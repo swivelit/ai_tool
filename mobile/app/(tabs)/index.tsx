@@ -14,6 +14,9 @@ type AnalysisResult = {
   category: string;
   raw_text: string;
   transcript?: string;
+  datetime?: string | null;
+  title?: string | null;
+  details?: string | null;
 };
 
 //const API_BASE = "http://localhost:8000"; // for web. For device, we will adjust.
@@ -206,7 +209,12 @@ export default function HomeScreen() {
           <Text style={styles.resultTitle}>Result</Text>
           <Text>Intent: {result.intent}</Text>
           <Text>Category: {result.category}</Text>
-          <Text>Raw Text / Transcript: {result.raw_text}</Text>
+          {result.datetime ? <Text>When: {result.datetime}</Text> : null}
+          {result.title ? <Text>Title: {result.title}</Text> : null}
+          {result.details ? <Text>Details: {result.details}</Text> : null}
+          <Text style={{ marginTop: 6 }}>
+            Raw Text / Transcript: {result.raw_text}
+          </Text>
         </View>
       )}
     </View>

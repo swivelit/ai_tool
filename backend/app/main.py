@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -6,11 +6,16 @@ from dotenv import load_dotenv
 import os
 from openai import OpenAI
 import tempfile
+import json
 
-# Load env vars (OPENAI_API_KEY, etc.)
+# Load environment variables
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is not set in .env")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 class TextAnalysisRequest(BaseModel):
@@ -18,15 +23,18 @@ class TextAnalysisRequest(BaseModel):
 
 
 class TextAnalysisResponse(BaseModel):
-    intent: str
-    category: str
-    raw_text: str
-    transcript: Optional[str] = None  # for voice endpoint
+    intent: str              # reminder | note | task | document | other
+    category: str            # Work | Home | Business | Other
+    raw_text: str            # original text / transcript
+    transcript: Optional[str] = None  # populated only for voice endpoint
+    datetime: Optional[str] = None    # ISO-ish datetime string or natural text
+    title: Optional[str] = None       # short title/summary
+    details: Optional[str] = None     # extra description
 
 
 app = FastAPI(title="Tamil Voice AI Backend")
 
-# --- CORS (allow frontend to call this API) ---
+# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # TODO: restrict in production
@@ -41,57 +49,114 @@ def health_check():
     return {"status": "ok", "message": "Tamil Voice AI backend is running 🚀"}
 
 
-# --- Very simple rule-based classifier (placeholder for LLM) ---
-def detect_intent(text: str) -> str:
-    t = text.lower()
-    # Expand with more Tamil patterns later
-    if "remind" in t or "reminder" in t or "நினைவூட்டு" in t:
-        return "reminder"
-    if "note" in t or "குறிப்பு" in t:
-        return "note"
-    if "task" in t or "செய்யணும்" in t:
-        return "task"
-    if "pdf" in t or "word" in t or "excel" in t or "ppt" in t:
-        return "document"
-    return "note"  # default
+# --- LLM classification helper ---
+
+SYSTEM_PROMPT = """
+You are an AI that reads Tamil and mixed Tamil-English (Tanglish) commands from users.
+
+Your job:
+1. Understand what the user wants.
+2. Classify the message into:
+   - intent: one of ["reminder", "note", "task", "document", "other"]
+   - category: one of ["Work", "Home", "Business", "Other"]
+3. Extract:
+   - datetime: when it should happen (if any). Use either an ISO-like string
+     (e.g. "2025-02-12 08:00") or a natural description (e.g. "tomorrow 8am").
+   - title: a short 3-10 word title for this item.
+   - details: a slightly longer description (1–2 sentences).
+
+Rules:
+- If it's clearly about office, job, meetings, projects → category: "Work".
+- If it's about personal life, house, family, bills, shopping → "Home".
+- If it's about business, shop, customers, leads, invoices → "Business".
+- If you are unsure → category: "Other" and intent: "other".
+
+Output:
+Return ONLY JSON with this exact structure, no extra text:
+
+{
+  "intent": "...",
+  "category": "...",
+  "datetime": "... or null",
+  "title": "...",
+  "details": "..."
+}
+"""
 
 
-def detect_category(text: str) -> str:
-    t = text.lower()
-    # Very naive keyword based – we will replace with LLM later
-    work_keywords = ["office", "meeting", "project", "client"]
-    home_keywords = ["home", "veedu", "சொந்த வீடு", "family", "amma", "appa"]
-    business_keywords = ["business", "customer", "lead", "invoice", "bill"]
+def llm_classify(text: str) -> dict:
+    """
+    Send Tamil / Tanglish text to the LLM and get structured JSON back.
+    """
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+        )
+        content = response.choices[0].message.content
+        data = json.loads(content)
 
-    if any(k in t for k in work_keywords):
-        return "Work"
-    if any(k in t for k in home_keywords):
-        return "Home"
-    if any(k in t for k in business_keywords):
-        return "Business"
-    return "Home"  # safe-ish default
+        # Basic safety defaults
+        intent = data.get("intent", "other")
+        category = data.get("category", "Other")
+        datetime_str = data.get("datetime")
+        title = data.get("title")
+        details = data.get("details")
 
+        # Normalize capitalization a bit
+        intent = intent.lower()
+        if category.lower() == "work":
+            category = "Work"
+        elif category.lower() == "home":
+            category = "Home"
+        elif category.lower() == "business":
+            category = "Business"
+        else:
+            category = "Other"
+
+        return {
+            "intent": intent,
+            "category": category,
+            "datetime": datetime_str,
+            "title": title,
+            "details": details,
+        }
+    except Exception as e:
+        # In production you'd log this properly
+        print("Error in llm_classify:", e)
+        raise HTTPException(status_code=500, detail="LLM classification failed")
+
+
+# --- Text endpoint using LLM ---
 
 @app.post("/analyze-text", response_model=TextAnalysisResponse)
 def analyze_text(payload: TextAnalysisRequest):
-    intent = detect_intent(payload.text)
-    category = detect_category(payload.text)
+    classification = llm_classify(payload.text)
 
     return TextAnalysisResponse(
-        intent=intent,
-        category=category,
+        intent=classification["intent"],
+        category=classification["category"],
         raw_text=payload.text,
+        datetime=classification.get("datetime"),
+        title=classification.get("title"),
+        details=classification.get("details"),
     )
 
+
+# --- Voice: Whisper + LLM ---
 
 @app.post("/transcribe-and-analyze", response_model=TextAnalysisResponse)
 async def transcribe_and_analyze(file: UploadFile = File(...)):
     """
     1. Receive audio file (Tamil speech)
     2. Send to Whisper for transcription
-    3. Run our detect_intent / detect_category on the transcript
+    3. Send transcript to LLM for classification
     """
-    # Save uploaded file to a temp file for the OpenAI client
     suffix = os.path.splitext(file.filename)[-1] or ".m4a"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await file.read()
@@ -99,7 +164,7 @@ async def transcribe_and_analyze(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        # Call Whisper transcription (Tamil is supported)
+        # Whisper transcription
         with open(tmp_path, "rb") as audio_file:
             transcript_obj = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -110,17 +175,19 @@ async def transcribe_and_analyze(file: UploadFile = File(...)):
 
         transcript_text = transcript_obj.text
 
-        intent = detect_intent(transcript_text)
-        category = detect_category(transcript_text)
+        # LLM classification on transcript
+        classification = llm_classify(transcript_text)
 
         return TextAnalysisResponse(
-            intent=intent,
-            category=category,
+            intent=classification["intent"],
+            category=classification["category"],
             raw_text=transcript_text,
             transcript=transcript_text,
+            datetime=classification.get("datetime"),
+            title=classification.get("title"),
+            details=classification.get("details"),
         )
     finally:
-        # Clean up temp file
         try:
             os.remove(tmp_path)
         except OSError:
