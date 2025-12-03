@@ -10,6 +10,7 @@ import {
 import { Audio } from "expo-av";
 
 type AnalysisResult = {
+  id: number;
   intent: string;
   category: string;
   raw_text: string;
@@ -207,6 +208,7 @@ export default function HomeScreen() {
       {result && (
         <View style={styles.resultContainer}>
           <Text style={styles.resultTitle}>Result</Text>
+          <Text>Id: {result.id}</Text>
           <Text>Intent: {result.intent}</Text>
           <Text>Category: {result.category}</Text>
           {result.datetime ? <Text>When: {result.datetime}</Text> : null}
