@@ -1,12 +1,16 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from dotenv import load_dotenv
 import os
 from openai import OpenAI
 import tempfile
 import json
+from datetime import datetime
+from sqlmodel import select, Session
+from .database import create_db_and_tables, get_session
+from .models import Item
 
 # Load environment variables
 load_dotenv()
@@ -23,13 +27,14 @@ class TextAnalysisRequest(BaseModel):
 
 
 class TextAnalysisResponse(BaseModel):
+    id: int
     intent: str              # reminder | note | task | document | other
     category: str            # Work | Home | Business | Other
     raw_text: str            # original text / transcript
-    transcript: Optional[str] = None  # populated only for voice endpoint
-    datetime: Optional[str] = None    # ISO-ish datetime string or natural text
-    title: Optional[str] = None       # short title/summary
-    details: Optional[str] = None     # extra description
+    transcript: Optional[str] = None
+    datetime: Optional[str] = None
+    title: Optional[str] = None
+    details: Optional[str] = None
 
 
 app = FastAPI(title="Tamil Voice AI Backend")
@@ -42,6 +47,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    create_db_and_tables()
 
 
 @app.get("/health")
@@ -101,61 +111,102 @@ def llm_classify(text: str) -> dict:
         content = response.choices[0].message.content
         data = json.loads(content)
 
-        # Basic safety defaults
-        intent = data.get("intent", "other")
-        category = data.get("category", "Other")
-        datetime_str = data.get("datetime")
-        title = data.get("title")
-        details = data.get("details")
+        intent = str(data.get("intent", "other")).lower()
+        category_raw = str(data.get("category", "Other"))
 
-        # Normalize capitalization a bit
-        intent = intent.lower()
-        if category.lower() == "work":
+        # Normalize category
+        cr = category_raw.lower()
+        if cr == "work":
             category = "Work"
-        elif category.lower() == "home":
+        elif cr == "home":
             category = "Home"
-        elif category.lower() == "business":
+        elif cr == "business":
             category = "Business"
+            # else:
         else:
             category = "Other"
 
         return {
             "intent": intent,
             "category": category,
-            "datetime": datetime_str,
-            "title": title,
-            "details": details,
+            "datetime": data.get("datetime"),
+            "title": data.get("title"),
+            "details": data.get("details"),
         }
     except Exception as e:
-        # In production you'd log this properly
         print("Error in llm_classify:", e)
         raise HTTPException(status_code=500, detail="LLM classification failed")
 
 
-# --- Text endpoint using LLM ---
-
-@app.post("/analyze-text", response_model=TextAnalysisResponse)
-def analyze_text(payload: TextAnalysisRequest):
-    classification = llm_classify(payload.text)
-
-    return TextAnalysisResponse(
+def create_item_in_db(
+    session: Session,
+    classification: dict,
+    raw_text: str,
+    source: str,
+    transcript: Optional[str] = None,
+) -> Item:
+    now = datetime.utcnow()
+    item = Item(
         intent=classification["intent"],
         category=classification["category"],
-        raw_text=payload.text,
-        datetime=classification.get("datetime"),
+        raw_text=raw_text,
+        transcript=transcript,
+        datetime_str=classification.get("datetime"),
         title=classification.get("title"),
         details=classification.get("details"),
+        source=source,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def item_to_response(item: Item) -> TextAnalysisResponse:
+    return TextAnalysisResponse(
+        id=item.id,
+        intent=item.intent,
+        category=item.category,
+        raw_text=item.raw_text,
+        transcript=item.transcript,
+        datetime=item.datetime_str,
+        title=item.title,
+        details=item.details,
     )
 
 
-# --- Voice: Whisper + LLM ---
+# --- Text endpoint using LLM + DB ---
+
+@app.post("/analyze-text", response_model=TextAnalysisResponse)
+def analyze_text(
+    payload: TextAnalysisRequest,
+    session: Session = Depends(get_session),
+):
+    classification = llm_classify(payload.text)
+    item = create_item_in_db(
+        session=session,
+        classification=classification,
+        raw_text=payload.text,
+        source="text",
+        transcript=None,
+    )
+    return item_to_response(item)
+
+
+# --- Voice: Whisper + LLM + DB ---
 
 @app.post("/transcribe-and-analyze", response_model=TextAnalysisResponse)
-async def transcribe_and_analyze(file: UploadFile = File(...)):
+async def transcribe_and_analyze(
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
     """
     1. Receive audio file (Tamil speech)
     2. Send to Whisper for transcription
     3. Send transcript to LLM for classification
+    4. Save in DB
     """
     suffix = os.path.splitext(file.filename)[-1] or ".m4a"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -178,17 +229,104 @@ async def transcribe_and_analyze(file: UploadFile = File(...)):
         # LLM classification on transcript
         classification = llm_classify(transcript_text)
 
-        return TextAnalysisResponse(
-            intent=classification["intent"],
-            category=classification["category"],
+        item = create_item_in_db(
+            session=session,
+            classification=classification,
             raw_text=transcript_text,
+            source="voice",
             transcript=transcript_text,
-            datetime=classification.get("datetime"),
-            title=classification.get("title"),
-            details=classification.get("details"),
         )
+
+        return item_to_response(item)
     finally:
         try:
             os.remove(tmp_path)
         except OSError:
             pass
+
+
+# --- List & get items (retrieval v1) ---
+
+@app.get("/items", response_model=List[TextAnalysisResponse])
+def list_items(
+    session: Session = Depends(get_session),
+    category: Optional[str] = None,
+    intent: Optional[str] = None,
+):
+    query = select(Item)
+
+    if category:
+        query = query.where(Item.category == category)
+    if intent:
+        query = query.where(Item.intent == intent)
+
+    items = session.exec(query.order_by(Item.created_at.desc())).all()
+    return [item_to_response(i) for i in items]
+
+
+@app.get("/items/{item_id}", response_model=TextAnalysisResponse)
+def get_item(
+    item_id: int,
+    session: Session = Depends(get_session),
+):
+    item = session.get(Item, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return item_to_response(item)
+
+
+# --- Document generation: Word (.docx) ---
+
+from docx import Document  # type: ignore
+
+
+DOCS_BASE_DIR = "generated_docs"
+
+
+def generate_docx_for_item(item: Item) -> str:
+    """
+    Create a Word document for an item and return the file path.
+    """
+    os.makedirs(DOCS_BASE_DIR, exist_ok=True)
+    # folder by category
+    category_folder = os.path.join(DOCS_BASE_DIR, item.category or "Other")
+    os.makedirs(category_folder, exist_ok=True)
+
+    safe_title = item.title or f"{item.intent.capitalize()} Item {item.id}"
+    # Make a simple safe filename
+    filename = f"item_{item.id}.docx"
+    path = os.path.join(category_folder, filename)
+
+    doc = Document()
+    doc.add_heading(safe_title, level=1)
+
+    if item.datetime_str:
+        doc.add_paragraph(f"When: {item.datetime_str}")
+    doc.add_paragraph(f"Category: {item.category}")
+    doc.add_paragraph(f"Intent: {item.intent}")
+    doc.add_paragraph("")
+
+    if item.details:
+        doc.add_paragraph(item.details)
+    else:
+        doc.add_paragraph(item.raw_text)
+
+    doc.save(path)
+    return path
+
+
+@app.post("/items/{item_id}/generate-docx")
+def generate_docx_endpoint(
+    item_id: int,
+    session: Session = Depends(get_session),
+):
+    item = session.get(Item, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    path = generate_docx_for_item(item)
+    return {
+        "item_id": item_id,
+        "docx_path": path,
+        "category": item.category,
+    }
