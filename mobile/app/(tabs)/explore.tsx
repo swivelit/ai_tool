@@ -7,6 +7,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  TextInput,
 } from "react-native";
 
 type Item = {
@@ -20,7 +21,19 @@ type Item = {
   details?: string | null;
 };
 
+type GenerateResponse = {
+  item_id: number;
+  docx_path?: string;
+  pdf_path?: string;
+  excel_path?: string;
+  ppt_path?: string;
+  category: string;
+};
+
 const API_BASE = "http://10.206.228.221:8000"; // same as in index.tsx
+
+const [searchText, setSearchText] = useState("");
+const [searching, setSearching] = useState(false);
 
 export default function ExploreScreen() {
   const [items, setItems] = useState<Item[]>([]);
@@ -46,6 +59,31 @@ export default function ExploreScreen() {
     }
   };
 
+  const searchItems = async () => {
+    if (!searchText.trim()) {
+      fetchItems();
+      return;
+    }
+    setError("");
+    setSearching(true);
+    try {
+      const res = await fetch(`${API_BASE}/search-items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: searchText }),
+      });
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      const data = await res.json();
+      const found: Item[] = data.items || [];
+      setItems(found);
+    } catch (err) {
+      console.error(err);
+      setError("Search failed.");
+    } finally {
+      setSearching(false);
+    }
+  };
+
   const generateDocx = async (itemId: number) => {
     setGeneratingId(itemId);
     setError("");
@@ -53,17 +91,66 @@ export default function ExploreScreen() {
       const res = await fetch(`${API_BASE}/items/${itemId}/generate-docx`, {
         method: "POST",
       });
-      if (!res.ok) {
-        throw new Error(`Server error: ${res.status}`);
-      }
-      const data = await res.json();
-      Alert.alert(
-        "Word Document Created",
-        `Path (on backend): ${data.docx_path}`
-      );
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      const data: GenerateResponse = await res.json();
+      Alert.alert("Word Document Created", `Backend path: ${data.docx_path}`);
     } catch (err) {
       console.error(err);
       setError("Failed to generate Word document.");
+    } finally {
+      setGeneratingId(null);
+    }
+  };
+
+  const generatePdf = async (itemId: number) => {
+    setGeneratingId(itemId);
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE}/items/${itemId}/generate-pdf`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      const data: GenerateResponse = await res.json();
+      Alert.alert("PDF Created", `Backend path: ${data.pdf_path}`);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to generate PDF.");
+    } finally {
+      setGeneratingId(null);
+    }
+  };
+
+  const generateExcel = async (itemId: number) => {
+    setGeneratingId(itemId);
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE}/items/${itemId}/generate-excel`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      const data: GenerateResponse = await res.json();
+      Alert.alert("Excel Created", `Backend path: ${data.excel_path}`);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to generate Excel.");
+    } finally {
+      setGeneratingId(null);
+    }
+  };
+
+  const generatePpt = async (itemId: number) => {
+    setGeneratingId(itemId);
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE}/items/${itemId}/generate-ppt`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      const data: GenerateResponse = await res.json();
+      Alert.alert("PPT Created", `Backend path: ${data.ppt_path}`);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to generate PPT.");
     } finally {
       setGeneratingId(null);
     }
@@ -87,6 +174,31 @@ export default function ExploreScreen() {
       {loading && <ActivityIndicator style={{ marginTop: 10 }} />}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
+      <View style={{ marginBottom: 12 }}>
+        <Text style={{ marginBottom: 4 }}>Search (Tamil)</Text>
+        <View style={{ flexDirection: "row" }}>
+          <View style={{ flex: 1, marginRight: 8 }}>
+            <TextInput
+              style={{
+                borderWidth: 1,
+                borderColor: "#ccc",
+                borderRadius: 8,
+                paddingHorizontal: 8,
+                paddingVertical: 6,
+                backgroundColor: "#fff",
+              }}
+              placeholder="நேத்து சொன்ன note..."
+              value={searchText}
+              onChangeText={setSearchText}
+            />
+          </View>
+          <Button
+            title={searching ? "..." : "Search"}
+            onPress={searchItems}
+            disabled={searching}
+          />
+        </View>
+      </View>
 
       <ScrollView style={styles.list}>
         {items.length === 0 && !loading ? (
@@ -110,10 +222,26 @@ export default function ExploreScreen() {
 
               <View style={styles.cardButtonRow}>
                 <Button
-                  title={
-                    generatingId === item.id ? "Generating..." : "Generate Word"
-                  }
+                  title={generatingId === item.id ? "..." : "Word"}
                   onPress={() => generateDocx(item.id)}
+                  disabled={generatingId === item.id}
+                />
+                <View style={{ width: 8 }} />
+                <Button
+                  title="PDF"
+                  onPress={() => generatePdf(item.id)}
+                  disabled={generatingId === item.id}
+                />
+                <View style={{ width: 8 }} />
+                <Button
+                  title="Excel"
+                  onPress={() => generateExcel(item.id)}
+                  disabled={generatingId === item.id}
+                />
+                <View style={{ width: 8 }} />
+                <Button
+                  title="PPT"
+                  onPress={() => generatePpt(item.id)}
                   disabled={generatingId === item.id}
                 />
               </View>
@@ -173,6 +301,7 @@ const styles = StyleSheet.create({
   },
   cardButtonRow: {
     marginTop: 8,
-    alignSelf: "flex-start",
+    flexDirection: "row",
+    flexWrap: "wrap",
   },
 });
