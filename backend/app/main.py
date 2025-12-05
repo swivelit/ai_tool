@@ -11,6 +11,13 @@ from datetime import datetime
 from sqlmodel import select, Session
 from .database import create_db_and_tables, get_session
 from .models import Item
+from docx import Document  # existing
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from openpyxl import Workbook
+from pptx import Presentation
+from pptx.util import Inches, Pt
+
 
 # Load environment variables
 load_dotenv()
@@ -25,7 +32,6 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 class TextAnalysisRequest(BaseModel):
     text: str
 
-
 class TextAnalysisResponse(BaseModel):
     id: int
     intent: str              # reminder | note | task | document | other
@@ -36,6 +42,11 @@ class TextAnalysisResponse(BaseModel):
     title: Optional[str] = None
     details: Optional[str] = None
 
+class SearchRequest(BaseModel):
+    query: str
+
+class SearchResponse(BaseModel):
+    items: list[TextAnalysisResponse]
 
 app = FastAPI(title="Tamil Voice AI Backend")
 
@@ -91,6 +102,26 @@ Return ONLY JSON with this exact structure, no extra text:
   "title": "...",
   "details": "..."
 }
+"""
+
+SEARCH_SYSTEM_PROMPT = """
+You are an AI assistant that searches through a list of saved items (notes, reminders, tasks).
+Each item has: id, intent, category, datetime, title, details, raw_text.
+
+User will ask in Tamil / mixed Tamil-English, e.g.:
+- "நேத்து சொன்ன office meeting note open பண்ணுங்க"
+- "last week business customer followup note"
+
+Your job:
+- Look at the items list.
+- Decide which 1–3 items are most relevant.
+- Return ONLY a JSON object:
+
+{
+  "ids": [1, 3]
+}
+
+If nothing is relevant, return {"ids": []}.
 """
 
 
@@ -281,6 +312,9 @@ from docx import Document  # type: ignore
 
 
 DOCS_BASE_DIR = "generated_docs"
+PDF_BASE_DIR = os.path.join(DOCS_BASE_DIR, "pdf")
+EXCEL_BASE_DIR = os.path.join(DOCS_BASE_DIR, "excel")
+PPT_BASE_DIR = os.path.join(DOCS_BASE_DIR, "ppt")
 
 
 def generate_docx_for_item(item: Item) -> str:
@@ -314,6 +348,118 @@ def generate_docx_for_item(item: Item) -> str:
     doc.save(path)
     return path
 
+def generate_pdf_for_item(item: Item) -> str:
+    os.makedirs(PDF_BASE_DIR, exist_ok=True)
+    category_folder = os.path.join(PDF_BASE_DIR, item.category or "Other")
+    os.makedirs(category_folder, exist_ok=True)
+
+    filename = f"item_{item.id}.pdf"
+    path = os.path.join(category_folder, filename)
+
+    c = canvas.Canvas(path, pagesize=A4)
+    width, height = A4
+
+    y = height - 50
+    title = item.title or f"{item.intent.capitalize()} Item {item.id}"
+
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, y, title)
+    y -= 30
+
+    c.setFont("Helvetica", 12)
+    if item.datetime_str:
+        c.drawString(50, y, f"When: {item.datetime_str}")
+        y -= 20
+    c.drawString(50, y, f"Category: {item.category}")
+    y -= 20
+    c.drawString(50, y, f"Intent: {item.intent}")
+    y -= 30
+
+    text = item.details or item.raw_text
+    for line in text.split("\n"):
+        if y < 50:
+            c.showPage()
+            y = height - 50
+            c.setFont("Helvetica", 12)
+        c.drawString(50, y, line)
+        y -= 18
+
+    c.save()
+    return path
+def generate_excel_for_item(item: Item) -> str:
+    os.makedirs(EXCEL_BASE_DIR, exist_ok=True)
+    category_folder = os.path.join(EXCEL_BASE_DIR, item.category or "Other")
+    os.makedirs(category_folder, exist_ok=True)
+
+    filename = f"item_{item.id}.xlsx"
+    path = os.path.join(category_folder, filename)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Item"
+
+    ws["A1"] = "Title"
+    ws["B1"] = item.title or f"{item.intent.capitalize()} Item {item.id}"
+
+    ws["A2"] = "Intent"
+    ws["B2"] = item.intent
+
+    ws["A3"] = "Category"
+    ws["B3"] = item.category
+
+    ws["A4"] = "When"
+    ws["B4"] = item.datetime_str or ""
+
+    ws["A5"] = "Details"
+    ws["B5"] = item.details or item.raw_text
+
+    wb.save(path)
+    return path
+def generate_ppt_for_item(item: Item) -> str:
+    os.makedirs(PPT_BASE_DIR, exist_ok=True)
+    category_folder = os.path.join(PPT_BASE_DIR, item.category or "Other")
+    os.makedirs(category_folder, exist_ok=True)
+
+    filename = f"item_{item.id}.pptx"
+    path = os.path.join(category_folder, filename)
+
+    prs = Presentation()
+    slide_layout = prs.slide_layouts[1]  # title + content
+    slide = prs.slides.add_slide(slide_layout)
+
+    title_shape = slide.shapes.title
+    body_shape = slide.placeholders[1]
+
+    title_shape.text = item.title or f"{item.intent.capitalize()} Item {item.id}"
+
+    tf = body_shape.text_frame
+    tf.text = f"Intent: {item.intent}\nCategory: {item.category}"
+    if item.datetime_str:
+        tf.add_paragraph().text = f"When: {item.datetime_str}"
+
+    details = item.details or item.raw_text
+    p = tf.add_paragraph()
+    p.text = details
+    p.level = 1
+
+    prs.save(path)
+    return path
+
+@app.post("/items/{item_id}/generate-pdf")
+def generate_pdf_endpoint(
+    item_id: int,
+    session: Session = Depends(get_session),
+):
+    item = session.get(Item, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    path = generate_pdf_for_item(item)
+    return {
+        "item_id": item_id,
+        "pdf_path": path,
+        "category": item.category,
+    }
 
 @app.post("/items/{item_id}/generate-docx")
 def generate_docx_endpoint(
@@ -330,3 +476,95 @@ def generate_docx_endpoint(
         "docx_path": path,
         "category": item.category,
     }
+
+@app.post("/items/{item_id}/generate-excel")
+def generate_excel_endpoint(
+    item_id: int,
+    session: Session = Depends(get_session),
+):
+    item = session.get(Item, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    path = generate_excel_for_item(item)
+    return {
+        "item_id": item_id,
+        "excel_path": path,
+        "category": item.category,
+    }
+
+@app.post("/items/{item_id}/generate-ppt")
+def generate_ppt_endpoint(
+    item_id: int,
+    session: Session = Depends(get_session),
+):
+    item = session.get(Item, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    path = generate_ppt_for_item(item)
+    return {
+        "item_id": item_id,
+        "ppt_path": path,
+        "category": item.category,
+    }
+
+@app.post("/search-items", response_model=SearchResponse)
+def search_items(
+    payload: SearchRequest,
+    session: Session = Depends(get_session),
+):
+    # get last N items
+    items = session.exec(
+        select(Item).order_by(Item.created_at.desc()).limit(50)
+    ).all()
+
+    if not items:
+        return SearchResponse(items=[])
+
+    # Build a compact summary for the LLM
+    items_summary = []
+    for i in items:
+        items_summary.append(
+            {
+                "id": i.id,
+                "intent": i.intent,
+                "category": i.category,
+                "datetime": i.datetime_str,
+                "title": i.title,
+                "details": i.details,
+                "text": i.raw_text,
+            }
+        )
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"Items: {json.dumps(items_summary, ensure_ascii=False)}\n\nQuery: {payload.query}",
+                },
+            ],
+        )
+        content = response.choices[0].message.content
+        data = json.loads(content)
+        ids = data.get("ids", [])
+        if not isinstance(ids, list):
+            ids = []
+
+    except Exception as e:
+        print("Error in search_items LLM:", e)
+        ids = []
+
+    # Fetch those items from DB in same order
+    found_items: list[TextAnalysisResponse] = []
+    for _id in ids:
+        item = session.get(Item, _id)
+        if item:
+            found_items.append(item_to_response(item))
+
+    return SearchResponse(items=found_items)
