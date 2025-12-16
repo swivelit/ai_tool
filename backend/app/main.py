@@ -50,6 +50,13 @@ class SearchResponse(BaseModel):
 
 app = FastAPI(title="Tamil Voice AI Backend")
 
+class SearchRequest(BaseModel):
+    query: str
+
+class SearchResponse(BaseModel):
+    items: list[TextAnalysisResponse]
+    transcript: Optional[str] = None  # for voice search endpoint
+
 # --- CORS ---
 app.add_middleware(
     CORSMiddleware,
@@ -108,13 +115,13 @@ SEARCH_SYSTEM_PROMPT = """
 You are an AI assistant that searches through a list of saved items (notes, reminders, tasks).
 Each item has: id, intent, category, datetime, title, details, raw_text.
 
-User will ask in Tamil / mixed Tamil-English, e.g.:
+User will ask in Tamil or mixed Tamil-English, e.g.:
 - "நேத்து சொன்ன office meeting note open பண்ணுங்க"
 - "last week business customer followup note"
 
 Your job:
-- Look at the items list.
-- Decide which 1–3 items are most relevant.
+- Look at the items list I give you.
+- Decide which 1–3 items are most relevant to the query.
 - Return ONLY a JSON object:
 
 {
@@ -277,6 +284,112 @@ async def transcribe_and_analyze(
 
 
 # --- List & get items (retrieval v1) ---
+from sqlmodel import select  # you already import this near top, just ensure it's there
+
+@app.post("/search-items", response_model=SearchResponse)
+def search_items(
+    payload: SearchRequest,
+    session: Session = Depends(get_session),
+):
+    # Take latest 50 items for search
+    items = session.exec(
+        select(Item).order_by(Item.created_at.desc()).limit(50)
+    ).all()
+
+    if not items:
+        return SearchResponse(items=[])
+
+    # Summarise items for the LLM
+    items_summary = []
+    for i in items:
+        items_summary.append(
+            {
+                "id": i.id,
+                "intent": i.intent,
+                "category": i.category,
+                "datetime": i.datetime_str,
+                "title": i.title,
+                "details": i.details,
+                "raw_text": i.raw_text,
+            }
+        )
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        "Items: "
+                        + json.dumps(items_summary, ensure_ascii=False)
+                        + "\n\nQuery: "
+                        + payload.query
+                    ),
+                },
+            ],
+        )
+        content = response.choices[0].message.content
+        data = json.loads(content)
+        ids = data.get("ids", [])
+        if not isinstance(ids, list):
+            ids = []
+    except Exception as e:
+        print("Error in search_items LLM:", e)
+        ids = []
+
+    # Fetch the matching items from DB (keep order given by LLM)
+    found_items: list[TextAnalysisResponse] = []
+    for _id in ids:
+        item = session.get(Item, _id)
+        if item:
+            found_items.append(item_to_response(item))
+
+    return SearchResponse(items=found_items)
+
+@app.post("/search-items-voice", response_model=SearchResponse)
+async def search_items_voice(
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
+    # Save temp file
+    suffix = os.path.splitext(file.filename)[-1] or ".m4a"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        # Whisper transcription
+        with open(tmp_path, "rb") as audio_file:
+            transcript_obj = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="json",
+                language="ta",
+            )
+
+        transcript_text = transcript_obj.text
+
+        # Reuse the text search endpoint's core
+        text_response = search_items(
+            payload=SearchRequest(query=transcript_text),
+            session=session,
+        )
+
+        # Attach transcript
+        return SearchResponse(
+            items=text_response.items,
+            transcript=transcript_text,
+        )
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
 @app.get("/items", response_model=List[TextAnalysisResponse])
 def list_items(
