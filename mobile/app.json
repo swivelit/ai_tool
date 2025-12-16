@@ -8,6 +8,13 @@
     "scheme": "mobile",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "extra": {
+      "API_BASE": "https://ai-tool-rrau.onrender.com",
+      "router": {},
+      "eas": {
+        "projectId": "43fd64c5-dbf3-4e80-8057-ecbb15689e27"
+      }
+    },
     "ios": {
       "supportsTablet": true
     },
@@ -19,7 +26,8 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.swivelit.tamilvoiceai"
     },
     "web": {
       "output": "static",
