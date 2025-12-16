@@ -21,9 +21,13 @@ type AnalysisResult = {
 };
 
 //const API_BASE = "http://localhost:8000"; // for web. For device, we will adjust.
-const API_BASE = "http://10.206.228.221:8000";
+//const API_BASE = "http://10.206.228.221:8000";
+import Constants from "expo-constants";
 
-
+const API_BASE =
+  (Constants.expoConfig?.extra?.API_BASE as string) ||
+  "http://10.206.228.221:8000";
+  
 export default function HomeScreen() {
   const [input, setInput] = useState("");
   const [result, setResult] = useState<AnalysisResult | null>(null);
