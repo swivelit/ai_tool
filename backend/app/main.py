@@ -21,10 +21,9 @@ from pptx.util import Inches, Pt
 
 # Load environment variables
 load_dotenv()
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is not set in .env")
+    raise RuntimeError("OPENAI_API_KEY is not set (env var missing)")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -41,12 +40,6 @@ class TextAnalysisResponse(BaseModel):
     datetime: Optional[str] = None
     title: Optional[str] = None
     details: Optional[str] = None
-
-class SearchRequest(BaseModel):
-    query: str
-
-class SearchResponse(BaseModel):
-    items: list[TextAnalysisResponse]
 
 app = FastAPI(title="Tamil Voice AI Backend")
 
@@ -66,6 +59,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+def root():
+    return {"ok": True, "message": "Tamil Voice AI backend. Use /health"}
 
 @app.on_event("startup")
 def on_startup() -> None:
@@ -284,8 +280,6 @@ async def transcribe_and_analyze(
 
 
 # --- List & get items (retrieval v1) ---
-from sqlmodel import select  # you already import this near top, just ensure it's there
-
 @app.post("/search-items", response_model=SearchResponse)
 def search_items(
     payload: SearchRequest,
@@ -420,9 +414,6 @@ def get_item(
 
 
 # --- Document generation: Word (.docx) ---
-
-from docx import Document  # type: ignore
-
 
 DOCS_BASE_DIR = "generated_docs"
 PDF_BASE_DIR = os.path.join(DOCS_BASE_DIR, "pdf")
@@ -621,63 +612,3 @@ def generate_ppt_endpoint(
         "ppt_path": path,
         "category": item.category,
     }
-
-@app.post("/search-items", response_model=SearchResponse)
-def search_items(
-    payload: SearchRequest,
-    session: Session = Depends(get_session),
-):
-    # get last N items
-    items = session.exec(
-        select(Item).order_by(Item.created_at.desc()).limit(50)
-    ).all()
-
-    if not items:
-        return SearchResponse(items=[])
-
-    # Build a compact summary for the LLM
-    items_summary = []
-    for i in items:
-        items_summary.append(
-            {
-                "id": i.id,
-                "intent": i.intent,
-                "category": i.category,
-                "datetime": i.datetime_str,
-                "title": i.title,
-                "details": i.details,
-                "text": i.raw_text,
-            }
-        )
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.1,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"Items: {json.dumps(items_summary, ensure_ascii=False)}\n\nQuery: {payload.query}",
-                },
-            ],
-        )
-        content = response.choices[0].message.content
-        data = json.loads(content)
-        ids = data.get("ids", [])
-        if not isinstance(ids, list):
-            ids = []
-
-    except Exception as e:
-        print("Error in search_items LLM:", e)
-        ids = []
-
-    # Fetch those items from DB in same order
-    found_items: list[TextAnalysisResponse] = []
-    for _id in ids:
-        item = session.get(Item, _id)
-        if item:
-            found_items.append(item_to_response(item))
-
-    return SearchResponse(items=found_items)
