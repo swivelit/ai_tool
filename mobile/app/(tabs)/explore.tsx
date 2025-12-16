@@ -8,7 +8,9 @@ import {
   ActivityIndicator,
   Alert,
   TextInput,
+  Platform,
 } from "react-native";
+import { Audio } from "expo-av";
 
 type Item = {
   id: number;
@@ -30,6 +32,11 @@ type GenerateResponse = {
   category: string;
 };
 
+type SearchResponse = {
+  items: Item[];
+  transcript?: string | null;
+};
+
 const API_BASE = "http://10.206.228.221:8000"; // same as in index.tsx
 
 const [searchText, setSearchText] = useState("");
@@ -40,6 +47,14 @@ export default function ExploreScreen() {
   const [loading, setLoading] = useState(false);
   const [generatingId, setGeneratingId] = useState<number | null>(null);
   const [error, setError] = useState("");
+
+  const [searchText, setSearchText] = useState("");
+  const [searching, setSearching] = useState(false);
+
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [recordingStatus, setRecordingStatus] = useState<"idle" | "recording">(
+    "idle"
+  );
 
   const fetchItems = async () => {
     setError("");
@@ -61,6 +76,7 @@ export default function ExploreScreen() {
 
   const searchItems = async () => {
     if (!searchText.trim()) {
+      // empty query -> load all items again
       fetchItems();
       return;
     }
@@ -73,12 +89,85 @@ export default function ExploreScreen() {
         body: JSON.stringify({ query: searchText }),
       });
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
-      const data = await res.json();
-      const found: Item[] = data.items || [];
-      setItems(found);
+      const data: SearchResponse = await res.json();
+      setItems(data.items || []);
     } catch (err) {
       console.error(err);
       setError("Search failed.");
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const startVoiceSearch = async () => {
+    if (Platform.OS === "web") {
+      setError("Voice search not supported on web. Use Android/iOS via Expo Go.");
+      return;
+    }
+
+    try {
+      setError("");
+      const permission = await Audio.requestPermissionsAsync();
+      if (!permission.granted) {
+        setError("Microphone permission is required for voice search.");
+        return;
+      }
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      setRecording(recording);
+      setRecordingStatus("recording");
+    } catch (err) {
+      console.error("Error starting voice search recording", err);
+      setError("Failed to start voice search.");
+    }
+  };
+
+  const stopVoiceSearch = async () => {
+    if (!recording) return;
+
+    try {
+      setRecordingStatus("idle");
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      setRecording(null);
+
+      if (!uri) {
+        setError("No audio URI found for voice search.");
+        return;
+      }
+
+      setSearching(true);
+      setError("");
+
+      const formData = new FormData();
+      formData.append("file", {
+        uri,
+        name: "search_audio.m4a",
+        type: "audio/m4a",
+      } as any);
+
+      const res = await fetch(`${API_BASE}/search-items-voice`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+
+      const data: SearchResponse = await res.json();
+      setItems(data.items || []);
+      if (data.transcript) {
+        setSearchText(data.transcript);
+      }
+    } catch (err) {
+      console.error("Error in voice search", err);
+      setError("Voice search failed.");
     } finally {
       setSearching(false);
     }
@@ -175,18 +264,11 @@ export default function ExploreScreen() {
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <View style={{ marginBottom: 12 }}>
-        <Text style={{ marginBottom: 4 }}>Search (Tamil)</Text>
-        <View style={{ flexDirection: "row" }}>
+        <Text style={{ marginBottom: 4 }}>Search (Tamil / English)</Text>
+        <View style={{ flexDirection: "row", marginBottom: 8 }}>
           <View style={{ flex: 1, marginRight: 8 }}>
             <TextInput
-              style={{
-                borderWidth: 1,
-                borderColor: "#ccc",
-                borderRadius: 8,
-                paddingHorizontal: 8,
-                paddingVertical: 6,
-                backgroundColor: "#fff",
-              }}
+              style={styles.searchInput}
               placeholder="நேத்து சொன்ன note..."
               value={searchText}
               onChangeText={setSearchText}
@@ -197,6 +279,21 @@ export default function ExploreScreen() {
             onPress={searchItems}
             disabled={searching}
           />
+        </View>
+
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          {Platform.OS === "web" ? (
+            <Text style={{ fontSize: 12, color: "#666" }}>
+              Voice search not supported on web.
+            </Text>
+          ) : recordingStatus === "idle" ? (
+            <Button title="🎙 Voice Search" onPress={startVoiceSearch} />
+          ) : (
+            <Button title="⏹ Stop" color="#b00020" onPress={stopVoiceSearch} />
+          )}
+
+          <View style={{ width: 12 }} />
+          <Button title="Clear" onPress={() => { setSearchText(""); fetchItems(); }} />
         </View>
       </View>
 
@@ -303,5 +400,13 @@ const styles = StyleSheet.create({
     marginTop: 8,
     flexDirection: "row",
     flexWrap: "wrap",
+  },
+  searchInput: {
+    borderWidth: 1,
+    borderColor: "#ccc",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    backgroundColor: "#fff",
   },
 });
