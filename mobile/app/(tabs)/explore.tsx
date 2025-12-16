@@ -37,7 +37,10 @@ type SearchResponse = {
   transcript?: string | null;
 };
 
-const API_BASE = "http://10.206.228.221:8000"; // same as in index.tsx
+import Constants from "expo-constants";
+const API_BASE =
+  (Constants.expoConfig?.extra?.API_BASE as string) ||
+  "http://10.206.228.221:8000";
 
 const [searchText, setSearchText] = useState("");
 const [searching, setSearching] = useState(false);
