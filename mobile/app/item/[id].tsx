@@ -3,6 +3,11 @@ import { SafeAreaView, Text, View, Pressable, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, router } from "expo-router";
 
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
+import { API_BASE, apiPost } from "@/lib/api";
+import { createPdfFromItem, createExcelFromItem } from "@/lib/localDocs";
+
 import { GlassCard } from "@/components/Glass";
 import { apiGet, apiPost } from "@/lib/api";
 import { Item } from "@/lib/types";
@@ -22,12 +27,31 @@ export default function ItemDetail() {
   }, [itemId]);
 
   async function gen(kind: "pdf" | "docx" | "excel" | "ppt") {
-    try {
-      const res = await apiPost<any>(`/items/${itemId}/generate-${kind}`);
-      Alert.alert("Generated", JSON.stringify(res, null, 2));
-      // NOTE: for Play Store quality: add a backend download endpoint to fetch the file.
-    } catch (e: any) {
-      Alert.alert("Error", e?.message || "Failed");
+    if (!item) return;
+
+    // Local generation
+    if (kind === "pdf") return createPdfFromItem(item);
+    if (kind === "excel") return createExcelFromItem(item);
+
+    // Server generation + download
+    const res = await apiPost<any>(`/items/${itemId}/generate-${kind}`);
+    const category = item.category || "Other";
+
+    const filename =
+      kind === "ppt" ? `item_${itemId}.pptx` :
+      kind === "docx" ? `item_${itemId}.docx` :
+      `item_${itemId}.${kind}`;
+
+    const url =
+      kind === "ppt" ? `${API_BASE}/files/ppt/${category}/${filename}` :
+      kind === "docx" ? `${API_BASE}/files/docx/${category}/${filename}` :
+      `${API_BASE}/files/${kind}/${category}/${filename}`;
+
+    const localPath = FileSystem.documentDirectory + filename;
+    const dl = await FileSystem.downloadAsync(url, localPath);
+
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(dl.uri);
     }
   }
 

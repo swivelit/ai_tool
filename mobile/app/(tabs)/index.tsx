@@ -1,5 +1,5 @@
-import React, { useMemo, useRef, useState } from "react";
-import { SafeAreaView, Text, TextInput, View, Pressable, ScrollView, Alert } from "react-native";
+import React, { useMemo, useState } from "react";
+import { SafeAreaView, Text, TextInput, View, Pressable, ScrollView, Alert, Modal } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Audio } from "expo-av";
 import * as Haptics from "expo-haptics";
@@ -10,11 +10,15 @@ import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { apiPost, apiPostForm } from "@/lib/api";
 import { Item } from "@/lib/types";
+import { getProfile } from "@/lib/account";
+import { parseDatetime } from "@/lib/datetime";
+import { scheduleReminder } from "@/lib/reminders";
 
 type AnalyzeResponse = Item;
 
 export default function Home() {
   const { name, settings } = useAssistant();
+
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -23,22 +27,66 @@ export default function Home() {
 
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
 
+  // Confirmation modal state (Answer B)
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingReminder, setPendingReminder] = useState<{
+    title: string;
+    details: string;
+    datetimeText: string; // what LLM gave (e.g. "tomorrow 8am")
+  } | null>(null);
+
   const placeholder = useMemo(() => {
     return settings.languageMode === "ta"
       ? "தமிழில் சொல்லுங்க… (உதா: நாளைக்கு காலை 8 மணிக்கு ரிமைண்டர்)"
       : "Tamil / Tanglish… (ex: nalaiku 8 mani reminder vechiko)";
   }, [settings.languageMode]);
 
+  function stripAssistantTrigger(input: string) {
+    const cleaned = input.trim();
+    if (!cleaned) return cleaned;
+
+    // Examples:
+    // "Ellie set reminder ..." -> strip "Ellie"
+    // "Ellie, set reminder ..." -> strip "Ellie," / "Ellie:"
+    const trigger = (name || "Ellie").trim().toLowerCase();
+    const lower = cleaned.toLowerCase();
+
+    if (lower.startsWith(trigger)) {
+      let rest = cleaned.slice((name || "Ellie").length).trim();
+      // Remove common punctuation after name
+      rest = rest.replace(/^[:,\-–—]+/, "").trim();
+      return rest || cleaned;
+    }
+    return cleaned;
+  }
+
   async function analyzeText() {
     if (!text.trim()) return;
+
     try {
       setBusy(true);
+
+      const profile = await getProfile();
+      const cleaned = stripAssistantTrigger(text);
+
       const res = await apiPost<AnalyzeResponse>("/analyze-text", {
-        text,
-        meta: { tone: settings.tone, languageMode: settings.languageMode }, // future-proof
+        text: cleaned,
+        user_id: profile?.userId ?? null,
+        meta: { tone: settings.tone, languageMode: settings.languageMode },
       });
+
       setResult(res);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Answer B: If reminder intent + datetime exists => ask confirm
+      if (res.intent === "reminder" && res.datetime) {
+        setPendingReminder({
+          title: res.title || "Reminder",
+          details: res.details || res.raw_text,
+          datetimeText: res.datetime,
+        });
+        setConfirmOpen(true);
+      }
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Failed");
     } finally {
@@ -75,6 +123,7 @@ export default function Home() {
 
   async function stopAndAnalyze() {
     if (!recording) return;
+
     try {
       setBusy(true);
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -86,6 +135,8 @@ export default function Home() {
 
       if (!uri) throw new Error("No audio file URI");
 
+      const profile = await getProfile();
+
       const form = new FormData();
       form.append("file", {
         uri,
@@ -93,9 +144,21 @@ export default function Home() {
         type: "audio/m4a",
       } as any);
 
-      const res = await apiPostForm<AnalyzeResponse>("/transcribe-and-analyze", form);
+      // Pass user_id as query param (backend supports it)
+      const res = await apiPostForm<AnalyzeResponse>(`/transcribe-and-analyze?user_id=${profile?.userId ?? ""}`, form);
+
       setResult(res);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Answer B: confirm reminder
+      if (res.intent === "reminder" && res.datetime) {
+        setPendingReminder({
+          title: res.title || "Reminder",
+          details: res.details || res.raw_text,
+          datetimeText: res.datetime,
+        });
+        setConfirmOpen(true);
+      }
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Voice analyze failed");
     } finally {
@@ -105,6 +168,60 @@ export default function Home() {
 
   function chip(t: string) {
     setText(t);
+  }
+
+  async function confirmScheduleReminder() {
+    if (!pendingReminder) return;
+
+    try {
+      setBusy(true);
+
+      const profile = await getProfile();
+      const tz = profile?.timezone || "Asia/Kolkata";
+
+      // Ask backend to parse "tomorrow 8am" into ISO datetime
+      const parsed = await parseDatetime(pendingReminder.datetimeText, tz);
+
+      if (!parsed.iso || parsed.confidence < 0.35) {
+        Alert.alert(
+          "Confirm time",
+          `I couldn’t confidently understand the time.\n\nDetected: "${pendingReminder.datetimeText}".\nPlease type a clearer time (ex: "tomorrow 8:00 AM").`
+        );
+        setConfirmOpen(false);
+        setPendingReminder(null);
+        return;
+      }
+
+      const when = new Date(parsed.iso);
+      if (isNaN(when.getTime())) {
+        Alert.alert("Error", "Parsed datetime was invalid.");
+        setConfirmOpen(false);
+        setPendingReminder(null);
+        return;
+      }
+
+      if (when.getTime() < Date.now() + 30_000) {
+        Alert.alert("Time is too soon", "Please choose a future time.");
+        setConfirmOpen(false);
+        setPendingReminder(null);
+        return;
+      }
+
+      await scheduleReminder(
+        pendingReminder.title,
+        pendingReminder.details,
+        when
+      );
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Reminder set ✅", parsed.human || when.toString());
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Failed to schedule reminder");
+    } finally {
+      setBusy(false);
+      setConfirmOpen(false);
+      setPendingReminder(null);
+    }
   }
 
   return (
@@ -154,7 +271,7 @@ export default function Home() {
 
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 12 }}>
               {[
-                "நாளைக்கு காலை 8 மணிக்கு office meeting reminder வை",
+                "Ellie, நாளைக்கு காலை 8 மணிக்கு office meeting reminder வை",
                 "விஸ்னஸ் நோட்ஸ் ஒப்பன் பண்ணுங்க",
                 "Today customer followup task add pannunga",
                 "Amma ku medicine reminder vechiko",
@@ -244,6 +361,82 @@ export default function Home() {
             }}
           />
         </View>
+
+        {/* Reminder confirmation modal (Answer B) */}
+        <Modal visible={confirmOpen} transparent animationType="fade" onRequestClose={() => setConfirmOpen(false)}>
+          <View
+            style={{
+              flex: 1,
+              backgroundColor: "rgba(0,0,0,0.55)",
+              justifyContent: "flex-end",
+              padding: 16,
+            }}
+          >
+            <View
+              style={{
+                borderRadius: 20,
+                padding: 16,
+                backgroundColor: "rgba(10,16,32,0.98)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.10)",
+              }}
+            >
+              <Text style={{ color: "white", fontWeight: "900", fontSize: 18 }}>Set reminder?</Text>
+
+              <Text style={{ marginTop: 10, color: "rgba(255,255,255,0.75)" }}>
+                <Text style={{ fontWeight: "900", color: "rgba(255,255,255,0.92)" }}>Title: </Text>
+                {pendingReminder?.title}
+              </Text>
+
+              <Text style={{ marginTop: 8, color: "rgba(255,255,255,0.75)" }}>
+                <Text style={{ fontWeight: "900", color: "rgba(255,255,255,0.92)" }}>When: </Text>
+                {pendingReminder?.datetimeText}
+              </Text>
+
+              <Text style={{ marginTop: 8, color: "rgba(255,255,255,0.65)" }} numberOfLines={3}>
+                {pendingReminder?.details}
+              </Text>
+
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+                <Pressable
+                  onPress={() => {
+                    setConfirmOpen(false);
+                    setPendingReminder(null);
+                  }}
+                  style={{
+                    flex: 1,
+                    height: 52,
+                    borderRadius: 16,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "rgba(255,255,255,0.06)",
+                    borderWidth: 1,
+                    borderColor: "rgba(255,255,255,0.10)",
+                  }}
+                >
+                  <Text style={{ color: "rgba(255,255,255,0.85)", fontWeight: "900" }}>Cancel</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={confirmScheduleReminder}
+                  disabled={busy}
+                  style={{
+                    flex: 1,
+                    height: 52,
+                    borderRadius: 16,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "rgba(34,211,238,0.22)",
+                    borderWidth: 1,
+                    borderColor: "rgba(34,211,238,0.35)",
+                  }}
+                >
+                  <Text style={{ color: "white", fontWeight: "900" }}>{busy ? "SETTING…" : "Confirm"}</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </LinearGradient>
   );
