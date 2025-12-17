@@ -1,106 +1,167 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 import os
 from openai import OpenAI
 import tempfile
 import json
-from datetime import datetime
+from datetime import datetime, date
 from sqlmodel import select, Session
+
 from .database import create_db_and_tables, get_session
-from .models import Item
-from docx import Document  # existing
+from .models import Item, User, Questionnaire, Conversation, QACache
+
+from docx import Document
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from openpyxl import Workbook
 from pptx import Presentation
-from pptx.util import Inches, Pt
 
-
-# Load environment variables
 load_dotenv()
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is not set (env var missing)")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-
-class TextAnalysisRequest(BaseModel):
-    text: str
-
-class TextAnalysisResponse(BaseModel):
-    id: int
-    intent: str              # reminder | note | task | document | other
-    category: str            # Work | Home | Business | Other
-    raw_text: str            # original text / transcript
-    transcript: Optional[str] = None
-    datetime: Optional[str] = None
-    title: Optional[str] = None
-    details: Optional[str] = None
-
 app = FastAPI(title="Tamil Voice AI Backend")
 
-class SearchRequest(BaseModel):
-    query: str
-
-class SearchResponse(BaseModel):
-    items: list[TextAnalysisResponse]
-    transcript: Optional[str] = None  # for voice search endpoint
-
-# --- CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: restrict in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------- Logging middleware (Render logs + DB conversations) ----------
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = datetime.utcnow()
+    body_text = ""
+    try:
+        b = await request.body()
+        if b:
+            body_text = b.decode("utf-8", errors="ignore")[:2000]
+    except Exception:
+        pass
+
+    response = await call_next(request)
+    ms = int((datetime.utcnow() - start).total_seconds() * 1000)
+
+    # Render logs
+    print(f"[REQ] {request.method} {request.url.path} {response.status_code} {ms}ms body={body_text[:400]}")
+
+    return response
+
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
+
 @app.get("/")
 def root():
     return {"ok": True, "message": "Tamil Voice AI backend. Use /health"}
 
-@app.on_event("startup")
-def on_startup() -> None:
-    create_db_and_tables()
-
-
 @app.get("/health")
-def health_check():
+def health():
     return {"status": "ok", "message": "Tamil Voice AI backend is running 🚀"}
 
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+import json
 
-# --- LLM classification helper ---
+PARSE_DT_PROMPT = """
+You convert natural language datetime into ISO datetime.
+Input includes:
+- timezone (IANA)
+- now (ISO)
+- text (may be like "tomorrow 8am", "நாளைக்கு காலை 8", "next monday 6pm")
 
+Return ONLY JSON:
+{
+  "iso": "YYYY-MM-DDTHH:MM:SS" or null,
+  "human": "human readable summary",
+  "confidence": 0.0 to 1.0
+}
+
+Rules:
+- If no datetime is present, return iso=null.
+- Use the provided timezone when interpreting relative dates.
+"""
+
+class ParseDatetimeRequest(BaseModel):
+    text: str
+    timezone: str = "Asia/Kolkata"
+    now_iso: Optional[str] = None
+
+@app.post("/parse-datetime")
+def parse_datetime(payload: ParseDatetimeRequest):
+    now_iso = payload.now_iso or datetime.utcnow().isoformat()
+
+    user_content = json.dumps(
+        {"timezone": payload.timezone, "now": now_iso, "text": payload.text},
+        ensure_ascii=False,
+    )
+
+    out = llm_json(PARSE_DT_PROMPT, user_content, temperature=0.0)
+    # Ensure keys exist
+    return {
+        "iso": out.get("iso"),
+        "human": out.get("human") or "",
+        "confidence": float(out.get("confidence") or 0.0),
+    }
+
+# ---------- Schemas ----------
+class TextAnalysisRequest(BaseModel):
+    text: str
+    user_id: Optional[int] = None
+    meta: Optional[Dict[str, Any]] = None
+
+class TextAnalysisResponse(BaseModel):
+    id: int
+    intent: str
+    category: str
+    raw_text: str
+    transcript: Optional[str] = None
+    datetime: Optional[str] = None
+    title: Optional[str] = None
+    details: Optional[str] = None
+
+class SearchRequest(BaseModel):
+    query: str
+    user_id: Optional[int] = None
+
+class SearchResponse(BaseModel):
+    items: list[TextAnalysisResponse]
+    transcript: Optional[str] = None
+
+class UserCreate(BaseModel):
+    name: str
+    place: Optional[str] = None
+    timezone: Optional[str] = "Asia/Kolkata"
+    assistant_name: Optional[str] = "Ellie"
+
+class QuestionnaireIn(BaseModel):
+    payload: Dict[str, Any]
+
+class Checkin(BaseModel):
+    title: str
+    when: str  # "08:00", "18:30" etc
+    message: str
+
+# ---------- LLM prompts ----------
 SYSTEM_PROMPT = """
 You are an AI that reads Tamil and mixed Tamil-English (Tanglish) commands from users.
 
-Your job:
-1. Understand what the user wants.
-2. Classify the message into:
-   - intent: one of ["reminder", "note", "task", "document", "other"]
-   - category: one of ["Work", "Home", "Business", "Other"]
-3. Extract:
-   - datetime: when it should happen (if any). Use either an ISO-like string
-     (e.g. "2025-02-12 08:00") or a natural description (e.g. "tomorrow 8am").
-   - title: a short 3-10 word title for this item.
-   - details: a slightly longer description (1–2 sentences).
-
-Rules:
-- If it's clearly about office, job, meetings, projects → category: "Work".
-- If it's about personal life, house, family, bills, shopping → "Home".
-- If it's about business, shop, customers, leads, invoices → "Business".
-- If you are unsure → category: "Other" and intent: "other".
-
-Output:
-Return ONLY JSON with this exact structure, no extra text:
-
+Return ONLY JSON:
 {
-  "intent": "...",
-  "category": "...",
+  "intent": "reminder|note|task|document|other",
+  "category": "Work|Home|Business|Other",
   "datetime": "... or null",
   "title": "...",
   "details": "..."
@@ -108,95 +169,44 @@ Return ONLY JSON with this exact structure, no extra text:
 """
 
 SEARCH_SYSTEM_PROMPT = """
-You are an AI assistant that searches through a list of saved items (notes, reminders, tasks).
-Each item has: id, intent, category, datetime, title, details, raw_text.
-
-User will ask in Tamil or mixed Tamil-English, e.g.:
-- "நேத்து சொன்ன office meeting note open பண்ணுங்க"
-- "last week business customer followup note"
-
-Your job:
-- Look at the items list I give you.
-- Decide which 1–3 items are most relevant to the query.
-- Return ONLY a JSON object:
-
-{
-  "ids": [1, 3]
-}
-
-If nothing is relevant, return {"ids": []}.
+You are an AI assistant that searches through saved items.
+Return ONLY JSON: {"ids":[...]}
 """
 
+CHECKIN_PROMPT = """
+You are a daily routine assistant. You will receive:
+- user profile (name, place, timezone, assistant name)
+- questionnaire answers (JSON)
+Your job:
+1) Create 3-8 check-ins for today.
+2) Each check-in must have:
+   - title
+   - when (HH:MM 24h)
+   - message (address user by name)
 
-def llm_classify(text: str) -> dict:
-    """
-    Send Tamil / Tanglish text to the LLM and get structured JSON back.
-    """
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.2,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
-        )
-        content = response.choices[0].message.content
-        data = json.loads(content)
+Return ONLY JSON:
+{ "checkins": [ { "title":"...", "when":"08:00", "message":"..." } ] }
+"""
 
-        intent = str(data.get("intent", "other")).lower()
-        category_raw = str(data.get("category", "Other"))
-
-        # Normalize category
-        cr = category_raw.lower()
-        if cr == "work":
-            category = "Work"
-        elif cr == "home":
-            category = "Home"
-        elif cr == "business":
-            category = "Business"
-            # else:
-        else:
-            category = "Other"
-
-        return {
-            "intent": intent,
-            "category": category,
-            "datetime": data.get("datetime"),
-            "title": data.get("title"),
-            "details": data.get("details"),
-        }
-    except Exception as e:
-        print("Error in llm_classify:", e)
-        raise HTTPException(status_code=500, detail="LLM classification failed")
-
-
-def create_item_in_db(
-    session: Session,
-    classification: dict,
-    raw_text: str,
-    source: str,
-    transcript: Optional[str] = None,
-) -> Item:
-    now = datetime.utcnow()
-    item = Item(
-        intent=classification["intent"],
-        category=classification["category"],
-        raw_text=raw_text,
-        transcript=transcript,
-        datetime_str=classification.get("datetime"),
-        title=classification.get("title"),
-        details=classification.get("details"),
-        source=source,
-        created_at=now,
-        updated_at=now,
+# ---------- Helpers ----------
+def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=temperature,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
     )
-    session.add(item)
-    session.commit()
-    session.refresh(item)
-    return item
+    return json.loads(resp.choices[0].message.content)
 
+def normalize_category(raw: str) -> str:
+    cr = (raw or "Other").lower()
+    if cr == "work": return "Work"
+    if cr == "home": return "Home"
+    if cr == "business": return "Business"
+    return "Other"
 
 def item_to_response(item: Item) -> TextAnalysisResponse:
     return TextAnalysisResponse(
@@ -210,154 +220,143 @@ def item_to_response(item: Item) -> TextAnalysisResponse:
         details=item.details,
     )
 
-
-# --- Text endpoint using LLM + DB ---
-
-@app.post("/analyze-text", response_model=TextAnalysisResponse)
-def analyze_text(
-    payload: TextAnalysisRequest,
-    session: Session = Depends(get_session),
-):
-    classification = llm_classify(payload.text)
-    item = create_item_in_db(
-        session=session,
-        classification=classification,
-        raw_text=payload.text,
-        source="text",
-        transcript=None,
+def log_conversation(session: Session, user_id: Optional[int], channel: str, user_input: str, transcript: Optional[str], llm_json_out: Optional[dict]):
+    row = Conversation(
+        user_id=user_id,
+        channel=channel,
+        user_input=user_input,
+        transcript=transcript,
+        llm_output_json=json.dumps(llm_json_out, ensure_ascii=False) if llm_json_out else None,
+        created_at=datetime.utcnow(),
     )
+    session.add(row)
+    session.commit()
+
+# ---------- Users ----------
+@app.post("/users")
+def create_user(payload: UserCreate, session: Session = Depends(get_session)):
+    u = User(
+        name=payload.name,
+        place=payload.place,
+        timezone=payload.timezone,
+        assistant_name=payload.assistant_name or "Ellie",
+    )
+    session.add(u)
+    session.commit()
+    session.refresh(u)
+    return u
+
+@app.get("/users/{user_id}")
+def get_user(user_id: int, session: Session = Depends(get_session)):
+    u = session.get(User, user_id)
+    if not u:
+        raise HTTPException(404, "User not found")
+    return u
+
+@app.post("/users/{user_id}/questionnaire")
+def save_questionnaire(user_id: int, payload: QuestionnaireIn, session: Session = Depends(get_session)):
+    u = session.get(User, user_id)
+    if not u:
+        raise HTTPException(404, "User not found")
+
+    q = Questionnaire(user_id=user_id, payload_json=json.dumps(payload.payload, ensure_ascii=False))
+    session.add(q)
+    session.commit()
+    return {"ok": True}
+
+@app.post("/users/{user_id}/generate-daily-checkins")
+def generate_daily_checkins(user_id: int, session: Session = Depends(get_session)):
+    u = session.get(User, user_id)
+    if not u:
+        raise HTTPException(404, "User not found")
+
+    q = session.exec(
+        select(Questionnaire).where(Questionnaire.user_id == user_id).order_by(Questionnaire.created_at.desc())
+    ).first()
+    if not q:
+        raise HTTPException(400, "No questionnaire found")
+
+    q_json = json.loads(q.payload_json)
+
+    user_content = json.dumps({
+        "profile": {
+            "name": u.name,
+            "place": u.place,
+            "timezone": u.timezone,
+            "assistant_name": u.assistant_name
+        },
+        "questionnaire": q_json,
+        "today": str(date.today()),
+    }, ensure_ascii=False)
+
+    out = llm_json(CHECKIN_PROMPT, user_content, temperature=0.2)
+    checkins = out.get("checkins", [])
+    log_conversation(session, user_id, "system", "generate-daily-checkins", None, out)
+    return {"checkins": checkins}
+
+@app.get("/conversations")
+def list_conversations(user_id: Optional[int] = None, limit: int = 50, session: Session = Depends(get_session)):
+    q = select(Conversation).order_by(Conversation.created_at.desc()).limit(limit)
+    if user_id:
+        q = q.where(Conversation.user_id == user_id)
+    rows = session.exec(q).all()
+    return rows
+
+# ---------- Analyze Text ----------
+@app.post("/analyze-text", response_model=TextAnalysisResponse)
+def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_session)):
+    data = llm_json(SYSTEM_PROMPT, payload.text, temperature=0.2)
+
+    intent = str(data.get("intent", "other")).lower()
+    category = normalize_category(str(data.get("category", "Other")))
+
+    item = Item(
+        intent=intent,
+        category=category,
+        raw_text=payload.text,
+        transcript=None,
+        datetime_str=data.get("datetime"),
+        title=data.get("title"),
+        details=data.get("details"),
+        source="text",
+        user_id=payload.user_id,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+
+    # Log conversation
+    log_conversation(session, payload.user_id, "text", payload.text, None, data)
+
+    # Save to QA cache (optional fast RAG base)
+    # If same question repeats, we can later detect similarity/embedding.
+    session.add(QACache(
+        user_id=payload.user_id,
+        question=payload.text,
+        answer=json.dumps(data, ensure_ascii=False),
+        hits=1,
+        updated_at=datetime.utcnow(),
+    ))
+    session.commit()
+
     return item_to_response(item)
 
-
-# --- Voice: Whisper + LLM + DB ---
-
+# ---------- Voice: Whisper + Analyze ----------
 @app.post("/transcribe-and-analyze", response_model=TextAnalysisResponse)
 async def transcribe_and_analyze(
+    user_id: Optional[int] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
-    """
-    1. Receive audio file (Tamil speech)
-    2. Send to Whisper for transcription
-    3. Send transcript to LLM for classification
-    4. Save in DB
-    """
     suffix = os.path.splitext(file.filename)[-1] or ".m4a"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        content = await file.read()
-        tmp.write(content)
+        tmp.write(await file.read())
         tmp_path = tmp.name
 
     try:
-        # Whisper transcription
-        with open(tmp_path, "rb") as audio_file:
-            transcript_obj = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="json",
-                language="ta",  # Tamil
-            )
-
-        transcript_text = transcript_obj.text
-
-        # LLM classification on transcript
-        classification = llm_classify(transcript_text)
-
-        item = create_item_in_db(
-            session=session,
-            classification=classification,
-            raw_text=transcript_text,
-            source="voice",
-            transcript=transcript_text,
-        )
-
-        return item_to_response(item)
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-
-
-# --- List & get items (retrieval v1) ---
-@app.post("/search-items", response_model=SearchResponse)
-def search_items(
-    payload: SearchRequest,
-    session: Session = Depends(get_session),
-):
-    # Take latest 50 items for search
-    items = session.exec(
-        select(Item).order_by(Item.created_at.desc()).limit(50)
-    ).all()
-
-    if not items:
-        return SearchResponse(items=[])
-
-    # Summarise items for the LLM
-    items_summary = []
-    for i in items:
-        items_summary.append(
-            {
-                "id": i.id,
-                "intent": i.intent,
-                "category": i.category,
-                "datetime": i.datetime_str,
-                "title": i.title,
-                "details": i.details,
-                "raw_text": i.raw_text,
-            }
-        )
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.1,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        "Items: "
-                        + json.dumps(items_summary, ensure_ascii=False)
-                        + "\n\nQuery: "
-                        + payload.query
-                    ),
-                },
-            ],
-        )
-        content = response.choices[0].message.content
-        data = json.loads(content)
-        ids = data.get("ids", [])
-        if not isinstance(ids, list):
-            ids = []
-    except Exception as e:
-        print("Error in search_items LLM:", e)
-        ids = []
-
-    # Fetch the matching items from DB (keep order given by LLM)
-    found_items: list[TextAnalysisResponse] = []
-    for _id in ids:
-        item = session.get(Item, _id)
-        if item:
-            found_items.append(item_to_response(item))
-
-    return SearchResponse(items=found_items)
-
-@app.post("/search-items-voice", response_model=SearchResponse)
-async def search_items_voice(
-    file: UploadFile = File(...),
-    session: Session = Depends(get_session),
-):
-    # Save temp file
-    suffix = os.path.splitext(file.filename)[-1] or ".m4a"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        content = await file.read()
-        tmp.write(content)
-        tmp_path = tmp.name
-
-    try:
-        # Whisper transcription
         with open(tmp_path, "rb") as audio_file:
             transcript_obj = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -365,250 +364,199 @@ async def search_items_voice(
                 response_format="json",
                 language="ta",
             )
-
         transcript_text = transcript_obj.text
 
-        # Reuse the text search endpoint's core
-        text_response = search_items(
-            payload=SearchRequest(query=transcript_text),
-            session=session,
-        )
+        data = llm_json(SYSTEM_PROMPT, transcript_text, temperature=0.2)
+        intent = str(data.get("intent", "other")).lower()
+        category = normalize_category(str(data.get("category", "Other")))
 
-        # Attach transcript
-        return SearchResponse(
-            items=text_response.items,
+        item = Item(
+            intent=intent,
+            category=category,
+            raw_text=transcript_text,
             transcript=transcript_text,
+            datetime_str=data.get("datetime"),
+            title=data.get("title"),
+            details=data.get("details"),
+            source="voice",
+            user_id=user_id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
         )
+        session.add(item)
+        session.commit()
+        session.refresh(item)
+
+        log_conversation(session, user_id, "voice", transcript_text, transcript_text, data)
+
+        return item_to_response(item)
     finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        try: os.remove(tmp_path)
+        except OSError: pass
 
+# ---------- Items ----------
 @app.get("/items", response_model=List[TextAnalysisResponse])
-def list_items(
-    session: Session = Depends(get_session),
-    category: Optional[str] = None,
-    intent: Optional[str] = None,
-):
-    query = select(Item)
-
-    if category:
-        query = query.where(Item.category == category)
-    if intent:
-        query = query.where(Item.intent == intent)
-
-    items = session.exec(query.order_by(Item.created_at.desc())).all()
+def list_items(session: Session = Depends(get_session), user_id: Optional[int] = None):
+    q = select(Item).order_by(Item.created_at.desc())
+    if user_id:
+        q = q.where(Item.user_id == user_id)
+    items = session.exec(q).all()
     return [item_to_response(i) for i in items]
 
-
 @app.get("/items/{item_id}", response_model=TextAnalysisResponse)
-def get_item(
-    item_id: int,
-    session: Session = Depends(get_session),
-):
+def get_item(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(404, "Item not found")
     return item_to_response(item)
 
-
-# --- Document generation: Word (.docx) ---
-
+# ---------- Document generation (server) + file download ----------
 DOCS_BASE_DIR = "generated_docs"
 PDF_BASE_DIR = os.path.join(DOCS_BASE_DIR, "pdf")
 EXCEL_BASE_DIR = os.path.join(DOCS_BASE_DIR, "excel")
 PPT_BASE_DIR = os.path.join(DOCS_BASE_DIR, "ppt")
+DOCX_BASE_DIR = os.path.join(DOCS_BASE_DIR, "docx")
 
+def ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
 
-def generate_docx_for_item(item: Item) -> str:
-    """
-    Create a Word document for an item and return the file path.
-    """
-    os.makedirs(DOCS_BASE_DIR, exist_ok=True)
-    # folder by category
-    category_folder = os.path.join(DOCS_BASE_DIR, item.category or "Other")
-    os.makedirs(category_folder, exist_ok=True)
-
-    safe_title = item.title or f"{item.intent.capitalize()} Item {item.id}"
-    # Make a simple safe filename
-    filename = f"item_{item.id}.docx"
-    path = os.path.join(category_folder, filename)
-
+def generate_docx(item: Item) -> str:
+    ensure_dir(DOCX_BASE_DIR)
+    cat = os.path.join(DOCX_BASE_DIR, item.category or "Other")
+    ensure_dir(cat)
+    path = os.path.join(cat, f"item_{item.id}.docx")
     doc = Document()
-    doc.add_heading(safe_title, level=1)
-
+    doc.add_heading(item.title or f"Item {item.id}", level=1)
+    doc.add_paragraph(f"Intent: {item.intent}")
+    doc.add_paragraph(f"Category: {item.category}")
     if item.datetime_str:
         doc.add_paragraph(f"When: {item.datetime_str}")
-    doc.add_paragraph(f"Category: {item.category}")
-    doc.add_paragraph(f"Intent: {item.intent}")
-    doc.add_paragraph("")
-
-    if item.details:
-        doc.add_paragraph(item.details)
-    else:
-        doc.add_paragraph(item.raw_text)
-
+    doc.add_paragraph(item.details or item.raw_text)
     doc.save(path)
     return path
 
-def generate_pdf_for_item(item: Item) -> str:
-    os.makedirs(PDF_BASE_DIR, exist_ok=True)
-    category_folder = os.path.join(PDF_BASE_DIR, item.category or "Other")
-    os.makedirs(category_folder, exist_ok=True)
-
-    filename = f"item_{item.id}.pdf"
-    path = os.path.join(category_folder, filename)
-
+def generate_pdf(item: Item) -> str:
+    ensure_dir(PDF_BASE_DIR)
+    cat = os.path.join(PDF_BASE_DIR, item.category or "Other")
+    ensure_dir(cat)
+    path = os.path.join(cat, f"item_{item.id}.pdf")
     c = canvas.Canvas(path, pagesize=A4)
-    width, height = A4
-
-    y = height - 50
-    title = item.title or f"{item.intent.capitalize()} Item {item.id}"
-
+    w, h = A4
+    y = h - 50
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, y, title)
+    c.drawString(50, y, item.title or f"Item {item.id}")
     y -= 30
-
     c.setFont("Helvetica", 12)
+    c.drawString(50, y, f"Intent: {item.intent}"); y -= 18
+    c.drawString(50, y, f"Category: {item.category}"); y -= 18
     if item.datetime_str:
-        c.drawString(50, y, f"When: {item.datetime_str}")
-        y -= 20
-    c.drawString(50, y, f"Category: {item.category}")
-    y -= 20
-    c.drawString(50, y, f"Intent: {item.intent}")
-    y -= 30
-
-    text = item.details or item.raw_text
-    for line in text.split("\n"):
-        if y < 50:
+        c.drawString(50, y, f"When: {item.datetime_str}"); y -= 18
+    y -= 10
+    for line in (item.details or item.raw_text).split("\n"):
+        if y < 60:
             c.showPage()
-            y = height - 50
-            c.setFont("Helvetica", 12)
-        c.drawString(50, y, line)
-        y -= 18
-
+            y = h - 50
+        c.drawString(50, y, line[:120])
+        y -= 16
     c.save()
     return path
-def generate_excel_for_item(item: Item) -> str:
-    os.makedirs(EXCEL_BASE_DIR, exist_ok=True)
-    category_folder = os.path.join(EXCEL_BASE_DIR, item.category or "Other")
-    os.makedirs(category_folder, exist_ok=True)
 
-    filename = f"item_{item.id}.xlsx"
-    path = os.path.join(category_folder, filename)
-
+def generate_excel(item: Item) -> str:
+    ensure_dir(EXCEL_BASE_DIR)
+    cat = os.path.join(EXCEL_BASE_DIR, item.category or "Other")
+    ensure_dir(cat)
+    path = os.path.join(cat, f"item_{item.id}.xlsx")
     wb = Workbook()
     ws = wb.active
-    ws.title = "Item"
-
-    ws["A1"] = "Title"
-    ws["B1"] = item.title or f"{item.intent.capitalize()} Item {item.id}"
-
-    ws["A2"] = "Intent"
-    ws["B2"] = item.intent
-
-    ws["A3"] = "Category"
-    ws["B3"] = item.category
-
-    ws["A4"] = "When"
-    ws["B4"] = item.datetime_str or ""
-
-    ws["A5"] = "Details"
-    ws["B5"] = item.details or item.raw_text
-
+    ws["A1"] = "Title"; ws["B1"] = item.title or ""
+    ws["A2"] = "Intent"; ws["B2"] = item.intent
+    ws["A3"] = "Category"; ws["B3"] = item.category
+    ws["A4"] = "When"; ws["B4"] = item.datetime_str or ""
+    ws["A5"] = "Details"; ws["B5"] = item.details or item.raw_text
     wb.save(path)
     return path
-def generate_ppt_for_item(item: Item) -> str:
-    os.makedirs(PPT_BASE_DIR, exist_ok=True)
-    category_folder = os.path.join(PPT_BASE_DIR, item.category or "Other")
-    os.makedirs(category_folder, exist_ok=True)
 
-    filename = f"item_{item.id}.pptx"
-    path = os.path.join(category_folder, filename)
-
+def generate_ppt(item: Item) -> str:
+    ensure_dir(PPT_BASE_DIR)
+    cat = os.path.join(PPT_BASE_DIR, item.category or "Other")
+    ensure_dir(cat)
+    path = os.path.join(cat, f"item_{item.id}.pptx")
     prs = Presentation()
-    slide_layout = prs.slide_layouts[1]  # title + content
-    slide = prs.slides.add_slide(slide_layout)
-
-    title_shape = slide.shapes.title
-    body_shape = slide.placeholders[1]
-
-    title_shape.text = item.title or f"{item.intent.capitalize()} Item {item.id}"
-
-    tf = body_shape.text_frame
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = item.title or f"Item {item.id}"
+    tf = slide.placeholders[1].text_frame
     tf.text = f"Intent: {item.intent}\nCategory: {item.category}"
     if item.datetime_str:
         tf.add_paragraph().text = f"When: {item.datetime_str}"
-
-    details = item.details or item.raw_text
-    p = tf.add_paragraph()
-    p.text = details
-    p.level = 1
-
+    tf.add_paragraph().text = item.details or item.raw_text
     prs.save(path)
     return path
 
 @app.post("/items/{item_id}/generate-pdf")
-def generate_pdf_endpoint(
-    item_id: int,
-    session: Session = Depends(get_session),
-):
+def gen_pdf(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    path = generate_pdf_for_item(item)
-    return {
-        "item_id": item_id,
-        "pdf_path": path,
-        "category": item.category,
-    }
-
-@app.post("/items/{item_id}/generate-docx")
-def generate_docx_endpoint(
-    item_id: int,
-    session: Session = Depends(get_session),
-):
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    path = generate_docx_for_item(item)
-    return {
-        "item_id": item_id,
-        "docx_path": path,
-        "category": item.category,
-    }
+    if not item: raise HTTPException(404, "Item not found")
+    path = generate_pdf(item)
+    return {"item_id": item_id, "pdf_path": path}
 
 @app.post("/items/{item_id}/generate-excel")
-def generate_excel_endpoint(
-    item_id: int,
-    session: Session = Depends(get_session),
-):
+def gen_excel(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    path = generate_excel_for_item(item)
-    return {
-        "item_id": item_id,
-        "excel_path": path,
-        "category": item.category,
-    }
+    if not item: raise HTTPException(404, "Item not found")
+    path = generate_excel(item)
+    return {"item_id": item_id, "excel_path": path}
 
 @app.post("/items/{item_id}/generate-ppt")
-def generate_ppt_endpoint(
-    item_id: int,
-    session: Session = Depends(get_session),
-):
+def gen_ppt(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    if not item: raise HTTPException(404, "Item not found")
+    path = generate_ppt(item)
+    return {"item_id": item_id, "ppt_path": path}
 
-    path = generate_ppt_for_item(item)
-    return {
-        "item_id": item_id,
-        "ppt_path": path,
-        "category": item.category,
-    }
+@app.post("/items/{item_id}/generate-docx")
+def gen_docx(item_id: int, session: Session = Depends(get_session)):
+    item = session.get(Item, item_id)
+    if not item: raise HTTPException(404, "Item not found")
+    path = generate_docx(item)
+    return {"item_id": item_id, "docx_path": path}
+
+# Download endpoints (Render-compatible)
+@app.get("/files/pdf/{category}/{filename}")
+def download_pdf(category: str, filename: str):
+    path = os.path.join(PDF_BASE_DIR, category, filename)
+    if not os.path.exists(path): raise HTTPException(404, "File not found")
+    return FileResponse(path, media_type="application/pdf", filename=filename)
+
+@app.get("/files/excel/{category}/{filename}")
+def download_excel(category: str, filename: str):
+    path = os.path.join(EXCEL_BASE_DIR, category, filename)
+    if not os.path.exists(path): raise HTTPException(404, "File not found")
+    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=filename)
+
+@app.get("/files/ppt/{category}/{filename}")
+def download_ppt(category: str, filename: str):
+    path = os.path.join(PPT_BASE_DIR, category, filename)
+    if not os.path.exists(path): raise HTTPException(404, "File not found")
+    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", filename=filename)
+
+@app.get("/files/docx/{category}/{filename}")
+def download_docx(category: str, filename: str):
+    path = os.path.join(DOCX_BASE_DIR, category, filename)
+    if not os.path.exists(path): raise HTTPException(404, "File not found")
+    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename=filename)
+
+# ---------- QA Cache endpoints (RAG-ready fast path) ----------
+@app.get("/qa/search")
+def qa_search(q: str, user_id: Optional[int] = None, session: Session = Depends(get_session)):
+    # simple contains search now (fast). Later: embeddings.
+    rows = session.exec(select(QACache).order_by(QACache.updated_at.desc()).limit(200)).all()
+    ql = q.lower()
+    out = []
+    for r in rows:
+        if user_id and r.user_id != user_id:
+            continue
+        if ql in r.question.lower() or ql in r.answer.lower():
+            out.append(r)
+        if len(out) >= 10:
+            break
+    return out

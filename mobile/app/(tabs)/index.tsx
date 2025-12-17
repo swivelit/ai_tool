@@ -1,90 +1,108 @@
-import React, { useState } from "react";
-import {
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-  Button,
-  Platform,
-} from "react-native";
+import React, { useMemo, useState } from "react";
+import { SafeAreaView, Text, TextInput, View, Pressable, ScrollView, Alert, Modal } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { Audio } from "expo-av";
+import * as Haptics from "expo-haptics";
 
-type AnalysisResult = {
-  id: number;
-  intent: string;
-  category: string;
-  raw_text: string;
-  transcript?: string;
-  datetime?: string | null;
-  title?: string | null;
-  details?: string | null;
-};
+import { GlassCard } from "@/components/Glass";
+import { Orb } from "@/components/Orb";
+import { Waveform } from "@/components/Waveform";
+import { useAssistant } from "@/components/AssistantProvider";
+import { apiPost, apiPostForm } from "@/lib/api";
+import { Item } from "@/lib/types";
+import { getProfile } from "@/lib/account";
+import { parseDatetime } from "@/lib/datetime";
+import { scheduleReminder } from "@/lib/reminders";
 
-//const API_BASE = "http://localhost:8000"; // for web. For device, we will adjust.
-//const API_BASE = "http://10.206.228.221:8000";
-import Constants from "expo-constants";
+type AnalyzeResponse = Item;
 
-const API_BASE =
-  (Constants.expoConfig?.extra?.API_BASE as string) ||
-  "http://10.206.228.221:8000";
-  
-export default function HomeScreen() {
-  const [input, setInput] = useState("");
-  const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+export default function Home() {
+  const { name, settings } = useAssistant();
+
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
-  const [recordingStatus, setRecordingStatus] = useState<"idle" | "recording">(
-    "idle"
-  );
+  const [listening, setListening] = useState(false);
 
-  const analyzeText = async () => {
-    setError("");
-    setResult(null);
+  const [result, setResult] = useState<AnalyzeResponse | null>(null);
 
-    if (!input.trim()) {
-      setError("Please type something in Tamil to analyze.");
-      return;
+  // Confirmation modal state (Answer B)
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingReminder, setPendingReminder] = useState<{
+    title: string;
+    details: string;
+    datetimeText: string; // what LLM gave (e.g. "tomorrow 8am")
+  } | null>(null);
+
+  const placeholder = useMemo(() => {
+    return settings.languageMode === "ta"
+      ? "தமிழில் சொல்லுங்க… (உதா: நாளைக்கு காலை 8 மணிக்கு ரிமைண்டர்)"
+      : "Tamil / Tanglish… (ex: nalaiku 8 mani reminder vechiko)";
+  }, [settings.languageMode]);
+
+  function stripAssistantTrigger(input: string) {
+    const cleaned = input.trim();
+    if (!cleaned) return cleaned;
+
+    // Examples:
+    // "Ellie set reminder ..." -> strip "Ellie"
+    // "Ellie, set reminder ..." -> strip "Ellie," / "Ellie:"
+    const trigger = (name || "Ellie").trim().toLowerCase();
+    const lower = cleaned.toLowerCase();
+
+    if (lower.startsWith(trigger)) {
+      let rest = cleaned.slice((name || "Ellie").length).trim();
+      // Remove common punctuation after name
+      rest = rest.replace(/^[:,\-–—]+/, "").trim();
+      return rest || cleaned;
     }
+    return cleaned;
+  }
+
+  async function analyzeText() {
+    if (!text.trim()) return;
 
     try {
-      setLoading(true);
-      const response = await fetch(`${API_BASE}/analyze-text`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ text: input }),
+      setBusy(true);
+
+      const profile = await getProfile();
+      const cleaned = stripAssistantTrigger(text);
+
+      const res = await apiPost<AnalyzeResponse>("/analyze-text", {
+        text: cleaned,
+        user_id: profile?.userId ?? null,
+        meta: { tone: settings.tone, languageMode: settings.languageMode },
       });
 
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
+      setResult(res);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Answer B: If reminder intent + datetime exists => ask confirm
+      if (res.intent === "reminder" && res.datetime) {
+        setPendingReminder({
+          title: res.title || "Reminder",
+          details: res.details || res.raw_text,
+          datetimeText: res.datetime,
+        });
+        setConfirmOpen(true);
       }
-
-      const data: AnalysisResult = await response.json();
-      setResult(data);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to connect to backend. Is it running on port 8000?");
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Failed");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
-  };
+  }
 
-  const startRecording = async () => {
-    if (Platform.OS === "web") {
-      setError("Voice recording not supported on web. Use Android/iOS via Expo Go.");
-      return;
-    }
-
+  async function startRecording() {
     try {
-      setError("");
-      setResult(null);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      setListening(true);
 
-      const permission = await Audio.requestPermissionsAsync();
-      if (!permission.granted) {
-        setError("Microphone permission is required.");
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) {
+        setListening(false);
+        Alert.alert("Mic permission needed", "Please allow microphone access.");
         return;
       }
 
@@ -93,198 +111,333 @@ export default function HomeScreen() {
         playsInSilentModeIOS: true,
       });
 
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-
-      setRecording(recording);
-      setRecordingStatus("recording");
-    } catch (err) {
-      console.error("Error starting recording", err);
-      setError("Failed to start recording.");
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await rec.startAsync();
+      setRecording(rec);
+    } catch (e: any) {
+      setListening(false);
+      Alert.alert("Error", e?.message || "Could not start recording");
     }
-  };
+  }
 
-  const stopRecordingAndAnalyze = async () => {
+  async function stopAndAnalyze() {
     if (!recording) return;
 
     try {
-      setRecordingStatus("idle");
+      setBusy(true);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
       setRecording(null);
+      setListening(false);
 
-      if (!uri) {
-        setError("No audio URI found after recording.");
-        return;
-      }
+      if (!uri) throw new Error("No audio file URI");
 
-      setLoading(true);
-      setError("");
+      const profile = await getProfile();
 
-      // NOTE: When using a real device, API_BASE cannot be localhost.
-      // We'll fix that in a later step with your machine's IP.
-      const formData = new FormData();
-      formData.append("file", {
+      const form = new FormData();
+      form.append("file", {
         uri,
         name: "audio.m4a",
         type: "audio/m4a",
       } as any);
 
-      const response = await fetch(`${API_BASE}/transcribe-and-analyze`, {
-        method: "POST",
-        headers: {
-          // Do NOT set Content-Type manually for FormData in React Native
-        } as any,
-        body: formData,
-      });
+      // Pass user_id as query param (backend supports it)
+      const res = await apiPostForm<AnalyzeResponse>(`/transcribe-and-analyze?user_id=${profile?.userId ?? ""}`, form);
 
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
+      setResult(res);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Answer B: confirm reminder
+      if (res.intent === "reminder" && res.datetime) {
+        setPendingReminder({
+          title: res.title || "Reminder",
+          details: res.details || res.raw_text,
+          datetimeText: res.datetime,
+        });
+        setConfirmOpen(true);
+      }
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Voice analyze failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function chip(t: string) {
+    setText(t);
+  }
+
+  async function confirmScheduleReminder() {
+    if (!pendingReminder) return;
+
+    try {
+      setBusy(true);
+
+      const profile = await getProfile();
+      const tz = profile?.timezone || "Asia/Kolkata";
+
+      // Ask backend to parse "tomorrow 8am" into ISO datetime
+      const parsed = await parseDatetime(pendingReminder.datetimeText, tz);
+
+      if (!parsed.iso || parsed.confidence < 0.35) {
+        Alert.alert(
+          "Confirm time",
+          `I couldn’t confidently understand the time.\n\nDetected: "${pendingReminder.datetimeText}".\nPlease type a clearer time (ex: "tomorrow 8:00 AM").`
+        );
+        setConfirmOpen(false);
+        setPendingReminder(null);
+        return;
       }
 
-      const data: AnalysisResult = await response.json();
-      setResult(data);
-      setInput(data.transcript || "");
-    } catch (err) {
-      console.error("Error stopping recording or calling API", err);
-      setError(
-        "Failed to send audio to backend. Make sure backend is reachable from your device."
+      const when = new Date(parsed.iso);
+      if (isNaN(when.getTime())) {
+        Alert.alert("Error", "Parsed datetime was invalid.");
+        setConfirmOpen(false);
+        setPendingReminder(null);
+        return;
+      }
+
+      if (when.getTime() < Date.now() + 30_000) {
+        Alert.alert("Time is too soon", "Please choose a future time.");
+        setConfirmOpen(false);
+        setPendingReminder(null);
+        return;
+      }
+
+      await scheduleReminder(
+        pendingReminder.title,
+        pendingReminder.details,
+        when
       );
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Reminder set ✅", parsed.human || when.toString());
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Failed to schedule reminder");
     } finally {
-      setLoading(false);
+      setBusy(false);
+      setConfirmOpen(false);
+      setPendingReminder(null);
     }
-  };
+  }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Tamil Voice AI – Text & Voice</Text>
-      <Text style={styles.subtitle}>
-        Type a Tamil instruction or use voice (Android/iOS).
-      </Text>
-
-      {/* Text input test area */}
-      <TextInput
-        style={styles.input}
-        placeholder="உங்களோட தமிழ் instruction இங்கே type பண்ணுங்க..."
-        value={input}
-        onChangeText={setInput}
-        multiline
-      />
-
-      <View style={styles.buttonWrapper}>
-        <Button
-          title={loading ? "Analyzing..." : "Analyze Text"}
-          onPress={analyzeText}
-          disabled={loading}
-        />
-      </View>
-
-      {/* Voice controls */}
-      <View style={styles.voiceSection}>
-        <Text style={styles.sectionTitle}>Voice (Tamil)</Text>
-        {Platform.OS === "web" ? (
-          <Text style={styles.infoText}>
-            Voice recording not supported on web. Open this in Expo Go on an
-            Android/iOS device.
+    <LinearGradient colors={["#070A14", "#0B1020", "#121A33"]} style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1, paddingHorizontal: 16, paddingTop: 10 }}>
+        <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
+          <Text style={{ color: "rgba(255,255,255,0.92)", fontSize: 28, fontWeight: "900" }}>
+            Tamil Voice AI
           </Text>
-        ) : (
-          <>
-            {recordingStatus === "idle" ? (
-              <Button
-                title="🎙 Start Recording"
-                onPress={startRecording}
-                disabled={loading}
-              />
-            ) : (
-              <Button
-                title="⏹ Stop & Analyze"
-                onPress={stopRecordingAndAnalyze}
-                color="#b00020"
-              />
-            )}
-          </>
-        )}
-      </View>
-
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-
-      {result && (
-        <View style={styles.resultContainer}>
-          <Text style={styles.resultTitle}>Result</Text>
-          <Text>Id: {result.id}</Text>
-          <Text>Intent: {result.intent}</Text>
-          <Text>Category: {result.category}</Text>
-          {result.datetime ? <Text>When: {result.datetime}</Text> : null}
-          {result.title ? <Text>Title: {result.title}</Text> : null}
-          {result.details ? <Text>Details: {result.details}</Text> : null}
-          <Text style={{ marginTop: 6 }}>
-            Raw Text / Transcript: {result.raw_text}
+          <Text style={{ marginTop: 8, color: "rgba(255,255,255,0.60)", fontSize: 14 }}>
+            Hi, I am {name}. What can I do for you today?
           </Text>
+
+          <GlassCard style={{ marginTop: 16 }}>
+            <TextInput
+              value={text}
+              onChangeText={setText}
+              multiline
+              placeholder={placeholder}
+              placeholderTextColor="rgba(255,255,255,0.35)"
+              style={{
+                minHeight: 110,
+                color: "white",
+                fontSize: 16,
+                lineHeight: 22,
+              }}
+            />
+
+            <Pressable
+              onPress={analyzeText}
+              disabled={busy}
+              style={{
+                marginTop: 12,
+                height: 52,
+                borderRadius: 16,
+                backgroundColor: "rgba(34,211,238,0.22)",
+                borderWidth: 1,
+                borderColor: "rgba(34,211,238,0.35)",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ color: "white", fontWeight: "900", fontSize: 16 }}>
+                {busy ? "WORKING…" : "ANALYZE"}
+              </Text>
+            </Pressable>
+
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 12 }}>
+              {[
+                "Ellie, நாளைக்கு காலை 8 மணிக்கு office meeting reminder வை",
+                "விஸ்னஸ் நோட்ஸ் ஒப்பன் பண்ணுங்க",
+                "Today customer followup task add pannunga",
+                "Amma ku medicine reminder vechiko",
+              ].map((c) => (
+                <Pressable
+                  key={c}
+                  onPress={() => chip(c)}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: "rgba(255,255,255,0.10)",
+                    backgroundColor: "rgba(255,255,255,0.06)",
+                  }}
+                >
+                  <Text style={{ color: "rgba(255,255,255,0.75)", fontWeight: "700" }}>{c}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </GlassCard>
+
+          <View style={{ marginTop: 18 }}>
+            <Text style={{ color: "rgba(255,255,255,0.78)", fontWeight: "900", fontSize: 16 }}>
+              Voice (Tamil)
+            </Text>
+            <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.55)" }}>
+              Tap the orb to {recording ? "stop & analyze" : "start recording"}.
+            </Text>
+
+            <GlassCard style={{ marginTop: 12, alignItems: "center" }}>
+              <Waveform active={!!recording} />
+            </GlassCard>
+          </View>
+
+          {result && (
+            <GlassCard style={{ marginTop: 16 }}>
+              <Text style={{ color: "rgba(255,255,255,0.92)", fontSize: 18, fontWeight: "900" }}>
+                Result
+              </Text>
+              <Text style={{ marginTop: 10, color: "rgba(255,255,255,0.80)" }}>
+                Id: {result.id}
+              </Text>
+              <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.80)" }}>
+                Intent: {result.intent}
+              </Text>
+              <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.80)" }}>
+                Category: {result.category}
+              </Text>
+              {!!result.datetime && (
+                <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.80)" }}>
+                  When: {result.datetime}
+                </Text>
+              )}
+              {!!result.title && (
+                <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.85)", fontWeight: "800" }}>
+                  Title: {result.title}
+                </Text>
+              )}
+              {!!result.details && (
+                <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.70)" }}>
+                  Details: {result.details}
+                </Text>
+              )}
+              <Text style={{ marginTop: 10, color: "rgba(255,255,255,0.70)" }}>
+                Raw: {result.raw_text}
+              </Text>
+            </GlassCard>
+          )}
+        </ScrollView>
+
+        {/* Floating Orb */}
+        <View
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 24,
+            alignItems: "center",
+          }}
+        >
+          <Orb
+            listening={listening || !!recording}
+            onPress={() => {
+              if (recording) stopAndAnalyze();
+              else startRecording();
+            }}
+          />
         </View>
-      )}
-    </View>
+
+        {/* Reminder confirmation modal (Answer B) */}
+        <Modal visible={confirmOpen} transparent animationType="fade" onRequestClose={() => setConfirmOpen(false)}>
+          <View
+            style={{
+              flex: 1,
+              backgroundColor: "rgba(0,0,0,0.55)",
+              justifyContent: "flex-end",
+              padding: 16,
+            }}
+          >
+            <View
+              style={{
+                borderRadius: 20,
+                padding: 16,
+                backgroundColor: "rgba(10,16,32,0.98)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.10)",
+              }}
+            >
+              <Text style={{ color: "white", fontWeight: "900", fontSize: 18 }}>Set reminder?</Text>
+
+              <Text style={{ marginTop: 10, color: "rgba(255,255,255,0.75)" }}>
+                <Text style={{ fontWeight: "900", color: "rgba(255,255,255,0.92)" }}>Title: </Text>
+                {pendingReminder?.title}
+              </Text>
+
+              <Text style={{ marginTop: 8, color: "rgba(255,255,255,0.75)" }}>
+                <Text style={{ fontWeight: "900", color: "rgba(255,255,255,0.92)" }}>When: </Text>
+                {pendingReminder?.datetimeText}
+              </Text>
+
+              <Text style={{ marginTop: 8, color: "rgba(255,255,255,0.65)" }} numberOfLines={3}>
+                {pendingReminder?.details}
+              </Text>
+
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+                <Pressable
+                  onPress={() => {
+                    setConfirmOpen(false);
+                    setPendingReminder(null);
+                  }}
+                  style={{
+                    flex: 1,
+                    height: 52,
+                    borderRadius: 16,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "rgba(255,255,255,0.06)",
+                    borderWidth: 1,
+                    borderColor: "rgba(255,255,255,0.10)",
+                  }}
+                >
+                  <Text style={{ color: "rgba(255,255,255,0.85)", fontWeight: "900" }}>Cancel</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={confirmScheduleReminder}
+                  disabled={busy}
+                  style={{
+                    flex: 1,
+                    height: 52,
+                    borderRadius: 16,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "rgba(34,211,238,0.22)",
+                    borderWidth: 1,
+                    borderColor: "rgba(34,211,238,0.35)",
+                  }}
+                >
+                  <Text style={{ color: "white", fontWeight: "900" }}>{busy ? "SETTING…" : "Confirm"}</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    paddingTop: 60,
-    paddingHorizontal: 16,
-    backgroundColor: "#f5f5f5",
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "700",
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: "#555",
-    marginBottom: 16,
-  },
-  input: {
-    minHeight: 100,
-    borderColor: "#ccc",
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 12,
-    backgroundColor: "#fff",
-    textAlignVertical: "top",
-  },
-  buttonWrapper: {
-    marginBottom: 16,
-  },
-  voiceSection: {
-    marginTop: 8,
-    marginBottom: 8,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    marginBottom: 4,
-  },
-  infoText: {
-    fontSize: 13,
-    color: "#666",
-  },
-  error: {
-    marginTop: 8,
-    color: "red",
-  },
-  resultContainer: {
-    marginTop: 20,
-    padding: 12,
-    borderRadius: 8,
-    backgroundColor: "#fff",
-    borderColor: "#ddd",
-    borderWidth: 1,
-  },
-  resultTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    marginBottom: 4,
-  },
-});
