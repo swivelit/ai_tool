@@ -5,12 +5,11 @@ import { useLocalSearchParams, router } from "expo-router";
 
 import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
-import { API_BASE, apiPost } from "@/lib/api";
-import { createPdfFromItem, createExcelFromItem } from "@/lib/localDocs";
 
 import { GlassCard } from "@/components/Glass";
-import { apiGet, apiPost } from "@/lib/api";
+import { apiGet, apiPost, API_BASE } from "@/lib/api";
 import { Item } from "@/lib/types";
+import { createPdfFromItem, createCsvFromItem } from "@/lib/localDocs";
 
 export default function ItemDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -18,40 +17,55 @@ export default function ItemDetail() {
   const [item, setItem] = useState<Item | null>(null);
 
   async function load() {
-    const data = await apiGet<Item>(`/items/${itemId}`);
-    setItem(data);
+    try {
+      const data = await apiGet<Item>(`/items/${itemId}`);
+      setItem(data);
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Failed to load item");
+    }
   }
 
   useEffect(() => {
+    if (!Number.isFinite(itemId)) return;
     load();
   }, [itemId]);
 
   async function gen(kind: "pdf" | "docx" | "excel" | "ppt") {
     if (!item) return;
 
-    // Local generation
-    if (kind === "pdf") return createPdfFromItem(item);
-    if (kind === "excel") return createExcelFromItem(item);
+    try {
+      // Local generation
+      if (kind === "pdf") return await createPdfFromItem(item);
+      if (kind === "excel") return await createCsvFromItem(item);
 
-    // Server generation + download
-    const res = await apiPost<any>(`/items/${itemId}/generate-${kind}`);
-    const category = item.category || "Other";
+      // Server generation (docx/ppt)
+      const res = await apiPost<any>(`/items/${itemId}/generate-${kind}`);
+      const category = item.category || res?.category || "Other";
 
-    const filename =
-      kind === "ppt" ? `item_${itemId}.pptx` :
-      kind === "docx" ? `item_${itemId}.docx` :
-      `item_${itemId}.${kind}`;
+      const filename =
+        kind === "ppt"
+          ? `item_${itemId}.pptx`
+          : kind === "docx"
+          ? `item_${itemId}.docx`
+          : `item_${itemId}.${kind}`;
 
-    const url =
-      kind === "ppt" ? `${API_BASE}/files/ppt/${category}/${filename}` :
-      kind === "docx" ? `${API_BASE}/files/docx/${category}/${filename}` :
-      `${API_BASE}/files/${kind}/${category}/${filename}`;
+      // If you implemented file-serving routes like:
+      // /files/ppt/{category}/{filename}, /files/docx/{category}/{filename}
+      const url =
+        kind === "ppt"
+          ? `${API_BASE}/files/ppt/${category}/${filename}`
+          : `${API_BASE}/files/docx/${category}/${filename}`;
 
-    const localPath = FileSystem.documentDirectory + filename;
-    const dl = await FileSystem.downloadAsync(url, localPath);
+      const localPath = FileSystem.documentDirectory + filename;
+      const dl = await FileSystem.downloadAsync(url, localPath);
 
-    if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(dl.uri);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(dl.uri);
+      } else {
+        Alert.alert("Saved", `File saved at: ${dl.uri}`);
+      }
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Document generation failed");
     }
   }
 
@@ -85,17 +99,17 @@ export default function ItemDetail() {
             </Text>
 
             <View style={{ gap: 10, marginTop: 16 }}>
-              <Pressable onPress={() => gen("pdf")} style={btnStyle("#22D3EE")}>
-                <Text style={btnText}>Generate PDF</Text>
+              <Pressable onPress={() => gen("pdf")} style={btnStyle}>
+                <Text style={btnText}>Generate PDF (Local)</Text>
               </Pressable>
-              <Pressable onPress={() => gen("docx")} style={btnStyle("#8B5CF6")}>
-                <Text style={btnText}>Generate Word</Text>
+              <Pressable onPress={() => gen("docx")} style={btnStyle}>
+                <Text style={btnText}>Generate Word (Server)</Text>
               </Pressable>
-              <Pressable onPress={() => gen("excel")} style={btnStyle("#34D399")}>
-                <Text style={btnText}>Generate Excel</Text>
+              <Pressable onPress={() => gen("excel")} style={btnStyle}>
+                <Text style={btnText}>Generate CSV (Local)</Text>
               </Pressable>
-              <Pressable onPress={() => gen("ppt")} style={btnStyle("#F59E0B")}>
-                <Text style={btnText}>Generate PPT</Text>
+              <Pressable onPress={() => gen("ppt")} style={btnStyle}>
+                <Text style={btnText}>Generate PPT (Server)</Text>
               </Pressable>
             </View>
           </GlassCard>
@@ -107,7 +121,7 @@ export default function ItemDetail() {
   );
 }
 
-const btnStyle = (color: string) => ({
+const btnStyle = {
   height: 50,
   borderRadius: 16,
   borderWidth: 1,
@@ -115,6 +129,6 @@ const btnStyle = (color: string) => ({
   backgroundColor: "rgba(255,255,255,0.06)",
   alignItems: "center" as const,
   justifyContent: "center" as const,
-});
+};
 
 const btnText = { color: "white", fontWeight: "900" as const };
