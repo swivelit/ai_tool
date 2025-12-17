@@ -1,341 +1,250 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, Pressable, TextInput, ScrollView, ActivityIndicator, Platform } from "react-native";
+import React, { useMemo, useRef, useState } from "react";
+import { SafeAreaView, Text, TextInput, View, Pressable, ScrollView, Alert } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { BlurView } from "expo-blur";
-import Constants from "expo-constants";
+import { Audio } from "expo-av";
+import * as Haptics from "expo-haptics";
 
-import AssistantNameModal from "../../components/AssistantNameModal";
-import { DEFAULT_ASSISTANT_NAME, getAssistantName, setAssistantName } from "../../lib/assistantName";
+import { GlassCard } from "@/components/Glass";
+import { Orb } from "@/components/Orb";
+import { Waveform } from "@/components/Waveform";
+import { useAssistant } from "@/components/AssistantProvider";
+import { apiPost, apiPostForm } from "@/lib/api";
+import { Item } from "@/lib/types";
 
-const API_BASE =
-  (Constants.expoConfig?.extra?.API_BASE as string) ||
-  "https://ai-tool-rrau.onrender.com"; // Render URL for APK builds
+type AnalyzeResponse = Item;
 
-type Result = {
-  id?: number;
-  intent?: string;
-  category?: string;
-  datetime?: string | null;
-  title?: string | null;
-  details?: string | null;
-  raw_text?: string;
-  transcript?: string | null;
-  error?: string;
-};
-
-export default function HomeScreen() {
-  const [assistantName, setAssistantNameState] = useState<string>(DEFAULT_ASSISTANT_NAME);
-  const [showNameModal, setShowNameModal] = useState(false);
-
+export default function Home() {
+  const { name, settings } = useAssistant();
   const [text, setText] = useState("");
-  const [result, setResult] = useState<Result | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  // hook your real recording logic here
-  const recordingSupported = Platform.OS !== "web";
-  const [isRecording, setIsRecording] = useState(false);
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [listening, setListening] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      const existing = await getAssistantName();
-      if (!existing) {
-        setShowNameModal(true);
-      } else {
-        setAssistantNameState(existing);
-      }
-    })();
-  }, []);
+  const [result, setResult] = useState<AnalyzeResponse | null>(null);
 
-  const canAnalyze = useMemo(() => text.trim().length > 0 && !loading, [text, loading]);
+  const placeholder = useMemo(() => {
+    return settings.languageMode === "ta"
+      ? "தமிழில் சொல்லுங்க… (உதா: நாளைக்கு காலை 8 மணிக்கு ரிமைண்டர்)"
+      : "Tamil / Tanglish… (ex: nalaiku 8 mani reminder vechiko)";
+  }, [settings.languageMode]);
 
-  async function analyzeText(payloadText?: string) {
-    const finalText = (payloadText ?? text).trim();
-    if (!finalText) return;
-
+  async function analyzeText() {
+    if (!text.trim()) return;
     try {
-      setLoading(true);
-      setResult(null);
-
-      const res = await fetch(`${API_BASE}/analyze-text`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: finalText }),
+      setBusy(true);
+      const res = await apiPost<AnalyzeResponse>("/analyze-text", {
+        text,
+        meta: { tone: settings.tone, languageMode: settings.languageMode }, // future-proof
       });
-
-      const data = await res.json();
-      setResult(data);
+      setResult(res);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
-      setResult({ error: e?.message || "Something went wrong" });
+      Alert.alert("Error", e?.message || "Failed");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
   async function startRecording() {
-    // TODO: plug your Expo Audio start logic
-    setIsRecording(true);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      setListening(true);
+
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) {
+        setListening(false);
+        Alert.alert("Mic permission needed", "Please allow microphone access.");
+        return;
+      }
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await rec.startAsync();
+      setRecording(rec);
+    } catch (e: any) {
+      setListening(false);
+      Alert.alert("Error", e?.message || "Could not start recording");
+    }
   }
 
-  async function stopAndAnalyzeRecording() {
-    // TODO: plug your Expo Audio stop + upload logic to /transcribe-and-analyze
-    setIsRecording(false);
+  async function stopAndAnalyze() {
+    if (!recording) return;
+    try {
+      setBusy(true);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      setRecording(null);
+      setListening(false);
+
+      if (!uri) throw new Error("No audio file URI");
+
+      const form = new FormData();
+      form.append("file", {
+        uri,
+        name: "audio.m4a",
+        type: "audio/m4a",
+      } as any);
+
+      const res = await apiPostForm<AnalyzeResponse>("/transcribe-and-analyze", form);
+      setResult(res);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Voice analyze failed");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  const chips = [
-    { label: "Office meeting reminder", value: "நாளைக்கு காலை 8 மணிக்கு office meeting reminder வெச்சுக்கோ" },
-    { label: "Business notes", value: "நேத்து சொன்ன business notes save பண்ணுங்க" },
-    { label: "Open PDF", value: "அந்த pdf open பண்ணுங்க" },
-    { label: "Task list", value: "இன்னைக்கு செய்ய வேண்டிய task list create பண்ணுங்க" },
-  ];
+  function chip(t: string) {
+    setText(t);
+  }
 
   return (
-    <LinearGradient
-      colors={["#0B1020", "#1A1030", "#0B1020"]}
-      start={{ x: 0.2, y: 0 }}
-      end={{ x: 0.8, y: 1 }}
-      style={{ flex: 1 }}
-    >
-      <AssistantNameModal
-        visible={showNameModal}
-        defaultName={DEFAULT_ASSISTANT_NAME}
-        onSkip={async () => {
-          await setAssistantName(DEFAULT_ASSISTANT_NAME);
-          setAssistantNameState(DEFAULT_ASSISTANT_NAME);
-          setShowNameModal(false);
-        }}
-        onSave={async (name) => {
-          await setAssistantName(name);
-          setAssistantNameState(name);
-          setShowNameModal(false);
-        }}
-      />
-
-      <ScrollView contentContainerStyle={{ padding: 18, paddingBottom: 160 }}>
-        {/* Top title */}
-        <View style={{ marginTop: 10, marginBottom: 14 }}>
-          <Text style={styles.title}>{assistantName}</Text>
-          <Text style={styles.subTitle}>Type or speak in Tamil. We’ll understand and act.</Text>
-        </View>
-
-        {/* Main “Assistant Card” */}
-        <BlurView intensity={22} tint="dark" style={styles.glassCard}>
-          <Text style={styles.cardSmall}>Ask {assistantName}</Text>
-          <Text style={styles.cardBig}>
-            Hi, I am {assistantName}.{"\n"}What can I do for you today?
+    <LinearGradient colors={["#070A14", "#0B1020", "#121A33"]} style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1, paddingHorizontal: 16, paddingTop: 10 }}>
+        <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
+          <Text style={{ color: "rgba(255,255,255,0.92)", fontSize: 28, fontWeight: "900" }}>
+            Tamil Voice AI
+          </Text>
+          <Text style={{ marginTop: 8, color: "rgba(255,255,255,0.60)", fontSize: 14 }}>
+            Hi, I am {name}. What can I do for you today?
           </Text>
 
-          {/* Input */}
-          <View style={styles.inputWrap}>
+          <GlassCard style={{ marginTop: 16 }}>
             <TextInput
               value={text}
               onChangeText={setText}
-              placeholder="Type a Tamil instruction…"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              style={styles.input}
               multiline
+              placeholder={placeholder}
+              placeholderTextColor="rgba(255,255,255,0.35)"
+              style={{
+                minHeight: 110,
+                color: "white",
+                fontSize: 16,
+                lineHeight: 22,
+              }}
             />
-          </View>
 
-          {/* Analyze */}
-          <Pressable
-            onPress={() => analyzeText()}
-            disabled={!canAnalyze}
-            style={({ pressed }) => [
-              styles.primaryBtn,
-              (!canAnalyze || pressed) && { opacity: 0.7 },
-              !canAnalyze && { opacity: 0.45 },
-            ]}
-          >
-            {loading ? <ActivityIndicator /> : <Text style={styles.primaryBtnText}>Analyze</Text>}
-          </Pressable>
-
-          {/* Suggestion chips */}
-          <View style={styles.chipsRow}>
-            {chips.map((c) => (
-              <Pressable
-                key={c.label}
-                onPress={() => {
-                  setText(c.value);
-                  analyzeText(c.value);
-                }}
-                style={({ pressed }) => [styles.chip, pressed && { opacity: 0.75 }]}
-              >
-                <Text style={styles.chipText}>{c.label}</Text>
-              </Pressable>
-            ))}
-          </View>
-
-          {/* Change name button */}
-          <Pressable
-            onPress={() => setShowNameModal(true)}
-            style={({ pressed }) => [
-              {
-                marginTop: 14,
-                alignSelf: "flex-start",
-                paddingVertical: 10,
-                paddingHorizontal: 12,
-                borderRadius: 999,
+            <Pressable
+              onPress={analyzeText}
+              disabled={busy}
+              style={{
+                marginTop: 12,
+                height: 52,
+                borderRadius: 16,
+                backgroundColor: "rgba(34,211,238,0.22)",
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.12)",
-                backgroundColor: "rgba(255,255,255,0.06)",
-              },
-              pressed && { opacity: 0.75 },
-            ]}
-          >
-            <Text style={{ color: "rgba(255,255,255,0.75)", fontSize: 12, fontWeight: "800" }}>
-              Rename assistant
-            </Text>
-          </Pressable>
-        </BlurView>
+                borderColor: "rgba(34,211,238,0.35)",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ color: "white", fontWeight: "900", fontSize: 16 }}>
+                {busy ? "WORKING…" : "ANALYZE"}
+              </Text>
+            </Pressable>
 
-        {/* Result Card */}
-        <BlurView intensity={18} tint="dark" style={[styles.glassCard, { marginTop: 14 }]}>
-          <Text style={styles.cardSmall}>Result</Text>
-
-          {!result ? (
-            <Text style={{ color: "rgba(255,255,255,0.6)", marginTop: 8 }}>No result yet.</Text>
-          ) : result.error ? (
-            <Text style={{ color: "#FCA5A5", marginTop: 8 }}>{result.error}</Text>
-          ) : (
-            <View style={{ marginTop: 10, gap: 10 }}>
-              <Row label="Intent" value={result.intent ?? ""} />
-              <Row label="Category" value={result.category ?? ""} />
-              <Row label="When" value={result.datetime ?? "—"} />
-              <Row label="Title" value={result.title ?? "—"} />
-              <Row label="Details" value={result.details ?? "—"} />
-              <Row label="Raw" value={result.raw_text ?? result.transcript ?? ""} />
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 12 }}>
+              {[
+                "நாளைக்கு காலை 8 மணிக்கு office meeting reminder வை",
+                "விஸ்னஸ் நோட்ஸ் ஒப்பன் பண்ணுங்க",
+                "Today customer followup task add pannunga",
+                "Amma ku medicine reminder vechiko",
+              ].map((c) => (
+                <Pressable
+                  key={c}
+                  onPress={() => chip(c)}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: "rgba(255,255,255,0.10)",
+                    backgroundColor: "rgba(255,255,255,0.06)",
+                  }}
+                >
+                  <Text style={{ color: "rgba(255,255,255,0.75)", fontWeight: "700" }}>{c}</Text>
+                </Pressable>
+              ))}
             </View>
-          )}
+          </GlassCard>
 
-          <Text style={{ color: "rgba(255,255,255,0.35)", marginTop: 14, fontSize: 12 }}>
-            API: {API_BASE}
-          </Text>
-        </BlurView>
-      </ScrollView>
-
-      {/* Bottom mic orb */}
-      <View style={styles.bottomDock}>
-        <View style={styles.dockPad} />
-        <Pressable
-          onPress={recordingSupported ? (isRecording ? stopAndAnalyzeRecording : startRecording) : undefined}
-          style={({ pressed }) => [styles.micOrb, pressed && { transform: [{ scale: 0.98 }] }]}
-        >
-          <LinearGradient
-            colors={isRecording ? ["#FF4D6D", "#FF7A59"] : ["#7C3AED", "#22D3EE"]}
-            style={styles.micOrbInner}
-          >
-            <Text style={{ color: "white", fontWeight: "900", fontSize: 16 }}>
-              {recordingSupported ? (isRecording ? "STOP" : "MIC") : "WEB"}
+          <View style={{ marginTop: 18 }}>
+            <Text style={{ color: "rgba(255,255,255,0.78)", fontWeight: "900", fontSize: 16 }}>
+              Voice (Tamil)
             </Text>
-          </LinearGradient>
-        </Pressable>
+            <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.55)" }}>
+              Tap the orb to {recording ? "stop & analyze" : "start recording"}.
+            </Text>
 
-        <View style={styles.micHint}>
-          <Text style={{ color: "rgba(255,255,255,0.55)", fontSize: 12 }}>
-            {recordingSupported ? (isRecording ? "Listening…" : "Tap to speak") : "Voice not supported on web"}
-          </Text>
+            <GlassCard style={{ marginTop: 12, alignItems: "center" }}>
+              <Waveform active={!!recording} />
+            </GlassCard>
+          </View>
+
+          {result && (
+            <GlassCard style={{ marginTop: 16 }}>
+              <Text style={{ color: "rgba(255,255,255,0.92)", fontSize: 18, fontWeight: "900" }}>
+                Result
+              </Text>
+              <Text style={{ marginTop: 10, color: "rgba(255,255,255,0.80)" }}>
+                Id: {result.id}
+              </Text>
+              <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.80)" }}>
+                Intent: {result.intent}
+              </Text>
+              <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.80)" }}>
+                Category: {result.category}
+              </Text>
+              {!!result.datetime && (
+                <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.80)" }}>
+                  When: {result.datetime}
+                </Text>
+              )}
+              {!!result.title && (
+                <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.85)", fontWeight: "800" }}>
+                  Title: {result.title}
+                </Text>
+              )}
+              {!!result.details && (
+                <Text style={{ marginTop: 6, color: "rgba(255,255,255,0.70)" }}>
+                  Details: {result.details}
+                </Text>
+              )}
+              <Text style={{ marginTop: 10, color: "rgba(255,255,255,0.70)" }}>
+                Raw: {result.raw_text}
+              </Text>
+            </GlassCard>
+          )}
+        </ScrollView>
+
+        {/* Floating Orb */}
+        <View
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 24,
+            alignItems: "center",
+          }}
+        >
+          <Orb
+            listening={listening || !!recording}
+            onPress={() => {
+              if (recording) stopAndAnalyze();
+              else startRecording();
+            }}
+          />
         </View>
-      </View>
+      </SafeAreaView>
     </LinearGradient>
   );
 }
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <View>
-      <Text style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}>{label}</Text>
-      <Text style={{ color: "rgba(255,255,255,0.90)", fontSize: 15, marginTop: 2, lineHeight: 20 }}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
-const styles = {
-  title: { color: "rgba(255,255,255,0.92)", fontSize: 30, fontWeight: "900" as const, letterSpacing: 0.2 },
-  subTitle: { color: "rgba(255,255,255,0.55)", fontSize: 14, marginTop: 6, lineHeight: 20 },
-
-  glassCard: {
-    borderRadius: 22,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(255,255,255,0.06)",
-    overflow: "hidden" as const,
-  },
-
-  cardSmall: { color: "rgba(255,255,255,0.55)", fontSize: 12, fontWeight: "700" as const },
-  cardBig: { color: "rgba(255,255,255,0.92)", fontSize: 16, fontWeight: "800" as const, marginTop: 10, lineHeight: 22 },
-
-  inputWrap: {
-    marginTop: 14,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(0,0,0,0.18)",
-    padding: 12,
-  },
-  input: { minHeight: 84, color: "rgba(255,255,255,0.92)", textAlignVertical: "top" as const },
-
-  primaryBtn: {
-    marginTop: 12,
-    borderRadius: 16,
-    paddingVertical: 14,
-    alignItems: "center" as const,
-    backgroundColor: "rgba(124,58,237,0.85)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-  },
-  primaryBtnText: { color: "white", fontWeight: "900" as const, fontSize: 14, letterSpacing: 0.3 },
-
-  chipsRow: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 10, marginTop: 14 },
-  chip: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(255,255,255,0.06)",
-  },
-  chipText: { color: "rgba(255,255,255,0.75)", fontSize: 12, fontWeight: "700" as const },
-
-  bottomDock: {
-    position: "absolute" as const,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: "center" as const,
-    paddingBottom: 26,
-    paddingTop: 10,
-  },
-  dockPad: {
-    position: "absolute" as const,
-    left: 16,
-    right: 16,
-    bottom: 16,
-    height: 74,
-    borderRadius: 28,
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-  },
-  micOrb: {
-    width: 74,
-    height: 74,
-    borderRadius: 37,
-    marginBottom: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    elevation: 8,
-  },
-  micOrbInner: {
-    flex: 1,
-    borderRadius: 37,
-    alignItems: "center" as const,
-    justifyContent: "center" as const,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.20)",
-  },
-  micHint: { marginTop: 6 },
-};
