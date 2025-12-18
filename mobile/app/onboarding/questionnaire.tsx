@@ -1,9 +1,17 @@
 import React, { useState } from "react";
-import { SafeAreaView, Text, TextInput, View, Pressable, Alert } from "react-native";
+import {
+  SafeAreaView,
+  Text,
+  TextInput,
+  View,
+  Pressable,
+  Alert,
+  ActivityIndicator,
+} from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { getProfile, submitQuestionnaire, generateDailyCheckins } from "@/lib/account";
-import { scheduleReminder } from "@/lib/reminders";
+import { ensureNotificationsReady, scheduleReminder, cancelAllReminders } from "@/lib/reminders";
 
 export default function Questionnaire() {
   const [workStart, setWorkStart] = useState("09:30");
@@ -11,33 +19,89 @@ export default function Questionnaire() {
   const [sleep, setSleep] = useState("23:30");
   const [wake, setWake] = useState("07:30");
   const [dailyHabits, setDailyHabits] = useState("Gym, Water, Reading");
+  const [busy, setBusy] = useState(false);
+
+  function validateHHMM(v: string) {
+    return /^([01]\d|2[0-3]):([0-5]\d)$/.test(v.trim());
+  }
 
   async function finish() {
-    const prof = await getProfile();
-    if (!prof?.userId) return Alert.alert("Profile missing", "Please create profile again.");
+    if (busy) return;
 
-    const payload = { workStart, workEnd, sleep, wake, dailyHabits };
-    await submitQuestionnaire(prof.userId, payload);
-
-    // Generate today's check-ins and schedule them on device
-    const out = await generateDailyCheckins(prof.userId);
-
-    for (const c of out.checkins) {
-      const [hh, mm] = c.when.split(":").map(Number);
-      const when = new Date();
-      when.setHours(hh, mm, 0, 0);
-      if (when.getTime() > Date.now() + 30_000) {
-        await scheduleReminder(c.title, c.message, when);
-      }
+    if (![workStart, workEnd, sleep, wake].every(validateHHMM)) {
+      Alert.alert("Invalid time", "Please use HH:MM format (e.g. 07:30).");
+      return;
     }
 
-    router.replace("/(tabs)");
+    try {
+      setBusy(true);
+
+      const prof = await getProfile();
+      if (!prof?.userId) {
+        Alert.alert("Profile missing", "Please create profile again.");
+        return;
+      }
+
+      // 1) Save questionnaire
+      const payload = { workStart, workEnd, sleep, wake, dailyHabits };
+      await submitQuestionnaire(prof.userId, payload);
+
+      // 2) Ensure notifications + channel
+      const ok = await ensureNotificationsReady();
+      if (!ok) {
+        Alert.alert(
+          "Notifications disabled",
+          "Enable notifications to receive check-ins. You can still use the app without them."
+        );
+        // still continue to app
+        router.replace("/(tabs)");
+        return;
+      }
+
+      // 3) Clear old reminders (avoid duplicates)
+      await cancelAllReminders();
+
+      // 4) Generate check-ins
+      const out = await generateDailyCheckins(prof.userId);
+
+      let scheduledCount = 0;
+      const now = Date.now();
+
+      for (const c of out.checkins || []) {
+        try {
+          if (!c?.when || !validateHHMM(c.when)) continue;
+
+          const [hh, mm] = c.when.split(":").map(Number);
+          const when = new Date();
+          when.setHours(hh, mm, 0, 0);
+
+          // if time already passed today, schedule it for tomorrow
+          if (when.getTime() <= now + 30_000) {
+            when.setDate(when.getDate() + 1);
+          }
+
+          await scheduleReminder(c.title, c.message, when);
+          scheduledCount += 1;
+        } catch (err) {
+          console.warn("Failed to schedule check-in", c, err);
+        }
+      }
+
+      Alert.alert("All set ✅", `Scheduled ${scheduledCount} check-ins.`);
+      router.replace("/(tabs)");
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Failed to finish onboarding");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
     <LinearGradient colors={["#070A14", "#0B1020", "#121A33"]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1, padding: 18 }}>
-        <Text style={{ color: "white", fontSize: 26, fontWeight: "900" }}>Daily routine</Text>
+        <Text style={{ color: "white", fontSize: 26, fontWeight: "900" }}>
+          Daily routine
+        </Text>
         <Text style={{ color: "rgba(255,255,255,0.65)", marginTop: 8 }}>
           We’ll use this to create smart check-ins.
         </Text>
@@ -48,8 +112,14 @@ export default function Questionnaire() {
         <Row label="Sleep time" value={sleep} setValue={setSleep} />
         <Row label="Daily habits (comma separated)" value={dailyHabits} setValue={setDailyHabits} />
 
-        <Pressable onPress={finish} style={btn}>
-          <Text style={{ color: "white", fontWeight: "900" }}>Finish & Schedule Check-ins</Text>
+        <Pressable onPress={finish} style={[btn, busy && { opacity: 0.6 }]} disabled={busy}>
+          {busy ? (
+            <ActivityIndicator />
+          ) : (
+            <Text style={{ color: "white", fontWeight: "900" }}>
+              Finish & Schedule Check-ins
+            </Text>
+          )}
         </Pressable>
       </SafeAreaView>
     </LinearGradient>
@@ -59,7 +129,9 @@ export default function Questionnaire() {
 function Row({ label, value, setValue }: any) {
   return (
     <View style={{ marginTop: 14 }}>
-      <Text style={{ color: "rgba(255,255,255,0.75)", fontWeight: "800" }}>{label}</Text>
+      <Text style={{ color: "rgba(255,255,255,0.75)", fontWeight: "800" }}>
+        {label}
+      </Text>
       <TextInput
         value={value}
         onChangeText={setValue}
