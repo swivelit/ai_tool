@@ -1,9 +1,9 @@
 import React, { useState } from "react";
-import { SafeAreaView, Text, TextInput, View, Pressable, Alert } from "react-native";
+import { SafeAreaView, Text, TextInput, View, Pressable, Alert, ActivityIndicator } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { getProfile, submitQuestionnaire, generateDailyCheckins } from "@/lib/account";
-import { scheduleReminder } from "@/lib/reminders";
+import { ensureNotificationsReady, scheduleReminder, cancelAllReminders } from "@/lib/reminders";
 
 export default function Questionnaire() {
   const [workStart, setWorkStart] = useState("09:30");
@@ -11,27 +11,77 @@ export default function Questionnaire() {
   const [sleep, setSleep] = useState("23:30");
   const [wake, setWake] = useState("07:30");
   const [dailyHabits, setDailyHabits] = useState("Gym, Water, Reading");
+  const [busy, setBusy] = useState(false);
+
+  function validateHHMM(v: string) {
+    const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(v.trim());
+    return !!m;
+  }
 
   async function finish() {
-    const prof = await getProfile();
-    if (!prof?.userId) return Alert.alert("Profile missing", "Please create profile again.");
+    if (busy) return;
 
-    const payload = { workStart, workEnd, sleep, wake, dailyHabits };
-    await submitQuestionnaire(prof.userId, payload);
-
-    // Generate today's check-ins and schedule them on device
-    const out = await generateDailyCheckins(prof.userId);
-
-    for (const c of out.checkins) {
-      const [hh, mm] = c.when.split(":").map(Number);
-      const when = new Date();
-      when.setHours(hh, mm, 0, 0);
-      if (when.getTime() > Date.now() + 30_000) {
-        await scheduleReminder(c.title, c.message, when);
-      }
+    // quick validation
+    if (![workStart, workEnd, sleep, wake].every(validateHHMM)) {
+      Alert.alert("Invalid time", "Please use HH:MM format (e.g. 07:30).");
+      return;
     }
 
-    router.replace("/(tabs)");
+    try {
+      setBusy(true);
+
+      const prof = await getProfile();
+      if (!prof?.userId) {
+        Alert.alert("Profile missing", "Please create profile again.");
+        return;
+      }
+
+      // 1) Save questionnaire
+      const payload = { workStart, workEnd, sleep, wake, dailyHabits };
+      await submitQuestionnaire(prof.userId, payload);
+
+      // 2) Notification permission + Android channel
+      const ok = await ensureNotificationsReady();
+      if (!ok) {
+        Alert.alert(
+          "Notifications disabled",
+          "Enable notifications to receive check-ins. You can still use the app without them."
+        );
+      }
+
+      // 3) Re-generate check-ins and schedule them
+      // optional: clear old ones to avoid duplicates
+      await cancelAllReminders();
+
+      const out = await generateDailyCheckins(prof.userId);
+
+      let scheduledCount = 0;
+      const now = Date.now();
+
+      for (const c of out.checkins || []) {
+        if (!c?.when || !validateHHMM(c.when)) continue;
+
+        const [hh, mm] = c.when.split(":").map(Number);
+        const when = new Date();
+        when.setHours(hh, mm, 0, 0);
+
+        // if time already passed today, schedule it for tomorrow
+        if (when.getTime() <= now + 30_000) {
+          when.setDate(when.getDate() + 1);
+        }
+
+        await scheduleReminder(c.title, c.message, when);
+        scheduledCount += 1;
+      }
+
+      // 4) Tell user something happened + navigate immediately
+      Alert.alert("All set ✅", `Scheduled ${scheduledCount} check-ins.`);
+      router.replace("/(tabs)");
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Failed to finish onboarding");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -48,8 +98,8 @@ export default function Questionnaire() {
         <Row label="Sleep time" value={sleep} setValue={setSleep} />
         <Row label="Daily habits (comma separated)" value={dailyHabits} setValue={setDailyHabits} />
 
-        <Pressable onPress={finish} style={btn}>
-          <Text style={{ color: "white", fontWeight: "900" }}>Finish & Schedule Check-ins</Text>
+        <Pressable onPress={finish} style={[btn, busy && { opacity: 0.6 }]} disabled={busy}>
+          {busy ? <ActivityIndicator /> : <Text style={{ color: "white", fontWeight: "900" }}>Finish & Schedule Check-ins</Text>}
         </Pressable>
       </SafeAreaView>
     </LinearGradient>
