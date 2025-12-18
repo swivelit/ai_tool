@@ -1,5 +1,13 @@
 import React, { useState } from "react";
-import { SafeAreaView, Text, TextInput, View, Pressable, Alert, ActivityIndicator } from "react-native";
+import {
+  SafeAreaView,
+  Text,
+  TextInput,
+  View,
+  Pressable,
+  Alert,
+  ActivityIndicator,
+} from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { getProfile, submitQuestionnaire, generateDailyCheckins } from "@/lib/account";
@@ -14,14 +22,12 @@ export default function Questionnaire() {
   const [busy, setBusy] = useState(false);
 
   function validateHHMM(v: string) {
-    const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(v.trim());
-    return !!m;
+    return /^([01]\d|2[0-3]):([0-5]\d)$/.test(v.trim());
   }
 
   async function finish() {
     if (busy) return;
 
-    // quick validation
     if (![workStart, workEnd, sleep, wake].every(validateHHMM)) {
       Alert.alert("Invalid time", "Please use HH:MM format (e.g. 07:30).");
       return;
@@ -40,41 +46,47 @@ export default function Questionnaire() {
       const payload = { workStart, workEnd, sleep, wake, dailyHabits };
       await submitQuestionnaire(prof.userId, payload);
 
-      // 2) Notification permission + Android channel
+      // 2) Ensure notifications + channel
       const ok = await ensureNotificationsReady();
       if (!ok) {
         Alert.alert(
           "Notifications disabled",
           "Enable notifications to receive check-ins. You can still use the app without them."
         );
+        // still continue to app
+        router.replace("/(tabs)");
+        return;
       }
 
-      // 3) Re-generate check-ins and schedule them
-      // optional: clear old ones to avoid duplicates
+      // 3) Clear old reminders (avoid duplicates)
       await cancelAllReminders();
 
+      // 4) Generate check-ins
       const out = await generateDailyCheckins(prof.userId);
 
       let scheduledCount = 0;
       const now = Date.now();
 
       for (const c of out.checkins || []) {
-        if (!c?.when || !validateHHMM(c.when)) continue;
+        try {
+          if (!c?.when || !validateHHMM(c.when)) continue;
 
-        const [hh, mm] = c.when.split(":").map(Number);
-        const when = new Date();
-        when.setHours(hh, mm, 0, 0);
+          const [hh, mm] = c.when.split(":").map(Number);
+          const when = new Date();
+          when.setHours(hh, mm, 0, 0);
 
-        // if time already passed today, schedule it for tomorrow
-        if (when.getTime() <= now + 30_000) {
-          when.setDate(when.getDate() + 1);
+          // if time already passed today, schedule it for tomorrow
+          if (when.getTime() <= now + 30_000) {
+            when.setDate(when.getDate() + 1);
+          }
+
+          await scheduleReminder(c.title, c.message, when);
+          scheduledCount += 1;
+        } catch (err) {
+          console.warn("Failed to schedule check-in", c, err);
         }
-
-        await scheduleReminder(c.title, c.message, when);
-        scheduledCount += 1;
       }
 
-      // 4) Tell user something happened + navigate immediately
       Alert.alert("All set ✅", `Scheduled ${scheduledCount} check-ins.`);
       router.replace("/(tabs)");
     } catch (e: any) {
@@ -87,7 +99,9 @@ export default function Questionnaire() {
   return (
     <LinearGradient colors={["#070A14", "#0B1020", "#121A33"]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1, padding: 18 }}>
-        <Text style={{ color: "white", fontSize: 26, fontWeight: "900" }}>Daily routine</Text>
+        <Text style={{ color: "white", fontSize: 26, fontWeight: "900" }}>
+          Daily routine
+        </Text>
         <Text style={{ color: "rgba(255,255,255,0.65)", marginTop: 8 }}>
           We’ll use this to create smart check-ins.
         </Text>
@@ -99,7 +113,13 @@ export default function Questionnaire() {
         <Row label="Daily habits (comma separated)" value={dailyHabits} setValue={setDailyHabits} />
 
         <Pressable onPress={finish} style={[btn, busy && { opacity: 0.6 }]} disabled={busy}>
-          {busy ? <ActivityIndicator /> : <Text style={{ color: "white", fontWeight: "900" }}>Finish & Schedule Check-ins</Text>}
+          {busy ? (
+            <ActivityIndicator />
+          ) : (
+            <Text style={{ color: "white", fontWeight: "900" }}>
+              Finish & Schedule Check-ins
+            </Text>
+          )}
         </Pressable>
       </SafeAreaView>
     </LinearGradient>
@@ -109,7 +129,9 @@ export default function Questionnaire() {
 function Row({ label, value, setValue }: any) {
   return (
     <View style={{ marginTop: 14 }}>
-      <Text style={{ color: "rgba(255,255,255,0.75)", fontWeight: "800" }}>{label}</Text>
+      <Text style={{ color: "rgba(255,255,255,0.75)", fontWeight: "800" }}>
+        {label}
+      </Text>
       <TextInput
         value={value}
         onChangeText={setValue}
