@@ -10,6 +10,7 @@ import tempfile
 import json
 from datetime import datetime, date
 from sqlmodel import select, Session
+from sqlalchemy import text as sql_text
 
 from .database import create_db_and_tables, get_session
 from .models import Item, User, Questionnaire, Conversation, QACache
@@ -38,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Logging middleware (Render logs + DB conversations) ----------
+# ---------- Logging middleware (Render logs + request body sample) ----------
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = datetime.utcnow()
@@ -52,15 +53,31 @@ async def log_requests(request: Request, call_next):
 
     response = await call_next(request)
     ms = int((datetime.utcnow() - start).total_seconds() * 1000)
-
-    # Render logs
     print(f"[REQ] {request.method} {request.url.path} {response.status_code} {ms}ms body={body_text[:400]}")
-
     return response
+
+def _ensure_sqlite_column_exists(session: Session, table: str, column: str, coltype: str):
+    """
+    Very small SQLite migration helper:
+    - checks PRAGMA table_info(table)
+    - adds column if missing
+    """
+    try:
+        rows = session.exec(sql_text(f"PRAGMA table_info({table});")).all()
+        existing = {r[1] for r in rows}  # r[1] is column name
+        if column not in existing:
+            session.exec(sql_text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype};"))
+            session.commit()
+            print(f"[MIGRATION] Added missing column: {table}.{column}")
+    except Exception as e:
+        print("[MIGRATION] Failed:", e)
 
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
+    # Safety migration for older Render DBs:
+    with Session(next(get_session())) as session:  # creates a session using your dependency generator
+        _ensure_sqlite_column_exists(session, "item", "user_id", "INTEGER")
 
 @app.get("/")
 def root():
@@ -70,17 +87,13 @@ def root():
 def health():
     return {"status": "ok", "message": "Tamil Voice AI backend is running 🚀"}
 
-from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
-import json
-
+# ---------- Parse datetime ----------
 PARSE_DT_PROMPT = """
 You convert natural language datetime into ISO datetime.
 Input includes:
 - timezone (IANA)
 - now (ISO)
-- text (may be like "tomorrow 8am", "நாளைக்கு காலை 8", "next monday 6pm")
+- text
 
 Return ONLY JSON:
 {
@@ -88,10 +101,6 @@ Return ONLY JSON:
   "human": "human readable summary",
   "confidence": 0.0 to 1.0
 }
-
-Rules:
-- If no datetime is present, return iso=null.
-- Use the provided timezone when interpreting relative dates.
 """
 
 class ParseDatetimeRequest(BaseModel):
@@ -102,14 +111,11 @@ class ParseDatetimeRequest(BaseModel):
 @app.post("/parse-datetime")
 def parse_datetime(payload: ParseDatetimeRequest):
     now_iso = payload.now_iso or datetime.utcnow().isoformat()
-
     user_content = json.dumps(
         {"timezone": payload.timezone, "now": now_iso, "text": payload.text},
         ensure_ascii=False,
     )
-
     out = llm_json(PARSE_DT_PROMPT, user_content, temperature=0.0)
-    # Ensure keys exist
     return {
         "iso": out.get("iso"),
         "human": out.get("human") or "",
@@ -149,11 +155,6 @@ class UserCreate(BaseModel):
 class QuestionnaireIn(BaseModel):
     payload: Dict[str, Any]
 
-class Checkin(BaseModel):
-    title: str
-    when: str  # "08:00", "18:30" etc
-    message: str
-
 # ---------- LLM prompts ----------
 SYSTEM_PROMPT = """
 You are an AI that reads Tamil and mixed Tamil-English (Tanglish) commands from users.
@@ -177,12 +178,12 @@ CHECKIN_PROMPT = """
 You are a daily routine assistant. You will receive:
 - user profile (name, place, timezone, assistant name)
 - questionnaire answers (JSON)
-Your job:
-1) Create 3-8 check-ins for today.
-2) Each check-in must have:
-   - title
-   - when (HH:MM 24h)
-   - message (address user by name)
+
+Create 3-8 check-ins for today.
+Each check-in:
+- title
+- when (HH:MM 24h)
+- message (address user by name)
 
 Return ONLY JSON:
 { "checkins": [ { "title":"...", "when":"08:00", "message":"..." } ] }
@@ -232,6 +233,33 @@ def log_conversation(session: Session, user_id: Optional[int], channel: str, use
     session.add(row)
     session.commit()
 
+def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, answer_json: dict):
+    """
+    Avoid inserting duplicates forever.
+    Very simple: if exact question exists for user -> increment hits + update answer.
+    """
+    q = select(QACache).where(QACache.question == question)
+    if user_id is not None:
+        q = q.where(QACache.user_id == user_id)
+
+    row = session.exec(q).first()
+    if row:
+        row.answer = json.dumps(answer_json, ensure_ascii=False)
+        row.hits = (row.hits or 0) + 1
+        row.updated_at = datetime.utcnow()
+        session.add(row)
+        session.commit()
+        return
+
+    session.add(QACache(
+        user_id=user_id,
+        question=question,
+        answer=json.dumps(answer_json, ensure_ascii=False),
+        hits=1,
+        updated_at=datetime.utcnow(),
+    ))
+    session.commit()
+
 # ---------- Users ----------
 @app.post("/users")
 def create_user(payload: UserCreate, session: Session = Depends(get_session)):
@@ -271,7 +299,9 @@ def generate_daily_checkins(user_id: int, session: Session = Depends(get_session
         raise HTTPException(404, "User not found")
 
     q = session.exec(
-        select(Questionnaire).where(Questionnaire.user_id == user_id).order_by(Questionnaire.created_at.desc())
+        select(Questionnaire)
+        .where(Questionnaire.user_id == user_id)
+        .order_by(Questionnaire.created_at.desc())
     ).first()
     if not q:
         raise HTTPException(400, "No questionnaire found")
@@ -290,17 +320,15 @@ def generate_daily_checkins(user_id: int, session: Session = Depends(get_session
     }, ensure_ascii=False)
 
     out = llm_json(CHECKIN_PROMPT, user_content, temperature=0.2)
-    checkins = out.get("checkins", [])
     log_conversation(session, user_id, "system", "generate-daily-checkins", None, out)
-    return {"checkins": checkins}
+    return {"checkins": out.get("checkins", [])}
 
 @app.get("/conversations")
 def list_conversations(user_id: Optional[int] = None, limit: int = 50, session: Session = Depends(get_session)):
     q = select(Conversation).order_by(Conversation.created_at.desc()).limit(limit)
     if user_id:
         q = q.where(Conversation.user_id == user_id)
-    rows = session.exec(q).all()
-    return rows
+    return session.exec(q).all()
 
 # ---------- Analyze Text ----------
 @app.post("/analyze-text", response_model=TextAnalysisResponse)
@@ -328,23 +356,12 @@ def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_se
     session.commit()
     session.refresh(item)
 
-    # Log conversation
     log_conversation(session, payload.user_id, "text", payload.text, None, data)
-
-    # Save to QA cache (optional fast RAG base)
-    # If same question repeats, we can later detect similarity/embedding.
-    session.add(QACache(
-        user_id=payload.user_id,
-        question=payload.text,
-        answer=json.dumps(data, ensure_ascii=False),
-        hits=1,
-        updated_at=datetime.utcnow(),
-    ))
-    session.commit()
+    upsert_qa_cache(session, payload.user_id, payload.text, data)
 
     return item_to_response(item)
 
-# ---------- Voice: Whisper + Analyze ----------
+# ---------- Voice ----------
 @app.post("/transcribe-and-analyze", response_model=TextAnalysisResponse)
 async def transcribe_and_analyze(
     user_id: Optional[int] = None,
@@ -383,23 +400,31 @@ async def transcribe_and_analyze(
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
+
         session.add(item)
         session.commit()
         session.refresh(item)
 
         log_conversation(session, user_id, "voice", transcript_text, transcript_text, data)
+        upsert_qa_cache(session, user_id, transcript_text, data)
 
         return item_to_response(item)
     finally:
-        try: os.remove(tmp_path)
-        except OSError: pass
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
 # ---------- Items ----------
 @app.get("/items", response_model=List[TextAnalysisResponse])
 def list_items(session: Session = Depends(get_session), user_id: Optional[int] = None):
     q = select(Item).order_by(Item.created_at.desc())
-    if user_id:
-        q = q.where(Item.user_id == user_id)
+    if user_id is not None:
+        # Safe even if migration didn't run for some reason:
+        try:
+            q = q.where(Item.user_id == user_id)
+        except Exception:
+            pass
     items = session.exec(q).all()
     return [item_to_response(i) for i in items]
 
@@ -410,7 +435,7 @@ def get_item(item_id: int, session: Session = Depends(get_session)):
         raise HTTPException(404, "Item not found")
     return item_to_response(item)
 
-# ---------- Document generation (server) + file download ----------
+# ---------- Document generation (server) ----------
 DOCS_BASE_DIR = "generated_docs"
 PDF_BASE_DIR = os.path.join(DOCS_BASE_DIR, "pdf")
 EXCEL_BASE_DIR = os.path.join(DOCS_BASE_DIR, "excel")
@@ -495,67 +520,86 @@ def generate_ppt(item: Item) -> str:
 @app.post("/items/{item_id}/generate-pdf")
 def gen_pdf(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
-    if not item: raise HTTPException(404, "Item not found")
+    if not item:
+        raise HTTPException(404, "Item not found")
     path = generate_pdf(item)
     return {"item_id": item_id, "pdf_path": path}
 
 @app.post("/items/{item_id}/generate-excel")
 def gen_excel(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
-    if not item: raise HTTPException(404, "Item not found")
+    if not item:
+        raise HTTPException(404, "Item not found")
     path = generate_excel(item)
     return {"item_id": item_id, "excel_path": path}
 
 @app.post("/items/{item_id}/generate-ppt")
 def gen_ppt(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
-    if not item: raise HTTPException(404, "Item not found")
+    if not item:
+        raise HTTPException(404, "Item not found")
     path = generate_ppt(item)
     return {"item_id": item_id, "ppt_path": path}
 
 @app.post("/items/{item_id}/generate-docx")
 def gen_docx(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
-    if not item: raise HTTPException(404, "Item not found")
+    if not item:
+        raise HTTPException(404, "Item not found")
     path = generate_docx(item)
     return {"item_id": item_id, "docx_path": path}
 
-# Download endpoints (Render-compatible)
+# ---------- Download endpoints ----------
 @app.get("/files/pdf/{category}/{filename}")
 def download_pdf(category: str, filename: str):
     path = os.path.join(PDF_BASE_DIR, category, filename)
-    if not os.path.exists(path): raise HTTPException(404, "File not found")
+    if not os.path.exists(path):
+        raise HTTPException(404, "File not found")
     return FileResponse(path, media_type="application/pdf", filename=filename)
 
 @app.get("/files/excel/{category}/{filename}")
 def download_excel(category: str, filename: str):
     path = os.path.join(EXCEL_BASE_DIR, category, filename)
-    if not os.path.exists(path): raise HTTPException(404, "File not found")
-    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "File not found")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
+    )
 
 @app.get("/files/ppt/{category}/{filename}")
 def download_ppt(category: str, filename: str):
     path = os.path.join(PPT_BASE_DIR, category, filename)
-    if not os.path.exists(path): raise HTTPException(404, "File not found")
-    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", filename=filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "File not found")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        filename=filename,
+    )
 
 @app.get("/files/docx/{category}/{filename}")
 def download_docx(category: str, filename: str):
     path = os.path.join(DOCX_BASE_DIR, category, filename)
-    if not os.path.exists(path): raise HTTPException(404, "File not found")
-    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename=filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "File not found")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename,
+    )
 
-# ---------- QA Cache endpoints (RAG-ready fast path) ----------
+# ---------- QA Cache endpoints ----------
 @app.get("/qa/search")
 def qa_search(q: str, user_id: Optional[int] = None, session: Session = Depends(get_session)):
-    # simple contains search now (fast). Later: embeddings.
     rows = session.exec(select(QACache).order_by(QACache.updated_at.desc()).limit(200)).all()
     ql = q.lower()
     out = []
     for r in rows:
-        if user_id and r.user_id != user_id:
+        if user_id is not None and r.user_id != user_id:
             continue
-        if ql in r.question.lower() or ql in r.answer.lower():
+        if ql in (r.question or "").lower() or ql in (r.answer or "").lower():
             out.append(r)
         if len(out) >= 10:
             break

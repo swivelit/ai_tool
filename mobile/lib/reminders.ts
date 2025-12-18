@@ -33,19 +33,25 @@ export async function ensureNotificationsReady(): Promise<boolean> {
 }
 
 export async function scheduleReminder(title: string, body: string, when: Date) {
-  // ✅ SDK 54+ requires trigger object with `type`
-  const trigger: Notifications.NotificationTriggerInput = {
-    type: Notifications.SchedulableTriggerInputTypes.DATE,
-    date: when,
-  };
+  // ✅ SDK 54+: trigger must be object with `type`
+  // ✅ Android: channelId MUST be on trigger (reliable), not only content
+  const trigger: Notifications.NotificationTriggerInput =
+    Platform.OS === "android"
+      ? {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: when,
+          channelId: ANDROID_CHANNEL_ID,
+        }
+      : {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: when,
+        };
 
   return Notifications.scheduleNotificationAsync({
     content: {
       title,
       body,
       sound: "default",
-      // ✅ Android: connect to channel
-      ...(Platform.OS === "android" ? { channelId: ANDROID_CHANNEL_ID } : {}),
     },
     trigger,
   });
