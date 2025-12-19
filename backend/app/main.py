@@ -11,9 +11,16 @@ import json
 from datetime import datetime, date
 from sqlmodel import select, Session
 from sqlalchemy import text as sql_text
-
+import re
 from .database import get_session
-from .models import Item, User, Questionnaire, Conversation, QACache
+from .models import (
+    Item,
+    User,
+    Questionnaire,
+    Conversation,
+    QACache,
+    DailyRoutine,
+)
 
 from docx import Document
 from reportlab.lib.pagesizes import A4
@@ -89,6 +96,17 @@ class ParseDatetimeRequest(BaseModel):
     timezone: str = "Asia/Kolkata"
     now_iso: Optional[str] = None
 
+class DailyRoutineIn(BaseModel):
+    wake_time: str
+    sleep_time: str
+    work_start: Optional[str] = None
+    work_end: Optional[str] = None
+    daily_habits: Optional[str] = None
+
+
+class DailyRoutineOut(DailyRoutineIn):
+    user_id: int
+
 @app.post("/parse-datetime")
 def parse_datetime(payload: ParseDatetimeRequest):
     now_iso = payload.now_iso or datetime.utcnow().isoformat()
@@ -156,12 +174,16 @@ Return ONLY JSON: {"ids":[...]}
 """
 
 CHECKIN_PROMPT = """
-You are a daily routine assistant. You will receive:
-- user profile (name, place, timezone, assistant name)
-- questionnaire answers (JSON)
+You are a daily routine assistant.
 
-Create 3-8 check-ins for today.
-Each check-in:
+You will receive:
+- user profile (name, place, timezone, assistant name)
+- user routine (wake_time, sleep_time, work_start, work_end, daily_habits)
+
+Create 3–8 smart check-ins for today.
+Respect the user's routine and time boundaries.
+
+Each check-in must include:
 - title
 - when (HH:MM 24h)
 - message (address user by name)
@@ -171,6 +193,10 @@ Return ONLY JSON:
 """
 
 # ---------- Helpers ----------
+def validate_hhmm(v: str) -> None:
+    if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", v):
+        raise HTTPException(400, f"Invalid time format: {v}")
+
 def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -289,30 +315,38 @@ def generate_daily_checkins(user_id: int, session: Session = Depends(get_session
     if not u:
         raise HTTPException(404, "User not found")
 
-    q = session.exec(
-        select(Questionnaire)
-        .where(Questionnaire.user_id == user_id)
-        .order_by(Questionnaire.created_at.desc())
+    routine = session.exec(
+        select(DailyRoutine).where(DailyRoutine.user_id == user_id)
     ).first()
-    if not q:
-        raise HTTPException(400, "No questionnaire found")
 
-    q_json = json.loads(q.payload_json)
+    if not routine:
+        raise HTTPException(400, "Daily routine not set")
 
     user_content = json.dumps({
         "profile": {
             "name": u.name,
             "place": u.place,
             "timezone": u.timezone,
-            "assistant_name": u.assistant_name
+            "assistant_name": u.assistant_name,
         },
-        "questionnaire": q_json,
+        "user_routine": {
+            "wake_time": routine.wake_time,
+            "sleep_time": routine.sleep_time,
+            "work_start": routine.work_start,
+            "work_end": routine.work_end,
+            "daily_habits": routine.daily_habits,
+        },
         "today": str(date.today()),
     }, ensure_ascii=False)
 
     out = llm_json(CHECKIN_PROMPT, user_content, temperature=0.2)
+
+    checkins = out.get("checkins", [])
+    checkins.sort(key=lambda x: x.get("when", "99:99"))
+
     log_conversation(session, user_id, "system", "generate-daily-checkins", None, out)
-    return {"checkins": out.get("checkins", [])}
+
+    return {"checkins": checkins}
 
 @app.get("/conversations")
 def list_conversations(user_id: Optional[int] = None, limit: int = 50, session: Session = Depends(get_session)):
@@ -539,6 +573,55 @@ def gen_docx(item_id: int, session: Session = Depends(get_session)):
         raise HTTPException(404, "Item not found")
     path = generate_docx(item)
     return {"item_id": item_id, "docx_path": path}
+
+@app.get("/users/{user_id}/daily-routine", response_model=DailyRoutineOut)
+def get_daily_routine(user_id: int, session: Session = Depends(get_session)):
+    r = session.exec(
+        select(DailyRoutine).where(DailyRoutine.user_id == user_id)
+    ).first()
+
+    if not r:
+        raise HTTPException(404, "Daily routine not set")
+
+    return r
+
+@app.put("/users/{user_id}/daily-routine", response_model=DailyRoutineOut)
+def upsert_daily_routine(
+    user_id: int,
+    payload: DailyRoutineIn,
+    session: Session = Depends(get_session),
+):
+    # ✅ Validate times
+    validate_hhmm(payload.wake_time)
+    validate_hhmm(payload.sleep_time)
+
+    if payload.work_start:
+        validate_hhmm(payload.work_start)
+    if payload.work_end:
+        validate_hhmm(payload.work_end)
+
+    r = session.exec(
+        select(DailyRoutine).where(DailyRoutine.user_id == user_id)
+    ).first()
+
+    if r:
+        r.wake_time = payload.wake_time
+        r.sleep_time = payload.sleep_time
+        r.work_start = payload.work_start
+        r.work_end = payload.work_end
+        r.daily_habits = payload.daily_habits
+        r.updated_at = datetime.utcnow()
+    else:
+        r = DailyRoutine(
+            user_id=user_id,
+            **payload.dict(),
+            updated_at=datetime.utcnow(),
+        )
+        session.add(r)
+
+    session.commit()
+    session.refresh(r)
+    return r
 
 # ---------- Download endpoints ----------
 @app.get("/files/pdf/{category}/{filename}")
