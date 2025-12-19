@@ -108,3 +108,27 @@ class QACache(SQLModel, table=True):
 
     hits: int = Field(default=1)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+# --------------------
+# Daily Routine (editable)
+# --------------------
+class DailyRoutine(SQLModel, table=True):
+    __tablename__ = "daily_routine"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    user_id: int = Field(
+        index=True,
+        foreign_key="user.id",
+        unique=True,  # one routine per user
+    )
+
+    wake_time: str        # "07:30"
+    sleep_time: str       # "23:30"
+
+    work_start: Optional[str] = None  # "09:30"
+    work_end: Optional[str] = None    # "18:30"
+
+    daily_habits: Optional[str] = None  # comma-separated for now
+
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
