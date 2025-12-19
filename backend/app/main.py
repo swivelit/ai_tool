@@ -56,6 +56,10 @@ async def log_requests(request: Request, call_next):
     print(f"[REQ] {request.method} {request.url.path} {response.status_code} {ms}ms body={body_text[:400]}")
     return response
 
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
+
 def _ensure_sqlite_column_exists(session: Session, table: str, column: str, coltype: str):
     """
     Very small SQLite migration helper:
@@ -283,14 +287,24 @@ def get_user(user_id: int, session: Session = Depends(get_session)):
 
 @app.post("/users/{user_id}/questionnaire")
 def save_questionnaire(user_id: int, payload: QuestionnaireIn, session: Session = Depends(get_session)):
-    u = session.get(User, user_id)
-    if not u:
-        raise HTTPException(404, "User not found")
+    q = session.exec(
+        select(Questionnaire)
+        .where(Questionnaire.user_id == user_id)
+        .order_by(Questionnaire.created_at.desc())
+    ).first()
 
-    q = Questionnaire(user_id=user_id, payload_json=json.dumps(payload.payload, ensure_ascii=False))
-    session.add(q)
+    if q:
+        q.payload_json = json.dumps(payload.payload, ensure_ascii=False)
+    else:
+        q = Questionnaire(
+            user_id=user_id,
+            payload_json=json.dumps(payload.payload, ensure_ascii=False),
+        )
+        session.add(q)
+
     session.commit()
     return {"ok": True}
+
 
 @app.post("/users/{user_id}/generate-daily-checkins")
 def generate_daily_checkins(user_id: int, session: Session = Depends(get_session)):
