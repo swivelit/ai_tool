@@ -12,7 +12,7 @@ from datetime import datetime, date
 from sqlmodel import select, Session
 from sqlalchemy import text as sql_text
 
-from .database import create_db_and_tables, get_session
+from .database import get_session
 from .models import Item, User, Questionnaire, Conversation, QACache
 
 from docx import Document
@@ -55,10 +55,6 @@ async def log_requests(request: Request, call_next):
     ms = int((datetime.utcnow() - start).total_seconds() * 1000)
     print(f"[REQ] {request.method} {request.url.path} {response.status_code} {ms}ms body={body_text[:400]}")
     return response
-
-@app.on_event("startup")
-def on_startup():
-    create_db_and_tables()
 
 def _ensure_sqlite_column_exists(session: Session, table: str, column: str, coltype: str):
     """
