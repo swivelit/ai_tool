@@ -41,3 +41,4 @@ watchfiles==1.1.1
 websockets==15.0.1
 xlsxwriter==3.2.9
 psycopg[binary]
+alembic==1.17.2
