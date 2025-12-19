@@ -56,28 +56,9 @@ async def log_requests(request: Request, call_next):
     print(f"[REQ] {request.method} {request.url.path} {response.status_code} {ms}ms body={body_text[:400]}")
     return response
 
-def _ensure_sqlite_column_exists(session: Session, table: str, column: str, coltype: str):
-    """
-    Very small SQLite migration helper:
-    - checks PRAGMA table_info(table)
-    - adds column if missing
-    """
-    try:
-        rows = session.exec(sql_text(f"PRAGMA table_info({table});")).all()
-        existing = {r[1] for r in rows}  # r[1] is column name
-        if column not in existing:
-            session.exec(sql_text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype};"))
-            session.commit()
-            print(f"[MIGRATION] Added missing column: {table}.{column}")
-    except Exception as e:
-        print("[MIGRATION] Failed:", e)
-
 @app.on_event("startup")
 def on_startup():
-    create_db_and_tables()
-    # Safety migration for older Render DBs:
-    with Session(next(get_session())) as session:  # creates a session using your dependency generator
-        _ensure_sqlite_column_exists(session, "item", "user_id", "INTEGER")
+    print("🚀 Tamil Voice AI backend starting (Postgres + Alembic)")
 
 @app.get("/")
 def root():
