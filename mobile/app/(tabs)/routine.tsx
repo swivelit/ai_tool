@@ -27,18 +27,21 @@ export default function RoutineScreen() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!userId) {
+        setLoading(false);
+        return;
+    }
 
     fetch(`${API}/users/${userId}/daily-routine`)
-      .then((r) => {
+        .then((r) => {
         if (r.status === 404) return null;
         return r.json();
-      })
-      .then((data) => {
+        })
+        .then((data) => {
         if (data) setRoutine(data);
-      })
-      .finally(() => setLoading(false));
-  }, [userId]);
+        })
+        .finally(() => setLoading(false));
+    }, [userId]);
 
   async function saveRoutine() {
     if (!userId) return;
@@ -63,9 +66,9 @@ export default function RoutineScreen() {
 
   if (loading) {
     return (
-      <View style={{ padding: 20 }}>
-        <Text style={{ color: "white" }}>Loading routine…</Text>
-      </View>
+        <View style={{ flex: 1, backgroundColor: "#0B1020", padding: 20 }}>
+         <Text style={{ color: "white" }}>Loading routine…</Text>
+        </View>
     );
   }
 
