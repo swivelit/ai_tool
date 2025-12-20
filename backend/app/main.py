@@ -329,7 +329,27 @@ def generate_daily_checkins(user_id: int, session: Session = Depends(get_session
     ).first()
 
     if not routine:
-        raise HTTPException(400, "Daily routine not set")
+        # Try to bootstrap from latest questionnaire
+        q = session.exec(
+            select(Questionnaire)
+            .where(Questionnaire.user_id == user_id)
+            .order_by(Questionnaire.created_at.desc())
+        ).first()
+
+        if not q:
+            raise HTTPException(400, "Daily routine not set")
+
+        q_payload = json.loads(q.payload_json)
+        routine_in = routine_from_questionnaire(q_payload)
+
+        routine = DailyRoutine(
+            user_id=user_id,
+            **routine_in.dict(),
+            updated_at=datetime.utcnow(),
+        )
+        session.add(routine)
+        session.commit()
+        session.refresh(routine)
 
     user_content = json.dumps({
         "profile": {
