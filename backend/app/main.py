@@ -209,6 +209,15 @@ def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) ->
     )
     return json.loads(resp.choices[0].message.content)
 
+def routine_from_questionnaire(q_payload: dict) -> DailyRoutineIn:
+    return DailyRoutineIn(
+        wake_time=q_payload.get("wake", "07:30"),
+        sleep_time=q_payload.get("sleep", "23:30"),
+        work_start=q_payload.get("workStart"),
+        work_end=q_payload.get("workEnd"),
+        daily_habits=q_payload.get("dailyHabits"),
+    )
+
 def normalize_category(raw: str) -> str:
     cr = (raw or "Other").lower()
     if cr == "work": return "Work"
