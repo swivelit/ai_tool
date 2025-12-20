@@ -48,21 +48,33 @@ export default function RoutineScreen() {
 
     setSaving(true);
     try {
-      const res = await fetch(`${API}/users/${userId}/daily-routine`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(routine),
-      });
+        const payload = {
+            wake_time: routine.wake_time,
+            sleep_time: routine.sleep_time,
+            work_start: routine.work_start?.trim() || null,
+            work_end: routine.work_end?.trim() || null,
+            daily_habits: routine.daily_habits?.trim() || null,
+        };
 
-      if (!res.ok) throw new Error("Failed");
+        const res = await fetch(`${API}/users/${userId}/daily-routine`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
 
-      Alert.alert("Saved", "Your daily routine has been updated.");
-    } catch {
-      Alert.alert("Error", "Could not save routine.");
+        if (!res.ok) {
+            const txt = await res.text();
+            throw new Error(txt);
+        }
+
+        Alert.alert("Saved", "Your daily routine has been updated.");
+    } catch (e) {
+        Alert.alert("Error", "Could not save routine.");
     } finally {
-      setSaving(false);
+        setSaving(false);
     }
   }
+
 
   if (loading) {
     return (

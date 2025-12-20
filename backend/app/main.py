@@ -196,6 +196,12 @@ Return ONLY JSON:
 def validate_hhmm(v: str) -> None:
     if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", v):
         raise HTTPException(400, f"Invalid time format: {v}")
+    
+def normalize_optional(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    v = v.strip()
+    return v if v else None
 
 def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
     resp = client.chat.completions.create(
@@ -620,14 +626,20 @@ def upsert_daily_routine(
     payload: DailyRoutineIn,
     session: Session = Depends(get_session),
 ):
-    # ✅ Validate times
+    # ✅ Normalize optional fields FIRST
+    work_start = normalize_optional(payload.work_start)
+    work_end = normalize_optional(payload.work_end)
+    daily_habits = normalize_optional(payload.daily_habits)
+
+    # ✅ Validate required times
     validate_hhmm(payload.wake_time)
     validate_hhmm(payload.sleep_time)
 
-    if payload.work_start:
-        validate_hhmm(payload.work_start)
-    if payload.work_end:
-        validate_hhmm(payload.work_end)
+    # ✅ Validate optional times only if present
+    if work_start:
+        validate_hhmm(work_start)
+    if work_end:
+        validate_hhmm(work_end)
 
     r = session.exec(
         select(DailyRoutine).where(DailyRoutine.user_id == user_id)
@@ -636,14 +648,18 @@ def upsert_daily_routine(
     if r:
         r.wake_time = payload.wake_time
         r.sleep_time = payload.sleep_time
-        r.work_start = payload.work_start
-        r.work_end = payload.work_end
-        r.daily_habits = payload.daily_habits
+        r.work_start = work_start
+        r.work_end = work_end
+        r.daily_habits = daily_habits
         r.updated_at = datetime.utcnow()
     else:
         r = DailyRoutine(
             user_id=user_id,
-            **payload.dict(),
+            wake_time=payload.wake_time,
+            sleep_time=payload.sleep_time,
+            work_start=work_start,
+            work_end=work_end,
+            daily_habits=daily_habits,
             updated_at=datetime.utcnow(),
         )
         session.add(r)
@@ -651,6 +667,7 @@ def upsert_daily_routine(
     session.commit()
     session.refresh(r)
     return r
+
 
 # ---------- Download endpoints ----------
 @app.get("/files/pdf/{category}/{filename}")
