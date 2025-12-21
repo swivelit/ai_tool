@@ -2,7 +2,9 @@ import React, { useEffect, useState } from "react";
 import { View, Text, ScrollView, TextInput, Pressable, Alert } from "react-native";
 import { useAssistant } from "@/components/AssistantProvider";
 
-const API = process.env.EXPO_PUBLIC_API_URL;
+import Constants from "expo-constants";
+
+const API = Constants.expoConfig?.extra?.apiUrl;
 
 type Routine = {
   wake_time: string;
