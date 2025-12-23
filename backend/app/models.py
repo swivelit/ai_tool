@@ -18,24 +18,6 @@ class User(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-
-# --------------------
-# Questionnaire
-# --------------------
-class Questionnaire(SQLModel, table=True):
-    __tablename__ = "questionnaire"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-
-    user_id: int = Field(
-        index=True,
-        foreign_key="user.id",
-    )
-
-    payload_json: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-
 # --------------------
 # Item (core memory / notes / tasks / reminders)
 # --------------------
@@ -132,3 +114,23 @@ class DailyRoutine(SQLModel, table=True):
     daily_habits: Optional[str] = None  # comma-separated for now
 
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # --------------------
+# User Personality / Character Profile
+class UserProfile(SQLModel, table=True):
+    __tablename__ = "user_profile"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    user_id: int = Field(
+        index=True,
+        foreign_key="user.id",
+        unique=True,
+    )
+
+    answers_json: str
+    questions_version: int = 1
+
+    profile_summary: Optional[str] = None
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+

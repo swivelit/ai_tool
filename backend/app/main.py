@@ -10,16 +10,15 @@ import tempfile
 import json
 from datetime import datetime, date
 from sqlmodel import select, Session
-from sqlalchemy import text as sql_text
 import re
 from .database import get_session
 from .models import (
     Item,
     User,
-    Questionnaire,
     Conversation,
     QACache,
     DailyRoutine,
+    UserProfile,
 )
 
 from docx import Document
@@ -29,7 +28,7 @@ from openpyxl import Workbook
 from pptx import Presentation
 
 load_dotenv()
-
+PERSONALITY_QUESTIONS_VERSION = 1
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is not set (env var missing)")
@@ -73,7 +72,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "message": "Tamil Voice AI backend is running 🚀"}
+    return {"status": "ok"}
 
 # ---------- Parse datetime ----------
 PARSE_DT_PROMPT = """
@@ -127,6 +126,9 @@ class TextAnalysisRequest(BaseModel):
     user_id: Optional[int] = None
     meta: Optional[Dict[str, Any]] = None
 
+class PersonalityAnswersIn(BaseModel):
+    answers: Dict[str, str]
+
 class TextAnalysisResponse(BaseModel):
     id: int
     intent: str
@@ -137,26 +139,29 @@ class TextAnalysisResponse(BaseModel):
     title: Optional[str] = None
     details: Optional[str] = None
 
-class SearchRequest(BaseModel):
-    query: str
-    user_id: Optional[int] = None
-
-class SearchResponse(BaseModel):
-    items: list[TextAnalysisResponse]
-    transcript: Optional[str] = None
-
 class UserCreate(BaseModel):
     name: str
     place: Optional[str] = None
     timezone: Optional[str] = "Asia/Kolkata"
-    assistant_name: Optional[str] = "Ellie"
-
-class QuestionnaireIn(BaseModel):
-    payload: Dict[str, Any]
 
 # ---------- LLM prompts ----------
 SYSTEM_PROMPT = """
-You are an AI that reads Tamil and mixed Tamil-English (Tanglish) commands from users.
+You are a personal AI assistant.
+
+You will receive JSON input with:
+- context:
+    - user (name, place, timezone)
+    - routine (daily schedule and habits)
+    - personality (communication style, motivation, sensitivity)
+- input (the user's message)
+
+Rules:
+- Always respect the user's routine when suggesting times or actions
+- Always match your tone to the personality profile
+- If personality is missing, be neutral and polite
+- If routine is missing, ask clarifying questions
+- Never suggest actions outside wake/sleep boundaries unless explicitly asked
+- If a request conflicts with routine, explain and suggest an alternative
 
 Return ONLY JSON:
 {
@@ -168,16 +173,33 @@ Return ONLY JSON:
 }
 """
 
-SEARCH_SYSTEM_PROMPT = """
-You are an AI assistant that searches through saved items.
-Return ONLY JSON: {"ids":[...]}
+PERSONALITY_QUESTIONS = [
+    "How would you describe yourself in one sentence?",
+    "Do you prefer strict reminders or gentle nudges?",
+    "Are you more spontaneous or planned?",
+    "What usually motivates you?",
+    "How do you want the assistant to talk to you?"
+]
+
+PERSONALITY_SUMMARY_PROMPT = """
+You are analyzing a user's personality.
+
+Based on their answers, create a concise profile including:
+- communication tone
+- motivation style
+- structure vs flexibility preference
+- emotional sensitivity
+
+Return plain text. No JSON.
 """
 
 CHECKIN_PROMPT = """
-You are a daily routine assistant.
+- Match message tone to personality
+- If personality prefers gentle nudges, avoid commands
+- If personality prefers strictness, be direct
 
 You will receive:
-- user profile (name, place, timezone, assistant name)
+- user profile (name, place, timezone)
 - user routine (wake_time, sleep_time, work_start, work_end, daily_habits)
 
 Create 3–8 smart check-ins for today.
@@ -193,6 +215,46 @@ Return ONLY JSON:
 """
 
 # ---------- Helpers ----------
+
+def build_user_context(session: Session, user_id: int) -> dict:
+    user = session.get(User, user_id)
+    if not user:
+        return {}
+
+    routine = session.exec(
+        select(DailyRoutine).where(DailyRoutine.user_id == user_id)
+    ).first()
+
+    profile = session.exec(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    ).first()
+
+    # ✅ Invalidate personality if question version changed
+    if profile and profile.questions_version != PERSONALITY_QUESTIONS_VERSION:
+        personality = None
+    elif profile and profile.profile_summary:
+        personality = profile.profile_summary
+    else:
+        personality = "No personality profile yet. Be neutral and helpful."
+    return {
+        "user": {
+            "name": user.name,
+            "place": user.place,
+            "timezone": user.timezone,
+        },
+        "routine": (
+            {
+                "wake_time": routine.wake_time,
+                "sleep_time": routine.sleep_time,
+                "work_start": routine.work_start,
+                "work_end": routine.work_end,
+                "daily_habits": routine.daily_habits,
+            }
+            if routine else None
+        ),
+        "personality": personality,
+    }
+
 def validate_hhmm(v: str) -> None:
     if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", v):
         raise HTTPException(400, f"Invalid time format: {v}")
@@ -214,15 +276,6 @@ def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) ->
         ],
     )
     return json.loads(resp.choices[0].message.content)
-
-def routine_from_questionnaire(q_payload: dict) -> DailyRoutineIn:
-    return DailyRoutineIn(
-        wake_time=q_payload.get("wake", "07:30"),
-        sleep_time=q_payload.get("sleep", "23:30"),
-        work_start=q_payload.get("workStart"),
-        work_end=q_payload.get("workEnd"),
-        daily_habits=q_payload.get("dailyHabits"),
-    )
 
 def normalize_category(raw: str) -> str:
     cr = (raw or "Other").lower()
@@ -289,11 +342,21 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
         name=payload.name,
         place=payload.place,
         timezone=payload.timezone,
-        assistant_name=payload.assistant_name or "Ellie",
+        assistant_name="Elli",
     )
     session.add(u)
     session.commit()
     session.refresh(u)
+
+    # ✅ Auto-create empty personality profile
+    profile = UserProfile(
+        user_id=u.id,
+        answers_json=json.dumps({}),
+        questions_version=PERSONALITY_QUESTIONS_VERSION,
+    )
+    session.add(profile)
+    session.commit()
+
     return u
 
 @app.get("/users/{user_id}")
@@ -302,27 +365,6 @@ def get_user(user_id: int, session: Session = Depends(get_session)):
     if not u:
         raise HTTPException(404, "User not found")
     return u
-
-@app.post("/users/{user_id}/questionnaire")
-def save_questionnaire(user_id: int, payload: QuestionnaireIn, session: Session = Depends(get_session)):
-    q = session.exec(
-        select(Questionnaire)
-        .where(Questionnaire.user_id == user_id)
-        .order_by(Questionnaire.created_at.desc())
-    ).first()
-
-    if q:
-        q.payload_json = json.dumps(payload.payload, ensure_ascii=False)
-    else:
-        q = Questionnaire(
-            user_id=user_id,
-            payload_json=json.dumps(payload.payload, ensure_ascii=False),
-        )
-        session.add(q)
-
-    session.commit()
-    return {"ok": True}
-
 
 @app.post("/users/{user_id}/generate-daily-checkins")
 def generate_daily_checkins(user_id: int, session: Session = Depends(get_session)):
@@ -335,42 +377,38 @@ def generate_daily_checkins(user_id: int, session: Session = Depends(get_session
     ).first()
 
     if not routine:
-        # Try to bootstrap from latest questionnaire
-        q = session.exec(
-            select(Questionnaire)
-            .where(Questionnaire.user_id == user_id)
-            .order_by(Questionnaire.created_at.desc())
-        ).first()
-
-        if not q:
-            raise HTTPException(400, "Daily routine not set")
-
-        q_payload = json.loads(q.payload_json)
-        routine_in = routine_from_questionnaire(q_payload)
-
-        routine = DailyRoutine(
-            user_id=user_id,
-            **routine_in.dict(),
-            updated_at=datetime.utcnow(),
+        raise HTTPException(
+            400,
+            "Daily routine not set. Please configure routine first."
         )
-        session.add(routine)
-        session.commit()
-        session.refresh(routine)
+
+    profile = session.exec(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    ).first()
 
     user_content = json.dumps({
-        "profile": {
+        "user": {
             "name": u.name,
             "place": u.place,
             "timezone": u.timezone,
-            "assistant_name": u.assistant_name,
         },
-        "user_routine": {
-            "wake_time": routine.wake_time,
-            "sleep_time": routine.sleep_time,
-            "work_start": routine.work_start,
-            "work_end": routine.work_end,
-            "daily_habits": routine.daily_habits,
-        },
+        "personality": (
+            profile.profile_summary
+            if profile
+            and profile.profile_summary
+            and profile.questions_version == PERSONALITY_QUESTIONS_VERSION
+            else "No personality profile yet. Be neutral and helpful."
+        ),
+        "routine": (
+            {
+                "wake_time": routine.wake_time,
+                "sleep_time": routine.sleep_time,
+                "work_start": routine.work_start,
+                "work_end": routine.work_end,
+                "daily_habits": routine.daily_habits,
+            }
+            if routine else None
+        ),
         "today": str(date.today()),
     }, ensure_ascii=False)
 
@@ -383,6 +421,13 @@ def generate_daily_checkins(user_id: int, session: Session = Depends(get_session
 
     return {"checkins": checkins}
 
+@app.get("/personality/questions")
+def get_personality_questions():
+    return {
+        "version": PERSONALITY_QUESTIONS_VERSION,
+        "questions": PERSONALITY_QUESTIONS,
+    }
+
 @app.get("/conversations")
 def list_conversations(user_id: Optional[int] = None, limit: int = 50, session: Session = Depends(get_session)):
     q = select(Conversation).order_by(Conversation.created_at.desc()).limit(limit)
@@ -391,10 +436,57 @@ def list_conversations(user_id: Optional[int] = None, limit: int = 50, session: 
     return session.exec(q).all()
 
 # ---------- Analyze Text ----------
+@app.post("/users/{user_id}/personality/generate-summary")
+def generate_personality_summary(user_id: int, session: Session = Depends(get_session)):
+    profile = session.exec(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    ).first()
+
+    if not profile:
+        raise HTTPException(404, "Personality answers not found")
+
+    answers = json.loads(profile.answers_json or "{}")
+
+    if not answers:
+        raise HTTPException(
+            400,
+            "No personality answers provided yet"
+        )
+    content = "\n".join(
+        f"{q}: {a}" for q, a in answers.items()
+    )
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.2,
+        messages=[
+            {"role": "system", "content": PERSONALITY_SUMMARY_PROMPT},
+            {"role": "user", "content": content},
+        ],
+    )
+
+    profile.profile_summary = resp.choices[0].message.content.strip()
+    profile.updated_at = datetime.utcnow()
+
+    session.add(profile)
+    session.commit()
+
+    return {"summary": profile.profile_summary}
+
 @app.post("/analyze-text", response_model=TextAnalysisResponse)
 def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_session)):
-    data = llm_json(SYSTEM_PROMPT, payload.text, temperature=0.2)
+    user_context = {}
+    if payload.user_id:
+        user_context = build_user_context(session, payload.user_id)
+    if payload.user_id and not user_context.get("personality"):
+        user_context["personality"] = "Unknown personality. Be neutral and helpful."
 
+    user_content = json.dumps({
+        "context": user_context,
+        "input": payload.text,
+    }, ensure_ascii=False)
+
+    data = llm_json(SYSTEM_PROMPT, user_content, temperature=0.2)
     intent = str(data.get("intent", "other")).lower()
     category = normalize_category(str(data.get("category", "Other")))
 
@@ -443,7 +535,18 @@ async def transcribe_and_analyze(
             )
         transcript_text = transcript_obj.text
 
-        data = llm_json(SYSTEM_PROMPT, transcript_text, temperature=0.2)
+        user_context = {}
+        if user_id:
+            user_context = build_user_context(session, user_id)
+        if user_id and not user_context.get("personality"):
+            user_context["personality"] = "Unknown personality. Be neutral and helpful."
+
+        user_content = json.dumps({
+            "context": user_context,
+            "input": transcript_text,
+        }, ensure_ascii=False)
+
+        data = llm_json(SYSTEM_PROMPT, user_content, temperature=0.2)
         intent = str(data.get("intent", "other")).lower()
         category = normalize_category(str(data.get("category", "Other")))
 
@@ -620,6 +723,47 @@ def get_daily_routine(user_id: int, session: Session = Depends(get_session)):
 
     return r
 
+@app.get("/users/{user_id}/personality")
+def get_personality(user_id: int, session: Session = Depends(get_session)):
+    profile = session.exec(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    ).first()
+
+    if not profile:
+        raise HTTPException(404, "Personality profile not found")
+
+    return {
+        "answers": json.loads(profile.answers_json or "{}"),
+        "summary": profile.profile_summary,
+    }
+@app.post("/users/{user_id}/personality")
+def save_personality_answers(
+    user_id: int,
+    payload: PersonalityAnswersIn,
+    session: Session = Depends(get_session),
+):
+    answers_json = json.dumps(payload.answers, ensure_ascii=False)
+
+    profile = session.exec(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    ).first()
+
+    if profile:
+        profile.answers_json = answers_json
+        profile.profile_summary = None
+        profile.updated_at = datetime.utcnow()
+    else:
+        profile = UserProfile(
+            user_id=user_id,
+            answers_json=answers_json,
+            updated_at=datetime.utcnow(),
+        )
+        session.add(profile)
+
+    session.commit()
+    session.refresh(profile)
+
+    return {"ok": True}
 @app.put("/users/{user_id}/daily-routine", response_model=DailyRoutineOut)
 def upsert_daily_routine(
     user_id: int,
