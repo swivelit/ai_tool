@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -16,12 +16,13 @@ import { Audio } from "expo-av";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { GlassCard } from "@/components/Glass";
 import { Orb } from "@/components/Orb";
 import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
-import { apiPost, apiPostForm } from "@/lib/api";
+import { apiGet, apiPost, apiPostForm } from "@/lib/api";
 import { Item } from "@/lib/types";
 import { parseDatetime } from "@/lib/datetime";
 import { scheduleReminder } from "@/lib/reminders";
@@ -35,14 +36,14 @@ type PendingReminder = {
 };
 
 const SUGGESTIONS = [
-  "Schedule a meeting tomorrow morning 10am",
-  "Schedule Ram birthday on 2nd February evening",
-  "Create an event for customer follow-up today 4pm",
-  "Remind me to take medicine tonight at 9pm",
+  "Schedule a meeting",
+  "Schedule a Birthday",
+  "Schedule a Event",
+  "Ask me anything...",
 ];
 
 export default function Home() {
-  const { name, settings, profile } = useAssistant();
+  const { name, settings, profile, refresh } = useAssistant();
 
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -55,6 +56,10 @@ export default function Home() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingReminder, setPendingReminder] = useState<PendingReminder | null>(null);
 
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [historySearch, setHistorySearch] = useState("");
+  const [historyItems, setHistoryItems] = useState<Item[]>([]);
+
   const greetingName = useMemo(() => {
     return (profile?.name || "there").trim();
   }, [profile?.name]);
@@ -63,11 +68,34 @@ export default function Home() {
     return (name || "Swivel AI").trim();
   }, [name]);
 
-  const placeholder = useMemo(() => {
-    return settings.languageMode === "ta"
-      ? "Ask me anything..."
-      : "Ask me anything...";
-  }, [settings.languageMode]);
+  const placeholder = "Ask me anything...";
+
+  const filteredHistory = useMemo(() => {
+    const q = historySearch.trim().toLowerCase();
+    if (!q) return historyItems.slice(0, 12);
+
+    return historyItems.filter((item) => {
+      const blob = `${item.title || ""} ${item.details || ""} ${item.raw_text || ""}`.toLowerCase();
+      return blob.includes(q);
+    });
+  }, [historyItems, historySearch]);
+
+  const resultText = result?.details || result?.raw_text || "";
+  const hasConversation = !!resultText || !!lastPrompt;
+
+  useEffect(() => {
+    loadHistory();
+  }, [profile?.userId]);
+
+  async function loadHistory() {
+    try {
+      const suffix = profile?.userId ? `?user_id=${profile.userId}` : "";
+      const data = await apiGet<Item[]>(`/items${suffix}`);
+      setHistoryItems(data || []);
+    } catch {
+      setHistoryItems([]);
+    }
+  }
 
   function stripAssistantTrigger(input: string) {
     const cleaned = input.trim();
@@ -102,6 +130,7 @@ export default function Home() {
 
       setResult(res);
       setText("");
+      await loadHistory();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       if (res.intent === "reminder" && res.datetime) {
@@ -178,6 +207,7 @@ export default function Home() {
 
       setLastPrompt(res.transcript || "Voice request");
       setResult(res);
+      await loadHistory();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       if (res.intent === "reminder" && res.datetime) {
@@ -209,7 +239,6 @@ export default function Home() {
     try {
       setBusy(true);
       const tz = profile?.timezone || "Asia/Kolkata";
-
       const parsed = await parseDatetime(pendingReminder.datetimeText, tz);
 
       if (!parsed.iso || parsed.confidence < 0.35) {
@@ -249,13 +278,42 @@ export default function Home() {
     }
   }
 
-  const resultText = result?.details || result?.raw_text || "";
-  const hasConversation = !!resultText || !!lastPrompt;
+  function openHistoryItem(item: Item) {
+    setLastPrompt(item.raw_text || "");
+    setResult(item);
+    setDrawerOpen(false);
+  }
+
+  function openSchedule() {
+    setDrawerOpen(false);
+    router.push("/(tabs)/explore");
+  }
+
+  function openRoutine() {
+    setDrawerOpen(false);
+    router.push("/(tabs)/routine");
+  }
+
+  async function signOut() {
+    Alert.alert("Sign out", "Do you want to sign out from this local account?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Sign out",
+        style: "destructive",
+        onPress: async () => {
+          await AsyncStorage.removeItem("user_profile_v1");
+          await refresh();
+          setDrawerOpen(false);
+          router.replace("/onboarding/profile");
+        },
+      },
+    ]);
+  }
 
   return (
     <LinearGradient
-      colors={["#020816", "#04132D", "#0B3D86"]}
-      start={{ x: 0.12, y: 0.04 }}
+      colors={["#020816", "#04122B", "#082E6B", "#0B4C9C"]}
+      start={{ x: 0.08, y: 0.02 }}
       end={{ x: 0.88, y: 1 }}
       style={{ flex: 1 }}
     >
@@ -265,46 +323,62 @@ export default function Home() {
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <View style={topBar}>
-            <Pressable style={iconBtn}>
-              <Ionicons name="menu" size={22} color="rgba(255,255,255,0.92)" />
+            <Pressable style={topIconBtn} onPress={() => setDrawerOpen(true)}>
+              <Ionicons name="menu" size={21} color="rgba(255,255,255,0.95)" />
             </Pressable>
 
-            <Text style={brandText}>{assistantLabel}</Text>
+            <Text style={brandText}>• {assistantLabel}</Text>
 
             <Pressable
-              style={iconBtn}
+              style={topIconBtn}
               onPress={() => {
                 setResult(null);
                 setLastPrompt("");
+                setText("");
               }}
             >
-              <Ionicons name="refresh" size={20} color="rgba(255,255,255,0.92)" />
+              <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.95)" />
             </Pressable>
           </View>
 
           <ScrollView
-            contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 180 }}
+            contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 130 }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
             {!hasConversation ? (
-              <View style={{ alignItems: "center", paddingTop: 22 }}>
-                <View style={{ marginTop: 8 }}>
-                  <Orb listening={listening} onPress={toggleMic} size={166} />
-                </View>
+              <View style={{ alignItems: "center", paddingTop: 16 }}>
+                <Orb listening={listening} onPress={toggleMic} size={168} />
 
                 <Text style={helloSmall}>Hello {greetingName}!</Text>
                 <Text style={helloBig}>How can I help you today?</Text>
 
                 <Text style={tapHint}>
-                  {recording ? "Listening... tap again to stop" : "Tap here to talk"}
+                  {recording ? "Listening..." : "Tap here to talk"}
                 </Text>
 
                 {listening ? (
-                  <View style={{ marginTop: 12 }}>
+                  <View style={{ marginTop: 14 }}>
                     <Waveform active />
                   </View>
                 ) : null}
+
+                <View style={{ marginTop: 26, width: "100%" }}>
+                  <Text style={sectionLabel}>Suggestions</Text>
+                  <View style={suggestionWrap}>
+                    {SUGGESTIONS.map((item) => (
+                      <Pressable
+                        key={item}
+                        onPress={() => setText(item)}
+                        style={suggestionChip}
+                      >
+                        <Text style={suggestionText} numberOfLines={1}>
+                          {item}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
               </View>
             ) : (
               <View style={{ paddingTop: 10 }}>
@@ -335,45 +409,53 @@ export default function Home() {
                     ) : null}
                   </GlassCard>
                 </View>
-              </View>
-            )}
 
-            <View style={{ marginTop: 28 }}>
-              <Text style={sectionLabel}>Suggestions</Text>
-              <View style={suggestionWrap}>
-                {SUGGESTIONS.map((item) => (
-                  <Pressable
-                    key={item}
-                    onPress={() => setText(item)}
-                    style={suggestionChip}
-                  >
-                    <Text style={suggestionText} numberOfLines={1}>
-                      {item}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-
-            <View style={{ marginTop: 18 }}>
-              <GlassCard style={{ borderRadius: 24 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                  <View style={miniOrb} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={cardTitle}>Voice assistant</Text>
-                    <Text style={cardSub}>
-                      {recording
-                        ? "Recording in progress..."
-                        : "Tap the mic below or tap the orb to speak in Tamil or English."}
-                    </Text>
+                <View style={{ marginTop: 24 }}>
+                  <Text style={sectionLabel}>Suggestions</Text>
+                  <View style={suggestionWrap}>
+                    {SUGGESTIONS.map((item) => (
+                      <Pressable
+                        key={item}
+                        onPress={() => setText(item)}
+                        style={suggestionChip}
+                      >
+                        <Text style={suggestionText} numberOfLines={1}>
+                          {item}
+                        </Text>
+                      </Pressable>
+                    ))}
                   </View>
                 </View>
-              </GlassCard>
-            </View>
+              </View>
+            )}
           </ScrollView>
+
+          {listening ? (
+            <View style={floatingWaveWrap}>
+              <Waveform active />
+            </View>
+          ) : null}
 
           <View style={composerShell}>
             <View style={composer}>
+              <Pressable
+                onPress={() => {
+                  if (hasConversation) {
+                    setResult(null);
+                    setLastPrompt("");
+                  } else {
+                    setDrawerOpen(true);
+                  }
+                }}
+                style={leftRoundBtn}
+              >
+                <Ionicons
+                  name={hasConversation ? "arrow-back" : "time-outline"}
+                  size={18}
+                  color="rgba(255,255,255,0.92)"
+                />
+              </Pressable>
+
               <TextInput
                 value={text}
                 onChangeText={setText}
@@ -386,8 +468,8 @@ export default function Home() {
               <Pressable
                 onPress={toggleMic}
                 style={[
-                  roundButton,
-                  recording ? roundButtonDanger : roundButtonSoft,
+                  actionBtn,
+                  recording ? actionBtnDanger : actionBtnMuted,
                 ]}
               >
                 <Ionicons
@@ -401,14 +483,100 @@ export default function Home() {
                 onPress={analyzeText}
                 disabled={busy || !text.trim()}
                 style={[
-                  roundButton,
-                  text.trim() ? roundButtonPrimary : roundButtonDisabled,
+                  actionBtn,
+                  text.trim() ? actionBtnPrimary : actionBtnDisabled,
                 ]}
               >
-                <Ionicons name="paper-plane" size={18} color="white" />
+                <Ionicons name="paper-plane-outline" size={18} color="white" />
               </Pressable>
             </View>
           </View>
+
+          <Modal
+            transparent
+            visible={drawerOpen}
+            animationType="fade"
+            onRequestClose={() => setDrawerOpen(false)}
+          >
+            <View style={drawerBackdrop}>
+              <Pressable style={{ flex: 1 }} onPress={() => setDrawerOpen(false)} />
+              <View style={drawerPanel}>
+                <View style={drawerHeader}>
+                  <View style={drawerSearchWrap}>
+                    <Ionicons name="search" size={15} color="rgba(255,255,255,0.55)" />
+                    <TextInput
+                      value={historySearch}
+                      onChangeText={setHistorySearch}
+                      placeholder="Search"
+                      placeholderTextColor="rgba(255,255,255,0.34)"
+                      style={drawerSearchInput}
+                    />
+                  </View>
+                  <Pressable onPress={() => setDrawerOpen(false)} style={drawerCloseBtn}>
+                    <Ionicons name="close" size={18} color="rgba(255,255,255,0.88)" />
+                  </Pressable>
+                </View>
+
+                <Text style={drawerSectionTitle}>My History</Text>
+
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={{ paddingBottom: 18 }}
+                >
+                  {filteredHistory.length === 0 ? (
+                    <View style={historyEmptyCard}>
+                      <Text style={historyEmptyText}>No history yet</Text>
+                    </View>
+                  ) : (
+                    filteredHistory.map((item) => (
+                      <Pressable
+                        key={item.id}
+                        onPress={() => openHistoryItem(item)}
+                        style={historyItem}
+                      >
+                        <Text style={historyItemText} numberOfLines={1}>
+                          {item.raw_text || item.title || "Untitled"}
+                        </Text>
+                      </Pressable>
+                    ))
+                  )}
+                </ScrollView>
+
+                <View style={{ marginTop: "auto" }}>
+                  <Pressable onPress={openRoutine} style={footerCard}>
+                    <Ionicons name="settings-outline" size={16} color="rgba(255,255,255,0.88)" />
+                    <Text style={footerCardText}>Setting</Text>
+                  </Pressable>
+
+                  <View style={accountCard}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={accountTitle}>Account</Text>
+                      <Text style={accountSubtitle} numberOfLines={1}>
+                        {profile?.name || "Local account"}
+                      </Text>
+                      <Text style={accountMeta} numberOfLines={1}>
+                        {profile?.place || profile?.timezone || "Swivel AI user"}
+                      </Text>
+                    </View>
+
+                    <Pressable onPress={signOut} style={signOutBtn}>
+                      <Text style={signOutBtnText}>Sign out</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={brandFooter}>
+                    <Text style={brandFooterText}>{assistantLabel}</Text>
+                    <Text style={brandFooterVersion}>v1.0</Text>
+                  </View>
+
+                  <Pressable onPress={openSchedule} style={scheduleShortcut}>
+                    <Ionicons name="calendar-outline" size={16} color="rgba(255,255,255,0.88)" />
+                    <Text style={scheduleShortcutText}>Schedule</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </Modal>
 
           <Modal
             transparent
@@ -473,50 +641,50 @@ const topBar = {
   justifyContent: "space-between" as const,
 };
 
-const iconBtn = {
+const topIconBtn = {
   width: 38,
   height: 38,
   borderRadius: 19,
   alignItems: "center" as const,
   justifyContent: "center" as const,
-  backgroundColor: "rgba(255,255,255,0.06)",
+  backgroundColor: "rgba(255,255,255,0.05)",
   borderWidth: 1,
   borderColor: "rgba(255,255,255,0.08)",
 };
 
 const brandText = {
-  color: "rgba(255,255,255,0.95)",
-  fontSize: 15,
+  color: "rgba(255,255,255,0.96)",
+  fontSize: 14,
   fontWeight: "800" as const,
   letterSpacing: 0.2,
 };
 
 const helloSmall = {
-  marginTop: 4,
+  marginTop: 6,
   color: "rgba(255,255,255,0.72)",
   fontSize: 14,
   fontWeight: "600" as const,
 };
 
 const helloBig = {
-  marginTop: 6,
+  marginTop: 8,
   color: "white",
-  fontSize: 29,
-  lineHeight: 35,
+  fontSize: 31,
+  lineHeight: 37,
   textAlign: "center" as const,
   fontWeight: "900" as const,
   maxWidth: 260,
 };
 
 const tapHint = {
-  marginTop: 18,
-  color: "rgba(255,255,255,0.55)",
-  fontSize: 13,
+  marginTop: 20,
+  color: "rgba(255,255,255,0.54)",
+  fontSize: 12,
   fontWeight: "600" as const,
 };
 
 const sectionLabel = {
-  color: "rgba(255,255,255,0.75)",
+  color: "rgba(255,255,255,0.70)",
   fontSize: 13,
   fontWeight: "800" as const,
   marginBottom: 10,
@@ -525,22 +693,25 @@ const sectionLabel = {
 const suggestionWrap = {
   flexDirection: "row" as const,
   flexWrap: "wrap" as const,
+  justifyContent: "space-between" as const,
   gap: 10,
 };
 
 const suggestionChip = {
+  width: "47.8%",
   minHeight: 38,
-  maxWidth: "48%",
   paddingHorizontal: 14,
   paddingVertical: 10,
   borderRadius: 999,
-  backgroundColor: "rgba(255,255,255,0.12)",
+  backgroundColor: "rgba(255,255,255,0.14)",
   borderWidth: 1,
-  borderColor: "rgba(179,230,255,0.12)",
+  borderColor: "rgba(175,230,255,0.14)",
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
 };
 
 const suggestionText = {
-  color: "rgba(255,255,255,0.90)",
+  color: "rgba(255,255,255,0.92)",
   fontSize: 12,
   fontWeight: "700" as const,
 };
@@ -552,7 +723,7 @@ const userBubbleWrap = {
 
 const userBubble = {
   maxWidth: "86%",
-  backgroundColor: "rgba(10,17,34,0.86)",
+  backgroundColor: "rgba(9,17,34,0.92)",
   borderRadius: 18,
   paddingHorizontal: 14,
   paddingVertical: 12,
@@ -561,7 +732,7 @@ const userBubble = {
 };
 
 const userBubbleText = {
-  color: "rgba(255,255,255,0.92)",
+  color: "rgba(255,255,255,0.95)",
   fontSize: 14,
   lineHeight: 20,
 };
@@ -604,53 +775,43 @@ const metaChipText = {
   fontWeight: "700" as const,
 };
 
-const miniOrb = {
-  width: 42,
-  height: 42,
-  borderRadius: 21,
-  backgroundColor: "rgba(90,217,255,0.22)",
-  borderWidth: 1,
-  borderColor: "rgba(130,220,255,0.22)",
-};
-
-const cardTitle = {
-  color: "rgba(255,255,255,0.95)",
-  fontWeight: "900" as const,
-  fontSize: 15,
-};
-
-const cardSub = {
-  marginTop: 5,
-  color: "rgba(255,255,255,0.64)",
-  lineHeight: 19,
-  fontSize: 13,
+const floatingWaveWrap = {
+  position: "absolute" as const,
+  left: 0,
+  right: 0,
+  bottom: 108,
+  alignItems: "center" as const,
 };
 
 const composerShell = {
   position: "absolute" as const,
   left: 0,
   right: 0,
-  bottom: 82,
+  bottom: Platform.OS === "ios" ? 18 : 14,
   paddingHorizontal: 14,
 };
 
 const composer = {
   minHeight: 64,
-  borderRadius: 24,
-  paddingLeft: 16,
+  borderRadius: 28,
+  paddingLeft: 10,
   paddingRight: 10,
   paddingVertical: 10,
   flexDirection: "row" as const,
-  alignItems: "flex-end" as const,
+  alignItems: "center" as const,
   gap: 10,
-  backgroundColor: "rgba(18,33,67,0.96)",
+  backgroundColor: "rgba(128,175,230,0.24)",
   borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.08)",
-  shadowColor: "#000",
-  shadowOpacity: 0.22,
-  shadowRadius: 18,
-  shadowOffset: { width: 0, height: 8 },
-  elevation: 12,
+  borderColor: "rgba(255,255,255,0.10)",
+};
+
+const leftRoundBtn = {
+  width: 38,
+  height: 38,
+  borderRadius: 19,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(255,255,255,0.08)",
 };
 
 const composerInput = {
@@ -662,30 +823,204 @@ const composerInput = {
   paddingBottom: 8,
 };
 
-const roundButton = {
-  width: 42,
-  height: 42,
-  borderRadius: 21,
+const actionBtn = {
+  width: 38,
+  height: 38,
+  borderRadius: 19,
   alignItems: "center" as const,
   justifyContent: "center" as const,
 };
 
-const roundButtonSoft = {
-  backgroundColor: "rgba(255,255,255,0.08)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.08)",
-};
-
-const roundButtonPrimary = {
-  backgroundColor: "rgba(99,191,255,0.95)",
-};
-
-const roundButtonDisabled = {
+const actionBtnMuted = {
   backgroundColor: "rgba(255,255,255,0.10)",
 };
 
-const roundButtonDanger = {
-  backgroundColor: "rgba(255,76,76,0.92)",
+const actionBtnPrimary = {
+  backgroundColor: "rgba(116,208,255,0.95)",
+};
+
+const actionBtnDisabled = {
+  backgroundColor: "rgba(255,255,255,0.10)",
+};
+
+const actionBtnDanger = {
+  backgroundColor: "rgba(255,79,79,0.95)",
+};
+
+const drawerBackdrop = {
+  flex: 1,
+  backgroundColor: "rgba(0,0,0,0.24)",
+  flexDirection: "row" as const,
+};
+
+const drawerPanel = {
+  width: "74%",
+  backgroundColor: "rgba(3,10,27,0.98)",
+  paddingTop: Platform.OS === "ios" ? 56 : 28,
+  paddingHorizontal: 12,
+  paddingBottom: 18,
+};
+
+const drawerHeader = {
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  gap: 10,
+  marginBottom: 18,
+};
+
+const drawerSearchWrap = {
+  flex: 1,
+  height: 38,
+  borderRadius: 12,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  paddingHorizontal: 12,
+  backgroundColor: "rgba(255,255,255,0.08)",
+};
+
+const drawerSearchInput = {
+  flex: 1,
+  marginLeft: 8,
+  color: "white",
+  fontSize: 14,
+};
+
+const drawerCloseBtn = {
+  width: 34,
+  height: 34,
+  borderRadius: 17,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(255,255,255,0.07)",
+};
+
+const drawerSectionTitle = {
+  color: "rgba(255,255,255,0.72)",
+  fontSize: 13,
+  fontWeight: "800" as const,
+  marginBottom: 10,
+};
+
+const historyItem = {
+  minHeight: 38,
+  borderRadius: 10,
+  justifyContent: "center" as const,
+  paddingHorizontal: 10,
+  backgroundColor: "rgba(255,255,255,0.04)",
+  marginBottom: 8,
+};
+
+const historyItemText = {
+  color: "rgba(255,255,255,0.84)",
+  fontSize: 12,
+};
+
+const historyEmptyCard = {
+  height: 48,
+  borderRadius: 10,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(255,255,255,0.04)",
+};
+
+const historyEmptyText = {
+  color: "rgba(255,255,255,0.50)",
+  fontSize: 12,
+};
+
+const footerCard = {
+  height: 40,
+  borderRadius: 12,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  paddingHorizontal: 12,
+  backgroundColor: "rgba(255,255,255,0.07)",
+  marginBottom: 10,
+  gap: 8,
+};
+
+const footerCardText = {
+  color: "rgba(255,255,255,0.90)",
+  fontSize: 13,
+  fontWeight: "700" as const,
+};
+
+const accountCard = {
+  borderRadius: 12,
+  backgroundColor: "rgba(255,255,255,0.07)",
+  padding: 12,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  gap: 10,
+};
+
+const accountTitle = {
+  color: "rgba(255,255,255,0.92)",
+  fontSize: 13,
+  fontWeight: "800" as const,
+};
+
+const accountSubtitle = {
+  marginTop: 4,
+  color: "rgba(255,255,255,0.84)",
+  fontSize: 12,
+};
+
+const accountMeta = {
+  marginTop: 2,
+  color: "rgba(255,255,255,0.48)",
+  fontSize: 11,
+};
+
+const signOutBtn = {
+  height: 32,
+  paddingHorizontal: 12,
+  borderRadius: 999,
+  backgroundColor: "rgba(255,90,90,0.20)",
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+};
+
+const signOutBtnText = {
+  color: "#FFD7D7",
+  fontSize: 12,
+  fontWeight: "800" as const,
+};
+
+const brandFooter = {
+  marginTop: 12,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  gap: 6,
+  paddingHorizontal: 4,
+};
+
+const brandFooterText = {
+  color: "rgba(255,255,255,0.88)",
+  fontWeight: "800" as const,
+  fontSize: 12,
+};
+
+const brandFooterVersion = {
+  color: "rgba(255,255,255,0.48)",
+  fontSize: 12,
+};
+
+const scheduleShortcut = {
+  marginTop: 10,
+  height: 38,
+  borderRadius: 12,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  paddingHorizontal: 12,
+  backgroundColor: "rgba(255,255,255,0.07)",
+  gap: 8,
+};
+
+const scheduleShortcutText = {
+  color: "rgba(255,255,255,0.90)",
+  fontSize: 13,
+  fontWeight: "700" as const,
 };
 
 const modalBackdrop = {

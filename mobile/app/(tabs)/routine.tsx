@@ -9,6 +9,8 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
@@ -57,7 +59,7 @@ export default function RoutineScreen() {
           });
         }
       } catch {
-        // keep defaults when no routine exists yet
+        // keep defaults
       } finally {
         if (mounted) setLoading(false);
       }
@@ -127,31 +129,38 @@ export default function RoutineScreen() {
 
   return (
     <LinearGradient
-      colors={["#020816", "#04132D", "#0B3D86"]}
-      start={{ x: 0.12, y: 0.04 }}
+      colors={["#020816", "#04122B", "#082E6B", "#76ACE4"]}
+      start={{ x: 0.08, y: 0.02 }}
       end={{ x: 0.88, y: 1 }}
       style={{ flex: 1 }}
     >
       <SafeAreaView style={{ flex: 1 }}>
         <ScrollView
           style={{ flex: 1 }}
-          contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 10, paddingBottom: 110 }}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 30 }}
           showsVerticalScrollIndicator={false}
         >
-          <Text style={screenTitle}>Routine</Text>
-          <Text style={screenSub}>
-            Keep your assistant aligned with your real day.
-          </Text>
+          <View style={topBar}>
+            <Pressable style={iconBtn} onPress={() => router.replace("/(tabs)")}>
+              <Ionicons name="chevron-back" size={18} color="rgba(255,255,255,0.95)" />
+            </Pressable>
 
-          <GlassCard style={{ marginTop: 18, borderRadius: 24 }}>
+            <Text style={screenTitle}>Setting</Text>
+
+            <View style={iconBtn}>
+              <Ionicons name="settings-outline" size={16} color="rgba(255,255,255,0.82)" />
+            </View>
+          </View>
+
+          <GlassCard style={{ marginTop: 18, borderRadius: 22 }}>
             <Text style={cardTitle}>Account</Text>
             <Text style={accountLine}>Name: {profile?.name || "Not set"}</Text>
             <Text style={accountLine}>Place: {profile?.place || "Not set"}</Text>
             <Text style={accountLine}>Timezone: {profile?.timezone || "Asia/Kolkata"}</Text>
           </GlassCard>
 
-          <GlassCard style={{ marginTop: 14, borderRadius: 24 }}>
-            <Text style={cardTitle}>Daily rhythm</Text>
+          <GlassCard style={{ marginTop: 14, borderRadius: 22 }}>
+            <Text style={cardTitle}>Daily routine</Text>
 
             <Field
               label="Wake time"
@@ -187,7 +196,7 @@ export default function RoutineScreen() {
               onChangeText={(v) => setRoutine((prev) => ({ ...prev, daily_habits: v }))}
               placeholder="Gym, Water, Reading"
               multiline
-              height={90}
+              height={92}
             />
           </GlassCard>
 
@@ -243,16 +252,28 @@ function Field({
   );
 }
 
-const screenTitle = {
-  color: "white",
-  fontSize: 30,
-  fontWeight: "900" as const,
+const topBar = {
+  paddingTop: 8,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  justifyContent: "space-between" as const,
 };
 
-const screenSub = {
-  marginTop: 6,
-  color: "rgba(255,255,255,0.62)",
-  fontSize: 14,
+const iconBtn = {
+  width: 36,
+  height: 36,
+  borderRadius: 18,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(255,255,255,0.08)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.08)",
+};
+
+const screenTitle = {
+  color: "white",
+  fontSize: 24,
+  fontWeight: "900" as const,
 };
 
 const cardTitle = {
@@ -275,7 +296,7 @@ const fieldLabel = {
 };
 
 const fieldInput = {
-  borderRadius: 18,
+  borderRadius: 16,
   paddingHorizontal: 14,
   color: "white",
   backgroundColor: "rgba(255,255,255,0.06)",
@@ -285,7 +306,7 @@ const fieldInput = {
 
 const saveBtn = {
   marginTop: 18,
-  height: 56,
+  height: 54,
   borderRadius: 18,
   alignItems: "center" as const,
   justifyContent: "center" as const,
