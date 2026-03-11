@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -8,9 +8,10 @@ import os
 from openai import OpenAI
 import tempfile
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from sqlmodel import select, Session
 import re
+import secrets
 from .database import get_session
 from .models import (
     Item,
@@ -143,6 +144,7 @@ class UserCreate(BaseModel):
     name: str
     place: Optional[str] = None
     timezone: Optional[str] = "Asia/Kolkata"
+    assistant_name: Optional[str] = "Elli"
 
 # ---------- LLM prompts ----------
 SYSTEM_PROMPT = """
@@ -213,6 +215,132 @@ Each check-in must include:
 Return ONLY JSON:
 { "checkins": [ { "title":"...", "when":"08:00", "message":"..." } ] }
 """
+
+# ---------- Compatibility auth/session store ----------
+ACCESS_TOKEN_TTL_MINUTES = 60
+REFRESH_TOKEN_TTL_DAYS = 30
+TOKEN_TYPE = "bearer"
+ACCESS_TOKENS: Dict[str, Dict[str, Any]] = {}
+REFRESH_TOKENS: Dict[str, Dict[str, Any]] = {}
+
+
+def iso_utc(dt: datetime) -> str:
+    return dt.replace(microsecond=0).isoformat() + "Z"
+
+
+def issue_session_tokens(user_id: int) -> Dict[str, Any]:
+    now = datetime.utcnow()
+    access_token = secrets.token_urlsafe(32)
+    refresh_token = secrets.token_urlsafe(48)
+    access_expires_at = now + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
+    refresh_expires_at = now + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+
+    ACCESS_TOKENS[access_token] = {
+        "user_id": user_id,
+        "expires_at": access_expires_at,
+    }
+    REFRESH_TOKENS[refresh_token] = {
+        "user_id": user_id,
+        "expires_at": refresh_expires_at,
+    }
+
+    return {
+        "access_token": access_token,
+        "access_expires_at": iso_utc(access_expires_at),
+        "refresh_token": refresh_token,
+        "refresh_expires_at": iso_utc(refresh_expires_at),
+        "token_type": TOKEN_TYPE,
+        "user_id": user_id,
+    }
+
+
+def get_bearer_token(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    parts = authorization.strip().split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1].strip() or None
+
+
+def validate_refresh_token(authorization: Optional[str]) -> Dict[str, Any]:
+    token = get_bearer_token(authorization)
+    if not token or token not in REFRESH_TOKENS:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    payload = REFRESH_TOKENS[token]
+    if payload["expires_at"] <= datetime.utcnow():
+        REFRESH_TOKENS.pop(token, None)
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+
+    return {"token": token, **payload}
+
+
+def pipeline_question_objects() -> List[Dict[str, Any]]:
+    questions: List[Dict[str, Any]] = []
+    for index, question in enumerate(PERSONALITY_QUESTIONS, start=1):
+        questions.append(
+            {
+                "id": f"q{index}",
+                "question_text": question,
+                "type": "text",
+                "options": [],
+            }
+        )
+    return questions
+
+
+def stringify_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key, value in (answers or {}).items():
+        if isinstance(value, list):
+            out[key] = ", ".join(str(v) for v in value)
+        elif value is None:
+            out[key] = ""
+        else:
+            out[key] = str(value)
+    return out
+
+
+def build_profile_payload(profile: Optional[UserProfile]) -> Optional[Dict[str, Any]]:
+    if not profile:
+        return None
+    return {
+        "answers": json.loads(profile.answers_json or "{}"),
+        "profile_summary": profile.profile_summary,
+        "questions_version": profile.questions_version,
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+    }
+
+
+def build_pipeline_chat_result(item: Item) -> Dict[str, Any]:
+    human_text = item.details or item.title or item.raw_text or ""
+    return {
+        "pipeline_version": "ai-tool-compat-v1",
+        "raw_english": item.raw_text or "",
+        "remodeled_english": item.raw_text or "",
+        "tamil_text": human_text,
+        "theni_tamil_text": human_text,
+        "direct_answer_source": "openai",
+        "direct_answer_confidence": 0.75,
+        "predicted_label": item.intent or "other",
+        "risk_level": "low",
+        "route_taken": item.intent or "other",
+        "cache_hit": False,
+        "stage_notes": [
+            f"intent={item.intent}",
+            f"category={item.category}",
+        ],
+        "core_meta": {
+            "item_id": item.id,
+            "title": item.title,
+            "datetime": item.datetime_str,
+        },
+        "remodel_meta": {},
+        "review_meta": {},
+        "translation_meta": {},
+        "timings_ms": {},
+    }
 
 # ---------- Helpers ----------
 
@@ -338,17 +466,17 @@ def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, ans
 # ---------- Users ----------
 @app.post("/users")
 def create_user(payload: UserCreate, session: Session = Depends(get_session)):
+    assistant_name = (payload.assistant_name or "Elli").strip() or "Elli"
     u = User(
         name=payload.name,
         place=payload.place,
-        timezone=payload.timezone,
-        assistant_name="Elli",
+        timezone=payload.timezone or "Asia/Kolkata",
+        assistant_name=assistant_name,
     )
     session.add(u)
     session.commit()
     session.refresh(u)
 
-    # ✅ Auto-create empty personality profile
     profile = UserProfile(
         user_id=u.id,
         answers_json=json.dumps({}),
@@ -357,7 +485,15 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
     session.add(profile)
     session.commit()
 
-    return u
+    tokens = issue_session_tokens(u.id)
+    return {
+        "id": u.id,
+        "name": u.name,
+        "place": u.place,
+        "timezone": u.timezone,
+        "assistant_name": u.assistant_name,
+        **tokens,
+    }
 
 @app.get("/users/{user_id}")
 def get_user(user_id: int, session: Session = Depends(get_session)):
@@ -427,6 +563,169 @@ def get_personality_questions():
         "version": PERSONALITY_QUESTIONS_VERSION,
         "questions": PERSONALITY_QUESTIONS,
     }
+
+@app.get("/api/questions")
+def get_pipeline_questions():
+    return {
+        "version": PERSONALITY_QUESTIONS_VERSION,
+        "questions": pipeline_question_objects(),
+    }
+
+@app.get("/api/health")
+def api_health():
+    return {"status": "ok", "mode": "ai-tool-compat"}
+
+@app.post("/auth/refresh")
+def refresh_auth_session(authorization: Optional[str] = Header(default=None)):
+    payload = validate_refresh_token(authorization)
+    REFRESH_TOKENS.pop(payload["token"], None)
+    return issue_session_tokens(int(payload["user_id"]))
+
+@app.post("/auth/logout")
+def logout_auth_session(authorization: Optional[str] = Header(default=None)):
+    token = get_bearer_token(authorization)
+    if token:
+        ACCESS_TOKENS.pop(token, None)
+        REFRESH_TOKENS.pop(token, None)
+    return {"ok": True}
+
+@app.get("/api/profile/{user_id}")
+def get_pipeline_profile(user_id: int, session: Session = Depends(get_session)):
+    profile = session.exec(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    ).first()
+    return {
+        "exists": profile is not None,
+        "profile": build_profile_payload(profile),
+    }
+
+@app.post("/api/profile/{user_id}")
+def save_pipeline_profile(
+    user_id: int,
+    payload: PersonalityAnswersIn,
+    session: Session = Depends(get_session),
+):
+    answers = stringify_answers(payload.answers)
+    answers_json = json.dumps(answers, ensure_ascii=False)
+
+    profile = session.exec(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    ).first()
+
+    if profile:
+        profile.answers_json = answers_json
+        profile.profile_summary = None
+        profile.questions_version = PERSONALITY_QUESTIONS_VERSION
+        profile.updated_at = datetime.utcnow()
+    else:
+        profile = UserProfile(
+            user_id=user_id,
+            answers_json=answers_json,
+            questions_version=PERSONALITY_QUESTIONS_VERSION,
+            updated_at=datetime.utcnow(),
+        )
+        session.add(profile)
+
+    session.commit()
+    session.refresh(profile)
+
+    if answers:
+        content = "\n".join(f"{q}: {a}" for q, a in answers.items())
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.2,
+                messages=[
+                    {"role": "system", "content": PERSONALITY_SUMMARY_PROMPT},
+                    {"role": "user", "content": content},
+                ],
+            )
+            profile.profile_summary = resp.choices[0].message.content.strip()
+            profile.updated_at = datetime.utcnow()
+            session.add(profile)
+            session.commit()
+            session.refresh(profile)
+        except Exception as exc:
+            print(f"[WARN] personality summary generation failed: {exc}")
+
+    return {
+        "ok": True,
+        "profile": build_profile_payload(profile),
+    }
+
+@app.post("/api/profile/{user_id}/reset")
+def reset_pipeline_profile(user_id: int, session: Session = Depends(get_session)):
+    profile = session.exec(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    ).first()
+
+    if profile:
+        profile.answers_json = json.dumps({}, ensure_ascii=False)
+        profile.profile_summary = None
+        profile.questions_version = PERSONALITY_QUESTIONS_VERSION
+        profile.updated_at = datetime.utcnow()
+        session.add(profile)
+        session.commit()
+
+    return {"ok": True}
+
+@app.post("/users/{user_id}/questionnaire")
+def submit_questionnaire_alias(
+    user_id: int,
+    payload: Dict[str, Any],
+    session: Session = Depends(get_session),
+):
+    raw_payload = payload.get("payload", payload)
+    mapped_answers = {
+        "work_start": raw_payload.get("workStart") or "",
+        "work_end": raw_payload.get("workEnd") or "",
+        "wake_time": raw_payload.get("wake") or "",
+        "sleep_time": raw_payload.get("sleep") or "",
+        "daily_habits": raw_payload.get("dailyHabits") or "",
+    }
+
+    profile = session.exec(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    ).first()
+
+    if profile:
+        profile.answers_json = json.dumps(mapped_answers, ensure_ascii=False)
+        profile.profile_summary = None
+        profile.questions_version = PERSONALITY_QUESTIONS_VERSION
+        profile.updated_at = datetime.utcnow()
+    else:
+        profile = UserProfile(
+            user_id=user_id,
+            answers_json=json.dumps(mapped_answers, ensure_ascii=False),
+            questions_version=PERSONALITY_QUESTIONS_VERSION,
+            updated_at=datetime.utcnow(),
+        )
+        session.add(profile)
+
+    session.commit()
+    session.refresh(profile)
+
+    return {
+        "ok": True,
+        "profile": build_profile_payload(profile),
+    }
+
+class PipelineChatRequest(BaseModel):
+    user_id: int
+    message: str
+
+@app.post("/api/chat")
+def pipeline_chat(payload: PipelineChatRequest, session: Session = Depends(get_session)):
+    analyzed = analyze_text(
+        TextAnalysisRequest(text=payload.message, user_id=payload.user_id),
+        session,
+    )
+
+    item = session.get(Item, analyzed.id)
+    if not item:
+        raise HTTPException(500, "Failed to fetch analyzed item")
+
+    return {"ok": True, "result": build_pipeline_chat_result(item)}
 
 @app.get("/conversations")
 def list_conversations(user_id: Optional[int] = None, limit: int = 50, session: Session = Depends(get_session)):
