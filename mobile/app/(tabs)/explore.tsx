@@ -27,7 +27,7 @@ export default function Explore() {
     try {
       setLoading(true);
       const data = await apiGet<Item[]>("/items");
-      setItems(data);
+      setItems(data || []);
     } finally {
       setLoading(false);
     }
@@ -78,62 +78,60 @@ export default function Explore() {
     return next;
   }, [items, q, filter]);
 
-  function formatDate(item: Item) {
+  function timeLabel(item: Item) {
     const d = parseItemDate(item);
-    if (!d) return item.datetime || "No time set";
+    if (!d) return item.datetime || "No time";
 
     const isToday = new Date().toDateString() === d.toDateString();
     const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    const date = d.toLocaleDateString([], { day: "2-digit", month: "2-digit", year: "numeric" });
-
-    return isToday ? `Today, ${time}` : `${time} • ${date}`;
+    return isToday ? `Today, ${time}` : time;
   }
 
-  function formatSubDate(item: Item) {
+  function dateBadge(item: Item) {
     const d = parseItemDate(item);
-    if (!d) return item.category || item.intent || "General";
-
+    if (!d) return item.category || "General";
     return d.toLocaleDateString([], {
       day: "2-digit",
-      month: "short",
+      month: "2-digit",
       year: "numeric",
     });
   }
 
-  function statusColor(item: Item) {
+  function dotColor(item: Item) {
     const d = parseItemDate(item);
-    if (!d) return "rgba(141, 221, 255, 0.9)";
+    if (!d) return "rgba(133,218,255,0.95)";
     return d.getTime() < Date.now()
-      ? "rgba(255,255,255,0.65)"
-      : "rgba(87, 255, 170, 0.95)";
+      ? "rgba(255,255,255,0.45)"
+      : "rgba(93,255,167,0.95)";
   }
 
   return (
     <LinearGradient
-      colors={["#020816", "#04132D", "#0B3D86"]}
-      start={{ x: 0.12, y: 0.04 }}
+      colors={["#020816", "#04122B", "#082E6B", "#76ACE4"]}
+      start={{ x: 0.08, y: 0.02 }}
       end={{ x: 0.88, y: 1 }}
       style={{ flex: 1 }}
     >
-      <SafeAreaView style={{ flex: 1, paddingHorizontal: 18 }}>
-        <View style={topRow}>
+      <SafeAreaView style={{ flex: 1, paddingHorizontal: 16 }}>
+        <View style={topBar}>
+          <Pressable style={iconBtn} onPress={() => router.replace("/(tabs)")}>
+            <Ionicons name="chevron-back" size={18} color="rgba(255,255,255,0.95)" />
+          </Pressable>
+
           <Text style={screenTitle}>Schedule</Text>
-          <Pressable style={refreshBtn} onPress={load}>
-            <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.92)" />
+
+          <Pressable style={iconBtn} onPress={load}>
+            <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.95)" />
           </Pressable>
         </View>
 
-        <Text style={screenSub}>
-          {loading ? "Refreshing..." : "All your upcoming and completed items."}
-        </Text>
-
-        <View style={searchShell}>
-          <Ionicons name="search" size={16} color="rgba(255,255,255,0.50)" />
+        <View style={searchWrap}>
+          <Ionicons name="search" size={15} color="rgba(255,255,255,0.55)" />
           <TextInput
             value={q}
             onChangeText={setQ}
             placeholder="Search schedule..."
-            placeholderTextColor="rgba(255,255,255,0.38)"
+            placeholderTextColor="rgba(255,255,255,0.34)"
             style={searchInput}
           />
         </View>
@@ -156,42 +154,49 @@ export default function Explore() {
           data={filtered}
           keyExtractor={(item) => String(item.id)}
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingTop: 16, paddingBottom: 110 }}
+          contentContainerStyle={{ paddingTop: 14, paddingBottom: 30 }}
           ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
           ListEmptyComponent={
-            <GlassCard style={{ borderRadius: 24 }}>
-              <Text style={emptyTitle}>No schedule items</Text>
+            <GlassCard style={{ borderRadius: 22 }}>
+              <Text style={emptyTitle}>{loading ? "Loading..." : "No schedule items"}</Text>
               <Text style={emptySub}>
-                Try creating a reminder or event from the AI screen.
+                Create reminders from the AI screen and they will show here.
               </Text>
             </GlassCard>
           }
           renderItem={({ item }) => (
             <Pressable onPress={() => router.push(`/item/${item.id}`)}>
-              <GlassCard style={{ borderRadius: 24 }}>
-                <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <View style={iconWrap}>
-                    <Ionicons name="calendar-outline" size={20} color="rgba(173,232,255,0.95)" />
-                  </View>
-
-                  <View style={{ flex: 1 }}>
-                    <Text style={itemTitle} numberOfLines={1}>
-                      {item.title || "Untitled item"}
-                    </Text>
-                    <Text style={itemPrimaryMeta}>{formatDate(item)}</Text>
-                    <Text style={itemSecondaryMeta}>{formatSubDate(item)}</Text>
-                  </View>
-
-                  <View
-                    style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: 5,
-                      backgroundColor: statusColor(item),
-                    }}
-                  />
+              <View style={scheduleCard}>
+                <View style={scheduleLeftIcon}>
+                  <Ionicons name="document-text-outline" size={18} color="rgba(180,232,255,0.95)" />
                 </View>
-              </GlassCard>
+
+                <View style={{ flex: 1 }}>
+                  <Text style={scheduleTitle} numberOfLines={1}>
+                    {item.title || "Untitled item"}
+                  </Text>
+                  <Text style={scheduleTime}>{timeLabel(item)}</Text>
+
+                  <View style={scheduleMetaRow}>
+                    <View
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: dotColor(item),
+                        marginRight: 6,
+                      }}
+                    />
+                    <Text style={scheduleMetaText}>
+                      {item.category || item.intent || "General"}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={dateBadgeWrap}>
+                  <Text style={dateBadgeText}>{dateBadge(item)}</Text>
+                </View>
+              </View>
             </Pressable>
           )}
         />
@@ -213,19 +218,20 @@ function FilterChip({
     <Pressable
       onPress={onPress}
       style={{
-        height: 34,
+        minWidth: 82,
+        height: 32,
         paddingHorizontal: 14,
         borderRadius: 999,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: active ? "rgba(140,220,255,0.22)" : "rgba(255,255,255,0.08)",
+        backgroundColor: active ? "rgba(142,214,255,0.22)" : "rgba(255,255,255,0.10)",
         borderWidth: 1,
-        borderColor: active ? "rgba(160,230,255,0.34)" : "rgba(255,255,255,0.08)",
+        borderColor: active ? "rgba(166,228,255,0.34)" : "rgba(255,255,255,0.08)",
       }}
     >
       <Text
         style={{
-          color: active ? "white" : "rgba(255,255,255,0.72)",
+          color: active ? "white" : "rgba(255,255,255,0.74)",
           fontWeight: "800",
           fontSize: 12,
         }}
@@ -236,53 +242,47 @@ function FilterChip({
   );
 }
 
-const topRow = {
-  paddingTop: 10,
+const topBar = {
+  paddingTop: 8,
   flexDirection: "row" as const,
   alignItems: "center" as const,
   justifyContent: "space-between" as const,
 };
 
-const screenTitle = {
-  color: "white",
-  fontSize: 30,
-  fontWeight: "900" as const,
-};
-
-const screenSub = {
-  marginTop: 6,
-  color: "rgba(255,255,255,0.62)",
-  fontSize: 14,
-};
-
-const refreshBtn = {
-  width: 38,
-  height: 38,
-  borderRadius: 19,
+const iconBtn = {
+  width: 36,
+  height: 36,
+  borderRadius: 18,
   alignItems: "center" as const,
   justifyContent: "center" as const,
-  backgroundColor: "rgba(255,255,255,0.06)",
+  backgroundColor: "rgba(255,255,255,0.08)",
   borderWidth: 1,
   borderColor: "rgba(255,255,255,0.08)",
 };
 
-const searchShell = {
-  marginTop: 16,
-  height: 48,
-  borderRadius: 18,
-  paddingHorizontal: 14,
+const screenTitle = {
+  color: "white",
+  fontSize: 24,
+  fontWeight: "900" as const,
+};
+
+const searchWrap = {
+  marginTop: 18,
+  height: 46,
+  borderRadius: 16,
   flexDirection: "row" as const,
   alignItems: "center" as const,
-  backgroundColor: "rgba(18,33,67,0.96)",
+  paddingHorizontal: 14,
+  backgroundColor: "rgba(16,34,68,0.92)",
   borderWidth: 1,
   borderColor: "rgba(255,255,255,0.08)",
 };
 
 const searchInput = {
   flex: 1,
-  marginLeft: 10,
+  marginLeft: 9,
   color: "white",
-  fontSize: 15,
+  fontSize: 14,
 };
 
 const filterRow = {
@@ -291,33 +291,67 @@ const filterRow = {
   gap: 10,
 };
 
-const iconWrap = {
-  width: 42,
-  height: 42,
-  borderRadius: 14,
+const scheduleCard = {
+  minHeight: 82,
+  borderRadius: 18,
+  paddingHorizontal: 12,
+  paddingVertical: 12,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  backgroundColor: "rgba(154,201,246,0.18)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.10)",
+};
+
+const scheduleLeftIcon = {
+  width: 34,
+  height: 34,
+  borderRadius: 17,
   alignItems: "center" as const,
   justifyContent: "center" as const,
   backgroundColor: "rgba(255,255,255,0.08)",
-  marginRight: 12,
+  marginRight: 10,
 };
 
-const itemTitle = {
+const scheduleTitle = {
   color: "rgba(255,255,255,0.96)",
-  fontSize: 16,
+  fontSize: 15,
   fontWeight: "900" as const,
 };
 
-const itemPrimaryMeta = {
+const scheduleTime = {
   marginTop: 6,
-  color: "rgba(255,255,255,0.80)",
-  fontSize: 13,
+  color: "rgba(255,255,255,0.82)",
+  fontSize: 12,
   fontWeight: "700" as const,
 };
 
-const itemSecondaryMeta = {
-  marginTop: 4,
-  color: "rgba(255,255,255,0.50)",
-  fontSize: 12,
+const scheduleMetaRow = {
+  marginTop: 6,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+};
+
+const scheduleMetaText = {
+  color: "rgba(255,255,255,0.58)",
+  fontSize: 11,
+};
+
+const dateBadgeWrap = {
+  marginLeft: 10,
+  minWidth: 82,
+  height: 28,
+  borderRadius: 999,
+  paddingHorizontal: 10,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(255,255,255,0.12)",
+};
+
+const dateBadgeText = {
+  color: "rgba(255,255,255,0.88)",
+  fontSize: 11,
+  fontWeight: "800" as const,
 };
 
 const emptyTitle = {
