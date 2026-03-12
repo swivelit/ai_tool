@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -17,6 +18,7 @@ import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
 import { Orb } from "@/components/Orb";
@@ -43,6 +45,7 @@ const SUGGESTIONS = [
 ];
 
 export default function Home() {
+  const insets = useSafeAreaInsets();
   const { name, settings, profile, refresh } = useAssistant();
 
   const [text, setText] = useState("");
@@ -59,6 +62,8 @@ export default function Home() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [historyItems, setHistoryItems] = useState<Item[]>([]);
+
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const greetingName = useMemo(() => {
     return (profile?.name || "there").trim();
@@ -83,9 +88,37 @@ export default function Home() {
   const resultText = result?.details || result?.raw_text || "";
   const hasConversation = !!resultText || !!lastPrompt;
 
+  const composerBottom = keyboardHeight > 0 ? keyboardHeight + 8 : Math.max(insets.bottom, 14);
+
   useEffect(() => {
     loadHistory();
   }, [profile?.userId]);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const showSub = Keyboard.addListener(showEvent, (event) => {
+      const screenY = event.endCoordinates?.screenY ?? 0;
+      const height = event.endCoordinates?.height ?? 0;
+
+      if (Platform.OS === "ios") {
+        setKeyboardHeight(height);
+        return;
+      }
+
+      setKeyboardHeight(height > 0 ? height : screenY);
+    });
+
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      setKeyboardHeight(0);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   async function loadHistory() {
     try {
@@ -320,7 +353,8 @@ export default function Home() {
       <SafeAreaView style={{ flex: 1 }}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={0}
         >
           <View style={topBar}>
             <Pressable style={topIconBtn} onPress={() => setDrawerOpen(true)}>
@@ -342,7 +376,10 @@ export default function Home() {
           </View>
 
           <ScrollView
-            contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 130 }}
+            contentContainerStyle={{
+              paddingHorizontal: 18,
+              paddingBottom: composerBottom + 92,
+            }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
@@ -431,12 +468,17 @@ export default function Home() {
           </ScrollView>
 
           {listening ? (
-            <View style={floatingWaveWrap}>
+            <View
+              style={[
+                floatingWaveWrap,
+                { bottom: composerBottom + 94 },
+              ]}
+            >
               <Waveform active />
             </View>
           ) : null}
 
-          <View style={composerShell}>
+          <View style={[composerShell, { bottom: composerBottom }]}>
             <View style={composer}>
               <Pressable
                 onPress={() => {
@@ -462,6 +504,7 @@ export default function Home() {
                 placeholder={placeholder}
                 placeholderTextColor="rgba(255,255,255,0.38)"
                 multiline
+                textAlignVertical="top"
                 style={composerInput}
               />
 
@@ -779,7 +822,6 @@ const floatingWaveWrap = {
   position: "absolute" as const,
   left: 0,
   right: 0,
-  bottom: 108,
   alignItems: "center" as const,
 };
 
@@ -787,7 +829,6 @@ const composerShell = {
   position: "absolute" as const,
   left: 0,
   right: 0,
-  bottom: Platform.OS === "ios" ? 18 : 14,
   paddingHorizontal: 14,
 };
 
