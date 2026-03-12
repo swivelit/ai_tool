@@ -6,7 +6,8 @@ import {
   setAssistantName,
   setSettings,
 } from "@/lib/storage";
-import { getProfile, UserProfile } from "@/lib/account";
+import { getProfileForFirebaseUid, UserProfile } from "@/lib/account";
+import { useAuth } from "@/components/AuthProvider";
 
 type Ctx = {
   name: string;
@@ -22,6 +23,7 @@ type Ctx = {
 const AssistantContext = createContext<Ctx | null>(null);
 
 export function AssistantProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
   const [name, setName] = useState("Elli");
   const [settings, setS] = useState<AssistantSettings>({
     tone: "pro",
@@ -36,7 +38,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       const [assistantName, savedSettings, savedProfile] = await Promise.all([
         getAssistantName(),
         getSettings(),
-        getProfile(),
+        getProfileForFirebaseUid(user?.uid),
       ]);
 
       setName(assistantName || "Elli");
@@ -47,19 +49,19 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function updateName(n: string) {
-    await setAssistantName(n);
+  async function updateName(nextName: string) {
+    await setAssistantName(nextName);
     await refresh();
   }
 
-  async function updateSettings(s: AssistantSettings) {
-    await setSettings(s);
+  async function updateSettings(nextSettings: AssistantSettings) {
+    await setSettings(nextSettings);
     await refresh();
   }
 
   useEffect(() => {
-    refresh();
-  }, []);
+    void refresh();
+  }, [user?.uid]);
 
   const value = useMemo(
     () => ({
