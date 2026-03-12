@@ -2,3 +2,4 @@
 .venv
 backend/tamil_voice_ai.db
 backend/generated_docs
+dist/dist/
