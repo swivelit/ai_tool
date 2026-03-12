@@ -63,8 +63,8 @@ if [[ -z "$ANDROID_SDK" ]]; then
   done
 fi
 
-[[ -n "$ANDROID_SDK" ]] || fail "Android SDK not found. Set ANDROID_SDK_ROOT first."
-[[ -d "$ANDROID_SDK/platform-tools" ]] || fail "Android SDK incomplete. Missing platform-tools."
+[[ -n "$ANDROID_SDK" ]] || fail "Android SDK not found. Set ANDROID_SDK_ROOT (or ANDROID_HOME) first."
+[[ -d "$ANDROID_SDK/platform-tools" ]] || fail "Android SDK looks incomplete. Missing platform-tools in: $ANDROID_SDK"
 
 export ANDROID_SDK_ROOT="$ANDROID_SDK"
 export ANDROID_HOME="$ANDROID_SDK"
