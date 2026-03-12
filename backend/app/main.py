@@ -33,14 +33,16 @@ from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 
 load_dotenv()
+
 PERSONALITY_QUESTIONS_VERSION = 1
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_JSON_MODEL = os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is not set (env var missing)")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-app = FastAPI(title="Tamil Voice AI Backend")
+app = FastAPI(title="J AI Backend")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -74,17 +76,38 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/")
 def root():
-    return {"ok": True, "message": "Tamil Voice AI backend. Use /health"}
+    return {
+        "ok": True,
+        "app": "J AI",
+        "message": "Persona-aware Tamil assistant backend is running.",
+        "endpoints": {
+            "health": "/health",
+            "text": "/api/chat",
+            "voice": "/transcribe-and-analyze",
+        },
+    }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "app": "J AI", "pipeline_version": PIPELINE_VERSION}
 
 
 @app.get("/api/health")
 def api_health():
-    return {"status": "ok", "mode": PIPELINE_VERSION}
+    return {
+        "status": "ok",
+        "app": "J AI",
+        "mode": PIPELINE_VERSION,
+        "features": [
+            "persona_context",
+            "openai_core_answer",
+            "english_remodel",
+            "tamil_translation",
+            "theni_tamil_conversion",
+            "whisper_audio_transcription",
+        ],
+    }
 
 
 PARSE_DT_PROMPT = """
@@ -218,22 +241,58 @@ class UserCreate(BaseModel):
     assistant_name: Optional[str] = "Elli"
 
 
+class ChatAPIRequest(BaseModel):
+    user_id: Optional[int] = None
+    message: Optional[str] = None
+    text: Optional[str] = None
+    include_pipeline: bool = True
+
+
 class PipelineChatRequest(BaseModel):
     user_id: int
     message: str
 
 
+def _extract_response_text(response: Any) -> str:
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return str(output_text).strip()
+
+    chunks: List[str] = []
+    for item in getattr(response, "output", None) or []:
+        for part in getattr(item, "content", None) or []:
+            text = getattr(part, "text", None)
+            if text:
+                chunks.append(str(text))
+            elif isinstance(part, dict) and part.get("text"):
+                chunks.append(str(part["text"]))
+    return "\n".join(part.strip() for part in chunks if str(part).strip()).strip()
+
+
 def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=temperature,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
+    response = client.responses.create(
+        model=OPENAI_JSON_MODEL,
+        input=[
+            {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_content.strip()}]},
         ],
+        temperature=temperature,
+        text={"format": {"type": "json_object"}},
     )
-    return json.loads(resp.choices[0].message.content)
+    raw = _extract_response_text(response)
+    return json.loads(raw)
+
+
+def llm_text(system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
+    response = client.responses.create(
+        model=OPENAI_JSON_MODEL,
+        input=[
+            {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_content.strip()}]},
+        ],
+        temperature=temperature,
+    )
+    return _extract_response_text(response)
 
 
 def normalize_category(raw: str) -> str:
@@ -649,6 +708,99 @@ def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _assistant_text_from_pipeline(pipeline_result: Dict[str, Any], fallback: str) -> str:
+    return (
+        str(pipeline_result.get("theni_tamil_text") or "").strip()
+        or str(pipeline_result.get("tamil_text") or "").strip()
+        or str(pipeline_result.get("remodeled_english") or "").strip()
+        or fallback
+    )
+
+
+def _save_item_from_pipeline(
+    session: Session,
+    *,
+    user_id: Optional[int],
+    source: str,
+    raw_text: str,
+    transcript: Optional[str],
+    pipeline_result: Dict[str, Any],
+) -> tuple[Item, Dict[str, Any], Dict[str, Any]]:
+    spoken_answer = _assistant_text_from_pipeline(pipeline_result, raw_text)
+    meta = _metadata_for_item(session, user_id, raw_text, spoken_answer)
+
+    item = Item(
+        intent=str(meta.get("intent", "other")).lower(),
+        category=normalize_category(str(meta.get("category", "Other"))),
+        raw_text=raw_text,
+        transcript=transcript,
+        datetime_str=meta.get("datetime"),
+        title=meta.get("title") or raw_text[:60],
+        details=spoken_answer,
+        source=source,
+        user_id=user_id,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+
+    normalized_pipeline = _normalized_pipeline_result(pipeline_result)
+    payload = {"pipeline": normalized_pipeline, "meta": meta}
+    log_conversation(session, user_id, source, raw_text, transcript, payload)
+    upsert_qa_cache(session, user_id, raw_text, payload)
+    return item, meta, normalized_pipeline
+
+
+def _build_chat_response(item: Item, meta: Dict[str, Any], pipeline: Dict[str, Any]) -> Dict[str, Any]:
+    assistant_text = item.details or item.raw_text
+    return {
+        "ok": True,
+        "item": {
+            "id": item.id,
+            "intent": item.intent,
+            "category": item.category,
+            "title": item.title,
+            "details": assistant_text,
+            "datetime": item.datetime_str,
+            "source": item.source,
+            "raw_text": item.raw_text,
+            "transcript": item.transcript,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+        },
+        "assistant": {
+            "text": assistant_text,
+            "english": pipeline.get("remodeled_english", ""),
+            "tamil": pipeline.get("tamil_text", ""),
+            "theni_tamil": pipeline.get("theni_tamil_text", ""),
+        },
+        "pipeline": pipeline,
+        "meta": meta,
+    }
+
+
+def _resolve_chat_text(payload: ChatAPIRequest) -> str:
+    text = (payload.message or payload.text or "").strip()
+    if not text:
+        raise HTTPException(400, "message or text is required")
+    return text
+
+
+def _transcribe_audio_file(file_path: str) -> str:
+    with open(file_path, "rb") as audio_file:
+        transcript_obj = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="json",
+            language="ta",
+        )
+    text = str(getattr(transcript_obj, "text", "") or "").strip()
+    if not text:
+        raise HTTPException(400, "Failed to transcribe audio")
+    return text
+
+
 @app.post("/parse-datetime")
 def parse_datetime(payload: ParseDatetimeRequest):
     now_iso = payload.now_iso or datetime.utcnow().isoformat()
@@ -728,13 +880,23 @@ def save_pipeline_profile(user_id: int, payload: PersonalityAnswersIn, session: 
     session.commit()
     session.refresh(profile)
     stage_profile = _sync_stage_profile(session, user_id)
+    STAGE_CACHE.clear()
     return {"ok": True, "profile": stage_profile}
 
 
 @app.post("/api/chat")
-def pipeline_chat(payload: PipelineChatRequest, session: Session = Depends(get_session)):
-    result = _run_stage_pipeline(session, payload.user_id, payload.message)
-    return {"ok": True, "result": _normalized_pipeline_result(result)}
+def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
+    text = _resolve_chat_text(payload)
+    pipeline_result = _run_stage_pipeline(session, payload.user_id, text)
+    item, meta, normalized_pipeline = _save_item_from_pipeline(
+        session,
+        user_id=payload.user_id,
+        source="text",
+        raw_text=text,
+        transcript=None,
+        pipeline_result=pipeline_result,
+    )
+    return _build_chat_response(item, meta, normalized_pipeline)
 
 
 @app.post("/users/{user_id}/questionnaire")
@@ -862,15 +1024,7 @@ def generate_personality_summary(user_id: int, session: Session = Depends(get_se
     if not answers:
         raise HTTPException(400, "No personality answers provided yet")
     content = "\n".join(f"{q}: {a}" for q, a in answers.items())
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": PERSONALITY_SUMMARY_PROMPT},
-            {"role": "user", "content": content},
-        ],
-    )
-    profile.profile_summary = resp.choices[0].message.content.strip()
+    profile.profile_summary = llm_text(PERSONALITY_SUMMARY_PROMPT, content, temperature=0.2).strip()
     profile.updated_at = datetime.utcnow()
     session.add(profile)
     session.commit()
@@ -882,49 +1036,18 @@ def generate_personality_summary(user_id: int, session: Session = Depends(get_se
 @app.post("/analyze-text", response_model=TextAnalysisResponse)
 def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_session)):
     pipeline_result = _run_stage_pipeline(session, payload.user_id, payload.text)
-    spoken_answer = (
-        pipeline_result.get("theni_tamil_text")
-        or pipeline_result.get("tamil_text")
-        or pipeline_result.get("remodeled_english")
-        or payload.text
-    )
-    meta = _metadata_for_item(session, payload.user_id, payload.text, spoken_answer)
-
-    item = Item(
-        intent=str(meta.get("intent", "other")).lower(),
-        category=normalize_category(str(meta.get("category", "Other"))),
+    item, _, _ = _save_item_from_pipeline(
+        session,
+        user_id=payload.user_id,
+        source="text",
         raw_text=payload.text,
         transcript=None,
-        datetime_str=meta.get("datetime"),
-        title=meta.get("title") or payload.text[:60],
-        details=spoken_answer,
-        source="text",
-        user_id=payload.user_id,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-    )
-    session.add(item)
-    session.commit()
-    session.refresh(item)
-
-    log_conversation(
-        session,
-        payload.user_id,
-        "text",
-        payload.text,
-        None,
-        {"pipeline": _normalized_pipeline_result(pipeline_result), "meta": meta},
-    )
-    upsert_qa_cache(
-        session,
-        payload.user_id,
-        payload.text,
-        {"pipeline": _normalized_pipeline_result(pipeline_result), "meta": meta},
+        pipeline_result=pipeline_result,
     )
     return item_to_response(item)
 
 
-@app.post("/transcribe-and-analyze", response_model=TextAnalysisResponse)
+@app.post("/transcribe-and-analyze")
 async def transcribe_and_analyze(
     user_id: Optional[int] = None,
     file: UploadFile = File(...),
@@ -936,56 +1059,56 @@ async def transcribe_and_analyze(
         tmp_path = tmp.name
 
     try:
-        with open(tmp_path, "rb") as audio_file:
-            transcript_obj = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="json",
-                language="ta",
-            )
-        transcript_text = transcript_obj.text
-
+        transcript_text = _transcribe_audio_file(tmp_path)
         pipeline_result = _run_stage_pipeline(session, user_id, transcript_text)
-        spoken_answer = (
-            pipeline_result.get("theni_tamil_text")
-            or pipeline_result.get("tamil_text")
-            or pipeline_result.get("remodeled_english")
-            or transcript_text
-        )
-        meta = _metadata_for_item(session, user_id, transcript_text, spoken_answer)
-
-        item = Item(
-            intent=str(meta.get("intent", "other")).lower(),
-            category=normalize_category(str(meta.get("category", "Other"))),
+        item, meta, normalized_pipeline = _save_item_from_pipeline(
+            session,
+            user_id=user_id,
+            source="voice",
             raw_text=transcript_text,
             transcript=transcript_text,
-            datetime_str=meta.get("datetime"),
-            title=meta.get("title") or transcript_text[:60],
-            details=spoken_answer,
-            source="voice",
-            user_id=user_id,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            pipeline_result=pipeline_result,
         )
-        session.add(item)
-        session.commit()
-        session.refresh(item)
+        response = item_to_response(item).model_dump()
+        response["assistant"] = {
+            "text": item.details or transcript_text,
+            "english": normalized_pipeline.get("remodeled_english", ""),
+            "tamil": normalized_pipeline.get("tamil_text", ""),
+            "theni_tamil": normalized_pipeline.get("theni_tamil_text", ""),
+        }
+        response["pipeline"] = normalized_pipeline
+        response["meta"] = meta
+        return response
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
-        log_conversation(
+
+@app.post("/api/transcribe-and-analyze")
+async def api_transcribe_and_analyze(
+    user_id: Optional[int] = None,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
+    suffix = os.path.splitext(file.filename)[-1] or ".m4a"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        transcript_text = _transcribe_audio_file(tmp_path)
+        pipeline_result = _run_stage_pipeline(session, user_id, transcript_text)
+        item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
-            user_id,
-            "voice",
-            transcript_text,
-            transcript_text,
-            {"pipeline": _normalized_pipeline_result(pipeline_result), "meta": meta},
+            user_id=user_id,
+            source="voice",
+            raw_text=transcript_text,
+            transcript=transcript_text,
+            pipeline_result=pipeline_result,
         )
-        upsert_qa_cache(
-            session,
-            user_id,
-            transcript_text,
-            {"pipeline": _normalized_pipeline_result(pipeline_result), "meta": meta},
-        )
-        return item_to_response(item)
+        return _build_chat_response(item, meta, normalized_pipeline)
     finally:
         try:
             os.remove(tmp_path)
