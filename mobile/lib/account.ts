@@ -5,10 +5,15 @@ const KEY = "user_profile_v1";
 
 export type UserProfile = {
   userId?: number;
+  firebaseUid?: string;
+  firebaseEmailVerified?: boolean;
   name: string;
   place?: string;
   timezone?: string;
   assistantName?: string;
+  email?: string;
+  avatarUrl?: string;
+  authProvider?: "password" | "google";
 };
 
 export async function getProfile(): Promise<UserProfile | null> {
@@ -16,18 +21,32 @@ export async function getProfile(): Promise<UserProfile | null> {
   return raw ? JSON.parse(raw) : null;
 }
 
-export async function saveProfile(p: UserProfile) {
-  await AsyncStorage.setItem(KEY, JSON.stringify(p));
+export async function getProfileForFirebaseUid(firebaseUid?: string | null) {
+  const profile = await getProfile();
+  if (!profile) return null;
+  if (!firebaseUid) return null;
+  if (!profile.firebaseUid) return null;
+  if (profile.firebaseUid !== firebaseUid) return null;
+  return profile;
 }
 
-export async function createProfileOnBackend(p: UserProfile) {
-  const u = await apiPost<any>("/users", {
-    name: p.name,
-    place: p.place,
-    timezone: p.timezone || "Asia/Kolkata",
-    assistant_name: p.assistantName || "Ellie",
+export async function saveProfile(profile: UserProfile) {
+  await AsyncStorage.setItem(KEY, JSON.stringify(profile));
+}
+
+export async function clearProfile() {
+  await AsyncStorage.removeItem(KEY);
+}
+
+export async function createProfileOnBackend(profile: UserProfile) {
+  const user = await apiPost<any>("/users", {
+    name: profile.name,
+    place: profile.place,
+    timezone: profile.timezone || "Asia/Kolkata",
+    assistant_name: profile.assistantName || "Ellie",
   });
-  const merged = { ...p, userId: u.id };
+
+  const merged = { ...profile, userId: user.id };
   await saveProfile(merged);
   return merged;
 }
