@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-BUILD_TYPE="${BUILD_TYPE:-debug}"
+BUILD_TYPE="${BUILD_TYPE:-release}"
 BUILD_TYPE="$(printf '%s' "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')"
 
 case "$BUILD_TYPE" in
@@ -46,7 +46,7 @@ command -v java >/dev/null 2>&1 || fail "Java is required. Install JDK 17 first.
 
 JAVA_MAJOR="$(java -version 2>&1 | awk -F '[\".]' '/version/ {print $2; exit}')"
 if [[ -n "${JAVA_MAJOR:-}" && "$JAVA_MAJOR" != "17" && "$JAVA_MAJOR" != "21" ]]; then
-  echo "⚠️  Detected Java version $JAVA_MAJOR. Gradle/Expo is safest with JDK 17."
+  echo "⚠️  Detected Java version $JAVA_MAJOR. JDK 17 is safest."
 fi
 
 ANDROID_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
@@ -63,14 +63,13 @@ if [[ -z "$ANDROID_SDK" ]]; then
   done
 fi
 
-[[ -n "$ANDROID_SDK" ]] || fail "Android SDK not found. Set ANDROID_SDK_ROOT (or ANDROID_HOME) first."
-[[ -d "$ANDROID_SDK/platform-tools" ]] || fail "Android SDK looks incomplete. Missing platform-tools in: $ANDROID_SDK"
+[[ -n "$ANDROID_SDK" ]] || fail "Android SDK not found. Set ANDROID_SDK_ROOT first."
+[[ -d "$ANDROID_SDK/platform-tools" ]] || fail "Android SDK incomplete. Missing platform-tools."
 
 export ANDROID_SDK_ROOT="$ANDROID_SDK"
 export ANDROID_HOME="$ANDROID_SDK"
 export PATH="$ANDROID_SDK/platform-tools:$ANDROID_SDK/emulator:$PATH"
 
-# Support both env names used in your app config / runtime code.
 if [[ -n "${API_BASE_URL:-}" ]]; then
   export EXPO_PUBLIC_API_BASE="$API_BASE_URL"
   export EXPO_PUBLIC_API_URL="$API_BASE_URL"
@@ -124,11 +123,6 @@ cp "$SOURCE_APK" "$DIST_DIR/$APK_NAME"
 info "APK ready"
 echo "Saved to: $DIST_DIR/$APK_NAME"
 echo ""
-echo "Install it with one of these:"
+echo "Install it with:"
 echo "  adb install -r '$DIST_DIR/$APK_NAME'"
 echo "  or copy the APK to your Android phone and open it there"
-
-if [[ "$BUILD_TYPE" == "release" ]]; then
-  echo ""
-  echo "Note: release builds may need signing setup depending on your Android config."
-fi
