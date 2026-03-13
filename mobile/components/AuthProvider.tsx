@@ -22,17 +22,17 @@ WebBrowser.maybeCompleteAuthSession();
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
 
+const APP_SCHEME =
+  extra.APP_SCHEME ||
+  (typeof Constants.expoConfig?.scheme === "string" &&
+  Constants.expoConfig.scheme.includes(".")
+    ? Constants.expoConfig.scheme
+    : "com.harishajahan.tamilai");
+
 const googleAndroidClientId =
   extra.googleAndroidClientId || process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
 const googleIosClientId = extra.googleIosClientId || process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
 const googleWebClientId = extra.googleWebClientId || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
-
-const expoScheme =
-  typeof Constants.expoConfig?.scheme === "string"
-    ? Constants.expoConfig.scheme
-    : Array.isArray(Constants.expoConfig?.scheme) && Constants.expoConfig.scheme.length > 0
-      ? Constants.expoConfig.scheme[0]
-      : "mobile";
 
 function mapFirebaseError(error: any) {
   const code = error?.code || "";
@@ -56,7 +56,7 @@ function mapFirebaseError(error: any) {
 
     default: {
       if (/invalid_request/i.test(message) || /access blocked/i.test(message)) {
-        return "Google rejected the sign-in request. Check your Google OAuth client IDs, SHA-1, and redirect URI setup.";
+        return "Google rejected the sign-in request. Check the redirect URI, Google client IDs, and SHA-1 setup.";
       }
 
       if (/redirect/i.test(message) && /uri/i.test(message)) {
@@ -95,9 +95,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const redirectUri = useMemo(
     () =>
       AuthSession.makeRedirectUri({
-        scheme: expoScheme,
+        scheme: APP_SCHEME,
         path: "oauthredirect",
-        native: `${expoScheme}:/oauthredirect`,
+        native: `${APP_SCHEME}:/oauthredirect`,
       }),
     []
   );
@@ -157,7 +157,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function signInWithGoogle() {
     if (!platformClientId) {
       throw new Error(
-        `Missing Google OAuth client ID for ${Platform.OS}. Add the EXPO_PUBLIC_GOOGLE_${Platform.OS.toUpperCase()}_CLIENT_ID value to your .env file.`
+        `Missing Google OAuth client ID for ${Platform.OS}. Add EXPO_PUBLIC_GOOGLE_${Platform.OS.toUpperCase()}_CLIENT_ID to your .env file.`
       );
     }
 

@@ -81,20 +81,18 @@ info "Build type: $BUILD_TYPE"
 
 cd "$MOBILE_DIR"
 
-if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
-  info "Installing mobile dependencies"
-  if [[ -f package-lock.json ]]; then
-    npm ci
-  else
-    npm install
-  fi
+info "Installing mobile dependencies"
+if [[ -f package-lock.json ]]; then
+  npm ci
+else
+  npm install
 fi
 
 info "Ensuring Expo CLI is available"
 npx expo --version >/dev/null
 
-info "Generating native Android project"
-npx expo prebuild --platform android --clean --non-interactive
+info "Generating native Android project (clean prebuild)"
+CI=1 npx expo prebuild --platform android --clean
 
 mkdir -p android
 cat > android/local.properties <<LOCALPROPS
@@ -126,3 +124,7 @@ echo ""
 echo "Install it with:"
 echo "  adb install -r '$DIST_DIR/$APK_NAME'"
 echo "  or copy the APK to your Android phone and open it there"
+echo ""
+echo "Examples:"
+echo "  ./build-apk.sh"
+echo "  BUILD_TYPE=debug ./build-apk.sh"

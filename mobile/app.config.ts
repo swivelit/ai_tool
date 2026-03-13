@@ -1,5 +1,7 @@
 import "dotenv/config";
 
+const APP_SCHEME = "com.harishajahan.tamilai";
+
 export default {
   expo: {
     name: "J AI",
@@ -7,11 +9,12 @@ export default {
     version: "1.0.0",
     orientation: "portrait",
     icon: "./assets/images/icon.png",
-    scheme: "mobile",
+    scheme: APP_SCHEME,
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
 
     extra: {
+      APP_SCHEME,
       API_BASE:
         process.env.EXPO_PUBLIC_API_BASE ||
         process.env.EXPO_PUBLIC_API_URL ||
