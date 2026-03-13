@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "303889449660",
+    "project_id": "j-ai-73e6c",
+    "storage_bucket": "j-ai-73e6c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:303889449660:android:916ce31e47b92010ff46b9",
+        "android_client_info": {
+          "package_name": "com.harishajahan.tamilai"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "303889449660-69v09bqfuvqpdh9j9mof9cgs28lccrkm.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.harishajahan.tamilai",
+            "certificate_hash": "2faaff2f69526152eab9f6f857a9c1a338d0d93a"
+          }
+        },
+        {
+          "client_id": "303889449660-rvn5gg08inh1t91kde6elljfmsn5n0sa.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.harishajahan.tamilai",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "303889449660-b8s80b7sel09ucmgl3ghsuj13q9b6beq.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCRgEhDwisN1BExhAK8dTgBvWAYyxml5Tg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "303889449660-b8s80b7sel09ucmgl3ghsuj13q9b6beq.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
