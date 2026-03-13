@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
+import * as AuthSession from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
 import * as Google from "expo-auth-session/providers/google";
 import {
@@ -26,8 +27,16 @@ const googleAndroidClientId =
 const googleIosClientId = extra.googleIosClientId || process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
 const googleWebClientId = extra.googleWebClientId || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
 
+const expoScheme =
+  typeof Constants.expoConfig?.scheme === "string"
+    ? Constants.expoConfig.scheme
+    : Array.isArray(Constants.expoConfig?.scheme) && Constants.expoConfig.scheme.length > 0
+      ? Constants.expoConfig.scheme[0]
+      : "mobile";
+
 function mapFirebaseError(error: any) {
   const code = error?.code || "";
+  const message = typeof error?.message === "string" ? error.message : "";
 
   switch (code) {
     case "auth/invalid-credential":
@@ -35,14 +44,27 @@ function mapFirebaseError(error: any) {
     case "auth/user-not-found":
     case "auth/invalid-email":
       return "Invalid email or password.";
+
     case "auth/email-already-in-use":
       return "This email is already registered. Please log in instead.";
+
     case "auth/weak-password":
       return "Password should be at least 6 characters.";
+
     case "auth/network-request-failed":
       return "Network error. Please check your internet connection.";
-    default:
-      return error?.message || "Authentication failed. Please try again.";
+
+    default: {
+      if (/invalid_request/i.test(message) || /access blocked/i.test(message)) {
+        return "Google rejected the sign-in request. Check your Google OAuth client IDs, SHA-1, and redirect URI setup.";
+      }
+
+      if (/redirect/i.test(message) && /uri/i.test(message)) {
+        return "Google redirect URI is not configured correctly.";
+      }
+
+      return message || "Authentication failed. Please try again.";
+    }
   }
 }
 
@@ -70,13 +92,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? googleIosClientId
         : googleWebClientId;
 
-  const [request, , promptAsync] = Google.useIdTokenAuthRequest({
-    androidClientId: googleAndroidClientId,
-    iosClientId: googleIosClientId,
-    webClientId: googleWebClientId,
-    scopes: ["openid", "profile", "email"],
-    selectAccount: true,
-  });
+  const redirectUri = useMemo(
+    () =>
+      AuthSession.makeRedirectUri({
+        scheme: expoScheme,
+        path: "oauthredirect",
+        native: `${expoScheme}:/oauthredirect`,
+      }),
+    []
+  );
+
+  const googleRequestConfig = useMemo(() => {
+    const config: Record<string, any> = {
+      scopes: ["openid", "profile", "email"],
+      selectAccount: true,
+      redirectUri,
+    };
+
+    if (googleAndroidClientId) config.androidClientId = googleAndroidClientId;
+    if (googleIosClientId) config.iosClientId = googleIosClientId;
+    if (googleWebClientId) config.webClientId = googleWebClientId;
+
+    return config;
+  }, [redirectUri]);
+
+  const [request, , promptAsync] = Google.useIdTokenAuthRequest(googleRequestConfig);
+
+  useEffect(() => {
+    WebBrowser.warmUpAsync().catch(() => undefined);
+
+    return () => {
+      WebBrowser.coolDownAsync().catch(() => undefined);
+    };
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
@@ -109,7 +157,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function signInWithGoogle() {
     if (!platformClientId) {
       throw new Error(
-        `Missing Google OAuth client ID for ${Platform.OS}. Add the EXPO_PUBLIC_GOOGLE_${Platform.OS.toUpperCase()}_CLIENT_ID value to .env.`
+        `Missing Google OAuth client ID for ${Platform.OS}. Add the EXPO_PUBLIC_GOOGLE_${Platform.OS.toUpperCase()}_CLIENT_ID value to your .env file.`
       );
     }
 
@@ -118,26 +166,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      const result = await promptAsync();
+      const result = await promptAsync({ redirectUri });
 
       if (result.type === "cancel" || result.type === "dismiss") {
         return;
       }
 
       if (result.type !== "success") {
+        const googleError =
+          typeof (result as any)?.params?.error === "string"
+            ? (result as any).params.error
+            : undefined;
+
+        if (googleError) {
+          throw new Error(`Google sign-in failed: ${googleError}`);
+        }
+
         throw new Error("Google sign-in failed. Please try again.");
       }
 
       const idToken =
         (typeof result.params?.id_token === "string" ? result.params.id_token : undefined) ||
         result.authentication?.idToken;
+
       const accessToken =
         (typeof result.params?.access_token === "string"
           ? result.params.access_token
           : undefined) || result.authentication?.accessToken;
 
       if (!idToken && !accessToken) {
-        throw new Error("Google sign-in finished without a usable token.");
+        throw new Error(
+          "Google sign-in finished without a usable token. Check your Google OAuth configuration."
+        );
       }
 
       const credential = GoogleAuthProvider.credential(idToken ?? null, accessToken ?? null);
