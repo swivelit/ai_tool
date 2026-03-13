@@ -41,10 +41,12 @@ export default {
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.harishajahan.tamilai",
+      googleServicesFile: "./GoogleService-Info.plist",
     },
 
     android: {
       package: "com.harishajahan.tamilai",
+      googleServicesFile: "./google-services.json",
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
       adaptiveIcon: {
@@ -62,6 +64,7 @@ export default {
 
     plugins: [
       "expo-router",
+      "@react-native-google-signin/google-signin",
       [
         "expo-splash-screen",
         {

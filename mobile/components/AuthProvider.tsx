@@ -1,9 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
-import * as AuthSession from "expo-auth-session";
-import * as WebBrowser from "expo-web-browser";
-import * as Google from "expo-auth-session/providers/google";
 import {
   User,
   createUserWithEmailAndPassword,
@@ -14,25 +11,20 @@ import {
   signOut,
   updateProfile,
 } from "firebase/auth";
+import {
+  GoogleSignin,
+  isErrorWithCode,
+  isSuccessResponse,
+  statusCodes,
+} from "@react-native-google-signin/google-signin";
 
 import { auth } from "@/lib/firebase";
 import { clearProfile } from "@/lib/account";
 
-WebBrowser.maybeCompleteAuthSession();
-
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
 
-const APP_SCHEME =
-  extra.APP_SCHEME ||
-  (typeof Constants.expoConfig?.scheme === "string" &&
-  Constants.expoConfig.scheme.includes(".")
-    ? Constants.expoConfig.scheme
-    : "com.harishajahan.tamilai");
-
-const googleAndroidClientId =
-  extra.googleAndroidClientId || process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
-const googleIosClientId = extra.googleIosClientId || process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
-const googleWebClientId = extra.googleWebClientId || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+const googleWebClientId =
+  extra.googleWebClientId || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
 
 function mapFirebaseError(error: any) {
   const code = error?.code || "";
@@ -54,18 +46,33 @@ function mapFirebaseError(error: any) {
     case "auth/network-request-failed":
       return "Network error. Please check your internet connection.";
 
-    default: {
-      if (/invalid_request/i.test(message) || /access blocked/i.test(message)) {
-        return "Google rejected the sign-in request. Check the redirect URI, Google client IDs, and SHA-1 setup.";
-      }
-
-      if (/redirect/i.test(message) && /uri/i.test(message)) {
-        return "Google redirect URI is not configured correctly.";
-      }
-
+    default:
       return message || "Authentication failed. Please try again.";
+  }
+}
+
+function mapGoogleError(error: any) {
+  if (isErrorWithCode(error)) {
+    switch (error.code) {
+      case statusCodes.IN_PROGRESS:
+        return "Google sign-in is already in progress.";
+
+      case statusCodes.PLAY_SERVICES_NOT_AVAILABLE:
+        return "Google Play Services is missing or outdated on this device.";
     }
   }
+
+  const message = typeof error?.message === "string" ? error.message : "";
+
+  if (/developer_error/i.test(message)) {
+    return "Google configuration mismatch. Check the package name, SHA-1 fingerprint, Web client ID, and google-services.json.";
+  }
+
+  if (/cancelled/i.test(message) || /canceled/i.test(message)) {
+    return "Google sign-in was cancelled.";
+  }
+
+  return message || "Google sign-in failed. Please try again.";
 }
 
 type AuthContextType = {
@@ -84,46 +91,27 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [googleReady, setGoogleReady] = useState(false);
 
-  const platformClientId =
-    Platform.OS === "android"
-      ? googleAndroidClientId
-      : Platform.OS === "ios"
-        ? googleIosClientId
-        : googleWebClientId;
-
-  const redirectUri = useMemo(
-    () =>
-      AuthSession.makeRedirectUri({
-        scheme: APP_SCHEME,
-        path: "oauthredirect",
-        native: `${APP_SCHEME}:/oauthredirect`,
-      }),
-    []
-  );
-
-  const googleRequestConfig = useMemo(() => {
-    const config: Record<string, any> = {
-      scopes: ["openid", "profile", "email"],
-      selectAccount: true,
-      redirectUri,
-    };
-
-    if (googleAndroidClientId) config.androidClientId = googleAndroidClientId;
-    if (googleIosClientId) config.iosClientId = googleIosClientId;
-    if (googleWebClientId) config.webClientId = googleWebClientId;
-
-    return config;
-  }, [redirectUri]);
-
-  const [request, , promptAsync] = Google.useIdTokenAuthRequest(googleRequestConfig);
+  const googleConfigured = Platform.OS !== "web" && Boolean(googleWebClientId);
 
   useEffect(() => {
-    WebBrowser.warmUpAsync().catch(() => undefined);
+    if (Platform.OS === "web") {
+      setGoogleReady(false);
+      return;
+    }
 
-    return () => {
-      WebBrowser.coolDownAsync().catch(() => undefined);
-    };
+    if (!googleWebClientId) {
+      setGoogleReady(false);
+      return;
+    }
+
+    GoogleSignin.configure({
+      webClientId: googleWebClientId,
+      scopes: ["email", "profile"],
+    });
+
+    setGoogleReady(true);
   }, []);
 
   useEffect(() => {
@@ -155,59 +143,61 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function signInWithGoogle() {
-    if (!platformClientId) {
+    if (Platform.OS === "web") {
+      throw new Error("Google sign-in is currently enabled only for Android/iOS builds.");
+    }
+
+    if (!googleWebClientId) {
       throw new Error(
-        `Missing Google OAuth client ID for ${Platform.OS}. Add EXPO_PUBLIC_GOOGLE_${Platform.OS.toUpperCase()}_CLIENT_ID to your .env file.`
+        "Missing EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID in your .env file."
       );
     }
 
-    if (!request) {
+    if (!googleReady) {
       throw new Error("Google sign-in is still preparing. Please try again.");
     }
 
     try {
-      const result = await promptAsync({ redirectUri });
+      await GoogleSignin.hasPlayServices({
+        showPlayServicesUpdateDialog: true,
+      });
 
-      if (result.type === "cancel" || result.type === "dismiss") {
+      const result = await GoogleSignin.signIn();
+
+      if (!isSuccessResponse(result)) {
         return;
       }
 
-      if (result.type !== "success") {
-        const googleError =
-          typeof (result as any)?.params?.error === "string"
-            ? (result as any).params.error
-            : undefined;
+      const idToken = result.data.idToken;
 
-        if (googleError) {
-          throw new Error(`Google sign-in failed: ${googleError}`);
-        }
-
-        throw new Error("Google sign-in failed. Please try again.");
-      }
-
-      const idToken =
-        (typeof result.params?.id_token === "string" ? result.params.id_token : undefined) ||
-        result.authentication?.idToken;
-
-      const accessToken =
-        (typeof result.params?.access_token === "string"
-          ? result.params.access_token
-          : undefined) || result.authentication?.accessToken;
-
-      if (!idToken && !accessToken) {
+      if (!idToken) {
         throw new Error(
-          "Google sign-in finished without a usable token. Check your Google OAuth configuration."
+          "Google sign-in did not return an ID token. Check your Web client ID and google-services.json setup."
         );
       }
 
-      const credential = GoogleAuthProvider.credential(idToken ?? null, accessToken ?? null);
+      const credential = GoogleAuthProvider.credential(idToken);
       await signInWithCredential(auth, credential);
     } catch (error) {
-      throw new Error(mapFirebaseError(error));
+      const message = mapGoogleError(error);
+
+      if (message === "Google sign-in was cancelled.") {
+        return;
+      }
+
+      throw new Error(message);
     }
   }
 
   async function signOutUser() {
+    if (Platform.OS !== "web") {
+      try {
+        await GoogleSignin.signOut();
+      } catch {
+        // Ignore Google SDK sign-out errors and continue signing out from Firebase.
+      }
+    }
+
     await signOut(auth);
     await clearProfile();
   }
@@ -216,14 +206,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       user,
       loading,
-      googleReady: Boolean(request),
-      googleConfigured: Boolean(platformClientId),
+      googleReady,
+      googleConfigured,
       signInWithPassword,
       signUpWithPassword,
       signInWithGoogle,
       signOutUser,
     }),
-    [loading, platformClientId, request, user]
+    [googleConfigured, googleReady, loading, user]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
