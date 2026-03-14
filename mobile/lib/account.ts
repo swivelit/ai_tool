@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { apiPost } from "./api";
+
+import { apiGet, apiPost } from "./api";
 
 const KEY = "user_profile_v1";
 
@@ -15,6 +16,16 @@ export type UserProfile = {
   avatarUrl?: string;
   authProvider?: "password" | "google";
 };
+
+export type PersonalityQuestion = {
+  id: string;
+  prompt: string;
+  type: "single" | "multi";
+  max_choices?: number;
+  options: string[];
+};
+
+export type PersonalityAnswers = Record<string, string | string[]>;
 
 export async function getProfile(): Promise<UserProfile | null> {
   const raw = await AsyncStorage.getItem(KEY);
@@ -43,12 +54,28 @@ export async function createProfileOnBackend(profile: UserProfile) {
     name: profile.name,
     place: profile.place,
     timezone: profile.timezone || "Asia/Kolkata",
-    assistant_name: profile.assistantName || "Ellie",
+    assistant_name: profile.assistantName || "Elli",
   });
 
   const merged = { ...profile, userId: user.id };
   await saveProfile(merged);
   return merged;
+}
+
+export async function getPersonalityQuestions(): Promise<PersonalityQuestion[]> {
+  const out = await apiGet<{ questions?: PersonalityQuestion[] }>("/api/questions");
+  return Array.isArray(out?.questions) ? out.questions : [];
+}
+
+export async function savePersonalityAnswers(userId: number, answers: PersonalityAnswers) {
+  const normalized = Object.fromEntries(
+    Object.entries(answers).map(([key, value]) => [
+      key,
+      Array.isArray(value) ? value.join(", ") : String(value ?? ""),
+    ])
+  ) as Record<string, string>;
+
+  return apiPost(`/users/${userId}/personality`, { answers: normalized });
 }
 
 export async function submitQuestionnaire(userId: number, payload: any) {

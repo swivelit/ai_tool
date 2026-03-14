@@ -33,7 +33,6 @@ function RouteGate() {
 
   useEffect(() => {
     const first = segments[0];
-    const second = segments[1];
     const inAuth = first === "auth";
     const inOnboarding = first === "onboarding";
     const atRoot = pathname === "/";
@@ -47,13 +46,13 @@ function RouteGate() {
     }
 
     if (!activeProfile?.userId) {
-      if (!(inOnboarding && second === "profile")) {
+      if (!inOnboarding) {
         router.replace("/onboarding/profile");
       }
       return;
     }
 
-    if (inAuth || atRoot || pathname === "/setup" || (inOnboarding && second === "profile")) {
+    if (inAuth || atRoot || pathname === "/setup") {
       router.replace("/(tabs)");
     }
   }, [pathname, profile?.firebaseUid, profile?.userId, segments, user]);
