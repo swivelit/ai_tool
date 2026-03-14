@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -13,22 +12,52 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useAssistant } from "@/components/AssistantProvider";
+import { useAuth } from "@/components/AuthProvider";
 import {
   PersonalityAnswers,
   PersonalityQuestion,
+  createProfileOnBackend,
   getPersonalityQuestions,
   getProfile,
+  getProfileForFirebaseUid,
   markQuestionnaireCompleted,
   savePersonalityAnswers,
 } from "@/lib/account";
 
+type NoticeState = {
+  title: string;
+  message: string;
+  primaryLabel?: string;
+  onPrimaryPress?: () => void;
+} | null;
+
 export default function QuestionnaireScreen() {
-  const { profile, userId, refresh } = useAssistant();
+  const { profile, userId, refresh, name: assistantLabel } = useAssistant();
+  const { user } = useAuth();
 
   const [questions, setQuestions] = useState<PersonalityQuestion[]>([]);
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<NoticeState>(null);
+
+  function showNotice(
+    title: string,
+    message: string,
+    primaryLabel?: string,
+    onPrimaryPress?: () => void
+  ) {
+    setNotice({
+      title,
+      message,
+      primaryLabel,
+      onPrimaryPress,
+    });
+  }
+
+  function closeNotice() {
+    setNotice(null);
+  }
 
   useEffect(() => {
     let alive = true;
@@ -40,7 +69,11 @@ export default function QuestionnaireScreen() {
         if (!alive) return;
         setQuestions(Array.isArray(nextQuestions) ? nextQuestions : []);
       } catch (error: any) {
-        Alert.alert("Unable to load questions", error?.message || "Please try again.");
+        if (!alive) return;
+        showNotice(
+          "Unable to load questions",
+          error?.message || "Please try again."
+        );
       } finally {
         if (alive) {
           setLoading(false);
@@ -67,7 +100,35 @@ export default function QuestionnaireScreen() {
     if (profile?.userId) return profile.userId;
 
     const localProfile = await getProfile();
-    return localProfile?.userId;
+    if (localProfile?.userId) return localProfile.userId;
+
+    if (!user) return null;
+
+    const localProfileForFirebaseUser = await getProfileForFirebaseUid(user.uid);
+    if (localProfileForFirebaseUser?.userId) {
+      return localProfileForFirebaseUser.userId;
+    }
+
+    const provider =
+      user.providerData?.some((item) => item.providerId === "google.com")
+        ? "google"
+        : "password";
+
+    const rebuiltProfile = await createProfileOnBackend({
+      firebaseUid: user.uid,
+      firebaseEmailVerified: user.emailVerified,
+      email: user.email || "",
+      avatarUrl: user.photoURL || undefined,
+      authProvider: provider,
+      name: profile?.name || user.displayName || "User",
+      place: profile?.place || localProfile?.place || "",
+      assistantName: profile?.assistantName || assistantLabel || "Elli",
+      timezone: "Asia/Kolkata",
+      questionnaireCompleted: false,
+    });
+
+    await refresh();
+    return rebuiltProfile?.userId ?? null;
   }
 
   function toggleOption(question: PersonalityQuestion, option: string) {
@@ -93,7 +154,7 @@ export default function QuestionnaireScreen() {
       const maxChoices = question.max_choices || current.length + 1;
 
       if (current.length >= maxChoices) {
-        Alert.alert(
+        showNotice(
           "Selection limit reached",
           `You can choose up to ${maxChoices} options for this question.`
         );
@@ -119,8 +180,8 @@ export default function QuestionnaireScreen() {
 
     const missing = questions.filter((question) => !(answers[question.id] || []).length);
     if (missing.length > 0) {
-      Alert.alert(
-        "Please answer all questions",
+      showNotice(
+        "Answer all questions",
         `You still have ${missing.length} unanswered question${missing.length > 1 ? "s" : ""}.`
       );
       return;
@@ -130,16 +191,16 @@ export default function QuestionnaireScreen() {
       setSaving(true);
 
       const resolvedUserId = await resolveUserId();
+
       if (!resolvedUserId) {
-        Alert.alert(
+        showNotice(
           "Profile missing",
-          "Your user session could not be found. Please complete your profile again.",
-          [
-            {
-              text: "Go to profile",
-              onPress: () => router.replace("/onboarding/profile"),
-            },
-          ]
+          "Your local user session could not be restored. Please go back and complete your profile once more.",
+          "Go to profile",
+          () => {
+            closeNotice();
+            router.replace("/onboarding/profile");
+          }
         );
         return;
       }
@@ -153,7 +214,10 @@ export default function QuestionnaireScreen() {
       await refresh();
       router.replace("/(tabs)/routine");
     } catch (error: any) {
-      Alert.alert("Failed to save answers", error?.message || "Please try again.");
+      showNotice(
+        "Failed to save answers",
+        error?.message || "Please try again."
+      );
     } finally {
       setSaving(false);
     }
@@ -165,7 +229,10 @@ export default function QuestionnaireScreen() {
       const nextQuestions = await getPersonalityQuestions();
       setQuestions(Array.isArray(nextQuestions) ? nextQuestions : []);
     } catch (error: any) {
-      Alert.alert("Unable to load questions", error?.message || "Please try again.");
+      showNotice(
+        "Unable to load questions",
+        error?.message || "Please try again."
+      );
     } finally {
       setLoading(false);
     }
@@ -184,30 +251,6 @@ export default function QuestionnaireScreen() {
           <Text style={{ marginTop: 14, color: "rgba(255,255,255,0.74)" }}>
             Loading your questionnaire...
           </Text>
-        </SafeAreaView>
-      </LinearGradient>
-    );
-  }
-
-  if (!questions.length) {
-    return (
-      <LinearGradient
-        colors={["#020816", "#04122B", "#082E6B", "#0B4C9C"]}
-        start={{ x: 0.08, y: 0.02 }}
-        end={{ x: 0.88, y: 1 }}
-        style={{ flex: 1 }}
-      >
-        <SafeAreaView style={{ flex: 1, padding: 20, justifyContent: "center" }}>
-          <View style={emptyCard}>
-            <Text style={emptyTitle}>No questions available</Text>
-            <Text style={emptyText}>
-              The questionnaire loaded, but no questions were returned from the API.
-            </Text>
-
-            <Pressable onPress={reloadQuestions} style={submitBtn}>
-              <Text style={submitBtnText}>Retry</Text>
-            </Pressable>
-          </View>
         </SafeAreaView>
       </LinearGradient>
     );
@@ -234,8 +277,8 @@ export default function QuestionnaireScreen() {
             <View style={{ flex: 1, paddingRight: 14 }}>
               <Text style={title}>Complete your personality profile</Text>
               <Text style={subtitle}>
-                Answer these {questions.length} questions so the assistant can respond in a way
-                that fits you better.
+                Answer these {questions.length} questions so {assistantLabel || "Elli"} can
+                respond in a way that fits you better.
               </Text>
             </View>
 
@@ -250,65 +293,108 @@ export default function QuestionnaireScreen() {
             </Text>
           </View>
 
-          {questions.map((question, index) => {
-            const selected = answers[question.id] || [];
-            const helperText =
-              question.type === "multi"
-                ? `Choose up to ${question.max_choices || 1}`
-                : "Choose 1 option";
+          {!questions.length ? (
+            <View style={emptyCard}>
+              <Text style={emptyTitle}>No questions available</Text>
+              <Text style={emptyText}>
+                The questionnaire loaded, but no questions were returned from the API.
+              </Text>
 
-            return (
-              <View key={question.id} style={card}>
-                <Text style={questionIndex}>Question {index + 1}</Text>
-                <Text style={questionText}>{question.prompt}</Text>
-                <Text style={helper}>{helperText}</Text>
+              <Pressable onPress={reloadQuestions} style={submitBtn}>
+                <Text style={submitBtnText}>Retry</Text>
+              </Pressable>
+            </View>
+          ) : (
+            questions.map((question, index) => {
+              const selected = answers[question.id] || [];
+              const helperText =
+                question.type === "multi"
+                  ? `Choose up to ${question.max_choices || 1}`
+                  : "Choose 1 option";
 
-                <View style={{ marginTop: 14 }}>
-                  {question.options.map((option) => {
-                    const active = selected.includes(option);
+              return (
+                <View key={question.id} style={card}>
+                  <Text style={questionIndex}>Question {index + 1}</Text>
+                  <Text style={questionText}>{question.prompt}</Text>
+                  <Text style={helper}>{helperText}</Text>
 
-                    return (
-                      <Pressable
-                        key={option}
-                        onPress={() => toggleOption(question, option)}
-                        style={[optionBtn, active && optionBtnActive]}
-                      >
-                        <Ionicons
-                          name={
-                            question.type === "multi"
-                              ? active
-                                ? "checkbox"
-                                : "square-outline"
-                              : active
-                                ? "radio-button-on"
-                                : "radio-button-off"
-                          }
-                          size={18}
-                          color={active ? "#041222" : "rgba(255,255,255,0.92)"}
-                        />
-                        <Text style={[optionText, active && optionTextActive]}>
-                          {formatOptionLabel(option)}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
+                  <View style={{ marginTop: 14 }}>
+                    {question.options.map((option) => {
+                      const active = selected.includes(option);
+
+                      return (
+                        <Pressable
+                          key={option}
+                          onPress={() => toggleOption(question, option)}
+                          style={[optionBtn, active && optionBtnActive]}
+                        >
+                          <Ionicons
+                            name={
+                              question.type === "multi"
+                                ? active
+                                  ? "checkbox"
+                                  : "square-outline"
+                                : active
+                                  ? "radio-button-on"
+                                  : "radio-button-off"
+                            }
+                            size={18}
+                            color={active ? "#041222" : "rgba(255,255,255,0.92)"}
+                          />
+                          <Text style={[optionText, active && optionTextActive]}>
+                            {formatOptionLabel(option)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
                 </View>
-              </View>
-            );
-          })}
+              );
+            })
+          )}
 
-          <Pressable
-            onPress={submit}
-            style={[submitBtn, saving && { opacity: 0.72 }]}
-            disabled={saving}
-          >
-            {saving ? (
-              <ActivityIndicator color="#041222" />
-            ) : (
-              <Text style={submitBtnText}>Save answers and continue</Text>
-            )}
-          </Pressable>
+          {!!questions.length && (
+            <Pressable
+              onPress={submit}
+              style={[submitBtn, saving && { opacity: 0.72 }]}
+              disabled={saving}
+            >
+              {saving ? (
+                <ActivityIndicator color="#041222" />
+              ) : (
+                <Text style={submitBtnText}>Save answers and continue</Text>
+              )}
+            </Pressable>
+          )}
         </ScrollView>
+
+        {notice ? (
+          <View style={noticeOverlay}>
+            <View style={noticeCard}>
+              <View style={noticeIconWrap}>
+                <Ionicons name="information-circle" size={22} color="rgba(173,232,255,0.98)" />
+              </View>
+
+              <Text style={noticeTitle}>{notice.title}</Text>
+              <Text style={noticeMessage}>{notice.message}</Text>
+
+              <View style={noticeActions}>
+                <Pressable onPress={closeNotice} style={noticeSecondaryBtn}>
+                  <Text style={noticeSecondaryText}>Close</Text>
+                </Pressable>
+
+                {notice.primaryLabel ? (
+                  <Pressable
+                    onPress={notice.onPrimaryPress || closeNotice}
+                    style={noticePrimaryBtn}
+                  >
+                    <Text style={noticePrimaryText}>{notice.primaryLabel}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          </View>
+        ) : null}
       </SafeAreaView>
     </LinearGradient>
   );
@@ -437,6 +523,7 @@ const submitBtnText = {
 };
 
 const emptyCard = {
+  marginTop: 14,
   borderRadius: 24,
   paddingHorizontal: 18,
   paddingVertical: 20,
@@ -456,4 +543,90 @@ const emptyText = {
   color: "rgba(255,255,255,0.70)",
   fontSize: 14,
   lineHeight: 21,
+};
+
+const noticeOverlay = {
+  position: "absolute" as const,
+  left: 0,
+  right: 0,
+  top: 0,
+  bottom: 0,
+  paddingHorizontal: 20,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(1,7,19,0.58)",
+};
+
+const noticeCard = {
+  borderRadius: 26,
+  paddingHorizontal: 18,
+  paddingVertical: 18,
+  backgroundColor: "rgba(8,18,43,0.98)",
+  borderWidth: 1,
+  borderColor: "rgba(173,232,255,0.18)",
+};
+
+const noticeIconWrap = {
+  width: 42,
+  height: 42,
+  borderRadius: 21,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(173,232,255,0.10)",
+  borderWidth: 1,
+  borderColor: "rgba(173,232,255,0.18)",
+};
+
+const noticeTitle = {
+  marginTop: 14,
+  color: "white",
+  fontSize: 22,
+  fontWeight: "900" as const,
+};
+
+const noticeMessage = {
+  marginTop: 10,
+  color: "rgba(255,255,255,0.72)",
+  fontSize: 14,
+  lineHeight: 22,
+};
+
+const noticeActions = {
+  marginTop: 18,
+  flexDirection: "row" as const,
+  justifyContent: "flex-end" as const,
+};
+
+const noticeSecondaryBtn = {
+  minHeight: 46,
+  paddingHorizontal: 16,
+  borderRadius: 16,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(255,255,255,0.08)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.10)",
+};
+
+const noticeSecondaryText = {
+  color: "rgba(255,255,255,0.92)",
+  fontWeight: "800" as const,
+  fontSize: 14,
+};
+
+const noticePrimaryBtn = {
+  marginLeft: 10,
+  minHeight: 46,
+  paddingHorizontal: 16,
+  borderRadius: 16,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(98,193,255,0.96)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.16)",
+};
+
+const noticePrimaryText = {
+  color: "#041222",
+  fontWeight: "900" as const,
+  fontSize: 14,
 };
