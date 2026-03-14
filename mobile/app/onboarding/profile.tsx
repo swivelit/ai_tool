@@ -12,16 +12,17 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 
 import { createProfileOnBackend } from "@/lib/account";
+import { setAssistantName } from "@/lib/storage";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 
 export default function ProfileScreen() {
-  const { name: currentAssistantName, refresh, updateName } = useAssistant();
+  const { name: currentAssistantName, refresh } = useAssistant();
   const { user } = useAuth();
 
   const [name, setName] = useState("");
   const [place, setPlace] = useState("");
-  const [assistantName, setAssistantName] = useState(currentAssistantName || "J AI");
+  const [assistantName, setAssistantNameInput] = useState(currentAssistantName || "Elli");
   const [busy, setBusy] = useState(false);
 
   const provider = useMemo(() => {
@@ -37,24 +38,31 @@ export default function ProfileScreen() {
 
   useEffect(() => {
     if (currentAssistantName) {
-      setAssistantName(currentAssistantName);
+      setAssistantNameInput(currentAssistantName);
     }
   }, [currentAssistantName]);
 
   async function saveProfile() {
     if (!user) {
-      return Alert.alert("Login required", "Please login again and then continue.");
+      Alert.alert("Login required", "Please login again and then continue.");
+      return;
     }
+
     if (!name.trim()) {
-      return Alert.alert("Name required", "Please enter your name.");
+      Alert.alert("Name required", "Please enter your name.");
+      return;
     }
+
     if (!assistantName.trim()) {
-      return Alert.alert("Assistant name required", "Please enter an assistant name.");
+      Alert.alert("Assistant name required", "Please enter an assistant name.");
+      return;
     }
 
     try {
       setBusy(true);
-      await updateName(assistantName.trim());
+
+      await setAssistantName(assistantName.trim());
+
       await createProfileOnBackend({
         firebaseUid: user.uid,
         firebaseEmailVerified: user.emailVerified,
@@ -66,6 +74,7 @@ export default function ProfileScreen() {
         assistantName: assistantName.trim(),
         timezone: "Asia/Kolkata",
       });
+
       await refresh();
       router.replace("/onboarding/questionnaire");
     } catch (error: any) {
@@ -78,15 +87,19 @@ export default function ProfileScreen() {
   return (
     <LinearGradient colors={["#070A14", "#0B1020", "#121A33"]} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1, padding: 18, justifyContent: "center" }}>
-        <Text style={{ color: "white", fontSize: 30, fontWeight: "900" }}>Complete your profile</Text>
+        <Text style={{ color: "white", fontSize: 30, fontWeight: "900" }}>
+          Complete your profile
+        </Text>
         <Text style={{ color: "rgba(255,255,255,0.65)", marginTop: 8, lineHeight: 22 }}>
-          Your login is ready. Add a few profile details so {assistantName || "J AI"} can
+          Your login is ready. Add a few profile details so {assistantName || "Elli"} can
           personalize the app.
         </Text>
 
         <Text style={label}>Email</Text>
         <View style={readonlyBox}>
-          <Text style={{ color: "rgba(255,255,255,0.88)", fontSize: 15 }}>{user?.email || "-"}</Text>
+          <Text style={{ color: "rgba(255,255,255,0.88)", fontSize: 15 }}>
+            {user?.email || "-"}
+          </Text>
         </View>
 
         <Text style={label}>Your name</Text>
@@ -112,15 +125,23 @@ export default function ProfileScreen() {
         <Text style={label}>Assistant name</Text>
         <TextInput
           value={assistantName}
-          onChangeText={setAssistantName}
-          placeholder="J AI"
+          onChangeText={setAssistantNameInput}
+          placeholder="Elli"
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={input}
           editable={!busy}
         />
 
-        <Pressable onPress={saveProfile} style={[btn, busy && { opacity: 0.7 }]} disabled={busy}>
-          {busy ? <ActivityIndicator color="white" /> : <Text style={{ color: "white", fontWeight: "900" }}>Continue</Text>}
+        <Pressable
+          onPress={saveProfile}
+          style={[btn, busy && { opacity: 0.7 }]}
+          disabled={busy}
+        >
+          {busy ? (
+            <ActivityIndicator color="white" />
+          ) : (
+            <Text style={{ color: "white", fontWeight: "900" }}>Continue</Text>
+          )}
         </Pressable>
       </SafeAreaView>
     </LinearGradient>
