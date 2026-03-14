@@ -17,13 +17,13 @@ import { Audio } from "expo-av";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
 import { Orb } from "@/components/Orb";
 import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
+import { useAuth } from "@/components/AuthProvider";
 import { apiGet, apiPost, apiPostForm } from "@/lib/api";
 import { Item } from "@/lib/types";
 import { parseDatetime } from "@/lib/datetime";
@@ -47,6 +47,7 @@ const SUGGESTIONS = [
 export default function Home() {
   const insets = useSafeAreaInsets();
   const { name, settings, profile, refresh } = useAssistant();
+  const { signOutUser } = useAuth();
 
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -328,16 +329,20 @@ export default function Home() {
   }
 
   async function signOut() {
-    Alert.alert("Sign out", "Do you want to sign out from this local account?", [
+    Alert.alert("Sign out", "Do you want to sign out from this account?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Sign out",
         style: "destructive",
         onPress: async () => {
-          await AsyncStorage.removeItem("user_profile_v1");
-          await refresh();
-          setDrawerOpen(false);
-          router.replace("/onboarding/profile");
+          try {
+            await signOutUser();
+            await refresh();
+            setDrawerOpen(false);
+            router.replace("/");
+          } catch (error: any) {
+            Alert.alert("Error", error?.message || "Failed to sign out.");
+          }
         },
       },
     ]);
