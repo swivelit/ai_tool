@@ -43,6 +43,8 @@ export default function ProfileScreen() {
   }, [currentAssistantName]);
 
   async function saveProfile() {
+    if (busy) return;
+
     if (!user) {
       Alert.alert("Login required", "Please login again and then continue.");
       return;
@@ -73,6 +75,7 @@ export default function ProfileScreen() {
         place: place.trim(),
         assistantName: assistantName.trim(),
         timezone: "Asia/Kolkata",
+        questionnaireCompleted: false,
       });
 
       await refresh();

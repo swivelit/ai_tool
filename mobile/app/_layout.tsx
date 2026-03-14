@@ -1,6 +1,6 @@
 import React, { useEffect } from "react";
 import { ActivityIndicator, SafeAreaView, Text } from "react-native";
-import { Stack, router, usePathname, useSegments } from "expo-router";
+import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -27,16 +27,19 @@ function BootScreen() {
 
 function RouteGate() {
   const pathname = usePathname();
-  const segments = useSegments();
   const { user } = useAuth();
   const { profile } = useAssistant();
 
   useEffect(() => {
-    const first = segments[0];
-    const inAuth = first === "auth";
-    const inOnboarding = first === "onboarding";
-    const atRoot = pathname === "/";
     const activeProfile = user && profile?.firebaseUid === user.uid ? profile : null;
+    const hasProfile = Boolean(activeProfile?.userId);
+    const questionnaireCompleted = Boolean(activeProfile?.questionnaireCompleted);
+
+    const inAuth = pathname.startsWith("/auth");
+    const inOnboarding = pathname.startsWith("/onboarding");
+    const atRoot = pathname === "/";
+    const atProfile = pathname === "/onboarding/profile";
+    const atQuestionnaire = pathname === "/onboarding/questionnaire";
 
     if (!user) {
       if (!inAuth && !atRoot) {
@@ -45,17 +48,24 @@ function RouteGate() {
       return;
     }
 
-    if (!activeProfile?.userId) {
-      if (!inOnboarding) {
+    if (!hasProfile) {
+      if (!atProfile) {
         router.replace("/onboarding/profile");
       }
       return;
     }
 
-    if (inAuth || atRoot || pathname === "/setup") {
+    if (!questionnaireCompleted) {
+      if (!atQuestionnaire) {
+        router.replace("/onboarding/questionnaire");
+      }
+      return;
+    }
+
+    if (inAuth || inOnboarding || atRoot || pathname === "/setup") {
       router.replace("/(tabs)");
     }
-  }, [pathname, profile?.firebaseUid, profile?.userId, segments, user]);
+  }, [pathname, profile?.firebaseUid, profile?.questionnaireCompleted, profile?.userId, user]);
 
   return null;
 }

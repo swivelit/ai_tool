@@ -15,6 +15,7 @@ export type UserProfile = {
   email?: string;
   avatarUrl?: string;
   authProvider?: "password" | "google";
+  questionnaireCompleted?: boolean;
 };
 
 export type PersonalityQuestion = {
@@ -57,9 +58,27 @@ export async function createProfileOnBackend(profile: UserProfile) {
     assistant_name: profile.assistantName || "Elli",
   });
 
-  const merged = { ...profile, userId: user.id };
+  const merged: UserProfile = {
+    ...profile,
+    userId: user.id,
+    questionnaireCompleted: profile.questionnaireCompleted ?? false,
+  };
+
   await saveProfile(merged);
   return merged;
+}
+
+export async function markQuestionnaireCompleted(done: boolean = true) {
+  const profile = await getProfile();
+  if (!profile) return null;
+
+  const updated: UserProfile = {
+    ...profile,
+    questionnaireCompleted: done,
+  };
+
+  await saveProfile(updated);
+  return updated;
 }
 
 export async function getPersonalityQuestions(): Promise<PersonalityQuestion[]> {
