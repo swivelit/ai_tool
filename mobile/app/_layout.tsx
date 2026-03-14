@@ -6,7 +6,7 @@ import { LinearGradient } from "expo-linear-gradient";
 
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
-import { getProfileForFirebaseUid, UserProfile } from "@/lib/account";
+import { getProfileForFirebaseUid } from "@/lib/account";
 
 function BootScreen() {
   return (
@@ -30,94 +30,85 @@ function RouteGate() {
   const pathname = usePathname();
   const { user } = useAuth();
   const { profile } = useAssistant();
-
-  const [storedProfile, setStoredProfile] = useState<UserProfile | null>(null);
-  const [checkingStoredProfile, setCheckingStoredProfile] = useState(true);
+  const [gateLoading, setGateLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
 
-    async function loadStoredProfile() {
+    async function syncAndRoute() {
       try {
-        if (!user?.uid) {
-          if (alive) {
-            setStoredProfile(null);
-            setCheckingStoredProfile(false);
+        if (!user) {
+          if (!alive) return;
+
+          const inAuth = pathname.startsWith("/auth");
+          const atRoot = pathname === "/";
+
+          if (!inAuth && !atRoot) {
+            router.replace("/");
+          }
+
+          setGateLoading(false);
+          return;
+        }
+
+        setGateLoading(true);
+
+        const localProfile = await getProfileForFirebaseUid(user.uid);
+        if (!alive) return;
+
+        const providerProfile =
+          profile?.firebaseUid === user.uid ? profile : null;
+
+        const activeProfile = providerProfile || localProfile;
+
+        const hasProfile = Boolean(activeProfile?.userId);
+        const questionnaireCompleted = Boolean(activeProfile?.questionnaireCompleted);
+
+        const inAuth = pathname.startsWith("/auth");
+        const inOnboarding = pathname.startsWith("/onboarding");
+        const atRoot = pathname === "/";
+        const atProfile = pathname === "/onboarding/profile";
+        const atQuestionnaire = pathname === "/onboarding/questionnaire";
+        const atSetup = pathname === "/setup";
+
+        if (!hasProfile) {
+          if (!atProfile) {
+            router.replace("/onboarding/profile");
           }
           return;
         }
 
-        setCheckingStoredProfile(true);
-        const localProfile = await getProfileForFirebaseUid(user.uid);
+        if (!questionnaireCompleted) {
+          if (!atQuestionnaire) {
+            router.replace("/onboarding/questionnaire");
+          }
+          return;
+        }
 
-        if (!alive) return;
-        setStoredProfile(localProfile);
+        if (inAuth || inOnboarding || atRoot || atSetup) {
+          router.replace("/(tabs)");
+        }
       } finally {
         if (alive) {
-          setCheckingStoredProfile(false);
+          setGateLoading(false);
         }
       }
     }
 
-    void loadStoredProfile();
+    void syncAndRoute();
 
     return () => {
       alive = false;
     };
   }, [
+    pathname,
     user?.uid,
     profile?.firebaseUid,
     profile?.userId,
     profile?.questionnaireCompleted,
   ]);
 
-  useEffect(() => {
-    if (checkingStoredProfile) return;
-
-    const providerProfile =
-      user && profile?.firebaseUid === user.uid ? profile : null;
-
-    const localProfile =
-      user && storedProfile?.firebaseUid === user.uid ? storedProfile : null;
-
-    const activeProfile = providerProfile || localProfile;
-
-    const hasProfile = Boolean(activeProfile?.userId);
-    const questionnaireCompleted = Boolean(activeProfile?.questionnaireCompleted);
-
-    const inAuth = pathname.startsWith("/auth");
-    const inOnboarding = pathname.startsWith("/onboarding");
-    const atRoot = pathname === "/";
-    const atProfile = pathname === "/onboarding/profile";
-    const atQuestionnaire = pathname === "/onboarding/questionnaire";
-
-    if (!user) {
-      if (!inAuth && !atRoot) {
-        router.replace("/");
-      }
-      return;
-    }
-
-    if (!hasProfile) {
-      if (!atProfile) {
-        router.replace("/onboarding/profile");
-      }
-      return;
-    }
-
-    if (!questionnaireCompleted) {
-      if (!atQuestionnaire) {
-        router.replace("/onboarding/questionnaire");
-      }
-      return;
-    }
-
-    if (inAuth || inOnboarding || atRoot || pathname === "/setup") {
-      router.replace("/(tabs)");
-    }
-  }, [checkingStoredProfile, pathname, profile, storedProfile, user]);
-
-  if (user && checkingStoredProfile) {
+  if (user && gateLoading) {
     return <BootScreen />;
   }
 
