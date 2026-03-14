@@ -37,11 +37,15 @@ function RouteGate() {
 
     async function syncAndRoute() {
       try {
+        const inAuth = pathname.startsWith("/auth");
+        const inOnboarding = pathname.startsWith("/onboarding");
+        const atRoot = pathname === "/";
+        const atProfile = pathname === "/onboarding/profile";
+        const atQuestionnaire = pathname === "/onboarding/questionnaire";
+        const atSetup = pathname === "/setup";
+
         if (!user) {
           if (!alive) return;
-
-          const inAuth = pathname.startsWith("/auth");
-          const atRoot = pathname === "/";
 
           if (!inAuth && !atRoot) {
             router.replace("/");
@@ -52,6 +56,15 @@ function RouteGate() {
         }
 
         setGateLoading(true);
+
+        // Important:
+        // once the questionnaire route is reached, allow it to render.
+        // The profile may still be hydrating from AsyncStorage/provider state,
+        // and bouncing away here is what makes the app look stuck.
+        if (atQuestionnaire) {
+          setGateLoading(false);
+          return;
+        }
 
         const localProfile = await getProfileForFirebaseUid(user.uid);
         if (!alive) return;
@@ -64,13 +77,6 @@ function RouteGate() {
         const hasProfile = Boolean(activeProfile?.userId);
         const questionnaireCompleted = Boolean(activeProfile?.questionnaireCompleted);
 
-        const inAuth = pathname.startsWith("/auth");
-        const inOnboarding = pathname.startsWith("/onboarding");
-        const atRoot = pathname === "/";
-        const atProfile = pathname === "/onboarding/profile";
-        const atQuestionnaire = pathname === "/onboarding/questionnaire";
-        const atSetup = pathname === "/setup";
-
         if (!hasProfile) {
           if (!atProfile) {
             router.replace("/onboarding/profile");
@@ -79,9 +85,7 @@ function RouteGate() {
         }
 
         if (!questionnaireCompleted) {
-          if (!atQuestionnaire) {
-            router.replace("/onboarding/questionnaire");
-          }
+          router.replace("/onboarding/questionnaire");
           return;
         }
 
@@ -108,7 +112,8 @@ function RouteGate() {
     profile?.questionnaireCompleted,
   ]);
 
-  if (user && gateLoading) {
+  // Do not cover the questionnaire screen with the boot overlay.
+  if (user && gateLoading && pathname !== "/onboarding/questionnaire") {
     return <BootScreen />;
   }
 
