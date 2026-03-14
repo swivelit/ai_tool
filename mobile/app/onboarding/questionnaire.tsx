@@ -12,7 +12,6 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
-import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import {
   PersonalityAnswers,
@@ -39,7 +38,7 @@ export default function QuestionnaireScreen() {
         setLoading(true);
         const nextQuestions = await getPersonalityQuestions();
         if (!alive) return;
-        setQuestions(nextQuestions);
+        setQuestions(Array.isArray(nextQuestions) ? nextQuestions : []);
       } catch (error: any) {
         Alert.alert("Unable to load questions", error?.message || "Please try again.");
       } finally {
@@ -151,13 +150,24 @@ export default function QuestionnaireScreen() {
 
       await savePersonalityAnswers(resolvedUserId, payload);
       await markQuestionnaireCompleted(true);
-
+      await refresh();
       router.replace("/(tabs)/routine");
-      void refresh();
     } catch (error: any) {
       Alert.alert("Failed to save answers", error?.message || "Please try again.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function reloadQuestions() {
+    try {
+      setLoading(true);
+      const nextQuestions = await getPersonalityQuestions();
+      setQuestions(Array.isArray(nextQuestions) ? nextQuestions : []);
+    } catch (error: any) {
+      Alert.alert("Unable to load questions", error?.message || "Please try again.");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -174,6 +184,30 @@ export default function QuestionnaireScreen() {
           <Text style={{ marginTop: 14, color: "rgba(255,255,255,0.74)" }}>
             Loading your questionnaire...
           </Text>
+        </SafeAreaView>
+      </LinearGradient>
+    );
+  }
+
+  if (!questions.length) {
+    return (
+      <LinearGradient
+        colors={["#020816", "#04122B", "#082E6B", "#0B4C9C"]}
+        start={{ x: 0.08, y: 0.02 }}
+        end={{ x: 0.88, y: 1 }}
+        style={{ flex: 1 }}
+      >
+        <SafeAreaView style={{ flex: 1, padding: 20, justifyContent: "center" }}>
+          <View style={emptyCard}>
+            <Text style={emptyTitle}>No questions available</Text>
+            <Text style={emptyText}>
+              The questionnaire loaded, but no questions were returned from the API.
+            </Text>
+
+            <Pressable onPress={reloadQuestions} style={submitBtn}>
+              <Text style={submitBtnText}>Retry</Text>
+            </Pressable>
+          </View>
         </SafeAreaView>
       </LinearGradient>
     );
@@ -224,12 +258,12 @@ export default function QuestionnaireScreen() {
                 : "Choose 1 option";
 
             return (
-              <GlassCard key={question.id} style={card}>
+              <View key={question.id} style={card}>
                 <Text style={questionIndex}>Question {index + 1}</Text>
                 <Text style={questionText}>{question.prompt}</Text>
                 <Text style={helper}>{helperText}</Text>
 
-                <View style={optionsWrap}>
+                <View style={{ marginTop: 14 }}>
                   {question.options.map((option) => {
                     const active = selected.includes(option);
 
@@ -259,7 +293,7 @@ export default function QuestionnaireScreen() {
                     );
                   })}
                 </View>
-              </GlassCard>
+              </View>
             );
           })}
 
@@ -324,8 +358,12 @@ const progressText = {
 
 const card = {
   marginTop: 14,
-  borderRadius: 26,
+  borderRadius: 24,
+  paddingHorizontal: 16,
   paddingVertical: 18,
+  backgroundColor: "rgba(255,255,255,0.08)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.10)",
 };
 
 const questionIndex = {
@@ -350,11 +388,6 @@ const helper = {
   fontSize: 13,
 };
 
-const optionsWrap = {
-  marginTop: 14,
-  gap: 10,
-};
-
 const optionBtn = {
   minHeight: 52,
   borderRadius: 18,
@@ -362,7 +395,7 @@ const optionBtn = {
   paddingVertical: 12,
   flexDirection: "row" as const,
   alignItems: "center" as const,
-  gap: 10,
+  marginBottom: 10,
   backgroundColor: "rgba(255,255,255,0.06)",
   borderWidth: 1,
   borderColor: "rgba(255,255,255,0.10)",
@@ -375,6 +408,7 @@ const optionBtnActive = {
 
 const optionText = {
   flex: 1,
+  marginLeft: 10,
   color: "rgba(255,255,255,0.92)",
   fontSize: 14,
   fontWeight: "700" as const,
@@ -400,4 +434,26 @@ const submitBtnText = {
   color: "#041222",
   fontWeight: "900" as const,
   fontSize: 17,
+};
+
+const emptyCard = {
+  borderRadius: 24,
+  paddingHorizontal: 18,
+  paddingVertical: 20,
+  backgroundColor: "rgba(255,255,255,0.08)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.10)",
+};
+
+const emptyTitle = {
+  color: "white",
+  fontSize: 22,
+  fontWeight: "900" as const,
+};
+
+const emptyText = {
+  marginTop: 10,
+  color: "rgba(255,255,255,0.70)",
+  fontSize: 14,
+  lineHeight: 21,
 };
