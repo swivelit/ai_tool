@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { ActivityIndicator, SafeAreaView, Text } from "react-native";
 import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -6,6 +6,7 @@ import { LinearGradient } from "expo-linear-gradient";
 
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
+import { getProfileForFirebaseUid, UserProfile } from "@/lib/account";
 
 function BootScreen() {
   return (
@@ -30,8 +31,57 @@ function RouteGate() {
   const { user } = useAuth();
   const { profile } = useAssistant();
 
+  const [storedProfile, setStoredProfile] = useState<UserProfile | null>(null);
+  const [checkingStoredProfile, setCheckingStoredProfile] = useState(true);
+
   useEffect(() => {
-    const activeProfile = user && profile?.firebaseUid === user.uid ? profile : null;
+    let alive = true;
+
+    async function loadStoredProfile() {
+      try {
+        if (!user?.uid) {
+          if (alive) {
+            setStoredProfile(null);
+            setCheckingStoredProfile(false);
+          }
+          return;
+        }
+
+        setCheckingStoredProfile(true);
+        const localProfile = await getProfileForFirebaseUid(user.uid);
+
+        if (!alive) return;
+        setStoredProfile(localProfile);
+      } finally {
+        if (alive) {
+          setCheckingStoredProfile(false);
+        }
+      }
+    }
+
+    void loadStoredProfile();
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    user?.uid,
+    profile?.firebaseUid,
+    profile?.userId,
+    profile?.questionnaireCompleted,
+  ]);
+
+  useEffect(() => {
+    if (checkingStoredProfile) return;
+
+    const providerProfile =
+      user && profile?.firebaseUid === user.uid ? profile : null;
+
+    const localProfile =
+      user && storedProfile?.firebaseUid === user.uid ? storedProfile : null;
+
+    const activeProfile = providerProfile || localProfile;
+
     const hasProfile = Boolean(activeProfile?.userId);
     const questionnaireCompleted = Boolean(activeProfile?.questionnaireCompleted);
 
@@ -65,13 +115,11 @@ function RouteGate() {
     if (inAuth || inOnboarding || atRoot || pathname === "/setup") {
       router.replace("/(tabs)");
     }
-  }, [
-    pathname,
-    profile?.firebaseUid,
-    profile?.questionnaireCompleted,
-    profile?.userId,
-    user,
-  ]);
+  }, [checkingStoredProfile, pathname, profile, storedProfile, user]);
+
+  if (user && checkingStoredProfile) {
+    return <BootScreen />;
+  }
 
   return null;
 }
