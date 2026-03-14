@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
+  ActivityIndicator,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -15,6 +15,7 @@ import { router } from "expo-router";
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { apiGet, API_BASE } from "@/lib/api";
+import { getProfile } from "@/lib/account";
 
 type Routine = {
   wake_time: string;
@@ -24,8 +25,18 @@ type Routine = {
   daily_habits?: string | null;
 };
 
+type NoticeState = {
+  title: string;
+  message: string;
+  primaryLabel?: string;
+  onPrimaryPress?: () => void;
+} | null;
+
 export default function RoutineScreen() {
-  const { userId, profile } = useAssistant();
+  const { userId, profile, refresh } = useAssistant();
+
+  const [resolvedUserId, setResolvedUserId] = useState<number | null>(userId || profile?.userId || null);
+  const [resolvedProfile, setResolvedProfile] = useState(profile || null);
 
   const [routine, setRoutine] = useState<Routine>({
     wake_time: "07:30",
@@ -37,18 +48,75 @@ export default function RoutineScreen() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<NoticeState>(null);
+
+  const accountName = useMemo(() => resolvedProfile?.name || profile?.name || "Not set", [resolvedProfile, profile?.name]);
+  const accountPlace = useMemo(() => resolvedProfile?.place || profile?.place || "Not set", [resolvedProfile, profile?.place]);
+  const accountTimezone = useMemo(
+    () => resolvedProfile?.timezone || profile?.timezone || "Asia/Kolkata",
+    [resolvedProfile, profile?.timezone]
+  );
+
+  function showNotice(
+    title: string,
+    message: string,
+    primaryLabel?: string,
+    onPrimaryPress?: () => void
+  ) {
+    setNotice({
+      title,
+      message,
+      primaryLabel,
+      onPrimaryPress,
+    });
+  }
+
+  function closeNotice() {
+    setNotice(null);
+  }
+
+  useEffect(() => {
+    let alive = true;
+
+    async function hydrateIdentity() {
+      try {
+        const localProfile = await getProfile();
+        if (!alive) return;
+
+        const nextUserId = userId || profile?.userId || localProfile?.userId || null;
+        const nextProfile = profile || localProfile || null;
+
+        setResolvedUserId(nextUserId);
+        setResolvedProfile(nextProfile);
+      } finally {
+        if (alive) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void hydrateIdentity();
+
+    return () => {
+      alive = false;
+    };
+  }, [userId, profile]);
 
   useEffect(() => {
     let mounted = true;
 
-    async function load() {
-      if (!userId) {
-        if (mounted) setLoading(false);
+    async function loadRoutine() {
+      if (!resolvedUserId) {
+        if (mounted) {
+          setLoading(false);
+        }
         return;
       }
 
       try {
-        const data = await apiGet<Routine>(`/users/${userId}/daily-routine`);
+        setLoading(true);
+        const data = await apiGet<Routine>(`/users/${resolvedUserId}/daily-routine`);
+
         if (mounted && data) {
           setRoutine({
             wake_time: data.wake_time || "07:30",
@@ -59,41 +127,51 @@ export default function RoutineScreen() {
           });
         }
       } catch {
-        // keep defaults
+        // keep defaults if routine does not exist yet
       } finally {
-        if (mounted) setLoading(false);
+        if (mounted) {
+          setLoading(false);
+        }
       }
     }
 
-    load();
+    void loadRoutine();
 
     return () => {
       mounted = false;
     };
-  }, [userId]);
+  }, [resolvedUserId]);
 
   function validateHHMM(v: string) {
     return /^([01]\d|2[0-3]):([0-5]\d)$/.test((v || "").trim());
   }
 
   async function saveRoutine() {
-    if (!userId) {
-      Alert.alert("Profile missing", "Please finish onboarding first.");
+    if (!resolvedUserId) {
+      showNotice(
+        "Profile missing",
+        "Your profile session is not ready yet. Please return to onboarding and complete the profile flow once.",
+        "Go to profile",
+        () => {
+          closeNotice();
+          router.replace("/onboarding/profile");
+        }
+      );
       return;
     }
 
     if (!validateHHMM(routine.wake_time) || !validateHHMM(routine.sleep_time)) {
-      Alert.alert("Invalid time", "Wake time and sleep time must be in HH:MM format.");
+      showNotice("Invalid time", "Wake time and sleep time must be in HH:MM format.");
       return;
     }
 
     if (routine.work_start?.trim() && !validateHHMM(routine.work_start)) {
-      Alert.alert("Invalid time", "Work start must be in HH:MM format.");
+      showNotice("Invalid time", "Work start must be in HH:MM format.");
       return;
     }
 
     if (routine.work_end?.trim() && !validateHHMM(routine.work_end)) {
-      Alert.alert("Invalid time", "Work end must be in HH:MM format.");
+      showNotice("Invalid time", "Work end must be in HH:MM format.");
       return;
     }
 
@@ -108,7 +186,7 @@ export default function RoutineScreen() {
         daily_habits: routine.daily_habits?.trim() || null,
       };
 
-      const res = await fetch(`${API_BASE}/users/${userId}/daily-routine`, {
+      const res = await fetch(`${API_BASE}/users/${resolvedUserId}/daily-routine`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -119,9 +197,14 @@ export default function RoutineScreen() {
         throw new Error(txt || "Could not save routine");
       }
 
-      Alert.alert("Saved", "Your routine has been updated.");
+      await refresh();
+
+      showNotice(
+        "Routine saved",
+        "Your daily routine has been updated successfully."
+      );
     } catch (e: any) {
-      Alert.alert("Error", e?.message || "Could not save routine.");
+      showNotice("Save failed", e?.message || "Could not save routine.");
     } finally {
       setSaving(false);
     }
@@ -154,9 +237,9 @@ export default function RoutineScreen() {
 
           <GlassCard style={{ marginTop: 18, borderRadius: 22 }}>
             <Text style={cardTitle}>Account</Text>
-            <Text style={accountLine}>Name: {profile?.name || "Not set"}</Text>
-            <Text style={accountLine}>Place: {profile?.place || "Not set"}</Text>
-            <Text style={accountLine}>Timezone: {profile?.timezone || "Asia/Kolkata"}</Text>
+            <Text style={accountLine}>Name: {accountName}</Text>
+            <Text style={accountLine}>Place: {accountPlace}</Text>
+            <Text style={accountLine}>Timezone: {accountTimezone}</Text>
           </GlassCard>
 
           <GlassCard style={{ marginTop: 14, borderRadius: 22 }}>
@@ -205,11 +288,41 @@ export default function RoutineScreen() {
             disabled={saving || loading}
             style={[saveBtn, (saving || loading) && { opacity: 0.65 }]}
           >
-            <Text style={saveBtnText}>
-              {loading ? "Loading..." : saving ? "Saving..." : "Save routine"}
-            </Text>
+            {saving || loading ? (
+              <ActivityIndicator color="#041222" />
+            ) : (
+              <Text style={saveBtnText}>Save routine</Text>
+            )}
           </Pressable>
         </ScrollView>
+
+        {notice ? (
+          <View style={noticeOverlay}>
+            <View style={noticeCard}>
+              <View style={noticeIconWrap}>
+                <Ionicons name="information-circle" size={22} color="rgba(173,232,255,0.98)" />
+              </View>
+
+              <Text style={noticeTitle}>{notice.title}</Text>
+              <Text style={noticeMessage}>{notice.message}</Text>
+
+              <View style={noticeActions}>
+                <Pressable onPress={closeNotice} style={noticeSecondaryBtn}>
+                  <Text style={noticeSecondaryText}>Close</Text>
+                </Pressable>
+
+                {notice.primaryLabel ? (
+                  <Pressable
+                    onPress={notice.onPrimaryPress || closeNotice}
+                    style={noticePrimaryBtn}
+                  >
+                    <Text style={noticePrimaryText}>{notice.primaryLabel}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          </View>
+        ) : null}
       </SafeAreaView>
     </LinearGradient>
   );
@@ -317,4 +430,90 @@ const saveBtnText = {
   color: "#041222",
   fontWeight: "900" as const,
   fontSize: 15,
+};
+
+const noticeOverlay = {
+  position: "absolute" as const,
+  left: 0,
+  right: 0,
+  top: 0,
+  bottom: 0,
+  paddingHorizontal: 20,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(1,7,19,0.58)",
+};
+
+const noticeCard = {
+  borderRadius: 26,
+  paddingHorizontal: 18,
+  paddingVertical: 18,
+  backgroundColor: "rgba(8,18,43,0.98)",
+  borderWidth: 1,
+  borderColor: "rgba(173,232,255,0.18)",
+};
+
+const noticeIconWrap = {
+  width: 42,
+  height: 42,
+  borderRadius: 21,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(173,232,255,0.10)",
+  borderWidth: 1,
+  borderColor: "rgba(173,232,255,0.18)",
+};
+
+const noticeTitle = {
+  marginTop: 14,
+  color: "white",
+  fontSize: 22,
+  fontWeight: "900" as const,
+};
+
+const noticeMessage = {
+  marginTop: 10,
+  color: "rgba(255,255,255,0.72)",
+  fontSize: 14,
+  lineHeight: 22,
+};
+
+const noticeActions = {
+  marginTop: 18,
+  flexDirection: "row" as const,
+  justifyContent: "flex-end" as const,
+};
+
+const noticeSecondaryBtn = {
+  minHeight: 46,
+  paddingHorizontal: 16,
+  borderRadius: 16,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(255,255,255,0.08)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.10)",
+};
+
+const noticeSecondaryText = {
+  color: "rgba(255,255,255,0.92)",
+  fontWeight: "800" as const,
+  fontSize: 14,
+};
+
+const noticePrimaryBtn = {
+  marginLeft: 10,
+  minHeight: 46,
+  paddingHorizontal: 16,
+  borderRadius: 16,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(98,193,255,0.96)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.16)",
+};
+
+const noticePrimaryText = {
+  color: "#041222",
+  fontWeight: "900" as const,
+  fontSize: 14,
 };
