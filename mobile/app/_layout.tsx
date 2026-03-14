@@ -65,7 +65,13 @@ function RouteGate() {
     if (inAuth || inOnboarding || atRoot || pathname === "/setup") {
       router.replace("/(tabs)");
     }
-  }, [pathname, profile?.firebaseUid, profile?.questionnaireCompleted, profile?.userId, user]);
+  }, [
+    pathname,
+    profile?.firebaseUid,
+    profile?.questionnaireCompleted,
+    profile?.userId,
+    user,
+  ]);
 
   return null;
 }
