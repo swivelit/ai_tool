@@ -1,14 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
+  Alert,
   Pressable,
   SafeAreaView,
   ScrollView,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -17,65 +14,57 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
-import { getProfile, submitQuestionnaire, generateDailyCheckins } from "@/lib/account";
 import {
-  ensureNotificationsReady,
-  scheduleReminder,
-  cancelAllReminders,
-} from "@/lib/reminders";
+  PersonalityAnswers,
+  PersonalityQuestion,
+  getPersonalityQuestions,
+  getProfile,
+  savePersonalityAnswers,
+} from "@/lib/account";
 
-type DialogState = {
-  visible: boolean;
-  title: string;
-  message: string;
-  kind?: "info" | "error" | "success";
-  primaryLabel?: string;
-  secondaryLabel?: string;
-  onPrimary?: () => void;
-  onSecondary?: () => void;
-};
-
-const initialDialog: DialogState = {
-  visible: false,
-  title: "",
-  message: "",
-  kind: "info",
-  primaryLabel: "OK",
-};
-
-export default function Questionnaire() {
+export default function QuestionnaireScreen() {
   const { profile, userId, refresh } = useAssistant();
 
-  const [workStart, setWorkStart] = useState("09:30");
-  const [workEnd, setWorkEnd] = useState("18:30");
-  const [sleep, setSleep] = useState("23:30");
-  const [wake, setWake] = useState("07:30");
-  const [dailyHabits, setDailyHabits] = useState("Gym, Water, Reading");
-  const [busy, setBusy] = useState(false);
-  const [dialog, setDialog] = useState<DialogState>(initialDialog);
+  const [questions, setQuestions] = useState<PersonalityQuestion[]>([]);
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    let alive = true;
+
+    async function load() {
+      try {
+        setLoading(true);
+        const nextQuestions = await getPersonalityQuestions();
+        if (!alive) return;
+        setQuestions(nextQuestions);
+      } catch (error: any) {
+        Alert.alert(
+          "Unable to load questions",
+          error?.message || "Please try again."
+        );
+      } finally {
+        if (alive) {
+          setLoading(false);
+        }
+      }
+    }
+
     void refresh();
+    void load();
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  function validateHHMM(v: string) {
-    return /^([01]\d|2[0-3]):([0-5]\d)$/.test((v || "").trim());
-  }
-
-  function showDialog(next: Omit<DialogState, "visible">) {
-    setDialog({
-      ...initialDialog,
-      ...next,
-      visible: true,
-    });
-  }
-
-  function hideDialog(after?: () => void) {
-    setDialog((prev) => ({ ...prev, visible: false }));
-    if (after) {
-      setTimeout(after, 120);
-    }
-  }
+  const answeredCount = useMemo(() => {
+    return questions.reduce((count, question) => {
+      const selected = answers[question.id] || [];
+      return count + (selected.length > 0 ? 1 : 0);
+    }, 0);
+  }, [answers, questions]);
 
   async function resolveUserId() {
     if (userId) return userId;
@@ -87,103 +76,123 @@ export default function Questionnaire() {
     return localProfile?.userId;
   }
 
-  async function finish() {
-    if (busy) return;
+  function toggleOption(question: PersonalityQuestion, option: string) {
+    setAnswers((prev) => {
+      const current = prev[question.id] || [];
 
-    if (![workStart, workEnd, sleep, wake].every(validateHHMM)) {
-      showDialog({
-        title: "Invalid time",
-        message: "Please use HH:MM format, for example 07:30.",
-        kind: "error",
-        primaryLabel: "OK",
-      });
+      if (question.type === "single") {
+        return {
+          ...prev,
+          [question.id]: [option],
+        };
+      }
+
+      const exists = current.includes(option);
+
+      if (exists) {
+        return {
+          ...prev,
+          [question.id]: current.filter((item) => item !== option),
+        };
+      }
+
+      const maxChoices = question.max_choices || current.length + 1;
+
+      if (current.length >= maxChoices) {
+        Alert.alert(
+          "Selection limit reached",
+          `You can choose up to ${maxChoices} options for this question.`
+        );
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [question.id]: [...current, option],
+      };
+    });
+  }
+
+  function formatOptionLabel(value: string) {
+    return value
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  }
+
+  async function submit() {
+    if (saving) return;
+
+    const missing = questions.filter((question) => !(answers[question.id] || []).length);
+    if (missing.length > 0) {
+      Alert.alert(
+        "Please answer all questions",
+        `You still have ${missing.length} unanswered question${missing.length > 1 ? "s" : ""}.`
+      );
       return;
     }
 
     try {
-      setBusy(true);
+      setSaving(true);
 
       const resolvedUserId = await resolveUserId();
-
       if (!resolvedUserId) {
-        showDialog({
-          title: "Profile missing",
-          message:
-            "Your account session is missing. Please create your profile again to continue.",
-          kind: "error",
-          primaryLabel: "Create profile",
-          secondaryLabel: "Close",
-          onPrimary: () => router.replace("/onboarding/profile"),
-        });
+        Alert.alert(
+          "Profile missing",
+          "Your user session could not be found. Please complete your profile again.",
+          [
+            {
+              text: "Go to profile",
+              onPress: () => router.replace("/onboarding/profile"),
+            },
+          ]
+        );
         return;
       }
 
-      const payload = {
-        workStart: workStart.trim(),
-        workEnd: workEnd.trim(),
-        sleep: sleep.trim(),
-        wake: wake.trim(),
-        dailyHabits: dailyHabits.trim(),
-      };
+      const payload: PersonalityAnswers = Object.fromEntries(
+        Object.entries(answers).map(([key, value]) => [key, value])
+      );
 
-      await submitQuestionnaire(resolvedUserId, payload);
+      await savePersonalityAnswers(resolvedUserId, payload);
+      await refresh();
 
-      const ok = await ensureNotificationsReady();
-
-      if (!ok) {
-        showDialog({
-          title: "Notifications disabled",
-          message:
-            "Your routine is saved. Enable notifications to receive check-ins, or continue using the app without them.",
-          kind: "info",
-          primaryLabel: "Continue",
-          onPrimary: () => router.replace("/(tabs)"),
-        });
-        return;
-      }
-
-      await cancelAllReminders();
-
-      const out = await generateDailyCheckins(resolvedUserId);
-      let scheduledCount = 0;
-      const now = Date.now();
-
-      for (const c of out.checkins || []) {
-        try {
-          if (!c?.when || !validateHHMM(c.when)) continue;
-
-          const [hh, mm] = c.when.split(":").map(Number);
-          const when = new Date();
-          when.setHours(hh, mm, 0, 0);
-
-          if (when.getTime() <= now + 30_000) {
-            when.setDate(when.getDate() + 1);
-          }
-
-          await scheduleReminder(c.title, c.message, when);
-          scheduledCount += 1;
-        } catch (err) {
-          console.warn("Failed to schedule check-in", c, err);
-        }
-      }
-
-      showDialog({
-        title: "All set",
-        message: `Scheduled ${scheduledCount} check-ins for your day.`,
-        kind: "success",
-        primaryLabel: "Continue",
-        onPrimary: () => router.replace("/(tabs)"),
-      });
-    } catch (e: any) {
-      showDialog({
-        title: "Something went wrong",
-        message: e?.message || "Failed to finish onboarding.",
-        kind: "error",
-        primaryLabel: "OK",
-      });
+      Alert.alert(
+        "Profile questions saved",
+        "Your personality profile is ready. Next, you can set your daily routine for reminders and check-ins.",
+        [
+          {
+            text: "Continue",
+            onPress: () => router.replace("/(tabs)/routine"),
+          },
+        ]
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Failed to save answers",
+        error?.message || "Please try again."
+      );
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
+  }
+
+  if (loading) {
+    return (
+      <LinearGradient
+        colors={["#020816", "#04122B", "#082E6B", "#0B4C9C"]}
+        start={{ x: 0.08, y: 0.02 }}
+        end={{ x: 0.88, y: 1 }}
+        style={{ flex: 1 }}
+      >
+        <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+          <ActivityIndicator size="large" color="white" />
+          <Text style={{ marginTop: 14, color: "rgba(255,255,255,0.74)" }}>
+            Loading your questionnaire...
+          </Text>
+        </SafeAreaView>
+      </LinearGradient>
+    );
   }
 
   return (
@@ -194,199 +203,109 @@ export default function Questionnaire() {
       style={{ flex: 1 }}
     >
       <SafeAreaView style={{ flex: 1 }}>
-        <KeyboardAvoidingView
+        <ScrollView
           style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          contentContainerStyle={{
+            paddingHorizontal: 18,
+            paddingTop: 12,
+            paddingBottom: 36,
+          }}
+          showsVerticalScrollIndicator={false}
         >
-          <ScrollView
-            style={{ flex: 1 }}
-            contentContainerStyle={{
-              paddingHorizontal: 18,
-              paddingTop: 12,
-              paddingBottom: 32,
-            }}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={headerRow}>
-              <Text style={title}>Daily routine</Text>
-
-              <View style={headerBadge}>
-                <Ionicons
-                  name="sparkles-outline"
-                  size={16}
-                  color="rgba(173,232,255,0.95)"
-                />
-              </View>
+          <View style={headerRow}>
+            <View style={{ flex: 1, paddingRight: 14 }}>
+              <Text style={title}>Complete your personality profile</Text>
+              <Text style={subtitle}>
+                Answer these {questions.length} questions so the assistant can respond in a way
+                that fits you better.
+              </Text>
             </View>
 
-            <Text style={subtitle}>We’ll use this to create smart check-ins.</Text>
-
-            <GlassCard style={{ marginTop: 22, borderRadius: 26 }}>
-              <Field
-                label="Work start (HH:MM)"
-                value={workStart}
-                onChangeText={setWorkStart}
-              />
-
-              <Field
-                label="Work end (HH:MM)"
-                value={workEnd}
-                onChangeText={setWorkEnd}
-              />
-
-              <Field
-                label="Wake time"
-                value={wake}
-                onChangeText={setWake}
-              />
-
-              <Field
-                label="Sleep time"
-                value={sleep}
-                onChangeText={setSleep}
-              />
-
-              <Field
-                label="Daily habits (comma separated)"
-                value={dailyHabits}
-                onChangeText={setDailyHabits}
-                multiline
-                height={88}
-                placeholder="Gym, Water, Reading"
-              />
-            </GlassCard>
-
-            <Pressable
-              onPress={finish}
-              style={[finishBtn, busy && { opacity: 0.72 }]}
-              disabled={busy}
-            >
-              {busy ? (
-                <ActivityIndicator color="#041222" />
-              ) : (
-                <Text style={finishBtnText}>Finish & Schedule Check-ins</Text>
-              )}
-            </Pressable>
-          </ScrollView>
-        </KeyboardAvoidingView>
-
-        <Modal
-          transparent
-          visible={dialog.visible}
-          animationType="fade"
-          onRequestClose={() => hideDialog()}
-        >
-          <View style={modalBackdrop}>
-            <Pressable
-              style={{ position: "absolute", inset: 0 }}
-              onPress={() => hideDialog()}
-            />
-
-            <GlassCard style={modalCard}>
-              <View
-                style={[
-                  modalIconWrap,
-                  dialog.kind === "error"
-                    ? modalIconError
-                    : dialog.kind === "success"
-                    ? modalIconSuccess
-                    : modalIconInfo,
-                ]}
-              >
-                <Ionicons
-                  name={
-                    dialog.kind === "error"
-                      ? "alert-circle"
-                      : dialog.kind === "success"
-                      ? "checkmark-circle"
-                      : "information-circle"
-                  }
-                  size={26}
-                  color="white"
-                />
-              </View>
-
-              <Text style={modalTitle}>{dialog.title}</Text>
-              <Text style={modalMessage}>{dialog.message}</Text>
-
-              <View style={modalActions}>
-                {dialog.secondaryLabel ? (
-                  <Pressable
-                    onPress={() => hideDialog(dialog.onSecondary)}
-                    style={[modalBtn, modalBtnGhost]}
-                  >
-                    <Text style={modalGhostText}>{dialog.secondaryLabel}</Text>
-                  </Pressable>
-                ) : null}
-
-                <Pressable
-                  onPress={() => hideDialog(dialog.onPrimary)}
-                  style={[
-                    modalBtn,
-                    modalBtnPrimary,
-                    !dialog.secondaryLabel && { flex: 1 },
-                  ]}
-                >
-                  <Text style={modalPrimaryText}>{dialog.primaryLabel || "OK"}</Text>
-                </Pressable>
-              </View>
-            </GlassCard>
+            <View style={headerBadge}>
+              <Ionicons name="sparkles-outline" size={16} color="rgba(173,232,255,0.95)" />
+            </View>
           </View>
-        </Modal>
+
+          <View style={progressWrap}>
+            <Text style={progressText}>
+              {answeredCount}/{questions.length} answered
+            </Text>
+          </View>
+
+          {questions.map((question, index) => {
+            const selected = answers[question.id] || [];
+            const helperText =
+              question.type === "multi"
+                ? `Choose up to ${question.max_choices || 1}`
+                : "Choose 1 option";
+
+            return (
+              <GlassCard key={question.id} style={card}>
+                <Text style={questionIndex}>Question {index + 1}</Text>
+                <Text style={questionText}>{question.prompt}</Text>
+                <Text style={helper}>{helperText}</Text>
+
+                <View style={optionsWrap}>
+                  {question.options.map((option) => {
+                    const active = selected.includes(option);
+
+                    return (
+                      <Pressable
+                        key={option}
+                        onPress={() => toggleOption(question, option)}
+                        style={[optionBtn, active && optionBtnActive]}
+                      >
+                        <Ionicons
+                          name={
+                            question.type === "multi"
+                              ? active
+                                ? "checkbox"
+                                : "square-outline"
+                              : active
+                              ? "radio-button-on"
+                              : "radio-button-off"
+                          }
+                          size={18}
+                          color={active ? "#041222" : "rgba(255,255,255,0.92)"}
+                        />
+                        <Text style={[optionText, active && optionTextActive]}>
+                          {formatOptionLabel(option)}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </GlassCard>
+            );
+          })}
+
+          <Pressable
+            onPress={submit}
+            style={[submitBtn, saving && { opacity: 0.72 }]}
+            disabled={saving}
+          >
+            {saving ? (
+              <ActivityIndicator color="#041222" />
+            ) : (
+              <Text style={submitBtnText}>Save answers and continue</Text>
+            )}
+          </Pressable>
+        </ScrollView>
       </SafeAreaView>
     </LinearGradient>
   );
 }
 
-function Field({
-  label,
-  value,
-  onChangeText,
-  multiline = false,
-  height = 58,
-  placeholder = "HH:MM",
-}: {
-  label: string;
-  value: string;
-  onChangeText: (value: string) => void;
-  multiline?: boolean;
-  height?: number;
-  placeholder?: string;
-}) {
-  return (
-    <View style={{ marginTop: 14 }}>
-      <Text style={fieldLabel}>{label}</Text>
-
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor="rgba(255,255,255,0.35)"
-        multiline={multiline}
-        textAlignVertical={multiline ? "top" : "center"}
-        style={[
-          fieldInput,
-          {
-            height,
-            paddingTop: multiline ? 14 : 0,
-          },
-        ]}
-      />
-    </View>
-  );
-}
-
 const headerRow = {
   flexDirection: "row" as const,
-  alignItems: "center" as const,
+  alignItems: "flex-start" as const,
   justifyContent: "space-between" as const,
 };
 
 const title = {
   color: "white",
-  fontSize: 31,
-  lineHeight: 37,
+  fontSize: 30,
+  lineHeight: 36,
   fontWeight: "900" as const,
 };
 
@@ -408,25 +327,82 @@ const headerBadge = {
   borderColor: "rgba(255,255,255,0.10)",
 };
 
-const fieldLabel = {
-  color: "rgba(255,255,255,0.90)",
-  fontWeight: "800" as const,
-  fontSize: 14,
-  marginBottom: 10,
+const progressWrap = {
+  marginTop: 18,
+  marginBottom: 6,
 };
 
-const fieldInput = {
-  borderRadius: 18,
-  paddingHorizontal: 16,
+const progressText = {
+  color: "rgba(173,232,255,0.95)",
+  fontSize: 13,
+  fontWeight: "800" as const,
+};
+
+const card = {
+  marginTop: 14,
+  borderRadius: 26,
+  paddingVertical: 18,
+};
+
+const questionIndex = {
+  color: "rgba(173,232,255,0.95)",
+  fontSize: 12,
+  fontWeight: "900" as const,
+  letterSpacing: 0.4,
+  textTransform: "uppercase" as const,
+};
+
+const questionText = {
+  marginTop: 10,
   color: "white",
-  fontSize: 15,
-  backgroundColor: "rgba(255,255,255,0.08)",
+  fontSize: 19,
+  lineHeight: 27,
+  fontWeight: "800" as const,
+};
+
+const helper = {
+  marginTop: 8,
+  color: "rgba(255,255,255,0.62)",
+  fontSize: 13,
+};
+
+const optionsWrap = {
+  marginTop: 14,
+  gap: 10,
+};
+
+const optionBtn = {
+  minHeight: 52,
+  borderRadius: 18,
+  paddingHorizontal: 14,
+  paddingVertical: 12,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  gap: 10,
+  backgroundColor: "rgba(255,255,255,0.06)",
   borderWidth: 1,
   borderColor: "rgba(255,255,255,0.10)",
 };
 
-const finishBtn = {
-  marginTop: 18,
+const optionBtnActive = {
+  backgroundColor: "rgba(98,193,255,0.96)",
+  borderColor: "rgba(255,255,255,0.18)",
+};
+
+const optionText = {
+  flex: 1,
+  color: "rgba(255,255,255,0.92)",
+  fontSize: 14,
+  fontWeight: "700" as const,
+  lineHeight: 20,
+};
+
+const optionTextActive = {
+  color: "#041222",
+};
+
+const submitBtn = {
+  marginTop: 20,
   minHeight: 58,
   borderRadius: 20,
   alignItems: "center" as const,
@@ -436,92 +412,8 @@ const finishBtn = {
   borderColor: "rgba(255,255,255,0.16)",
 };
 
-const finishBtnText = {
+const submitBtnText = {
   color: "#041222",
   fontWeight: "900" as const,
   fontSize: 17,
-};
-
-const modalBackdrop = {
-  flex: 1,
-  paddingHorizontal: 18,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(0,0,0,0.42)",
-};
-
-const modalCard = {
-  borderRadius: 28,
-  paddingHorizontal: 18,
-  paddingTop: 18,
-  paddingBottom: 16,
-};
-
-const modalIconWrap = {
-  width: 54,
-  height: 54,
-  borderRadius: 27,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  marginBottom: 14,
-};
-
-const modalIconInfo = {
-  backgroundColor: "rgba(63,171,255,0.92)",
-};
-
-const modalIconError = {
-  backgroundColor: "rgba(255,98,98,0.92)",
-};
-
-const modalIconSuccess = {
-  backgroundColor: "rgba(63,205,138,0.92)",
-};
-
-const modalTitle = {
-  color: "white",
-  fontSize: 22,
-  fontWeight: "900" as const,
-};
-
-const modalMessage = {
-  marginTop: 10,
-  color: "rgba(255,255,255,0.76)",
-  fontSize: 14,
-  lineHeight: 21,
-};
-
-const modalActions = {
-  flexDirection: "row" as const,
-  gap: 10,
-  marginTop: 18,
-};
-
-const modalBtn = {
-  minHeight: 48,
-  borderRadius: 16,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  paddingHorizontal: 16,
-};
-
-const modalBtnGhost = {
-  flex: 1,
-  backgroundColor: "rgba(255,255,255,0.06)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.10)",
-};
-
-const modalBtnPrimary = {
-  flex: 1,
-  backgroundColor: "rgba(98,193,255,0.96)",
-};
-
-const modalGhostText = {
-  color: "rgba(255,255,255,0.90)",
-  fontWeight: "900" as const,
-};
-
-const modalPrimaryText = {
-  color: "#041222",
-  fontWeight: "900" as const,
 };
