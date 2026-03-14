@@ -151,9 +151,11 @@ export default function QuestionnaireScreen() {
 
       await savePersonalityAnswers(resolvedUserId, payload);
       await markQuestionnaireCompleted(true);
+      await refresh();
 
-      router.replace("/(tabs)/routine");
-      void refresh();
+      requestAnimationFrame(() => {
+        router.replace("/(tabs)/routine");
+      });
     } catch (error: any) {
       Alert.alert("Failed to save answers", error?.message || "Please try again.");
     } finally {
