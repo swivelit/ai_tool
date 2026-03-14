@@ -114,6 +114,7 @@ export default function ProfileScreen() {
         <Text style={{ color: "white", fontSize: 30, fontWeight: "900" }}>
           Complete your profile
         </Text>
+
         <Text style={{ color: "rgba(255,255,255,0.65)", marginTop: 8, lineHeight: 22 }}>
           Your login is ready. Add a few profile details so {assistantName || "Elli"} can
           personalize the app.
