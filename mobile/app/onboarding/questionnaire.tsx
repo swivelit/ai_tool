@@ -19,6 +19,7 @@ import {
   PersonalityQuestion,
   getPersonalityQuestions,
   getProfile,
+  markQuestionnaireCompleted,
   savePersonalityAnswers,
 } from "@/lib/account";
 
@@ -48,7 +49,6 @@ export default function QuestionnaireScreen() {
       }
     }
 
-    void refresh();
     void load();
 
     return () => {
@@ -66,8 +66,6 @@ export default function QuestionnaireScreen() {
   async function resolveUserId() {
     if (userId) return userId;
     if (profile?.userId) return profile.userId;
-
-    await refresh();
 
     const localProfile = await getProfile();
     return localProfile?.userId;
@@ -152,18 +150,10 @@ export default function QuestionnaireScreen() {
       );
 
       await savePersonalityAnswers(resolvedUserId, payload);
+      await markQuestionnaireCompleted(true);
       await refresh();
 
-      Alert.alert(
-        "Profile questions saved",
-        "Your personality profile is ready. Next, set your daily routine.",
-        [
-          {
-            text: "Continue",
-            onPress: () => router.replace("/(tabs)/routine"),
-          },
-        ]
-      );
+      router.replace("/(tabs)/routine");
     } catch (error: any) {
       Alert.alert("Failed to save answers", error?.message || "Please try again.");
     } finally {
@@ -256,8 +246,8 @@ export default function QuestionnaireScreen() {
                                 ? "checkbox"
                                 : "square-outline"
                               : active
-                              ? "radio-button-on"
-                              : "radio-button-off"
+                                ? "radio-button-on"
+                                : "radio-button-off"
                           }
                           size={18}
                           color={active ? "#041222" : "rgba(255,255,255,0.92)"}

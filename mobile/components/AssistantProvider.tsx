@@ -1,4 +1,11 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   AssistantSettings,
   getAssistantName,
@@ -24,6 +31,7 @@ const AssistantContext = createContext<Ctx | null>(null);
 
 export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+
   const [name, setName] = useState("Elli");
   const [settings, setS] = useState<AssistantSettings>({
     tone: "pro",
@@ -32,22 +40,17 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  async function refresh() {
-    try {
-      setLoading(true);
-      const [assistantName, savedSettings, savedProfile] = await Promise.all([
-        getAssistantName(),
-        getSettings(),
-        getProfileForFirebaseUid(user?.uid),
-      ]);
+  const refresh = useCallback(async () => {
+    const [assistantName, savedSettings, savedProfile] = await Promise.all([
+      getAssistantName(),
+      getSettings(),
+      getProfileForFirebaseUid(user?.uid),
+    ]);
 
-      setName(assistantName || "Elli");
-      setS(savedSettings);
-      setProfile(savedProfile);
-    } finally {
-      setLoading(false);
-    }
-  }
+    setName(assistantName || "Elli");
+    setS(savedSettings);
+    setProfile(savedProfile);
+  }, [user?.uid]);
 
   async function updateName(nextName: string) {
     await setAssistantName(nextName);
@@ -60,8 +63,25 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
-    void refresh();
-  }, [user?.uid]);
+    let alive = true;
+
+    async function load() {
+      try {
+        setLoading(true);
+        await refresh();
+      } finally {
+        if (alive) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void load();
+
+    return () => {
+      alive = false;
+    };
+  }, [refresh]);
 
   const value = useMemo(
     () => ({
@@ -74,7 +94,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       updateName,
       updateSettings,
     }),
-    [name, settings, profile, loading]
+    [name, settings, profile, loading, refresh]
   );
 
   return <AssistantContext.Provider value={value}>{children}</AssistantContext.Provider>;
