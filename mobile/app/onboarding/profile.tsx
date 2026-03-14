@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   SafeAreaView,
   Text,
@@ -10,6 +9,7 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 
 import {
   createProfileOnBackend,
@@ -20,6 +20,13 @@ import { setAssistantName } from "@/lib/storage";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 
+type NoticeState = {
+  title: string;
+  message: string;
+  primaryLabel?: string;
+  onPrimaryPress?: () => void;
+} | null;
+
 export default function ProfileScreen() {
   const { name: currentAssistantName, profile, refresh } = useAssistant();
   const { user } = useAuth();
@@ -28,6 +35,7 @@ export default function ProfileScreen() {
   const [place, setPlace] = useState("");
   const [assistantName, setAssistantNameInput] = useState(currentAssistantName || "Elli");
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<NoticeState>(null);
 
   const provider = useMemo(() => {
     if (user?.providerData?.some((item) => item.providerId === "google.com")) {
@@ -47,21 +55,48 @@ export default function ProfileScreen() {
     }
   }, [currentAssistantName]);
 
+  function showNotice(
+    title: string,
+    message: string,
+    primaryLabel?: string,
+    onPrimaryPress?: () => void
+  ) {
+    setNotice({
+      title,
+      message,
+      primaryLabel,
+      onPrimaryPress,
+    });
+  }
+
+  function closeNotice() {
+    setNotice(null);
+  }
+
   async function saveProfileAndContinue() {
     if (busy) return;
 
     if (!user) {
-      Alert.alert("Login required", "Please login again and then continue.");
+      showNotice(
+        "Login required",
+        "Please login again and then continue."
+      );
       return;
     }
 
     if (!name.trim()) {
-      Alert.alert("Name required", "Please enter your name.");
+      showNotice(
+        "Name required",
+        "Please enter your name."
+      );
       return;
     }
 
     if (!assistantName.trim()) {
-      Alert.alert("Assistant name required", "Please enter an assistant name.");
+      showNotice(
+        "Assistant name required",
+        "Please enter an assistant name."
+      );
       return;
     }
 
@@ -102,7 +137,10 @@ export default function ProfileScreen() {
       await refresh();
       router.replace("/onboarding/questionnaire");
     } catch (error: any) {
-      Alert.alert("Error", error?.message || "Failed to save profile.");
+      showNotice(
+        "Couldn’t save profile",
+        error?.message || "Failed to save profile."
+      );
     } finally {
       setBusy(false);
     }
@@ -168,6 +206,38 @@ export default function ProfileScreen() {
             <Text style={{ color: "white", fontWeight: "900" }}>Continue</Text>
           )}
         </Pressable>
+
+        {notice ? (
+          <View style={noticeOverlay}>
+            <View style={noticeCard}>
+              <View style={noticeIconWrap}>
+                <Ionicons
+                  name="information-circle"
+                  size={22}
+                  color="rgba(173,232,255,0.98)"
+                />
+              </View>
+
+              <Text style={noticeTitle}>{notice.title}</Text>
+              <Text style={noticeMessage}>{notice.message}</Text>
+
+              <View style={noticeActions}>
+                <Pressable onPress={closeNotice} style={noticeSecondaryBtn}>
+                  <Text style={noticeSecondaryText}>Close</Text>
+                </Pressable>
+
+                {notice.primaryLabel ? (
+                  <Pressable
+                    onPress={notice.onPrimaryPress || closeNotice}
+                    style={noticePrimaryBtn}
+                  >
+                    <Text style={noticePrimaryText}>{notice.primaryLabel}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          </View>
+        ) : null}
       </SafeAreaView>
     </LinearGradient>
   );
@@ -211,4 +281,90 @@ const btn = {
   backgroundColor: "rgba(34,211,238,0.22)",
   borderWidth: 1,
   borderColor: "rgba(34,211,238,0.35)",
+};
+
+const noticeOverlay = {
+  position: "absolute" as const,
+  left: 0,
+  right: 0,
+  top: 0,
+  bottom: 0,
+  paddingHorizontal: 20,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(1,7,19,0.58)",
+};
+
+const noticeCard = {
+  borderRadius: 26,
+  paddingHorizontal: 18,
+  paddingVertical: 18,
+  backgroundColor: "rgba(8,18,43,0.98)",
+  borderWidth: 1,
+  borderColor: "rgba(173,232,255,0.18)",
+};
+
+const noticeIconWrap = {
+  width: 42,
+  height: 42,
+  borderRadius: 21,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(173,232,255,0.10)",
+  borderWidth: 1,
+  borderColor: "rgba(173,232,255,0.18)",
+};
+
+const noticeTitle = {
+  marginTop: 14,
+  color: "white",
+  fontSize: 22,
+  fontWeight: "900" as const,
+};
+
+const noticeMessage = {
+  marginTop: 10,
+  color: "rgba(255,255,255,0.72)",
+  fontSize: 14,
+  lineHeight: 22,
+};
+
+const noticeActions = {
+  marginTop: 18,
+  flexDirection: "row" as const,
+  justifyContent: "flex-end" as const,
+};
+
+const noticeSecondaryBtn = {
+  minHeight: 46,
+  paddingHorizontal: 16,
+  borderRadius: 16,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(255,255,255,0.08)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.10)",
+};
+
+const noticeSecondaryText = {
+  color: "rgba(255,255,255,0.92)",
+  fontWeight: "800" as const,
+  fontSize: 14,
+};
+
+const noticePrimaryBtn = {
+  marginLeft: 10,
+  minHeight: 46,
+  paddingHorizontal: 16,
+  borderRadius: 16,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(98,193,255,0.96)",
+  borderWidth: 1,
+  borderColor: "rgba(255,255,255,0.16)",
+};
+
+const noticePrimaryText = {
+  color: "#041222",
+  fontWeight: "900" as const,
+  fontSize: 14,
 };
