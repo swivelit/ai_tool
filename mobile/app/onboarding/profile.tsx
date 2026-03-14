@@ -78,11 +78,8 @@ export default function ProfileScreen() {
         questionnaireCompleted: false,
       });
 
-      await refresh();
-
-      requestAnimationFrame(() => {
-        router.replace("/onboarding/questionnaire");
-      });
+      router.replace("/onboarding/questionnaire");
+      void refresh();
     } catch (error: any) {
       Alert.alert("Error", error?.message || "Failed to save profile.");
     } finally {
