@@ -11,13 +11,17 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 
-import { createProfileOnBackend } from "@/lib/account";
+import {
+  createProfileOnBackend,
+  getProfileForFirebaseUid,
+  saveProfile,
+} from "@/lib/account";
 import { setAssistantName } from "@/lib/storage";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 
 export default function ProfileScreen() {
-  const { name: currentAssistantName, refresh } = useAssistant();
+  const { name: currentAssistantName, profile, refresh } = useAssistant();
   const { user } = useAuth();
 
   const [name, setName] = useState("");
@@ -33,8 +37,9 @@ export default function ProfileScreen() {
   }, [user?.providerData]);
 
   useEffect(() => {
-    setName(user?.displayName || "");
-  }, [user?.displayName]);
+    setName(user?.displayName || profile?.name || "");
+    setPlace(profile?.place || "");
+  }, [profile?.name, profile?.place, user?.displayName]);
 
   useEffect(() => {
     if (currentAssistantName) {
@@ -42,7 +47,7 @@ export default function ProfileScreen() {
     }
   }, [currentAssistantName]);
 
-  async function saveProfile() {
+  async function saveProfileAndContinue() {
     if (busy) return;
 
     if (!user) {
@@ -63,9 +68,7 @@ export default function ProfileScreen() {
     try {
       setBusy(true);
 
-      await setAssistantName(assistantName.trim());
-
-      await createProfileOnBackend({
+      const normalizedProfile = {
         firebaseUid: user.uid,
         firebaseEmailVerified: user.emailVerified,
         email: user.email || "",
@@ -76,10 +79,28 @@ export default function ProfileScreen() {
         assistantName: assistantName.trim(),
         timezone: "Asia/Kolkata",
         questionnaireCompleted: false,
-      });
+      } as const;
 
+      await setAssistantName(normalizedProfile.assistantName);
+
+      const existingProfile =
+        profile?.firebaseUid === user.uid && profile?.userId
+          ? profile
+          : await getProfileForFirebaseUid(user.uid);
+
+      if (existingProfile?.userId) {
+        await saveProfile({
+          ...existingProfile,
+          ...normalizedProfile,
+          userId: existingProfile.userId,
+          questionnaireCompleted: existingProfile.questionnaireCompleted ?? false,
+        });
+      } else {
+        await createProfileOnBackend(normalizedProfile);
+      }
+
+      await refresh();
       router.replace("/onboarding/questionnaire");
-      void refresh();
     } catch (error: any) {
       Alert.alert("Error", error?.message || "Failed to save profile.");
     } finally {
@@ -136,7 +157,7 @@ export default function ProfileScreen() {
         />
 
         <Pressable
-          onPress={saveProfile}
+          onPress={saveProfileAndContinue}
           style={[btn, busy && { opacity: 0.7 }]}
           disabled={busy}
         >
