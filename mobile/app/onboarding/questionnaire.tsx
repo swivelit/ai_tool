@@ -40,10 +40,7 @@ export default function QuestionnaireScreen() {
         if (!alive) return;
         setQuestions(nextQuestions);
       } catch (error: any) {
-        Alert.alert(
-          "Unable to load questions",
-          error?.message || "Please try again."
-        );
+        Alert.alert("Unable to load questions", error?.message || "Please try again.");
       } finally {
         if (alive) {
           setLoading(false);
@@ -159,7 +156,7 @@ export default function QuestionnaireScreen() {
 
       Alert.alert(
         "Profile questions saved",
-        "Your personality profile is ready. Next, you can set your daily routine for reminders and check-ins.",
+        "Your personality profile is ready. Next, set your daily routine.",
         [
           {
             text: "Continue",
@@ -168,10 +165,7 @@ export default function QuestionnaireScreen() {
         ]
       );
     } catch (error: any) {
-      Alert.alert(
-        "Failed to save answers",
-        error?.message || "Please try again."
-      );
+      Alert.alert("Failed to save answers", error?.message || "Please try again.");
     } finally {
       setSaving(false);
     }
