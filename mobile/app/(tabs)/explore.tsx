@@ -2,14 +2,15 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   FlatList,
   Pressable,
-  SafeAreaView,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
 import { apiGet } from "@/lib/api";
@@ -17,11 +18,28 @@ import { Item } from "@/lib/types";
 
 type FilterKey = "all" | "upcoming" | "completed";
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 export default function Explore() {
+  const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
+
   const [items, setItems] = useState<Item[]>([]);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<FilterKey>("all");
   const [loading, setLoading] = useState(false);
+
+  const isSmallPhone = width < 370 || height < 760;
+  const isVerySmallPhone = width < 345 || height < 700;
+
+  const horizontalPadding = isSmallPhone ? 14 : 16;
+  const topPadding = insets.top + (isSmallPhone ? 6 : 10);
+  const titleFontSize = isVerySmallPhone ? 22 : isSmallPhone ? 24 : 26;
+  const searchHeight = isSmallPhone ? 44 : 46;
+  const chipHeight = isSmallPhone ? 31 : 32;
+  const badgeMinWidth = isSmallPhone ? 72 : 82;
 
   async function load() {
     try {
@@ -34,7 +52,7 @@ export default function Explore() {
   }
 
   useEffect(() => {
-    load();
+    void load();
   }, []);
 
   function parseItemDate(item: Item): Date | null {
@@ -112,41 +130,52 @@ export default function Explore() {
       end={{ x: 0.88, y: 1 }}
       style={{ flex: 1 }}
     >
-      <SafeAreaView style={{ flex: 1, paddingHorizontal: 16 }}>
+      <View style={{ flex: 1, paddingTop: topPadding, paddingHorizontal: horizontalPadding }}>
         <View style={topBar}>
           <Pressable style={iconBtn} onPress={() => router.replace("/(tabs)")}>
             <Ionicons name="chevron-back" size={18} color="rgba(255,255,255,0.95)" />
           </Pressable>
 
-          <Text style={screenTitle}>Schedule</Text>
+          <View style={titleWrap}>
+            <Text style={[screenTitle, { fontSize: titleFontSize }]} numberOfLines={1}>
+              Schedule
+            </Text>
+          </View>
 
           <Pressable style={iconBtn} onPress={load}>
             <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.95)" />
           </Pressable>
         </View>
 
-        <View style={searchWrap}>
+        <View style={[searchWrap, { marginTop: isSmallPhone ? 14 : 18, height: searchHeight }]}>
           <Ionicons name="search" size={15} color="rgba(255,255,255,0.55)" />
           <TextInput
             value={q}
             onChangeText={setQ}
             placeholder="Search schedule..."
             placeholderTextColor="rgba(255,255,255,0.34)"
-            style={searchInput}
+            style={[searchInput, { fontSize: isSmallPhone ? 13 : 14 }]}
           />
         </View>
 
-        <View style={filterRow}>
-          <FilterChip label="All" active={filter === "all"} onPress={() => setFilter("all")} />
+        <View style={[filterRow, { marginTop: isSmallPhone ? 12 : 14 }]}>
+          <FilterChip
+            label="All"
+            active={filter === "all"}
+            onPress={() => setFilter("all")}
+            height={chipHeight}
+          />
           <FilterChip
             label="Upcoming"
             active={filter === "upcoming"}
             onPress={() => setFilter("upcoming")}
+            height={chipHeight}
           />
           <FilterChip
             label="Completed"
             active={filter === "completed"}
             onPress={() => setFilter("completed")}
+            height={chipHeight}
           />
         </View>
 
@@ -154,7 +183,10 @@ export default function Explore() {
           data={filtered}
           keyExtractor={(item) => String(item.id)}
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingTop: 14, paddingBottom: 30 }}
+          contentContainerStyle={{
+            paddingTop: isSmallPhone ? 10 : 14,
+            paddingBottom: Math.max(insets.bottom + 24, 30),
+          }}
           ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
           ListEmptyComponent={
             <GlassCard style={{ borderRadius: 22 }}>
@@ -166,16 +198,22 @@ export default function Explore() {
           }
           renderItem={({ item }) => (
             <Pressable onPress={() => router.push(`/item/${item.id}`)}>
-              <View style={scheduleCard}>
-                <View style={scheduleLeftIcon}>
-                  <Ionicons name="document-text-outline" size={18} color="rgba(180,232,255,0.95)" />
+              <View style={[scheduleCard, { minHeight: isSmallPhone ? 78 : 82 }]}>
+                <View style={[scheduleLeftIcon, { width: isSmallPhone ? 32 : 34, height: isSmallPhone ? 32 : 34, borderRadius: isSmallPhone ? 16 : 17 }]}>
+                  <Ionicons
+                    name="document-text-outline"
+                    size={18}
+                    color="rgba(180,232,255,0.95)"
+                  />
                 </View>
 
-                <View style={{ flex: 1 }}>
-                  <Text style={scheduleTitle} numberOfLines={1}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[scheduleTitle, { fontSize: isSmallPhone ? 14 : 15 }]} numberOfLines={1}>
                     {item.title || "Untitled item"}
                   </Text>
-                  <Text style={scheduleTime}>{timeLabel(item)}</Text>
+                  <Text style={[scheduleTime, { fontSize: isSmallPhone ? 11 : 12 }]}>
+                    {timeLabel(item)}
+                  </Text>
 
                   <View style={scheduleMetaRow}>
                     <View
@@ -187,20 +225,22 @@ export default function Explore() {
                         marginRight: 6,
                       }}
                     />
-                    <Text style={scheduleMetaText}>
+                    <Text style={scheduleMetaText} numberOfLines={1}>
                       {item.category || item.intent || "General"}
                     </Text>
                   </View>
                 </View>
 
-                <View style={dateBadgeWrap}>
-                  <Text style={dateBadgeText}>{dateBadge(item)}</Text>
+                <View style={[dateBadgeWrap, { minWidth: badgeMinWidth }]}>
+                  <Text style={dateBadgeText} numberOfLines={1}>
+                    {dateBadge(item)}
+                  </Text>
                 </View>
               </View>
             </Pressable>
           )}
         />
-      </SafeAreaView>
+      </View>
     </LinearGradient>
   );
 }
@@ -209,17 +249,19 @@ function FilterChip({
   label,
   active,
   onPress,
+  height,
 }: {
   label: string;
   active: boolean;
   onPress: () => void;
+  height: number;
 }) {
   return (
     <Pressable
       onPress={onPress}
       style={{
         minWidth: 82,
-        height: 32,
+        height,
         paddingHorizontal: 14,
         borderRadius: 999,
         alignItems: "center",
@@ -227,6 +269,8 @@ function FilterChip({
         backgroundColor: active ? "rgba(142,214,255,0.22)" : "rgba(255,255,255,0.10)",
         borderWidth: 1,
         borderColor: active ? "rgba(166,228,255,0.34)" : "rgba(255,255,255,0.08)",
+        marginRight: 10,
+        marginBottom: 10,
       }}
     >
       <Text
@@ -243,10 +287,17 @@ function FilterChip({
 }
 
 const topBar = {
-  paddingTop: 8,
+  minHeight: 44,
   flexDirection: "row" as const,
   alignItems: "center" as const,
   justifyContent: "space-between" as const,
+};
+
+const titleWrap = {
+  flex: 1,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  paddingHorizontal: 12,
 };
 
 const iconBtn = {
@@ -262,13 +313,10 @@ const iconBtn = {
 
 const screenTitle = {
   color: "white",
-  fontSize: 24,
   fontWeight: "900" as const,
 };
 
 const searchWrap = {
-  marginTop: 18,
-  height: 46,
   borderRadius: 16,
   flexDirection: "row" as const,
   alignItems: "center" as const,
@@ -282,17 +330,15 @@ const searchInput = {
   flex: 1,
   marginLeft: 9,
   color: "white",
-  fontSize: 14,
 };
 
 const filterRow = {
-  marginTop: 14,
   flexDirection: "row" as const,
-  gap: 10,
+  flexWrap: "wrap" as const,
+  alignItems: "center" as const,
 };
 
 const scheduleCard = {
-  minHeight: 82,
   borderRadius: 18,
   paddingHorizontal: 12,
   paddingVertical: 12,
@@ -304,9 +350,6 @@ const scheduleCard = {
 };
 
 const scheduleLeftIcon = {
-  width: 34,
-  height: 34,
-  borderRadius: 17,
   alignItems: "center" as const,
   justifyContent: "center" as const,
   backgroundColor: "rgba(255,255,255,0.08)",
@@ -315,14 +358,12 @@ const scheduleLeftIcon = {
 
 const scheduleTitle = {
   color: "rgba(255,255,255,0.96)",
-  fontSize: 15,
   fontWeight: "900" as const,
 };
 
 const scheduleTime = {
   marginTop: 6,
   color: "rgba(255,255,255,0.82)",
-  fontSize: 12,
   fontWeight: "700" as const,
 };
 
@@ -333,13 +374,13 @@ const scheduleMetaRow = {
 };
 
 const scheduleMetaText = {
+  flex: 1,
   color: "rgba(255,255,255,0.58)",
   fontSize: 11,
 };
 
 const dateBadgeWrap = {
   marginLeft: 10,
-  minWidth: 82,
   height: 28,
   borderRadius: 999,
   paddingHorizontal: 10,
