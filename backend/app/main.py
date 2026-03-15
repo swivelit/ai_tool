@@ -816,24 +816,55 @@ def parse_datetime(payload: ParseDatetimeRequest):
 @app.post("/users")
 def create_user(payload: UserCreate, session: Session = Depends(get_session)):
     assistant_name = (payload.assistant_name or "Elli").strip() or "Elli"
+
+    print(
+        "[DEBUG] /users incoming payload:",
+        json.dumps(payload.model_dump(), ensure_ascii=False, default=str),
+    )
+
     user = User(
         name=payload.name,
         place=payload.place,
         timezone=payload.timezone or "Asia/Kolkata",
         assistant_name=assistant_name,
     )
-    session.add(user)
-    session.commit()
-    session.refresh(user)
 
-    profile = UserProfile(
-        user_id=user.id,
-        answers_json=json.dumps({}, ensure_ascii=False),
-        questions_version=PERSONALITY_QUESTIONS_VERSION,
+    try:
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+
+        profile = UserProfile(
+            user_id=user.id,
+            answers_json=json.dumps({}, ensure_ascii=False),
+            questions_version=PERSONALITY_QUESTIONS_VERSION,
+        )
+        session.add(profile)
+        session.commit()
+        session.refresh(profile)
+
+    except Exception as exc:
+        session.rollback()
+        print(f"[DEBUG] /users failed while saving: {exc}")
+        raise
+
+    response_payload = {
+        "id": int(user.id) if user.id is not None else None,
+        "name": user.name,
+        "place": user.place or "",
+        "timezone": user.timezone or "Asia/Kolkata",
+        "assistant_name": user.assistant_name or assistant_name,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "profile_id": int(profile.id) if profile.id is not None else None,
+        "profile_user_id": int(profile.user_id) if profile.user_id is not None else None,
+    }
+
+    print(
+        "[DEBUG] /users response payload:",
+        json.dumps(response_payload, ensure_ascii=False, default=str),
     )
-    session.add(profile)
-    session.commit()
-    return user
+
+    return response_payload
 
 
 @app.get("/users/{user_id}")
