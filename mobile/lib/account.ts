@@ -44,26 +44,137 @@ function safeParseProfile(raw: string | null): UserProfile | null {
   }
 }
 
+function toPositiveNumber(value: any): number | undefined {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : NaN;
+
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric;
+  }
+
+  return undefined;
+}
+
+function normalizeKey(key: string) {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function tryParseJsonString(value: any) {
+  if (typeof value !== "string") return value;
+
+  const trimmed = value.trim();
+  if (
+    !trimmed ||
+    (!trimmed.startsWith("{") && !trimmed.startsWith("["))
+  ) {
+    return value;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
 function normalizeUserId(payload: any): number | undefined {
-  const candidates = [
-    payload?.id,
-    payload?.userId,
-    payload?.user_id,
-    payload?.data?.id,
-    payload?.data?.userId,
-    payload?.data?.user_id,
+  const parsedPayload = tryParseJsonString(payload);
+
+  const directCandidates = [
+    parsedPayload?.id,
+    parsedPayload?.userId,
+    parsedPayload?.user_id,
+    parsedPayload?.backendUserId,
+    parsedPayload?.backend_user_id,
+
+    parsedPayload?.data?.id,
+    parsedPayload?.data?.userId,
+    parsedPayload?.data?.user_id,
+    parsedPayload?.data?.backendUserId,
+    parsedPayload?.data?.backend_user_id,
+
+    parsedPayload?.user?.id,
+    parsedPayload?.user?.userId,
+    parsedPayload?.user?.user_id,
+    parsedPayload?.user?.backendUserId,
+    parsedPayload?.user?.backend_user_id,
+
+    parsedPayload?.data?.user?.id,
+    parsedPayload?.data?.user?.userId,
+    parsedPayload?.data?.user?.user_id,
+    parsedPayload?.data?.user?.backendUserId,
+    parsedPayload?.data?.user?.backend_user_id,
+
+    parsedPayload?.profile?.id,
+    parsedPayload?.profile?.userId,
+    parsedPayload?.profile?.user_id,
+
+    parsedPayload?.result?.id,
+    parsedPayload?.result?.userId,
+    parsedPayload?.result?.user_id,
   ];
 
-  for (const value of candidates) {
-    const numeric =
-      typeof value === "number"
-        ? value
-        : typeof value === "string"
-          ? Number(value)
-          : NaN;
+  for (const value of directCandidates) {
+    const resolved = toPositiveNumber(value);
+    if (resolved) {
+      return resolved;
+    }
+  }
 
-    if (Number.isFinite(numeric) && numeric > 0) {
-      return numeric;
+  const targetKeys = new Set([
+    "id",
+    "userid",
+    "backenduserid",
+  ]);
+
+  const queue: any[] = [parsedPayload];
+  const visited = new Set<any>();
+  let steps = 0;
+
+  while (queue.length && steps < 200) {
+    steps += 1;
+    const current = tryParseJsonString(queue.shift());
+
+    if (!current || typeof current !== "object") {
+      const primitiveResolved = toPositiveNumber(current);
+      if (primitiveResolved) {
+        return primitiveResolved;
+      }
+      continue;
+    }
+
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    if (Array.isArray(current)) {
+      for (const item of current) {
+        queue.push(item);
+      }
+      continue;
+    }
+
+    for (const [key, value] of Object.entries(current)) {
+      const normalized = normalizeKey(key);
+
+      if (targetKeys.has(normalized)) {
+        const resolved = toPositiveNumber(value);
+        if (resolved) {
+          return resolved;
+        }
+      }
+
+      if (value && typeof value === "object") {
+        queue.push(value);
+      } else if (typeof value === "string") {
+        const maybeParsed = tryParseJsonString(value);
+        if (maybeParsed !== value) {
+          queue.push(maybeParsed);
+        }
+      }
     }
   }
 
