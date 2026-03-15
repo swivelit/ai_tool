@@ -20,7 +20,13 @@ import {
 } from "@react-native-google-signin/google-signin";
 
 import { auth } from "@/lib/firebase";
-import { clearProfile, deleteAccountOnBackend } from "@/lib/account";
+import {
+  clearProfile,
+  createProfileOnBackend,
+  deleteAccountOnBackend,
+  getProfileForFirebaseUid,
+  saveProfile,
+} from "@/lib/account";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
 
@@ -40,6 +46,9 @@ function mapFirebaseError(error: any) {
 
     case "auth/email-already-in-use":
       return "This email is already registered. Please log in instead.";
+
+    case "auth/account-exists-with-different-credential":
+      return "This email is already linked to a different sign-in method. Please use the original login method for this account.";
 
     case "auth/weak-password":
       return "Password should be at least 6 characters.";
@@ -77,6 +86,31 @@ function mapGoogleError(error: any) {
   }
 
   return message || "Google sign-in failed. Please try again.";
+}
+
+function detectProvider(user: User): "password" | "google" {
+  if (user.providerData?.some((item) => item.providerId === "google.com")) {
+    return "google";
+  }
+
+  return "password";
+}
+
+function buildFallbackName(user: User) {
+  const displayName = user.displayName?.trim();
+  if (displayName) {
+    return displayName;
+  }
+
+  const email = user.email?.trim();
+  if (email && email.includes("@")) {
+    const localPart = email.split("@")[0]?.trim();
+    if (localPart) {
+      return localPart;
+    }
+  }
+
+  return "User";
 }
 
 type AuthContextType = {
@@ -128,9 +162,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return unsubscribe;
   }, []);
 
+  async function syncProfileForAuthenticatedUser(authUser: User) {
+    try {
+      const provider = detectProvider(authUser);
+      const restoredProfile = await getProfileForFirebaseUid(authUser.uid, authUser.email);
+
+      const mergedProfile = restoredProfile
+        ? {
+            ...restoredProfile,
+            firebaseUid: authUser.uid,
+            firebaseEmailVerified: authUser.emailVerified,
+            email: authUser.email || restoredProfile.email || "",
+            avatarUrl: authUser.photoURL || restoredProfile.avatarUrl,
+            authProvider: provider,
+          }
+        : null;
+
+      if (mergedProfile?.userId) {
+        await saveProfile(mergedProfile);
+        return;
+      }
+
+      const createdProfile = await createProfileOnBackend({
+        ...(mergedProfile || {}),
+        firebaseUid: authUser.uid,
+        firebaseEmailVerified: authUser.emailVerified,
+        email: authUser.email || mergedProfile?.email || "",
+        avatarUrl: authUser.photoURL || mergedProfile?.avatarUrl,
+        authProvider: provider,
+        name: mergedProfile?.name || buildFallbackName(authUser),
+        place: mergedProfile?.place || "",
+        assistantName: mergedProfile?.assistantName || "Elli",
+        timezone: mergedProfile?.timezone || "Asia/Kolkata",
+        questionnaireCompleted: mergedProfile?.questionnaireCompleted ?? false,
+        userId: mergedProfile?.userId,
+      });
+
+      await saveProfile(createdProfile);
+    } catch (error) {
+      console.warn("[auth] Failed to sync backend profile after authentication:", error);
+    }
+  }
+
   async function signInWithPassword(email: string, password: string) {
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
+      const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
+      await syncProfileForAuthenticatedUser(credential.user);
     } catch (error) {
       throw new Error(mapFirebaseError(error));
     }
@@ -142,6 +219,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (name.trim()) {
         await updateProfile(credential.user, { displayName: name.trim() });
       }
+
+      await syncProfileForAuthenticatedUser(auth.currentUser || credential.user);
     } catch (error) {
       throw new Error(mapFirebaseError(error));
     }
@@ -182,7 +261,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const credential = GoogleAuthProvider.credential(idToken);
-      await signInWithCredential(auth, credential);
+      const userCredential = await signInWithCredential(auth, credential);
+      await syncProfileForAuthenticatedUser(userCredential.user);
     } catch (error) {
       const message = mapGoogleError(error);
 
@@ -214,15 +294,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error("No logged-in user found.");
     }
 
+    const restoredProfile = await getProfileForFirebaseUid(currentUser.uid, currentUser.email);
+    const resolvedBackendUserId = backendUserId || restoredProfile?.userId;
+
     try {
       await deleteUser(currentUser);
     } catch (error) {
       throw new Error(mapFirebaseError(error));
     }
 
-    if (backendUserId) {
+    if (resolvedBackendUserId) {
       try {
-        await deleteAccountOnBackend(backendUserId);
+        await deleteAccountOnBackend(resolvedBackendUserId);
       } catch (error: any) {
         throw new Error(
           error?.message ||
