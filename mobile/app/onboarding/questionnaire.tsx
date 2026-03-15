@@ -110,7 +110,7 @@ export default function QuestionnaireScreen() {
 
     if (!user) return null;
 
-    const localProfileForFirebaseUser = await getProfileForFirebaseUid(user.uid);
+    const localProfileForFirebaseUser = await getProfileForFirebaseUid(user.uid, user.email);
     if (localProfileForFirebaseUser?.userId) {
       return localProfileForFirebaseUser.userId;
     }
@@ -121,16 +121,17 @@ export default function QuestionnaireScreen() {
         : "password";
 
     const rebuiltProfile = await createProfileOnBackend({
+      userId: profile?.userId || localProfile?.userId,
       firebaseUid: user.uid,
       firebaseEmailVerified: user.emailVerified,
       email: user.email || "",
       avatarUrl: user.photoURL || undefined,
       authProvider: provider,
-      name: profile?.name || user.displayName || "User",
+      name: profile?.name || user.displayName || localProfile?.name || "User",
       place: profile?.place || localProfile?.place || "",
-      assistantName: profile?.assistantName || assistantLabel || "Elli",
+      assistantName: profile?.assistantName || localProfile?.assistantName || assistantLabel || "Elli",
       timezone: "Asia/Kolkata",
-      questionnaireCompleted: false,
+      questionnaireCompleted: profile?.questionnaireCompleted ?? localProfile?.questionnaireCompleted ?? false,
     });
 
     await refresh();

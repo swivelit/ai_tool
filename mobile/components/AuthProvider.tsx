@@ -4,6 +4,7 @@ import Constants from "expo-constants";
 import {
   User,
   createUserWithEmailAndPassword,
+  deleteUser,
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithCredential,
@@ -19,7 +20,7 @@ import {
 } from "@react-native-google-signin/google-signin";
 
 import { auth } from "@/lib/firebase";
-import { clearProfile } from "@/lib/account";
+import { clearProfile, deleteAccountOnBackend } from "@/lib/account";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
 
@@ -45,6 +46,9 @@ function mapFirebaseError(error: any) {
 
     case "auth/network-request-failed":
       return "Network error. Please check your internet connection.";
+
+    case "auth/requires-recent-login":
+      return "For security, please sign out, log in again, and then delete your account.";
 
     default:
       return message || "Authentication failed. Please try again.";
@@ -84,6 +88,7 @@ type AuthContextType = {
   signUpWithPassword: (name: string, email: string, password: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signOutUser: () => Promise<void>;
+  deleteCurrentAccount: (backendUserId?: number) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -202,6 +207,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await clearProfile();
   }
 
+  async function deleteCurrentAccount(backendUserId?: number) {
+    const currentUser = auth.currentUser;
+
+    if (!currentUser) {
+      throw new Error("No logged-in user found.");
+    }
+
+    try {
+      await deleteUser(currentUser);
+    } catch (error) {
+      throw new Error(mapFirebaseError(error));
+    }
+
+    if (backendUserId) {
+      try {
+        await deleteAccountOnBackend(backendUserId);
+      } catch (error: any) {
+        throw new Error(
+          error?.message ||
+            "Your login account was deleted, but backend cleanup failed. Please remove the remaining profile data from the server."
+        );
+      }
+    }
+
+    if (Platform.OS !== "web") {
+      try {
+        await GoogleSignin.revokeAccess();
+      } catch {
+        // Ignore revoke errors.
+      }
+
+      try {
+        await GoogleSignin.signOut();
+      } catch {
+        // Ignore Google SDK sign-out errors after deletion.
+      }
+    }
+
+    await clearProfile();
+  }
+
   const value = useMemo(
     () => ({
       user,
@@ -212,6 +258,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signUpWithPassword,
       signInWithGoogle,
       signOutUser,
+      deleteCurrentAccount,
     }),
     [googleConfigured, googleReady, loading, user]
   );

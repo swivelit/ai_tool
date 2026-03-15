@@ -11,6 +11,9 @@ class User(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
 
+    firebase_uid: Optional[str] = Field(default=None, index=True, unique=True)
+    email: Optional[str] = Field(default=None, index=True, unique=True)
+
     name: str
     place: Optional[str] = None
     timezone: str = "Asia/Kolkata"
@@ -133,4 +136,3 @@ class UserProfile(SQLModel, table=True):
 
     profile_summary: Optional[str] = None
     updated_at: datetime = Field(default_factory=datetime.utcnow)
-

@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { apiGet, apiPost } from "./api";
+import { apiDelete, apiGet, apiPost } from "./api";
 
 const KEY = "user_profile_v1";
 const BACKUP_KEY = "user_profile_v1_backup";
@@ -30,6 +30,69 @@ export type PersonalityQuestion = {
 };
 
 export type PersonalityAnswers = Record<string, string | string[]>;
+
+type BackendResolvedUserResponse = {
+  found?: boolean;
+  user?: any;
+};
+
+function normalizeEmail(email?: string | null) {
+  const value = (email || "").trim().toLowerCase();
+  return value || undefined;
+}
+
+function mapBackendUserToProfile(user: any): UserProfile | null {
+  if (!user || typeof user !== "object") return null;
+
+  const resolvedUserId = normalizeUserId(user);
+  if (!resolvedUserId) return null;
+
+  return {
+    userId: resolvedUserId,
+    firebaseUid: typeof user.firebase_uid === "string" ? user.firebase_uid : undefined,
+    name: String(user.name || "User"),
+    place: typeof user.place === "string" ? user.place : "",
+    timezone: typeof user.timezone === "string" && user.timezone.trim()
+      ? user.timezone
+      : "Asia/Kolkata",
+    assistantName:
+      typeof user.assistant_name === "string" && user.assistant_name.trim()
+        ? user.assistant_name
+        : "Elli",
+    email: normalizeEmail(user.email) || undefined,
+    questionnaireCompleted: Boolean(user.questionnaire_completed),
+  };
+}
+
+async function resolveProfileFromBackendByAuth(
+  firebaseUid?: string | null,
+  email?: string | null
+): Promise<UserProfile | null> {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedUid = (firebaseUid || "").trim();
+
+  if (!normalizedUid && !normalizedEmail) {
+    return null;
+  }
+
+  const query = new URLSearchParams();
+
+  if (normalizedUid) {
+    query.set("firebase_uid", normalizedUid);
+  }
+
+  if (normalizedEmail) {
+    query.set("email", normalizedEmail);
+  }
+
+  const response = await apiGet<BackendResolvedUserResponse>(`/users/resolve?${query.toString()}`);
+
+  if (!response?.found || !response.user) {
+    return null;
+  }
+
+  return mapBackendUserToProfile(response.user);
+}
 
 function safeParseProfile(raw: string | null): UserProfile | null {
   if (!raw) return null;
@@ -242,36 +305,72 @@ export async function getProfile(): Promise<UserProfile | null> {
   return restoreProfileFromBackup();
 }
 
-export async function getProfileForFirebaseUid(firebaseUid?: string | null) {
-  if (!firebaseUid) return null;
+export async function getProfileForFirebaseUid(
+  firebaseUid?: string | null,
+  email?: string | null
+) {
+  const normalizedUid = (firebaseUid || "").trim();
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!normalizedUid && !normalizedEmail) return null;
 
   const profile = await getProfile();
-  if (!profile) return null;
 
-  if (profile.firebaseUid === firebaseUid) {
-    return profile;
+  if (profile) {
+    const sameUid = normalizedUid && profile.firebaseUid === normalizedUid;
+    const sameEmail = normalizedEmail && normalizeEmail(profile.email) === normalizedEmail;
+
+    if (sameUid || sameEmail) {
+      const patched: UserProfile = {
+        ...profile,
+        firebaseUid: normalizedUid || profile.firebaseUid,
+        email: normalizedEmail || profile.email,
+      };
+      await writeProfileCache(patched);
+      return patched;
+    }
+
+    if (!profile.firebaseUid && normalizedUid) {
+      const patched: UserProfile = {
+        ...profile,
+        firebaseUid: normalizedUid,
+        email: normalizedEmail || profile.email,
+      };
+      await writeProfileCache(patched);
+      return patched;
+    }
+
+    const lastFirebaseUid = await AsyncStorage.getItem(LAST_FIREBASE_UID_KEY);
+    if (normalizedUid && lastFirebaseUid === normalizedUid && profile.userId) {
+      const patched: UserProfile = {
+        ...profile,
+        firebaseUid: normalizedUid,
+        email: normalizedEmail || profile.email,
+      };
+      await writeProfileCache(patched);
+      return patched;
+    }
   }
 
-  if (!profile.firebaseUid) {
-    const patched: UserProfile = {
-      ...profile,
-      firebaseUid,
+  try {
+    const restored = await resolveProfileFromBackendByAuth(normalizedUid, normalizedEmail);
+
+    if (!restored) {
+      return null;
+    }
+
+    const merged: UserProfile = {
+      ...restored,
+      firebaseUid: normalizedUid || restored.firebaseUid,
+      email: normalizedEmail || restored.email,
     };
-    await writeProfileCache(patched);
-    return patched;
-  }
 
-  const lastFirebaseUid = await AsyncStorage.getItem(LAST_FIREBASE_UID_KEY);
-  if (lastFirebaseUid === firebaseUid && profile.userId) {
-    const patched: UserProfile = {
-      ...profile,
-      firebaseUid,
-    };
-    await writeProfileCache(patched);
-    return patched;
+    await writeProfileCache(merged);
+    return merged;
+  } catch (error) {
+    console.warn("[account] Failed to resolve profile from backend:", error);
+    return null;
   }
-
-  return null;
 }
 
 export async function saveProfile(profile: UserProfile) {
@@ -289,6 +388,9 @@ export async function clearProfile() {
 
 export async function createProfileOnBackend(profile: UserProfile) {
   const requestBody = {
+    user_id: profile.userId,
+    firebase_uid: profile.firebaseUid,
+    email: normalizeEmail(profile.email) || undefined,
     name: profile.name,
     place: profile.place,
     timezone: profile.timezone || "Asia/Kolkata",
@@ -311,10 +413,16 @@ export async function createProfileOnBackend(profile: UserProfile) {
     );
   }
 
+  const backendProfile = mapBackendUserToProfile(user) || null;
+
   const merged: UserProfile = {
     ...profile,
+    ...backendProfile,
     userId: resolvedUserId,
-    questionnaireCompleted: profile.questionnaireCompleted ?? false,
+    firebaseUid: profile.firebaseUid || backendProfile?.firebaseUid,
+    email: normalizeEmail(profile.email) || backendProfile?.email,
+    questionnaireCompleted:
+      backendProfile?.questionnaireCompleted ?? profile.questionnaireCompleted ?? false,
   };
 
   await saveProfile(merged);
@@ -362,4 +470,8 @@ export async function generateDailyCheckins(userId: number) {
     `/users/${userId}/generate-daily-checkins`,
     {}
   );
+}
+
+export async function deleteAccountOnBackend(userId: number) {
+  return apiDelete<{ ok: boolean; deleted_user_id: number }>(`/users/${userId}`);
 }
