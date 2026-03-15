@@ -66,7 +66,7 @@ function RouteGate() {
           return;
         }
 
-        const localProfile = await getProfileForFirebaseUid(user.uid);
+        const localProfile = await getProfileForFirebaseUid(user.uid, user.email);
         if (!alive) return;
 
         const providerProfile =

@@ -44,13 +44,22 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
     const [assistantName, savedSettings, savedProfile] = await Promise.all([
       getAssistantName(),
       getSettings(),
-      getProfileForFirebaseUid(user?.uid),
+      getProfileForFirebaseUid(user?.uid, user?.email),
     ]);
 
-    setName(assistantName || "Elli");
+    const resolvedAssistantName =
+      assistantName && assistantName !== "Elli"
+        ? assistantName
+        : savedProfile?.assistantName || assistantName || "Elli";
+
+    if (savedProfile?.assistantName && savedProfile.assistantName !== assistantName) {
+      await setAssistantName(savedProfile.assistantName);
+    }
+
+    setName(resolvedAssistantName);
     setS(savedSettings);
     setProfile(savedProfile);
-  }, [user?.uid]);
+  }, [user?.email, user?.uid]);
 
   async function updateName(nextName: string) {
     await setAssistantName(nextName);

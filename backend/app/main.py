@@ -11,14 +11,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from openai import OpenAI
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlalchemy import inspect as sa_inspect, text as sa_text
+from sqlmodel import Session, delete, select
 
-from .database import get_session
+from .database import engine, get_session
 from .models import Conversation, DailyRoutine, Item, QACache, User, UserProfile
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -57,6 +58,43 @@ STAGE_REMODELER = EnglishRemodeler(STAGE_CORE)
 STAGE_TRANSLATOR = StageTranslator(STAGE_CORE)
 STAGE_CACHE: Dict[str, Dict[str, Any]] = {}
 
+def _ensure_user_table_auth_columns() -> None:
+    inspector = sa_inspect(engine)
+    if not inspector.has_table("user"):
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("user")}
+
+    with engine.begin() as conn:
+        if "firebase_uid" not in columns:
+            conn.execute(sa_text('ALTER TABLE "user" ADD COLUMN firebase_uid VARCHAR'))
+
+        if "email" not in columns:
+            conn.execute(sa_text('ALTER TABLE "user" ADD COLUMN email VARCHAR'))
+
+        try:
+            conn.execute(
+                sa_text(
+                    'CREATE UNIQUE INDEX IF NOT EXISTS ix_user_firebase_uid_unique ON "user" (firebase_uid)'
+                )
+            )
+        except Exception as exc:
+            print(f"[WARN] Could not create firebase_uid index: {exc}")
+
+        try:
+            conn.execute(
+                sa_text('CREATE UNIQUE INDEX IF NOT EXISTS ix_user_email_unique ON "user" (email)')
+            )
+        except Exception as exc:
+            print(f"[WARN] Could not create email index: {exc}")
+
+
+@app.on_event("startup")
+def ensure_runtime_schema() -> None:
+    try:
+        _ensure_user_table_auth_columns()
+    except Exception as exc:
+        print(f"[WARN] Runtime schema sync skipped: {exc}")
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -235,6 +273,9 @@ class TextAnalysisResponse(BaseModel):
 
 
 class UserCreate(BaseModel):
+    user_id: Optional[int] = None
+    firebase_uid: Optional[str] = None
+    email: Optional[str] = None
     name: str
     place: Optional[str] = None
     timezone: Optional[str] = "Asia/Kolkata"
@@ -811,53 +852,111 @@ def parse_datetime(payload: ParseDatetimeRequest):
         "human": out.get("human") or "",
         "confidence": float(out.get("confidence") or 0.0),
     }
+def _normalize_email(email: Optional[str]) -> Optional[str]:
+    normalized = (email or "").strip().lower()
+    return normalized or None
 
+
+def _questionnaire_completed(profile: Optional[UserProfile]) -> bool:
+    if not profile:
+        return False
+
+    try:
+        answers = json.loads(profile.answers_json or "{}")
+    except Exception:
+        answers = {}
+
+    return bool(answers)
+
+
+def _ensure_user_profile(session: Session, user_id: int) -> UserProfile:
+    profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
+    if profile:
+        return profile
+
+    profile = UserProfile(
+        user_id=user_id,
+        answers_json=json.dumps({}, ensure_ascii=False),
+        questions_version=PERSONALITY_QUESTIONS_VERSION,
+        updated_at=datetime.utcnow(),
+    )
+    session.add(profile)
+    session.commit()
+    session.refresh(profile)
+    return profile
+
+
+def _serialize_user_payload(user: User, profile: Optional[UserProfile]) -> Dict[str, Any]:
+    assistant_name = (user.assistant_name or "Elli").strip() or "Elli"
+
+    return {
+        "id": int(user.id) if user.id is not None else None,
+        "firebase_uid": user.firebase_uid,
+        "email": user.email or "",
+        "name": user.name,
+        "place": user.place or "",
+        "timezone": user.timezone or "Asia/Kolkata",
+        "assistant_name": assistant_name,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "profile_id": int(profile.id) if profile and profile.id is not None else None,
+        "profile_user_id": int(profile.user_id) if profile and profile.user_id is not None else None,
+        "questionnaire_completed": _questionnaire_completed(profile),
+    }
 
 @app.post("/users")
 def create_user(payload: UserCreate, session: Session = Depends(get_session)):
     assistant_name = (payload.assistant_name or "Elli").strip() or "Elli"
+    normalized_email = _normalize_email(payload.email)
+    firebase_uid = (payload.firebase_uid or "").strip() or None
 
     print(
         "[DEBUG] /users incoming payload:",
         json.dumps(payload.model_dump(), ensure_ascii=False, default=str),
     )
 
-    user = User(
-        name=payload.name,
-        place=payload.place,
-        timezone=payload.timezone or "Asia/Kolkata",
-        assistant_name=assistant_name,
-    )
+    user: Optional[User] = None
 
     try:
-        session.add(user)
-        session.commit()
-        session.refresh(user)
+        if payload.user_id:
+            user = session.get(User, payload.user_id)
 
-        profile = UserProfile(
-            user_id=user.id,
-            answers_json=json.dumps({}, ensure_ascii=False),
-            questions_version=PERSONALITY_QUESTIONS_VERSION,
-        )
-        session.add(profile)
-        session.commit()
-        session.refresh(profile)
+        if not user and firebase_uid:
+            user = session.exec(select(User).where(User.firebase_uid == firebase_uid)).first()
+
+        if not user and normalized_email:
+            user = session.exec(select(User).where(User.email == normalized_email)).first()
+
+        if user:
+            user.firebase_uid = firebase_uid or user.firebase_uid
+            user.email = normalized_email or user.email
+            user.name = payload.name
+            user.place = payload.place
+            user.timezone = payload.timezone or user.timezone or "Asia/Kolkata"
+            user.assistant_name = assistant_name
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+        else:
+            user = User(
+                firebase_uid=firebase_uid,
+                email=normalized_email,
+                name=payload.name,
+                place=payload.place,
+                timezone=payload.timezone or "Asia/Kolkata",
+                assistant_name=assistant_name,
+            )
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+
+        profile = _ensure_user_profile(session, int(user.id))
 
     except Exception as exc:
         session.rollback()
         print(f"[DEBUG] /users failed while saving: {exc}")
         raise
 
-    response_payload = {
-        "id": int(user.id) if user.id is not None else None,
-        "name": user.name,
-        "place": user.place or "",
-        "timezone": user.timezone or "Asia/Kolkata",
-        "assistant_name": user.assistant_name or assistant_name,
-        "created_at": user.created_at.isoformat() if user.created_at else None,
-        "profile_id": int(profile.id) if profile.id is not None else None,
-        "profile_user_id": int(profile.user_id) if profile.user_id is not None else None,
-    }
+    response_payload = _serialize_user_payload(user, profile)
 
     print(
         "[DEBUG] /users response payload:",
@@ -867,13 +966,87 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
     return response_payload
 
 
+@app.get("/users/resolve")
+def resolve_user(
+    firebase_uid: Optional[str] = Query(default=None),
+    email: Optional[str] = Query(default=None),
+    session: Session = Depends(get_session),
+):
+    normalized_email = _normalize_email(email)
+    normalized_uid = (firebase_uid or "").strip() or None
+
+    if not normalized_uid and not normalized_email:
+        raise HTTPException(400, "firebase_uid or email is required")
+
+    user: Optional[User] = None
+
+    if normalized_uid:
+        user = session.exec(select(User).where(User.firebase_uid == normalized_uid)).first()
+
+    if not user and normalized_email:
+        user = session.exec(select(User).where(User.email == normalized_email)).first()
+
+    if not user:
+        return {"found": False}
+
+    profile = _ensure_user_profile(session, int(user.id))
+
+    if normalized_uid and user.firebase_uid != normalized_uid:
+        user.firebase_uid = normalized_uid
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+
+    if normalized_email and user.email != normalized_email:
+        user.email = normalized_email
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+
+    return {
+        "found": True,
+        "user": _serialize_user_payload(user, profile),
+    }
+
+
 @app.get("/users/{user_id}")
 def get_user(user_id: int, session: Session = Depends(get_session)):
     user = session.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
-    return user
+    profile = _ensure_user_profile(session, user_id)
+    return _serialize_user_payload(user, profile)
 
+@app.delete("/users/{user_id}")
+def delete_user_account(user_id: int, session: Session = Depends(get_session)):
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    try:
+        session.exec(delete(Item).where(Item.user_id == user_id))
+        session.exec(delete(Conversation).where(Conversation.user_id == user_id))
+        session.exec(delete(QACache).where(QACache.user_id == user_id))
+        session.exec(delete(DailyRoutine).where(DailyRoutine.user_id == user_id))
+        session.exec(delete(UserProfile).where(UserProfile.user_id == user_id))
+        session.delete(user)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        print(f"[DEBUG] /users/{{user_id}} delete failed: {exc}")
+        raise
+
+    for path_getter in (STAGE_BEHAVIOUR._profile_path, STAGE_BEHAVIOUR._history_log_path):
+        try:
+            path_getter(str(user_id)).unlink(missing_ok=True)
+        except Exception as exc:
+            print(f"[WARN] Failed to delete stage file for user {user_id}: {exc}")
+
+    keys_to_delete = [key for key in STAGE_CACHE if key.startswith(f"{user_id}::")]
+    for key in keys_to_delete:
+        STAGE_CACHE.pop(key, None)
+
+    return {"ok": True, "deleted_user_id": user_id}
 
 @app.get("/personality/questions")
 def get_personality_questions():

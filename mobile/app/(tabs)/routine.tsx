@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   Text,
@@ -14,8 +15,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
+import { useAuth } from "@/components/AuthProvider";
 import { apiGet, API_BASE } from "@/lib/api";
-import { getProfile } from "@/lib/account";
+import { getProfileForFirebaseUid } from "@/lib/account";
 
 type Routine = {
   wake_time: string;
@@ -34,6 +36,7 @@ type NoticeState = {
 
 export default function RoutineScreen() {
   const insets = useSafeAreaInsets();
+  const { user, deleteCurrentAccount } = useAuth();
   const { userId, profile, refresh } = useAssistant();
 
   const [resolvedUserId, setResolvedUserId] = useState<number | null>(
@@ -48,7 +51,7 @@ export default function RoutineScreen() {
     work_end: "18:30",
     daily_habits: "Gym, Water, Reading",
   });
-
+  const [deleting, setDeleting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
@@ -81,7 +84,33 @@ export default function RoutineScreen() {
       onPrimaryPress,
     });
   }
+  async function confirmDeleteAccount() {
+    if (deleting) return;
 
+    Alert.alert(
+      "Delete account",
+      "This will permanently delete your login and all app data. This action cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setDeleting(true);
+              await deleteCurrentAccount(targetUserId || undefined);
+              await refresh();
+              router.replace("/");
+            } catch (error: any) {
+              showNotice("Delete failed", error?.message || "Failed to delete account.");
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  }
   function closeNotice() {
     setNotice(null);
   }
@@ -91,11 +120,14 @@ export default function RoutineScreen() {
 
     async function hydrateIdentity() {
       try {
-        const localProfile = await getProfile();
+        const localProfile = await getProfileForFirebaseUid(user?.uid, user?.email);
         if (!alive) return;
 
         const nextUserId = userId || profile?.userId || localProfile?.userId || null;
-        const nextProfile = profile || localProfile || null;
+        const nextProfile =
+          (profile?.firebaseUid && user?.uid && profile.firebaseUid === user.uid)
+            ? profile
+            : localProfile || profile || null;
 
         setResolvedUserId(nextUserId);
         setResolvedProfile(nextProfile);
@@ -260,6 +292,18 @@ export default function RoutineScreen() {
             <Text style={accountLine}>Name: {accountName}</Text>
             <Text style={accountLine}>Place: {accountPlace}</Text>
             <Text style={accountLine}>Timezone: {accountTimezone}</Text>
+
+            <Pressable
+              onPress={confirmDeleteAccount}
+              disabled={deleting}
+              style={[deleteBtn, deleting && { opacity: 0.65 }]}
+            >
+              {deleting ? (
+                <ActivityIndicator color="#FFD7D7" />
+              ) : (
+                <Text style={deleteBtnText}>Delete account</Text>
+              )}
+            </Pressable>
           </GlassCard>
 
           <GlassCard style={{ marginTop: 14, borderRadius: 22 }}>
@@ -454,6 +498,23 @@ const fieldInput = {
   backgroundColor: "rgba(255,255,255,0.06)",
   borderWidth: 1,
   borderColor: "rgba(255,255,255,0.08)",
+};
+
+const deleteBtn = {
+  marginTop: 16,
+  height: 48,
+  borderRadius: 16,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(255,90,90,0.18)",
+  borderWidth: 1,
+  borderColor: "rgba(255,120,120,0.28)",
+};
+
+const deleteBtnText = {
+  color: "#FFD7D7",
+  fontWeight: "900" as const,
+  fontSize: 14,
 };
 
 const saveBtn = {

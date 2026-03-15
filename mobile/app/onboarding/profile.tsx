@@ -125,18 +125,16 @@ export default function ProfileScreen() {
       const existingProfile =
         profile?.firebaseUid === user.uid && profile?.userId
           ? profile
-          : await getProfileForFirebaseUid(user.uid);
+          : await getProfileForFirebaseUid(user.uid, user.email);
 
-      if (existingProfile?.userId) {
-        await saveProfile({
-          ...existingProfile,
-          ...normalizedProfile,
-          userId: existingProfile.userId,
-          questionnaireCompleted: existingProfile.questionnaireCompleted ?? false,
-        });
-      } else {
-        await createProfileOnBackend(normalizedProfile);
-      }
+      const upsertedProfile = await createProfileOnBackend({
+        ...existingProfile,
+        ...normalizedProfile,
+        userId: existingProfile?.userId,
+        questionnaireCompleted: existingProfile?.questionnaireCompleted ?? false,
+      });
+
+      await saveProfile(upsertedProfile);
 
       await refresh();
       router.replace("/onboarding/questionnaire");
