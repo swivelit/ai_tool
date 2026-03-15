@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
@@ -11,6 +10,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
@@ -33,9 +33,12 @@ type NoticeState = {
 } | null;
 
 export default function RoutineScreen() {
+  const insets = useSafeAreaInsets();
   const { userId, profile, refresh } = useAssistant();
 
-  const [resolvedUserId, setResolvedUserId] = useState<number | null>(userId || profile?.userId || null);
+  const [resolvedUserId, setResolvedUserId] = useState<number | null>(
+    userId || profile?.userId || null
+  );
   const [resolvedProfile, setResolvedProfile] = useState(profile || null);
 
   const [routine, setRoutine] = useState<Routine>({
@@ -50,8 +53,16 @@ export default function RoutineScreen() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
 
-  const accountName = useMemo(() => resolvedProfile?.name || profile?.name || "Not set", [resolvedProfile, profile?.name]);
-  const accountPlace = useMemo(() => resolvedProfile?.place || profile?.place || "Not set", [resolvedProfile, profile?.place]);
+  const accountName = useMemo(
+    () => resolvedProfile?.name || profile?.name || "Not set",
+    [resolvedProfile, profile?.name]
+  );
+
+  const accountPlace = useMemo(
+    () => resolvedProfile?.place || profile?.place || "Not set",
+    [resolvedProfile, profile?.place]
+  );
+
   const accountTimezone = useMemo(
     () => resolvedProfile?.timezone || profile?.timezone || "Asia/Kolkata",
     [resolvedProfile, profile?.timezone]
@@ -199,10 +210,7 @@ export default function RoutineScreen() {
 
       await refresh();
 
-      showNotice(
-        "Routine saved",
-        "Your daily routine has been updated successfully."
-      );
+      router.replace("/(tabs)");
     } catch (e: any) {
       showNotice("Save failed", e?.message || "Could not save routine.");
     } finally {
@@ -217,21 +225,33 @@ export default function RoutineScreen() {
       end={{ x: 0.88, y: 1 }}
       style={{ flex: 1 }}
     >
-      <SafeAreaView style={{ flex: 1 }}>
+      <View style={{ flex: 1, paddingTop: insets.top }}>
         <ScrollView
           style={{ flex: 1 }}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 30 }}
+          contentContainerStyle={{
+            paddingHorizontal: 16,
+            paddingTop: 10,
+            paddingBottom: Math.max(insets.bottom + 24, 30),
+          }}
           showsVerticalScrollIndicator={false}
         >
           <View style={topBar}>
-            <Pressable style={iconBtn} onPress={() => router.replace("/(tabs)")}>
-              <Ionicons name="chevron-back" size={18} color="rgba(255,255,255,0.95)" />
+            <Pressable
+              style={iconBtn}
+              onPress={() => router.replace("/(tabs)")}
+              hitSlop={10}
+            >
+              <Ionicons name="chevron-back" size={20} color="rgba(255,255,255,0.95)" />
             </Pressable>
 
-            <Text style={screenTitle}>Setting</Text>
+            <View style={titleWrap}>
+              <Text style={screenTitle} numberOfLines={1}>
+                Setting
+              </Text>
+            </View>
 
             <View style={iconBtn}>
-              <Ionicons name="settings-outline" size={16} color="rgba(255,255,255,0.82)" />
+              <Ionicons name="settings-outline" size={18} color="rgba(255,255,255,0.82)" />
             </View>
           </View>
 
@@ -297,10 +317,22 @@ export default function RoutineScreen() {
         </ScrollView>
 
         {notice ? (
-          <View style={noticeOverlay}>
+          <View
+            style={[
+              noticeOverlay,
+              {
+                paddingTop: insets.top + 20,
+                paddingBottom: Math.max(insets.bottom + 20, 20),
+              },
+            ]}
+          >
             <View style={noticeCard}>
               <View style={noticeIconWrap}>
-                <Ionicons name="information-circle" size={22} color="rgba(173,232,255,0.98)" />
+                <Ionicons
+                  name="information-circle"
+                  size={22}
+                  color="rgba(173,232,255,0.98)"
+                />
               </View>
 
               <Text style={noticeTitle}>{notice.title}</Text>
@@ -323,7 +355,7 @@ export default function RoutineScreen() {
             </View>
           </View>
         ) : null}
-      </SafeAreaView>
+      </View>
     </LinearGradient>
   );
 }
@@ -366,16 +398,23 @@ function Field({
 }
 
 const topBar = {
-  paddingTop: 8,
+  minHeight: 44,
   flexDirection: "row" as const,
   alignItems: "center" as const,
   justifyContent: "space-between" as const,
 };
 
+const titleWrap = {
+  flex: 1,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  paddingHorizontal: 12,
+};
+
 const iconBtn = {
-  width: 36,
-  height: 36,
-  borderRadius: 18,
+  width: 40,
+  height: 40,
+  borderRadius: 20,
   alignItems: "center" as const,
   justifyContent: "center" as const,
   backgroundColor: "rgba(255,255,255,0.08)",
