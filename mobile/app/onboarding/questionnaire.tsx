@@ -2,14 +2,15 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
@@ -32,6 +33,8 @@ type NoticeState = {
 } | null;
 
 export default function QuestionnaireScreen() {
+  const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
   const { profile, userId, refresh, name: assistantLabel } = useAssistant();
   const { user } = useAuth();
 
@@ -40,6 +43,12 @@ export default function QuestionnaireScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
+
+  const isSmallPhone = width < 370 || height < 760;
+  const isVerySmallPhone = width < 345 || height < 700;
+  const horizontalPadding = isSmallPhone ? 16 : 18;
+  const topPadding = insets.top + (isSmallPhone ? 8 : 12);
+  const bottomPadding = Math.max(insets.bottom + 28, 36);
 
   function showNotice(
     title: string,
@@ -70,10 +79,7 @@ export default function QuestionnaireScreen() {
         setQuestions(Array.isArray(nextQuestions) ? nextQuestions : []);
       } catch (error: any) {
         if (!alive) return;
-        showNotice(
-          "Unable to load questions",
-          error?.message || "Please try again."
-        );
+        showNotice("Unable to load questions", error?.message || "Please try again.");
       } finally {
         if (alive) {
           setLoading(false);
@@ -214,10 +220,7 @@ export default function QuestionnaireScreen() {
       await refresh();
       router.replace("/(tabs)/routine");
     } catch (error: any) {
-      showNotice(
-        "Failed to save answers",
-        error?.message || "Please try again."
-      );
+      showNotice("Failed to save answers", error?.message || "Please try again.");
     } finally {
       setSaving(false);
     }
@@ -229,10 +232,7 @@ export default function QuestionnaireScreen() {
       const nextQuestions = await getPersonalityQuestions();
       setQuestions(Array.isArray(nextQuestions) ? nextQuestions : []);
     } catch (error: any) {
-      showNotice(
-        "Unable to load questions",
-        error?.message || "Please try again."
-      );
+      showNotice("Unable to load questions", error?.message || "Please try again.");
     } finally {
       setLoading(false);
     }
@@ -246,12 +246,21 @@ export default function QuestionnaireScreen() {
         end={{ x: 0.88, y: 1 }}
         style={{ flex: 1 }}
       >
-        <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+        <View
+          style={{
+            flex: 1,
+            alignItems: "center",
+            justifyContent: "center",
+            paddingTop: insets.top,
+            paddingBottom: insets.bottom,
+            paddingHorizontal: 18,
+          }}
+        >
           <ActivityIndicator size="large" color="white" />
           <Text style={{ marginTop: 14, color: "rgba(255,255,255,0.74)" }}>
             Loading your questionnaire...
           </Text>
-        </SafeAreaView>
+        </View>
       </LinearGradient>
     );
   }
@@ -263,20 +272,38 @@ export default function QuestionnaireScreen() {
       end={{ x: 0.88, y: 1 }}
       style={{ flex: 1 }}
     >
-      <SafeAreaView style={{ flex: 1 }}>
+      <View style={{ flex: 1 }}>
         <ScrollView
           style={{ flex: 1 }}
           contentContainerStyle={{
-            paddingHorizontal: 18,
-            paddingTop: 12,
-            paddingBottom: 36,
+            paddingHorizontal: horizontalPadding,
+            paddingTop: topPadding,
+            paddingBottom: bottomPadding,
           }}
           showsVerticalScrollIndicator={false}
         >
           <View style={headerRow}>
             <View style={{ flex: 1, paddingRight: 14 }}>
-              <Text style={title}>Complete your personality profile</Text>
-              <Text style={subtitle}>
+              <Text
+                style={[
+                  title,
+                  {
+                    fontSize: isVerySmallPhone ? 26 : isSmallPhone ? 28 : 30,
+                    lineHeight: isVerySmallPhone ? 32 : isSmallPhone ? 34 : 36,
+                  },
+                ]}
+              >
+                Complete your personality profile
+              </Text>
+              <Text
+                style={[
+                  subtitle,
+                  {
+                    fontSize: isSmallPhone ? 13 : 14,
+                    lineHeight: isSmallPhone ? 20 : 21,
+                  },
+                ]}
+              >
                 Answer these {questions.length} questions so {assistantLabel || "Elli"} can
                 respond in a way that fits you better.
               </Text>
@@ -287,7 +314,7 @@ export default function QuestionnaireScreen() {
             </View>
           </View>
 
-          <View style={progressWrap}>
+          <View style={[progressWrap, { marginTop: isSmallPhone ? 14 : 18 }]}>
             <Text style={progressText}>
               {answeredCount}/{questions.length} answered
             </Text>
@@ -313,9 +340,19 @@ export default function QuestionnaireScreen() {
                   : "Choose 1 option";
 
               return (
-                <View key={question.id} style={card}>
+                <View key={question.id} style={[card, { marginTop: isSmallPhone ? 12 : 14 }]}>
                   <Text style={questionIndex}>Question {index + 1}</Text>
-                  <Text style={questionText}>{question.prompt}</Text>
+                  <Text
+                    style={[
+                      questionText,
+                      {
+                        fontSize: isSmallPhone ? 17 : 19,
+                        lineHeight: isSmallPhone ? 24 : 27,
+                      },
+                    ]}
+                  >
+                    {question.prompt}
+                  </Text>
                   <Text style={helper}>{helperText}</Text>
 
                   <View style={{ marginTop: 14 }}>
@@ -326,7 +363,11 @@ export default function QuestionnaireScreen() {
                         <Pressable
                           key={option}
                           onPress={() => toggleOption(question, option)}
-                          style={[optionBtn, active && optionBtnActive]}
+                          style={[
+                            optionBtn,
+                            { minHeight: isSmallPhone ? 50 : 52 },
+                            active && optionBtnActive,
+                          ]}
                         >
                           <Ionicons
                             name={
@@ -341,7 +382,13 @@ export default function QuestionnaireScreen() {
                             size={18}
                             color={active ? "#041222" : "rgba(255,255,255,0.92)"}
                           />
-                          <Text style={[optionText, active && optionTextActive]}>
+                          <Text
+                            style={[
+                              optionText,
+                              { fontSize: isSmallPhone ? 13 : 14, lineHeight: isSmallPhone ? 19 : 20 },
+                              active && optionTextActive,
+                            ]}
+                          >
                             {formatOptionLabel(option)}
                           </Text>
                         </Pressable>
@@ -356,20 +403,34 @@ export default function QuestionnaireScreen() {
           {!!questions.length && (
             <Pressable
               onPress={submit}
-              style={[submitBtn, saving && { opacity: 0.72 }]}
+              style={[
+                submitBtn,
+                { marginTop: isSmallPhone ? 18 : 20, minHeight: isSmallPhone ? 54 : 58 },
+                saving && { opacity: 0.72 },
+              ]}
               disabled={saving}
             >
               {saving ? (
                 <ActivityIndicator color="#041222" />
               ) : (
-                <Text style={submitBtnText}>Save answers and continue</Text>
+                <Text style={[submitBtnText, { fontSize: isSmallPhone ? 15 : 17 }]}>
+                  Save answers and continue
+                </Text>
               )}
             </Pressable>
           )}
         </ScrollView>
 
         {notice ? (
-          <View style={noticeOverlay}>
+          <View
+            style={[
+              noticeOverlay,
+              {
+                paddingTop: insets.top + 20,
+                paddingBottom: Math.max(insets.bottom + 20, 20),
+              },
+            ]}
+          >
             <View style={noticeCard}>
               <View style={noticeIconWrap}>
                 <Ionicons name="information-circle" size={22} color="rgba(173,232,255,0.98)" />
@@ -395,7 +456,7 @@ export default function QuestionnaireScreen() {
             </View>
           </View>
         ) : null}
-      </SafeAreaView>
+      </View>
     </LinearGradient>
   );
 }
@@ -408,16 +469,12 @@ const headerRow = {
 
 const title = {
   color: "white",
-  fontSize: 30,
-  lineHeight: 36,
   fontWeight: "900" as const,
 };
 
 const subtitle = {
   marginTop: 8,
   color: "rgba(255,255,255,0.68)",
-  fontSize: 14,
-  lineHeight: 21,
 };
 
 const headerBadge = {
@@ -432,7 +489,6 @@ const headerBadge = {
 };
 
 const progressWrap = {
-  marginTop: 18,
   marginBottom: 6,
 };
 
@@ -443,7 +499,6 @@ const progressText = {
 };
 
 const card = {
-  marginTop: 14,
   borderRadius: 24,
   paddingHorizontal: 16,
   paddingVertical: 18,
@@ -463,8 +518,6 @@ const questionIndex = {
 const questionText = {
   marginTop: 10,
   color: "white",
-  fontSize: 19,
-  lineHeight: 27,
   fontWeight: "800" as const,
 };
 
@@ -475,7 +528,6 @@ const helper = {
 };
 
 const optionBtn = {
-  minHeight: 52,
   borderRadius: 18,
   paddingHorizontal: 14,
   paddingVertical: 12,
@@ -496,9 +548,7 @@ const optionText = {
   flex: 1,
   marginLeft: 10,
   color: "rgba(255,255,255,0.92)",
-  fontSize: 14,
   fontWeight: "700" as const,
-  lineHeight: 20,
 };
 
 const optionTextActive = {
@@ -506,8 +556,6 @@ const optionTextActive = {
 };
 
 const submitBtn = {
-  marginTop: 20,
-  minHeight: 58,
   borderRadius: 20,
   alignItems: "center" as const,
   justifyContent: "center" as const,
@@ -519,7 +567,6 @@ const submitBtn = {
 const submitBtnText = {
   color: "#041222",
   fontWeight: "900" as const,
-  fontSize: 17,
 };
 
 const emptyCard = {

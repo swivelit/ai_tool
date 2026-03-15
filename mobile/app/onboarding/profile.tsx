@@ -1,15 +1,19 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
-  SafeAreaView,
+  ScrollView,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   createProfileOnBackend,
@@ -28,6 +32,8 @@ type NoticeState = {
 } | null;
 
 export default function ProfileScreen() {
+  const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
   const { name: currentAssistantName, profile, refresh } = useAssistant();
   const { user } = useAuth();
 
@@ -36,6 +42,13 @@ export default function ProfileScreen() {
   const [assistantName, setAssistantNameInput] = useState(currentAssistantName || "Elli");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
+
+  const isSmallPhone = width < 370 || height < 760;
+  const isVerySmallPhone = width < 345 || height < 700;
+  const horizontalPadding = isSmallPhone ? 16 : 18;
+  const topPadding = insets.top + (isSmallPhone ? 10 : 14);
+  const bottomPadding = Math.max(insets.bottom + 24, 24);
+  const maxFormWidth = Math.min(width - horizontalPadding * 2, 520);
 
   const provider = useMemo(() => {
     if (user?.providerData?.some((item) => item.providerId === "google.com")) {
@@ -77,26 +90,17 @@ export default function ProfileScreen() {
     if (busy) return;
 
     if (!user) {
-      showNotice(
-        "Login required",
-        "Please login again and then continue."
-      );
+      showNotice("Login required", "Please login again and then continue.");
       return;
     }
 
     if (!name.trim()) {
-      showNotice(
-        "Name required",
-        "Please enter your name."
-      );
+      showNotice("Name required", "Please enter your name.");
       return;
     }
 
     if (!assistantName.trim()) {
-      showNotice(
-        "Assistant name required",
-        "Please enter an assistant name."
-      );
+      showNotice("Assistant name required", "Please enter an assistant name.");
       return;
     }
 
@@ -137,10 +141,7 @@ export default function ProfileScreen() {
       await refresh();
       router.replace("/onboarding/questionnaire");
     } catch (error: any) {
-      showNotice(
-        "Couldn’t save profile",
-        error?.message || "Failed to save profile."
-      );
+      showNotice("Couldn’t save profile", error?.message || "Failed to save profile.");
     } finally {
       setBusy(false);
     }
@@ -148,67 +149,109 @@ export default function ProfileScreen() {
 
   return (
     <LinearGradient colors={["#070A14", "#0B1020", "#121A33"]} style={{ flex: 1 }}>
-      <SafeAreaView style={{ flex: 1, padding: 18, justifyContent: "center" }}>
-        <Text style={{ color: "white", fontSize: 30, fontWeight: "900" }}>
-          Complete your profile
-        </Text>
-
-        <Text style={{ color: "rgba(255,255,255,0.65)", marginTop: 8, lineHeight: 22 }}>
-          Your login is ready. Add a few profile details so {assistantName || "Elli"} can
-          personalize the app.
-        </Text>
-
-        <Text style={label}>Email</Text>
-        <View style={readonlyBox}>
-          <Text style={{ color: "rgba(255,255,255,0.88)", fontSize: 15 }}>
-            {user?.email || "-"}
-          </Text>
-        </View>
-
-        <Text style={label}>Your name</Text>
-        <TextInput
-          value={name}
-          onChangeText={setName}
-          placeholder="Your name"
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={input}
-          editable={!busy}
-        />
-
-        <Text style={label}>Place</Text>
-        <TextInput
-          value={place}
-          onChangeText={setPlace}
-          placeholder="Place (optional)"
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={input}
-          editable={!busy}
-        />
-
-        <Text style={label}>Assistant name</Text>
-        <TextInput
-          value={assistantName}
-          onChangeText={setAssistantNameInput}
-          placeholder="Elli"
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={input}
-          editable={!busy}
-        />
-
-        <Pressable
-          onPress={saveProfileAndContinue}
-          style={[btn, busy && { opacity: 0.7 }]}
-          disabled={busy}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{
+            flexGrow: 1,
+            paddingHorizontal: horizontalPadding,
+            paddingTop: topPadding,
+            paddingBottom: bottomPadding,
+            justifyContent: height > 760 ? "center" : "flex-start",
+          }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
-          {busy ? (
-            <ActivityIndicator color="white" />
-          ) : (
-            <Text style={{ color: "white", fontWeight: "900" }}>Continue</Text>
-          )}
-        </Pressable>
+          <View style={{ width: "100%", alignSelf: "center", maxWidth: maxFormWidth }}>
+            <Text
+              style={{
+                color: "white",
+                fontSize: isVerySmallPhone ? 26 : isSmallPhone ? 28 : 30,
+                lineHeight: isVerySmallPhone ? 32 : isSmallPhone ? 34 : 36,
+                fontWeight: "900",
+              }}
+            >
+              Complete your profile
+            </Text>
+
+            <Text
+              style={{
+                color: "rgba(255,255,255,0.65)",
+                marginTop: 8,
+                lineHeight: isSmallPhone ? 21 : 22,
+                fontSize: isSmallPhone ? 13 : 14,
+              }}
+            >
+              Your login is ready. Add a few profile details so {assistantName || "Elli"} can
+              personalize the app.
+            </Text>
+
+            <Text style={[label, { marginTop: isSmallPhone ? 16 : 18 }]}>Email</Text>
+            <View style={[readonlyBox, { minHeight: isSmallPhone ? 52 : 54 }]}>
+              <Text style={{ color: "rgba(255,255,255,0.88)", fontSize: isSmallPhone ? 14 : 15 }}>
+                {user?.email || "-"}
+              </Text>
+            </View>
+
+            <Text style={label}>Your name</Text>
+            <TextInput
+              value={name}
+              onChangeText={setName}
+              placeholder="Your name"
+              placeholderTextColor="rgba(255,255,255,0.35)"
+              style={[input, { height: isSmallPhone ? 52 : 54 }]}
+              editable={!busy}
+            />
+
+            <Text style={label}>Place</Text>
+            <TextInput
+              value={place}
+              onChangeText={setPlace}
+              placeholder="Place (optional)"
+              placeholderTextColor="rgba(255,255,255,0.35)"
+              style={[input, { height: isSmallPhone ? 52 : 54 }]}
+              editable={!busy}
+            />
+
+            <Text style={label}>Assistant name</Text>
+            <TextInput
+              value={assistantName}
+              onChangeText={setAssistantNameInput}
+              placeholder="Elli"
+              placeholderTextColor="rgba(255,255,255,0.35)"
+              style={[input, { height: isSmallPhone ? 52 : 54 }]}
+              editable={!busy}
+            />
+
+            <Pressable
+              onPress={saveProfileAndContinue}
+              style={[btn, { marginTop: isSmallPhone ? 16 : 18, height: isSmallPhone ? 52 : 54 }, busy && { opacity: 0.7 }]}
+              disabled={busy}
+            >
+              {busy ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text style={{ color: "white", fontWeight: "900", fontSize: 15 }}>
+                  Continue
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        </ScrollView>
 
         {notice ? (
-          <View style={noticeOverlay}>
+          <View
+            style={[
+              noticeOverlay,
+              {
+                paddingTop: insets.top + 20,
+                paddingBottom: Math.max(insets.bottom + 20, 20),
+              },
+            ]}
+          >
             <View style={noticeCard}>
               <View style={noticeIconWrap}>
                 <Ionicons
@@ -238,7 +281,7 @@ export default function ProfileScreen() {
             </View>
           </View>
         ) : null}
-      </SafeAreaView>
+      </KeyboardAvoidingView>
     </LinearGradient>
   );
 }
@@ -252,7 +295,6 @@ const label = {
 };
 
 const input = {
-  height: 54,
   borderRadius: 16,
   paddingHorizontal: 14,
   color: "white",
@@ -262,7 +304,6 @@ const input = {
 };
 
 const readonlyBox = {
-  minHeight: 54,
   borderRadius: 16,
   paddingHorizontal: 14,
   alignItems: "flex-start" as const,
@@ -273,8 +314,6 @@ const readonlyBox = {
 };
 
 const btn = {
-  marginTop: 18,
-  height: 54,
   borderRadius: 16,
   alignItems: "center" as const,
   justifyContent: "center" as const,
