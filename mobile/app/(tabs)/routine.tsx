@@ -71,6 +71,9 @@ export default function RoutineScreen() {
     [resolvedProfile, profile?.timezone]
   );
 
+  const targetUserId =
+    resolvedUserId || userId || profile?.userId || resolvedProfile?.userId || null;
+
   function showNotice(
     title: string,
     message: string,
