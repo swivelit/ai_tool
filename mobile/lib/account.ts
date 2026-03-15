@@ -37,7 +37,6 @@ function safeParseProfile(raw: string | null): UserProfile | null {
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
-
     return parsed as UserProfile;
   } catch {
     return null;
@@ -67,10 +66,9 @@ function tryParseJsonString(value: any) {
   if (typeof value !== "string") return value;
 
   const trimmed = value.trim();
-  if (
-    !trimmed ||
-    (!trimmed.startsWith("{") && !trimmed.startsWith("["))
-  ) {
+  if (!trimmed) return value;
+
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
     return value;
   }
 
@@ -125,12 +123,7 @@ function normalizeUserId(payload: any): number | undefined {
     }
   }
 
-  const targetKeys = new Set([
-    "id",
-    "userid",
-    "backenduserid",
-  ]);
-
+  const targetKeys = new Set(["id", "userid", "backenduserid"]);
   const queue: any[] = [parsedPayload];
   const visited = new Set<any>();
   let steps = 0;
@@ -179,6 +172,14 @@ function normalizeUserId(payload: any): number | undefined {
   }
 
   return undefined;
+}
+
+function safeStringify(value: any) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 async function writeProfileCache(profile: UserProfile) {
@@ -287,16 +288,27 @@ export async function clearProfile() {
 }
 
 export async function createProfileOnBackend(profile: UserProfile) {
-  const user = await apiPost<any>("/users", {
+  const requestBody = {
     name: profile.name,
     place: profile.place,
     timezone: profile.timezone || "Asia/Kolkata",
     assistant_name: profile.assistantName || "Elli",
-  });
+  };
+
+  console.log("[account] POST /users request:", safeStringify(requestBody));
+
+  const user = await apiPost<any>("/users", requestBody);
+
+  console.log("[account] POST /users raw response:", safeStringify(user));
 
   const resolvedUserId = normalizeUserId(user);
+
+  console.log("[account] POST /users resolved userId:", resolvedUserId);
+
   if (!resolvedUserId) {
-    throw new Error("Backend user id was missing in /users response.");
+    throw new Error(
+      `Backend user id was missing in /users response. Raw response: ${safeStringify(user)}`
+    );
   }
 
   const merged: UserProfile = {
@@ -306,6 +318,9 @@ export async function createProfileOnBackend(profile: UserProfile) {
   };
 
   await saveProfile(merged);
+
+  console.log("[account] Saved profile:", safeStringify(merged));
+
   return merged;
 }
 
