@@ -36,7 +36,13 @@ type NoticeState = {
 
 export default function RoutineScreen() {
   const insets = useSafeAreaInsets();
-  const { user, deleteCurrentAccount } = useAuth();
+  const {
+    user,
+    deleteCurrentAccount,
+    linkPasswordForCurrentUser,
+    passwordLinked,
+    googleLinked,
+  } = useAuth();
   const { userId, profile, refresh } = useAssistant();
 
   const [resolvedUserId, setResolvedUserId] = useState<number | null>(
@@ -51,6 +57,9 @@ export default function RoutineScreen() {
     work_end: "18:30",
     daily_habits: "Gym, Water, Reading",
   });
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [linkingPassword, setLinkingPassword] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -71,6 +80,13 @@ export default function RoutineScreen() {
     [resolvedProfile, profile?.timezone]
   );
 
+  const signInMethods = useMemo(() => {
+    const methods: string[] = [];
+    if (googleLinked) methods.push("Google");
+    if (passwordLinked) methods.push("Email/password");
+    return methods.length ? methods.join(", ") : "Not linked";
+  }, [googleLinked, passwordLinked]);
+
   const targetUserId =
     resolvedUserId || userId || profile?.userId || resolvedProfile?.userId || null;
 
@@ -87,6 +103,11 @@ export default function RoutineScreen() {
       onPrimaryPress,
     });
   }
+
+  function closeNotice() {
+    setNotice(null);
+  }
+
   async function confirmDeleteAccount() {
     if (deleting) return;
 
@@ -114,8 +135,54 @@ export default function RoutineScreen() {
       ]
     );
   }
-  function closeNotice() {
-    setNotice(null);
+
+  async function handleAddPasswordLogin() {
+    if (linkingPassword) return;
+
+    if (!user?.email) {
+      showNotice(
+        "Email missing",
+        "This account does not have an email address to attach a password to."
+      );
+      return;
+    }
+
+    if (passwordLinked) {
+      showNotice("Already linked", "This account already supports email/password login.");
+      return;
+    }
+
+    if (password.trim().length < 6) {
+      showNotice("Invalid password", "Password should be at least 6 characters.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      showNotice("Password mismatch", "Password and confirm password must match.");
+      return;
+    }
+
+    try {
+      setLinkingPassword(true);
+      await linkPasswordForCurrentUser(
+        password.trim(),
+        accountName !== "Not set" ? accountName : undefined
+      );
+      setPassword("");
+      setConfirmPassword("");
+      await refresh();
+      showNotice(
+        "Password login added",
+        "You can now log in with this email and password without using Google."
+      );
+    } catch (error: any) {
+      showNotice(
+        "Couldn’t add password login",
+        error?.message || "Failed to link password login."
+      );
+    } finally {
+      setLinkingPassword(false);
+    }
   }
 
   useEffect(() => {
@@ -128,7 +195,7 @@ export default function RoutineScreen() {
 
         const nextUserId = userId || profile?.userId || localProfile?.userId || null;
         const nextProfile =
-          (profile?.firebaseUid && user?.uid && profile.firebaseUid === user.uid)
+          profile?.firebaseUid && user?.uid && profile.firebaseUid === user.uid
             ? profile
             : localProfile || profile || null;
 
@@ -146,7 +213,7 @@ export default function RoutineScreen() {
     return () => {
       alive = false;
     };
-  }, [userId, profile]);
+  }, [profile, user?.email, user?.uid, userId]);
 
   useEffect(() => {
     let mounted = true;
@@ -244,10 +311,9 @@ export default function RoutineScreen() {
       }
 
       await refresh();
-
       router.replace("/(tabs)");
-    } catch (e: any) {
-      showNotice("Save failed", e?.message || "Could not save routine.");
+    } catch (error: any) {
+      showNotice("Save failed", error?.message || "Could not save routine.");
     } finally {
       setSaving(false);
     }
@@ -293,8 +359,10 @@ export default function RoutineScreen() {
           <GlassCard style={{ marginTop: 18, borderRadius: 22 }}>
             <Text style={cardTitle}>Account</Text>
             <Text style={accountLine}>Name: {accountName}</Text>
+            <Text style={accountLine}>Email: {user?.email || "-"}</Text>
             <Text style={accountLine}>Place: {accountPlace}</Text>
             <Text style={accountLine}>Timezone: {accountTimezone}</Text>
+            <Text style={accountLine}>Sign-in methods: {signInMethods}</Text>
 
             <Pressable
               onPress={confirmDeleteAccount}
@@ -307,6 +375,57 @@ export default function RoutineScreen() {
                 <Text style={deleteBtnText}>Delete account</Text>
               )}
             </Pressable>
+          </GlassCard>
+
+          <GlassCard style={{ marginTop: 14, borderRadius: 22 }}>
+            <Text style={cardTitle}>Email/password login</Text>
+            <Text style={helperText}>
+              {passwordLinked
+                ? "This account already supports email/password login."
+                : "Add a password for this email so you can log in without Google next time."}
+            </Text>
+
+            <Text style={accountLine}>Google linked: {googleLinked ? "Yes" : "No"}</Text>
+            <Text style={accountLine}>Email/password linked: {passwordLinked ? "Yes" : "No"}</Text>
+
+            {!passwordLinked ? (
+              <>
+                <Field
+                  label="New password"
+                  value={password}
+                  onChangeText={setPassword}
+                  placeholder="Minimum 6 characters"
+                  secureTextEntry
+                />
+
+                <Field
+                  label="Confirm password"
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  placeholder="Repeat password"
+                  secureTextEntry
+                />
+
+                <Pressable
+                  onPress={handleAddPasswordLogin}
+                  disabled={linkingPassword}
+                  style={[secondaryActionBtn, linkingPassword && { opacity: 0.65 }]}
+                >
+                  {linkingPassword ? (
+                    <ActivityIndicator color="#041222" />
+                  ) : (
+                    <Text style={secondaryActionBtnText}>Add email/password login</Text>
+                  )}
+                </Pressable>
+              </>
+            ) : (
+              <View style={linkedBadge}>
+                <Ionicons name="checkmark-circle" size={18} color="#AEE7FF" />
+                <Text style={linkedBadgeText}>
+                  You can now use this account with email/password too.
+                </Text>
+              </View>
+            )}
           </GlassCard>
 
           <GlassCard style={{ marginTop: 14, borderRadius: 22 }}>
@@ -414,6 +533,7 @@ function Field({
   placeholder,
   multiline = false,
   height = 52,
+  secureTextEntry = false,
 }: {
   label: string;
   value: string;
@@ -421,6 +541,7 @@ function Field({
   placeholder: string;
   multiline?: boolean;
   height?: number;
+  secureTextEntry?: boolean;
 }) {
   return (
     <View style={{ marginTop: 14 }}>
@@ -431,6 +552,8 @@ function Field({
         placeholder={placeholder}
         placeholderTextColor="rgba(255,255,255,0.35)"
         multiline={multiline}
+        secureTextEntry={secureTextEntry}
+        autoCapitalize="none"
         style={[
           fieldInput,
           {
@@ -481,6 +604,13 @@ const cardTitle = {
   fontWeight: "900" as const,
 };
 
+const helperText = {
+  marginTop: 10,
+  color: "rgba(255,255,255,0.70)",
+  fontSize: 13,
+  lineHeight: 20,
+};
+
 const accountLine = {
   marginTop: 8,
   color: "rgba(255,255,255,0.72)",
@@ -501,6 +631,42 @@ const fieldInput = {
   backgroundColor: "rgba(255,255,255,0.06)",
   borderWidth: 1,
   borderColor: "rgba(255,255,255,0.08)",
+};
+
+const linkedBadge = {
+  marginTop: 16,
+  minHeight: 48,
+  borderRadius: 16,
+  paddingHorizontal: 14,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  backgroundColor: "rgba(173,232,255,0.10)",
+  borderWidth: 1,
+  borderColor: "rgba(173,232,255,0.18)",
+};
+
+const linkedBadgeText = {
+  marginLeft: 10,
+  flex: 1,
+  color: "rgba(255,255,255,0.92)",
+  fontWeight: "700" as const,
+  fontSize: 13,
+  lineHeight: 18,
+};
+
+const secondaryActionBtn = {
+  marginTop: 16,
+  height: 48,
+  borderRadius: 16,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  backgroundColor: "rgba(110,199,255,0.96)",
+};
+
+const secondaryActionBtnText = {
+  color: "#041222",
+  fontWeight: "900" as const,
+  fontSize: 14,
 };
 
 const deleteBtn = {
