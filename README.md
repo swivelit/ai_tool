@@ -214,3 +214,10 @@ Then run:
 
 cd backend
 ./run_local_model_api.sh
+
+
+THENI_TAMIL_API_URL=http://127.0.0.1:8010/convert
+THENI_TAMIL_API_TIMEOUT=90
+ENABLE_LOCAL_DIALECT_MODEL=false
+TAMIL_TO_THENI_MODEL_ROOT=./models/stage_tamil_thenitamil_model
+uvicorn theni_tamil_api:app --host 0.0.0.0 --port 8010
