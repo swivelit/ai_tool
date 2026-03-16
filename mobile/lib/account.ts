@@ -19,6 +19,7 @@ export type UserProfile = {
   avatarUrl?: string;
   authProvider?: "password" | "google";
   questionnaireCompleted?: boolean;
+  replyLanguage?: "en" | "ta";
 };
 
 export type PersonalityQuestion = {
@@ -61,6 +62,7 @@ function mapBackendUserToProfile(user: any): UserProfile | null {
         : "Elli",
     email: normalizeEmail(user.email) || undefined,
     questionnaireCompleted: Boolean(user.questionnaire_completed),
+    replyLanguage: user.reply_language === "en" ? "en" : "ta",
   };
 }
 
@@ -285,6 +287,7 @@ async function restoreProfileFromBackup(): Promise<UserProfile | null> {
       timezone: "Asia/Kolkata",
       assistantName: "Elli",
       questionnaireCompleted: false,
+      replyLanguage: "ta",
     };
 
     await writeProfileCache(rebuilt);
@@ -395,6 +398,7 @@ export async function createProfileOnBackend(profile: UserProfile) {
     place: profile.place,
     timezone: profile.timezone || "Asia/Kolkata",
     assistant_name: profile.assistantName || "Elli",
+    reply_language: profile.replyLanguage === "en" ? "en" : "ta",
   };
 
   console.log("[account] POST /users request:", safeStringify(requestBody));
@@ -423,6 +427,7 @@ export async function createProfileOnBackend(profile: UserProfile) {
     email: normalizeEmail(profile.email) || backendProfile?.email,
     questionnaireCompleted:
       backendProfile?.questionnaireCompleted ?? profile.questionnaireCompleted ?? false,
+    replyLanguage: backendProfile?.replyLanguage || profile.replyLanguage || "ta",
   };
 
   await saveProfile(merged);

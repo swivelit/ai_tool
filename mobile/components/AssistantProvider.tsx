@@ -13,7 +13,7 @@ import {
   setAssistantName,
   setSettings,
 } from "@/lib/storage";
-import { getProfileForFirebaseUid, UserProfile } from "@/lib/account";
+import { createProfileOnBackend, getProfileForFirebaseUid, UserProfile } from "@/lib/account";
 import { useAuth } from "@/components/AuthProvider";
 
 type Ctx = {
@@ -35,7 +35,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const [name, setName] = useState("Elli");
   const [settings, setS] = useState<AssistantSettings>({
     tone: "pro",
-    languageMode: "mixed",
+    languageMode: "ta",
   });
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -56,18 +56,56 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       await setAssistantName(savedProfile.assistantName);
     }
 
+    const resolvedSettings: AssistantSettings = {
+      tone: savedSettings.tone,
+      languageMode: savedProfile?.replyLanguage || savedSettings.languageMode || "ta",
+    };
+
+    if (
+      resolvedSettings.tone !== savedSettings.tone ||
+      resolvedSettings.languageMode !== savedSettings.languageMode
+    ) {
+      await setSettings(resolvedSettings);
+    }
+
     setName(resolvedAssistantName);
-    setS(savedSettings);
+    setS(resolvedSettings);
     setProfile(savedProfile);
   }, [user?.email, user?.uid]);
 
   async function updateName(nextName: string) {
     await setAssistantName(nextName);
+
+    if (profile) {
+      try {
+        await createProfileOnBackend({
+          ...profile,
+          assistantName: nextName,
+          replyLanguage: profile.replyLanguage || settings.languageMode,
+        });
+      } catch (error) {
+        console.warn("[assistant] Failed to sync assistant name to backend:", error);
+      }
+    }
+
     await refresh();
   }
 
   async function updateSettings(nextSettings: AssistantSettings) {
     await setSettings(nextSettings);
+
+    if (profile) {
+      try {
+        await createProfileOnBackend({
+          ...profile,
+          assistantName: name,
+          replyLanguage: nextSettings.languageMode,
+        });
+      } catch (error) {
+        console.warn("[assistant] Failed to sync reply language to backend:", error);
+      }
+    }
+
     await refresh();
   }
 

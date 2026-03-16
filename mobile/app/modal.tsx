@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { SafeAreaView, Text, TextInput, View, Pressable } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
@@ -10,9 +10,16 @@ import { AssistantSettings } from "@/lib/storage";
 export default function SettingsModal() {
   const { name, settings, updateName, updateSettings } = useAssistant();
   const [n, setN] = useState(name);
-
   const [tone, setTone] = useState<AssistantSettings["tone"]>(settings.tone);
-  const [languageMode, setLanguageMode] = useState<AssistantSettings["languageMode"]>(settings.languageMode);
+  const [languageMode, setLanguageMode] = useState<AssistantSettings["languageMode"]>(
+    settings.languageMode
+  );
+
+  useEffect(() => {
+    setN(name);
+    setTone(settings.tone);
+    setLanguageMode(settings.languageMode);
+  }, [name, settings.languageMode, settings.tone]);
 
   async function save() {
     await updateName(n.trim() || "Elli");
@@ -66,14 +73,24 @@ export default function SettingsModal() {
 
         <GlassCard style={{ marginTop: 14 }}>
           <Text style={{ color: "rgba(255,255,255,0.85)", fontWeight: "900" }}>
-            Language mode
+            Reply language
           </Text>
+
           <Row>
-            <Pill active={languageMode === "mixed"} label="Tamil + Tanglish" onPress={() => setLanguageMode("mixed")} />
-            <Pill active={languageMode === "ta"} label="Tamil only" onPress={() => setLanguageMode("ta")} />
+            <Pill
+              active={languageMode === "en"}
+              label="English"
+              onPress={() => setLanguageMode("en")}
+            />
+            <Pill
+              active={languageMode === "ta"}
+              label="Tamil"
+              onPress={() => setLanguageMode("ta")}
+            />
           </Row>
+
           <Text style={{ marginTop: 10, color: "rgba(255,255,255,0.55)" }}>
-            (UI changes now. Backend can use this later for stricter Tamil responses.)
+            New replies will follow this language preference.
           </Text>
         </GlassCard>
 
