@@ -8,6 +8,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 try:
+    import torch
+except Exception:
+    torch = None
+
+try:
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 except Exception:
     AutoModelForSeq2SeqLM = None
@@ -17,6 +22,7 @@ except Exception:
 MODEL_ROOT = Path(os.getenv("THENI_MODEL_ROOT", "./models/stage_tamil_thenitamil_model")).resolve()
 MAX_LENGTH = int(os.getenv("THENI_MODEL_MAX_LENGTH", "192"))
 NUM_BEAMS = int(os.getenv("THENI_MODEL_NUM_BEAMS", "4"))
+DEVICE = os.getenv("THENI_MODEL_DEVICE", "cpu").strip().lower() or "cpu"
 
 app = FastAPI(title="Theni Tamil Local API")
 
@@ -27,6 +33,13 @@ _loaded_model_dir: Optional[Path] = None
 
 class ConvertRequest(BaseModel):
     text: str
+
+
+class ConvertResponse(BaseModel):
+    ok: bool
+    input_text: str
+    theni_tamil_text: str
+    source: str = "local_model_api"
 
 
 def _is_hf_weight_file(filename: str) -> bool:
@@ -48,11 +61,21 @@ def _pick_best_model_dir(root: Path) -> Optional[Path]:
     return sorted(candidates, key=lambda p: len(str(p)))[0] if candidates else None
 
 
+def _cleanup(text: str) -> str:
+    return " ".join(str(text or "").strip().split())
+
+
+def _resolved_device() -> str:
+    if DEVICE == "cuda" and torch is not None and torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 def _ensure_model_loaded() -> None:
     global _tokenizer, _model, _loaded_model_dir
 
     if AutoTokenizer is None or AutoModelForSeq2SeqLM is None:
-        raise RuntimeError("transformers is not installed. Add transformers and torch to your environment.")
+        raise RuntimeError("transformers is not installed. Install transformers, torch, sentencepiece, and safetensors.")
 
     model_dir = _pick_best_model_dir(MODEL_ROOT)
     if model_dir is None:
@@ -63,11 +86,12 @@ def _ensure_model_loaded() -> None:
 
     _tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
     _model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir))
+
+    device = _resolved_device()
+    if hasattr(_model, "to"):
+        _model = _model.to(device)
+
     _loaded_model_dir = model_dir
-
-
-def _cleanup(text: str) -> str:
-    return " ".join(str(text or "").strip().split())
 
 
 @app.get("/health")
@@ -78,6 +102,7 @@ def health():
         "model_root": str(MODEL_ROOT),
         "resolved_model_dir": str(model_dir) if model_dir else None,
         "loaded": _loaded_model_dir is not None,
+        "device": _resolved_device(),
     }
 
 
@@ -85,12 +110,17 @@ def health():
 def warmup():
     try:
         _ensure_model_loaded()
-        return {"ok": True, "loaded": True, "resolved_model_dir": str(_loaded_model_dir)}
+        return {
+            "ok": True,
+            "loaded": True,
+            "resolved_model_dir": str(_loaded_model_dir),
+            "device": _resolved_device(),
+        }
     except Exception as exc:
         raise HTTPException(500, f"Warmup failed: {exc}")
 
 
-@app.post("/convert")
+@app.post("/convert", response_model=ConvertResponse)
 def convert(payload: ConvertRequest):
     text = _cleanup(payload.text)
     if not text:
@@ -99,12 +129,17 @@ def convert(payload: ConvertRequest):
     try:
         _ensure_model_loaded()
         encoded = _tokenizer(text, return_tensors="pt", truncation=True, max_length=MAX_LENGTH)
+
+        if torch is not None:
+            device = _resolved_device()
+            encoded = {key: value.to(device) for key, value in encoded.items()}
+
         output_ids = _model.generate(**encoded, max_length=MAX_LENGTH, num_beams=NUM_BEAMS)
         output_text = _tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
-        return {
-            "ok": True,
-            "input_text": text,
-            "theni_tamil_text": _cleanup(output_text),
-        }
+        return ConvertResponse(
+            ok=True,
+            input_text=text,
+            theni_tamil_text=_cleanup(output_text),
+        )
     except Exception as exc:
         raise HTTPException(500, f"Conversion failed: {exc}")

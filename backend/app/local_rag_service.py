@@ -5,14 +5,22 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlmodel import Session
 
-from config import FAST_RAG_DATASET_PATH
+from config import (
+    FAST_RAG_AUTO_RELOAD,
+    FAST_RAG_CACHE_MATCH_THRESHOLD,
+    FAST_RAG_DATASET_PATH,
+    FAST_RAG_MAX_CACHE_ROWS,
+    FAST_RAG_PREFIX_MATCH_THRESHOLD,
+    FAST_RAG_STRONG_MATCH_THRESHOLD,
+)
 from .models import Item, QACache, User
 
 
@@ -138,16 +146,32 @@ class LocalRAGService:
     def __init__(self, dataset_path: Optional[Path] = None) -> None:
         self.dataset_path = dataset_path or FAST_RAG_DATASET_PATH
         self.rows: List[FastRAGRow] = []
-        self.reload()
+        self._dataset_mtime_ns: Optional[int] = None
+        self.reload(force=True)
 
-    def reload(self) -> None:
+    def reload(self, *, force: bool = False) -> None:
         self._ensure_default_dataset()
+        try:
+            current_mtime = self.dataset_path.stat().st_mtime_ns
+        except OSError:
+            current_mtime = None
+
+        if not force and self.rows and current_mtime == self._dataset_mtime_ns:
+            return
+
         self.rows = self._load_rows()
+        self._dataset_mtime_ns = current_mtime
+
+    def _reload_if_needed(self) -> None:
+        if not FAST_RAG_AUTO_RELOAD:
+            return
+        self.reload(force=False)
 
     def _ensure_default_dataset(self) -> None:
         self.dataset_path.parent.mkdir(parents=True, exist_ok=True)
         if self.dataset_path.exists():
             return
+
         with self.dataset_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(
                 handle,
@@ -160,6 +184,7 @@ class LocalRAGService:
         rows: List[FastRAGRow] = []
         if not self.dataset_path.exists():
             return rows
+
         with self.dataset_path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
@@ -193,6 +218,10 @@ class LocalRAGService:
             return 0.0
         return len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
 
+    @classmethod
+    def string_similarity(cls, left: str, right: str) -> float:
+        return SequenceMatcher(None, cls.normalize_lookup_text(left), cls.normalize_lookup_text(right)).ratio()
+
     @staticmethod
     def _build_pipeline_result(
         *,
@@ -215,7 +244,7 @@ class LocalRAGService:
     ) -> Dict[str, Any]:
         english = str(remodeled_english if remodeled_english is not None else raw_english).strip()
         return {
-            "pipeline_version": "local_rag_service_v1",
+            "pipeline_version": "local_rag_service_v2",
             "raw_english": str(raw_english or "").strip(),
             "remodeled_english": english,
             "tamil_text": str(tamil_text or "").strip(),
@@ -266,7 +295,7 @@ class LocalRAGService:
         today = now_local.date()
         tomorrow = today + timedelta(days=1)
         upcoming_cutoff = now_local + timedelta(days=30)
-        collected: List[tuple[datetime, Item]] = []
+        collected: List[Tuple[datetime, Item]] = []
 
         for item in all_items:
             parsed = self._parse_item_datetime(item.datetime_str, user)
@@ -351,24 +380,33 @@ class LocalRAGService:
     def _format_template(template: str, *, user_name: str, assistant_name: str) -> str:
         return str(template or "").format(user_name=user_name, assistant_name=assistant_name).strip()
 
-    def _match_fast_row(self, normalized_message: str) -> Optional[tuple[FastRAGRow, float]]:
+    def _match_fast_row(self, normalized_message: str) -> Optional[Tuple[FastRAGRow, float]]:
         best_row: Optional[FastRAGRow] = None
         best_score = 0.0
+
         for row in self.rows:
             row_query = self.normalize_lookup_text(row.query)
             if not row_query:
                 continue
-            score = self.token_overlap_score(normalized_message, row_query)
+
+            token_score = self.token_overlap_score(normalized_message, row_query)
+            string_score = self.string_similarity(normalized_message, row_query)
+            score = max(token_score, string_score)
+
             if normalized_message == row_query:
                 score = 1.0
             elif normalized_message.startswith(row_query):
-                score = max(score, 0.98)
+                score = max(score, FAST_RAG_PREFIX_MATCH_THRESHOLD)
+            elif row_query in normalized_message:
+                score = max(score, 0.975)
+
             if score > best_score:
                 best_row = row
                 best_score = score
-        if best_row is None or best_score < 0.96:
+
+        if best_row is None or best_score < FAST_RAG_STRONG_MATCH_THRESHOLD:
             return None
-        return best_row, best_score
+        return best_row, round(best_score, 4)
 
     def _coerce_cached_pipeline(self, payload: Any) -> Optional[Dict[str, Any]]:
         if not isinstance(payload, dict):
@@ -397,18 +435,21 @@ class LocalRAGService:
     def _try_cached_answer(self, session: Session, user_id: Optional[int], normalized_message: str) -> Optional[Dict[str, Any]]:
         if not user_id:
             return None
+
         cache_rows = list(
-            session.exec(
-                select(QACache).where(QACache.user_id == user_id).order_by(QACache.updated_at.desc())
-            ).all()
-        )[:40]
+            session.exec(select(QACache).where(QACache.user_id == user_id).order_by(QACache.updated_at.desc())).all()
+        )[:FAST_RAG_MAX_CACHE_ROWS]
 
         best_payload: Optional[Dict[str, Any]] = None
         best_score = 0.0
         for row in cache_rows:
-            score = self.token_overlap_score(normalized_message, row.question)
-            if self.normalize_lookup_text(row.question) == normalized_message:
+            normalized_question = self.normalize_lookup_text(row.question)
+            token_score = self.token_overlap_score(normalized_message, normalized_question)
+            string_score = self.string_similarity(normalized_message, normalized_question)
+            score = max(token_score, string_score)
+            if normalized_question == normalized_message:
                 score = 1.0
+
             if score > best_score:
                 try:
                     payload = json.loads(row.answer or "{}")
@@ -417,7 +458,7 @@ class LocalRAGService:
                 best_payload = self._coerce_cached_pipeline(payload)
                 best_score = score
 
-        if best_payload and best_score >= 0.96:
+        if best_payload and best_score >= FAST_RAG_CACHE_MATCH_THRESHOLD:
             best_payload["route_taken"] = "cached_answer"
             best_payload["direct_answer_source"] = "qa_cache"
             best_payload["direct_answer_confidence"] = f"{best_score:.4f}"
@@ -426,9 +467,12 @@ class LocalRAGService:
                 ["Reused a cached answer and skipped a new OpenAI call."], ensure_ascii=False
             )
             return best_payload
+
         return None
 
     def try_answer(self, session: Session, user_id: Optional[int], message: str) -> Optional[Dict[str, Any]]:
+        self._reload_if_needed()
+
         normalized = self.normalize_lookup_text(message)
         if not normalized:
             return None
@@ -464,6 +508,7 @@ class LocalRAGService:
             schedule_result = self._build_schedule_answer(session, user_id, normalized, user)
             if schedule_result is not None:
                 return schedule_result
+
             cached = self._try_cached_answer(session, user_id, normalized)
             if cached is not None:
                 return cached
