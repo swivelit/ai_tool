@@ -6,7 +6,7 @@ export const KEYS = {
 };
 
 export type AssistantTone = "pro" | "friendly";
-export type LanguageMode = "ta" | "mixed";
+export type LanguageMode = "en" | "ta";
 
 export type AssistantSettings = {
   tone: AssistantTone;
@@ -15,8 +15,20 @@ export type AssistantSettings = {
 
 export const DEFAULTS: { name: string; settings: AssistantSettings } = {
   name: "Elli",
-  settings: { tone: "pro", languageMode: "mixed" },
+  settings: { tone: "pro", languageMode: "ta" },
 };
+
+function normalizeLanguageMode(value: unknown): LanguageMode {
+  if (value === "en" || value === "ta") {
+    return value;
+  }
+
+  if (value === "mixed") {
+    return "ta";
+  }
+
+  return DEFAULTS.settings.languageMode;
+}
 
 export async function getAssistantName(): Promise<string> {
   return (await AsyncStorage.getItem(KEYS.assistantName)) || DEFAULTS.name;
@@ -29,13 +41,23 @@ export async function setAssistantName(name: string): Promise<void> {
 export async function getSettings(): Promise<AssistantSettings> {
   const raw = await AsyncStorage.getItem(KEYS.settings);
   if (!raw) return DEFAULTS.settings;
+
   try {
-    return { ...DEFAULTS.settings, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw) || {};
+    return {
+      tone: parsed.tone === "friendly" ? "friendly" : DEFAULTS.settings.tone,
+      languageMode: normalizeLanguageMode(parsed.languageMode),
+    };
   } catch {
     return DEFAULTS.settings;
   }
 }
 
 export async function setSettings(s: AssistantSettings): Promise<void> {
-  await AsyncStorage.setItem(KEYS.settings, JSON.stringify(s));
+  const normalized: AssistantSettings = {
+    tone: s.tone === "friendly" ? "friendly" : "pro",
+    languageMode: normalizeLanguageMode(s.languageMode),
+  };
+
+  await AsyncStorage.setItem(KEYS.settings, JSON.stringify(normalized));
 }

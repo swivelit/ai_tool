@@ -6,9 +6,10 @@ import re
 import sys
 import tempfile
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -58,6 +59,356 @@ STAGE_REMODELER = EnglishRemodeler(STAGE_CORE)
 STAGE_TRANSLATOR = StageTranslator(STAGE_CORE)
 STAGE_CACHE: Dict[str, Dict[str, Any]] = {}
 
+
+def _normalize_reply_language(value: Optional[str]) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"en", "english"}:
+        return "en"
+    if normalized in {"ta", "tamil", "mixed", "tanglish"}:
+        return "ta"
+    return "ta"
+
+
+def _normalize_lookup_text(text: str) -> str:
+    parts = re.findall(r"[a-z0-9_\u0B80-\u0BFF]+", str(text or "").lower())
+    return " ".join(parts)
+
+
+def _token_overlap_score(left: str, right: str) -> float:
+    left_tokens = set(_normalize_lookup_text(left).split())
+    right_tokens = set(_normalize_lookup_text(right).split())
+    if not left_tokens and not right_tokens:
+        return 1.0
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
+
+
+def _build_pipeline_result(
+    *,
+    raw_english: str,
+    remodeled_english: Optional[str] = None,
+    tamil_text: str = "",
+    theni_tamil_text: str = "",
+    route_taken: str,
+    direct_answer_source: str = "",
+    direct_answer_confidence: str = "",
+    predicted_label: str = "local",
+    risk_level: str = "low",
+    stage_notes: Optional[List[str]] = None,
+    core_meta: Optional[Dict[str, Any]] = None,
+    remodel_meta: Optional[Dict[str, Any]] = None,
+    review_meta: Optional[Dict[str, Any]] = None,
+    translation_meta: Optional[Dict[str, Any]] = None,
+    timings_ms: Optional[Dict[str, Any]] = None,
+    cache_hit: str = "false",
+) -> Dict[str, Any]:
+    english = str(remodeled_english if remodeled_english is not None else raw_english).strip()
+    return {
+        "pipeline_version": PIPELINE_VERSION,
+        "raw_english": str(raw_english or "").strip(),
+        "remodeled_english": english,
+        "tamil_text": str(tamil_text or "").strip(),
+        "theni_tamil_text": str(theni_tamil_text or tamil_text or "").strip(),
+        "direct_answer_source": str(direct_answer_source or ""),
+        "direct_answer_confidence": str(direct_answer_confidence or ""),
+        "predicted_label": str(predicted_label or "local"),
+        "risk_level": str(risk_level or "low"),
+        "route_taken": str(route_taken or "local_rag"),
+        "cache_hit": str(cache_hit or "false"),
+        "stage_notes": json.dumps(stage_notes or [], ensure_ascii=False),
+        "core_meta": json.dumps(core_meta or {}, ensure_ascii=False),
+        "remodel_meta": json.dumps(remodel_meta or {}, ensure_ascii=False),
+        "review_meta": json.dumps(review_meta or {}, ensure_ascii=False),
+        "translation_meta": json.dumps(translation_meta or {}, ensure_ascii=False),
+        "timings_ms": json.dumps(timings_ms or {"total_ms": 0.0}, ensure_ascii=False),
+    }
+
+
+def _coerce_cached_pipeline(payload: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return None
+
+    return _build_pipeline_result(
+        raw_english=str(pipeline.get("raw_english", "")).strip(),
+        remodeled_english=str(pipeline.get("remodeled_english", "")).strip() or str(pipeline.get("raw_english", "")).strip(),
+        tamil_text=str(pipeline.get("tamil_text", "")).strip(),
+        theni_tamil_text=str(pipeline.get("theni_tamil_text", "")).strip(),
+        route_taken=str(pipeline.get("route_taken", "cached_answer")).strip() or "cached_answer",
+        direct_answer_source=str(pipeline.get("direct_answer_source", "qa_cache")).strip() or "qa_cache",
+        direct_answer_confidence=str(pipeline.get("direct_answer_confidence", "1.0000")).strip() or "1.0000",
+        predicted_label=str(pipeline.get("predicted_label", "cached")).strip() or "cached",
+        risk_level=str(pipeline.get("risk_level", "low")).strip() or "low",
+        stage_notes=["Reused a cached answer and skipped a new OpenAI call."],
+        core_meta=pipeline.get("core_meta") if isinstance(pipeline.get("core_meta"), dict) else {},
+        remodel_meta=pipeline.get("remodel_meta") if isinstance(pipeline.get("remodel_meta"), dict) else {},
+        review_meta=pipeline.get("review_meta") if isinstance(pipeline.get("review_meta"), dict) else {},
+        translation_meta=pipeline.get("translation_meta") if isinstance(pipeline.get("translation_meta"), dict) else {},
+        timings_ms=pipeline.get("timings_ms") if isinstance(pipeline.get("timings_ms"), dict) else {"total_ms": 0.0},
+    )
+
+
+def _get_user_timezone(user: Optional[User]) -> ZoneInfo:
+    tz_name = (user.timezone if user and user.timezone else "Asia/Kolkata").strip() or "Asia/Kolkata"
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return ZoneInfo("Asia/Kolkata")
+
+
+def _parse_item_datetime(raw_value: Optional[str], user: Optional[User]) -> Optional[datetime]:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=_get_user_timezone(user))
+
+    return parsed.astimezone(_get_user_timezone(user))
+
+
+def _format_item_time(item: Item, user: Optional[User]) -> str:
+    parsed = _parse_item_datetime(item.datetime_str, user)
+    if parsed is None:
+        return "Any time"
+    return parsed.strftime("%I:%M %p").lstrip("0")
+
+
+def _collect_items_for_scope(session: Session, user_id: int, scope: str, user: Optional[User]) -> List[Item]:
+    all_items = list(session.exec(select(Item).where(Item.user_id == user_id)).all())
+    now_local = datetime.now(_get_user_timezone(user))
+    today = now_local.date()
+    tomorrow = today + timedelta(days=1)
+    upcoming_cutoff = now_local + timedelta(days=30)
+    collected: List[tuple[datetime, Item]] = []
+
+    for item in all_items:
+        parsed = _parse_item_datetime(item.datetime_str, user)
+        if parsed is None:
+            continue
+
+        include = False
+        if scope == "today":
+            include = parsed.date() == today
+        elif scope == "tomorrow":
+            include = parsed.date() == tomorrow
+        else:
+            include = parsed >= now_local and parsed <= upcoming_cutoff
+
+        if include:
+            collected.append((parsed, item))
+
+    collected.sort(key=lambda pair: pair[0])
+    return [item for _, item in collected[:5]]
+
+
+def _build_schedule_answer(session: Session, user_id: int, normalized_query: str, user: Optional[User]) -> Optional[Dict[str, Any]]:
+    if not any(word in normalized_query for word in ["schedule", "reminder", "reminders", "task", "tasks", "todo", "plan"]):
+        return None
+
+    scope = "upcoming"
+    label_en = "upcoming"
+    label_ta = "வரவிருக்கும்"
+
+    if "today" in normalized_query or "இன்று" in normalized_query:
+        scope = "today"
+        label_en = "today"
+        label_ta = "இன்று"
+    elif "tomorrow" in normalized_query or "நாளை" in normalized_query:
+        scope = "tomorrow"
+        label_en = "tomorrow"
+        label_ta = "நாளை"
+
+    items = _collect_items_for_scope(session, user_id, scope, user)
+    display_name = (user.name if user and user.name else "there").strip() or "there"
+
+    if not items:
+        english = f"You do not have any {label_en} reminders, {display_name}."
+        tamil = f"{display_name}, உங்களுக்கு {label_ta} எந்த நினைவூட்டலும் இல்லை."
+        return _build_pipeline_result(
+            raw_english=english,
+            remodeled_english=english,
+            tamil_text=tamil,
+            theni_tamil_text=tamil,
+            route_taken="local_schedule_rag",
+            direct_answer_source="local_schedule_memory",
+            direct_answer_confidence="1.0000",
+            predicted_label="schedule",
+            stage_notes=["Answered from the user's saved reminders without calling OpenAI."],
+            timings_ms={"total_ms": 0.0},
+        )
+
+    english_lines = [f"You have {len(items)} {label_en} reminder(s), {display_name}:"]
+    tamil_lines = [f"{display_name}, உங்களுக்கு {label_ta} {len(items)} நினைவூட்டல்(கள்) இருக்கின்றன:"]
+
+    for idx, item in enumerate(items, start=1):
+        title = (item.title or item.raw_text or "Untitled").strip()
+        time_label = _format_item_time(item, user)
+        english_lines.append(f"{idx}. {time_label} - {title}")
+        tamil_lines.append(f"{idx}. {time_label} - {title}")
+
+    english = "\n".join(english_lines)
+    tamil = "\n".join(tamil_lines)
+    return _build_pipeline_result(
+        raw_english=english,
+        remodeled_english=english,
+        tamil_text=tamil,
+        theni_tamil_text=tamil,
+        route_taken="local_schedule_rag",
+        direct_answer_source="local_schedule_memory",
+        direct_answer_confidence="1.0000",
+        predicted_label="schedule",
+        stage_notes=["Answered from the user's saved reminders without calling OpenAI."],
+        timings_ms={"total_ms": 0.0},
+    )
+
+
+def _try_local_fast_path(session: Session, user_id: Optional[int], message: str) -> Optional[Dict[str, Any]]:
+    normalized = _normalize_lookup_text(message)
+    if not normalized:
+        return None
+
+    user = session.get(User, user_id) if user_id else None
+    display_name = (user.name if user and user.name else "there").strip() or "there"
+    assistant_name = (user.assistant_name if user and user.assistant_name else "Elli").strip() or "Elli"
+
+    greeting_phrases = {"hi", "hey", "hello", "hai", "vanakkam", "வணக்கம்", "ஹலோ"}
+    if normalized in greeting_phrases or normalized.startswith("good morning") or normalized.startswith("good evening") or normalized.startswith("good afternoon"):
+        if normalized.startswith("good morning"):
+            english = f"Good morning {display_name}, how are you doing?"
+            tamil = f"காலை வணக்கம் {display_name}, எப்படி இருக்கீங்க?"
+        elif normalized.startswith("good evening"):
+            english = f"Good evening {display_name}, how are you doing?"
+            tamil = f"மாலை வணக்கம் {display_name}, எப்படி இருக்கீங்க?"
+        elif normalized.startswith("good afternoon"):
+            english = f"Good afternoon {display_name}, how are you doing?"
+            tamil = f"மதிய வணக்கம் {display_name}, எப்படி இருக்கீங்க?"
+        else:
+            english = f"Hi {display_name}, how are you doing?"
+            tamil = f"ஹாய் {display_name}, எப்படி இருக்கீங்க?"
+
+        return _build_pipeline_result(
+            raw_english=english,
+            remodeled_english=english,
+            tamil_text=tamil,
+            theni_tamil_text=tamil,
+            route_taken="local_greeting",
+            direct_answer_source="instant_greeting_rule",
+            direct_answer_confidence="1.0000",
+            predicted_label="greeting",
+            stage_notes=["Answered with an instant local greeting without calling OpenAI."],
+            timings_ms={"total_ms": 0.0},
+        )
+
+    if normalized in {"how are you", "how r you", "epdi iruka", "எப்படி இருக்கீங்க"}:
+        english = f"I am doing well, {display_name}. How can I help you today?"
+        tamil = f"நான் நல்லா இருக்கேன் {display_name}. இன்று என்ன உதவி வேண்டும்?"
+        return _build_pipeline_result(
+            raw_english=english,
+            remodeled_english=english,
+            tamil_text=tamil,
+            theni_tamil_text=tamil,
+            route_taken="local_smalltalk",
+            direct_answer_source="instant_smalltalk_rule",
+            direct_answer_confidence="1.0000",
+            predicted_label="smalltalk",
+            stage_notes=["Answered a small-talk query locally without calling OpenAI."],
+            timings_ms={"total_ms": 0.0},
+        )
+
+    if normalized in {"thanks", "thank you", "nandri", "நன்றி"}:
+        english = f"You're welcome, {display_name}."
+        tamil = f"பரவாயில்லை {display_name}, உதவியது சந்தோஷம்."
+        return _build_pipeline_result(
+            raw_english=english,
+            remodeled_english=english,
+            tamil_text=tamil,
+            theni_tamil_text=tamil,
+            route_taken="local_smalltalk",
+            direct_answer_source="instant_thanks_rule",
+            direct_answer_confidence="1.0000",
+            predicted_label="smalltalk",
+            stage_notes=["Answered a thank-you query locally without calling OpenAI."],
+            timings_ms={"total_ms": 0.0},
+        )
+
+    if normalized in {"what is my name", "whats my name", "who am i", "my name"}:
+        english = f"Your name is {display_name}."
+        tamil = f"உங்கள் பெயர் {display_name}."
+        return _build_pipeline_result(
+            raw_english=english,
+            remodeled_english=english,
+            tamil_text=tamil,
+            theni_tamil_text=tamil,
+            route_taken="local_profile_rag",
+            direct_answer_source="local_profile_memory",
+            direct_answer_confidence="1.0000",
+            predicted_label="profile",
+            stage_notes=["Answered from the saved user profile without calling OpenAI."],
+            timings_ms={"total_ms": 0.0},
+        )
+
+    if normalized in {"who are you", "what is your name", "whats your name", "your name", "what can you do", "help"}:
+        english = f"I'm {assistant_name}, your assistant. I can help with reminders, schedules, and quick answers."
+        tamil = f"நான் {assistant_name}. நினைவூட்டல்கள், அட்டவணை, மற்றும் விரைவு பதில்களில் நான் உதவ முடியும்."
+        return _build_pipeline_result(
+            raw_english=english,
+            remodeled_english=english,
+            tamil_text=tamil,
+            theni_tamil_text=tamil,
+            route_taken="local_assistant_identity",
+            direct_answer_source="local_assistant_profile",
+            direct_answer_confidence="1.0000",
+            predicted_label="assistant_identity",
+            stage_notes=["Answered from app configuration without calling OpenAI."],
+            timings_ms={"total_ms": 0.0},
+        )
+
+    if user_id:
+        schedule_result = _build_schedule_answer(session, user_id, normalized, user)
+        if schedule_result is not None:
+            return schedule_result
+
+        cache_rows = list(
+            session.exec(
+                select(QACache).where(QACache.user_id == user_id).order_by(QACache.updated_at.desc())
+            ).all()
+        )[:40]
+
+        best_payload: Optional[Dict[str, Any]] = None
+        best_score = 0.0
+        for row in cache_rows:
+            score = _token_overlap_score(normalized, row.question)
+            if _normalize_lookup_text(row.question) == normalized:
+                score = 1.0
+            if score > best_score:
+                try:
+                    payload = json.loads(row.answer or "{}")
+                except Exception:
+                    payload = {}
+                best_payload = _coerce_cached_pipeline(payload)
+                best_score = score
+
+        if best_payload and best_score >= 0.96:
+            best_payload["route_taken"] = "cached_answer"
+            best_payload["direct_answer_source"] = "qa_cache"
+            best_payload["direct_answer_confidence"] = f"{best_score:.4f}"
+            best_payload["cache_hit"] = "true"
+            best_payload["stage_notes"] = json.dumps(
+                ["Reused a cached answer and skipped a new OpenAI call."], ensure_ascii=False
+            )
+            return best_payload
+
+    return None
+
 def _ensure_user_table_auth_columns() -> None:
     inspector = sa_inspect(engine)
     if not inspector.has_table("user"):
@@ -71,6 +422,9 @@ def _ensure_user_table_auth_columns() -> None:
 
         if "email" not in columns:
             conn.execute(sa_text('ALTER TABLE "user" ADD COLUMN email VARCHAR'))
+
+        if "reply_language" not in columns:
+            conn.execute(sa_text('ALTER TABLE "user" ADD COLUMN reply_language VARCHAR DEFAULT \'ta\''))
 
         try:
             conn.execute(
@@ -255,6 +609,7 @@ class TextAnalysisRequest(BaseModel):
     text: str
     user_id: Optional[int] = None
     meta: Optional[Dict[str, Any]] = None
+    reply_language: Optional[str] = None
 
 
 class PersonalityAnswersIn(BaseModel):
@@ -280,6 +635,7 @@ class UserCreate(BaseModel):
     place: Optional[str] = None
     timezone: Optional[str] = "Asia/Kolkata"
     assistant_name: Optional[str] = "Elli"
+    reply_language: Optional[str] = "ta"
 
 
 class ChatAPIRequest(BaseModel):
@@ -287,6 +643,7 @@ class ChatAPIRequest(BaseModel):
     message: Optional[str] = None
     text: Optional[str] = None
     include_pipeline: bool = True
+    reply_language: Optional[str] = None
 
 
 class PipelineChatRequest(BaseModel):
@@ -420,56 +777,57 @@ def build_user_context(session: Session, user_id: int) -> dict:
     user = session.get(User, user_id)
     if not user:
         return {}
+
     routine = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
+
     if profile and profile.questions_version != PERSONALITY_QUESTIONS_VERSION:
-        personality = None
+        personality = "Personality profile outdated. Be neutral and helpful."
     elif profile and profile.profile_summary:
         personality = profile.profile_summary
     else:
         personality = "No personality profile yet. Be neutral and helpful."
+
     return {
         "user": {
             "name": user.name,
             "place": user.place,
             "timezone": user.timezone,
         },
-        "routine": (
-            {
-                "wake_time": routine.wake_time,
-                "sleep_time": routine.sleep_time,
-                "work_start": routine.work_start,
-                "work_end": routine.work_end,
-                "daily_habits": routine.daily_habits,
-            }
-            if routine
-            else None
-        ),
+        "routine": {
+            "wake_time": routine.wake_time if routine else None,
+            "sleep_time": routine.sleep_time if routine else None,
+            "work_start": routine.work_start if routine else None,
+            "work_end": routine.work_end if routine else None,
+            "daily_habits": routine.daily_habits if routine else None,
+        },
         "personality": personality,
     }
 
 
 def _infer_hobbies(habits_text: str) -> List[str]:
-    text = (habits_text or "").lower()
-    hobbies: List[str] = []
-    if "music" in text:
-        hobbies.append("music")
-    if "movie" in text or "cinema" in text:
-        hobbies.append("movies")
-    if "read" in text or "book" in text:
+    s = (habits_text or "").lower()
+    hobbies = []
+    if "walk" in s:
+        hobbies.append("walking")
+    if "read" in s:
         hobbies.append("reading")
-    if "cook" in text:
+    if "gym" in s or "workout" in s:
+        hobbies.append("fitness")
+    if "pray" in s:
+        hobbies.append("spirituality")
+    if "cook" in s:
         hobbies.append("cooking")
-    if "travel" in text or "trip" in text:
-        hobbies.append("travel")
-    return hobbies[:3] or ["music"]
+    if "music" in s:
+        hobbies.append("music")
+    return hobbies[:4]
 
 
 def _infer_tone(summary: str) -> str:
     s = (summary or "").lower()
-    if any(word in s for word in ["direct", "strict", "brief"]):
-        return "short_direct"
-    if any(word in s for word in ["detailed", "explain"]):
+    if any(word in s for word in ["short", "brief"]):
+        return "brief"
+    if any(word in s for word in ["detail", "deep"]):
         return "detailed"
     if any(word in s for word in ["casual", "friendly"]):
         return "friendly_casual"
@@ -536,6 +894,7 @@ def _sync_stage_profile(session: Session, user_id: Optional[int]) -> Dict[str, A
             "place": user.place if user else "",
             "timezone": user.timezone if user else "Asia/Kolkata",
             "assistant_name": user.assistant_name if user else "Elli",
+            "reply_language": _normalize_reply_language(user.reply_language if user else "ta"),
         },
         "daily_routine": {
             "wake_time": routine.wake_time if routine else "07:30",
@@ -588,13 +947,23 @@ def _log_stage_history(user_id: Optional[int], profile: Dict[str, Any], query: s
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str) -> Dict[str, Any]:
+def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, reply_language: Optional[str] = None) -> Dict[str, Any]:
+    pipeline_user = session.get(User, user_id) if user_id else None
+    resolved_reply_language = _normalize_reply_language(reply_language or (pipeline_user.reply_language if pipeline_user else None))
     uid = str(user_id or "guest")
-    cache_key = f"{uid}::{' '.join(message.strip().lower().split())}"
+    cache_key = f"{uid}:{resolved_reply_language}::{' '.join(message.strip().lower().split())}"
     if cache_key in STAGE_CACHE:
         cached = dict(STAGE_CACHE[cache_key])
         cached["cache_hit"] = "true"
         return cached
+
+    fast_path = _try_local_fast_path(session, user_id, message)
+    if fast_path is not None:
+        STAGE_CACHE[cache_key] = dict(fast_path)
+        if len(STAGE_CACHE) > 128:
+            first_key = next(iter(STAGE_CACHE))
+            STAGE_CACHE.pop(first_key, None)
+        return fast_path
 
     profile = _sync_stage_profile(session, user_id)
     total_start = time.perf_counter()
@@ -654,14 +1023,19 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str) 
             if str(note or "").strip():
                 stage_notes.append(str(note).strip())
 
-    t0 = time.perf_counter()
-    translation_meta = STAGE_TRANSLATOR.english_to_tamil_with_meta(remodeled_english, profile)
-    tamil_text = str(translation_meta.get("tamil_text", "")).strip()
-    timings["english_to_tamil_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+    tamil_text = ""
+    theni_tamil_text = ""
+    if resolved_reply_language == "ta":
+        t0 = time.perf_counter()
+        translation_meta = STAGE_TRANSLATOR.english_to_tamil_with_meta(remodeled_english, profile)
+        tamil_text = str(translation_meta.get("tamil_text", "")).strip()
+        timings["english_to_tamil_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
-    t0 = time.perf_counter()
-    theni_tamil_text = STAGE_TRANSLATOR.tamil_to_thenitamil(tamil_text)
-    timings["tamil_to_theni_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        t0 = time.perf_counter()
+        theni_tamil_text = STAGE_TRANSLATOR.tamil_to_thenitamil(tamil_text)
+        timings["tamil_to_theni_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+    else:
+        translation_meta = {"skipped": True, "reason": "reply_language_is_english"}
 
     total_ms = round((time.perf_counter() - total_start) * 1000, 2)
     result: Dict[str, Any] = {
@@ -749,7 +1123,15 @@ def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _assistant_text_from_pipeline(pipeline_result: Dict[str, Any], fallback: str) -> str:
+def _assistant_text_from_pipeline(
+    pipeline_result: Dict[str, Any],
+    fallback: str,
+    reply_language: Optional[str] = None,
+) -> str:
+    resolved_reply_language = _normalize_reply_language(reply_language)
+    if resolved_reply_language == "en":
+        return str(pipeline_result.get("remodeled_english") or "").strip() or fallback
+
     return (
         str(pipeline_result.get("theni_tamil_text") or "").strip()
         or str(pipeline_result.get("tamil_text") or "").strip()
@@ -766,8 +1148,9 @@ def _save_item_from_pipeline(
     raw_text: str,
     transcript: Optional[str],
     pipeline_result: Dict[str, Any],
+    reply_language: Optional[str] = None,
 ) -> tuple[Item, Dict[str, Any], Dict[str, Any]]:
-    spoken_answer = _assistant_text_from_pipeline(pipeline_result, raw_text)
+    spoken_answer = _assistant_text_from_pipeline(pipeline_result, raw_text, reply_language)
     meta = _metadata_for_item(session, user_id, raw_text, spoken_answer)
 
     item = Item(
@@ -897,6 +1280,7 @@ def _serialize_user_payload(user: User, profile: Optional[UserProfile]) -> Dict[
         "place": user.place or "",
         "timezone": user.timezone or "Asia/Kolkata",
         "assistant_name": assistant_name,
+        "reply_language": _normalize_reply_language(getattr(user, "reply_language", "ta")),
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "profile_id": int(profile.id) if profile and profile.id is not None else None,
         "profile_user_id": int(profile.user_id) if profile and profile.user_id is not None else None,
@@ -906,6 +1290,7 @@ def _serialize_user_payload(user: User, profile: Optional[UserProfile]) -> Dict[
 @app.post("/users")
 def create_user(payload: UserCreate, session: Session = Depends(get_session)):
     assistant_name = (payload.assistant_name or "Elli").strip() or "Elli"
+    reply_language = _normalize_reply_language(payload.reply_language)
     normalized_email = _normalize_email(payload.email)
     firebase_uid = (payload.firebase_uid or "").strip() or None
 
@@ -933,6 +1318,7 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
             user.place = payload.place
             user.timezone = payload.timezone or user.timezone or "Asia/Kolkata"
             user.assistant_name = assistant_name
+            user.reply_language = reply_language or getattr(user, "reply_language", "ta") or "ta"
             session.add(user)
             session.commit()
             session.refresh(user)
@@ -944,6 +1330,7 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
                 place=payload.place,
                 timezone=payload.timezone or "Asia/Kolkata",
                 assistant_name=assistant_name,
+                reply_language=reply_language,
             )
             session.add(user)
             session.commit()
@@ -1091,7 +1478,7 @@ def save_pipeline_profile(user_id: int, payload: PersonalityAnswersIn, session: 
 @app.post("/api/chat")
 def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
     text = _resolve_chat_text(payload)
-    pipeline_result = _run_stage_pipeline(session, payload.user_id, text)
+    pipeline_result = _run_stage_pipeline(session, payload.user_id, text, payload.reply_language)
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
@@ -1099,6 +1486,7 @@ def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
         raw_text=text,
         transcript=None,
         pipeline_result=pipeline_result,
+        reply_language=payload.reply_language,
     )
     return _build_chat_response(item, meta, normalized_pipeline)
 
@@ -1239,7 +1627,8 @@ def generate_personality_summary(user_id: int, session: Session = Depends(get_se
 
 @app.post("/analyze-text", response_model=TextAnalysisResponse)
 def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_session)):
-    pipeline_result = _run_stage_pipeline(session, payload.user_id, payload.text)
+    reply_language = payload.reply_language or (payload.meta or {}).get("reply_language")
+    pipeline_result = _run_stage_pipeline(session, payload.user_id, payload.text, reply_language)
     item, _, _ = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
@@ -1247,6 +1636,7 @@ def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_se
         raw_text=payload.text,
         transcript=None,
         pipeline_result=pipeline_result,
+        reply_language=reply_language,
     )
     return item_to_response(item)
 
@@ -1254,6 +1644,7 @@ def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_se
 @app.post("/transcribe-and-analyze")
 async def transcribe_and_analyze(
     user_id: Optional[int] = None,
+    reply_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
@@ -1264,7 +1655,7 @@ async def transcribe_and_analyze(
 
     try:
         transcript_text = _transcribe_audio_file(tmp_path)
-        pipeline_result = _run_stage_pipeline(session, user_id, transcript_text)
+        pipeline_result = _run_stage_pipeline(session, user_id, transcript_text, reply_language)
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=user_id,
@@ -1272,6 +1663,7 @@ async def transcribe_and_analyze(
             raw_text=transcript_text,
             transcript=transcript_text,
             pipeline_result=pipeline_result,
+            reply_language=reply_language,
         )
         response = item_to_response(item).model_dump()
         response["assistant"] = {
@@ -1293,6 +1685,7 @@ async def transcribe_and_analyze(
 @app.post("/api/transcribe-and-analyze")
 async def api_transcribe_and_analyze(
     user_id: Optional[int] = None,
+    reply_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
@@ -1303,7 +1696,7 @@ async def api_transcribe_and_analyze(
 
     try:
         transcript_text = _transcribe_audio_file(tmp_path)
-        pipeline_result = _run_stage_pipeline(session, user_id, transcript_text)
+        pipeline_result = _run_stage_pipeline(session, user_id, transcript_text, reply_language)
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=user_id,
@@ -1311,6 +1704,7 @@ async def api_transcribe_and_analyze(
             raw_text=transcript_text,
             transcript=transcript_text,
             pipeline_result=pipeline_result,
+            reply_language=reply_language,
         )
         return _build_chat_response(item, meta, normalized_pipeline)
     finally:
@@ -1367,35 +1761,38 @@ def generate_docx(item: Item) -> str:
 
 
 def generate_pdf(item: Item) -> str:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
+    from fpdf import FPDF
 
     ensure_dir(PDF_BASE_DIR)
     cat = os.path.join(PDF_BASE_DIR, item.category or "Other")
     ensure_dir(cat)
     path = os.path.join(cat, f"item_{item.id}.pdf")
-    c = canvas.Canvas(path, pagesize=A4)
-    _, h = A4
-    y = h - 50
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, y, item.title or f"Item {item.id}")
-    y -= 30
-    c.setFont("Helvetica", 12)
-    c.drawString(50, y, f"Intent: {item.intent}")
-    y -= 18
-    c.drawString(50, y, f"Category: {item.category}")
-    y -= 18
+
+    pdf = FPDF()
+    pdf.add_page()
+
+    font_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    ]
+    font_path = next((p for p in font_candidates if os.path.exists(p)), None)
+
+    if font_path:
+        pdf.add_font("DejaVu", "", font_path, uni=True)
+        pdf.set_font("DejaVu", size=14)
+    else:
+        pdf.set_font("Arial", size=12)
+
+    pdf.cell(0, 10, txt=item.title or f"Item {item.id}", ln=True)
+    pdf.set_font_size(11)
+    pdf.multi_cell(0, 8, txt=f"Intent: {item.intent}")
+    pdf.multi_cell(0, 8, txt=f"Category: {item.category}")
     if item.datetime_str:
-        c.drawString(50, y, f"When: {item.datetime_str}")
-        y -= 18
-    y -= 10
-    for line in (item.details or item.raw_text).split("\n"):
-        if y < 60:
-            c.showPage()
-            y = h - 50
-        c.drawString(50, y, line[:120])
-        y -= 16
-    c.save()
+        pdf.multi_cell(0, 8, txt=f"When: {item.datetime_str}")
+    pdf.ln(2)
+    pdf.multi_cell(0, 8, txt=item.details or item.raw_text)
+
+    pdf.output(path)
     return path
 
 
@@ -1408,16 +1805,18 @@ def generate_excel(item: Item) -> str:
     path = os.path.join(cat, f"item_{item.id}.xlsx")
     wb = Workbook()
     ws = wb.active
-    ws["A1"] = "Title"
-    ws["B1"] = item.title or ""
-    ws["A2"] = "Intent"
-    ws["B2"] = item.intent
-    ws["A3"] = "Category"
-    ws["B3"] = item.category
-    ws["A4"] = "When"
-    ws["B4"] = item.datetime_str or ""
-    ws["A5"] = "Details"
-    ws["B5"] = item.details or item.raw_text
+    ws.title = "Item"
+    rows = [
+        ("ID", item.id),
+        ("Title", item.title),
+        ("Intent", item.intent),
+        ("Category", item.category),
+        ("When", item.datetime_str),
+        ("Details", item.details or item.raw_text),
+    ]
+    for i, (k, v) in enumerate(rows, start=1):
+        ws.cell(row=i, column=1, value=k)
+        ws.cell(row=i, column=2, value=v)
     wb.save(path)
     return path
 
@@ -1429,6 +1828,7 @@ def generate_ppt(item: Item) -> str:
     cat = os.path.join(PPT_BASE_DIR, item.category or "Other")
     ensure_dir(cat)
     path = os.path.join(cat, f"item_{item.id}.pptx")
+
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[1])
     slide.shapes.title.text = item.title or f"Item {item.id}"
@@ -1437,104 +1837,50 @@ def generate_ppt(item: Item) -> str:
     if item.datetime_str:
         tf.add_paragraph().text = f"When: {item.datetime_str}"
     tf.add_paragraph().text = item.details or item.raw_text
+
     prs.save(path)
     return path
 
 
 @app.post("/items/{item_id}/generate-pdf")
-def gen_pdf(item_id: int, session: Session = Depends(get_session)):
+def item_generate_pdf(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
-    return {"item_id": item_id, "pdf_path": generate_pdf(item)}
+    path = generate_pdf(item)
+    return {"ok": True, "path": path, "download_url": f"/download?path={path}"}
 
 
 @app.post("/items/{item_id}/generate-excel")
-def gen_excel(item_id: int, session: Session = Depends(get_session)):
+def item_generate_excel(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
-    return {"item_id": item_id, "excel_path": generate_excel(item)}
+    path = generate_excel(item)
+    return {"ok": True, "path": path, "download_url": f"/download?path={path}"}
 
 
 @app.post("/items/{item_id}/generate-ppt")
-def gen_ppt(item_id: int, session: Session = Depends(get_session)):
+def item_generate_ppt(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
-    return {"item_id": item_id, "ppt_path": generate_ppt(item)}
+    path = generate_ppt(item)
+    return {"ok": True, "path": path, "download_url": f"/download?path={path}"}
 
 
 @app.post("/items/{item_id}/generate-docx")
-def gen_docx(item_id: int, session: Session = Depends(get_session)):
+def item_generate_docx(item_id: int, session: Session = Depends(get_session)):
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
-    return {"item_id": item_id, "docx_path": generate_docx(item)}
+    path = generate_docx(item)
+    return {"ok": True, "path": path, "download_url": f"/download?path={path}"}
 
 
-@app.get("/files/pdf/{category}/{filename}")
-def download_pdf(category: str, filename: str):
-    path = os.path.join(PDF_BASE_DIR, category, filename)
-    if not os.path.exists(path):
+@app.get("/download")
+def download_generated(path: str):
+    if not os.path.isfile(path):
         raise HTTPException(404, "File not found")
-    return FileResponse(path, media_type="application/pdf", filename=filename)
-
-
-@app.get("/files/excel/{category}/{filename}")
-def download_excel(category: str, filename: str):
-    path = os.path.join(EXCEL_BASE_DIR, category, filename)
-    if not os.path.exists(path):
-        raise HTTPException(404, "File not found")
-    return FileResponse(
-        path,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=filename,
-    )
-
-
-@app.get("/files/ppt/{category}/{filename}")
-def download_ppt(category: str, filename: str):
-    path = os.path.join(PPT_BASE_DIR, category, filename)
-    if not os.path.exists(path):
-        raise HTTPException(404, "File not found")
-    return FileResponse(
-        path,
-        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        filename=filename,
-    )
-
-
-@app.get("/files/docx/{category}/{filename}")
-def download_docx(category: str, filename: str):
-    path = os.path.join(DOCX_BASE_DIR, category, filename)
-    if not os.path.exists(path):
-        raise HTTPException(404, "File not found")
-    return FileResponse(
-        path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=filename,
-    )
-
-
-@app.get("/conversations")
-def list_conversations(user_id: Optional[int] = None, limit: int = 50, session: Session = Depends(get_session)):
-    query = select(Conversation).order_by(Conversation.created_at.desc()).limit(limit)
-    if user_id is not None:
-        query = query.where(Conversation.user_id == user_id)
-    return session.exec(query).all()
-
-
-@app.get("/qa/search")
-def qa_search(q: str, user_id: Optional[int] = None, session: Session = Depends(get_session)):
-    rows = session.exec(select(QACache).order_by(QACache.updated_at.desc()).limit(200)).all()
-    ql = q.lower()
-    out = []
-    for row in rows:
-        if user_id is not None and row.user_id != user_id:
-            continue
-        if ql in (row.question or "").lower() or ql in (row.answer or "").lower():
-            out.append(row)
-        if len(out) >= 10:
-            break
-    return out
+    filename = os.path.basename(path)
+    return FileResponse(path, filename=filename)

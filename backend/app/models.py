@@ -18,6 +18,7 @@ class User(SQLModel, table=True):
     place: Optional[str] = None
     timezone: str = "Asia/Kolkata"
     assistant_name: str = "Ellie"
+    reply_language: str = "ta"
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
