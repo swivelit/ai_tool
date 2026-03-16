@@ -12,11 +12,13 @@ from config import (
     DIALECT_MODEL_NUM_BEAMS,
     ENABLE_LOCAL_DIALECT_MODEL,
     ENABLE_TAMIL_VALIDATION,
+    ENABLE_THENI_TAMIL_CONVERSION,
     ENABLE_TRANSLATION_REFINEMENT,
     MIN_TAMIL_CHAR_RATIO,
     TAMIL_TO_THENI_MODEL_ROOT,
     THENI_TAMIL_API_TIMEOUT,
     THENI_TAMIL_API_URL,
+    THENI_TAMIL_MODE,
     TRANSLATION_MAX_CHUNK_CHARS,
     TRANSLATION_MAX_RETRIES,
     TRANSLATION_REFINEMENT_MAX_CHARS,
@@ -56,7 +58,8 @@ def _pick_best_model_dir(root: Path) -> Optional[Path]:
 class StageTranslator:
     """
     English -> standard Tamil uses the existing OpenAI stage.
-    Standard Tamil -> Theni Tamil stays local-first to avoid extra token cost.
+    Standard Tamil -> Theni Tamil stays local-first / local-service-first,
+    so it does not create extra OpenAI token cost.
     """
 
     def __init__(self, core: Any) -> None:
@@ -64,6 +67,8 @@ class StageTranslator:
         self._tokenizer = None
         self._model = None
         self._loaded_model_dir: Optional[Path] = None
+        self._local_model_unavailable = False
+        self._api_unavailable = False
 
     def _contains_tamil(self, text: str) -> bool:
         return bool(TAMIL_RE.search(str(text or "")))
@@ -117,23 +122,33 @@ class StageTranslator:
         gc.collect()
 
     def _load_local_model(self, model_dir: Path) -> bool:
+        if self._local_model_unavailable:
+            return False
+
         if not ENABLE_LOCAL_DIALECT_MODEL or AutoTokenizer is None or AutoModelForSeq2SeqLM is None:
+            self._local_model_unavailable = True
             return False
 
         resolved = _pick_best_model_dir(model_dir)
         if resolved is None:
+            self._local_model_unavailable = True
             return False
 
         if self._loaded_model_dir == resolved and self._model is not None and self._tokenizer is not None:
             return True
 
-        self._tokenizer = AutoTokenizer.from_pretrained(str(resolved))
-        self._model = AutoModelForSeq2SeqLM.from_pretrained(str(resolved))
-        self._loaded_model_dir = resolved
-        return True
+        try:
+            self._tokenizer = AutoTokenizer.from_pretrained(str(resolved))
+            self._model = AutoModelForSeq2SeqLM.from_pretrained(str(resolved))
+            self._loaded_model_dir = resolved
+            return True
+        except Exception:
+            self._local_model_unavailable = True
+            self._clear_memory()
+            return False
 
     def _convert_via_external_api(self, tamil_text: str) -> str:
-        if not THENI_TAMIL_API_URL:
+        if self._api_unavailable or not THENI_TAMIL_API_URL:
             return ""
 
         try:
@@ -143,10 +158,16 @@ class StageTranslator:
                 timeout=THENI_TAMIL_API_TIMEOUT,
             )
             response.raise_for_status()
-            payload = response.json()
-            output = self._cleanup_tamil(payload.get("theni_tamil_text") or payload.get("text") or "")
+            payload = response.json() if response.content else {}
+            output = self._cleanup_tamil(
+                payload.get("theni_tamil_text")
+                or payload.get("text")
+                or payload.get("output_text")
+                or ""
+            )
             return output if self._looks_like_valid_tamil_output(output) else ""
         except Exception:
+            self._api_unavailable = True
             return ""
 
     def _ensure_tamil_to_theni_model(self) -> bool:
@@ -271,34 +292,6 @@ Task:
     def english_to_tamil(self, english_text: str, profile: Dict[str, Any]) -> str:
         return str(self.english_to_tamil_with_meta(english_text, profile).get("tamil_text", "")).strip()
 
-    def tamil_to_thenitamil(self, tamil_text: str) -> str:
-        """
-        Cost-free dialect conversion path:
-        1) separate local API
-        2) local HF model
-        3) graceful fallback to standard Tamil (no extra OpenAI call)
-        """
-        tamil_text = self._cleanup_tamil(tamil_text)
-        if not tamil_text:
-            return ""
-
-        if not self._looks_like_valid_tamil_output(tamil_text):
-            return tamil_text
-
-        api_result = self._convert_via_external_api(tamil_text)
-        if api_result:
-            return api_result
-
-        if self._ensure_tamil_to_theni_model():
-            try:
-                generated = self._cleanup_tamil(self._generate(tamil_text, self._model))
-                if self._looks_like_valid_tamil_output(generated):
-                    return generated
-            except Exception:
-                self._clear_memory()
-
-        return tamil_text
-
     def _generate(self, text: str, model: Any) -> str:
         if self._tokenizer is None or model is None:
             raise RuntimeError("Local tokenizer/model not loaded.")
@@ -315,3 +308,44 @@ Task:
             num_beams=DIALECT_MODEL_NUM_BEAMS,
         )
         return str(self._tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]).strip()
+
+    def tamil_to_thenitamil(self, tamil_text: str) -> str:
+        """
+        Cost-free dialect conversion path:
+        1) local API service (recommended for 2-3 GB model separation)
+        2) optional local in-process HF model
+        3) graceful fallback to standard Tamil (no extra OpenAI call)
+        """
+        tamil_text = self._cleanup_tamil(tamil_text)
+        if not tamil_text:
+            return ""
+
+        if not ENABLE_THENI_TAMIL_CONVERSION:
+            return tamil_text
+
+        if not self._looks_like_valid_tamil_output(tamil_text):
+            return tamil_text
+
+        preferred_mode = (THENI_TAMIL_MODE or "api_then_local").strip().lower()
+        try_api_first = preferred_mode in {"api", "api_then_local", "api_then_model", "service"}
+        try_local_after = preferred_mode in {"local", "local_only", "api_then_local", "api_then_model", "local_then_api"}
+
+        if try_api_first:
+            api_result = self._convert_via_external_api(tamil_text)
+            if api_result:
+                return api_result
+
+        if try_local_after and self._ensure_tamil_to_theni_model():
+            try:
+                generated = self._cleanup_tamil(self._generate(tamil_text, self._model))
+                if self._looks_like_valid_tamil_output(generated):
+                    return generated
+            except Exception:
+                self._clear_memory()
+
+        if preferred_mode == "local_then_api":
+            api_result = self._convert_via_external_api(tamil_text)
+            if api_result:
+                return api_result
+
+        return tamil_text
