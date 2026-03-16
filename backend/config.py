@@ -13,6 +13,10 @@ DATA_DIR = BASE_DIR / "data"
 PROFILES_DIR = DATA_DIR / "profiles"
 LOGS_DIR = DATA_DIR / "logs"
 MODELS_DIR = BASE_DIR / "models"
+CLASSIFIER_DATASET_PATH = DATA_DIR / "classifier_dataset.csv"
+FAST_RAG_DATASET_PATH = DATA_DIR / "fast_rag_replies.csv"
+PIPELINE_QUESTIONS_CSV_PATH = DATA_DIR / "pipeline_questions.csv"
+GENERATED_DOCS_DIR = DATA_DIR / "generated_docs"
 
 
 def _ensure_dirs(paths: Iterable[Path]) -> None:
@@ -20,7 +24,7 @@ def _ensure_dirs(paths: Iterable[Path]) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
-_ensure_dirs((DATA_DIR, PROFILES_DIR, LOGS_DIR, MODELS_DIR))
+_ensure_dirs((DATA_DIR, PROFILES_DIR, LOGS_DIR, MODELS_DIR, GENERATED_DOCS_DIR))
 
 
 def _env_str(name: str, default: str = "") -> str:
@@ -138,3 +142,6 @@ HEALTH_RISK_KEYWORDS = {
     "chest pain",
     "fainting",
 }
+
+THENI_TAMIL_API_URL = _env_str("THENI_TAMIL_API_URL", "")
+THENI_TAMIL_API_TIMEOUT = _env_int("THENI_TAMIL_API_TIMEOUT", 90, minimum=5)

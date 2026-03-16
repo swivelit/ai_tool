@@ -4,6 +4,7 @@ import gc
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import requests
 
 from config import (
     DIALECT_MODEL_MAX_LENGTH,
@@ -18,6 +19,8 @@ from config import (
     TRANSLATION_REFINEMENT_MAX_CHARS,
     TRANSLATION_RETRY_ON_NON_TAMIL,
     TRANSLATION_TEMPERATURE,
+    THENI_TAMIL_API_TIMEOUT,
+    THENI_TAMIL_API_URL,
 )
 
 try:
@@ -127,7 +130,20 @@ class StageTranslator:
         self._model = AutoModelForSeq2SeqLM.from_pretrained(str(resolved))
         self._loaded_model_dir = resolved
         return True
-
+    def _convert_via_external_api(self, tamil_text: str) -> str:
+        if not THENI_TAMIL_API_URL:
+            return ""
+        try:
+            response = requests.post(
+                THENI_TAMIL_API_URL,
+                json={"text": tamil_text},
+                timeout=THENI_TAMIL_API_TIMEOUT,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return self._cleanup_tamil(payload.get("theni_tamil_text") or payload.get("text") or "")
+        except Exception:
+            return ""
     def _ensure_tamil_to_theni_model(self) -> bool:
         return self._load_local_model(TAMIL_TO_THENI_MODEL_ROOT)
 
@@ -225,6 +241,11 @@ Task:
         tamil_text = self._cleanup_tamil(tamil_text)
         if not tamil_text:
             return ""
+
+        api_result = self._convert_via_external_api(tamil_text)
+        if api_result:
+            return api_result
+
         if self._ensure_tamil_to_theni_model():
             try:
                 return self._cleanup_tamil(self._generate(tamil_text, self._model))
@@ -237,7 +258,6 @@ Task:
         return self._cleanup_tamil(
             self.core.generate_text(system_prompt, tamil_text, temperature=0.12, max_output_tokens=900)
         )
-
     def _raise_missing_model(self, direction: str) -> None:
         raise FileNotFoundError(f"Could not find a local Hugging Face model directory for {direction}.")
 

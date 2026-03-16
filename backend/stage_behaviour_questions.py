@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import csv
 
 from config import (
     DATA_DIR,
@@ -19,10 +20,11 @@ from config import (
     PROFILE_VERSION,
     PROFILES_DIR,
     QUESTION_COUNT,
+    PIPELINE_QUESTIONS_CSV_PATH,
 )
 
 
-QUESTIONS: List[Dict[str, Any]] = [
+DEFAULT_QUESTIONS: List[Dict[str, Any]] = [
     {
         "id": "age_group",
         "prompt": "What is your age group?",
@@ -134,6 +136,59 @@ QUESTIONS: List[Dict[str, Any]] = [
         "options": ["student", "working_professional", "homemaker", "caregiver_parent", "self_employed"],
     },
 ]
+
+
+def _serialize_question_options(options: List[str]) -> str:
+    return "|".join(str(option).strip() for option in options if str(option).strip())
+
+
+def _ensure_questions_csv(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["id", "prompt", "type", "max_choices", "options"])
+        writer.writeheader()
+        for question in DEFAULT_QUESTIONS:
+            writer.writerow({
+                "id": question.get("id", ""),
+                "prompt": question.get("prompt", ""),
+                "type": question.get("type", "single"),
+                "max_choices": question.get("max_choices", ""),
+                "options": _serialize_question_options(question.get("options", [])),
+            })
+
+
+def _load_questions_from_csv(path: Path) -> List[Dict[str, Any]]:
+    _ensure_questions_csv(path)
+    questions: List[Dict[str, Any]] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            qid = str(row.get("id", "")).strip()
+            prompt = str(row.get("prompt", "")).strip()
+            qtype = str(row.get("type", "single")).strip() or "single"
+            raw_options = str(row.get("options", "")).strip()
+            options = [part.strip() for part in raw_options.split("|") if part.strip()]
+            if not qid or not prompt or not options:
+                continue
+            entry: Dict[str, Any] = {
+                "id": qid,
+                "prompt": prompt,
+                "type": qtype,
+                "options": options,
+            }
+            raw_max = str(row.get("max_choices", "")).strip()
+            if raw_max:
+                try:
+                    entry["max_choices"] = int(raw_max)
+                except Exception:
+                    pass
+            questions.append(entry)
+    return questions or DEFAULT_QUESTIONS
+
+
+QUESTIONS: List[Dict[str, Any]] = _load_questions_from_csv(PIPELINE_QUESTIONS_CSV_PATH)
 
 
 class LocalHybridRAG:

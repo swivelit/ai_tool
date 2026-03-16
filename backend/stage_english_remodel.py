@@ -20,11 +20,32 @@ from config import (
     REMODEL_MIN_OUTPUT_CHARS,
     REMODEL_MIN_SIMILARITY_TO_RAW,
     REMODEL_TEMPERATURE,
+    CLASSIFIER_DATASET_PATH,
 )
 
 
 WORD_RE = re.compile(r"[a-zA-Z0-9_\u0B80-\u0BFF]+")
 
+DEFAULT_CLASSIFIER_ROWS: List[Dict[str, str]] = [
+    {"text": "hi", "label": "greeting", "answer": "Hi there, how are you doing?"},
+    {"text": "hello", "label": "greeting", "answer": "Hi there, how are you doing?"},
+    {"text": "hey", "label": "greeting", "answer": "Hi there, how are you doing?"},
+    {"text": "how are you", "label": "smalltalk", "answer": "I am doing well. How can I help you today?"},
+    {"text": "thanks", "label": "smalltalk", "answer": "You're welcome."},
+    {"text": "what is my name", "label": "profile", "answer": "I can read your saved profile to tell you your name."},
+    {"text": "who are you", "label": "assistant_identity", "answer": "I'm your assistant. I can help with reminders, schedules, and quick answers."},
+    {"text": "help", "label": "assistant_identity", "answer": "I can help with reminders, schedules, and quick answers."},
+]
+
+
+def _ensure_default_classifier_dataset(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["text", "label", "answer"])
+        writer.writeheader()
+        writer.writerows(DEFAULT_CLASSIFIER_ROWS)
 
 def _normalize_text(text: str) -> str:
     return " ".join(str(text or "").strip().lower().split())
@@ -90,7 +111,7 @@ class RoutingDecision:
 
 class EmbeddedTextClassifier:
     def __init__(self, dataset_path: Optional[Path] = None) -> None:
-        self.dataset_path = dataset_path or (DATA_DIR / "classifier_dataset.csv")
+        self.dataset_path = dataset_path or CLASSIFIER_DATASET_PATH
         self.rows = self._load_dataset()
         self.label_centroids: Dict[str, Counter[str]] = self._train()
 
@@ -101,7 +122,9 @@ class EmbeddedTextClassifier:
         return _normalize_text(text)
 
     def _load_dataset(self) -> List[Dict[str, str]]:
-        return _coerce_csv_rows(self._resolve_dataset_path())
+        dataset_path = self._resolve_dataset_path()
+        _ensure_default_classifier_dataset(dataset_path)
+        return _coerce_csv_rows(dataset_path)
 
     def _train(self) -> Dict[str, Counter[str]]:
         bucket: Dict[str, Counter[str]] = defaultdict(Counter)
