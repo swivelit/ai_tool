@@ -178,9 +178,9 @@ export default function Home() {
       const res = await apiPost<AnalyzeResponse>("/analyze-text", {
         text: cleaned,
         user_id: profile?.userId ?? null,
+        reply_language: settings.languageMode,
         meta: { tone: settings.tone, languageMode: settings.languageMode },
       });
-
       setResult(res);
       setText("");
       await loadHistory();
@@ -254,10 +254,9 @@ export default function Home() {
       );
 
       const res = await apiPostForm<AnalyzeResponse>(
-        `/transcribe-and-analyze?user_id=${profile?.userId ?? ""}`,
+        `/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${settings.languageMode}`,
         form
       );
-
       setLastPrompt(res.transcript || "Voice request");
       setResult(res);
       await loadHistory();

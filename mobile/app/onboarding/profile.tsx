@@ -34,7 +34,7 @@ type NoticeState = {
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
-  const { name: currentAssistantName, profile, refresh } = useAssistant();
+  const { name: currentAssistantName, profile, refresh, settings } = useAssistant();
   const { user } = useAuth();
 
   const [name, setName] = useState("");
@@ -118,6 +118,7 @@ export default function ProfileScreen() {
         assistantName: assistantName.trim(),
         timezone: "Asia/Kolkata",
         questionnaireCompleted: false,
+        replyLanguage: settings.languageMode,
       } as const;
 
       await setAssistantName(normalizedProfile.assistantName);

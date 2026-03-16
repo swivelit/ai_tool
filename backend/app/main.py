@@ -22,13 +22,14 @@ from sqlmodel import Session, delete, select
 
 from .database import engine, get_session
 from .models import Conversation, DailyRoutine, Item, QACache, User, UserProfile
+from .local_rag_service import LocalRAGService
 
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = CURRENT_DIR.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from config import LOGS_DIR, PIPELINE_VERSION  # noqa: E402
+from config import GENERATED_DOCS_DIR, LOGS_DIR, PIPELINE_VERSION  # noqa: E402
 from stage_behaviour_questions import BehaviourQuestionnaire, QUESTIONS as PIPELINE_QUESTIONS  # noqa: E402
 from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
@@ -57,6 +58,7 @@ STAGE_BEHAVIOUR = BehaviourQuestionnaire()
 STAGE_CORE = OpenAICore()
 STAGE_REMODELER = EnglishRemodeler(STAGE_CORE)
 STAGE_TRANSLATOR = StageTranslator(STAGE_CORE)
+LOCAL_RAG_SERVICE = LocalRAGService()
 STAGE_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
@@ -957,7 +959,7 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         cached["cache_hit"] = "true"
         return cached
 
-    fast_path = _try_local_fast_path(session, user_id, message)
+    fast_path = LOCAL_RAG_SERVICE.try_answer(session, user_id, message)
     if fast_path is not None:
         STAGE_CACHE[cache_key] = dict(fast_path)
         if len(STAGE_CACHE) > 128:
@@ -1429,7 +1431,7 @@ def delete_user_account(user_id: int, session: Session = Depends(get_session)):
         except Exception as exc:
             print(f"[WARN] Failed to delete stage file for user {user_id}: {exc}")
 
-    keys_to_delete = [key for key in STAGE_CACHE if key.startswith(f"{user_id}::")]
+    keys_to_delete = [key for key in STAGE_CACHE if key.startswith(f"{user_id}:")]
     for key in keys_to_delete:
         STAGE_CACHE.pop(key, None)
 
@@ -1731,7 +1733,7 @@ def get_item(item_id: int, session: Session = Depends(get_session)):
     return item_to_response(item)
 
 
-DOCS_BASE_DIR = "generated_docs"
+DOCS_BASE_DIR = str(GENERATED_DOCS_DIR)
 PDF_BASE_DIR = os.path.join(DOCS_BASE_DIR, "pdf")
 EXCEL_BASE_DIR = os.path.join(DOCS_BASE_DIR, "excel")
 PPT_BASE_DIR = os.path.join(DOCS_BASE_DIR, "ppt")
