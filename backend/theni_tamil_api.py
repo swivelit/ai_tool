@@ -50,6 +50,7 @@ def _pick_best_model_dir(root: Path) -> Optional[Path]:
 
 def _ensure_model_loaded() -> None:
     global _tokenizer, _model, _loaded_model_dir
+
     if AutoTokenizer is None or AutoModelForSeq2SeqLM is None:
         raise RuntimeError("transformers is not installed. Add transformers and torch to your environment.")
 
@@ -78,6 +79,15 @@ def health():
         "resolved_model_dir": str(model_dir) if model_dir else None,
         "loaded": _loaded_model_dir is not None,
     }
+
+
+@app.post("/warmup")
+def warmup():
+    try:
+        _ensure_model_loaded()
+        return {"ok": True, "loaded": True, "resolved_model_dir": str(_loaded_model_dir)}
+    except Exception as exc:
+        raise HTTPException(500, f"Warmup failed: {exc}")
 
 
 @app.post("/convert")
