@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import math
 import os
 import re
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -14,7 +18,58 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlmodel import Session
 
-from .models import DailyRoutine, Item, QACache, User
+from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User
+
+try:
+    from openai import OpenAI
+except Exception:  # pragma: no cover
+    OpenAI = None  # type: ignore
+
+try:
+    from config import (
+        OPENAI_API_KEY,
+        RAG_ENABLED,
+        RAG_EMBED_CACHE_SIZE,
+        RAG_EMBEDDING_MODEL,
+        RAG_ENABLE_FAST_RAG_SEMANTIC,
+        RAG_ENABLE_FOLLOWUP_REWRITE,
+        RAG_FAST_RAG_MIN_SCORE,
+        RAG_MAX_CACHE_CANDIDATES,
+        RAG_MAX_CONTEXT_CHARS,
+        RAG_MAX_CONVERSATION_CANDIDATES,
+        RAG_MAX_ITEM_CANDIDATES,
+        RAG_MIN_SCORE,
+        RAG_RECENCY_HALF_LIFE_DAYS,
+        RAG_TOP_K,
+    )
+except Exception:  # pragma: no cover
+    # If config isn't importable (edge cases), fall back to env-only behavior.
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    _fb = lambda x: str(os.getenv(x, "")).strip().lower()  # noqa: E731
+    _fi = lambda x, d: int(str(os.getenv(x, d)).strip() or d)  # noqa: E731
+    _ff = lambda x, d: float(str(os.getenv(x, d)).strip() or d)  # noqa: E731
+
+    RAG_ENABLED = _fb("RAG_ENABLED") in {"1", "true", "yes", "y", "on"} if _fb("RAG_ENABLED") else True
+    RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small")
+    RAG_ENABLE_FAST_RAG_SEMANTIC = (
+        _fb("RAG_ENABLE_FAST_RAG_SEMANTIC") in {"1", "true", "yes", "y", "on"}
+        if _fb("RAG_ENABLE_FAST_RAG_SEMANTIC")
+        else True
+    )
+    RAG_FAST_RAG_MIN_SCORE = _ff("RAG_FAST_RAG_MIN_SCORE", 0.86)
+    RAG_MAX_ITEM_CANDIDATES = max(20, _fi("RAG_MAX_ITEM_CANDIDATES", 250))
+    RAG_MAX_CONVERSATION_CANDIDATES = max(10, _fi("RAG_MAX_CONVERSATION_CANDIDATES", 80))
+    RAG_MAX_CACHE_CANDIDATES = max(10, _fi("RAG_MAX_CACHE_CANDIDATES", 60))
+    RAG_TOP_K = max(2, _fi("RAG_TOP_K", 6))
+    RAG_MIN_SCORE = _ff("RAG_MIN_SCORE", 0.56)
+    RAG_MAX_CONTEXT_CHARS = max(800, _fi("RAG_MAX_CONTEXT_CHARS", 3200))
+    RAG_RECENCY_HALF_LIFE_DAYS = max(0.1, _ff("RAG_RECENCY_HALF_LIFE_DAYS", 14.0))
+    RAG_ENABLE_FOLLOWUP_REWRITE = (
+        _fb("RAG_ENABLE_FOLLOWUP_REWRITE") in {"1", "true", "yes", "y", "on"}
+        if _fb("RAG_ENABLE_FOLLOWUP_REWRITE")
+        else True
+    )
+    RAG_EMBED_CACHE_SIZE = max(256, _fi("RAG_EMBED_CACHE_SIZE", 4096))
 
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = CURRENT_DIR.parent
@@ -316,6 +371,18 @@ class KeywordRule:
     keywords: Tuple[str, ...]
 
 
+@dataclass
+class RagSnippet:
+    source_type: str
+    source_id: str
+    updated_at: datetime
+    text: str
+    score: float
+    score_semantic: float
+    score_lexical: float
+    score_recency: float
+
+
 class LocalRAGService:
     def __init__(self, dataset_path: Optional[Path] = None) -> None:
         self.dataset_path = dataset_path or FAST_RAG_DATASET_PATH
@@ -325,6 +392,17 @@ class LocalRAGService:
         self.keyword_rules: List[KeywordRule] = []
         self.synonym_map: Dict[str, Set[str]] = {}
         self._file_state: Dict[Path, Optional[int]] = {}
+
+        # --- Advanced RAG / Embeddings ---
+        self._rag_enabled = bool(RAG_ENABLED and OpenAI is not None and bool(str(OPENAI_API_KEY or "").strip()))
+        self._embedding_model = str(RAG_EMBEDDING_MODEL or "text-embedding-3-small").strip() or "text-embedding-3-small"
+        self._openai = OpenAI(api_key=OPENAI_API_KEY) if self._rag_enabled else None
+        # LRU cache: content_hash -> (embedding, norm, updated_at_epoch)
+        self._embed_cache: "OrderedDict[str, Tuple[List[float], float, float]]" = OrderedDict()
+        # In-memory embeddings for fast_rag rows (query templates)
+        self._fast_row_vectors: Dict[str, Tuple[List[float], float]] = {}
+        self._fast_row_vectors_state: Optional[Dict[Path, Optional[int]]] = None
+
         self.reload(force=True)
 
     def reload(self, *, force: bool = False) -> None:
@@ -337,6 +415,10 @@ class LocalRAGService:
         self.keyword_rules = self._load_keyword_rules()
         self.synonym_map = self._load_synonyms()
         self._file_state = current_state
+
+        # Fast-rag semantic vectors are recomputed lazily.
+        self._fast_row_vectors.clear()
+        self._fast_row_vectors_state = None
 
     def _reload_if_needed(self) -> None:
         if FAST_RAG_AUTO_RELOAD:
@@ -510,6 +592,164 @@ class LocalRAGService:
             return 0.0
         return len(left & right) / max(1, len(left | right))
 
+    # --------------------
+    # Embeddings helpers (Advanced RAG)
+    # --------------------
+    @staticmethod
+    def _sha256(text: str) -> str:
+        return hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()
+    
+    @staticmethod
+    def _vector_norm(vec: List[float]) -> float:
+        return math.sqrt(sum((float(x) * float(x)) for x in (vec or []))) if vec else 0.0
+
+    @staticmethod
+    def _cosine(vec_a: List[float], norm_a: float, vec_b: List[float], norm_b: float) -> float:
+        if not vec_a or not vec_b:
+            return 0.0
+        if norm_a <= 0.0:
+            norm_a = LocalRAGService._vector_norm(vec_a)
+        if norm_b <= 0.0:
+            norm_b = LocalRAGService._vector_norm(vec_b)
+        if norm_a <= 0.0 or norm_b <= 0.0:
+            return 0.0
+        # dot product
+        dot = 0.0
+        # Safe for mismatched dims (rare). We use min length.
+        for i in range(min(len(vec_a), len(vec_b))):
+            dot += float(vec_a[i]) * float(vec_b[i])
+        return float(dot) / float(norm_a * norm_b)
+
+    def _lru_get(self, key: str) -> Optional[Tuple[List[float], float]]:
+        hit = self._embed_cache.get(key)
+        if hit is None:
+            return None
+        vec, norm, _ts = hit
+        self._embed_cache.move_to_end(key)
+        return vec, norm
+
+    def _lru_set(self, key: str, vec: List[float], norm: float) -> None:
+        self._embed_cache[key] = (vec, norm, time.time())
+        self._embed_cache.move_to_end(key)
+        while len(self._embed_cache) > int(RAG_EMBED_CACHE_SIZE or 4096):
+            self._embed_cache.popitem(last=False)
+
+    def _openai_embed(self, texts: List[str]) -> List[List[float]]:
+        if not self._rag_enabled or self._openai is None:
+            return []
+        if not texts:
+            return []
+
+        try:
+            # OpenAI Python v2.x: client.embeddings.create(model=..., input=[...])
+            resp = self._openai.embeddings.create(model=self._embedding_model, input=texts)
+            data = getattr(resp, "data", None)
+            if data is None and isinstance(resp, dict):
+                data = resp.get("data")
+            vectors: List[List[float]] = []
+            for item in data or []:
+                emb = getattr(item, "embedding", None)
+                if emb is None and isinstance(item, dict):
+                    emb = item.get("embedding")
+                vectors.append([float(x) for x in (emb or [])])
+            return vectors
+        except Exception:
+            return []
+
+    def _embed_query(self, text: str) -> Optional[Tuple[List[float], float]]:
+        """Embeds a query in-memory only (not persisted)."""
+        clean = str(text or "").strip()
+        if not clean:
+            return None
+        key = f"query::{self._sha256(clean)}"
+        cached = self._lru_get(key)
+        if cached is not None:
+            return cached
+        vectors = self._openai_embed([clean])
+        if not vectors:
+            return None
+        vec = vectors[0]
+        norm = self._vector_norm(vec)
+        self._lru_set(key, vec, norm)
+        return vec, norm
+
+    def _get_or_create_embedding(
+        self,
+        session: Optional[Session],
+        *,
+        user_id: Optional[int],
+        source_type: str,
+        source_id: str,
+        content_text: str,
+        updated_at: Optional[datetime],
+    ) -> Optional[Tuple[List[float], float, str]]:
+        """Fetches a persisted embedding or creates it.
+
+        Returns (embedding, norm, content_hash).
+        """
+        if not self._rag_enabled:
+            return None
+        content_text = str(content_text or "").strip()
+        if not content_text:
+            return None
+
+        stamp = updated_at.isoformat() if isinstance(updated_at, datetime) else ""
+        base = f"u={user_id or 0}|t={source_type}|id={source_id}|ts={stamp}|{content_text}"
+        content_hash = self._sha256(base)
+
+        cached = self._lru_get(content_hash)
+        if cached is not None:
+            vec, norm = cached
+            return vec, norm, content_hash
+
+        # 1) DB lookup
+        if session is not None:
+            try:
+                existing = session.exec(select(RagEmbedding).where(RagEmbedding.content_hash == content_hash)).first()
+            except Exception:
+                existing = None
+            if existing is not None:
+                try:
+                    vec = [float(x) for x in json.loads(existing.embedding_json or "[]")]
+                except Exception:
+                    vec = []
+                norm = float(existing.embedding_norm or 0.0) if vec else 0.0
+                if vec:
+                    self._lru_set(content_hash, vec, norm)
+                    return vec, norm, content_hash
+
+        # 2) Create
+        vectors = self._openai_embed([content_text])
+        if not vectors:
+            return None
+        vec = vectors[0]
+        norm = self._vector_norm(vec)
+        self._lru_set(content_hash, vec, norm)
+
+        if session is not None:
+            try:
+                session.add(
+                    RagEmbedding(
+                        user_id=user_id,
+                        source_type=str(source_type),
+                        source_id=str(source_id),
+                        content_hash=content_hash,
+                        content_text=content_text,
+                        embedding_json=json.dumps(vec, ensure_ascii=False),
+                        embedding_norm=norm,
+                        updated_at=updated_at or datetime.utcnow(),
+                    )
+                )
+                session.commit()
+            except Exception:
+                # Ignore (table might not exist yet, or race/unique conflict).
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+
+        return vec, norm, content_hash
+    
     def _format_template(self, template: str, *, user_name: str, assistant_name: str, place: str) -> str:
         safe_place = place or "your saved place"
         return str(template or "").format(
@@ -570,7 +810,7 @@ class LocalRAGService:
 
         collected.sort(key=lambda pair: pair[0])
         return [item for _, item in collected[:5]]
-
+    
     def _build_pipeline_result(
         self,
         *,
@@ -611,357 +851,73 @@ class LocalRAGService:
             "translation_meta": json.dumps(translation_meta or {}, ensure_ascii=False),
             "timings_ms": json.dumps(timings_ms or {"total_ms": 0.0}, ensure_ascii=False),
         }
+    
+    def _ensure_fast_row_vectors(self) -> None:
+        """Ensures semantic vectors for fast_rag rows are loaded.
 
-    def _build_schedule_answer(self, session: Session, user_id: int, normalized_message: str, user: Optional[User]) -> Optional[Dict[str, Any]]:
-        if not self._matches_intent_scope(normalized_message, intent="schedule", scope="base"):
-            return None
+        This is lazy to keep boot time fast and to avoid embedding calls if you don't use them.
+        """
+        if not (self._rag_enabled and RAG_ENABLE_FAST_RAG_SEMANTIC):
+            return
+        if not self.rows:
+            return
 
-        scope = "upcoming"
-        if self._matches_intent_scope(normalized_message, intent="schedule", scope="today"):
-            scope = "today"
-        elif self._matches_intent_scope(normalized_message, intent="schedule", scope="tomorrow"):
-            scope = "tomorrow"
+        # Reuse if dataset didn't change.
+        current_state = self._file_mtime_state()
+        if self._fast_row_vectors and self._fast_row_vectors_state == current_state:
+            return
 
-        scope_labels = {
-            "today": ("today", "இன்று"),
-            "tomorrow": ("tomorrow", "நாளை"),
-            "upcoming": ("upcoming", "வரவிருக்கும்"),
-        }
-        label_en, label_ta = scope_labels[scope]
+        texts = [str(row.query or "").strip() for row in self.rows]
+        texts = [t for t in texts if t]
+        if not texts:
+            return
 
-        items = self._collect_items_for_scope(session, user_id, scope, user)
-        display_name = (user.name if user and user.name else "there").strip() or "there"
-
-        if not items:
-            english = f"You do not have any {label_en} reminders, {display_name}."
-            tamil = f"{display_name}, உங்களுக்கு {label_ta} எந்த நினைவூட்டலும் இல்லை."
-            return self._build_pipeline_result(
-                raw_english=english,
-                remodeled_english=english,
-                tamil_text=tamil,
-                theni_tamil_text=tamil,
-                route_taken="local_schedule_rag",
-                direct_answer_source="local_schedule_memory",
-                direct_answer_confidence="1.0000",
-                predicted_label="schedule",
-                stage_notes=["Answered from the user's saved reminders without calling OpenAI."],
-                timings_ms={"total_ms": 0.0},
-            )
-
-        english_lines = [f"You have {len(items)} {label_en} reminder(s), {display_name}:"]
-        tamil_lines = [f"{display_name}, உங்களுக்கு {label_ta} {len(items)} நினைவூட்டல்(கள்) இருக்கின்றன:"]
-        for idx, item in enumerate(items, start=1):
-            title = (item.title or item.raw_text or "Untitled").strip()
-            time_label = self._format_item_time(item, user)
-            english_lines.append(f"{idx}. {time_label} - {title}")
-            tamil_lines.append(f"{idx}. {time_label} - {title}")
-
-        english = "\n".join(english_lines)
-        tamil = "\n".join(tamil_lines)
-        return self._build_pipeline_result(
-            raw_english=english,
-            remodeled_english=english,
-            tamil_text=tamil,
-            theni_tamil_text=tamil,
-            route_taken="local_schedule_rag",
-            direct_answer_source="local_schedule_memory",
-            direct_answer_confidence="1.0000",
-            predicted_label="schedule",
-            stage_notes=["Answered from the user's saved reminders without calling OpenAI."],
-            timings_ms={"total_ms": 0.0},
-        )
-
-    def _build_routine_answer(self, session: Session, user_id: int, normalized_message: str, user: Optional[User]) -> Optional[Dict[str, Any]]:
-        if not self._matches_intent_scope(normalized_message, intent="routine"):
-            return None
-
-        routine = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
-        display_name = (user.name if user and user.name else "there").strip() or "there"
-
-        if not routine:
-            english = f"I do not have your daily routine yet, {display_name}. Please complete your routine setup first."
-            tamil = f"{display_name}, உங்கள் தினசரி பழக்க விவரம் இன்னும் சேமிக்கப்படவில்லை. முதலில் routine setup-ஐ முடிக்கவும்."
-            return self._build_pipeline_result(
-                raw_english=english,
-                remodeled_english=english,
-                tamil_text=tamil,
-                theni_tamil_text=tamil,
-                route_taken="local_routine_rag",
-                direct_answer_source="local_daily_routine",
-                direct_answer_confidence="1.0000",
-                predicted_label="routine",
-                stage_notes=["Answered from the user's saved daily routine without calling OpenAI."],
-                timings_ms={"total_ms": 0.0},
-            )
-
-        work_window = ""
-        if routine.work_start and routine.work_end:
-            work_window = f" from {routine.work_start} to {routine.work_end}"
-        habits = (routine.daily_habits or "").strip() or "No daily habits saved yet."
-
-        if self._matches_intent_scope(normalized_message, intent="routine", scope="wake"):
-            english = f"Your wake-up time is {routine.wake_time}, {display_name}."
-            tamil = f"{display_name}, உங்கள் எழும் நேரம் {routine.wake_time}."
-        elif self._matches_intent_scope(normalized_message, intent="routine", scope="sleep"):
-            english = f"Your sleep time is {routine.sleep_time}, {display_name}."
-            tamil = f"{display_name}, உங்கள் தூங்கும் நேரம் {routine.sleep_time}."
-        elif self._matches_intent_scope(normalized_message, intent="routine", scope="work"):
-            if routine.work_start and routine.work_end:
-                english = f"Your work time is from {routine.work_start} to {routine.work_end}, {display_name}."
-                tamil = f"{display_name}, உங்கள் வேலை நேரம் {routine.work_start} முதல் {routine.work_end} வரை."
+        # Batch embeddings to reduce network overhead.
+        vectors: List[List[float]] = []
+        batch_size = 64
+        for i in range(0, len(texts), batch_size):
+            chunk = texts[i : i + batch_size]
+            out = self._openai_embed(chunk)
+            if out and len(out) == len(chunk):
+                vectors.extend(out)
             else:
-                english = f"I do not have your work timing yet, {display_name}."
-                tamil = f"{display_name}, உங்கள் வேலை நேரம் இன்னும் சேமிக்கப்படவில்லை."
-        elif self._matches_intent_scope(normalized_message, intent="routine", scope="habits"):
-            english = f"Your saved daily habits are: {habits}"
-            tamil = f"உங்கள் சேமிக்கப்பட்ட தினசரி பழக்கங்கள்: {habits}"
-        else:
-            english = (
-                f"Your routine summary, {display_name}: wake at {routine.wake_time}, "
-                f"sleep at {routine.sleep_time}{work_window}. Habits: {habits}"
-            )
-            tamil = (
-                f"{display_name}, உங்கள் routine summary: எழும் நேரம் {routine.wake_time}, "
-                f"தூங்கும் நேரம் {routine.sleep_time}"
-            )
-            if routine.work_start and routine.work_end:
-                tamil += f", வேலை நேரம் {routine.work_start} முதல் {routine.work_end} வரை"
-            tamil += f". பழக்கங்கள்: {habits}"
+                # If something failed, stop; we'll just skip semantic matching.
+                vectors = []
+                break
 
-        return self._build_pipeline_result(
-            raw_english=english,
-            remodeled_english=english,
-            tamil_text=tamil,
-            theni_tamil_text=tamil,
-            route_taken="local_routine_rag",
-            direct_answer_source="local_daily_routine",
-            direct_answer_confidence="1.0000",
-            predicted_label="routine",
-            stage_notes=["Answered from the user's saved daily routine without calling OpenAI."],
-            timings_ms={"total_ms": 0.0},
-        )
+        if not vectors or len(vectors) != len(texts):
+            return
 
-    def _matches_intent_scope(self, normalized_message: str, *, intent: str, scope: Optional[str] = None) -> bool:
-        message = self.normalize_lookup_text(normalized_message)
-        message_tokens = set(self._tokens(message))
-        if not message:
-            return False
-
-        matched = False
-        for rule in self.keyword_rules:
-            if rule.intent != intent:
+        new_map: Dict[str, Tuple[List[float], float]] = {}
+        for text, vec in zip(texts, vectors):
+            if not vec:
                 continue
-            if scope is not None and rule.scope != scope:
-                continue
-            if scope is None and rule.scope not in {"base", "default", "today", "tomorrow", "wake", "sleep", "work", "habits", "summary"}:
-                continue
-            for keyword in rule.keywords:
-                normalized_keyword = self.normalize_lookup_text(keyword)
-                if not normalized_keyword:
-                    continue
-                keyword_tokens = set(self._tokens(normalized_keyword))
-                if self._contains_phrase(message, normalized_keyword):
-                    return True
-                overlap = self._set_overlap(self._expand_tokens(message_tokens), self._expand_tokens(keyword_tokens))
-                if overlap >= 0.84:
-                    matched = True
-        return matched
+            new_map[text] = (vec, self._vector_norm(vec))
 
-    def _score_row(self, normalized_message: str, row: FastRAGRow) -> float:
-        row_query = self.normalize_lookup_text(row.query)
-        if not row_query:
-            return 0.0
+        self._fast_row_vectors = new_map
+        self._fast_row_vectors_state = current_state
+    
+    def build_rag_context(self, session: Session, user_id: Optional[int], message: str) -> Dict[str, Any]:
+        """Returns a compact RAG context block for prompting the main LLM.
 
-        message_tokens = set(self._tokens(normalized_message))
-        row_tokens = set(self._tokens(row_query))
-        expanded_message = self._expand_tokens(message_tokens)
-        expanded_row = self._expand_tokens(row_tokens)
-        expanded_tags = self._expand_tokens(row.tags)
+        Output format:
+        {
+          "context_text": "...",
+          "snippets": [ {source_type, source_id, score, ...}, ... ],
+          "timings_ms": { ... }
+        }
+        """
+        t0 = time.perf_counter()
 
-        for blocked in row.blocked_terms:
-            blocked_normalized = self.normalize_lookup_text(blocked)
-            if blocked_normalized and self._contains_phrase(normalized_message, blocked_normalized):
-                return 0.0
+        if not (self._rag_enabled and RAG_ENABLED and user_id):
+            return {"context_text": "", "snippets": [], "timings_ms": {"rag_total_ms": 0.0}}
 
-        if row.required_terms:
-            required_hits = 0
-            for required in row.required_terms:
-                required_normalized = self.normalize_lookup_text(required)
-                if required_normalized and (
-                    self._contains_phrase(normalized_message, required_normalized)
-                    or self._set_overlap(expanded_message, self._expand_tokens(self._tokens(required_normalized))) >= 0.84
-                ):
-                    required_hits += 1
-            if required_hits == 0:
-                return 0.0
-
-        token_score = self._set_overlap(expanded_message, expanded_row)
-        text_score = self._string_similarity(normalized_message, row_query)
-        tag_score = self._set_overlap(expanded_message, expanded_tags) if expanded_tags else 0.0
-
-        score = (0.58 * token_score) + (0.27 * text_score) + (0.15 * tag_score)
-
-        if normalized_message == row_query:
-            score = 1.0
-        else:
-            message_token_count = len(message_tokens)
-            row_token_count = len(row_tokens)
-            if row_token_count >= 2 and self._contains_phrase(normalized_message, row_query):
-                score = max(score, 0.985)
-            elif normalized_message.startswith(row_query) and message_token_count <= row_token_count + 1:
-                score = max(score, FAST_RAG_PREFIX_MATCH_THRESHOLD)
-            elif row_query.startswith(normalized_message) and row_token_count <= message_token_count + 1:
-                score = max(score, 0.955)
-
-            if row_token_count <= 2 and message_token_count >= row_token_count + 3:
-                score *= 0.72
-
-        score += min(0.03, max(0, row.priority) / 5000.0)
-        return min(1.0, round(score, 4))
-
-    def _match_fast_row(self, normalized_message: str) -> Optional[Tuple[FastRAGRow, float]]:
-        best_row: Optional[FastRAGRow] = None
-        best_score = 0.0
-        for row in self.rows:
-            score = self._score_row(normalized_message, row)
-            if score > best_score:
-                best_row = row
-                best_score = score
-        if best_row is None or best_score < FAST_RAG_STRONG_MATCH_THRESHOLD:
-            return None
-        return best_row, best_score
-
-    def _coerce_cached_pipeline(self, payload: Any) -> Optional[Dict[str, Any]]:
-        if not isinstance(payload, dict):
-            return None
-        pipeline = payload.get("pipeline")
-        if not isinstance(pipeline, dict):
-            return None
-        return self._build_pipeline_result(
-            raw_english=str(pipeline.get("raw_english", "")).strip(),
-            remodeled_english=str(pipeline.get("remodeled_english", "")).strip() or str(pipeline.get("raw_english", "")).strip(),
-            tamil_text=str(pipeline.get("tamil_text", "")).strip(),
-            theni_tamil_text=str(pipeline.get("theni_tamil_text", "")).strip(),
-            route_taken=str(pipeline.get("route_taken", "cached_answer")).strip() or "cached_answer",
-            direct_answer_source=str(pipeline.get("direct_answer_source", "qa_cache")).strip() or "qa_cache",
-            direct_answer_confidence=str(pipeline.get("direct_answer_confidence", "1.0000")).strip() or "1.0000",
-            predicted_label=str(pipeline.get("predicted_label", "cached")).strip() or "cached",
-            risk_level=str(pipeline.get("risk_level", "low")).strip() or "low",
-            stage_notes=["Reused a cached answer and skipped a new OpenAI call."],
-            core_meta=pipeline.get("core_meta") if isinstance(pipeline.get("core_meta"), dict) else {},
-            remodel_meta=pipeline.get("remodel_meta") if isinstance(pipeline.get("remodel_meta"), dict) else {},
-            review_meta=pipeline.get("review_meta") if isinstance(pipeline.get("review_meta"), dict) else {},
-            translation_meta=pipeline.get("translation_meta") if isinstance(pipeline.get("translation_meta"), dict) else {},
-            timings_ms=pipeline.get("timings_ms") if isinstance(pipeline.get("timings_ms"), dict) else {"total_ms": 0.0},
-        )
-
-    def _try_cached_answer(self, session: Session, user_id: Optional[int], normalized_message: str) -> Optional[Dict[str, Any]]:
-        if not user_id:
-            return None
-
-        cache_rows = list(
-            session.exec(
-                select(QACache).where(QACache.user_id == user_id).order_by(QACache.updated_at.desc())
-            ).all()
-        )[:FAST_RAG_MAX_CACHE_ROWS]
-
-        best_payload: Optional[Dict[str, Any]] = None
-        best_score = 0.0
-        normalized_message_tokens = set(self._tokens(normalized_message))
-        expanded_message_tokens = self._expand_tokens(normalized_message_tokens)
-
-        for row in cache_rows:
-            normalized_question = self.normalize_lookup_text(row.question)
-            if not normalized_question:
-                continue
-            normalized_question_tokens = set(self._tokens(normalized_question))
-            score = max(
-                self._set_overlap(expanded_message_tokens, self._expand_tokens(normalized_question_tokens)),
-                self._string_similarity(normalized_message, normalized_question),
-            )
-            if normalized_message == normalized_question:
-                score = 1.0
-
-            if score > best_score:
-                try:
-                    payload = json.loads(row.answer or "{}")
-                except Exception:
-                    payload = {}
-                best_payload = self._coerce_cached_pipeline(payload)
-                best_score = score
-
-        if best_payload and best_score >= FAST_RAG_CACHE_MATCH_THRESHOLD:
-            best_payload["route_taken"] = "cached_answer"
-            best_payload["direct_answer_source"] = "qa_cache"
-            best_payload["direct_answer_confidence"] = f"{best_score:.4f}"
-            best_payload["cache_hit"] = "true"
-            best_payload["stage_notes"] = json.dumps(
-                ["Reused a cached answer and skipped a new OpenAI call."], ensure_ascii=False
-            )
-            return best_payload
-        return None
+        query_text = self._maybe_rewrite_followup_query(session, int(user_id), message)
+        normalized_query = self.normalize_lookup_text(query_text)
+        q_tokens = set(self._tokens(normalized_query))
+        exp_q = self._expand_tokens(q_tokens)
+        return {"context_text": context_text, "snippets": snippet_meta, "timings_ms": timings}
 
     def try_answer(self, session: Session, user_id: Optional[int], message: str) -> Optional[Dict[str, Any]]:
         self._reload_if_needed()
-
-        normalized_message = self.normalize_lookup_text(message)
-        if not normalized_message:
-            return None
-
-        user = session.get(User, user_id) if user_id else None
-        display_name = (user.name if user and user.name else "there").strip() or "there"
-        assistant_name = (user.assistant_name if user and user.assistant_name else "Elli").strip() or "Elli"
-        place = (user.place if user and user.place else "your saved place").strip() or "your saved place"
-
-        if user_id:
-            schedule_result = self._build_schedule_answer(session, user_id, normalized_message, user)
-            if schedule_result is not None:
-                return schedule_result
-
-            routine_result = self._build_routine_answer(session, user_id, normalized_message, user)
-            if routine_result is not None:
-                return routine_result
-
-        matched = self._match_fast_row(normalized_message)
-        if matched is not None:
-            row, score = matched
-            english = self._format_template(
-                row.english_template,
-                user_name=display_name,
-                assistant_name=assistant_name,
-                place=place,
-            )
-            tamil = self._format_template(
-                row.tamil_template,
-                user_name=display_name,
-                assistant_name=assistant_name,
-                place=place,
-            )
-            theni = self._format_template(
-                row.theni_tamil_template or row.tamil_template,
-                user_name=display_name,
-                assistant_name=assistant_name,
-                place=place,
-            )
-            return self._build_pipeline_result(
-                raw_english=english,
-                remodeled_english=english,
-                tamil_text=tamil,
-                theni_tamil_text=theni,
-                route_taken=f"local_{row.route}",
-                direct_answer_source=f"fast_rag_csv:{row.query}",
-                direct_answer_confidence=f"{score:.4f}",
-                predicted_label=row.label,
-                stage_notes=[
-                    "Answered from backend/data/fast_rag_replies.csv without calling OpenAI.",
-                    "Keyword datasets in backend/data can be edited without changing Python code.",
-                ],
-                timings_ms={"total_ms": 0.0},
-            )
-
-        if user_id:
-            cached = self._try_cached_answer(session, user_id, normalized_message)
-            if cached is not None:
-                return cached
-
-        return None
+        return None 
