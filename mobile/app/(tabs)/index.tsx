@@ -18,6 +18,7 @@ import { Audio } from "expo-av";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
@@ -25,10 +26,11 @@ import { Orb } from "@/components/Orb";
 import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
-import { apiGet, apiPost, apiPostForm } from "@/lib/api";
-import { Item } from "@/lib/types";
+import { Brand } from "@/constants/theme";
 import { parseDatetime } from "@/lib/datetime";
+import { apiGet, apiPost, apiPostForm } from "@/lib/api";
 import { scheduleReminder } from "@/lib/reminders";
+import { Item } from "@/lib/types";
 
 type AnalyzeResponse = Item;
 
@@ -38,15 +40,44 @@ type PendingReminder = {
   datetimeText: string;
 };
 
-const SUGGESTIONS = [
-  "Schedule a meeting",
-  "Schedule a Birthday",
-  "Schedule a Event",
-  "Ask me anything...",
+type SuggestionItem = {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  helper: string;
+};
+
+const SUGGESTIONS: SuggestionItem[] = [
+  {
+    label: "Schedule a meeting",
+    icon: "briefcase-outline",
+    helper: "Create events and time blocks fast.",
+  },
+  {
+    label: "Schedule a birthday",
+    icon: "gift-outline",
+    helper: "Remember important celebrations on time.",
+  },
+  {
+    label: "Plan an event",
+    icon: "calendar-clear-outline",
+    helper: "Turn ideas into a clean schedule.",
+  },
+  {
+    label: "Ask me anything",
+    icon: "sparkles-outline",
+    helper: "Notes, reminders, ideas, and everyday help.",
+  },
 ];
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function getDayPart() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
 }
 
 export default function Home() {
@@ -76,16 +107,14 @@ export default function Home() {
   const isVerySmallPhone = width < 345 || height < 700;
 
   const horizontalPadding = isSmallPhone ? 14 : 18;
-  const topBarPaddingTop = insets.top + (isSmallPhone ? 4 : 8);
-  const orbSize = clamp(width * 0.42, 148, 188);
-  const helloBigFontSize = isVerySmallPhone ? 23 : isSmallPhone ? 27 : 31;
-  const helloBigLineHeight = isVerySmallPhone ? 29 : isSmallPhone ? 33 : 37;
-  const helloMaxWidth = Math.min(width - 72, 300);
-  const suggestionGap = isSmallPhone ? 8 : 10;
-  const suggestionChipWidth = width < 360 ? "48.5%" : "47.8%";
-  const drawerWidth = Math.min(width * 0.78, 320);
+  const topBarPaddingTop = insets.top + (isSmallPhone ? 6 : 10);
+  const orbSize = clamp(width * 0.46, 170, 220);
+  const heroTitleSize = isVerySmallPhone ? 25 : isSmallPhone ? 29 : 33;
+  const heroTitleLineHeight = isVerySmallPhone ? 31 : isSmallPhone ? 35 : 39;
   const composerBottom = keyboardHeight > 0 ? keyboardHeight + 8 : Math.max(insets.bottom, 14);
-  const suggestionTopMargin = isSmallPhone ? 22 : 26;
+  const drawerWidth = Math.min(width * 0.82, 336);
+  const pageBottomPadding = composerBottom + 108;
+  const assistantCardMaxWidth = width < 360 ? "100%" : "94%";
 
   const greetingName = useMemo(() => {
     return (profile?.name || "there").trim();
@@ -95,7 +124,9 @@ export default function Home() {
     return (name || "Swivel AI").trim();
   }, [name]);
 
-  const placeholder = "Ask me anything...";
+  const greeting = useMemo(() => {
+    return `${getDayPart()}, ${greetingName}`;
+  }, [greetingName]);
 
   const filteredHistory = useMemo(() => {
     const q = historySearch.trim().toLowerCase();
@@ -109,6 +140,7 @@ export default function Home() {
 
   const resultText = result?.details || result?.raw_text || "";
   const hasConversation = !!resultText || !!lastPrompt;
+  const placeholder = listening ? "Listening... tap stop when you're done" : "Message your assistant";
 
   useEffect(() => {
     loadHistory();
@@ -367,240 +399,237 @@ export default function Home() {
   }
 
   return (
-    <LinearGradient
-      colors={["#020816", "#04122B", "#082E6B", "#0B4C9C"]}
-      start={{ x: 0.08, y: 0.02 }}
-      end={{ x: 0.88, y: 1 }}
-      style={styles.screen}
-    >
-      <View style={styles.screen}>
-        <KeyboardAvoidingView
-          style={styles.screen}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          keyboardVerticalOffset={0}
-        >
-          <View
-            style={[
-              styles.topBar,
-              {
-                paddingTop: topBarPaddingTop,
-                paddingHorizontal: horizontalPadding,
-              },
-            ]}
-          >
-            <Pressable style={styles.topIconBtn} onPress={() => setDrawerOpen(true)}>
-              <Ionicons name="menu" size={21} color="rgba(255,255,255,0.95)" />
-            </Pressable>
+    <LinearGradient colors={Brand.gradients.page} style={styles.screen}>
+      <StatusBar style="dark" />
 
-            <View style={styles.brandWrap}>
-              <Text
-                style={[styles.brandText, { fontSize: isSmallPhone ? 13 : 14 }]}
-                numberOfLines={1}
-              >
-                • {assistantLabel}
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <View style={styles.topGlow} />
+        <View style={styles.leftGlow} />
+        <View style={styles.bottomGlow} />
+      </View>
+
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
+      >
+        <View
+          style={[
+            styles.topBar,
+            {
+              paddingTop: topBarPaddingTop,
+              paddingHorizontal: horizontalPadding,
+            },
+          ]}
+        >
+          <Pressable style={styles.topIconBtn} onPress={() => setDrawerOpen(true)}>
+            <Ionicons name="menu" size={20} color={Brand.cocoa} />
+          </Pressable>
+
+          <View style={styles.brandWrap}>
+            <View style={styles.brandPill}>
+              <Ionicons name="sparkles" size={13} color={Brand.bronze} />
+              <Text style={[styles.brandText, { fontSize: isSmallPhone ? 12 : 13 }]} numberOfLines={1}>
+                {assistantLabel}
               </Text>
             </View>
-
-            <Pressable
-              style={styles.topIconBtn}
-              onPress={() => {
-                setResult(null);
-                setLastPrompt("");
-                setText("");
-              }}
-            >
-              <Ionicons name="refresh" size={18} color="rgba(255,255,255,0.95)" />
-            </Pressable>
           </View>
 
-          <ScrollView
-            contentContainerStyle={{
-              paddingHorizontal: horizontalPadding,
-              paddingBottom: composerBottom + 92,
-              paddingTop: isSmallPhone ? 8 : 12,
+          <Pressable
+            style={styles.topIconBtn}
+            onPress={() => {
+              setResult(null);
+              setLastPrompt("");
+              setText("");
             }}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
           >
-            {!hasConversation ? (
-              <View style={{ alignItems: "center", paddingTop: isSmallPhone ? 8 : 14 }}>
-                <Orb listening={listening} onPress={toggleMic} size={orbSize} />
+            <Ionicons name="refresh" size={18} color={Brand.cocoa} />
+          </Pressable>
+        </View>
 
-                <Text
-                  style={[
-                    styles.helloSmall,
-                    { marginTop: isSmallPhone ? 4 : 6, fontSize: isSmallPhone ? 13 : 14 },
-                  ]}
-                >
-                  Hello {greetingName}!
-                </Text>
-
-                <Text
-                  style={[
-                    styles.helloBig,
-                    {
-                      fontSize: helloBigFontSize,
-                      lineHeight: helloBigLineHeight,
-                      maxWidth: helloMaxWidth,
-                      marginTop: isSmallPhone ? 6 : 8,
-                    },
-                  ]}
-                >
-                  How can I help you today?
-                </Text>
-
-                <Text
-                  style={[
-                    styles.tapHint,
-                    {
-                      marginTop: isSmallPhone ? 16 : 20,
-                      fontSize: isSmallPhone ? 11 : 12,
-                    },
-                  ]}
-                >
-                  {recording ? "Listening..." : "Tap here to talk"}
-                </Text>
-
-                {listening ? (
-                  <View style={{ marginTop: 14 }}>
-                    <Waveform active />
+        <ScrollView
+          contentContainerStyle={{
+            paddingHorizontal: horizontalPadding,
+            paddingBottom: pageBottomPadding,
+            paddingTop: isSmallPhone ? 8 : 12,
+          }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {!hasConversation ? (
+            <View style={{ paddingTop: isSmallPhone ? 6 : 12 }}>
+              <GlassCard style={{ borderRadius: 30 }}>
+                <View style={styles.heroHeaderRow}>
+                  <View style={styles.heroPill}>
+                    <Ionicons name="radio-outline" size={14} color={Brand.bronze} />
+                    <Text style={styles.heroPillText}>{recording ? "Voice is live" : "Premium assistant"}</Text>
                   </View>
-                ) : null}
 
-                <View style={{ marginTop: suggestionTopMargin, width: "100%" }}>
-                  <Text
-                    style={[
-                      styles.sectionLabel,
-                      { fontSize: isSmallPhone ? 12 : 13, marginBottom: isSmallPhone ? 8 : 10 },
-                    ]}
-                  >
-                    Suggestions
-                  </Text>
-
-                  <View style={[styles.suggestionWrap, { gap: suggestionGap }]}>
-                    {SUGGESTIONS.map((item) => (
-                      <Pressable
-                        key={item}
-                        onPress={() => setText(item)}
-                        style={[
-                          styles.suggestionChip,
-                          {
-                            width: suggestionChipWidth,
-                            minHeight: isSmallPhone ? 36 : 38,
-                            paddingHorizontal: isSmallPhone ? 10 : 14,
-                            paddingVertical: isSmallPhone ? 9 : 10,
-                          },
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.suggestionText,
-                            { fontSize: isSmallPhone ? 11 : 12 },
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {item}
-                        </Text>
-                      </Pressable>
-                    ))}
+                  <View style={styles.heroStatusChip}>
+                    <Ionicons name="checkmark-circle" size={14} color={Brand.success} />
+                    <Text style={styles.heroStatusText}>{busy ? "Working" : "Ready"}</Text>
                   </View>
                 </View>
+
+                <View style={styles.orbStage}>
+                  <View style={styles.orbAmbientGlow} />
+                  <Orb listening={listening} onPress={toggleMic} size={orbSize} />
+                </View>
+
+                <Text style={[styles.greeting, { fontSize: isSmallPhone ? 14 : 15 }]}>{greeting}</Text>
+                <Text
+                  style={[
+                    styles.heroTitle,
+                    {
+                      fontSize: heroTitleSize,
+                      lineHeight: heroTitleLineHeight,
+                    },
+                  ]}
+                >
+                  Your AI home, redesigned to feel refined, warm, and truly production ready.
+                </Text>
+                <Text style={styles.heroSubtitle}>
+                  Tap the globe to speak, or type below to plan your day, set reminders, and get crisp answers with a cleaner premium interface.
+                </Text>
+
+                <View style={styles.heroMetaRow}>
+                  <View style={styles.heroMetaCard}>
+                    <Text style={styles.heroMetaTitle}>Voice mode</Text>
+                    <Text style={styles.heroMetaValue}>{recording ? "Listening now" : "Tap to start"}</Text>
+                  </View>
+
+                  <View style={styles.heroMetaCard}>
+                    <Text style={styles.heroMetaTitle}>Experience</Text>
+                    <Text style={styles.heroMetaValue}>Warm · Polished · Fast</Text>
+                  </View>
+                </View>
+              </GlassCard>
+
+              {listening ? (
+                <View style={styles.inlineWaveWrap}>
+                  <Waveform active />
+                </View>
+              ) : null}
+
+              <View style={{ marginTop: 22 }}>
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionLabel}>Quick actions</Text>
+                  <Text style={styles.sectionCaption}>One tap to begin</Text>
+                </View>
+
+                <View style={styles.suggestionWrap}>
+                  {SUGGESTIONS.map((item) => (
+                    <Pressable
+                      key={item.label}
+                      onPress={() => setText(item.label)}
+                      style={({ pressed }) => [styles.suggestionCard, pressed && styles.pressed]}
+                    >
+                      <View style={styles.suggestionIconWrap}>
+                        <Ionicons name={item.icon} size={18} color={Brand.bronze} />
+                      </View>
+                      <Text style={styles.suggestionTitle}>{item.label}</Text>
+                      <Text style={styles.suggestionHelper}>{item.helper}</Text>
+                    </Pressable>
+                  ))}
+                </View>
               </View>
-            ) : (
-              <View style={{ paddingTop: 10 }}>
-                {lastPrompt ? (
-                  <View style={styles.userBubbleWrap}>
-                    <View style={[styles.userBubble, { maxWidth: width < 360 ? "90%" : "86%" }]}>
-                      <Text style={[styles.userBubbleText, { fontSize: isSmallPhone ? 13 : 14 }]}>
-                        {lastPrompt}
-                      </Text>
+            </View>
+          ) : (
+            <View style={{ paddingTop: 6 }}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionLabel}>Conversation</Text>
+                <Text style={styles.sectionCaption}>Current result</Text>
+              </View>
+
+              {lastPrompt ? (
+                <View style={styles.userBubbleWrap}>
+                  <View style={[styles.userBubble, { maxWidth: width < 360 ? "92%" : "86%" }]}>
+                    <Text style={[styles.userBubbleText, { fontSize: isSmallPhone ? 13 : 14 }]}>{lastPrompt}</Text>
+                  </View>
+                </View>
+              ) : null}
+
+              <View style={styles.assistantBubbleWrap}>
+                <GlassCard style={{ borderRadius: 26, maxWidth: assistantCardMaxWidth }}>
+                  <View style={styles.assistantHeaderRow}>
+                    <View>
+                      <Text style={styles.assistantNameLabel}>{assistantLabel}</Text>
+                      <Text style={styles.assistantSubLabel}>{busy && !resultText ? "Analyzing your request" : "Response ready"}</Text>
+                    </View>
+
+                    <View style={styles.assistantBadge}>
+                      <Ionicons name="sparkles" size={14} color={Brand.bronze} />
                     </View>
                   </View>
-                ) : null}
 
-                <View style={styles.assistantBubbleWrap}>
-                  <GlassCard style={{ borderRadius: 22 }}>
-                    <Text style={styles.assistantNameLabel}>{assistantLabel}</Text>
-                    <Text
-                      style={[
-                        styles.assistantBubbleText,
-                        { fontSize: isSmallPhone ? 14 : 15, lineHeight: isSmallPhone ? 21 : 22 },
-                      ]}
-                    >
-                      {busy && !resultText ? "Thinking..." : resultText}
-                    </Text>
-
-                    {!!result?.datetime ? (
-                      <View style={styles.metaChip}>
-                        <Ionicons
-                          name="time-outline"
-                          size={14}
-                          color="rgba(173,232,255,0.95)"
-                        />
-                        <Text style={styles.metaChipText}>{result.datetime}</Text>
-                      </View>
-                    ) : null}
-                  </GlassCard>
-                </View>
-
-                <View style={{ marginTop: 24 }}>
                   <Text
                     style={[
-                      styles.sectionLabel,
-                      { fontSize: isSmallPhone ? 12 : 13, marginBottom: isSmallPhone ? 8 : 10 },
+                      styles.assistantBubbleText,
+                      { fontSize: isSmallPhone ? 14 : 15, lineHeight: isSmallPhone ? 22 : 24 },
                     ]}
                   >
-                    Suggestions
+                    {busy && !resultText ? "Thinking..." : resultText}
                   </Text>
 
-                  <View style={[styles.suggestionWrap, { gap: suggestionGap }]}>
-                    {SUGGESTIONS.map((item) => (
-                      <Pressable
-                        key={item}
-                        onPress={() => setText(item)}
-                        style={[
-                          styles.suggestionChip,
-                          {
-                            width: suggestionChipWidth,
-                            minHeight: isSmallPhone ? 36 : 38,
-                            paddingHorizontal: isSmallPhone ? 10 : 14,
-                            paddingVertical: isSmallPhone ? 9 : 10,
-                          },
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.suggestionText,
-                            { fontSize: isSmallPhone ? 11 : 12 },
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {item}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
+                  {!!result?.datetime ? (
+                    <View style={styles.metaChip}>
+                      <Ionicons name="time-outline" size={14} color={Brand.bronze} />
+                      <Text style={styles.metaChipText}>{result.datetime}</Text>
+                    </View>
+                  ) : null}
+                </GlassCard>
+              </View>
+
+              <View style={{ marginTop: 24 }}>
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionLabel}>Keep going</Text>
+                  <Text style={styles.sectionCaption}>Suggested prompts</Text>
+                </View>
+
+                <View style={styles.suggestionWrap}>
+                  {SUGGESTIONS.map((item) => (
+                    <Pressable
+                      key={item.label}
+                      onPress={() => setText(item.label)}
+                      style={({ pressed }) => [styles.suggestionCard, pressed && styles.pressed]}
+                    >
+                      <View style={styles.suggestionIconWrap}>
+                        <Ionicons name={item.icon} size={18} color={Brand.bronze} />
+                      </View>
+                      <Text style={styles.suggestionTitle}>{item.label}</Text>
+                      <Text style={styles.suggestionHelper}>{item.helper}</Text>
+                    </Pressable>
+                  ))}
                 </View>
               </View>
-            )}
-          </ScrollView>
+            </View>
+          )}
+        </ScrollView>
 
-          {listening ? (
-            <View style={[styles.floatingWaveWrap, { bottom: composerBottom + 94 }]}>
+        {listening ? (
+          <View style={[styles.floatingWaveWrap, { bottom: composerBottom + 100 }]}>
+            <View style={styles.floatingWaveCard}>
               <Waveform active />
             </View>
-          ) : null}
+          </View>
+        ) : null}
 
-          <View
-            style={[
-              styles.composerShell,
-              {
-                bottom: composerBottom,
-                paddingHorizontal: isSmallPhone ? 10 : 14,
-              },
-            ]}
-          >
-            <View style={[styles.composer, { minHeight: isSmallPhone ? 60 : 64 }]}>
+        <View
+          style={[
+            styles.composerShell,
+            {
+              bottom: composerBottom,
+              paddingHorizontal: horizontalPadding,
+            },
+          ]}
+        >
+          <View style={styles.composerWrap}>
+            <LinearGradient
+              colors={["rgba(255,255,255,0.92)", "rgba(255,239,210,0.88)"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[styles.composer, { minHeight: isSmallPhone ? 64 : 68 }]}
+            >
               <Pressable
                 onPress={() => {
                   if (hasConversation) {
@@ -615,7 +644,7 @@ export default function Home() {
                 <Ionicons
                   name={hasConversation ? "arrow-back" : "time-outline"}
                   size={18}
-                  color="rgba(255,255,255,0.92)"
+                  color={Brand.cocoa}
                 />
               </Pressable>
 
@@ -623,7 +652,7 @@ export default function Home() {
                 value={text}
                 onChangeText={setText}
                 placeholder={placeholder}
-                placeholderTextColor="rgba(255,255,255,0.38)"
+                placeholderTextColor="rgba(124, 99, 80, 0.55)"
                 multiline
                 textAlignVertical="top"
                 style={[styles.composerInput, { fontSize: isSmallPhone ? 14 : 15 }]}
@@ -631,181 +660,162 @@ export default function Home() {
 
               <Pressable
                 onPress={toggleMic}
-                style={[
-                  styles.actionBtn,
-                  recording ? styles.actionBtnDanger : styles.actionBtnMuted,
-                ]}
+                style={[styles.actionBtn, recording ? styles.actionBtnDanger : styles.actionBtnMuted]}
               >
-                <Ionicons name={recording ? "stop" : "mic"} size={18} color="white" />
+                <Ionicons name={recording ? "stop" : "mic"} size={18} color={recording ? "#fff" : Brand.cocoa} />
               </Pressable>
 
               <Pressable
                 onPress={analyzeText}
                 disabled={busy || !text.trim()}
-                style={[
-                  styles.actionBtn,
-                  text.trim() ? styles.actionBtnPrimary : styles.actionBtnDisabled,
-                ]}
+                style={[styles.actionBtn, text.trim() ? styles.actionBtnPrimary : styles.actionBtnDisabled]}
               >
-                <Ionicons name="paper-plane-outline" size={18} color="white" />
+                <Ionicons
+                  name="paper-plane-outline"
+                  size={18}
+                  color={text.trim() ? Brand.ink : "rgba(124, 99, 80, 0.5)"}
+                />
               </Pressable>
-            </View>
+            </LinearGradient>
           </View>
+        </View>
 
-          <Modal
-            transparent
-            visible={drawerOpen}
-            animationType="fade"
-            onRequestClose={() => setDrawerOpen(false)}
-          >
-            <View style={styles.drawerBackdrop}>
-              <Pressable style={{ flex: 1 }} onPress={() => setDrawerOpen(false)} />
-              <View
-                style={[
-                  styles.drawerPanel,
-                  {
-                    width: drawerWidth,
-                    paddingTop: Math.max(insets.top + 14, Platform.OS === "ios" ? 56 : 28),
-                    paddingBottom: Math.max(insets.bottom + 18, 18),
-                  },
-                ]}
-              >
-                <View style={styles.drawerHeader}>
-                  <View style={styles.drawerSearchWrap}>
-                    <Ionicons name="search" size={15} color="rgba(255,255,255,0.55)" />
-                    <TextInput
-                      value={historySearch}
-                      onChangeText={setHistorySearch}
-                      placeholder="Search"
-                      placeholderTextColor="rgba(255,255,255,0.34)"
-                      style={styles.drawerSearchInput}
-                    />
-                  </View>
-
-                  <Pressable onPress={() => setDrawerOpen(false)} style={styles.drawerCloseBtn}>
-                    <Ionicons name="close" size={18} color="rgba(255,255,255,0.88)" />
-                  </Pressable>
+        <Modal transparent visible={drawerOpen} animationType="fade" onRequestClose={() => setDrawerOpen(false)}>
+          <View style={styles.drawerBackdrop}>
+            <Pressable style={{ flex: 1 }} onPress={() => setDrawerOpen(false)} />
+            <LinearGradient
+              colors={["#fffaf2", "#fff0d2", "#ffe5b4"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[
+                styles.drawerPanel,
+                {
+                  width: drawerWidth,
+                  paddingTop: Math.max(insets.top + 14, Platform.OS === "ios" ? 56 : 28),
+                  paddingBottom: Math.max(insets.bottom + 18, 18),
+                },
+              ]}
+            >
+              <View style={styles.drawerHeader}>
+                <View style={styles.drawerSearchWrap}>
+                  <Ionicons name="search" size={15} color="rgba(124, 99, 80, 0.6)" />
+                  <TextInput
+                    value={historySearch}
+                    onChangeText={setHistorySearch}
+                    placeholder="Search your history"
+                    placeholderTextColor="rgba(124, 99, 80, 0.42)"
+                    style={styles.drawerSearchInput}
+                  />
                 </View>
 
-                <Text style={styles.drawerSectionTitle}>My History</Text>
+                <Pressable onPress={() => setDrawerOpen(false)} style={styles.drawerCloseBtn}>
+                  <Ionicons name="close" size={18} color={Brand.cocoa} />
+                </Pressable>
+              </View>
 
-                <ScrollView
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={{ paddingBottom: 18 }}
-                >
-                  {filteredHistory.length === 0 ? (
-                    <View style={styles.historyEmptyCard}>
-                      <Text style={styles.historyEmptyText}>No history yet</Text>
-                    </View>
-                  ) : (
-                    filteredHistory.map((item) => (
-                      <Pressable
-                        key={item.id}
-                        onPress={() => openHistoryItem(item)}
-                        style={styles.historyItem}
-                      >
-                        <Text style={styles.historyItemText} numberOfLines={1}>
-                          {item.raw_text || item.title || "Untitled"}
-                        </Text>
-                      </Pressable>
-                    ))
-                  )}
-                </ScrollView>
+              <View style={styles.drawerTitleRow}>
+                <View>
+                  <Text style={styles.drawerSectionTitle}>Recent history</Text>
+                  <Text style={styles.drawerSectionSub}>Your latest prompts and results</Text>
+                </View>
+              </View>
 
-                <View style={{ marginTop: "auto" }}>
-                  <Pressable onPress={openRoutine} style={styles.footerCard}>
-                    <Ionicons
-                      name="settings-outline"
-                      size={16}
-                      color="rgba(255,255,255,0.88)"
-                    />
-                    <Text style={styles.footerCardText}>Setting</Text>
-                  </Pressable>
-
-                  <View style={styles.accountCard}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.accountTitle}>Account</Text>
-                      <Text style={styles.accountSubtitle} numberOfLines={1}>
-                        {profile?.name || "Local account"}
+              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 18 }}>
+                {filteredHistory.length === 0 ? (
+                  <View style={styles.historyEmptyCard}>
+                    <Ionicons name="time-outline" size={18} color={Brand.muted} />
+                    <Text style={styles.historyEmptyText}>No history yet</Text>
+                  </View>
+                ) : (
+                  filteredHistory.map((item) => (
+                    <Pressable key={item.id} onPress={() => openHistoryItem(item)} style={styles.historyItem}>
+                      <Text style={styles.historyItemText} numberOfLines={1}>
+                        {item.raw_text || item.title || "Untitled"}
                       </Text>
-                      <Text style={styles.accountMeta} numberOfLines={1}>
-                        {profile?.place || profile?.timezone || "Swivel AI user"}
-                      </Text>
-                    </View>
-
-                    <Pressable onPress={signOut} style={styles.signOutBtn}>
-                      <Text style={styles.signOutBtnText}>Sign out</Text>
+                      <Ionicons name="chevron-forward" size={16} color="rgba(124, 99, 80, 0.58)" />
                     </Pressable>
-                  </View>
+                  ))
+                )}
+              </ScrollView>
 
-                  <View style={styles.brandFooter}>
-                    <Text style={styles.brandFooterText}>{assistantLabel}</Text>
-                    <Text style={styles.brandFooterVersion}>v1.0</Text>
-                  </View>
+              <View style={{ marginTop: "auto" }}>
+                <Pressable onPress={openRoutine} style={styles.footerCard}>
+                  <Ionicons name="settings-outline" size={16} color={Brand.cocoa} />
+                  <Text style={styles.footerCardText}>Settings</Text>
+                </Pressable>
 
-                  <Pressable onPress={openSchedule} style={styles.scheduleShortcut}>
-                    <Ionicons
-                      name="calendar-outline"
-                      size={16}
-                      color="rgba(255,255,255,0.88)"
-                    />
-                    <Text style={styles.scheduleShortcutText}>Schedule</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          </Modal>
+                <Pressable onPress={openSchedule} style={styles.footerCard}>
+                  <Ionicons name="calendar-outline" size={16} color={Brand.cocoa} />
+                  <Text style={styles.footerCardText}>Schedule</Text>
+                </Pressable>
 
-          <Modal
-            transparent
-            visible={confirmOpen}
-            animationType="fade"
-            onRequestClose={() => setConfirmOpen(false)}
-          >
-            <View style={styles.modalBackdrop}>
-              <View style={styles.modalCard}>
-                <Text style={styles.modalTitle}>Confirm reminder</Text>
-
-                <Text style={styles.modalText}>
-                  <Text style={styles.modalTextStrong}>Title: </Text>
-                  {pendingReminder?.title}
-                </Text>
-
-                <Text style={styles.modalText}>
-                  <Text style={styles.modalTextStrong}>When: </Text>
-                  {pendingReminder?.datetimeText}
-                </Text>
-
-                <Text style={styles.modalMuted} numberOfLines={3}>
-                  {pendingReminder?.details}
-                </Text>
-
-                <View style={styles.modalActionRow}>
-                  <Pressable
-                    onPress={() => {
-                      setConfirmOpen(false);
-                      setPendingReminder(null);
-                    }}
-                    style={[styles.modalBtn, styles.modalBtnGhost]}
-                  >
-                    <Text style={styles.modalBtnGhostText}>Cancel</Text>
-                  </Pressable>
-
-                  <Pressable
-                    onPress={confirmScheduleReminder}
-                    disabled={busy}
-                    style={[styles.modalBtn, styles.modalBtnPrimary]}
-                  >
-                    <Text style={styles.modalBtnPrimaryText}>
-                      {busy ? "SETTING..." : "Confirm"}
+                <View style={styles.accountCard}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.accountTitle}>Account</Text>
+                    <Text style={styles.accountSubtitle} numberOfLines={1}>
+                      {profile?.name || "Local account"}
                     </Text>
+                    <Text style={styles.accountMeta} numberOfLines={1}>
+                      {profile?.place || profile?.timezone || "Assistant user"}
+                    </Text>
+                  </View>
+
+                  <Pressable onPress={signOut} style={styles.signOutBtn}>
+                    <Text style={styles.signOutBtnText}>Sign out</Text>
                   </Pressable>
                 </View>
+
+                <View style={styles.brandFooter}>
+                  <Text style={styles.brandFooterText}>{assistantLabel}</Text>
+                  <Text style={styles.brandFooterVersion}>v1.0</Text>
+                </View>
               </View>
-            </View>
-          </Modal>
-        </KeyboardAvoidingView>
-      </View>
+            </LinearGradient>
+          </View>
+        </Modal>
+
+        <Modal transparent visible={confirmOpen} animationType="fade" onRequestClose={() => setConfirmOpen(false)}>
+          <View style={styles.modalBackdrop}>
+            <GlassCard style={{ borderRadius: 28 }}>
+              <Text style={styles.modalTitle}>Confirm reminder</Text>
+
+              <Text style={styles.modalText}>
+                <Text style={styles.modalTextStrong}>Title: </Text>
+                {pendingReminder?.title}
+              </Text>
+
+              <Text style={styles.modalText}>
+                <Text style={styles.modalTextStrong}>When: </Text>
+                {pendingReminder?.datetimeText}
+              </Text>
+
+              <Text style={styles.modalMuted} numberOfLines={3}>
+                {pendingReminder?.details}
+              </Text>
+
+              <View style={styles.modalActionRow}>
+                <Pressable
+                  onPress={() => {
+                    setConfirmOpen(false);
+                    setPendingReminder(null);
+                  }}
+                  style={[styles.modalBtn, styles.modalBtnGhost]}
+                >
+                  <Text style={styles.modalBtnGhostText}>Cancel</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={confirmScheduleReminder}
+                  disabled={busy}
+                  style={[styles.modalBtn, styles.modalBtnPrimary]}
+                >
+                  <Text style={styles.modalBtnPrimaryText}>{busy ? "SETTING..." : "Confirm"}</Text>
+                </Pressable>
+              </View>
+            </GlassCard>
+          </View>
+        </Modal>
+      </KeyboardAvoidingView>
     </LinearGradient>
   );
 }
@@ -815,22 +825,52 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  topGlow: {
+    position: "absolute",
+    top: -110,
+    right: -30,
+    width: 240,
+    height: 240,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.55)",
+  },
+
+  leftGlow: {
+    position: "absolute",
+    top: 240,
+    left: -90,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: "rgba(255, 229, 180, 0.36)",
+  },
+
+  bottomGlow: {
+    position: "absolute",
+    bottom: -110,
+    right: 10,
+    width: 280,
+    height: 280,
+    borderRadius: 999,
+    backgroundColor: "rgba(215, 154, 89, 0.18)",
+  },
+
   topBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingBottom: 4,
+    paddingBottom: 8,
   },
 
   topIconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: "rgba(255,255,255,0.68)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: Brand.line,
   },
 
   brandWrap: {
@@ -840,51 +880,205 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
 
+  brandPill: {
+    maxWidth: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.68)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
   brandText: {
-    color: "rgba(255,255,255,0.96)",
+    color: Brand.cocoa,
     fontWeight: "800",
     letterSpacing: 0.2,
   },
 
-  helloSmall: {
-    color: "rgba(255,255,255,0.72)",
-    fontWeight: "600",
+  heroHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
   },
 
-  helloBig: {
-    color: "white",
+  heroPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.74)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  heroPillText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  heroStatusChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.64)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  heroStatusText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  orbStage: {
+    marginTop: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 270,
+  },
+
+  orbAmbientGlow: {
+    position: "absolute",
+    width: 250,
+    height: 250,
+    borderRadius: 999,
+    backgroundColor: "rgba(255, 229, 180, 0.18)",
+  },
+
+  greeting: {
+    marginTop: 2,
+    color: Brand.muted,
+    textAlign: "center",
+    fontWeight: "700",
+  },
+
+  heroTitle: {
+    marginTop: 10,
+    color: Brand.ink,
     textAlign: "center",
     fontWeight: "900",
   },
 
-  tapHint: {
-    color: "rgba(255,255,255,0.54)",
-    fontWeight: "600",
+  heroSubtitle: {
+    marginTop: 12,
+    color: Brand.muted,
+    textAlign: "center",
+    fontSize: 14,
+    lineHeight: 22,
+  },
+
+  heroMetaRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 22,
+  },
+
+  heroMetaCard: {
+    flex: 1,
+    minHeight: 78,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: "rgba(255,255,255,0.58)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  heroMetaTitle: {
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  heroMetaValue: {
+    marginTop: 6,
+    color: Brand.ink,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "800",
+  },
+
+  inlineWaveWrap: {
+    marginTop: 16,
+    alignItems: "center",
+  },
+
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 12,
   },
 
   sectionLabel: {
-    color: "rgba(255,255,255,0.70)",
-    fontWeight: "800",
+    color: Brand.cocoa,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  sectionCaption: {
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
   },
 
   suggestionWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
+    gap: 12,
   },
 
-  suggestionChip: {
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.14)",
+  suggestionCard: {
+    width: "48%",
+    minHeight: 130,
+    borderRadius: 24,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.66)",
     borderWidth: 1,
-    borderColor: "rgba(175,230,255,0.14)",
+    borderColor: Brand.line,
+  },
+
+  pressed: {
+    opacity: 0.94,
+    transform: [{ scale: 0.992 }],
+  },
+
+  suggestionIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "rgba(255,229,180,0.7)",
   },
 
-  suggestionText: {
-    color: "rgba(255,255,255,0.92)",
-    fontWeight: "700",
+  suggestionTitle: {
+    marginTop: 14,
+    color: Brand.ink,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "800",
+  },
+
+  suggestionHelper: {
+    marginTop: 6,
+    color: Brand.muted,
+    fontSize: 12,
+    lineHeight: 18,
   },
 
   userBubbleWrap: {
@@ -893,37 +1087,63 @@ const styles = StyleSheet.create({
   },
 
   userBubble: {
-    backgroundColor: "rgba(9,17,34,0.92)",
-    borderRadius: 18,
+    backgroundColor: "rgba(110, 76, 46, 0.95)",
+    borderRadius: 20,
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.07)",
+    borderColor: "rgba(255,255,255,0.1)",
   },
 
   userBubbleText: {
-    color: "rgba(255,255,255,0.95)",
+    color: Brand.warmWhite,
     lineHeight: 20,
+    fontWeight: "600",
   },
 
   assistantBubbleWrap: {
     alignItems: "flex-start",
   },
 
+  assistantHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 10,
+  },
+
   assistantNameLabel: {
-    color: "rgba(173,232,255,0.95)",
+    color: Brand.bronze,
     fontSize: 12,
     fontWeight: "900",
     letterSpacing: 0.3,
-    marginBottom: 8,
+  },
+
+  assistantSubLabel: {
+    marginTop: 3,
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  assistantBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.7)",
+    borderWidth: 1,
+    borderColor: Brand.line,
   },
 
   assistantBubbleText: {
-    color: "rgba(255,255,255,0.95)",
+    color: Brand.ink,
   },
 
   metaChip: {
-    marginTop: 14,
+    marginTop: 16,
     alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
@@ -931,13 +1151,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 7,
     borderRadius: 999,
-    backgroundColor: "rgba(75,174,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.64)",
     borderWidth: 1,
-    borderColor: "rgba(123,218,255,0.18)",
+    borderColor: Brand.lineStrong,
   },
 
   metaChipText: {
-    color: "rgba(218,244,255,0.95)",
+    color: Brand.cocoa,
     fontSize: 12,
     fontWeight: "700",
   },
@@ -949,10 +1169,29 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
+  floatingWaveCard: {
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: "rgba(255,255,255,0.74)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
   composerShell: {
     position: "absolute",
     left: 0,
     right: 0,
+  },
+
+  composerWrap: {
+    borderRadius: 28,
+    overflow: "hidden",
+    shadowColor: "#cb8e4d",
+    shadowOpacity: 0.12,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
   },
 
   composer: {
@@ -963,61 +1202,61 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: "rgba(128,175,230,0.24)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: Brand.lineStrong,
   },
 
   leftRoundBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.72)",
   },
 
   composerInput: {
     flex: 1,
     maxHeight: 120,
-    color: "white",
+    color: Brand.ink,
     paddingTop: 8,
     paddingBottom: 8,
   },
 
   actionBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
   },
 
   actionBtnMuted: {
-    backgroundColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.72)",
   },
 
   actionBtnPrimary: {
-    backgroundColor: "rgba(116,208,255,0.95)",
+    backgroundColor: "#f0c17e",
   },
 
   actionBtnDisabled: {
-    backgroundColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.62)",
   },
 
   actionBtnDanger: {
-    backgroundColor: "rgba(255,79,79,0.95)",
+    backgroundColor: Brand.danger,
   },
 
   drawerBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.24)",
+    backgroundColor: "rgba(82, 57, 28, 0.16)",
     flexDirection: "row",
   },
 
   drawerPanel: {
-    backgroundColor: "rgba(3,10,27,0.98)",
     paddingHorizontal: 12,
+    borderLeftWidth: 1,
+    borderColor: Brand.line,
   },
 
   drawerHeader: {
@@ -1029,84 +1268,112 @@ const styles = StyleSheet.create({
 
   drawerSearchWrap: {
     flex: 1,
-    height: 38,
-    borderRadius: 12,
+    height: 40,
+    borderRadius: 14,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.7)",
+    borderWidth: 1,
+    borderColor: Brand.line,
   },
 
   drawerSearchInput: {
     flex: 1,
     marginLeft: 8,
-    color: "white",
+    color: Brand.ink,
     fontSize: 14,
   },
 
   drawerCloseBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.07)",
+    backgroundColor: "rgba(255,255,255,0.7)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  drawerTitleRow: {
+    marginBottom: 12,
   },
 
   drawerSectionTitle: {
-    color: "rgba(255,255,255,0.72)",
-    fontSize: 13,
-    fontWeight: "800",
-    marginBottom: 10,
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  drawerSectionSub: {
+    marginTop: 4,
+    color: Brand.muted,
+    fontSize: 12,
   },
 
   historyItem: {
-    minHeight: 38,
-    borderRadius: 10,
-    justifyContent: "center",
-    paddingHorizontal: 10,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    minHeight: 46,
+    borderRadius: 14,
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexDirection: "row",
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(255,255,255,0.58)",
+    borderWidth: 1,
+    borderColor: Brand.line,
     marginBottom: 8,
   },
 
   historyItemText: {
-    color: "rgba(255,255,255,0.84)",
+    flex: 1,
+    marginRight: 10,
+    color: Brand.cocoa,
     fontSize: 12,
+    fontWeight: "700",
   },
 
   historyEmptyCard: {
-    height: 48,
-    borderRadius: 10,
+    height: 78,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: "rgba(255,255,255,0.58)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+    gap: 8,
   },
 
   historyEmptyText: {
-    color: "rgba(255,255,255,0.50)",
+    color: Brand.muted,
     fontSize: 12,
+    fontWeight: "700",
   },
 
   footerCard: {
-    height: 40,
-    borderRadius: 12,
+    height: 44,
+    borderRadius: 14,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
-    backgroundColor: "rgba(255,255,255,0.07)",
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
     marginBottom: 10,
     gap: 8,
   },
 
   footerCardText: {
-    color: "rgba(255,255,255,0.90)",
+    color: Brand.cocoa,
     fontSize: 13,
     fontWeight: "700",
   },
 
   accountCard: {
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.07)",
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
     padding: 12,
     flexDirection: "row",
     alignItems: "center",
@@ -1114,34 +1381,37 @@ const styles = StyleSheet.create({
   },
 
   accountTitle: {
-    color: "rgba(255,255,255,0.92)",
+    color: Brand.ink,
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "900",
   },
 
   accountSubtitle: {
     marginTop: 4,
-    color: "rgba(255,255,255,0.84)",
+    color: Brand.cocoa,
     fontSize: 12,
+    fontWeight: "700",
   },
 
   accountMeta: {
     marginTop: 2,
-    color: "rgba(255,255,255,0.48)",
+    color: Brand.muted,
     fontSize: 11,
   },
 
   signOutBtn: {
-    height: 32,
-    paddingHorizontal: 12,
+    height: 34,
+    paddingHorizontal: 14,
     borderRadius: 999,
-    backgroundColor: "rgba(255,90,90,0.20)",
+    backgroundColor: "rgba(185, 98, 72, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(185, 98, 72, 0.18)",
     alignItems: "center",
     justifyContent: "center",
   },
 
   signOutBtnText: {
-    color: "#FFD7D7",
+    color: Brand.danger,
     fontSize: 12,
     fontWeight: "800",
   },
@@ -1155,69 +1425,44 @@ const styles = StyleSheet.create({
   },
 
   brandFooterText: {
-    color: "rgba(255,255,255,0.88)",
+    color: Brand.cocoa,
     fontWeight: "800",
     fontSize: 12,
   },
 
   brandFooterVersion: {
-    color: "rgba(255,255,255,0.48)",
+    color: Brand.muted,
     fontSize: 12,
-  },
-
-  scheduleShortcut: {
-    marginTop: 10,
-    height: 38,
-    borderRadius: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    backgroundColor: "rgba(255,255,255,0.07)",
-    gap: 8,
-  },
-
-  scheduleShortcutText: {
-    color: "rgba(255,255,255,0.90)",
-    fontSize: 13,
-    fontWeight: "700",
   },
 
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: "rgba(72, 46, 18, 0.18)",
     justifyContent: "center",
     paddingHorizontal: 18,
   },
 
-  modalCard: {
-    borderRadius: 24,
-    padding: 18,
-    backgroundColor: "rgba(7,14,30,0.98)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-
   modalTitle: {
-    color: "white",
+    color: Brand.ink,
     fontSize: 20,
     fontWeight: "900",
   },
 
   modalText: {
     marginTop: 12,
-    color: "rgba(255,255,255,0.82)",
+    color: Brand.cocoa,
     fontSize: 14,
     lineHeight: 20,
   },
 
   modalTextStrong: {
-    color: "white",
+    color: Brand.ink,
     fontWeight: "900",
   },
 
   modalMuted: {
     marginTop: 10,
-    color: "rgba(255,255,255,0.58)",
+    color: Brand.muted,
     fontSize: 13,
     lineHeight: 19,
   },
@@ -1237,22 +1482,22 @@ const styles = StyleSheet.create({
   },
 
   modalBtnGhost: {
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.58)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: Brand.lineStrong,
   },
 
   modalBtnPrimary: {
-    backgroundColor: "rgba(98,193,255,0.96)",
+    backgroundColor: "#efbf7c",
   },
 
   modalBtnGhostText: {
-    color: "rgba(255,255,255,0.88)",
+    color: Brand.cocoa,
     fontWeight: "900",
   },
 
   modalBtnPrimaryText: {
-    color: "#041222",
+    color: Brand.ink,
     fontWeight: "900",
   },
 });
