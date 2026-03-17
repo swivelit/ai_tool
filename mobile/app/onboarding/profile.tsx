@@ -2,9 +2,11 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
+  StyleSheet,
   Text,
   TextInput,
   View,
@@ -13,6 +15,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -23,6 +26,8 @@ import {
 import { setAssistantName } from "@/lib/storage";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
+import { GlassCard } from "@/components/Glass";
+import { Brand } from "@/constants/theme";
 
 type NoticeState = {
   title: string;
@@ -147,13 +152,21 @@ export default function ProfileScreen() {
   }
 
   return (
-    <LinearGradient colors={["#070A14", "#0B1020", "#121A33"]} style={{ flex: 1 }}>
+    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+      <StatusBar style="dark" />
+
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <View style={styles.topGlow} />
+        <View style={styles.leftGlow} />
+        <View style={styles.bottomGlow} />
+      </View>
+
       <KeyboardAvoidingView
-        style={{ flex: 1 }}
+        style={styles.page}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <ScrollView
-          style={{ flex: 1 }}
+          style={styles.page}
           contentContainerStyle={{
             flexGrow: 1,
             paddingHorizontal: horizontalPadding,
@@ -165,244 +178,381 @@ export default function ProfileScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={{ width: "100%", alignSelf: "center", maxWidth: maxFormWidth }}>
+            <View style={styles.heroPill}>
+              <Ionicons name="person-circle-outline" size={14} color={Brand.bronze} />
+              <Text style={styles.heroPillText}>Profile setup</Text>
+            </View>
+
             <Text
-              style={{
-                color: "white",
-                fontSize: isVerySmallPhone ? 26 : isSmallPhone ? 28 : 30,
-                lineHeight: isVerySmallPhone ? 32 : isSmallPhone ? 34 : 36,
-                fontWeight: "900",
-              }}
+              style={[
+                styles.title,
+                {
+                  fontSize: isVerySmallPhone ? 28 : isSmallPhone ? 31 : 34,
+                  lineHeight: isVerySmallPhone ? 34 : isSmallPhone ? 37 : 40,
+                },
+              ]}
             >
               Complete your profile
             </Text>
 
-            <Text
-              style={{
-                color: "rgba(255,255,255,0.65)",
-                marginTop: 8,
-                lineHeight: isSmallPhone ? 21 : 22,
-                fontSize: isSmallPhone ? 13 : 14,
-              }}
-            >
-              Your login is ready. Add a few profile details so {assistantName || "Elli"} can
-              personalize the app.
+            <Text style={styles.subtitle}>
+              Your login is ready. Add a few details so {assistantName || "Elli"} can personalize
+              the experience from the start.
             </Text>
 
-            <Text style={[label, { marginTop: isSmallPhone ? 16 : 18 }]}>Email</Text>
-            <View style={[readonlyBox, { minHeight: isSmallPhone ? 52 : 54 }]}>
-              <Text style={{ color: "rgba(255,255,255,0.88)", fontSize: isSmallPhone ? 14 : 15 }}>
-                {user?.email || "-"}
-              </Text>
-            </View>
+            <GlassCard style={{ borderRadius: 28, marginTop: 18 }}>
+              <View style={styles.progressWrap}>
+                <Text style={styles.progressLabel}>Step 1 of 2</Text>
+                <Text style={styles.progressValue}>Profile</Text>
+              </View>
 
-            <Text style={label}>Your name</Text>
-            <TextInput
-              value={name}
-              onChangeText={setName}
-              placeholder="Your name"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              style={[input, { height: isSmallPhone ? 52 : 54 }]}
-              editable={!busy}
-            />
+              <FieldLabel label="Email" />
+              <View style={[styles.readonlyBox, { minHeight: isSmallPhone ? 52 : 56 }]}>
+                <Ionicons name="mail-outline" size={16} color={Brand.bronze} />
+                <Text style={styles.readonlyText}>{user?.email || "-"}</Text>
+              </View>
 
-            <Text style={label}>Place</Text>
-            <TextInput
-              value={place}
-              onChangeText={setPlace}
-              placeholder="Place (optional)"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              style={[input, { height: isSmallPhone ? 52 : 54 }]}
-              editable={!busy}
-            />
+              <FieldLabel label="Your name" />
+              <TextInput
+                value={name}
+                onChangeText={setName}
+                placeholder="Your name"
+                placeholderTextColor="rgba(124, 99, 80, 0.52)"
+                style={[styles.input, { height: isSmallPhone ? 52 : 56 }]}
+                editable={!busy}
+              />
 
-            <Text style={label}>Assistant name</Text>
-            <TextInput
-              value={assistantName}
-              onChangeText={setAssistantNameInput}
-              placeholder="Elli"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              style={[input, { height: isSmallPhone ? 52 : 54 }]}
-              editable={!busy}
-            />
+              <FieldLabel label="Place" />
+              <TextInput
+                value={place}
+                onChangeText={setPlace}
+                placeholder="Place (optional)"
+                placeholderTextColor="rgba(124, 99, 80, 0.52)"
+                style={[styles.input, { height: isSmallPhone ? 52 : 56 }]}
+                editable={!busy}
+              />
 
-            <Pressable
-              onPress={saveProfileAndContinue}
-              style={[btn, { marginTop: isSmallPhone ? 16 : 18, height: isSmallPhone ? 52 : 54 }, busy && { opacity: 0.7 }]}
-              disabled={busy}
-            >
-              {busy ? (
-                <ActivityIndicator color="white" />
-              ) : (
-                <Text style={{ color: "white", fontWeight: "900", fontSize: 15 }}>
-                  Continue
+              <FieldLabel label="Assistant name" />
+              <TextInput
+                value={assistantName}
+                onChangeText={setAssistantNameInput}
+                placeholder="Elli"
+                placeholderTextColor="rgba(124, 99, 80, 0.52)"
+                style={[styles.input, { height: isSmallPhone ? 52 : 56 }]}
+                editable={!busy}
+              />
+
+              <View style={styles.tipCard}>
+                <Ionicons name="sparkles-outline" size={16} color={Brand.bronze} />
+                <Text style={styles.tipText}>
+                  You can change the assistant name later in Settings.
                 </Text>
-              )}
-            </Pressable>
+              </View>
+
+              <Pressable
+                onPress={saveProfileAndContinue}
+                style={({ pressed }) => [
+                  styles.buttonShell,
+                  pressed && styles.pressed,
+                  busy && styles.disabled,
+                ]}
+                disabled={busy}
+              >
+                <LinearGradient
+                  colors={Brand.gradients.button}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={[styles.primaryButton, { minHeight: isSmallPhone ? 54 : 58 }]}
+                >
+                  {busy ? (
+                    <ActivityIndicator color={Brand.ink} />
+                  ) : (
+                    <>
+                      <Text style={styles.primaryButtonText}>Continue</Text>
+                      <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
+                    </>
+                  )}
+                </LinearGradient>
+              </Pressable>
+            </GlassCard>
           </View>
         </ScrollView>
 
-        {notice ? (
-          <View
-            style={[
-              noticeOverlay,
-              {
-                paddingTop: insets.top + 20,
-                paddingBottom: Math.max(insets.bottom + 20, 20),
-              },
-            ]}
-          >
-            <View style={noticeCard}>
-              <View style={noticeIconWrap}>
-                <Ionicons
-                  name="information-circle"
-                  size={22}
-                  color="rgba(173,232,255,0.98)"
-                />
+        <Modal transparent visible={!!notice} animationType="fade" onRequestClose={closeNotice}>
+          <View style={styles.noticeOverlay}>
+            <GlassCard style={{ borderRadius: 28 }}>
+              <View style={styles.noticeIconWrap}>
+                <Ionicons name="information-circle" size={22} color={Brand.bronze} />
               </View>
 
-              <Text style={noticeTitle}>{notice.title}</Text>
-              <Text style={noticeMessage}>{notice.message}</Text>
+              <Text style={styles.noticeTitle}>{notice?.title}</Text>
+              <Text style={styles.noticeMessage}>{notice?.message}</Text>
 
-              <View style={noticeActions}>
-                <Pressable onPress={closeNotice} style={noticeSecondaryBtn}>
-                  <Text style={noticeSecondaryText}>Close</Text>
+              <View style={styles.noticeActions}>
+                <Pressable onPress={closeNotice} style={styles.noticeSecondaryBtn}>
+                  <Text style={styles.noticeSecondaryText}>Close</Text>
                 </Pressable>
 
-                {notice.primaryLabel ? (
+                {notice?.primaryLabel ? (
                   <Pressable
                     onPress={notice.onPrimaryPress || closeNotice}
-                    style={noticePrimaryBtn}
+                    style={styles.noticePrimaryBtn}
                   >
-                    <Text style={noticePrimaryText}>{notice.primaryLabel}</Text>
+                    <Text style={styles.noticePrimaryText}>{notice.primaryLabel}</Text>
                   </Pressable>
                 ) : null}
               </View>
-            </View>
+            </GlassCard>
           </View>
-        ) : null}
+        </Modal>
       </KeyboardAvoidingView>
     </LinearGradient>
   );
 }
 
-const label = {
-  marginTop: 14,
-  marginBottom: 8,
-  color: "rgba(255,255,255,0.92)",
-  fontSize: 14,
-  fontWeight: "800" as const,
-};
+function FieldLabel({ label }: { label: string }) {
+  return <Text style={styles.label}>{label}</Text>;
+}
 
-const input = {
-  borderRadius: 16,
-  paddingHorizontal: 14,
-  color: "white",
-  backgroundColor: "rgba(255,255,255,0.08)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.12)",
-};
+const styles = StyleSheet.create({
+  page: {
+    flex: 1,
+  },
 
-const readonlyBox = {
-  borderRadius: 16,
-  paddingHorizontal: 14,
-  alignItems: "flex-start" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(255,255,255,0.05)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.10)",
-};
+  topGlow: {
+    position: "absolute",
+    top: -90,
+    right: -20,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.56)",
+  },
 
-const btn = {
-  borderRadius: 16,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(34,211,238,0.22)",
-  borderWidth: 1,
-  borderColor: "rgba(34,211,238,0.35)",
-};
+  leftGlow: {
+    position: "absolute",
+    top: 240,
+    left: -80,
+    width: 200,
+    height: 200,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,229,180,0.34)",
+  },
 
-const noticeOverlay = {
-  position: "absolute" as const,
-  left: 0,
-  right: 0,
-  top: 0,
-  bottom: 0,
-  paddingHorizontal: 20,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(1,7,19,0.58)",
-};
+  bottomGlow: {
+    position: "absolute",
+    bottom: -100,
+    right: 10,
+    width: 260,
+    height: 260,
+    borderRadius: 999,
+    backgroundColor: "rgba(215,154,89,0.16)",
+  },
 
-const noticeCard = {
-  borderRadius: 26,
-  paddingHorizontal: 18,
-  paddingVertical: 18,
-  backgroundColor: "rgba(8,18,43,0.98)",
-  borderWidth: 1,
-  borderColor: "rgba(173,232,255,0.18)",
-};
+  heroPill: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.66)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
 
-const noticeIconWrap = {
-  width: 42,
-  height: 42,
-  borderRadius: 21,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(173,232,255,0.10)",
-  borderWidth: 1,
-  borderColor: "rgba(173,232,255,0.18)",
-};
+  heroPillText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
 
-const noticeTitle = {
-  marginTop: 14,
-  color: "white",
-  fontSize: 22,
-  fontWeight: "900" as const,
-};
+  title: {
+    marginTop: 16,
+    color: Brand.ink,
+    fontWeight: "900",
+  },
 
-const noticeMessage = {
-  marginTop: 10,
-  color: "rgba(255,255,255,0.72)",
-  fontSize: 14,
-  lineHeight: 22,
-};
+  subtitle: {
+    marginTop: 10,
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 22,
+  },
 
-const noticeActions = {
-  marginTop: 18,
-  flexDirection: "row" as const,
-  justifyContent: "flex-end" as const,
-};
+  progressWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
 
-const noticeSecondaryBtn = {
-  minHeight: 46,
-  paddingHorizontal: 16,
-  borderRadius: 16,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(255,255,255,0.08)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.10)",
-};
+  progressLabel: {
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
 
-const noticeSecondaryText = {
-  color: "rgba(255,255,255,0.92)",
-  fontWeight: "800" as const,
-  fontSize: 14,
-};
+  progressValue: {
+    color: Brand.bronze,
+    fontSize: 12,
+    fontWeight: "900",
+  },
 
-const noticePrimaryBtn = {
-  marginLeft: 10,
-  minHeight: 46,
-  paddingHorizontal: 16,
-  borderRadius: 16,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(98,193,255,0.96)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.16)",
-};
+  label: {
+    marginTop: 16,
+    marginBottom: 8,
+    color: Brand.cocoa,
+    fontSize: 13,
+    fontWeight: "800",
+  },
 
-const noticePrimaryText = {
-  color: "#041222",
-  fontWeight: "900" as const,
-  fontSize: 14,
-};
+  input: {
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    color: Brand.ink,
+    fontSize: 15,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
+
+  readonlyBox: {
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  readonlyText: {
+    flex: 1,
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+
+  tipCard: {
+    marginTop: 16,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "rgba(255,255,255,0.56)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  tipText: {
+    flex: 1,
+    color: Brand.muted,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+
+  buttonShell: {
+    borderRadius: 18,
+    overflow: "hidden",
+    marginTop: 22,
+  },
+
+  primaryButton: {
+    borderRadius: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+
+  primaryButtonText: {
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  disabled: {
+    opacity: 0.7,
+  },
+
+  pressed: {
+    opacity: 0.95,
+    transform: [{ scale: 0.995 }],
+  },
+
+  noticeOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 18,
+    backgroundColor: "rgba(72, 46, 18, 0.18)",
+  },
+
+  noticeIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  noticeTitle: {
+    marginTop: 14,
+    color: Brand.ink,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+
+  noticeMessage: {
+    marginTop: 10,
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+
+  noticeActions: {
+    marginTop: 18,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+  },
+
+  noticeSecondaryBtn: {
+    minHeight: 46,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
+
+  noticeSecondaryText: {
+    color: Brand.cocoa,
+    fontWeight: "800",
+    fontSize: 14,
+  },
+
+  noticePrimaryBtn: {
+    minHeight: 46,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#efbf7c",
+  },
+
+  noticePrimaryText: {
+    color: Brand.ink,
+    fontWeight: "900",
+    fontSize: 14,
+  },
+});

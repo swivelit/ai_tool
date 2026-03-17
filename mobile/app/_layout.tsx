@@ -1,27 +1,31 @@
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, SafeAreaView, Text } from "react-native";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
+import { GlassCard } from "@/components/Glass";
+import { Brand } from "@/constants/theme";
 import { getProfileForFirebaseUid } from "@/lib/account";
 
 function BootScreen() {
   return (
-    <LinearGradient
-      colors={["#020816", "#04122B", "#082E6B", "#0B4C9C"]}
-      start={{ x: 0.08, y: 0.02 }}
-      end={{ x: 0.88, y: 1 }}
-      style={{ flex: 1 }}
-    >
-      <SafeAreaView style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator size="large" color="white" />
-        <Text style={{ marginTop: 14, color: "rgba(255,255,255,0.75)", fontSize: 14 }}>
-          Loading J AI...
-        </Text>
-      </SafeAreaView>
+    <LinearGradient colors={Brand.gradients.page} style={styles.bootPage}>
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <View style={styles.topGlow} />
+        <View style={styles.leftGlow} />
+        <View style={styles.bottomGlow} />
+      </View>
+
+      <GlassCard style={{ borderRadius: 28, minWidth: 240 }}>
+        <View style={styles.bootCard}>
+          <ActivityIndicator size="small" color={Brand.bronze} />
+          <Text style={styles.bootTitle}>Loading J AI...</Text>
+          <Text style={styles.bootText}>Preparing your premium assistant experience.</Text>
+        </View>
+      </GlassCard>
     </LinearGradient>
   );
 }
@@ -57,10 +61,6 @@ function RouteGate() {
 
         setGateLoading(true);
 
-        // Important:
-        // once the questionnaire route is reached, allow it to render.
-        // The profile may still be hydrating from AsyncStorage/provider state,
-        // and bouncing away here is what makes the app look stuck.
         if (atQuestionnaire) {
           setGateLoading(false);
           return;
@@ -69,9 +69,7 @@ function RouteGate() {
         const localProfile = await getProfileForFirebaseUid(user.uid, user.email);
         if (!alive) return;
 
-        const providerProfile =
-          profile?.firebaseUid === user.uid ? profile : null;
-
+        const providerProfile = profile?.firebaseUid === user.uid ? profile : null;
         const activeProfile = providerProfile || localProfile;
 
         const hasProfile = Boolean(activeProfile?.userId);
@@ -112,7 +110,6 @@ function RouteGate() {
     profile?.questionnaireCompleted,
   ]);
 
-  // Do not cover the questionnaire screen with the boot overlay.
   if (user && gateLoading && pathname !== "/onboarding/questionnaire") {
     return <BootScreen />;
   }
@@ -130,7 +127,7 @@ function AppShell() {
 
   return (
     <>
-      <StatusBar style="light" />
+      <StatusBar style="dark" />
       <RouteGate />
       <Stack
         screenOptions={{
@@ -165,3 +162,62 @@ export default function RootLayout() {
     </AuthProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  bootPage: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+
+  bootCard: {
+    minHeight: 120,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+
+  bootTitle: {
+    color: Brand.ink,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  bootText: {
+    color: Brand.muted,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: "center",
+  },
+
+  topGlow: {
+    position: "absolute",
+    top: -90,
+    right: -20,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.56)",
+  },
+
+  leftGlow: {
+    position: "absolute",
+    top: 240,
+    left: -80,
+    width: 200,
+    height: 200,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,229,180,0.34)",
+  },
+
+  bottomGlow: {
+    position: "absolute",
+    bottom: -100,
+    right: 10,
+    width: 260,
+    height: 260,
+    borderRadius: 999,
+    backgroundColor: "rgba(215,154,89,0.16)",
+  },
+});
