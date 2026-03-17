@@ -49,7 +49,7 @@ export default function Setup() {
   const nameQuality = useMemo(() => {
     const value = input.trim();
     if (!value) return "Using default";
-    if (value.length < 3) return "Short and quick";
+    if (value.length < 3) return "Easy";
     if (value.length < 8) return "Balanced";
     return "Distinctive";
   }, [input]);
@@ -95,7 +95,7 @@ export default function Setup() {
             <View style={styles.topBar}>
               <View style={styles.topBarPill}>
                 <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
-                <Text style={styles.topBarPillText}>Quick setup</Text>
+                <Text style={styles.topBarPillText}>Almost ready</Text>
               </View>
 
               <Pressable
@@ -128,12 +128,11 @@ export default function Setup() {
                   },
                 ]}
               >
-                Give your assistant a name that feels personal and memorable.
+                Give your assistant a name that fits you.
               </Text>
 
               <Text style={styles.subtitle}>
-                This small setup step makes the experience feel warmer and more human.
-                You can always change it later from Settings.
+                A name makes your assistant feel more personal.
               </Text>
 
               <View style={styles.metricRow}>
@@ -163,7 +162,7 @@ export default function Setup() {
             <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
               <Text style={styles.sectionTitle}>Choose assistant name</Text>
               <Text style={styles.sectionSubtitle}>
-                Short names work best in voice prompts and quick typed commands.
+                Keep it simple for voice and chat.
               </Text>
 
               <Text style={styles.label}>Assistant name</Text>

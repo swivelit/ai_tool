@@ -55,7 +55,7 @@ export default function SettingsModal() {
 
           <Text style={styles.title}>Quick settings</Text>
           <Text style={styles.subtitle}>
-            A compact premium panel for fast preference changes.
+            Everything you need to fine-tune your assistant.
           </Text>
 
           <GlassCard style={{ borderRadius: 24, marginTop: 14 }}>

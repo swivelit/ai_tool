@@ -46,7 +46,7 @@ export default function AssistantNameModal({
   const resolvedName = trimmed.length >= 2 ? trimmed : defaultName;
   const quality = useMemo(() => {
     if (!trimmed) return "Using default";
-    if (trimmed.length < 4) return "Short and quick";
+    if (trimmed.length < 4) return "Easy";
     if (trimmed.length < 8) return "Balanced";
     return "Distinctive";
   }, [trimmed]);
@@ -91,7 +91,7 @@ export default function AssistantNameModal({
 
             <Text style={styles.title}>Name your assistant</Text>
             <Text style={styles.subtitle}>
-              Choose a name that feels natural in voice commands and chat. If you skip,
+              Choose a name that feels natural to say and type. If you skip,
               we’ll use <Text style={styles.subtitleStrong}>{defaultName}</Text>.
             </Text>
 

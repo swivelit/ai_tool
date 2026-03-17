@@ -24,18 +24,18 @@ import { Brand } from "@/constants/theme";
 const HIGHLIGHTS = [
   {
     icon: "person-outline" as const,
-    title: "Personal onboarding",
-    copy: "Start with your own name and move into a guided assistant setup.",
+    title: "Made for you",
+    copy: "Get everything ready in just a moment.",
   },
   {
     icon: "calendar-clear-outline" as const,
-    title: "Planner-ready experience",
-    copy: "Built for reminders, routines, and structured day planning.",
+    title: "Stay organized",
+    copy: "Everything you need to manage your day.",
   },
   {
     icon: "lock-closed-outline" as const,
-    title: "Trusted account flow",
-    copy: "Clear validation, secure auth, and a more mature UI system.",
+    title: "Secure account access",
+    copy: "A smooth and secure way to begin.",
   },
 ];
 
@@ -212,24 +212,22 @@ export default function SignupScreen() {
                   },
                 ]}
               >
-                Start with a cleaner, more production-ready signup flow.
+                Start here and make it yours.
               </Text>
 
               <Text style={styles.subtitle}>
-                Create your account with stronger structure, better field
-                feedback, and a premium visual identity that matches the rest of
-                the app.
+                Sign up once and let your assistant take it from there.
               </Text>
 
               <View style={styles.metricRow}>
                 <View style={styles.metricChip}>
-                  <Text style={styles.metricText}>Quick signup</Text>
+                  <Text style={styles.metricText}>Quick start</Text>
                 </View>
                 <View style={styles.metricChip}>
                   <Text style={styles.metricText}>Clear validation</Text>
                 </View>
                 <View style={styles.metricChip}>
-                  <Text style={styles.metricText}>Warm premium UI</Text>
+                  <Text style={styles.metricText}>Smooth experience</Text>
                 </View>
               </View>
             </View>
@@ -239,7 +237,7 @@ export default function SignupScreen() {
                 <View>
                   <Text style={styles.cardTitle}>Create account</Text>
                   <Text style={styles.cardSubtitle}>
-                    Join the assistant and continue into onboarding.
+                    Sign up and keep going.
                   </Text>
                 </View>
 
@@ -415,8 +413,7 @@ export default function SignupScreen() {
                   color={Brand.success}
                 />
                 <Text style={styles.infoBannerText}>
-                  After signup, the app will guide the user into onboarding and
-                  profile setup automatically.
+                  Next, we will help you personalize your assistant.
                 </Text>
               </View>
 

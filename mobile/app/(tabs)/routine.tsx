@@ -435,7 +435,7 @@ export default function RoutineScreen() {
     if (!resolvedUserId) {
       showNotice(
         "Profile missing",
-        "Your profile session is not ready yet. Please return to onboarding and complete the profile flow once.",
+        "Your profile is not complete yet. Please finish setup first.",
         "Go to profile",
         () => {
           closeNotice();
@@ -521,7 +521,7 @@ export default function RoutineScreen() {
             </Pressable>
 
             <View style={styles.topCenter}>
-              <Text style={styles.topCaption}>Workspace</Text>
+              <Text style={styles.topCaption}>Home</Text>
               <Text style={styles.topTitle}>Settings</Text>
             </View>
 
@@ -538,7 +538,7 @@ export default function RoutineScreen() {
             <View style={styles.heroHeaderRow}>
               <View style={styles.heroPill}>
                 <Ionicons name="settings-outline" size={14} color={Brand.bronze} />
-                <Text style={styles.heroPillText}>Premium settings workspace</Text>
+                <Text style={styles.heroPillText}>Control center</Text>
               </View>
 
               <View style={styles.heroStatusChip}>
@@ -560,11 +560,11 @@ export default function RoutineScreen() {
                 },
               ]}
             >
-              Personalize the assistant, refine your routine, and manage account access from one polished control center.
+              Adjust your assistant, routine, and account settings here.
             </Text>
 
             <Text style={styles.heroSubtitle}>
-              This screen is redesigned to feel more production-ready: clearer hierarchy, stronger account context, and a routine editor that looks like a real premium app.
+              Make changes easily and stay in control.
             </Text>
 
             <View style={styles.metricRow}>

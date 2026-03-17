@@ -334,12 +334,11 @@ export default function QuestionnaireScreen() {
               },
             ]}
           >
-            Help {assistantLabel || "Elli"} learn your style with a more refined questionnaire experience.
+            Help {assistantLabel || "Elli"} understand how you think and work.
           </Text>
 
           <Text style={styles.subtitle}>
-            Answer these {questions.length} questions so replies feel more natural, relevant,
-            and aligned with how you actually think and communicate.
+            Answer these {questions.length} to make {assistantLabel || "Elli"} more helpful.
           </Text>
 
           <View style={styles.metricRow}>
@@ -391,7 +390,7 @@ export default function QuestionnaireScreen() {
             </View>
 
             <Text style={styles.progressHelper}>
-              Finish all questions to unlock the fully personalized assistant experience.
+              Finish all questions to complete your setup.
             </Text>
           </LinearGradient>
         </GlassCard>
