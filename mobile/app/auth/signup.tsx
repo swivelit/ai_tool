@@ -1,67 +1,67 @@
-import React, { useState } from "react";
+import React, { useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
+  StyleSheet,
   Text,
   TextInput,
   View,
   useWindowDimensions,
-} from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
-import { router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+} from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { StatusBar } from 'expo-status-bar';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { GlassCard } from "@/components/Glass";
-import { useAuth } from "@/components/AuthProvider";
+import { GlassCard } from '@/components/Glass';
+import { useAuth } from '@/components/AuthProvider';
+import { Brand } from '@/constants/theme';
 
 export default function SignupScreen() {
   const { signUpWithPassword, signInWithGoogle, googleConfigured, googleReady } = useAuth();
 
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [busy, setBusy] = useState(false);
-  const [errorText, setErrorText] = useState("");
+  const [errorText, setErrorText] = useState('');
 
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
 
-  const isSmallPhone = width < 370 || height < 760;
-  const isVerySmallPhone = width < 345 || height < 700;
-
-  const horizontalPadding = isSmallPhone ? 16 : 18;
-  const topPadding = insets.top + (isSmallPhone ? 10 : 16);
-  const bottomPadding = Math.max(insets.bottom + 24, 24);
-  const cardRadius = isSmallPhone ? 24 : 28;
-  const inputHeight = isSmallPhone ? 52 : 56;
-  const buttonHeight = isSmallPhone ? 52 : 54;
+  const isCompact = width < 370 || height < 760;
+  const horizontalPadding = isCompact ? 16 : 20;
+  const topPadding = insets.top + (isCompact ? 12 : 18);
+  const bottomPadding = Math.max(insets.bottom + 28, 30);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 520);
+  const inputHeight = isCompact ? 54 : 58;
+  const buttonHeight = isCompact ? 54 : 58;
 
   async function handleSignup() {
     if (!name.trim() || !email.trim() || !password || !confirmPassword) {
-      setErrorText("Please fill all fields.");
+      setErrorText('Please fill all fields.');
       return;
     }
     if (password.length < 6) {
-      setErrorText("Password should be at least 6 characters.");
+      setErrorText('Password should be at least 6 characters.');
       return;
     }
     if (password !== confirmPassword) {
-      setErrorText("Passwords do not match.");
+      setErrorText('Passwords do not match.');
       return;
     }
 
     try {
       setBusy(true);
-      setErrorText("");
-      await signUpWithPassword(name, email, password);
-    } catch (error: any) {
-      setErrorText(error?.message || "Sign up failed.");
+      setErrorText('');
+      await signUpWithPassword(name.trim(), email.trim(), password);
+    } catch (error: unknown) {
+      setErrorText(error instanceof Error ? error.message : 'Sign up failed.');
     } finally {
       setBusy(false);
     }
@@ -70,303 +70,185 @@ export default function SignupScreen() {
   async function handleGoogle() {
     try {
       setBusy(true);
-      setErrorText("");
+      setErrorText('');
       await signInWithGoogle();
-    } catch (error: any) {
-      setErrorText(error?.message || "Google sign-in failed.");
+    } catch (error: unknown) {
+      setErrorText(error instanceof Error ? error.message : 'Google sign-in failed.');
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <LinearGradient
-      colors={["#020816", "#04122B", "#082E6B", "#0B4C9C"]}
-      start={{ x: 0.08, y: 0.02 }}
-      end={{ x: 0.88, y: 1 }}
-      style={{ flex: 1 }}
-    >
+    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+      <StatusBar style="dark" />
+
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <View style={styles.topGlow} />
+        <View style={styles.bottomGlow} />
+      </View>
+
       <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={styles.page}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView
-          style={{ flex: 1 }}
+          style={styles.page}
           contentContainerStyle={{
             flexGrow: 1,
             paddingHorizontal: horizontalPadding,
             paddingTop: topPadding,
             paddingBottom: bottomPadding,
-            justifyContent: height > 780 ? "center" : "flex-start",
+            justifyContent: height > 780 ? 'center' : 'flex-start',
           }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View
-            style={{
-              width: "100%",
-              alignSelf: "center",
-              maxWidth: contentMaxWidth,
-            }}
-          >
-            <Pressable onPress={() => router.replace("/")} style={backBtn}>
-              <Ionicons name="chevron-back" size={18} color="white" />
-              <Text style={[backBtnText, { fontSize: isSmallPhone ? 13 : 14 }]}>Back</Text>
+          <View style={{ width: '100%', alignSelf: 'center', maxWidth: contentMaxWidth }}>
+            <Pressable onPress={() => router.replace('/')} style={styles.backButton}>
+              <Ionicons name="chevron-back" size={18} color={Brand.cocoa} />
+              <Text style={styles.backButtonText}>Back</Text>
             </Pressable>
 
-            <GlassCard
-              style={{
-                marginTop: isSmallPhone ? 16 : 18,
-                borderRadius: cardRadius,
-                width: "100%",
-              }}
-            >
-              <Text
-                style={{
-                  color: "white",
-                  fontSize: isVerySmallPhone ? 25 : isSmallPhone ? 27 : 30,
-                  lineHeight: isVerySmallPhone ? 31 : isSmallPhone ? 33 : 36,
-                  fontWeight: "900",
-                }}
-              >
-                Create account
-              </Text>
+            <View style={styles.headerBlock}>
+              <View style={styles.titlePill}>
+                <Ionicons name="person-add-outline" size={14} color={Brand.bronze} />
+                <Text style={styles.titlePillText}>Create your account</Text>
+              </View>
 
               <Text
-                style={{
-                  marginTop: 8,
-                  color: "rgba(255,255,255,0.70)",
-                  fontSize: isSmallPhone ? 13 : 14,
-                  lineHeight: isSmallPhone ? 20 : 21,
-                }}
+                style={[
+                  styles.title,
+                  { fontSize: isCompact ? 31 : 34, lineHeight: isCompact ? 37 : 40 },
+                ]}
               >
-                Set up your login now. Your profile details come next.
+                Start with style
               </Text>
+              <Text style={styles.subtitle}>
+                A cleaner first-run experience with warmer tones, stronger structure, and better
+                visual hierarchy for production-level polish.
+              </Text>
+            </View>
 
+            <GlassCard style={{ borderRadius: 28 }}>
               {errorText ? (
-                <View
-                  style={[
-                    errorCard,
-                    {
-                      marginTop: isSmallPhone ? 14 : 16,
-                      paddingHorizontal: isSmallPhone ? 10 : 12,
-                      paddingVertical: isSmallPhone ? 9 : 10,
-                      borderRadius: isSmallPhone ? 14 : 16,
-                    },
-                  ]}
-                >
-                  <Ionicons name="alert-circle-outline" size={16} color="#FFD8D8" />
-                  <Text
-                    style={{
-                      flex: 1,
-                      color: "#FFE8E8",
-                      fontSize: isSmallPhone ? 12 : 13,
-                      lineHeight: isSmallPhone ? 18 : 19,
-                    }}
-                  >
-                    {errorText}
-                  </Text>
+                <View style={styles.errorCard}>
+                  <Ionicons name="alert-circle-outline" size={16} color="#fff4ef" />
+                  <Text style={styles.errorText}>{errorText}</Text>
                 </View>
               ) : null}
 
-              <Text
-                style={[
-                  label,
-                  {
-                    marginTop: isSmallPhone ? 14 : 16,
-                    marginBottom: 9,
-                    fontSize: isSmallPhone ? 13 : 14,
-                  },
-                ]}
-              >
-                Name
-              </Text>
+              <View style={{ marginTop: errorText ? 16 : 0 }}>
+                <Text style={styles.label}>Name</Text>
+                <TextInput
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="Hari"
+                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                  style={[styles.input, { height: inputHeight }]}
+                  editable={!busy}
+                />
+              </View>
 
-              <TextInput
-                value={name}
-                onChangeText={setName}
-                placeholder="Hari"
-                placeholderTextColor="rgba(255,255,255,0.35)"
-                style={[
-                  input,
-                  {
-                    height: inputHeight,
-                    borderRadius: isSmallPhone ? 16 : 18,
-                    paddingHorizontal: 16,
-                    fontSize: isSmallPhone ? 14 : 15,
-                  },
-                ]}
-                editable={!busy}
-              />
+              <View style={{ marginTop: 16 }}>
+                <Text style={styles.label}>Email</Text>
+                <TextInput
+                  value={email}
+                  onChangeText={setEmail}
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  placeholder="you@example.com"
+                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                  style={[styles.input, { height: inputHeight }]}
+                  editable={!busy}
+                />
+              </View>
 
-              <Text
-                style={[
-                  label,
-                  {
-                    marginTop: isSmallPhone ? 14 : 16,
-                    marginBottom: 9,
-                    fontSize: isSmallPhone ? 13 : 14,
-                  },
-                ]}
-              >
-                Email
-              </Text>
+              <View style={{ marginTop: 16 }}>
+                <Text style={styles.label}>Password</Text>
+                <TextInput
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                  placeholder="Minimum 6 characters"
+                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                  style={[styles.input, { height: inputHeight }]}
+                  editable={!busy}
+                />
+              </View>
 
-              <TextInput
-                value={email}
-                onChangeText={setEmail}
-                autoCapitalize="none"
-                keyboardType="email-address"
-                placeholder="you@example.com"
-                placeholderTextColor="rgba(255,255,255,0.35)"
-                style={[
-                  input,
-                  {
-                    height: inputHeight,
-                    borderRadius: isSmallPhone ? 16 : 18,
-                    paddingHorizontal: 16,
-                    fontSize: isSmallPhone ? 14 : 15,
-                  },
-                ]}
-                editable={!busy}
-              />
-
-              <Text
-                style={[
-                  label,
-                  {
-                    marginTop: isSmallPhone ? 14 : 16,
-                    marginBottom: 9,
-                    fontSize: isSmallPhone ? 13 : 14,
-                  },
-                ]}
-              >
-                Password
-              </Text>
-
-              <TextInput
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-                placeholder="Minimum 6 characters"
-                placeholderTextColor="rgba(255,255,255,0.35)"
-                style={[
-                  input,
-                  {
-                    height: inputHeight,
-                    borderRadius: isSmallPhone ? 16 : 18,
-                    paddingHorizontal: 16,
-                    fontSize: isSmallPhone ? 14 : 15,
-                  },
-                ]}
-                editable={!busy}
-              />
-
-              <Text
-                style={[
-                  label,
-                  {
-                    marginTop: isSmallPhone ? 14 : 16,
-                    marginBottom: 9,
-                    fontSize: isSmallPhone ? 13 : 14,
-                  },
-                ]}
-              >
-                Confirm password
-              </Text>
-
-              <TextInput
-                value={confirmPassword}
-                onChangeText={setConfirmPassword}
-                secureTextEntry
-                placeholder="Repeat password"
-                placeholderTextColor="rgba(255,255,255,0.35)"
-                style={[
-                  input,
-                  {
-                    height: inputHeight,
-                    borderRadius: isSmallPhone ? 16 : 18,
-                    paddingHorizontal: 16,
-                    fontSize: isSmallPhone ? 14 : 15,
-                  },
-                ]}
-                editable={!busy}
-              />
+              <View style={{ marginTop: 16 }}>
+                <Text style={styles.label}>Confirm password</Text>
+                <TextInput
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  secureTextEntry
+                  placeholder="Re-enter password"
+                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                  style={[styles.input, { height: inputHeight }]}
+                  editable={!busy}
+                />
+              </View>
 
               <Pressable
                 onPress={handleSignup}
-                style={[
-                  primaryBtn,
-                  {
-                    marginTop: isSmallPhone ? 20 : 22,
-                    minHeight: buttonHeight,
-                    borderRadius: isSmallPhone ? 16 : 18,
-                  },
-                  busy && disabledBtn,
-                ]}
                 disabled={busy}
+                style={({ pressed }) => [
+                  styles.buttonShell,
+                  pressed && styles.buttonPressed,
+                  busy && styles.disabled,
+                ]}
               >
-                {busy ? (
-                  <ActivityIndicator color="#041222" />
-                ) : (
-                  <Text style={[primaryBtnText, { fontSize: isSmallPhone ? 14 : 15 }]}>
-                    Create account
-                  </Text>
-                )}
+                <LinearGradient
+                  colors={Brand.gradients.button}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={[styles.primaryButton, { minHeight: buttonHeight, marginTop: 22 }]}
+                >
+                  {busy ? (
+                    <ActivityIndicator color={Brand.ink} />
+                  ) : (
+                    <>
+                      <Text style={styles.primaryButtonText}>Create account</Text>
+                      <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
+                    </>
+                  )}
+                </LinearGradient>
               </Pressable>
 
-              <View style={[dividerRow, { marginTop: isSmallPhone ? 16 : 18 }]}>
-                <View style={dividerLine} />
-                <Text style={[dividerText, { fontSize: isSmallPhone ? 11 : 12 }]}>or</Text>
-                <View style={dividerLine} />
+              <View style={styles.dividerRow}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or continue with</Text>
+                <View style={styles.dividerLine} />
               </View>
 
               <Pressable
                 onPress={handleGoogle}
                 disabled={busy || !googleReady || !googleConfigured}
-                style={[
-                  googleBtn,
-                  {
-                    marginTop: isSmallPhone ? 16 : 18,
-                    minHeight: buttonHeight,
-                    borderRadius: isSmallPhone ? 16 : 18,
-                  },
-                  (busy || !googleReady || !googleConfigured) && disabledBtn,
+                style={({ pressed }) => [
+                  styles.googleButton,
+                  pressed && styles.buttonPressed,
+                  (busy || !googleReady || !googleConfigured) && styles.disabled,
+                  { minHeight: buttonHeight },
                 ]}
               >
-                <Ionicons name="logo-google" size={18} color="#041222" />
-                <Text style={[googleBtnText, { fontSize: isSmallPhone ? 14 : 15 }]}>
-                  Continue with Google
-                </Text>
+                <Ionicons name="logo-google" size={18} color={Brand.ink} />
+                <Text style={styles.googleButtonText}>Continue with Google</Text>
               </Pressable>
 
               {!googleConfigured ? (
-                <Text
-                  style={{
-                    marginTop: 10,
-                    color: "rgba(255,255,255,0.60)",
-                    fontSize: isSmallPhone ? 11 : 12,
-                    lineHeight: isSmallPhone ? 17 : 18,
-                  }}
-                >
-                  Add your EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID to .env to enable this button.
+                <Text style={styles.helperText}>
+                  Add your EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID in your env file to enable Google
+                  sign-in.
                 </Text>
               ) : null}
 
-              <Pressable
-                onPress={() => router.replace("/auth/login")}
-                style={{ marginTop: isSmallPhone ? 16 : 18, alignItems: "center" }}
-              >
-                <Text
-                  style={{
-                    color: "rgba(173,232,255,0.98)",
-                    fontSize: isSmallPhone ? 13 : 14,
-                    fontWeight: "800",
-                  }}
-                >
-                  Already have an account? Login
-                </Text>
-              </Pressable>
+              <View style={styles.footerRow}>
+                <Text style={styles.footerCopy}>Already have an account?</Text>
+                <Pressable onPress={() => router.replace('/auth/login')}>
+                  <Text style={styles.footerLink}>Login</Text>
+                </Pressable>
+              </View>
             </GlassCard>
           </View>
         </ScrollView>
@@ -375,80 +257,182 @@ export default function SignupScreen() {
   );
 }
 
-const backBtn = {
-  flexDirection: "row" as const,
-  alignItems: "center" as const,
-  gap: 6,
-  alignSelf: "flex-start" as const,
-};
-
-const backBtnText = {
-  color: "white",
-  fontWeight: "800" as const,
-};
-
-const errorCard = {
-  flexDirection: "row" as const,
-  alignItems: "center" as const,
-  gap: 8,
-  backgroundColor: "rgba(255,92,92,0.18)",
-  borderWidth: 1,
-  borderColor: "rgba(255,160,160,0.25)",
-};
-
-const label = {
-  color: "rgba(255,255,255,0.92)",
-  fontWeight: "800" as const,
-};
-
-const input = {
-  color: "white",
-  backgroundColor: "rgba(255,255,255,0.08)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.10)",
-};
-
-const primaryBtn = {
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(98,193,255,0.96)",
-};
-
-const primaryBtnText = {
-  color: "#041222",
-  fontWeight: "900" as const,
-};
-
-const dividerRow = {
-  flexDirection: "row" as const,
-  alignItems: "center" as const,
-  gap: 10,
-};
-
-const dividerLine = {
-  flex: 1,
-  height: 1,
-  backgroundColor: "rgba(255,255,255,0.12)",
-};
-
-const dividerText = {
-  color: "rgba(255,255,255,0.48)",
-  fontWeight: "700" as const,
-};
-
-const googleBtn = {
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  flexDirection: "row" as const,
-  gap: 10,
-  backgroundColor: "rgba(255,255,255,0.94)",
-};
-
-const googleBtnText = {
-  color: "#041222",
-  fontWeight: "900" as const,
-};
-
-const disabledBtn = {
-  opacity: 0.6,
-};
+const styles = StyleSheet.create({
+  page: {
+    flex: 1,
+  },
+  topGlow: {
+    position: 'absolute',
+    top: -80,
+    right: -20,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.55)',
+  },
+  bottomGlow: {
+    position: 'absolute',
+    bottom: -60,
+    left: -30,
+    width: 240,
+    height: 240,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,229,180,0.35)',
+  },
+  backButton: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  backButtonText: {
+    color: Brand.cocoa,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  headerBlock: {
+    marginTop: 18,
+    marginBottom: 18,
+  },
+  titlePill: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Brand.line,
+    backgroundColor: 'rgba(255,255,255,0.62)',
+  },
+  titlePillText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  title: {
+    marginTop: 16,
+    color: Brand.ink,
+    fontWeight: '900',
+  },
+  subtitle: {
+    marginTop: 8,
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  errorCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 18,
+    backgroundColor: Brand.danger,
+  },
+  errorText: {
+    flex: 1,
+    color: '#fff8f5',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
+  },
+  label: {
+    color: Brand.cocoa,
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 9,
+  },
+  input: {
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    color: Brand.ink,
+    fontSize: 15,
+    backgroundColor: 'rgba(255,255,255,0.72)',
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
+  buttonShell: {
+    borderRadius: 18,
+    overflow: 'hidden',
+  },
+  buttonPressed: {
+    opacity: 0.94,
+  },
+  disabled: {
+    opacity: 0.6,
+  },
+  primaryButton: {
+    borderRadius: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    shadowColor: '#d4934f',
+    shadowOpacity: 0.24,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  primaryButtonText: {
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 18,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: Brand.line,
+  },
+  dividerText: {
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  googleButton: {
+    marginTop: 18,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    backgroundColor: 'rgba(255,255,255,0.78)',
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
+  googleButtonText: {
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  helperText: {
+    marginTop: 12,
+    color: Brand.muted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  footerRow: {
+    marginTop: 20,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  footerCopy: {
+    color: Brand.muted,
+    fontSize: 13,
+  },
+  footerLink: {
+    color: Brand.bronze,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+});
