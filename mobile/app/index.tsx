@@ -21,24 +21,24 @@ const FEATURES = [
   {
     icon: "sparkles-outline" as const,
     title: "Assistant-first experience",
-    copy: "Built around planning, reminders, routines, and natural AI conversations.",
+    copy: "Everything you need to stay organized, in one place.",
   },
   {
     icon: "shield-checkmark-outline" as const,
     title: "Secure account flow",
-    copy: "A cleaner entry experience backed by persistent Firebase authentication.",
+    copy: "Your data stays safe and always available.",
   },
   {
     icon: "color-wand-outline" as const,
     title: "Premium product feel",
-    copy: "Polished hierarchy, softer gradients, and more production-level spacing.",
+    copy: "Designed to feel smooth, simple, and intuitive.",
   },
 ];
 
 const HIGHLIGHTS = [
-  "Warm premium UI",
-  "Fast onboarding",
-  "Production-ready experience",
+  "Intelligent by design",
+  "Ready instantly",
+  "Built for you",
 ];
 
 export default function LandingScreen() {
@@ -111,12 +111,11 @@ export default function LandingScreen() {
               },
             ]}
           >
-            A more advanced frontend for your AI product, designed to feel premium from the very first screen.
+            One assistant. Total control.
           </Text>
 
           <Text style={styles.heroSubtitle}>
-            The landing experience now feels calmer, sharper, and more trustworthy while keeping
-            the auth flow simple. It sets the tone for the rest of the app before users even sign in.
+            Seamless from the first tap. Everything is ready when you are.
           </Text>
 
           <View style={styles.highlightRow}>
@@ -131,12 +130,12 @@ export default function LandingScreen() {
             <View style={styles.heroCardTopRow}>
               <View style={{ flex: 1, paddingRight: 12 }}>
                 <Text style={styles.cardTitle}>
-                  {user ? "Welcome back." : "Sign in beautifully."}
+                  {user ? "Welcome back." : "Get started"}
                 </Text>
                 <Text style={styles.cardSubtitle}>
                   {user
                     ? "Your session is active. Jump straight into the assistant workspace and continue where you left off."
-                    : "A cleaner auth handoff, stronger visual hierarchy, and a more premium first impression for real users."}
+                    : "Secure, simple, and ready in seconds."}
                 </Text>
               </View>
 
@@ -180,10 +179,9 @@ export default function LandingScreen() {
                 <Text style={styles.previewBadgeText}>Product preview</Text>
               </View>
 
-              <Text style={styles.previewTitle}>“Plan my day, set reminders, and keep me on track.”</Text>
+              <Text style={styles.previewTitle}>“Keep me on track throughout the day.”</Text>
               <Text style={styles.previewCopy}>
-                The new frontend language is built to make the app feel cohesive across landing,
-                auth, onboarding, planner, detail screens, and settings.
+                Designed to feel seamless, wherever you are in the app.
               </Text>
             </LinearGradient>
 
@@ -235,7 +233,7 @@ export default function LandingScreen() {
             )}
 
             <Text style={styles.footerNote}>
-              Designed to feel softer, more polished, and more premium while staying clear and highly usable on small phones too.
+              Crafted for simplicity and everyday reliability.
             </Text>
           </GlassCard>
         </View>
