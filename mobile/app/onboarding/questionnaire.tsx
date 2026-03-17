@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
   Pressable,
   ScrollView,
+  StyleSheet,
   Text,
   View,
   useWindowDimensions,
@@ -10,8 +12,11 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { GlassCard } from "@/components/Glass";
+import { Brand } from "@/constants/theme";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import {
@@ -49,6 +54,7 @@ export default function QuestionnaireScreen() {
   const horizontalPadding = isSmallPhone ? 16 : 18;
   const topPadding = insets.top + (isSmallPhone ? 8 : 12);
   const bottomPadding = Math.max(insets.bottom + 28, 36);
+  const titleSize = isVerySmallPhone ? 28 : isSmallPhone ? 31 : 34;
 
   function showNotice(
     title: string,
@@ -101,6 +107,8 @@ export default function QuestionnaireScreen() {
     }, 0);
   }, [answers, questions]);
 
+  const progress = questions.length ? answeredCount / questions.length : 0;
+
   async function resolveUserId() {
     if (userId) return userId;
     if (profile?.userId) return profile.userId;
@@ -129,9 +137,11 @@ export default function QuestionnaireScreen() {
       authProvider: provider,
       name: profile?.name || user.displayName || localProfile?.name || "User",
       place: profile?.place || localProfile?.place || "",
-      assistantName: profile?.assistantName || localProfile?.assistantName || assistantLabel || "Elli",
+      assistantName:
+        profile?.assistantName || localProfile?.assistantName || assistantLabel || "Elli",
       timezone: "Asia/Kolkata",
-      questionnaireCompleted: profile?.questionnaireCompleted ?? localProfile?.questionnaireCompleted ?? false,
+      questionnaireCompleted:
+        profile?.questionnaireCompleted ?? localProfile?.questionnaireCompleted ?? false,
     });
 
     await refresh();
@@ -241,135 +251,127 @@ export default function QuestionnaireScreen() {
 
   if (loading) {
     return (
-      <LinearGradient
-        colors={["#020816", "#04122B", "#082E6B", "#0B4C9C"]}
-        start={{ x: 0.08, y: 0.02 }}
-        end={{ x: 0.88, y: 1 }}
-        style={{ flex: 1 }}
-      >
-        <View
-          style={{
-            flex: 1,
-            alignItems: "center",
-            justifyContent: "center",
-            paddingTop: insets.top,
-            paddingBottom: insets.bottom,
-            paddingHorizontal: 18,
-          }}
-        >
-          <ActivityIndicator size="large" color="white" />
-          <Text style={{ marginTop: 14, color: "rgba(255,255,255,0.74)" }}>
-            Loading your questionnaire...
-          </Text>
+      <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+        <StatusBar style="dark" />
+        <View style={styles.loaderPage}>
+          <View style={styles.loaderCard}>
+            <ActivityIndicator size="small" color={Brand.bronze} />
+            <Text style={styles.loaderText}>Loading your questionnaire...</Text>
+          </View>
         </View>
       </LinearGradient>
     );
   }
 
   return (
-    <LinearGradient
-      colors={["#020816", "#04122B", "#082E6B", "#0B4C9C"]}
-      start={{ x: 0.08, y: 0.02 }}
-      end={{ x: 0.88, y: 1 }}
-      style={{ flex: 1 }}
-    >
-      <View style={{ flex: 1 }}>
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{
-            paddingHorizontal: horizontalPadding,
-            paddingTop: topPadding,
-            paddingBottom: bottomPadding,
-          }}
-          showsVerticalScrollIndicator={false}
+    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+      <StatusBar style="dark" />
+
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <View style={styles.topGlow} />
+        <View style={styles.leftGlow} />
+        <View style={styles.bottomGlow} />
+      </View>
+
+      <ScrollView
+        style={styles.page}
+        contentContainerStyle={{
+          paddingHorizontal: horizontalPadding,
+          paddingTop: topPadding,
+          paddingBottom: bottomPadding,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.heroPill}>
+          <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
+          <Text style={styles.heroPillText}>Personality profile</Text>
+        </View>
+
+        <Text
+          style={[
+            styles.title,
+            {
+              fontSize: titleSize,
+              lineHeight: titleSize + 6,
+            },
+          ]}
         >
-          <View style={headerRow}>
-            <View style={{ flex: 1, paddingRight: 14 }}>
-              <Text
-                style={[
-                  title,
-                  {
-                    fontSize: isVerySmallPhone ? 26 : isSmallPhone ? 28 : 30,
-                    lineHeight: isVerySmallPhone ? 32 : isSmallPhone ? 34 : 36,
-                  },
-                ]}
-              >
-                Complete your personality profile
-              </Text>
-              <Text
-                style={[
-                  subtitle,
-                  {
-                    fontSize: isSmallPhone ? 13 : 14,
-                    lineHeight: isSmallPhone ? 20 : 21,
-                  },
-                ]}
-              >
-                Answer these {questions.length} questions so {assistantLabel || "Elli"} can
-                respond in a way that fits you better.
-              </Text>
-            </View>
+          Help {assistantLabel || "Elli"} understand your style
+        </Text>
 
-            <View style={headerBadge}>
-              <Ionicons name="sparkles-outline" size={16} color="rgba(173,232,255,0.95)" />
-            </View>
-          </View>
+        <Text style={styles.subtitle}>
+          Answer these {questions.length} questions so replies can feel more natural, relevant, and
+          personal to you.
+        </Text>
 
-          <View style={[progressWrap, { marginTop: isSmallPhone ? 14 : 18 }]}>
-            <Text style={progressText}>
+        <GlassCard style={{ borderRadius: 28, marginTop: 18 }}>
+          <View style={styles.progressHeader}>
+            <Text style={styles.progressLabel}>Progress</Text>
+            <Text style={styles.progressValue}>
               {answeredCount}/{questions.length} answered
             </Text>
           </View>
 
-          {!questions.length ? (
-            <View style={emptyCard}>
-              <Text style={emptyTitle}>No questions available</Text>
-              <Text style={emptyText}>
-                The questionnaire loaded, but no questions were returned from the API.
-              </Text>
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${Math.max(progress * 100, 4)}%` }]} />
+          </View>
 
-              <Pressable onPress={reloadQuestions} style={submitBtn}>
-                <Text style={submitBtnText}>Retry</Text>
-              </Pressable>
+          <Text style={styles.progressHelper}>
+            Finish all questions to unlock the fully personalized assistant experience.
+          </Text>
+        </GlassCard>
+
+        {!questions.length ? (
+          <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+            <View style={styles.emptyIconWrap}>
+              <Ionicons name="help-circle-outline" size={24} color={Brand.bronze} />
             </View>
-          ) : (
-            questions.map((question, index) => {
-              const selected = answers[question.id] || [];
-              const helperText =
-                question.type === "multi"
-                  ? `Choose up to ${question.max_choices || 1}`
-                  : "Choose 1 option";
+            <Text style={styles.emptyTitle}>No questions available</Text>
+            <Text style={styles.emptyText}>
+              The questionnaire loaded, but no questions were returned from the API.
+            </Text>
 
-              return (
-                <View key={question.id} style={[card, { marginTop: isSmallPhone ? 12 : 14 }]}>
-                  <Text style={questionIndex}>Question {index + 1}</Text>
-                  <Text
-                    style={[
-                      questionText,
-                      {
-                        fontSize: isSmallPhone ? 17 : 19,
-                        lineHeight: isSmallPhone ? 24 : 27,
-                      },
-                    ]}
-                  >
-                    {question.prompt}
-                  </Text>
-                  <Text style={helper}>{helperText}</Text>
+            <Pressable onPress={reloadQuestions} style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}>
+              <Text style={styles.retryBtnText}>Retry</Text>
+            </Pressable>
+          </GlassCard>
+        ) : (
+          questions.map((question, index) => {
+            const selected = answers[question.id] || [];
+            const helperText =
+              question.type === "multi"
+                ? `Choose up to ${question.max_choices || 1}`
+                : "Choose 1 option";
 
-                  <View style={{ marginTop: 14 }}>
-                    {question.options.map((option) => {
-                      const active = selected.includes(option);
+            return (
+              <GlassCard key={question.id} style={{ borderRadius: 28, marginTop: 16 }}>
+                <View style={styles.questionHeaderRow}>
+                  <Text style={styles.questionIndex}>Question {index + 1}</Text>
+                  <View style={styles.questionTypeChip}>
+                    <Text style={styles.questionTypeChipText}>
+                      {question.type === "multi" ? "Multiple choice" : "Single choice"}
+                    </Text>
+                  </View>
+                </View>
 
-                      return (
-                        <Pressable
-                          key={option}
-                          onPress={() => toggleOption(question, option)}
-                          style={[
-                            optionBtn,
-                            { minHeight: isSmallPhone ? 50 : 52 },
-                            active && optionBtnActive,
-                          ]}
-                        >
+                <Text style={styles.questionText}>{question.prompt}</Text>
+                <Text style={styles.helper}>{helperText}</Text>
+
+                <View style={{ marginTop: 14 }}>
+                  {question.options.map((option) => {
+                    const active = selected.includes(option);
+
+                    return (
+                      <Pressable
+                        key={option}
+                        onPress={() => toggleOption(question, option)}
+                        style={({ pressed }) => [
+                          styles.optionBtn,
+                          active && styles.optionBtnActive,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <View style={[styles.optionIconWrap, active && styles.optionIconWrapActive]}>
                           <Ionicons
                             name={
                               question.type === "multi"
@@ -381,300 +383,447 @@ export default function QuestionnaireScreen() {
                                   : "radio-button-off"
                             }
                             size={18}
-                            color={active ? "#041222" : "rgba(255,255,255,0.92)"}
+                            color={active ? Brand.ink : Brand.cocoa}
                           />
-                          <Text
-                            style={[
-                              optionText,
-                              { fontSize: isSmallPhone ? 13 : 14, lineHeight: isSmallPhone ? 19 : 20 },
-                              active && optionTextActive,
-                            ]}
-                          >
-                            {formatOptionLabel(option)}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </View>
-              );
-            })
-          )}
+                        </View>
 
-          {!!questions.length && (
-            <Pressable
-              onPress={submit}
-              style={[
-                submitBtn,
-                { marginTop: isSmallPhone ? 18 : 20, minHeight: isSmallPhone ? 54 : 58 },
-                saving && { opacity: 0.72 },
-              ]}
-              disabled={saving}
+                        <Text style={[styles.optionText, active && styles.optionTextActive]}>
+                          {formatOptionLabel(option)}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </GlassCard>
+            );
+          })
+        )}
+
+        {!!questions.length && (
+          <Pressable
+            onPress={submit}
+            style={({ pressed }) => [
+              styles.submitShell,
+              saving && styles.disabled,
+              pressed && styles.pressed,
+            ]}
+            disabled={saving}
+          >
+            <LinearGradient
+              colors={Brand.gradients.button}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[styles.submitBtn, { minHeight: isSmallPhone ? 54 : 58 }]}
             >
               {saving ? (
-                <ActivityIndicator color="#041222" />
+                <ActivityIndicator color={Brand.ink} />
               ) : (
-                <Text style={[submitBtnText, { fontSize: isSmallPhone ? 15 : 17 }]}>
-                  Save answers and continue
-                </Text>
+                <>
+                  <Text style={styles.submitBtnText}>Save answers and continue</Text>
+                  <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
+                </>
               )}
-            </Pressable>
-          )}
-        </ScrollView>
+            </LinearGradient>
+          </Pressable>
+        )}
+      </ScrollView>
 
-        {notice ? (
-          <View
-            style={[
-              noticeOverlay,
-              {
-                paddingTop: insets.top + 20,
-                paddingBottom: Math.max(insets.bottom + 20, 20),
-              },
-            ]}
-          >
-            <View style={noticeCard}>
-              <View style={noticeIconWrap}>
-                <Ionicons name="information-circle" size={22} color="rgba(173,232,255,0.98)" />
-              </View>
-
-              <Text style={noticeTitle}>{notice.title}</Text>
-              <Text style={noticeMessage}>{notice.message}</Text>
-
-              <View style={noticeActions}>
-                <Pressable onPress={closeNotice} style={noticeSecondaryBtn}>
-                  <Text style={noticeSecondaryText}>Close</Text>
-                </Pressable>
-
-                {notice.primaryLabel ? (
-                  <Pressable
-                    onPress={notice.onPrimaryPress || closeNotice}
-                    style={noticePrimaryBtn}
-                  >
-                    <Text style={noticePrimaryText}>{notice.primaryLabel}</Text>
-                  </Pressable>
-                ) : null}
-              </View>
+      <Modal transparent visible={!!notice} animationType="fade" onRequestClose={closeNotice}>
+        <View style={styles.noticeOverlay}>
+          <GlassCard style={{ borderRadius: 28 }}>
+            <View style={styles.noticeIconWrap}>
+              <Ionicons name="information-circle" size={22} color={Brand.bronze} />
             </View>
-          </View>
-        ) : null}
-      </View>
+
+            <Text style={styles.noticeTitle}>{notice?.title}</Text>
+            <Text style={styles.noticeMessage}>{notice?.message}</Text>
+
+            <View style={styles.noticeActions}>
+              <Pressable onPress={closeNotice} style={styles.noticeSecondaryBtn}>
+                <Text style={styles.noticeSecondaryText}>Close</Text>
+              </Pressable>
+
+              {notice?.primaryLabel ? (
+                <Pressable
+                  onPress={notice.onPrimaryPress || closeNotice}
+                  style={styles.noticePrimaryBtn}
+                >
+                  <Text style={styles.noticePrimaryText}>{notice.primaryLabel}</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </GlassCard>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
 
-const headerRow = {
-  flexDirection: "row" as const,
-  alignItems: "flex-start" as const,
-  justifyContent: "space-between" as const,
-};
+const styles = StyleSheet.create({
+  page: {
+    flex: 1,
+  },
 
-const title = {
-  color: "white",
-  fontWeight: "900" as const,
-};
+  loaderPage: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
 
-const subtitle = {
-  marginTop: 8,
-  color: "rgba(255,255,255,0.68)",
-};
+  loaderCard: {
+    minHeight: 120,
+    minWidth: 220,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    paddingHorizontal: 18,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
 
-const headerBadge = {
-  width: 38,
-  height: 38,
-  borderRadius: 19,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(255,255,255,0.08)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.10)",
-};
+  loaderText: {
+    color: Brand.muted,
+    fontSize: 14,
+    fontWeight: "700",
+  },
 
-const progressWrap = {
-  marginBottom: 6,
-};
+  topGlow: {
+    position: "absolute",
+    top: -90,
+    right: -20,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.56)",
+  },
 
-const progressText = {
-  color: "rgba(173,232,255,0.95)",
-  fontSize: 13,
-  fontWeight: "800" as const,
-};
+  leftGlow: {
+    position: "absolute",
+    top: 240,
+    left: -80,
+    width: 200,
+    height: 200,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,229,180,0.34)",
+  },
 
-const card = {
-  borderRadius: 24,
-  paddingHorizontal: 16,
-  paddingVertical: 18,
-  backgroundColor: "rgba(255,255,255,0.08)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.10)",
-};
+  bottomGlow: {
+    position: "absolute",
+    bottom: -100,
+    right: 10,
+    width: 260,
+    height: 260,
+    borderRadius: 999,
+    backgroundColor: "rgba(215,154,89,0.16)",
+  },
 
-const questionIndex = {
-  color: "rgba(173,232,255,0.95)",
-  fontSize: 12,
-  fontWeight: "900" as const,
-  letterSpacing: 0.4,
-  textTransform: "uppercase" as const,
-};
+  heroPill: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.66)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
 
-const questionText = {
-  marginTop: 10,
-  color: "white",
-  fontWeight: "800" as const,
-};
+  heroPillText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
 
-const helper = {
-  marginTop: 8,
-  color: "rgba(255,255,255,0.62)",
-  fontSize: 13,
-};
+  title: {
+    marginTop: 16,
+    color: Brand.ink,
+    fontWeight: "900",
+  },
 
-const optionBtn = {
-  borderRadius: 18,
-  paddingHorizontal: 14,
-  paddingVertical: 12,
-  flexDirection: "row" as const,
-  alignItems: "center" as const,
-  marginBottom: 10,
-  backgroundColor: "rgba(255,255,255,0.06)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.10)",
-};
+  subtitle: {
+    marginTop: 10,
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 22,
+  },
 
-const optionBtnActive = {
-  backgroundColor: "rgba(98,193,255,0.96)",
-  borderColor: "rgba(255,255,255,0.18)",
-};
+  progressHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
 
-const optionText = {
-  flex: 1,
-  marginLeft: 10,
-  color: "rgba(255,255,255,0.92)",
-  fontWeight: "700" as const,
-};
+  progressLabel: {
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
 
-const optionTextActive = {
-  color: "#041222",
-};
+  progressValue: {
+    color: Brand.bronze,
+    fontSize: 12,
+    fontWeight: "900",
+  },
 
-const submitBtn = {
-  borderRadius: 20,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(98,193,255,0.96)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.16)",
-};
+  progressTrack: {
+    marginTop: 12,
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
 
-const submitBtnText = {
-  color: "#041222",
-  fontWeight: "900" as const,
-};
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#efbf7c",
+  },
 
-const emptyCard = {
-  marginTop: 14,
-  borderRadius: 24,
-  paddingHorizontal: 18,
-  paddingVertical: 20,
-  backgroundColor: "rgba(255,255,255,0.08)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.10)",
-};
+  progressHelper: {
+    marginTop: 10,
+    color: Brand.muted,
+    fontSize: 13,
+    lineHeight: 19,
+  },
 
-const emptyTitle = {
-  color: "white",
-  fontSize: 22,
-  fontWeight: "900" as const,
-};
+  emptyIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "center",
+    backgroundColor: "rgba(255,229,180,0.60)",
+  },
 
-const emptyText = {
-  marginTop: 10,
-  color: "rgba(255,255,255,0.70)",
-  fontSize: 14,
-  lineHeight: 21,
-};
+  emptyTitle: {
+    marginTop: 16,
+    color: Brand.ink,
+    fontSize: 22,
+    fontWeight: "900",
+    textAlign: "center",
+  },
 
-const noticeOverlay = {
-  position: "absolute" as const,
-  left: 0,
-  right: 0,
-  top: 0,
-  bottom: 0,
-  paddingHorizontal: 20,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(1,7,19,0.58)",
-};
+  emptyText: {
+    marginTop: 10,
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 22,
+    textAlign: "center",
+  },
 
-const noticeCard = {
-  borderRadius: 26,
-  paddingHorizontal: 18,
-  paddingVertical: 18,
-  backgroundColor: "rgba(8,18,43,0.98)",
-  borderWidth: 1,
-  borderColor: "rgba(173,232,255,0.18)",
-};
+  retryBtn: {
+    marginTop: 18,
+    minHeight: 48,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
 
-const noticeIconWrap = {
-  width: 42,
-  height: 42,
-  borderRadius: 21,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(173,232,255,0.10)",
-  borderWidth: 1,
-  borderColor: "rgba(173,232,255,0.18)",
-};
+  retryBtnText: {
+    color: Brand.cocoa,
+    fontSize: 14,
+    fontWeight: "900",
+  },
 
-const noticeTitle = {
-  marginTop: 14,
-  color: "white",
-  fontSize: 22,
-  fontWeight: "900" as const,
-};
+  questionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
 
-const noticeMessage = {
-  marginTop: 10,
-  color: "rgba(255,255,255,0.72)",
-  fontSize: 14,
-  lineHeight: 22,
-};
+  questionIndex: {
+    color: Brand.bronze,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+  },
 
-const noticeActions = {
-  marginTop: 18,
-  flexDirection: "row" as const,
-  justifyContent: "flex-end" as const,
-};
+  questionTypeChip: {
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
 
-const noticeSecondaryBtn = {
-  minHeight: 46,
-  paddingHorizontal: 16,
-  borderRadius: 16,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(255,255,255,0.08)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.10)",
-};
+  questionTypeChipText: {
+    color: Brand.cocoa,
+    fontSize: 11,
+    fontWeight: "800",
+  },
 
-const noticeSecondaryText = {
-  color: "rgba(255,255,255,0.92)",
-  fontWeight: "800" as const,
-  fontSize: 14,
-};
+  questionText: {
+    marginTop: 12,
+    color: Brand.ink,
+    fontSize: 19,
+    lineHeight: 27,
+    fontWeight: "800",
+  },
 
-const noticePrimaryBtn = {
-  marginLeft: 10,
-  minHeight: 46,
-  paddingHorizontal: 16,
-  borderRadius: 16,
-  alignItems: "center" as const,
-  justifyContent: "center" as const,
-  backgroundColor: "rgba(98,193,255,0.96)",
-  borderWidth: 1,
-  borderColor: "rgba(255,255,255,0.16)",
-};
+  helper: {
+    marginTop: 8,
+    color: Brand.muted,
+    fontSize: 13,
+  },
 
-const noticePrimaryText = {
-  color: "#041222",
-  fontWeight: "900" as const,
-  fontSize: 14,
-};
+  optionBtn: {
+    minHeight: 54,
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+    backgroundColor: "rgba(255,255,255,0.60)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  optionBtnActive: {
+    backgroundColor: "rgba(255,229,180,0.84)",
+    borderColor: "rgba(185,120,54,0.22)",
+  },
+
+  optionIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+  },
+
+  optionIconWrapActive: {
+    backgroundColor: "rgba(255,255,255,0.82)",
+  },
+
+  optionText: {
+    flex: 1,
+    marginLeft: 10,
+    color: Brand.ink,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "700",
+  },
+
+  optionTextActive: {
+    color: Brand.ink,
+  },
+
+  submitShell: {
+    borderRadius: 18,
+    overflow: "hidden",
+    marginTop: 20,
+  },
+
+  submitBtn: {
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  submitBtnText: {
+    color: Brand.ink,
+    fontWeight: "900",
+    fontSize: 15,
+  },
+
+  disabled: {
+    opacity: 0.72,
+  },
+
+  pressed: {
+    opacity: 0.95,
+    transform: [{ scale: 0.995 }],
+  },
+
+  noticeOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 18,
+    backgroundColor: "rgba(72, 46, 18, 0.18)",
+  },
+
+  noticeIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  noticeTitle: {
+    marginTop: 14,
+    color: Brand.ink,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+
+  noticeMessage: {
+    marginTop: 10,
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+
+  noticeActions: {
+    marginTop: 18,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+  },
+
+  noticeSecondaryBtn: {
+    minHeight: 46,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
+
+  noticeSecondaryText: {
+    color: Brand.cocoa,
+    fontWeight: "800",
+    fontSize: 14,
+  },
+
+  noticePrimaryBtn: {
+    minHeight: 46,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#efbf7c",
+  },
+
+  noticePrimaryText: {
+    color: Brand.ink,
+    fontWeight: "900",
+    fontSize: 14,
+  },
+});
