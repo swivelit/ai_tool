@@ -54,7 +54,7 @@ export default function QuestionnaireScreen() {
   const horizontalPadding = isSmallPhone ? 16 : 18;
   const topPadding = insets.top + (isSmallPhone ? 8 : 12);
   const bottomPadding = Math.max(insets.bottom + 28, 36);
-  const titleSize = isVerySmallPhone ? 28 : isSmallPhone ? 31 : 34;
+  const titleSize = isVerySmallPhone ? 28 : isSmallPhone ? 31 : 36;
 
   function showNotice(
     title: string,
@@ -106,6 +106,10 @@ export default function QuestionnaireScreen() {
       return count + (selected.length > 0 ? 1 : 0);
     }, 0);
   }, [answers, questions]);
+
+  const totalSelected = useMemo(() => {
+    return Object.values(answers).reduce((sum, current) => sum + current.length, 0);
+  }, [answers]);
 
   const progress = questions.length ? answeredCount / questions.length : 0;
 
@@ -192,6 +196,13 @@ export default function QuestionnaireScreen() {
       .join(" ");
   }
 
+  function questionHelper(question: PersonalityQuestion) {
+    if (question.type === "multi") {
+      return `Choose up to ${question.max_choices || 1} options`;
+    }
+    return "Choose one option";
+  }
+
   async function submit() {
     if (saving) return;
 
@@ -267,7 +278,7 @@ export default function QuestionnaireScreen() {
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="dark" />
 
-      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
         <View style={styles.topGlow} />
         <View style={styles.leftGlow} />
         <View style={styles.bottomGlow} />
@@ -282,43 +293,107 @@ export default function QuestionnaireScreen() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.heroPill}>
-          <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
-          <Text style={styles.heroPillText}>Personality profile</Text>
+        <View style={styles.topBar}>
+          <View style={styles.topBarPill}>
+            <Ionicons name="layers-outline" size={14} color={Brand.bronze} />
+            <Text style={styles.topBarPillText}>Onboarding</Text>
+          </View>
+
+          <View style={styles.topBarRight}>
+            <View style={styles.topBarStepChip}>
+              <Text style={styles.topBarStepText}>Step 2 of 2</Text>
+            </View>
+          </View>
         </View>
 
-        <Text
-          style={[
-            styles.title,
-            {
-              fontSize: titleSize,
-              lineHeight: titleSize + 6,
-            },
-          ]}
-        >
-          Help {assistantLabel || "Elli"} understand your style
-        </Text>
+        <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
+          <View style={styles.heroHeaderRow}>
+            <View style={styles.heroPill}>
+              <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
+              <Text style={styles.heroPillText}>Personality profile</Text>
+            </View>
 
-        <Text style={styles.subtitle}>
-          Answer these {questions.length} questions so replies can feel more natural, relevant, and
-          personal to you.
-        </Text>
-
-        <GlassCard style={{ borderRadius: 28, marginTop: 18 }}>
-          <View style={styles.progressHeader}>
-            <Text style={styles.progressLabel}>Progress</Text>
-            <Text style={styles.progressValue}>
-              {answeredCount}/{questions.length} answered
-            </Text>
+            <View style={styles.heroStatusChip}>
+              <Ionicons
+                name={answeredCount === questions.length ? "checkmark-circle" : "flash-outline"}
+                size={14}
+                color={answeredCount === questions.length ? Brand.success : Brand.bronze}
+              />
+              <Text style={styles.heroStatusText}>
+                {answeredCount === questions.length ? "Ready" : "In progress"}
+              </Text>
+            </View>
           </View>
 
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${Math.max(progress * 100, 4)}%` }]} />
-          </View>
-
-          <Text style={styles.progressHelper}>
-            Finish all questions to unlock the fully personalized assistant experience.
+          <Text
+            style={[
+              styles.title,
+              {
+                fontSize: titleSize,
+                lineHeight: titleSize + 6,
+              },
+            ]}
+          >
+            Help {assistantLabel || "Elli"} learn your style with a more refined questionnaire experience.
           </Text>
+
+          <Text style={styles.subtitle}>
+            Answer these {questions.length} questions so replies feel more natural, relevant,
+            and aligned with how you actually think and communicate.
+          </Text>
+
+          <View style={styles.metricRow}>
+            <MetricCard
+              label="Answered"
+              value={`${answeredCount}/${questions.length}`}
+              icon="checkmark-done-outline"
+            />
+            <MetricCard
+              label="Selections"
+              value={String(totalSelected)}
+              icon="albums-outline"
+            />
+            <MetricCard
+              label="Completion"
+              value={`${Math.round(progress * 100)}%`}
+              icon="flash-outline"
+            />
+          </View>
+
+          <LinearGradient
+            colors={["rgba(255,255,255,0.84)", "rgba(255,239,210,0.66)"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.progressCard}
+          >
+            <View style={styles.progressHeader}>
+              <View>
+                <Text style={styles.progressLabel}>Progress</Text>
+                <Text style={styles.progressValue}>
+                  {answeredCount}/{questions.length} answered
+                </Text>
+              </View>
+
+              <View style={styles.progressBadge}>
+                <Text style={styles.progressBadgeText}>
+                  {Math.round(progress * 100)}%
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { width: `${Math.max(progress * 100, questions.length ? 4 : 0)}%` },
+                ]}
+              />
+            </View>
+
+            <Text style={styles.progressHelper}>
+              Finish all questions to unlock the fully personalized assistant experience.
+            </Text>
+          </LinearGradient>
         </GlassCard>
 
         {!questions.length ? (
@@ -331,31 +406,44 @@ export default function QuestionnaireScreen() {
               The questionnaire loaded, but no questions were returned from the API.
             </Text>
 
-            <Pressable onPress={reloadQuestions} style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}>
+            <Pressable
+              onPress={reloadQuestions}
+              style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}
+            >
               <Text style={styles.retryBtnText}>Retry</Text>
             </Pressable>
           </GlassCard>
         ) : (
           questions.map((question, index) => {
             const selected = answers[question.id] || [];
-            const helperText =
-              question.type === "multi"
-                ? `Choose up to ${question.max_choices || 1}`
-                : "Choose 1 option";
+            const isComplete = selected.length > 0;
 
             return (
               <GlassCard key={question.id} style={{ borderRadius: 28, marginTop: 16 }}>
                 <View style={styles.questionHeaderRow}>
-                  <Text style={styles.questionIndex}>Question {index + 1}</Text>
+                  <View>
+                    <Text style={styles.questionIndex}>Question {index + 1}</Text>
+                    <Text style={styles.questionText}>{question.prompt}</Text>
+                  </View>
+
+                  <View style={[styles.questionStateChip, isComplete && styles.questionStateChipDone]}>
+                    <Ionicons
+                      name={isComplete ? "checkmark-circle" : "ellipse-outline"}
+                      size={14}
+                      color={isComplete ? Brand.success : Brand.cocoa}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.questionMetaRow}>
                   <View style={styles.questionTypeChip}>
                     <Text style={styles.questionTypeChipText}>
                       {question.type === "multi" ? "Multiple choice" : "Single choice"}
                     </Text>
                   </View>
-                </View>
 
-                <Text style={styles.questionText}>{question.prompt}</Text>
-                <Text style={styles.helper}>{helperText}</Text>
+                  <Text style={styles.helper}>{questionHelper(question)}</Text>
+                </View>
 
                 <View style={{ marginTop: 14 }}>
                   {question.options.map((option) => {
@@ -379,17 +467,28 @@ export default function QuestionnaireScreen() {
                                   ? "checkbox"
                                   : "square-outline"
                                 : active
-                                  ? "radio-button-on"
-                                  : "radio-button-off"
+                                ? "radio-button-on"
+                                : "radio-button-off"
                             }
                             size={18}
                             color={active ? Brand.ink : Brand.cocoa}
                           />
                         </View>
 
-                        <Text style={[styles.optionText, active && styles.optionTextActive]}>
-                          {formatOptionLabel(option)}
-                        </Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.optionText, active && styles.optionTextActive]}>
+                            {formatOptionLabel(option)}
+                          </Text>
+                          <Text style={styles.optionSubtext}>
+                            {active ? "Selected" : "Tap to choose"}
+                          </Text>
+                        </View>
+
+                        <Ionicons
+                          name="chevron-forward"
+                          size={16}
+                          color={active ? Brand.ink : "rgba(124, 99, 80, 0.56)"}
+                        />
                       </Pressable>
                     );
                   })}
@@ -400,31 +499,54 @@ export default function QuestionnaireScreen() {
         )}
 
         {!!questions.length && (
-          <Pressable
-            onPress={submit}
-            style={({ pressed }) => [
-              styles.submitShell,
-              saving && styles.disabled,
-              pressed && styles.pressed,
-            ]}
-            disabled={saving}
-          >
-            <LinearGradient
-              colors={Brand.gradients.button}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={[styles.submitBtn, { minHeight: isSmallPhone ? 54 : 58 }]}
+          <View style={styles.footerArea}>
+            <GlassCard style={{ borderRadius: 24 }}>
+              <View style={styles.footerSummaryRow}>
+                <View>
+                  <Text style={styles.footerSummaryTitle}>Ready to continue?</Text>
+                  <Text style={styles.footerSummaryText}>
+                    {answeredCount === questions.length
+                      ? "All questions are completed. Save your answers and continue."
+                      : `${questions.length - answeredCount} question${
+                          questions.length - answeredCount > 1 ? "s are" : " is"
+                        } still pending.`}
+                  </Text>
+                </View>
+
+                <View style={styles.footerSummaryBadge}>
+                  <Text style={styles.footerSummaryBadgeText}>
+                    {answeredCount}/{questions.length}
+                  </Text>
+                </View>
+              </View>
+            </GlassCard>
+
+            <Pressable
+              onPress={submit}
+              style={({ pressed }) => [
+                styles.submitShell,
+                saving && styles.disabled,
+                pressed && styles.pressed,
+              ]}
+              disabled={saving}
             >
-              {saving ? (
-                <ActivityIndicator color={Brand.ink} />
-              ) : (
-                <>
-                  <Text style={styles.submitBtnText}>Save answers and continue</Text>
-                  <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
-                </>
-              )}
-            </LinearGradient>
-          </Pressable>
+              <LinearGradient
+                colors={Brand.gradients.button}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={[styles.submitBtn, { minHeight: isSmallPhone ? 54 : 58 }]}
+              >
+                {saving ? (
+                  <ActivityIndicator color={Brand.ink} />
+                ) : (
+                  <>
+                    <Text style={styles.submitBtnText}>Save answers and continue</Text>
+                    <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
+                  </>
+                )}
+              </LinearGradient>
+            </Pressable>
+          </View>
         )}
       </ScrollView>
 
@@ -456,6 +578,28 @@ export default function QuestionnaireScreen() {
         </View>
       </Modal>
     </LinearGradient>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}) {
+  return (
+    <View style={styles.metricCard}>
+      <View style={styles.metricIconWrap}>
+        <Ionicons name={icon} size={15} color={Brand.bronze} />
+      </View>
+      <Text style={styles.metricValue} numberOfLines={1}>
+        {value}
+      </Text>
+      <Text style={styles.metricLabel}>{label}</Text>
+    </View>
   );
 }
 
@@ -520,6 +664,60 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(215,154,89,0.16)",
   },
 
+  topBar: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  topBarRight: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  topBarPill: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  topBarPillText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  topBarStepChip: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  topBarStepText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  heroHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
   heroPill: {
     alignSelf: "flex-start",
     flexDirection: "row",
@@ -539,8 +737,26 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
+  heroStatusChip: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 11,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  heroStatusText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
   title: {
-    marginTop: 16,
+    marginTop: 18,
     color: Brand.ink,
     fontWeight: "900",
   },
@@ -550,6 +766,54 @@ const styles = StyleSheet.create({
     color: Brand.muted,
     fontSize: 14,
     lineHeight: 22,
+  },
+
+  metricRow: {
+    marginTop: 20,
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  metricCard: {
+    flex: 1,
+    minHeight: 96,
+    borderRadius: 22,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    backgroundColor: "rgba(255,255,255,0.58)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  metricIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,229,180,0.68)",
+  },
+
+  metricValue: {
+    marginTop: 12,
+    color: Brand.ink,
+    fontSize: 17,
+    fontWeight: "900",
+  },
+
+  metricLabel: {
+    marginTop: 4,
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  progressCard: {
+    marginTop: 18,
+    borderRadius: 24,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Brand.line,
   },
 
   progressHeader: {
@@ -566,13 +830,31 @@ const styles = StyleSheet.create({
   },
 
   progressValue: {
-    color: Brand.bronze,
+    marginTop: 4,
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  progressBadge: {
+    minWidth: 58,
+    minHeight: 34,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  progressBadgeText: {
+    color: Brand.cocoa,
     fontSize: 12,
     fontWeight: "900",
   },
 
   progressTrack: {
-    marginTop: 12,
+    marginTop: 14,
     height: 10,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.62)",
@@ -639,7 +921,7 @@ const styles = StyleSheet.create({
 
   questionHeaderRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 10,
   },
@@ -650,6 +932,40 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 0.3,
     textTransform: "uppercase",
+  },
+
+  questionText: {
+    marginTop: 10,
+    color: Brand.ink,
+    fontSize: 19,
+    lineHeight: 27,
+    fontWeight: "800",
+    maxWidth: "92%",
+  },
+
+  questionStateChip: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  questionStateChipDone: {
+    backgroundColor: "rgba(111, 140, 94, 0.10)",
+    borderColor: "rgba(111, 140, 94, 0.18)",
+  },
+
+  questionMetaRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap",
   },
 
   questionTypeChip: {
@@ -669,23 +985,15 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
-  questionText: {
-    marginTop: 12,
-    color: Brand.ink,
-    fontSize: 19,
-    lineHeight: 27,
-    fontWeight: "800",
-  },
-
   helper: {
-    marginTop: 8,
     color: Brand.muted,
     fontSize: 13,
+    fontWeight: "700",
   },
 
   optionBtn: {
-    minHeight: 54,
-    borderRadius: 18,
+    minHeight: 60,
+    borderRadius: 20,
     paddingHorizontal: 12,
     paddingVertical: 10,
     flexDirection: "row",
@@ -702,9 +1010,9 @@ const styles = StyleSheet.create({
   },
 
   optionIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.72)",
@@ -715,22 +1023,69 @@ const styles = StyleSheet.create({
   },
 
   optionText: {
-    flex: 1,
-    marginLeft: 10,
     color: Brand.ink,
     fontSize: 14,
     lineHeight: 20,
-    fontWeight: "700",
+    fontWeight: "800",
   },
 
   optionTextActive: {
     color: Brand.ink,
   },
 
+  optionSubtext: {
+    marginTop: 3,
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+
+  footerArea: {
+    marginTop: 18,
+  },
+
+  footerSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  footerSummaryTitle: {
+    color: Brand.ink,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+
+  footerSummaryText: {
+    marginTop: 6,
+    color: Brand.muted,
+    fontSize: 13,
+    lineHeight: 19,
+    maxWidth: 250,
+  },
+
+  footerSummaryBadge: {
+    minWidth: 56,
+    minHeight: 40,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,229,180,0.70)",
+    borderWidth: 1,
+    borderColor: "rgba(185,120,54,0.18)",
+  },
+
+  footerSummaryBadgeText: {
+    color: Brand.ink,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
   submitShell: {
     borderRadius: 18,
     overflow: "hidden",
-    marginTop: 20,
+    marginTop: 16,
   },
 
   submitBtn: {
@@ -739,6 +1094,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
     gap: 10,
+    shadowColor: "#d4934f",
+    shadowOpacity: 0.24,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
   },
 
   submitBtnText: {
