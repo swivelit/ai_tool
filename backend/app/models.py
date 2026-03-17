@@ -119,7 +119,8 @@ class DailyRoutine(SQLModel, table=True):
 
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-    # --------------------
+
+# --------------------
 # User Personality / Character Profile
 class UserProfile(SQLModel, table=True):
     __tablename__ = "user_profile"
@@ -137,3 +138,36 @@ class UserProfile(SQLModel, table=True):
 
     profile_summary: Optional[str] = None
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# --------------------
+# RAG Embeddings (persistent semantic index)
+# --------------------
+class RagEmbedding(SQLModel, table=True):
+    """Stores embeddings for different sources (items, conversations, cache, documents).
+
+    We store embedding vectors as JSON text for maximum portability (works on Postgres/SQLite).
+    Similarity search is computed in Python (cosine), which is fast enough for typical per-user sizes.
+    """
+
+    __tablename__ = "rag_embedding"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Null user_id is allowed for global/shared sources.
+    user_id: Optional[int] = Field(default=None, index=True, foreign_key="user.id")
+
+    # e.g. "item" | "conversation" | "qa_cache" | "fast_rag" | "doc_chunk"
+    source_type: str = Field(index=True)
+
+    # A string so it can represent int ids or compound keys like "file.pdf#12".
+    source_id: str = Field(index=True)
+
+    # Stable id for the embedding row. Unique index is created at runtime.
+    content_hash: str = Field(index=True)
+
+    content_text: str
+    embedding_json: str
+    embedding_norm: float = 0.0
+
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
