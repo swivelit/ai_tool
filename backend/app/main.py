@@ -18,10 +18,10 @@ from fastapi.responses import FileResponse
 from openai import OpenAI
 from pydantic import BaseModel
 from sqlalchemy import inspect as sa_inspect, text as sa_text
-from sqlmodel import Session, delete, select
+from sqlmodel import SQLModel, Session, delete, select
 
 from .database import engine, get_session
-from .models import Conversation, DailyRoutine, Item, QACache, User, UserProfile
+from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User, UserProfile
 from .local_rag_service import LocalRAGService
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -29,7 +29,14 @@ BACKEND_ROOT = CURRENT_DIR.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from config import GENERATED_DOCS_DIR, LOGS_DIR, PIPELINE_VERSION  # noqa: E402
+from config import (
+    GENERATED_DOCS_DIR,
+    LOGS_DIR,
+    PIPELINE_VERSION,
+    RAG_CONTEXT_HEADER,
+    RAG_CONTEXT_INCLUDE_IN_STAGE_CONTEXT,
+    RAG_CONTEXT_MAX_SNIPPETS,
+)  # noqa: E402
 from stage_behaviour_questions import BehaviourQuestionnaire, QUESTIONS as PIPELINE_QUESTIONS  # noqa: E402
 from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
@@ -445,10 +452,46 @@ def _ensure_user_table_auth_columns() -> None:
             print(f"[WARN] Could not create email index: {exc}")
 
 
+def _ensure_rag_embedding_table() -> None:
+    try:
+        SQLModel.metadata.create_all(engine, tables=[RagEmbedding.__table__])
+    except Exception as exc:
+        print(f"[WARN] Could not create rag_embedding table via SQLModel metadata: {exc}")
+
+    with engine.begin() as conn:
+        try:
+            conn.execute(
+                sa_text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_rag_embedding_content_hash_unique ON rag_embedding (content_hash)"
+                )
+            )
+        except Exception as exc:
+            print(f"[WARN] Could not create rag_embedding content_hash index: {exc}")
+
+        try:
+            conn.execute(
+                sa_text(
+                    "CREATE INDEX IF NOT EXISTS ix_rag_embedding_user_source_updated ON rag_embedding (user_id, source_type, updated_at)"
+                )
+            )
+        except Exception as exc:
+            print(f"[WARN] Could not create rag_embedding user/source/updated index: {exc}")
+
+        try:
+            conn.execute(
+                sa_text(
+                    "CREATE INDEX IF NOT EXISTS ix_rag_embedding_user_updated ON rag_embedding (user_id, updated_at)"
+                )
+            )
+        except Exception as exc:
+            print(f"[WARN] Could not create rag_embedding user/updated index: {exc}")
+
+
 @app.on_event("startup")
 def ensure_runtime_schema() -> None:
     try:
         _ensure_user_table_auth_columns()
+        _ensure_rag_embedding_table()
     except Exception as exc:
         print(f"[WARN] Runtime schema sync skipped: {exc}")
 
@@ -500,6 +543,9 @@ def api_health():
             "tamil_translation",
             "theni_tamil_conversion",
             "whisper_audio_transcription",
+            "advanced_hybrid_rag",
+            "semantic_memory_rag",
+            "qa_cache_rag",
         ],
     }
 
@@ -948,6 +994,68 @@ def _log_stage_history(user_id: Optional[int], profile: Dict[str, Any], query: s
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+def _build_augmented_profile_context(
+    session: Session,
+    user_id: Optional[int],
+    message: str,
+    base_profile_context: str,
+) -> tuple[str, Dict[str, Any]]:
+    if not (RAG_CONTEXT_INCLUDE_IN_STAGE_CONTEXT and user_id):
+        return base_profile_context, {
+            "enabled": False,
+            "reason": "rag_context_disabled_or_guest",
+            "snippet_count": 0,
+            "context_chars": 0,
+            "timings_ms": {"rag_total_ms": 0.0},
+            "snippets": [],
+        }
+
+    try:
+        rag_payload = LOCAL_RAG_SERVICE.build_rag_context(session, user_id, message)
+    except Exception as exc:
+        return base_profile_context, {
+            "enabled": True,
+            "reason": "rag_context_error",
+            "error": str(exc),
+            "snippet_count": 0,
+            "context_chars": 0,
+            "timings_ms": {"rag_total_ms": 0.0},
+            "snippets": [],
+        }
+
+    context_text = str((rag_payload or {}).get("context_text") or "").strip()
+    snippets = (rag_payload or {}).get("snippets") or []
+    timings = (rag_payload or {}).get("timings_ms") or {"rag_total_ms": 0.0}
+
+    safe_snippets: List[Dict[str, Any]] = []
+    for snippet in list(snippets)[: max(1, RAG_CONTEXT_MAX_SNIPPETS)]:
+        if not isinstance(snippet, dict):
+            continue
+        safe_snippets.append(
+            {
+                "source_type": str(snippet.get("source_type", "")),
+                "source_id": str(snippet.get("source_id", "")),
+                "score": float(snippet.get("score", 0.0) or 0.0),
+                "score_semantic": float(snippet.get("score_semantic", 0.0) or 0.0),
+                "score_lexical": float(snippet.get("score_lexical", 0.0) or 0.0),
+                "score_recency": float(snippet.get("score_recency", 0.0) or 0.0),
+            }
+        )
+
+    meta = {
+        "enabled": True,
+        "reason": "ok" if context_text else "no_matching_context",
+        "snippet_count": len(safe_snippets),
+        "context_chars": len(context_text),
+        "timings_ms": timings,
+        "snippets": safe_snippets,
+    }
+
+    if not context_text:
+        return base_profile_context, meta
+
+    merged = f"{base_profile_context.strip()}\n\n{RAG_CONTEXT_HEADER.strip()}\n{context_text}".strip()
+    return merged, meta
 
 def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, reply_language: Optional[str] = None) -> Dict[str, Any]:
     pipeline_user = session.get(User, user_id) if user_id else None
@@ -973,14 +1081,32 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
     stage_notes: List[str] = []
 
     t0 = time.perf_counter()
-    profile_context = STAGE_BEHAVIOUR.build_runtime_context(profile, user_query=message)
+    base_profile_context = STAGE_BEHAVIOUR.build_runtime_context(profile, user_query=message)
+    profile_context, rag_context_meta = _build_augmented_profile_context(session, user_id, message, base_profile_context)
     timings["context_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+    rag_timing_payload = rag_context_meta.get("timings_ms") if isinstance(rag_context_meta, dict) else {}
+    if isinstance(rag_timing_payload, dict):
+        for key, value in rag_timing_payload.items():
+            try:
+                timings[str(key)] = round(float(value), 2)
+            except Exception:
+                continue
+    if rag_context_meta.get("snippet_count", 0):
+        stage_notes.append(
+            f"Added {int(rag_context_meta.get('snippet_count', 0))} advanced RAG snippet(s) from user memory and cache."
+        )
 
     t0 = time.perf_counter()
     direct_match = STAGE_REMODELER.get_direct_answer_match(message)
     timings["direct_match_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
-    core_meta: Dict[str, Any] = {"answer": "", "answer_style": "", "risk_level": "low", "safety_notes": ""}
+    core_meta: Dict[str, Any] = {
+        "answer": "",
+        "answer_style": "",
+        "risk_level": "low",
+        "safety_notes": "",
+        "rag_context": rag_context_meta,
+    }
     remodel_meta: Dict[str, Any] = {}
     review_meta: Dict[str, Any] = {}
     translation_meta: Dict[str, Any] = {}
@@ -1001,6 +1127,8 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
     else:
         t0 = time.perf_counter()
         core_meta = STAGE_CORE.answer_user_query_structured(message, profile_context)
+        if isinstance(core_meta, dict):
+            core_meta["rag_context"] = rag_context_meta
         timings["core_answer_ms"] = round((time.perf_counter() - t0) * 1000, 2)
         raw_english = str(core_meta.get("answer", "")).strip()
 
@@ -1011,6 +1139,8 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
 
         t0 = time.perf_counter()
         review_meta = STAGE_CORE.review_answer(message, remodeled_english, profile_context)
+        if isinstance(review_meta, dict):
+            review_meta["rag_context_used"] = bool(rag_context_meta.get("snippet_count", 0))
         timings["review_ms"] = round((time.perf_counter() - t0) * 1000, 2)
         remodeled_english = str(review_meta.get("final_answer", remodeled_english)).strip() or remodeled_english
 
@@ -1140,7 +1270,6 @@ def _assistant_text_from_pipeline(
         or str(pipeline_result.get("remodeled_english") or "").strip()
         or fallback
     )
-
 
 def _save_item_from_pipeline(
     session: Session,
