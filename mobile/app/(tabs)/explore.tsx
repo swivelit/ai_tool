@@ -525,7 +525,7 @@ export default function Explore() {
               </Pressable>
 
               <View style={styles.topCenter}>
-                <Text style={styles.topCaption}>Planner workspace</Text>
+                <Text style={styles.topCaption}>Planner</Text>
                 <Text style={styles.topTitle}>Schedule</Text>
               </View>
 
@@ -546,7 +546,7 @@ export default function Explore() {
                     size={14}
                     color={Brand.bronze}
                   />
-                  <Text style={styles.heroPillText}>Planner overview</Text>
+                  <Text style={styles.heroPillText}>Schedule overview</Text>
                 </View>
 
                 <View style={styles.heroStatusPill}>
@@ -570,13 +570,11 @@ export default function Explore() {
                   },
                 ]}
               >
-                Your reminders, tasks, and plans presented like a polished
-                production planner.
+                See your day, your way.
               </Text>
 
               <Text style={styles.heroSubtitle}>
-                Review what matters now, search instantly, and open any item
-                from a cleaner, more professional schedule experience.
+                Stay focused on what is next and find anything quickly.
               </Text>
 
               <View style={styles.metricGrid}>
@@ -648,8 +646,7 @@ export default function Explore() {
                   <View>
                     <Text style={styles.nextUpTitle}>Nothing upcoming yet</Text>
                     <Text style={styles.nextUpDetails}>
-                      Create a reminder or event from the AI command center and
-                      it will appear here with a premium planner view.
+                      Anything you add will show up here automatically.
                     </Text>
                   </View>
                 )}
@@ -748,7 +745,7 @@ export default function Explore() {
             <Text style={styles.emptySub}>
               {q.trim()
                 ? "Try a different keyword or switch filters to widen your schedule search."
-                : "Create reminders from the AI screen and they will appear here in a refined planner layout."}
+                : "New reminders will show up here as soon as they are added."}
             </Text>
 
             {!q.trim() ? (
@@ -759,7 +756,7 @@ export default function Explore() {
                   pressed && styles.pressed,
                 ]}
               >
-                <Text style={styles.emptyCtaText}>Go to AI workspace</Text>
+                <Text style={styles.emptyCtaText}>Back to assistant</Text>
               </Pressable>
             ) : null}
           </GlassCard>

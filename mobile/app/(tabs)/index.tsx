@@ -66,7 +66,7 @@ const SUGGESTIONS: SuggestionItem[] = [
   {
     label: "Help me plan my day",
     icon: "sparkles-outline",
-    helper: "Get clear, polished guidance instantly.",
+    helper: "Get a clear answer right away.",
   },
 ];
 
@@ -563,7 +563,7 @@ export default function Home() {
                 {assistantLabel}
               </Text>
             </View>
-            <Text style={styles.topBrandCaption}>AI workspace</Text>
+            <Text style={styles.topBrandCaption}>Home</Text>
           </View>
 
           <Pressable onPress={openRoutine} style={styles.topIconBtn}>
@@ -589,7 +589,7 @@ export default function Home() {
                   color={Brand.bronze}
                 />
                 <Text style={styles.heroPillText}>
-                  {listening ? "Voice mode active" : "Premium assistant"}
+                  {listening ? "Voice mode active" : "Smart assistant"}
                 </Text>
               </View>
 
@@ -620,12 +620,10 @@ export default function Home() {
                   },
                 ]}
               >
-                A polished AI control center built to feel premium, fast, and
-                production ready.
+                Everything you need to think, plan, and act.
               </Text>
               <Text style={styles.heroSubtitle}>
-                Plan your day, capture voice requests, set reminders, and review
-                conversation history in a cleaner, more professional experience.
+                Set reminders, capture ideas, and stay organized with ease.
               </Text>
             </View>
 
@@ -754,8 +752,7 @@ export default function Home() {
                 <View>
                   <Text style={styles.sectionTitle}>Current response</Text>
                   <Text style={styles.sectionSubtitle}>
-                    A cleaner, card-based conversation view for the active
-                    request.
+                    Everything from your current request, in one place.
                   </Text>
                 </View>
 
@@ -838,7 +835,7 @@ export default function Home() {
               <View>
                 <Text style={styles.sectionTitle}>Quick actions</Text>
                 <Text style={styles.sectionSubtitle}>
-                  High-intent prompts designed to help users get value fast.
+                  Start with one tap.
                 </Text>
               </View>
             </View>
@@ -855,7 +852,7 @@ export default function Home() {
               <View>
                 <Text style={styles.sectionTitle}>Recent history</Text>
                 <Text style={styles.sectionSubtitle}>
-                  Quick access to the latest assistant activity.
+                  Your latest assistant activity.
                 </Text>
               </View>
 
@@ -873,7 +870,7 @@ export default function Home() {
                 <Ionicons name="time-outline" size={20} color={Brand.muted} />
                 <Text style={styles.historyEmptyTitle}>No history yet</Text>
                 <Text style={styles.historyEmptyText}>
-                  Start a conversation to build your assistant timeline.
+                  Once you begin, your history will show up here.
                 </Text>
               </View>
             ) : (

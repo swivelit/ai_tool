@@ -190,7 +190,7 @@ export default function ProfileScreen() {
             <View style={styles.topBar}>
               <View style={styles.topBarPill}>
                 <Ionicons name="layers-outline" size={14} color={Brand.bronze} />
-                <Text style={styles.topBarPillText}>Onboarding</Text>
+                <Text style={styles.topBarPillText}>Let’s begin</Text>
               </View>
 
               <Pressable
@@ -223,12 +223,12 @@ export default function ProfileScreen() {
                   },
                 ]}
               >
-                Complete your profile with a cleaner, premium onboarding experience.
+                Complete your profile to get started.
               </Text>
 
               <Text style={styles.subtitle}>
-                Your login is ready. Add a few details so {assistantName || "Elli"} can
-                personalize the experience from the very first interaction.
+                Tell {assistantName || "Elli"} a little about you to make 
+                every response more useful.
               </Text>
 
               <View style={styles.metricRow}>
@@ -245,13 +245,12 @@ export default function ProfileScreen() {
               >
                 <View style={styles.previewBadge}>
                   <Ionicons name="sparkles" size={14} color={Brand.bronze} />
-                  <Text style={styles.previewBadgeText}>Assistant preview</Text>
+                  <Text style={styles.previewBadgeText}>How it will sound</Text>
                 </View>
 
                 <Text style={styles.previewTitle}>{assistantName.trim() || "Elli"}</Text>
                 <Text style={styles.previewText}>
-                  “Hi {name.trim() || "there"}, I’ll personalize reminders, schedules, and
-                  responses for your daily routine.”
+                  “Hi {name.trim() || "there"}, I am ready to help with your day.”
                 </Text>
               </LinearGradient>
             </GlassCard>
@@ -259,9 +258,9 @@ export default function ProfileScreen() {
             <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
               <View style={styles.sectionHeaderRow}>
                 <View>
-                  <Text style={styles.sectionTitle}>Account snapshot</Text>
+                  <Text style={styles.sectionTitle}>Account</Text>
                   <Text style={styles.sectionSubtitle}>
-                    Basic account details already detected from your login session.
+                    Your account information is ready to go.
                   </Text>
                 </View>
                 <SectionPill label="Secure" />
@@ -296,7 +295,7 @@ export default function ProfileScreen() {
                 <View>
                   <Text style={styles.sectionTitle}>Personal details</Text>
                   <Text style={styles.sectionSubtitle}>
-                    These details help shape onboarding and assistant personalization.
+                    This information helps personalize your experience.
                   </Text>
                 </View>
                 <SectionPill label="Required" />
@@ -337,10 +336,9 @@ export default function ProfileScreen() {
                   <Ionicons name="bulb-outline" size={16} color={Brand.bronze} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.tipTitle}>Naming tip</Text>
+                  <Text style={styles.tipTitle}>Quick tip</Text>
                   <Text style={styles.tipText}>
-                    Pick a short assistant name that feels natural when you use voice or quick prompts.
-                    You can always change it later in Settings.
+                    Pick a name you will enjoy using. You can update it anytime.
                   </Text>
                 </View>
               </View>

@@ -23,7 +23,7 @@ function BootScreen() {
         <View style={styles.bootCard}>
           <ActivityIndicator size="small" color={Brand.bronze} />
           <Text style={styles.bootTitle}>Loading J AI...</Text>
-          <Text style={styles.bootText}>Preparing your premium assistant experience.</Text>
+          <Text style={styles.bootText}>Setting things up.</Text>
         </View>
       </GlassCard>
     </LinearGradient>

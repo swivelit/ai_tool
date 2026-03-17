@@ -417,8 +417,7 @@ export default function ItemDetail() {
                 </Text>
 
                 <Text style={styles.subtitle}>
-                  A premium production-ready detail page for reminders, planner
-                  entries, and assistant-generated schedule items.
+                  Everything you need for this item is right here.
                 </Text>
 
                 <View style={styles.descriptorRow}>
@@ -537,7 +536,7 @@ export default function ItemDetail() {
                 <View>
                   <Text style={styles.sectionTitle}>Item metadata</Text>
                   <Text style={styles.sectionSubtitle}>
-                    Technical fields surfaced in a cleaner, product-like way.
+                    Helpful details about this item.
                   </Text>
                 </View>
 
@@ -575,7 +574,7 @@ export default function ItemDetail() {
                 <View>
                   <Text style={styles.sectionTitle}>Export options</Text>
                   <Text style={styles.sectionSubtitle}>
-                    Share this item in polished output formats for real-world use.
+                    Share or download this item your way.
                   </Text>
                 </View>
 
@@ -614,21 +613,21 @@ export default function ItemDetail() {
                 />
                 <ExportCard
                   label="Word"
-                  helper="Server generated DOCX"
+                  helper="Word document"
                   icon="reader-outline"
                   active={exporting === "docx"}
                   onPress={() => gen("docx")}
                 />
                 <ExportCard
                   label="CSV"
-                  helper="Spreadsheet-friendly export"
+                  helper="Spreadsheet format"
                   icon="grid-outline"
                   active={exporting === "excel"}
                   onPress={() => gen("excel")}
                 />
                 <ExportCard
                   label="PPT"
-                  helper="Presentation-ready deck"
+                  helper="Presentation format"
                   icon="easel-outline"
                   active={exporting === "ppt"}
                   onPress={() => gen("ppt")}
@@ -669,7 +668,7 @@ export default function ItemDetail() {
                 >
                   <Ionicons name="sparkles" size={16} color={Brand.ink} />
                   <Text style={styles.bottomActionPrimaryText}>
-                    AI workspace
+                    Home
                   </Text>
                 </LinearGradient>
               </Pressable>

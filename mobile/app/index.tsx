@@ -30,8 +30,8 @@ const FEATURES = [
   },
   {
     icon: "color-wand-outline" as const,
-    title: "Premium product feel",
-    copy: "Designed to feel smooth, simple, and intuitive.",
+    title: "Made to feel effortless",
+    copy: "Everything feels natural from the first tap.",
   },
 ];
 
@@ -87,7 +87,7 @@ export default function LandingScreen() {
           <View style={styles.heroTopRow}>
             <View style={styles.brandPill}>
               <Ionicons name="sparkles" size={14} color={Brand.bronze} />
-              <Text style={styles.brandPillText}>J AI · Personal companion</Text>
+              <Text style={styles.brandPillText}>J AI · Built around you</Text>
             </View>
 
             <View style={styles.heroStatusChip}>
@@ -97,7 +97,7 @@ export default function LandingScreen() {
                 color={user ? Brand.success : Brand.bronze}
               />
               <Text style={styles.heroStatusText}>
-                {user ? "Session ready" : "New experience"}
+                {user ? "All set" : "Get started"}
               </Text>
             </View>
           </View>
@@ -134,7 +134,7 @@ export default function LandingScreen() {
                 </Text>
                 <Text style={styles.cardSubtitle}>
                   {user
-                    ? "Your session is active. Jump straight into the assistant workspace and continue where you left off."
+                    ? "You are all set. Pick up right where you left off."
                     : "Secure, simple, and ready in seconds."}
                 </Text>
               </View>
@@ -176,7 +176,7 @@ export default function LandingScreen() {
                   size={14}
                   color={Brand.bronze}
                 />
-                <Text style={styles.previewBadgeText}>Product preview</Text>
+                <Text style={styles.previewBadgeText}>See it work</Text>
               </View>
 
               <Text style={styles.previewTitle}>“Keep me on track throughout the day.”</Text>
@@ -228,7 +228,7 @@ export default function LandingScreen() {
                 ]}
               >
                 <Ionicons name="sparkles-outline" size={18} color={Brand.cocoa} />
-                <Text style={styles.secondaryButtonText}>Rename assistant</Text>
+                <Text style={styles.secondaryButtonText}>Choose a new name</Text>
               </Pressable>
             )}
 

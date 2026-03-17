@@ -25,17 +25,17 @@ const BENEFITS = [
   {
     icon: "shield-checkmark-outline" as const,
     title: "Secure access",
-    copy: "Firebase-backed authentication with a cleaner, more trustworthy UI.",
+    copy: "Built for secure and easy access.",
   },
   {
     icon: "sparkles-outline" as const,
-    title: "Premium assistant workspace",
-    copy: "Continue into a polished AI experience built for real daily use.",
+    title: "Your control center",
+    copy: "Step back into your assistant in seconds.",
   },
   {
     icon: "time-outline" as const,
     title: "Fast re-entry",
-    copy: "Designed to feel smooth, calm, and quick even on smaller screens.",
+    copy: "Built for speed and simplicity.",
   },
 ];
 
@@ -172,12 +172,11 @@ export default function LoginScreen() {
                   },
                 ]}
               >
-                Welcome back to a more premium login experience.
+                Good to see you again.
               </Text>
 
               <Text style={styles.subtitle}>
-                Sign in with clean hierarchy, softer contrast, stronger spacing,
-                and a production-ready feel that matches the rest of the app.
+                Fast, simple, and secure from the start.
               </Text>
 
               <View style={styles.metricRow}>
@@ -188,7 +187,7 @@ export default function LoginScreen() {
                   <Text style={styles.metricText}>Secure flow</Text>
                 </View>
                 <View style={styles.metricChip}>
-                  <Text style={styles.metricText}>Premium UI</Text>
+                  <Text style={styles.metricText}>Easy to use</Text>
                 </View>
               </View>
             </View>
@@ -198,7 +197,7 @@ export default function LoginScreen() {
                 <View>
                   <Text style={styles.cardTitle}>Login</Text>
                   <Text style={styles.cardSubtitle}>
-                    Continue to your assistant workspace.
+                    Return to your assistant.
                   </Text>
                 </View>
 
