@@ -1,41 +1,58 @@
-/**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
- */
-
 import { Platform } from 'react-native';
 
-const tintColorLight = '#0a7ea4';
-const tintColorDark = '#fff';
+const tintColorLight = '#c88c46';
+const tintColorDark = '#ffe5b4';
+
+export const Brand = {
+  cream: '#fffaf2',
+  warmWhite: '#fff6e8',
+  soft: '#fff0d0',
+  peach: '#ffe5b4',
+  sand: '#f3d2a2',
+  caramel: '#d79a59',
+  bronze: '#b97836',
+  cocoa: '#7c5434',
+  ink: '#2f2118',
+  muted: '#7c6350',
+  line: 'rgba(99, 64, 34, 0.14)',
+  lineStrong: 'rgba(99, 64, 34, 0.22)',
+  glass: 'rgba(255, 249, 239, 0.72)',
+  glassStrong: 'rgba(255, 244, 224, 0.88)',
+  overlay: 'rgba(89, 56, 27, 0.08)',
+  danger: '#b96248',
+  success: '#6f8c5e',
+  gradients: {
+    page: ['#fffaf2', '#fff2d8', '#ffe5b4'] as const,
+    hero: ['#fff6e8', '#ffeac2', '#ffdca4'] as const,
+    button: ['#edbb77', '#d89a57', '#c4823d'] as const,
+    softCard: ['rgba(255,255,255,0.95)', 'rgba(255,236,204,0.92)'] as const,
+  },
+} as const;
 
 export const Colors = {
   light: {
-    text: '#11181C',
-    background: '#fff',
+    text: Brand.ink,
+    background: Brand.cream,
     tint: tintColorLight,
-    icon: '#687076',
-    tabIconDefault: '#687076',
+    icon: Brand.muted,
+    tabIconDefault: 'rgba(124, 99, 80, 0.72)',
     tabIconSelected: tintColorLight,
   },
   dark: {
-    text: '#ECEDEE',
-    background: '#151718',
+    text: Brand.warmWhite,
+    background: '#2a1e16',
     tint: tintColorDark,
-    icon: '#9BA1A6',
-    tabIconDefault: '#9BA1A6',
+    icon: 'rgba(255, 229, 180, 0.74)',
+    tabIconDefault: 'rgba(255, 229, 180, 0.60)',
     tabIconSelected: tintColorDark,
   },
 };
 
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
     sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
     serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
     rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
     mono: 'ui-monospace',
   },
   default: {
