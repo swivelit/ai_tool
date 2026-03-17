@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -19,6 +20,12 @@ import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { Brand } from "@/constants/theme";
 
+const EXAMPLES = [
+  "Hey Elli, remind me to call mom at 7.",
+  "Elli, help me plan tomorrow.",
+  "Can you schedule a meeting for Friday?",
+];
+
 export default function Setup() {
   const { updateName, name } = useAssistant();
   const insets = useSafeAreaInsets();
@@ -31,10 +38,21 @@ export default function Setup() {
   const horizontalPadding = isSmallPhone ? 16 : 18;
   const topPadding = insets.top + (isSmallPhone ? 10 : 14);
   const bottomPadding = Math.max(insets.bottom + 24, 24);
+  const heroTitleSize = isVerySmallPhone ? 28 : isSmallPhone ? 31 : 36;
+  const heroTitleLineHeight = isVerySmallPhone ? 34 : isSmallPhone ? 37 : 42;
+  const selectedName = input.trim() || name || "Elli";
 
   useEffect(() => {
     setInput(name || "");
   }, [name]);
+
+  const nameQuality = useMemo(() => {
+    const value = input.trim();
+    if (!value) return "Using default";
+    if (value.length < 3) return "Short and quick";
+    if (value.length < 8) return "Balanced";
+    return "Distinctive";
+  }, [input]);
 
   async function onContinue() {
     const trimmed = input.trim();
@@ -51,7 +69,7 @@ export default function Setup() {
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="dark" />
 
-      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
         <View style={styles.topGlow} />
         <View style={styles.leftGlow} />
         <View style={styles.bottomGlow} />
@@ -61,55 +79,134 @@ export default function Setup() {
         style={styles.page}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <View
-          style={{
-            flex: 1,
+        <ScrollView
+          style={styles.page}
+          contentContainerStyle={{
+            flexGrow: 1,
             justifyContent: "center",
             paddingTop: topPadding,
             paddingBottom: bottomPadding,
             paddingHorizontal: horizontalPadding,
           }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
-          <View style={{ width: "100%", maxWidth: 520, alignSelf: "center" }}>
-            <View style={styles.heroPill}>
-              <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
-              <Text style={styles.heroPillText}>Quick setup</Text>
-            </View>
-
-            <Text
-              style={[
-                styles.title,
-                {
-                  fontSize: isVerySmallPhone ? 28 : isSmallPhone ? 31 : 34,
-                  lineHeight: isVerySmallPhone ? 34 : isSmallPhone ? 37 : 40,
-                },
-              ]}
-            >
-              Name your assistant
-            </Text>
-
-            <Text style={styles.subtitle}>
-              This gives the app a more personal feel. You can change it later in Settings any time.
-            </Text>
-
-            <GlassCard style={{ borderRadius: 28, marginTop: 18 }}>
-              <Text style={styles.label}>Assistant name</Text>
-              <TextInput
-                value={input}
-                onChangeText={setInput}
-                placeholder={`Default: ${name || "Elli"}`}
-                placeholderTextColor="rgba(124, 99, 80, 0.52)"
-                style={styles.input}
-              />
-
-              <View style={styles.exampleCard}>
-                <Ionicons name="chatbubble-ellipses-outline" size={16} color={Brand.bronze} />
-                <Text style={styles.exampleText}>
-                  Example: “Hey {input.trim() || name || "Elli"}, remind me to call mom at 7.”
-                </Text>
+          <View style={{ width: "100%", maxWidth: 560, alignSelf: "center" }}>
+            <View style={styles.topBar}>
+              <View style={styles.topBarPill}>
+                <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
+                <Text style={styles.topBarPillText}>Quick setup</Text>
               </View>
 
-              <Pressable onPress={onContinue} style={({ pressed }) => [styles.buttonShell, pressed && styles.pressed]}>
+              <Pressable
+                onPress={onSkip}
+                style={({ pressed }) => [styles.topSkipBtn, pressed && styles.pressed]}
+              >
+                <Text style={styles.topSkipBtnText}>Skip</Text>
+              </Pressable>
+            </View>
+
+            <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
+              <View style={styles.heroHeaderRow}>
+                <View style={styles.heroPill}>
+                  <Ionicons name="chatbubble-ellipses-outline" size={14} color={Brand.bronze} />
+                  <Text style={styles.heroPillText}>Assistant identity</Text>
+                </View>
+
+                <View style={styles.heroStatusChip}>
+                  <Ionicons name="flash-outline" size={14} color={Brand.bronze} />
+                  <Text style={styles.heroStatusText}>Optional step</Text>
+                </View>
+              </View>
+
+              <Text
+                style={[
+                  styles.title,
+                  {
+                    fontSize: heroTitleSize,
+                    lineHeight: heroTitleLineHeight,
+                  },
+                ]}
+              >
+                Give your assistant a name that feels personal and memorable.
+              </Text>
+
+              <Text style={styles.subtitle}>
+                This small setup step makes the experience feel warmer and more human.
+                You can always change it later from Settings.
+              </Text>
+
+              <View style={styles.metricRow}>
+                <MetricCard label="Current name" value={selectedName} icon="sparkles-outline" />
+                <MetricCard label="Style" value={nameQuality} icon="color-wand-outline" />
+                <MetricCard label="Default" value="Elli" icon="star-outline" />
+              </View>
+
+              <LinearGradient
+                colors={["rgba(255,255,255,0.88)", "rgba(255,239,210,0.72)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.previewCard}
+              >
+                <View style={styles.previewBadge}>
+                  <Ionicons name="mic-outline" size={14} color={Brand.bronze} />
+                  <Text style={styles.previewBadgeText}>Live preview</Text>
+                </View>
+
+                <Text style={styles.previewTitle}>{selectedName}</Text>
+                <Text style={styles.previewText}>
+                  “Hey {selectedName}, remind me to call mom at 7.”
+                </Text>
+              </LinearGradient>
+            </GlassCard>
+
+            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+              <Text style={styles.sectionTitle}>Choose assistant name</Text>
+              <Text style={styles.sectionSubtitle}>
+                Short names work best in voice prompts and quick typed commands.
+              </Text>
+
+              <Text style={styles.label}>Assistant name</Text>
+              <View style={styles.inputShell}>
+                <View style={styles.inputIconWrap}>
+                  <Ionicons name="sparkles-outline" size={16} color={Brand.bronze} />
+                </View>
+
+                <TextInput
+                  value={input}
+                  onChangeText={setInput}
+                  placeholder={`Default: ${name || "Elli"}`}
+                  placeholderTextColor="rgba(124, 99, 80, 0.52)"
+                  style={styles.input}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                />
+              </View>
+
+              <View style={styles.examplePanel}>
+                <View style={styles.examplePanelHeader}>
+                  <Ionicons
+                    name="chatbubble-ellipses-outline"
+                    size={16}
+                    color={Brand.bronze}
+                  />
+                  <Text style={styles.examplePanelTitle}>Usage examples</Text>
+                </View>
+
+                <View style={styles.exampleList}>
+                  {EXAMPLES.map((example, index) => (
+                    <Text key={index} style={styles.exampleText}>
+                      {example.replace(/Elli/g, selectedName)}
+                    </Text>
+                  ))}
+                </View>
+              </View>
+
+              <Pressable
+                onPress={onContinue}
+                style={({ pressed }) => [styles.buttonShell, pressed && styles.pressed]}
+              >
                 <LinearGradient
                   colors={Brand.gradients.button}
                   start={{ x: 0, y: 0 }}
@@ -121,14 +218,40 @@ export default function Setup() {
                 </LinearGradient>
               </Pressable>
 
-              <Pressable onPress={onSkip} style={({ pressed }) => [styles.skipButton, pressed && styles.pressed]}>
-                <Text style={styles.skipText}>Skip and use Elli</Text>
+              <Pressable
+                onPress={onSkip}
+                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+              >
+                <Ionicons name="play-skip-forward-outline" size={18} color={Brand.cocoa} />
+                <Text style={styles.secondaryButtonText}>Skip and use Elli</Text>
               </Pressable>
             </GlassCard>
           </View>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </LinearGradient>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}) {
+  return (
+    <View style={styles.metricCard}>
+      <View style={styles.metricIconWrap}>
+        <Ionicons name={icon} size={15} color={Brand.bronze} />
+      </View>
+      <Text style={styles.metricValue} numberOfLines={1}>
+        {value}
+      </Text>
+      <Text style={styles.metricLabel}>{label}</Text>
+    </View>
   );
 }
 
@@ -167,14 +290,62 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(215,154,89,0.16)",
   },
 
-  heroPill: {
-    alignSelf: "flex-start",
+  topBar: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  topBarPill: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  topBarPillText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  topSkipBtn: {
+    minHeight: 36,
     paddingHorizontal: 12,
-    paddingVertical: 8,
     borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  topSkipBtnText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  heroHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  heroPill: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     backgroundColor: "rgba(255,255,255,0.66)",
     borderWidth: 1,
     borderColor: Brand.line,
@@ -186,8 +357,26 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
+  heroStatusChip: {
+    minHeight: 34,
+    paddingHorizontal: 11,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  heroStatusText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
   title: {
-    marginTop: 16,
+    marginTop: 18,
     color: Brand.ink,
     fontWeight: "900",
   },
@@ -199,39 +388,160 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
 
+  metricRow: {
+    marginTop: 20,
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  metricCard: {
+    flex: 1,
+    minHeight: 96,
+    borderRadius: 22,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    backgroundColor: "rgba(255,255,255,0.58)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  metricIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,229,180,0.68)",
+  },
+
+  metricValue: {
+    marginTop: 12,
+    color: Brand.ink,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+
+  metricLabel: {
+    marginTop: 4,
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  previewCard: {
+    marginTop: 18,
+    borderRadius: 24,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  previewBadge: {
+    alignSelf: "flex-start",
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  previewBadgeText: {
+    color: Brand.cocoa,
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.3,
+  },
+
+  previewTitle: {
+    marginTop: 14,
+    color: Brand.ink,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  previewText: {
+    marginTop: 6,
+    color: Brand.muted,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+
+  sectionTitle: {
+    color: Brand.ink,
+    fontSize: 20,
+    fontWeight: "900",
+  },
+
+  sectionSubtitle: {
+    marginTop: 6,
+    color: Brand.muted,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+
   label: {
     color: Brand.cocoa,
     fontSize: 13,
     fontWeight: "800",
+    marginTop: 18,
     marginBottom: 8,
   },
 
-  input: {
-    height: 56,
+  inputShell: {
+    minHeight: 56,
     borderRadius: 18,
-    paddingHorizontal: 14,
-    color: Brand.ink,
-    fontSize: 15,
     backgroundColor: "rgba(255,255,255,0.72)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
+    flexDirection: "row",
+    alignItems: "center",
+    overflow: "hidden",
   },
 
-  exampleCard: {
+  inputIconWrap: {
+    width: 46,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  input: {
+    flex: 1,
+    color: Brand.ink,
+    fontSize: 15,
+    paddingRight: 14,
+  },
+
+  examplePanel: {
     marginTop: 16,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
+    borderRadius: 20,
+    padding: 14,
     backgroundColor: "rgba(255,255,255,0.56)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
 
+  examplePanelHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  examplePanelTitle: {
+    color: Brand.ink,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  exampleList: {
+    marginTop: 10,
+    gap: 8,
+  },
+
   exampleText: {
-    flex: 1,
     color: Brand.muted,
     fontSize: 13,
     lineHeight: 19,
@@ -250,6 +560,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
+    shadowColor: "#d4934f",
+    shadowOpacity: 0.24,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
   },
 
   primaryButtonText: {
@@ -258,21 +573,23 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
 
-  skipButton: {
-    minHeight: 48,
+  secondaryButton: {
+    minHeight: 54,
     marginTop: 12,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.62)",
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: Brand.lineStrong,
+    backgroundColor: "rgba(255,255,255,0.78)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
   },
 
-  skipText: {
+  secondaryButtonText: {
     color: Brand.cocoa,
     fontSize: 14,
-    fontWeight: "800",
+    fontWeight: "900",
   },
 
   pressed: {

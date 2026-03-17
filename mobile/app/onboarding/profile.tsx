@@ -53,7 +53,7 @@ export default function ProfileScreen() {
   const horizontalPadding = isSmallPhone ? 16 : 18;
   const topPadding = insets.top + (isSmallPhone ? 10 : 14);
   const bottomPadding = Math.max(insets.bottom + 24, 24);
-  const maxFormWidth = Math.min(width - horizontalPadding * 2, 520);
+  const maxFormWidth = Math.min(width - horizontalPadding * 2, 560);
 
   const provider = useMemo(() => {
     if (user?.providerData?.some((item) => item.providerId === "google.com")) {
@@ -61,6 +61,16 @@ export default function ProfileScreen() {
     }
     return "password" as const;
   }, [user?.providerData]);
+
+  const providerLabel = provider === "google" ? "Google sign-in" : "Email & password";
+  const profileCompletion = useMemo(() => {
+    let score = 25;
+    if (name.trim()) score += 25;
+    if (assistantName.trim()) score += 25;
+    if (place.trim()) score += 15;
+    if (user?.email) score += 10;
+    return `${Math.min(score, 100)}%`;
+  }, [assistantName, name, place, user?.email]);
 
   useEffect(() => {
     setName(user?.displayName || profile?.name || "");
@@ -141,7 +151,6 @@ export default function ProfileScreen() {
       });
 
       await saveProfile(upsertedProfile);
-
       await refresh();
       router.replace("/onboarding/questionnaire");
     } catch (error: any) {
@@ -155,7 +164,7 @@ export default function ProfileScreen() {
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="dark" />
 
-      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
         <View style={styles.topGlow} />
         <View style={styles.leftGlow} />
         <View style={styles.bottomGlow} />
@@ -178,75 +187,162 @@ export default function ProfileScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={{ width: "100%", alignSelf: "center", maxWidth: maxFormWidth }}>
-            <View style={styles.heroPill}>
-              <Ionicons name="person-circle-outline" size={14} color={Brand.bronze} />
-              <Text style={styles.heroPillText}>Profile setup</Text>
-            </View>
-
-            <Text
-              style={[
-                styles.title,
-                {
-                  fontSize: isVerySmallPhone ? 28 : isSmallPhone ? 31 : 34,
-                  lineHeight: isVerySmallPhone ? 34 : isSmallPhone ? 37 : 40,
-                },
-              ]}
-            >
-              Complete your profile
-            </Text>
-
-            <Text style={styles.subtitle}>
-              Your login is ready. Add a few details so {assistantName || "Elli"} can personalize
-              the experience from the start.
-            </Text>
-
-            <GlassCard style={{ borderRadius: 28, marginTop: 18 }}>
-              <View style={styles.progressWrap}>
-                <Text style={styles.progressLabel}>Step 1 of 2</Text>
-                <Text style={styles.progressValue}>Profile</Text>
+            <View style={styles.topBar}>
+              <View style={styles.topBarPill}>
+                <Ionicons name="layers-outline" size={14} color={Brand.bronze} />
+                <Text style={styles.topBarPillText}>Onboarding</Text>
               </View>
 
-              <FieldLabel label="Email" />
-              <View style={[styles.readonlyBox, { minHeight: isSmallPhone ? 52 : 56 }]}>
-                <Ionicons name="mail-outline" size={16} color={Brand.bronze} />
-                <Text style={styles.readonlyText}>{user?.email || "-"}</Text>
+              <Pressable
+                onPress={() => router.replace("/")}
+                style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+              >
+                <Ionicons name="close-outline" size={18} color={Brand.cocoa} />
+              </Pressable>
+            </View>
+
+            <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
+              <View style={styles.heroHeaderRow}>
+                <View style={styles.heroPill}>
+                  <Ionicons name="person-circle-outline" size={14} color={Brand.bronze} />
+                  <Text style={styles.heroPillText}>Profile setup</Text>
+                </View>
+
+                <View style={styles.heroStatusChip}>
+                  <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
+                  <Text style={styles.heroStatusText}>Step 1 of 2</Text>
+                </View>
+              </View>
+
+              <Text
+                style={[
+                  styles.title,
+                  {
+                    fontSize: isVerySmallPhone ? 28 : isSmallPhone ? 31 : 36,
+                    lineHeight: isVerySmallPhone ? 34 : isSmallPhone ? 37 : 42,
+                  },
+                ]}
+              >
+                Complete your profile with a cleaner, premium onboarding experience.
+              </Text>
+
+              <Text style={styles.subtitle}>
+                Your login is ready. Add a few details so {assistantName || "Elli"} can
+                personalize the experience from the very first interaction.
+              </Text>
+
+              <View style={styles.metricRow}>
+                <MetricCard label="Progress" value={profileCompletion} icon="flash-outline" />
+                <MetricCard label="Timezone" value="IST" icon="earth-outline" />
+                <MetricCard label="Language" value={settings.languageMode.toUpperCase()} icon="language-outline" />
+              </View>
+
+              <LinearGradient
+                colors={["rgba(255,255,255,0.84)", "rgba(255,239,210,0.66)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.previewCard}
+              >
+                <View style={styles.previewBadge}>
+                  <Ionicons name="sparkles" size={14} color={Brand.bronze} />
+                  <Text style={styles.previewBadgeText}>Assistant preview</Text>
+                </View>
+
+                <Text style={styles.previewTitle}>{assistantName.trim() || "Elli"}</Text>
+                <Text style={styles.previewText}>
+                  “Hi {name.trim() || "there"}, I’ll personalize reminders, schedules, and
+                  responses for your daily routine.”
+                </Text>
+              </LinearGradient>
+            </GlassCard>
+
+            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+              <View style={styles.sectionHeaderRow}>
+                <View>
+                  <Text style={styles.sectionTitle}>Account snapshot</Text>
+                  <Text style={styles.sectionSubtitle}>
+                    Basic account details already detected from your login session.
+                  </Text>
+                </View>
+                <SectionPill label="Secure" />
+              </View>
+
+              <View style={styles.infoGrid}>
+                <ReadonlyInfoCard
+                  label="Email"
+                  value={user?.email || "-"}
+                  icon="mail-outline"
+                />
+                <ReadonlyInfoCard
+                  label="Sign-in"
+                  value={providerLabel}
+                  icon={provider === "google" ? "logo-google" : "key-outline"}
+                />
+                <ReadonlyInfoCard
+                  label="Timezone"
+                  value="Asia/Kolkata"
+                  icon="time-outline"
+                />
+                <ReadonlyInfoCard
+                  label="Reply mode"
+                  value={settings.languageMode === "ta" ? "Tamil" : "English"}
+                  icon="chatbubble-ellipses-outline"
+                />
+              </View>
+            </GlassCard>
+
+            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+              <View style={styles.sectionHeaderRow}>
+                <View>
+                  <Text style={styles.sectionTitle}>Personal details</Text>
+                  <Text style={styles.sectionSubtitle}>
+                    These details help shape onboarding and assistant personalization.
+                  </Text>
+                </View>
+                <SectionPill label="Required" />
               </View>
 
               <FieldLabel label="Your name" />
-              <TextInput
+              <InputField
                 value={name}
                 onChangeText={setName}
                 placeholder="Your name"
-                placeholderTextColor="rgba(124, 99, 80, 0.52)"
-                style={[styles.input, { height: isSmallPhone ? 52 : 56 }]}
+                icon="person-outline"
                 editable={!busy}
+                compact={isSmallPhone}
               />
 
               <FieldLabel label="Place" />
-              <TextInput
+              <InputField
                 value={place}
                 onChangeText={setPlace}
-                placeholder="Place (optional)"
-                placeholderTextColor="rgba(124, 99, 80, 0.52)"
-                style={[styles.input, { height: isSmallPhone ? 52 : 56 }]}
+                placeholder="City, area, or place (optional)"
+                icon="location-outline"
                 editable={!busy}
+                compact={isSmallPhone}
               />
 
               <FieldLabel label="Assistant name" />
-              <TextInput
+              <InputField
                 value={assistantName}
                 onChangeText={setAssistantNameInput}
                 placeholder="Elli"
-                placeholderTextColor="rgba(124, 99, 80, 0.52)"
-                style={[styles.input, { height: isSmallPhone ? 52 : 56 }]}
+                icon="sparkles-outline"
                 editable={!busy}
+                compact={isSmallPhone}
               />
 
               <View style={styles.tipCard}>
-                <Ionicons name="sparkles-outline" size={16} color={Brand.bronze} />
-                <Text style={styles.tipText}>
-                  You can change the assistant name later in Settings.
-                </Text>
+                <View style={styles.tipIconWrap}>
+                  <Ionicons name="bulb-outline" size={16} color={Brand.bronze} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.tipTitle}>Naming tip</Text>
+                  <Text style={styles.tipText}>
+                    Pick a short assistant name that feels natural when you use voice or quick prompts.
+                    You can always change it later in Settings.
+                  </Text>
+                </View>
               </View>
 
               <Pressable
@@ -268,7 +364,7 @@ export default function ProfileScreen() {
                     <ActivityIndicator color={Brand.ink} />
                   ) : (
                     <>
-                      <Text style={styles.primaryButtonText}>Continue</Text>
+                      <Text style={styles.primaryButtonText}>Save and continue</Text>
                       <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
                     </>
                   )}
@@ -314,6 +410,90 @@ function FieldLabel({ label }: { label: string }) {
   return <Text style={styles.label}>{label}</Text>;
 }
 
+function SectionPill({ label }: { label: string }) {
+  return (
+    <View style={styles.sectionPill}>
+      <Text style={styles.sectionPillText}>{label}</Text>
+    </View>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}) {
+  return (
+    <View style={styles.metricCard}>
+      <View style={styles.metricIconWrap}>
+        <Ionicons name={icon} size={15} color={Brand.bronze} />
+      </View>
+      <Text style={styles.metricValue} numberOfLines={1}>
+        {value}
+      </Text>
+      <Text style={styles.metricLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function ReadonlyInfoCard({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}) {
+  return (
+    <View style={styles.infoCard}>
+      <View style={styles.infoIconWrap}>
+        <Ionicons name={icon} size={15} color={Brand.bronze} />
+      </View>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue} numberOfLines={2}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function InputField({
+  value,
+  onChangeText,
+  placeholder,
+  icon,
+  editable,
+  compact,
+}: {
+  value: string;
+  onChangeText: (value: string) => void;
+  placeholder: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  editable: boolean;
+  compact: boolean;
+}) {
+  return (
+    <View style={[styles.inputShell, { minHeight: compact ? 52 : 56 }]}>
+      <View style={styles.inputIconWrap}>
+        <Ionicons name={icon} size={16} color={Brand.bronze} />
+      </View>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor="rgba(124, 99, 80, 0.52)"
+        style={styles.input}
+        editable={editable}
+      />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   page: {
     flex: 1,
@@ -349,6 +529,49 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(215,154,89,0.16)",
   },
 
+  topBar: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  topBarPill: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  topBarPillText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  backBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  heroHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
   heroPill: {
     alignSelf: "flex-start",
     flexDirection: "row",
@@ -368,8 +591,26 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
+  heroStatusChip: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 11,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  heroStatusText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
   title: {
-    marginTop: 16,
+    marginTop: 18,
     color: Brand.ink,
     fontWeight: "900",
   },
@@ -381,23 +622,166 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
 
-  progressWrap: {
+  metricRow: {
+    marginTop: 20,
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 4,
+    gap: 10,
   },
 
-  progressLabel: {
+  metricCard: {
+    flex: 1,
+    minHeight: 96,
+    borderRadius: 22,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    backgroundColor: "rgba(255,255,255,0.58)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  metricIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,229,180,0.68)",
+  },
+
+  metricValue: {
+    marginTop: 12,
+    color: Brand.ink,
+    fontSize: 17,
+    fontWeight: "900",
+  },
+
+  metricLabel: {
+    marginTop: 4,
     color: Brand.muted,
     fontSize: 12,
     fontWeight: "700",
   },
 
-  progressValue: {
-    color: Brand.bronze,
-    fontSize: 12,
+  previewCard: {
+    marginTop: 18,
+    borderRadius: 24,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  previewBadge: {
+    alignSelf: "flex-start",
+    minHeight: 30,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  previewBadgeText: {
+    color: Brand.cocoa,
+    fontSize: 11,
     fontWeight: "900",
+    letterSpacing: 0.3,
+  },
+
+  previewTitle: {
+    marginTop: 14,
+    color: Brand.ink,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  previewText: {
+    marginTop: 6,
+    color: Brand.muted,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  sectionTitle: {
+    color: Brand.ink,
+    fontSize: 20,
+    fontWeight: "900",
+  },
+
+  sectionSubtitle: {
+    marginTop: 6,
+    color: Brand.muted,
+    fontSize: 13,
+    lineHeight: 19,
+    maxWidth: 255,
+  },
+
+  sectionPill: {
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.66)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  sectionPillText: {
+    color: Brand.cocoa,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+  },
+
+  infoGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 18,
+  },
+
+  infoCard: {
+    width: "48.5%",
+    minHeight: 106,
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.58)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  infoIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,229,180,0.68)",
+  },
+
+  infoLabel: {
+    marginTop: 12,
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  infoValue: {
+    marginTop: 8,
+    color: Brand.ink,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "800",
   },
 
   label: {
@@ -408,49 +792,58 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
-  input: {
+  inputShell: {
     borderRadius: 18,
-    paddingHorizontal: 14,
-    color: Brand.ink,
-    fontSize: 15,
     backgroundColor: "rgba(255,255,255,0.72)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-  },
-
-  readonlyBox: {
-    borderRadius: 18,
-    paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    backgroundColor: "rgba(255,255,255,0.62)",
-    borderWidth: 1,
-    borderColor: Brand.line,
+    overflow: "hidden",
   },
 
-  readonlyText: {
+  inputIconWrap: {
+    width: 46,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  input: {
     flex: 1,
     color: Brand.ink,
     fontSize: 15,
-    fontWeight: "600",
+    paddingRight: 14,
   },
 
   tipCard: {
     marginTop: 16,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
+    borderRadius: 20,
+    padding: 14,
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 10,
+    gap: 12,
     backgroundColor: "rgba(255,255,255,0.56)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
 
+  tipIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,229,180,0.68)",
+  },
+
+  tipTitle: {
+    color: Brand.ink,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
   tipText: {
-    flex: 1,
+    marginTop: 4,
     color: Brand.muted,
     fontSize: 13,
     lineHeight: 19,
@@ -468,6 +861,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
+    shadowColor: "#d4934f",
+    shadowOpacity: 0.24,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
   },
 
   primaryButtonText: {

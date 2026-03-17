@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -10,48 +10,86 @@ import {
   TextInput,
   View,
   useWindowDimensions,
-} from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { StatusBar } from 'expo-status-bar';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+} from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { router } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { StatusBar } from "expo-status-bar";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { GlassCard } from '@/components/Glass';
-import { useAuth } from '@/components/AuthProvider';
-import { Brand } from '@/constants/theme';
+import { GlassCard } from "@/components/Glass";
+import { useAuth } from "@/components/AuthProvider";
+import { Brand } from "@/constants/theme";
+
+const BENEFITS = [
+  {
+    icon: "shield-checkmark-outline" as const,
+    title: "Secure access",
+    copy: "Firebase-backed authentication with a cleaner, more trustworthy UI.",
+  },
+  {
+    icon: "sparkles-outline" as const,
+    title: "Premium assistant workspace",
+    copy: "Continue into a polished AI experience built for real daily use.",
+  },
+  {
+    icon: "time-outline" as const,
+    title: "Fast re-entry",
+    copy: "Designed to feel smooth, calm, and quick even on smaller screens.",
+  },
+];
+
+function emailLooksValid(value: string) {
+  return /\S+@\S+\.\S+/.test(value.trim());
+}
 
 export default function LoginScreen() {
-  const { signInWithPassword, signInWithGoogle, googleConfigured, googleReady } = useAuth();
+  const { signInWithPassword, signInWithGoogle, googleConfigured, googleReady } =
+    useAuth();
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [errorText, setErrorText] = useState('');
+  const [errorText, setErrorText] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
 
   const isCompact = width < 370 || height < 760;
+  const isVeryCompact = width < 345 || height < 700;
+
   const horizontalPadding = isCompact ? 16 : 20;
-  const topPadding = insets.top + (isCompact ? 12 : 18);
+  const topPadding = insets.top + (isCompact ? 10 : 16);
   const bottomPadding = Math.max(insets.bottom + 28, 30);
-  const contentMaxWidth = Math.min(width - horizontalPadding * 2, 520);
-  const inputHeight = isCompact ? 54 : 58;
+  const contentMaxWidth = Math.min(width - horizontalPadding * 2, 540);
+  const inputHeight = isCompact ? 56 : 60;
   const buttonHeight = isCompact ? 54 : 58;
 
+  const canSubmit = useMemo(
+    () => email.trim().length > 0 && password.length > 0 && !busy,
+    [busy, email, password]
+  );
+
   async function handleLogin() {
-    if (!email.trim() || !password) {
-      setErrorText('Please enter both email and password.');
+    const nextEmail = email.trim();
+
+    if (!nextEmail || !password) {
+      setErrorText("Please enter both email and password.");
+      return;
+    }
+
+    if (!emailLooksValid(nextEmail)) {
+      setErrorText("Please enter a valid email address.");
       return;
     }
 
     try {
       setBusy(true);
-      setErrorText('');
-      await signInWithPassword(email.trim(), password);
+      setErrorText("");
+      await signInWithPassword(nextEmail, password);
     } catch (error: unknown) {
-      setErrorText(error instanceof Error ? error.message : 'Login failed.');
+      setErrorText(error instanceof Error ? error.message : "Login failed.");
     } finally {
       setBusy(false);
     }
@@ -60,10 +98,12 @@ export default function LoginScreen() {
   async function handleGoogle() {
     try {
       setBusy(true);
-      setErrorText('');
+      setErrorText("");
       await signInWithGoogle();
     } catch (error: unknown) {
-      setErrorText(error instanceof Error ? error.message : 'Google sign-in failed.');
+      setErrorText(
+        error instanceof Error ? error.message : "Google sign-in failed."
+      );
     } finally {
       setBusy(false);
     }
@@ -73,14 +113,15 @@ export default function LoginScreen() {
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="dark" />
 
-      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
         <View style={styles.topGlow} />
+        <View style={styles.leftGlow} />
         <View style={styles.bottomGlow} />
       </View>
 
       <KeyboardAvoidingView
         style={styles.page}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <ScrollView
           style={styles.page}
@@ -89,93 +130,195 @@ export default function LoginScreen() {
             paddingHorizontal: horizontalPadding,
             paddingTop: topPadding,
             paddingBottom: bottomPadding,
-            justifyContent: height > 780 ? 'center' : 'flex-start',
+            justifyContent: height > 780 ? "center" : "flex-start",
           }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={{ width: '100%', alignSelf: 'center', maxWidth: contentMaxWidth }}>
-            <Pressable onPress={() => router.replace('/')} style={styles.backButton}>
+          <View
+            style={{
+              width: "100%",
+              alignSelf: "center",
+              maxWidth: contentMaxWidth,
+            }}
+          >
+            <Pressable
+              onPress={() => router.replace("/")}
+              style={({ pressed }) => [
+                styles.backButton,
+                pressed && styles.pressed,
+              ]}
+            >
               <Ionicons name="chevron-back" size={18} color={Brand.cocoa} />
               <Text style={styles.backButtonText}>Back</Text>
             </Pressable>
 
             <View style={styles.headerBlock}>
               <View style={styles.titlePill}>
-                <Ionicons name="lock-closed-outline" size={14} color={Brand.bronze} />
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={14}
+                  color={Brand.bronze}
+                />
                 <Text style={styles.titlePillText}>Secure access</Text>
               </View>
 
               <Text
                 style={[
                   styles.title,
-                  { fontSize: isCompact ? 31 : 34, lineHeight: isCompact ? 37 : 40 },
+                  {
+                    fontSize: isVeryCompact ? 30 : isCompact ? 34 : 38,
+                    lineHeight: isVeryCompact ? 36 : isCompact ? 39 : 44,
+                  },
                 ]}
               >
-                Welcome back
+                Welcome back to a more premium login experience.
               </Text>
+
               <Text style={styles.subtitle}>
-                Premium, warm, and clear. Sign in to continue using J AI with a more polished
-                production-style experience.
+                Sign in with clean hierarchy, softer contrast, stronger spacing,
+                and a production-ready feel that matches the rest of the app.
               </Text>
+
+              <View style={styles.metricRow}>
+                <View style={styles.metricChip}>
+                  <Text style={styles.metricText}>Fast sign-in</Text>
+                </View>
+                <View style={styles.metricChip}>
+                  <Text style={styles.metricText}>Secure flow</Text>
+                </View>
+                <View style={styles.metricChip}>
+                  <Text style={styles.metricText}>Premium UI</Text>
+                </View>
+              </View>
             </View>
 
-            <GlassCard style={{ borderRadius: 28 }}>
+            <GlassCard style={{ borderRadius: 30 }}>
+              <View style={styles.cardHeaderRow}>
+                <View>
+                  <Text style={styles.cardTitle}>Login</Text>
+                  <Text style={styles.cardSubtitle}>
+                    Continue to your assistant workspace.
+                  </Text>
+                </View>
+
+                <View style={styles.cardBadge}>
+                  <Ionicons
+                    name="sparkles-outline"
+                    size={14}
+                    color={Brand.bronze}
+                  />
+                  <Text style={styles.cardBadgeText}>Ready</Text>
+                </View>
+              </View>
+
               {errorText ? (
                 <View style={styles.errorCard}>
-                  <Ionicons name="alert-circle-outline" size={16} color="#fff4ef" />
+                  <Ionicons
+                    name="alert-circle-outline"
+                    size={16}
+                    color="#fff4ef"
+                  />
                   <Text style={styles.errorText}>{errorText}</Text>
                 </View>
               ) : null}
 
-              <View style={{ marginTop: errorText ? 16 : 0 }}>
+              <View style={{ marginTop: errorText ? 16 : 18 }}>
                 <Text style={styles.label}>Email</Text>
-                <TextInput
-                  value={email}
-                  onChangeText={setEmail}
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  placeholder="you@example.com"
-                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
-                  style={[styles.input, { height: inputHeight }]}
-                  editable={!busy}
-                />
+                <View style={[styles.inputShell, { minHeight: inputHeight }]}>
+                  <View style={styles.inputIconWrap}>
+                    <Ionicons
+                      name="mail-outline"
+                      size={16}
+                      color={Brand.bronze}
+                    />
+                  </View>
+                  <TextInput
+                    value={email}
+                    onChangeText={(value) => {
+                      setEmail(value);
+                      if (errorText) setErrorText("");
+                    }}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
+                    autoComplete="email"
+                    textContentType="username"
+                    placeholder="you@example.com"
+                    placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                    style={styles.input}
+                    editable={!busy}
+                    returnKeyType="next"
+                  />
+                </View>
               </View>
 
               <View style={{ marginTop: 16 }}>
                 <Text style={styles.label}>Password</Text>
-                <TextInput
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry
-                  placeholder="Your password"
-                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
-                  style={[styles.input, { height: inputHeight }]}
-                  editable={!busy}
-                />
+                <View style={[styles.inputShell, { minHeight: inputHeight }]}>
+                  <View style={styles.inputIconWrap}>
+                    <Ionicons
+                      name="key-outline"
+                      size={16}
+                      color={Brand.bronze}
+                    />
+                  </View>
+                  <TextInput
+                    value={password}
+                    onChangeText={(value) => {
+                      setPassword(value);
+                      if (errorText) setErrorText("");
+                    }}
+                    secureTextEntry={!showPassword}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="password"
+                    textContentType="password"
+                    placeholder="Your password"
+                    placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                    style={styles.input}
+                    editable={!busy}
+                    returnKeyType="go"
+                    onSubmitEditing={handleLogin}
+                  />
+                  <Pressable
+                    onPress={() => setShowPassword((prev) => !prev)}
+                    style={styles.visibilityBtn}
+                  >
+                    <Ionicons
+                      name={showPassword ? "eye-off-outline" : "eye-outline"}
+                      size={18}
+                      color={Brand.cocoa}
+                    />
+                  </Pressable>
+                </View>
               </View>
 
               <Pressable
                 onPress={handleLogin}
-                disabled={busy}
+                disabled={!canSubmit}
                 style={({ pressed }) => [
                   styles.buttonShell,
-                  pressed && styles.buttonPressed,
-                  busy && styles.disabled,
+                  pressed && styles.pressed,
+                  !canSubmit && styles.disabled,
                 ]}
               >
                 <LinearGradient
                   colors={Brand.gradients.button}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
-                  style={[styles.primaryButton, { minHeight: buttonHeight, marginTop: 22 }]}
+                  style={[styles.primaryButton, { minHeight: buttonHeight }]}
                 >
                   {busy ? (
                     <ActivityIndicator color={Brand.ink} />
                   ) : (
                     <>
                       <Text style={styles.primaryButtonText}>Login</Text>
-                      <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
+                      <Ionicons
+                        name="arrow-forward"
+                        size={18}
+                        color={Brand.ink}
+                      />
                     </>
                   )}
                 </LinearGradient>
@@ -192,7 +335,7 @@ export default function LoginScreen() {
                 disabled={busy || !googleReady || !googleConfigured}
                 style={({ pressed }) => [
                   styles.googleButton,
-                  pressed && styles.buttonPressed,
+                  pressed && styles.pressed,
                   (busy || !googleReady || !googleConfigured) && styles.disabled,
                   { minHeight: buttonHeight },
                 ]}
@@ -203,14 +346,32 @@ export default function LoginScreen() {
 
               {!googleConfigured ? (
                 <Text style={styles.helperText}>
-                  Add your EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID in your env file to enable Google
-                  sign-in.
+                  Add your EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID in your env file
+                  to enable Google sign-in.
                 </Text>
               ) : null}
 
+              <View style={styles.benefitList}>
+                {BENEFITS.map((item) => (
+                  <View key={item.title} style={styles.benefitRow}>
+                    <View style={styles.benefitIconWrap}>
+                      <Ionicons
+                        name={item.icon}
+                        size={16}
+                        color={Brand.bronze}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.benefitTitle}>{item.title}</Text>
+                      <Text style={styles.benefitCopy}>{item.copy}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+
               <View style={styles.footerRow}>
                 <Text style={styles.footerCopy}>Don’t have an account yet?</Text>
-                <Pressable onPress={() => router.replace('/auth/signup')}>
+                <Pressable onPress={() => router.replace("/auth/signup")}>
                   <Text style={styles.footerLink}>Create account</Text>
                 </Pressable>
               </View>
@@ -226,178 +387,340 @@ const styles = StyleSheet.create({
   page: {
     flex: 1,
   },
+
   topGlow: {
-    position: 'absolute',
+    position: "absolute",
     top: -80,
     right: -20,
     width: 220,
     height: 220,
     borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.55)',
+    backgroundColor: "rgba(255,255,255,0.55)",
   },
+
+  leftGlow: {
+    position: "absolute",
+    top: 250,
+    left: -80,
+    width: 200,
+    height: 200,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,229,180,0.28)",
+  },
+
   bottomGlow: {
-    position: 'absolute',
-    bottom: -60,
-    left: -30,
+    position: "absolute",
+    bottom: -70,
+    left: -20,
     width: 240,
     height: 240,
     borderRadius: 999,
-    backgroundColor: 'rgba(255,229,180,0.35)',
+    backgroundColor: "rgba(255,229,180,0.35)",
   },
+
   backButton: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
+    alignSelf: "flex-start",
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
   },
+
   backButtonText: {
     color: Brand.cocoa,
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: "800",
   },
+
   headerBlock: {
     marginTop: 18,
     marginBottom: 18,
   },
+
   titlePill: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
+    alignSelf: "flex-start",
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: Brand.line,
-    backgroundColor: 'rgba(255,255,255,0.62)',
+    backgroundColor: "rgba(255,255,255,0.62)",
   },
+
   titlePillText: {
     color: Brand.cocoa,
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: "800",
   },
+
   title: {
     marginTop: 16,
     color: Brand.ink,
-    fontWeight: '900',
+    fontWeight: "900",
   },
+
   subtitle: {
-    marginTop: 8,
+    marginTop: 10,
     color: Brand.muted,
     fontSize: 14,
     lineHeight: 22,
   },
-  errorCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 18,
-    backgroundColor: Brand.danger,
+
+  metricRow: {
+    marginTop: 16,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
   },
-  errorText: {
-    flex: 1,
-    color: '#fff8f5',
+
+  metricChip: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.58)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  metricText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  cardHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  cardTitle: {
+    color: Brand.ink,
+    fontSize: 24,
+    fontWeight: "900",
+  },
+
+  cardSubtitle: {
+    marginTop: 6,
+    color: Brand.muted,
     fontSize: 13,
     lineHeight: 19,
-    fontWeight: '600',
   },
-  label: {
+
+  cardBadge: {
+    minHeight: 32,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 11,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.66)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  cardBadgeText: {
     color: Brand.cocoa,
-    fontSize: 14,
-    fontWeight: '800',
-    marginBottom: 9,
+    fontSize: 11,
+    fontWeight: "900",
   },
-  input: {
+
+  errorCard: {
+    marginTop: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
     borderRadius: 18,
-    paddingHorizontal: 16,
-    color: Brand.ink,
-    fontSize: 15,
-    backgroundColor: 'rgba(255,255,255,0.72)',
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    backgroundColor: Brand.danger,
+  },
+
+  errorText: {
+    flex: 1,
+    color: "#fff4ef",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+
+  label: {
+    marginBottom: 8,
+    color: Brand.cocoa,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  inputShell: {
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: Brand.lineStrong,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    flexDirection: "row",
+    alignItems: "center",
+    overflow: "hidden",
   },
+
+  inputIconWrap: {
+    width: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  input: {
+    flex: 1,
+    color: Brand.ink,
+    fontSize: 15,
+    paddingRight: 10,
+  },
+
+  visibilityBtn: {
+    width: 46,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
   buttonShell: {
+    marginTop: 22,
     borderRadius: 18,
-    overflow: 'hidden',
+    overflow: "hidden",
   },
-  buttonPressed: {
-    opacity: 0.94,
-  },
-  disabled: {
-    opacity: 0.6,
-  },
+
   primaryButton: {
     borderRadius: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     gap: 10,
-    shadowColor: '#d4934f',
+    shadowColor: "#d4934f",
     shadowOpacity: 0.24,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 10 },
     elevation: 8,
   },
+
   primaryButtonText: {
     color: Brand.ink,
     fontSize: 15,
-    fontWeight: '900',
+    fontWeight: "900",
   },
+
   dividerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
     marginTop: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
+
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: Brand.line,
+    backgroundColor: Brand.lineStrong,
   },
+
   dividerText: {
     color: Brand.muted,
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: "700",
   },
+
   googleButton: {
     marginTop: 18,
     borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 10,
-    backgroundColor: 'rgba(255,255,255,0.78)',
     borderWidth: 1,
     borderColor: Brand.lineStrong,
+    backgroundColor: "rgba(255,255,255,0.80)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
   },
+
   googleButtonText: {
     color: Brand.ink,
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: "900",
   },
+
   helperText: {
     marginTop: 12,
     color: Brand.muted,
     fontSize: 12,
     lineHeight: 18,
   },
+
+  benefitList: {
+    marginTop: 18,
+    gap: 12,
+  },
+
+  benefitRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: 14,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.52)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  benefitIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,229,180,0.68)",
+  },
+
+  benefitTitle: {
+    color: Brand.ink,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  benefitCopy: {
+    marginTop: 4,
+    color: Brand.muted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+
   footerRow: {
     marginTop: 20,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
     gap: 6,
-    flexWrap: 'wrap',
+    flexWrap: "wrap",
   },
+
   footerCopy: {
     color: Brand.muted,
     fontSize: 13,
+    fontWeight: "700",
   },
+
   footerLink: {
     color: Brand.bronze,
     fontSize: 13,
-    fontWeight: '900',
+    fontWeight: "900",
+  },
+
+  disabled: {
+    opacity: 0.6,
+  },
+
+  pressed: {
+    opacity: 0.95,
+    transform: [{ scale: 0.995 }],
   },
 });
