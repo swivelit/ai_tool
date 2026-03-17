@@ -68,7 +68,7 @@ OPENAI_BACKOFF_BASE_SECONDS = _env_float("OPENAI_BACKOFF_BASE_SECONDS", 0.8, min
 OPENAI_CACHE_SIZE = _env_int("OPENAI_CACHE_SIZE", 128, minimum=8)
 OPENAI_JSON_REPAIR_ATTEMPTS = _env_int("OPENAI_JSON_REPAIR_ATTEMPTS", 1, minimum=0)
 
-PIPELINE_VERSION = _env_str("PIPELINE_VERSION", "ai_tool_stage_merge_v2")
+PIPELINE_VERSION = _env_str("PIPELINE_VERSION", "ai_tool_stage_merge_v3_advanced_rag")
 PROFILE_VERSION = _env_str("PROFILE_VERSION", "v4")
 QUESTION_COUNT = _env_int("QUESTION_COUNT", 15, minimum=1)
 MAX_HISTORY_DOCS = _env_int("MAX_HISTORY_DOCS", 8, minimum=1)
@@ -157,3 +157,26 @@ HEALTH_RISK_KEYWORDS = {
     "chest pain",
     "fainting",
 }
+
+# --------------------
+# Advanced RAG configuration
+# --------------------
+RAG_ENABLED = _env_bool("RAG_ENABLED", True)
+RAG_EMBEDDING_MODEL = _env_str("RAG_EMBEDDING_MODEL", "text-embedding-3-small")
+RAG_ENABLE_FAST_RAG_SEMANTIC = _env_bool("RAG_ENABLE_FAST_RAG_SEMANTIC", True)
+RAG_ENABLE_FOLLOWUP_REWRITE = _env_bool("RAG_ENABLE_FOLLOWUP_REWRITE", True)
+
+RAG_FAST_RAG_MIN_SCORE = _env_float("RAG_FAST_RAG_MIN_SCORE", 0.86, minimum=0.0)
+RAG_MIN_SCORE = _env_float("RAG_MIN_SCORE", 0.56, minimum=0.0)
+RAG_TOP_K = _env_int("RAG_TOP_K", 6, minimum=1)
+RAG_MAX_ITEM_CANDIDATES = _env_int("RAG_MAX_ITEM_CANDIDATES", 250, minimum=20)
+RAG_MAX_CONVERSATION_CANDIDATES = _env_int("RAG_MAX_CONVERSATION_CANDIDATES", 80, minimum=10)
+RAG_MAX_CACHE_CANDIDATES = _env_int("RAG_MAX_CACHE_CANDIDATES", 60, minimum=10)
+RAG_MAX_CONTEXT_CHARS = _env_int("RAG_MAX_CONTEXT_CHARS", 3200, minimum=800)
+RAG_RECENCY_HALF_LIFE_DAYS = _env_float("RAG_RECENCY_HALF_LIFE_DAYS", 14.0, minimum=0.1)
+RAG_EMBED_CACHE_SIZE = _env_int("RAG_EMBED_CACHE_SIZE", 4096, minimum=256)
+
+# Stage-pipeline RAG injection controls
+RAG_CONTEXT_INCLUDE_IN_STAGE_CONTEXT = _env_bool("RAG_CONTEXT_INCLUDE_IN_STAGE_CONTEXT", True)
+RAG_CONTEXT_HEADER = _env_str("RAG_CONTEXT_HEADER", "Relevant user memory and knowledge:")
+RAG_CONTEXT_MAX_SNIPPETS = _env_int("RAG_CONTEXT_MAX_SNIPPETS", 6, minimum=1)
