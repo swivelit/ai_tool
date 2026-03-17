@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import { Animated, Easing, Pressable, View } from "react-native";
+import { Animated, Easing, Pressable, StyleSheet, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 
 import { Brand } from "@/constants/theme";
 
@@ -16,19 +17,20 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
   const activeAnim = useRef(new Animated.Value(0)).current;
   const ringRotateAnim = useRef(new Animated.Value(0)).current;
   const orbitAnim = useRef(new Animated.Value(0)).current;
+  const iconAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const floatLoop = Animated.loop(
       Animated.sequence([
         Animated.timing(floatAnim, {
           toValue: 1,
-          duration: 2800,
+          duration: 2600,
           easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
         Animated.timing(floatAnim, {
           toValue: 0,
-          duration: 2800,
+          duration: 2600,
           easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
@@ -39,13 +41,13 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
       Animated.sequence([
         Animated.timing(pulseAnim, {
           toValue: 1,
-          duration: 1900,
+          duration: 1800,
           easing: Easing.inOut(Easing.quad),
           useNativeDriver: true,
         }),
         Animated.timing(pulseAnim, {
           toValue: 0,
-          duration: 1900,
+          duration: 1800,
           easing: Easing.inOut(Easing.quad),
           useNativeDriver: true,
         }),
@@ -55,7 +57,7 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
     const ringLoop = Animated.loop(
       Animated.timing(ringRotateAnim, {
         toValue: 1,
-        duration: 16000,
+        duration: 15000,
         easing: Easing.linear,
         useNativeDriver: true,
       })
@@ -70,18 +72,37 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
       })
     );
 
+    const iconLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(iconAnim, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(iconAnim, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
     floatLoop.start();
     pulseLoop.start();
     ringLoop.start();
     orbitLoop.start();
+    iconLoop.start();
 
     return () => {
       floatLoop.stop();
       pulseLoop.stop();
       ringLoop.stop();
       orbitLoop.stop();
+      iconLoop.stop();
     };
-  }, [floatAnim, orbitAnim, pulseAnim, ringRotateAnim]);
+  }, [floatAnim, iconAnim, orbitAnim, pulseAnim, ringRotateAnim]);
 
   useEffect(() => {
     Animated.timing(activeAnim, {
@@ -104,7 +125,7 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
 
   const haloOpacity = pulseAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0.24, 0.5],
+    outputRange: [0.22, 0.48],
   });
 
   const activeScale = activeAnim.interpolate({
@@ -114,12 +135,12 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
 
   const activeOpacity = activeAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0.14, 0.72],
+    outputRange: [0.12, 0.7],
   });
 
   const coreScale = activeAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [1, 1.03],
+    outputRange: [1, 1.035],
   });
 
   const ringRotate = ringRotateAnim.interpolate({
@@ -137,12 +158,17 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
     outputRange: ["0deg", "360deg"],
   });
 
+  const iconScale = iconAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.06],
+  });
+
   const shellColors = useMemo(
     () => ["#fffdf8", "#ffeecf", "#ffd99f", "#c7843f"] as const,
     []
   );
 
-  const oceanColors = useMemo(
+  const coreColors = useMemo(
     () => ["#fff8ec", "#ffe6b7", "#efbc74", "#b86e31"] as const,
     []
   );
@@ -150,60 +176,64 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
   return (
     <Pressable
       onPress={onPress}
-      style={{ alignItems: "center", justifyContent: "center" }}
       accessibilityRole="button"
       accessibilityLabel={listening ? "Stop recording" : "Start voice input"}
+      style={styles.pressable}
     >
       <View
         style={{
-          width: size + 110,
-          height: size + 110,
+          width: size + 112,
+          height: size + 112,
           alignItems: "center",
           justifyContent: "center",
         }}
       >
         <Animated.View
           pointerEvents="none"
-          style={{
-            position: "absolute",
-            width: size + 96,
-            height: size + 96,
-            borderRadius: 999,
-            backgroundColor: "rgba(255, 229, 180, 0.22)",
-            transform: [{ scale: haloScale }],
-            opacity: haloOpacity,
-          }}
+          style={[
+            styles.absCenter,
+            {
+              width: size + 98,
+              height: size + 98,
+              borderRadius: 999,
+              backgroundColor: "rgba(255, 229, 180, 0.22)",
+              transform: [{ scale: haloScale }],
+              opacity: haloOpacity,
+            },
+          ]}
+        />
+
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.absCenter,
+            {
+              width: size + 58,
+              height: size + 58,
+              borderRadius: 999,
+              backgroundColor: "rgba(215, 154, 89, 0.18)",
+              transform: [{ scale: activeScale }],
+              opacity: activeOpacity,
+            },
+          ]}
         />
 
         <Animated.View
           pointerEvents="none"
           style={{
             position: "absolute",
-            width: size + 58,
-            height: size + 58,
-            borderRadius: 999,
-            backgroundColor: "rgba(215, 154, 89, 0.18)",
-            transform: [{ scale: activeScale }],
-            opacity: activeOpacity,
-          }}
-        />
-
-        <Animated.View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            width: size + 52,
-            height: size + 52,
-            transform: [{ rotate: orbitRotate }],
+            width: size + 54,
+            height: size + 54,
             alignItems: "center",
             justifyContent: "center",
+            transform: [{ rotate: orbitRotate }],
           }}
         >
           <View
             style={{
               position: "absolute",
-              width: size + 52,
-              height: size + 52,
+              width: size + 54,
+              height: size + 54,
               borderRadius: 999,
               borderWidth: 1,
               borderColor: "rgba(124, 84, 52, 0.16)",
@@ -258,7 +288,7 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
               }}
             >
               <LinearGradient
-                colors={oceanColors}
+                colors={coreColors}
                 start={{ x: 0.18, y: 0.1 }}
                 end={{ x: 0.84, y: 0.94 }}
                 style={{ flex: 1, borderRadius: 999 }}
@@ -266,16 +296,12 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
 
               <Animated.View
                 pointerEvents="none"
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  right: 0,
-                  bottom: 0,
-                  left: 0,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  transform: [{ rotate: ringRotate }],
-                }}
+                style={[
+                  styles.absFillCenter,
+                  {
+                    transform: [{ rotate: ringRotate }],
+                  },
+                ]}
               >
                 <View
                   style={{
@@ -323,91 +349,97 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
 
               <Animated.View
                 pointerEvents="none"
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  right: 0,
-                  bottom: 0,
-                  left: 0,
-                  transform: [{ rotate: reverseRingRotate }],
-                }}
+                style={[
+                  styles.absFill,
+                  {
+                    transform: [{ rotate: reverseRingRotate }],
+                  },
+                ]}
               >
                 <View
                   style={{
                     position: "absolute",
-                    top: size * 0.24,
-                    left: size * 0.17,
-                    width: size * 0.34,
-                    height: size * 0.19,
+                    top: size * 0.22,
+                    left: size * 0.18,
+                    width: size * 0.32,
+                    height: size * 0.18,
                     borderRadius: 999,
-                    backgroundColor: "rgba(124, 84, 52, 0.18)",
+                    backgroundColor: "rgba(124, 84, 52, 0.14)",
                     transform: [{ rotate: "-16deg" }],
                   }}
                 />
                 <View
                   style={{
                     position: "absolute",
-                    top: size * 0.44,
-                    left: size * 0.21,
-                    width: size * 0.22,
+                    top: size * 0.49,
+                    right: size * 0.18,
+                    width: size * 0.24,
+                    height: size * 0.15,
+                    borderRadius: 999,
+                    backgroundColor: "rgba(124, 84, 52, 0.1)",
+                    transform: [{ rotate: "18deg" }],
+                  }}
+                />
+                <View
+                  style={{
+                    position: "absolute",
+                    bottom: size * 0.18,
+                    left: size * 0.24,
+                    width: size * 0.14,
                     height: size * 0.14,
                     borderRadius: 999,
-                    backgroundColor: "rgba(124, 84, 52, 0.16)",
-                    transform: [{ rotate: "12deg" }],
-                  }}
-                />
-                <View
-                  style={{
-                    position: "absolute",
-                    top: size * 0.32,
-                    right: size * 0.16,
-                    width: size * 0.28,
-                    height: size * 0.18,
-                    borderRadius: 999,
-                    backgroundColor: "rgba(124, 84, 52, 0.18)",
-                    transform: [{ rotate: "22deg" }],
-                  }}
-                />
-                <View
-                  style={{
-                    position: "absolute",
-                    top: size * 0.52,
-                    right: size * 0.23,
-                    width: size * 0.18,
-                    height: size * 0.11,
-                    borderRadius: 999,
-                    backgroundColor: "rgba(124, 84, 52, 0.14)",
-                    transform: [{ rotate: "-18deg" }],
+                    backgroundColor: "rgba(255,255,255,0.22)",
                   }}
                 />
               </Animated.View>
 
-              <View
-                pointerEvents="none"
-                style={{
-                  position: "absolute",
-                  top: 16,
-                  left: 18,
-                  width: size * 0.34,
-                  height: size * 0.16,
-                  borderRadius: 999,
-                  backgroundColor: "rgba(255,255,255,0.44)",
-                  transform: [{ rotate: "-18deg" }],
-                }}
+              <LinearGradient
+                colors={["rgba(255,255,255,0.5)", "rgba(255,255,255,0.06)"]}
+                start={{ x: 0.14, y: 0.1 }}
+                end={{ x: 0.82, y: 0.88 }}
+                style={[
+                  styles.absFill,
+                  {
+                    borderRadius: 999,
+                  },
+                ]}
               />
 
-              <View
+              <Animated.View
                 pointerEvents="none"
-                style={{
-                  position: "absolute",
-                  right: 24,
-                  bottom: 22,
-                  width: size * 0.2,
-                  height: size * 0.2,
-                  borderRadius: 999,
-                  backgroundColor: "rgba(124, 84, 52, 0.08)",
-                }}
-              />
+                style={[
+                  styles.absFillCenter,
+                  {
+                    transform: [{ scale: iconScale }],
+                  },
+                ]}
+              >
+                <View
+                  style={{
+                    width: size * 0.34,
+                    height: size * 0.34,
+                    borderRadius: 999,
+                    backgroundColor: listening
+                      ? "rgba(255,248,236,0.28)"
+                      : "rgba(255,248,236,0.18)",
+                    borderWidth: 1,
+                    borderColor: "rgba(255,255,255,0.26)",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    shadowColor: "#f7d6a0",
+                    shadowOpacity: 0.22,
+                    shadowRadius: 10,
+                    shadowOffset: { width: 0, height: 4 },
+                    elevation: 4,
+                  }}
+                >
+                  <Ionicons
+                    name={listening ? "stop" : "mic"}
+                    size={size * 0.16}
+                    color={Brand.ink}
+                  />
+                </View>
+              </Animated.View>
             </View>
           </LinearGradient>
         </Animated.View>
@@ -415,3 +447,32 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
     </Pressable>
   );
 }
+
+const styles = StyleSheet.create({
+  pressable: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  absCenter: {
+    position: "absolute",
+  },
+
+  absFill: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
+
+  absFillCenter: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});
