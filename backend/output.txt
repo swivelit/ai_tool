@@ -1,0 +1,131 @@
+----------------------------
+Question: How do you usually spend your free time?
+Condition: introverted
+Expected: I usually prefer spending time by myself, such as reading a good book or watching movies quietly at home.
+Generated: I usually spend my free time quietly, enjoying activities like reading, listening to music, or reflecting alone. These moments help me recharge and feel calm.
+Similarity: 0.753
+Latency: 5.189 seconds
+
+----------------------------
+Question: How do you usually plan your day?
+Condition: disciplined
+Expected: I like to plan my day in advance, including tasks, timings, and priorities, so that everything stays organized.
+Generated: I start by listing my key tasks and prioritizing them based on deadlines and importance. Then, I allocate specific time blocks to each activity, ensuring I stay focused and avoid distractions throughout the day.
+Similarity: 0.5683
+Latency: 2.435 seconds
+
+----------------------------
+Question: When making decisions you usually:
+Condition: calm_under_stress
+Expected: I usually choose the safest and most reliable option after thinking about possible risks and outcomes.
+Generated: When making decisions, I stay calm and carefully weigh the options before choosing the best path. I focus on practical steps and avoid rushing, which helps me handle pressure smoothly.
+Similarity: 0.5245
+Latency: 1.983 seconds
+
+----------------------------
+Question: How do you react when facing stress?
+Condition: calm_under_stress
+Expected: I try to face the problem immediately and look for a practical solution instead of delaying it.
+Generated: When facing stress, I stay calm by taking slow, deep breaths and focusing on one step at a time. This helps me think clearly and handle the situation without feeling overwhelmed.
+Similarity: 0.3712
+Latency: 1.801 seconds
+
+----------------------------
+Question: How do you prefer learning new skills?
+Condition: disciplined
+Expected: I prefer learning through clear step-by-step instructions so I can understand each stage without confusion.
+Generated: I prefer learning new skills through structured practice and clear, step-by-step guidance. Staying consistent and setting specific goals helps me master the skill efficiently.
+Similarity: 0.7355
+Latency: 1.732 seconds
+
+----------------------------
+Question: After a busy week you prefer:
+Condition: introverted
+Expected: After a busy week, I usually prefer quiet time alone so I can relax, recharge, and enjoy some peace.
+Generated: After a busy week, I prefer some quiet time alone to recharge, like reading or listening to music. It helps me relax without too much social interaction.
+Similarity: 0.8768
+Latency: 1.502 seconds
+
+----------------------------
+Question: Which hobby interests you most?
+Condition: active
+Expected: I am most interested in hobbies related to sports, exercise, or fitness activities that keep me active and healthy.
+Generated: I enjoy hobbies that keep me moving and engaged, like hiking or playing sports. They help me stay active and energized while having fun.
+Similarity: 0.7445
+Latency: 2.037 seconds
+
+----------------------------
+Question: When facing a challenge you:
+Condition: disciplined
+Expected: When I face a challenge, I prefer to analyze the situation carefully before deciding on the best way forward.
+Generated: When facing a challenge, I stay focused and assess the situation calmly. I create a clear plan of action and follow it step-by-step until the problem is resolved.
+Similarity: 0.6668
+Latency: 1.413 seconds
+
+----------------------------
+Question: What motivates you the most?
+Condition: disciplined
+Expected: I am strongly motivated by achievement, personal growth, and the feeling of reaching my goals successfully.
+Generated: What motivates me the most is setting clear goals and consistently working toward them. I find discipline in following a structured plan helps me stay focused and achieve steady progress.
+Similarity: 0.7272
+Latency: 1.587 seconds
+
+Similarity: 0.7272
+Latency: 1.587 seconds
+
+
+----------------------------
+Question: How would friends describe you?
+Condition: introverted
+Expected: My friends would probably describe me as calm, thoughtful, and someone who thinks carefully before speaking or acting.
+Generated: Friends would describe me as a good listener who values meaningful conversations over small talk. I’m calm and thoughtful, often preferring quiet time but always there when someone needs support.
+Similarity: 0.7736
+ut always there when someone needs support.
+Similarity: 0.7736
+Latency: 1.418 seconds
+
+===============================
+Total Questions: 10
+Average Similarity: 0.6741
+Average Latency: 2.11 seconds
+Latency: 1.418 seconds
+
+===============================
+Total Questions: 10
+Latency: 1.418 seconds
+
+Latency: 1.418 seconds
+Latency: 1.418 seconds
+
+===============================
+Latency: 1.418 seconds
+
+Latency: 1.418 seconds
+Latency: 1.418 seconds
+
+===============================
+Total Questions: 10
+Average Similarity: 0.6741
+Latency: 1.418 seconds
+
+Latency: 1.418 seconds
+Latency: 1.418 seconds
+
+===============================
+Total Questions: 10
+Average Similarity: 0.6741
+Latency: 1.418 seconds
+
+===============================
+Total Questions: 10
+Latency: 1.418 seconds
+
+===============================
+Latency: 1.418 seconds
+
+Latency: 1.418 seconds
+
+===============================
+Total Questions: 10
+Average Similarity: 0.6741
+Average Latency: 2.11 seconds
