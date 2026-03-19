@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -1206,6 +1207,220 @@ class LocalRAGService:
         }
         return {"context_text": context_text, "snippets": snippet_meta, "timings_ms": timings}
 
+    # ── Response Filtering & Remodelling Layer ──────────────────────────
+
+    _filter_logger = logging.getLogger("local_rag.response_filter")
+
+    # Keywords used for rule-based conflict detection (no API call needed)
+    _NON_VEG_KEYWORDS: Set[str] = {
+        "chicken", "mutton", "beef", "pork", "fish", "prawn", "shrimp",
+        "crab", "lobster", "lamb", "bacon", "sausage", "steak", "meat",
+        "egg", "eggs", "turkey", "duck", "goat", "venison", "salami",
+        "கோழி", "மட்டன்", "மீன்", "இறால்", "நண்டு", "முட்டை",
+    }
+    _HIGH_ACTIVITY_KEYWORDS: Set[str] = {
+        "run", "running", "sprint", "jogging", "jog", "push-up", "pushup",
+        "pull-up", "pullup", "burpee", "hiit", "crossfit", "heavy lift",
+        "deadlift", "squat", "plank", "jumping", "jump", "marathon",
+    }
+
+    _EMPTY_SAFETY_PROFILE: Dict[str, Any] = {
+        "diet": "",
+        "allergies": [],
+        "injuries": [],
+        "activity": "",
+    }
+
+    def _get_user_safety_profile(
+        self,
+        session: Session,
+        user_id: int,
+    ) -> Dict[str, Any]:
+        """Fetch diet/allergy/injury/activity from UserProfile.answers_json.
+
+        Returns an empty profile (no filtering) when the DB row is missing
+        or the JSON doesn't contain the expected keys. No dummy values are
+        assumed — only real user data triggers conflict detection.
+        """
+        try:
+            profile = session.exec(
+                select(UserProfile).where(UserProfile.user_id == user_id)
+            ).first()
+            if profile is not None and profile.answers_json:
+                data = json.loads(profile.answers_json)
+                if isinstance(data, dict):
+                    return {
+                        "diet": str(data.get("diet", "")).strip().lower(),
+                        "allergies": [
+                            str(a).strip().lower()
+                            for a in (data.get("allergies") or [])
+                            if str(a).strip()
+                        ],
+                        "injuries": [
+                            str(i).strip().lower()
+                            for i in (data.get("injuries") or [])
+                            if str(i).strip()
+                        ],
+                        "activity": str(data.get("activity", "")).strip().lower(),
+                    }
+        except Exception:
+            pass
+        return dict(self._EMPTY_SAFETY_PROFILE)
+
+    def _detect_profile_conflicts(
+        self,
+        response_text: str,
+        user_profile: Dict[str, Any],
+    ) -> List[Dict[str, str]]:
+        """Rule-based conflict detection — no API call, pure string matching."""
+        conflicts: List[Dict[str, str]] = []
+        lower_response = response_text.lower()
+        tokens = set(re.findall(r"[a-z0-9\u0B80-\u0BFF]+", lower_response))
+
+        # 1. Diet conflict (non-veg suggestion for vegetarian user)
+        diet = str(user_profile.get("diet", "")).strip().lower()
+        if diet in {"vegetarian", "vegan", "veg"}:
+            found = tokens & self._NON_VEG_KEYWORDS
+            if found:
+                conflicts.append({
+                    "type": "diet",
+                    "detail": f"Non-vegetarian items mentioned: {', '.join(sorted(found))}",
+                })
+
+        # 2. Allergy conflict
+        allergies = [str(a).strip().lower() for a in user_profile.get("allergies", []) if str(a).strip()]
+        for allergen in allergies:
+            if allergen in lower_response:
+                conflicts.append({
+                    "type": "allergy",
+                    "detail": f"Allergic ingredient mentioned: {allergen}",
+                })
+
+        # 3. Injury / physical limitation conflict
+        injuries = [str(i).strip().lower() for i in user_profile.get("injuries", []) if str(i).strip()]
+        if injuries:
+            found_activity = tokens & self._HIGH_ACTIVITY_KEYWORDS
+            if found_activity:
+                conflicts.append({
+                    "type": "injury",
+                    "detail": f"High-intensity activity ({', '.join(sorted(found_activity))}) may conflict with injuries: {', '.join(injuries)}",
+                })
+
+        # 4. Activity-level mismatch
+        activity = str(user_profile.get("activity", "moderate")).strip().lower()
+        if activity == "low":
+            found_heavy = tokens & self._HIGH_ACTIVITY_KEYWORDS
+            if found_heavy:
+                conflicts.append({
+                    "type": "activity_level",
+                    "detail": f"Intense activity ({', '.join(sorted(found_heavy))}) suggested for a low-activity user",
+                })
+
+        return conflicts
+
+    def _remodel_for_safety(
+        self,
+        original_english: str,
+        user_profile: Dict[str, Any],
+        conflicts: List[Dict[str, str]],
+    ) -> Optional[str]:
+        """Call OpenAI to produce a safe alternative only when conflicts exist."""
+        if not conflicts or self._openai is None:
+            return None
+
+        conflict_summary = "; ".join(c["detail"] for c in conflicts)
+        prompt = (
+            "You are a safety-aware assistant. The following response was generated "
+            "for a user but contains conflicts with their personal profile.\n\n"
+            f"--- Original Response ---\n{original_english}\n\n"
+            f"--- User Profile ---\n{json.dumps(user_profile, ensure_ascii=False)}\n\n"
+            f"--- Detected Conflicts ---\n{conflict_summary}\n\n"
+            "Please rewrite the response so that:\n"
+            "1. All conflicting suggestions are replaced with safe alternatives.\n"
+            "2. The overall meaning and helpfulness are preserved.\n"
+            "3. Keep the tone friendly and natural.\n"
+            "4. Do NOT mention the conflict or that you modified anything.\n"
+            "Return ONLY the corrected response text, nothing else."
+        )
+        try:
+            resp = self._openai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=512,
+                temperature=0.4,
+            )
+            choice = resp.choices[0] if resp.choices else None
+            if choice and choice.message and choice.message.content:
+                return str(choice.message.content).strip()
+        except Exception as exc:
+            self._filter_logger.warning("Remodel API call failed: %s", exc)
+        return None
+
+    def _filter_and_remodel_response(
+        self,
+        result: Dict[str, Any],
+        session: Session,
+        user_id: Optional[int],
+    ) -> Dict[str, Any]:
+        """Post-processing filter applied to every pipeline result.
+
+        • If no conflict is detected the result is returned unchanged
+          (zero extra latency, no OpenAI call).
+        • If a conflict is found the English text is remodelled via OpenAI
+          and the result dict is updated in-place.
+        """
+        if not user_id:
+            return result
+
+        english_text = str(result.get("remodeled_english") or result.get("raw_english") or "").strip()
+        if not english_text:
+            return result
+
+        user_profile = self._get_user_safety_profile(session, int(user_id))
+        conflicts = self._detect_profile_conflicts(english_text, user_profile)
+
+        if not conflicts:
+            return result
+
+        # Log the detected conflicts
+        self._filter_logger.info(
+            "Conflicts detected for user %s: %s",
+            user_id,
+            json.dumps(conflicts, ensure_ascii=False),
+        )
+
+        remodeled = self._remodel_for_safety(english_text, user_profile, conflicts)
+        if remodeled:
+            self._filter_logger.info(
+                "Response remodelled for user %s | original_len=%d | new_len=%d",
+                user_id,
+                len(english_text),
+                len(remodeled),
+            )
+            # Update the result dict — keep original as raw, put safe version as remodeled
+            result["raw_english"] = english_text
+            result["remodeled_english"] = remodeled
+
+            # Update stage notes
+            try:
+                notes = json.loads(result.get("stage_notes", "[]"))
+            except Exception:
+                notes = []
+            if isinstance(notes, list):
+                notes.append(f"Response filtered: {'; '.join(c['type'] for c in conflicts)} conflict(s) detected and remodelled.")
+                result["stage_notes"] = json.dumps(notes, ensure_ascii=False)
+
+            result["risk_level"] = "filtered"
+        else:
+            self._filter_logger.warning(
+                "Conflict detected but remodel failed for user %s — returning original.",
+                user_id,
+            )
+
+        return result
+
+    # ── Main entry point ───────────────────────────────────────────────
+
     def try_answer(self, session: Session, user_id: Optional[int], message: str) -> Optional[Dict[str, Any]]:
         self._reload_if_needed()
         normalized = self.normalize_lookup_text(message)
@@ -1216,11 +1431,11 @@ class LocalRAGService:
         if user_id:
             schedule_answer = self._build_schedule_answer(session, int(user_id), normalized, user)
             if schedule_answer is not None:
-                return schedule_answer
+                return self._filter_and_remodel_response(schedule_answer, session, user_id)
 
             routine_answer = self._build_routine_answer(session, int(user_id), normalized, user)
             if routine_answer is not None:
-                return routine_answer
+                return self._filter_and_remodel_response(routine_answer, session, user_id)
 
             cache_rows = list(
                 session.exec(
@@ -1251,28 +1466,32 @@ class LocalRAGService:
                 remodeled_english = str(best_payload.get("remodeled_english", "")).strip() or raw_english
                 tamil_text = str(best_payload.get("tamil_text", "")).strip()
                 theni_tamil_text = str(best_payload.get("theni_tamil_text", "")).strip() or tamil_text
-                return self._build_pipeline_result(
-                    raw_english=raw_english,
-                    remodeled_english=remodeled_english,
-                    tamil_text=tamil_text,
-                    theni_tamil_text=theni_tamil_text,
-                    route_taken="cached_answer",
-                    direct_answer_source="qa_cache",
-                    direct_answer_confidence=f"{best_score:.4f}",
-                    predicted_label=str(best_payload.get("predicted_label", "cached")).strip() or "cached",
-                    risk_level=str(best_payload.get("risk_level", "low")).strip() or "low",
-                    stage_notes=["Reused a cached answer and skipped a new OpenAI call."],
-                    core_meta=best_payload.get("core_meta") if isinstance(best_payload.get("core_meta"), dict) else {},
-                    remodel_meta=best_payload.get("remodel_meta") if isinstance(best_payload.get("remodel_meta"), dict) else {},
-                    review_meta=best_payload.get("review_meta") if isinstance(best_payload.get("review_meta"), dict) else {},
-                    translation_meta=best_payload.get("translation_meta") if isinstance(best_payload.get("translation_meta"), dict) else {},
-                    timings_ms=best_payload.get("timings_ms") if isinstance(best_payload.get("timings_ms"), dict) else {"total_ms": 0.0},
-                    cache_hit="true",
+                return self._filter_and_remodel_response(
+                    self._build_pipeline_result(
+                        raw_english=raw_english,
+                        remodeled_english=remodeled_english,
+                        tamil_text=tamil_text,
+                        theni_tamil_text=theni_tamil_text,
+                        route_taken="cached_answer",
+                        direct_answer_source="qa_cache",
+                        direct_answer_confidence=f"{best_score:.4f}",
+                        predicted_label=str(best_payload.get("predicted_label", "cached")).strip() or "cached",
+                        risk_level=str(best_payload.get("risk_level", "low")).strip() or "low",
+                        stage_notes=["Reused a cached answer and skipped a new OpenAI call."],
+                        core_meta=best_payload.get("core_meta") if isinstance(best_payload.get("core_meta"), dict) else {},
+                        remodel_meta=best_payload.get("remodel_meta") if isinstance(best_payload.get("remodel_meta"), dict) else {},
+                        review_meta=best_payload.get("review_meta") if isinstance(best_payload.get("review_meta"), dict) else {},
+                        translation_meta=best_payload.get("translation_meta") if isinstance(best_payload.get("translation_meta"), dict) else {},
+                        timings_ms=best_payload.get("timings_ms") if isinstance(best_payload.get("timings_ms"), dict) else {"total_ms": 0.0},
+                        cache_hit="true",
+                    ),
+                    session,
+                    user_id,
                 )
 
         direct_profile = self._build_user_profile_answer(normalized, user)
         if direct_profile is not None:
-            return direct_profile
+            return self._filter_and_remodel_response(direct_profile, session, user_id)
 
         match = self._match_fast_row(normalized, user)
         if match is None:
@@ -1282,15 +1501,19 @@ class LocalRAGService:
         assistant_name = (user.assistant_name if user and user.assistant_name else "Ellie").strip() or "Ellie"
         place = (user.place if user and user.place else "your saved place").strip() or "your saved place"
         english, tamil, theni = self._row_language_text(row, "ta", user_name, assistant_name, place)
-        return self._build_pipeline_result(
-            raw_english=english,
-            remodeled_english=english,
-            tamil_text=tamil,
-            theni_tamil_text=theni,
-            route_taken=f"fast_rag_{row.route}",
-            direct_answer_source=source,
-            direct_answer_confidence=f"{score:.4f}",
-            predicted_label=row.label,
-            stage_notes=["Answered from fast local RAG without calling OpenAI."],
-            timings_ms={"total_ms": 0.0},
+        return self._filter_and_remodel_response(
+            self._build_pipeline_result(
+                raw_english=english,
+                remodeled_english=english,
+                tamil_text=tamil,
+                theni_tamil_text=theni,
+                route_taken=f"fast_rag_{row.route}",
+                direct_answer_source=source,
+                direct_answer_confidence=f"{score:.4f}",
+                predicted_label=row.label,
+                stage_notes=["Answered from fast local RAG without calling OpenAI."],
+                timings_ms={"total_ms": 0.0},
+            ),
+            session,
+            user_id,
         )
