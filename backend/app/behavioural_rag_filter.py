@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Set
 from openai import OpenAI
 from sqlmodel import Session, select
 
-from .models import UserProfile
+from .models import UserProfile, DailyRoutine
 
 logger = logging.getLogger("behavioural_rag_filter")
 
@@ -47,6 +47,12 @@ HIGH_ACTIVITY_KEYWORDS: Set[str] = {
     "run", "running", "sprint", "jogging", "jog", "push-up", "pushup",
     "pull-up", "pullup", "burpee", "hiit", "crossfit", "heavy lift",
     "deadlift", "squat", "plank", "jumping", "jump", "marathon",
+}
+
+SLEEP_KEYWORDS: Set[str] = {
+    "midnight", "late night", "1am", "2am", "3am", "4am", "5am", 
+    "stay up", "night owl", "all night", "overnight", "late meal",
+    "midnight snack", "pre-dawn",
 }
 
 
@@ -78,36 +84,41 @@ class BehaviouralRAGFilter:
     # ── Step 1: Fetch real user data from DB ─────────────────────────────────
 
     def _get_user_profile(self, session: Session, user_id: int) -> Dict[str, Any]:
-        """Fetch diet / allergies / injuries / activity from the database.
-
-        Returns an EMPTY profile if no data is found.
-        No default values are assumed — only REAL user data triggers filtering.
+        """Fetch diet/allergies (UserProfile) and wake/sleep (DailyRoutine) from DB.
+        
+        Returns an EMPTY profile if no data found. No assumptions made.
         """
+        result: Dict[str, Any] = {
+            "diet": "", "allergies": [], "injuries": [], "activity": "",
+            "wake_time": "", "sleep_time": "", "habits": []
+        }
         try:
-            row = session.exec(
-                select(UserProfile).where(UserProfile.user_id == user_id)
-            ).first()
-            if row and row.answers_json:
-                data = json.loads(row.answers_json)
+            # 1. Fetch questionnaire data
+            u_row = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
+            if u_row and u_row.answers_json:
+                data = json.loads(u_row.answers_json)
                 if isinstance(data, dict):
-                    return {
-                        "diet":     str(data.get("diet", "")).strip().lower(),
-                        "allergies": [
-                            str(a).strip().lower()
-                            for a in (data.get("allergies") or [])
-                            if str(a).strip()
-                        ],
-                        "injuries": [
-                            str(i).strip().lower()
-                            for i in (data.get("injuries") or [])
-                            if str(i).strip()
-                        ],
-                        "activity": str(data.get("activity", "")).strip().lower(),
-                    }
+                    result["diet"] = str(data.get("diet", "")).strip().lower()
+                    result["allergies"] = [str(a).strip().lower() for a in (data.get("allergies") or []) if str(a).strip()]
+                    result["injuries"] = [str(i).strip().lower() for i in (data.get("injuries") or []) if str(i).strip()]
+                    result["activity"] = str(data.get("activity", "")).strip().lower()
+
+                    # 3. Fetch Personality & Communication (Your leader's request)
+                    result["personality_style"] = str(data.get("personality_style", "calm")).strip().lower()
+                    result["communication_tone"] = str(data.get("communication_tone", "warm")).strip().lower()
+                    result["main_goal"] = str(data.get("main_goal", "health")).strip().lower()
+                    result["hobbies"] = [h.strip().lower() for h in (data.get("hobbies") or []) if h.strip()]
+
+            # 2. Fetch routine data (Your new connection)
+            r_row = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
+            if r_row:
+                result["wake_time"] = str(r_row.wake_time or "").strip()
+                result["sleep_time"] = str(r_row.sleep_time or "").strip()
+                result["habits"] = [h.strip().lower() for h in (r_row.daily_habits or "").split(",") if h.strip()]
+
         except Exception as exc:
-            logger.warning("Could not load user profile for safety filter: %s", exc)
-        # Empty profile = no assumptions = no filtering
-        return {"diet": "", "allergies": [], "injuries": [], "activity": ""}
+            logger.warning("Could not load full user profile for safety filter: %s", exc)
+        return result
 
     # ── Step 2: Detect conflicts (rule-based, zero API cost) ─────────────────
 
@@ -164,6 +175,31 @@ class BehaviouralRAGFilter:
                     ),
                 })
 
+        # Rule 5 — Routine Conflict: Late-night suggestions for early sleepers
+        sleep_time = profile.get("sleep_time", "")
+        if sleep_time:
+            # If user sleeps before 10:30 PM (22:30), check for night-owl suggestions
+            try:
+                hour = int(sleep_time.split(":")[0])
+                if hour < 22: # User sleeps early
+                    found_night = tokens & SLEEP_KEYWORDS
+                    if found_night:
+                        conflicts.append({
+                            "type": "routine",
+                            "detail": f"Late-night suggestions ({', '.join(sorted(found_night))}) conflict with user's sleep time ({sleep_time})",
+                        })
+            except (ValueError, IndexError):
+                pass
+
+        # Rule 6 — Personality Conflict: Private/Introvert suggestions
+        personality = profile.get("personality_style", "")
+        if personality in {"emotional_sensitive", "calm"}: # Often maps to Introverted
+             if any(kw in lower for kw in ["party", "crowd", "stage", "performance", "public speaking"]):
+                 conflicts.append({
+                     "type": "personality",
+                     "detail": f"This suggestion might be socially overwhelming for a {personality} user.",
+                 })
+
         return conflicts
 
     # ── Step 3: Remodel response via OpenAI (only when conflict found) ────────
@@ -186,10 +222,11 @@ class BehaviouralRAGFilter:
             f"--- User Profile ---\n{json.dumps(profile, ensure_ascii=False)}\n\n"
             f"--- Detected Conflicts ---\n{conflict_summary}\n\n"
             "Rewrite the response so that:\n"
-            "1. All conflicting items are replaced with safe alternatives.\n"
-            "2. The meaning and helpfulness are preserved.\n"
-            "3. The tone stays friendly and natural.\n"
-            "4. Do NOT mention the conflict or that you changed anything.\n"
+            f"1. Matches the user's personality style: {profile.get('personality_style', 'balanced')}.\n"
+            f"2. Uses the preferred tone: {profile.get('communication_tone', 'warm and clear')}.\n"
+            f"3. All physical safety/physical conflicts are fixed.\n"
+            "4. The meaning and helpfulness are preserved.\n"
+            "5. Do NOT mention the conflict or that you changed anything.\n"
             "Return ONLY the corrected response text."
         )
         try:
