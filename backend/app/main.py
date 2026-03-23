@@ -41,7 +41,7 @@ from stage_behaviour_questions import BehaviourQuestionnaire, QUESTIONS as PIPEL
 from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
-from .stage_safety_filter import StageSafetyFilter  # noqa: E402
+from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
 
 load_dotenv()
 
@@ -67,7 +67,7 @@ STAGE_CORE = OpenAICore()
 STAGE_REMODELER = EnglishRemodeler(STAGE_CORE)
 STAGE_TRANSLATOR = StageTranslator(STAGE_CORE)
 LOCAL_RAG_SERVICE = LocalRAGService()
-SAFETY_FILTER = StageSafetyFilter(
+SAFETY_FILTER = BehaviouralRAGFilter(
     openai_api_key=OPENAI_API_KEY,
     translator=STAGE_TRANSLATOR,
 )

@@ -1,7 +1,7 @@
 """
-stage_safety_filter.py
+behavioural_rag_filter.py
 ───────────────────────────────────────────────────────
-RAG Safety Filter 
+Behavioural RAG Safety Filter
 
 This module is the SAFETY LAYER that sits between the OpenAI response
 and the final JSON that is sent to the mobile UI.
@@ -9,7 +9,7 @@ and the final JSON that is sent to the mobile UI.
 Flow:
     OpenAI Response (raw_english)
         ↓
-    [StageSafetyFilter.apply()]   ← This file
+    [BehaviouralRAGFilter.apply()]
         ↓  - fetches real user data (diet, allergies, injuries, activity)
         ↓  - detects conflicts (rule-based, zero extra API calls)
         ↓  - remodels the response via OpenAI only when conflict found
@@ -30,7 +30,7 @@ from sqlmodel import Session, select
 
 from .models import UserProfile
 
-logger = logging.getLogger("stage_safety_filter")
+logger = logging.getLogger("behavioural_rag_filter")
 
 
 # ── Keyword sets used for RULE-BASED conflict detection ──────────────────────
@@ -52,13 +52,13 @@ HIGH_ACTIVITY_KEYWORDS: Set[str] = {
 
 # ── Main Safety Filter class ─────────────────────────────────────────────────
 
-class StageSafetyFilter:
+class BehaviouralRAGFilter:
     """RAG-based safety layer that filters OpenAI responses using real user data.
 
     Usage (in main.py):
-        from .stage_safety_filter import StageSafetyFilter
+        from .behavioural_rag_filter import BehaviouralRAGFilter
 
-        SAFETY_FILTER = StageSafetyFilter(
+        SAFETY_FILTER = BehaviouralRAGFilter(
             openai_api_key=OPENAI_API_KEY,
             translator=STAGE_TRANSLATOR,
         )
