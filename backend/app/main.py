@@ -41,6 +41,7 @@ from stage_behaviour_questions import BehaviourQuestionnaire, QUESTIONS as PIPEL
 from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
+from .stage_safety_filter import StageSafetyFilter  # noqa: E402
 
 load_dotenv()
 
@@ -66,6 +67,10 @@ STAGE_CORE = OpenAICore()
 STAGE_REMODELER = EnglishRemodeler(STAGE_CORE)
 STAGE_TRANSLATOR = StageTranslator(STAGE_CORE)
 LOCAL_RAG_SERVICE = LocalRAGService()
+SAFETY_FILTER = StageSafetyFilter(
+    openai_api_key=OPENAI_API_KEY,
+    translator=STAGE_TRANSLATOR,
+)
 STAGE_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
@@ -1155,9 +1160,37 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
             if str(note or "").strip():
                 stage_notes.append(str(note).strip())
 
-    tamil_text = ""
+    # ── RAG Safety Filter ──────────────────────────────────────────────────────
+    # This sits BETWEEN the OpenAI response and the final output sent to the UI.
+    # It checks the user's real profile data (diet, allergies, injuries, activity)
+    # and rewrites / re-translates the response if any conflict is found.
+    _safety_result = {
+        "raw_english": raw_english,
+        "remodeled_english": remodeled_english,
+        "stage_notes": json.dumps(stage_notes, ensure_ascii=False),
+        "risk_level": risk_level,
+    }
+    _safety_result = SAFETY_FILTER.apply(_safety_result, session, user_id)
+
+    raw_english       = _safety_result.get("raw_english", raw_english)
+    remodeled_english = _safety_result.get("remodeled_english", remodeled_english)
+    risk_level        = _safety_result.get("risk_level", risk_level)
+    try:
+        stage_notes = json.loads(_safety_result.get("stage_notes", "[]"))
+    except Exception:
+        pass
+    # If the safety filter already re-translated (MT Task), carry those forward
+    _safety_tamil       = _safety_result.get("tamil_text", "")
+    _safety_theni       = _safety_result.get("theni_tamil_text", "")
+
     theni_tamil_text = ""
-    if resolved_reply_language == "ta":
+    tamil_text = ""
+    if _safety_tamil:
+        # MT Task: safety filter already retranslated → use that directly
+        tamil_text       = _safety_tamil
+        theni_tamil_text = _safety_theni
+        translation_meta = {"source": "safety_filter_retranslation"}
+    elif resolved_reply_language == "ta":
         t0 = time.perf_counter()
         translation_meta = STAGE_TRANSLATOR.english_to_tamil_with_meta(remodeled_english, profile)
         tamil_text = str(translation_meta.get("tamil_text", "")).strip()
