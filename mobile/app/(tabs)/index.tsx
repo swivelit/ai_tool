@@ -184,6 +184,7 @@ export default function Home() {
   const [historyItems, setHistoryItems] = useState<Item[]>([]);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
+  const recordingRef = useRef<Audio.Recording | null>(null);
   const recordingPhaseRef = useRef<"idle" | "starting" | "recording" | "stopping">("idle");
   const stopWhenReadyRef = useRef(false);
   const recordingSourceRef = useRef<"orb" | "button" | null>(null);
@@ -258,6 +259,10 @@ export default function Home() {
   }, [profile?.userId]);
 
   useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
+
+  useEffect(() => {
     const showEvent =
       Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvent =
@@ -277,6 +282,31 @@ export default function Home() {
       hideSub.remove();
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      const activeRecording = recordingRef.current;
+      if (activeRecording) {
+        void activeRecording.stopAndUnloadAsync().catch(() => undefined);
+      }
+
+      void Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: false,
+      }).catch(() => undefined);
+    };
+  }, []);
+
+  async function resetAudioMode() {
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: false,
+      });
+    } catch {
+      // Ignore cleanup failures.
+    }
+  }
 
   async function loadHistory() {
     try {
@@ -302,6 +332,11 @@ export default function Home() {
     }
 
     return cleaned;
+  }
+
+  function closeReminderConfirm() {
+    setConfirmOpen(false);
+    setPendingReminder(null);
   }
 
   async function analyzeText() {
@@ -372,6 +407,8 @@ export default function Home() {
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
       await nextRecording.startAsync();
+
+      recordingRef.current = nextRecording;
       setRecording(nextRecording);
       recordingPhaseRef.current = "recording";
 
@@ -383,8 +420,10 @@ export default function Home() {
       recordingPhaseRef.current = "idle";
       recordingSourceRef.current = null;
       stopWhenReadyRef.current = false;
+      recordingRef.current = null;
       setRecording(null);
       setListening(false);
+      await resetAudioMode();
       Alert.alert("Error", error?.message || "Could not start recording.");
     }
   }
@@ -407,11 +446,14 @@ export default function Home() {
       setBusy(true);
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
+      recordingRef.current = null;
       setRecording(null);
       setListening(false);
       recordingSourceRef.current = null;
 
       await activeRecording.stopAndUnloadAsync();
+      await resetAudioMode();
+
       const uri = activeRecording.getURI();
 
       if (!uri) {
@@ -456,8 +498,10 @@ export default function Home() {
       recordingPhaseRef.current = "idle";
       recordingSourceRef.current = null;
       stopWhenReadyRef.current = false;
+      recordingRef.current = null;
       setRecording(null);
       setListening(false);
+      await resetAudioMode();
       setBusy(false);
     }
   }
@@ -508,23 +552,20 @@ export default function Home() {
           "Confirm time",
           `I couldn’t confidently understand the time.\n\nDetected: "${pendingReminder.datetimeText}".\nPlease type a clearer time.`
         );
-        setConfirmOpen(false);
-        setPendingReminder(null);
+        closeReminderConfirm();
         return;
       }
 
       const when = new Date(parsed.iso);
       if (Number.isNaN(when.getTime())) {
         Alert.alert("Error", "Parsed datetime was invalid.");
-        setConfirmOpen(false);
-        setPendingReminder(null);
+        closeReminderConfirm();
         return;
       }
 
       if (when.getTime() < Date.now() + 30_000) {
         Alert.alert("Time is too soon", "Please choose a future time.");
-        setConfirmOpen(false);
-        setPendingReminder(null);
+        closeReminderConfirm();
         return;
       }
 
@@ -541,8 +582,7 @@ export default function Home() {
       Alert.alert("Error", error?.message || "Failed to schedule reminder.");
     } finally {
       setBusy(false);
-      setConfirmOpen(false);
-      setPendingReminder(null);
+      closeReminderConfirm();
     }
   }
 
@@ -1192,7 +1232,7 @@ export default function Home() {
           transparent
           visible={confirmOpen}
           animationType="fade"
-          onRequestClose={() => setConfirmOpen(false)}
+          onRequestClose={closeReminderConfirm}
         >
           <View style={styles.modalBackdrop}>
             <GlassCard style={styles.modalCard}>
@@ -1228,7 +1268,7 @@ export default function Home() {
 
               <View style={styles.modalActionsRow}>
                 <Pressable
-                  onPress={() => setConfirmOpen(false)}
+                  onPress={closeReminderConfirm}
                   style={styles.modalSecondaryBtn}
                 >
                   <Text style={styles.modalSecondaryBtnText}>Cancel</Text>
