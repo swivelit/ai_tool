@@ -89,7 +89,7 @@ class BehaviouralRAGFilter:
         Returns an EMPTY profile if no data found. No assumptions made.
         """
         result: Dict[str, Any] = {
-            "diet": "", "allergies": [], "injuries": [], "activity": "",
+            "diet": "", "food_caution": "", "health_conditions": [], "activity": "",
             "wake_time": "", "sleep_time": "", "habits": []
         }
         try:
@@ -98,14 +98,15 @@ class BehaviouralRAGFilter:
             if u_row and u_row.answers_json:
                 data = json.loads(u_row.answers_json)
                 if isinstance(data, dict):
-                    result["diet"] = str(data.get("diet", "")).strip().lower()
-                    result["allergies"] = [str(a).strip().lower() for a in (data.get("allergies") or []) if str(a).strip()]
-                    result["injuries"] = [str(i).strip().lower() for i in (data.get("injuries") or []) if str(i).strip()]
-                    result["activity"] = str(data.get("activity", "")).strip().lower()
+                    result["diet"] = str(data.get("food_preference", "")).strip().lower()
+                    result["food_caution"] = str(data.get("food_caution", "")).strip().lower()
+                    result["health_conditions"] = [str(c).strip().lower() for c in (data.get("health_conditions") or []) if str(c).strip()]
+                    result["activity"] = str(data.get("daily_activity", "")).strip().lower()
 
-                    # 3. Fetch Personality & Communication (Your leader's request)
+                    # personality fields
                     result["personality_style"] = str(data.get("personality_style", "calm")).strip().lower()
                     result["communication_tone"] = str(data.get("communication_tone", "warm")).strip().lower()
+                    result["answer_length"] = str(data.get("answer_length", "medium")).strip().lower()
                     result["main_goal"] = str(data.get("main_goal", "health")).strip().lower()
                     result["hobbies"] = [h.strip().lower() for h in (data.get("hobbies") or []) if h.strip()]
 
@@ -134,44 +135,41 @@ class BehaviouralRAGFilter:
 
         # Rule 1 — Diet: Non-veg suggestion for vegetarian user
         diet = profile.get("diet", "")
-        if diet in {"vegetarian", "vegan", "veg"}:
-            found = tokens & NON_VEG_KEYWORDS
+        if diet in {"vegetarian", "vegan", "veg", "eggetarian"}:
+            # If eggetarian, allow eggs, block other meat
+            target_keywords = NON_VEG_KEYWORDS
+            if diet == "eggetarian":
+                target_keywords = NON_VEG_KEYWORDS - {"egg", "eggs", "முட்டை"}
+            
+            found = tokens & target_keywords
             if found:
                 conflicts.append({
                     "type": "diet",
-                    "detail": f"Non-vegetarian items in response: {', '.join(sorted(found))}",
+                    "detail": f"Non-vegetarian items ({', '.join(sorted(found))}) conflict with {diet} preference",
                 })
 
-        # Rule 2 — Allergy: Any allergen mentioned in the response
-        for allergen in profile.get("allergies", []):
-            if allergen and allergen in lower:
-                conflicts.append({
-                    "type": "allergy",
-                    "detail": f"Response contains allergen: {allergen}",
-                })
+        # Rule 2 — Allergy & Caution: Items mentioned in response
+        caution = profile.get("food_caution", "")
+        if caution == "avoid_sugary_foods" and any(kw in lower for kw in ["sugar", "sweet", "dessert", "candy"]):
+             conflicts.append({"type": "caution", "detail": "Response contains sugary items for a sugar-conscious user"})
+        
+        # Check specific conditions
+        for cond in profile.get("health_conditions", []):
+            if cond == "allergy_digestion_kidney_or_other" and any(kw in lower for kw in ["allergy", "allergic"]):
+                conflicts.append({"type": "health", "detail": "Response may trigger known health sensitivities"})
 
-        # Rule 3 — Injury: High-intensity activity suggested to an injured user
-        if profile.get("injuries"):
-            found_activity = tokens & HIGH_ACTIVITY_KEYWORDS
-            if found_activity:
-                conflicts.append({
-                    "type": "injury",
-                    "detail": (
-                        f"High-intensity activity ({', '.join(sorted(found_activity))}) "
-                        f"conflicts with user injuries: {', '.join(profile['injuries'])}"
-                    ),
-                })
+        # Rule 3 is removed because injury data is not collected.
 
         # Rule 4 — Activity level: Intense exercise suggested to a low-activity user
         activity = profile.get("activity", "")
-        if activity == "low":
+        if activity in {"mostly_sitting", "light_movement", "low"}:
             found_heavy = tokens & HIGH_ACTIVITY_KEYWORDS
             if found_heavy:
                 conflicts.append({
                     "type": "activity_level",
                     "detail": (
                         f"Intense activity ({', '.join(sorted(found_heavy))}) "
-                        "suggested for a low-activity user"
+                        f"suggested for a {activity} user"
                     ),
                 })
 
@@ -224,9 +222,10 @@ class BehaviouralRAGFilter:
             "Rewrite the response so that:\n"
             f"1. Matches the user's personality style: {profile.get('personality_style', 'balanced')}.\n"
             f"2. Uses the preferred tone: {profile.get('communication_tone', 'warm and clear')}.\n"
-            f"3. All physical safety/physical conflicts are fixed.\n"
-            "4. The meaning and helpfulness are preserved.\n"
-            "5. Do NOT mention the conflict or that you changed anything.\n"
+            f"3. Strictly follows the desired answer length: {profile.get('answer_length', 'medium')}.\n"
+            f"4. All physical safety/physical conflicts are fixed.\n"
+            f"5. The meaning and helpfulness are preserved.\n"
+            "6. Do NOT mention the conflict or that you changed anything.\n"
             "Return ONLY the corrected response text."
         )
         try:
@@ -245,13 +244,14 @@ class BehaviouralRAGFilter:
 
     # ── Step 4: Re-translate safe response (MT Task) ─────────────────────────
 
-    def _retranslate(self, safe_english: str, result: Dict[str, Any]) -> None:
+    def _retranslate(self, safe_english: str, result: Dict[str, Any], profile: Dict[str, Any]) -> None:
         """MT Task: Translate the safe remodeled English back to Tamil/Theni Tamil."""
         if not self.translator:
             return
         try:
             if hasattr(self.translator, "english_to_tamil_with_meta"):
-                meta = self.translator.english_to_tamil_with_meta(safe_english, None)
+                # Pass profile context for better translation tone matching
+                meta = self.translator.english_to_tamil_with_meta(safe_english, profile)
                 new_tamil = str(meta.get("tamil_text", "")).strip()
                 if new_tamil:
                     result["tamil_text"] = new_tamil
@@ -315,11 +315,16 @@ class BehaviouralRAGFilter:
             result["raw_english"] = english_text          # keep original
             result["remodeled_english"] = safe_english    # replace with safe
 
-            # Append to stage notes
+            # Append to stage notes safely
             try:
-                notes = json.loads(result.get("stage_notes", "[]"))
+                raw_notes = result.get("stage_notes", "[]")
+                if isinstance(raw_notes, list):
+                    notes = raw_notes
+                else:
+                    notes = json.loads(str(raw_notes))
             except Exception:
                 notes = []
+
             if isinstance(notes, list):
                 notes.append(
                     "Safety filter: "
@@ -331,7 +336,7 @@ class BehaviouralRAGFilter:
             result["risk_level"] = "filtered"
 
             # Step 4 — MT Task: Re-translate safe response to Tamil
-            self._retranslate(safe_english, result)
+            self._retranslate(safe_english, result, profile)
 
         else:
             logger.warning(
