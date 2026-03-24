@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -156,7 +157,7 @@ export default function QuestionnaireScreen() {
 
     Animated.timing(trackX, {
       toValue,
-      duration: 340,
+      duration: 360,
       easing: Easing.bezier(0.22, 1, 0.36, 1),
       useNativeDriver: true,
     }).start();
@@ -211,6 +212,65 @@ export default function QuestionnaireScreen() {
     setCurrentQuestionIndex(Math.max(0, Math.min(nextIndex, maxAccessibleIndex)));
   }
 
+  function bounceToCurrentQuestion() {
+    Animated.spring(trackX, {
+      toValue: -currentQuestionIndex * carouselWidth,
+      tension: 82,
+      friction: 11,
+      useNativeDriver: true,
+    }).start();
+  }
+
+  function goToPreviousQuestion() {
+    if (!canGoBack) {
+      bounceToCurrentQuestion();
+      return;
+    }
+
+    setCurrentQuestionIndex((prev) => Math.max(0, prev - 1));
+  }
+
+  const swipeBackResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gestureState) => {
+          if (!canGoBack || saving) return false;
+
+          const horizontalIntent =
+            gestureState.dx > 8 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+          return horizontalIntent;
+        },
+        onPanResponderMove: (_, gestureState) => {
+          if (!canGoBack || saving) return;
+
+          const dragX = Math.max(0, gestureState.dx);
+          const easedDragX = Math.min(carouselWidth, dragX * 0.96);
+          trackX.setValue(-currentQuestionIndex * carouselWidth + easedDragX);
+        },
+        onPanResponderRelease: (_, gestureState) => {
+          if (!canGoBack || saving) {
+            bounceToCurrentQuestion();
+            return;
+          }
+
+          const shouldGoBack =
+            gestureState.dx > carouselWidth * 0.22 || gestureState.vx > 0.55;
+
+          if (shouldGoBack) {
+            goToPreviousQuestion();
+            return;
+          }
+
+          bounceToCurrentQuestion();
+        },
+        onPanResponderTerminate: () => {
+          bounceToCurrentQuestion();
+        },
+        onPanResponderTerminationRequest: () => true,
+      }),
+    [canGoBack, carouselWidth, currentQuestionIndex, saving, trackX]
+  );
+
   function toggleOption(question: PersonalityQuestion, option: string, questionIndex: number) {
     let nextAnswersSnapshot: Record<string, string[]> = answers;
     let shouldAutoAdvance = false;
@@ -264,7 +324,7 @@ export default function QuestionnaireScreen() {
           if (prev !== questionIndex) return prev;
           return nextIndex;
         });
-      }, 160);
+      }, 170);
     }
   }
 
@@ -326,11 +386,6 @@ export default function QuestionnaireScreen() {
     } finally {
       setLoading(false);
     }
-  }
-
-  function goBack() {
-    if (!canGoBack) return;
-    goToQuestion(currentQuestionIndex - 1);
   }
 
   function goForward() {
@@ -414,6 +469,16 @@ export default function QuestionnaireScreen() {
             One question at a time. Clean, focused, and easy to move through.
           </Text>
 
+          <View style={styles.progressHeader}>
+            <Text style={styles.progressCaption}>
+              Question {Math.min(currentQuestionIndex + 1, questions.length || 1)} of{" "}
+              {questions.length}
+            </Text>
+            <Text style={styles.progressCaption}>
+              {answeredCount}/{questions.length} answered
+            </Text>
+          </View>
+
           <View style={styles.progressTrack}>
             <View
               style={[
@@ -443,7 +508,7 @@ export default function QuestionnaireScreen() {
           </GlassCard>
         ) : currentQuestion ? (
           <>
-            <View style={styles.carouselShell}>
+            <View style={styles.carouselShell} {...swipeBackResponder.panHandlers}>
               <Animated.View
                 style={[
                   styles.carouselTrack,
@@ -464,7 +529,6 @@ export default function QuestionnaireScreen() {
                         styles.slide,
                         {
                           width: carouselWidth,
-                          paddingRight: questionIndex === questions.length - 1 ? 0 : 12,
                         },
                       ]}
                     >
@@ -476,11 +540,19 @@ export default function QuestionnaireScreen() {
                             </Text>
                           </View>
 
-                          {answered ? (
-                            <View style={styles.questionDoneChip}>
-                              <Ionicons name="checkmark" size={13} color={Brand.success} />
+                          <View style={styles.questionTopRight}>
+                            <View style={styles.questionIndexPill}>
+                              <Text style={styles.questionIndexPillText}>
+                                {questionIndex + 1}/{questions.length}
+                              </Text>
                             </View>
-                          ) : null}
+
+                            {answered ? (
+                              <View style={styles.questionDoneChip}>
+                                <Ionicons name="checkmark" size={13} color={Brand.success} />
+                              </View>
+                            ) : null}
+                          </View>
                         </View>
 
                         <Text style={styles.questionText}>{question.prompt}</Text>
@@ -520,7 +592,9 @@ export default function QuestionnaireScreen() {
                                   />
                                 </View>
 
-                                <Text style={[styles.optionText, active && styles.optionTextActive]}>
+                                <Text
+                                  style={[styles.optionText, active && styles.optionTextActive]}
+                                >
                                   {formatOptionLabel(option)}
                                 </Text>
                               </Pressable>
@@ -534,27 +608,8 @@ export default function QuestionnaireScreen() {
               </Animated.View>
             </View>
 
-            <View style={styles.actionRow}>
-              <Pressable
-                onPress={goBack}
-                disabled={!canGoBack}
-                style={({ pressed }) => [
-                  styles.backBtn,
-                  !canGoBack && styles.backBtnDisabled,
-                  pressed && canGoBack && styles.pressed,
-                ]}
-              >
-                <Ionicons
-                  name="arrow-back"
-                  size={16}
-                  color={canGoBack ? Brand.cocoa : "rgba(124, 99, 80, 0.38)"}
-                />
-                <Text style={[styles.backBtnText, !canGoBack && styles.backBtnTextDisabled]}>
-                  Back
-                </Text>
-              </Pressable>
-
-              {currentQuestion.type === "multi" || isLastQuestion ? (
+            {currentQuestion.type === "multi" || isLastQuestion ? (
+              <View style={styles.footerActionWrap}>
                 <Pressable
                   onPress={goForward}
                   disabled={saving || !currentAnswered}
@@ -586,12 +641,8 @@ export default function QuestionnaireScreen() {
                     )}
                   </LinearGradient>
                 </Pressable>
-              ) : (
-                <View style={styles.autoAdvanceHint}>
-                  <Text style={styles.autoAdvanceHintText}>Select an option to continue</Text>
-                </View>
-              )}
-            </View>
+              </View>
+            ) : null}
           </>
         ) : null}
       </ScrollView>
@@ -748,8 +799,22 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
 
-  progressTrack: {
+  progressHeader: {
     marginTop: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  progressCaption: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  progressTrack: {
+    marginTop: 10,
     height: 5,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.66)",
@@ -837,6 +902,12 @@ const styles = StyleSheet.create({
     gap: 12,
   },
 
+  questionTopRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
   questionMetaPill: {
     minHeight: 32,
     paddingHorizontal: 12,
@@ -849,6 +920,23 @@ const styles = StyleSheet.create({
   },
 
   questionMetaPillText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  questionIndexPill: {
+    minHeight: 32,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.66)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  questionIndexPillText: {
     color: Brand.cocoa,
     fontSize: 12,
     fontWeight: "800",
@@ -921,43 +1009,11 @@ const styles = StyleSheet.create({
     color: Brand.ink,
   },
 
-  actionRow: {
+  footerActionWrap: {
     marginTop: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-
-  backBtn: {
-    minHeight: 56,
-    minWidth: 112,
-    paddingHorizontal: 18,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 8,
-    backgroundColor: "rgba(255,255,255,0.62)",
-    borderWidth: 1,
-    borderColor: Brand.lineStrong,
-  },
-
-  backBtnDisabled: {
-    opacity: 0.55,
-  },
-
-  backBtnText: {
-    color: Brand.cocoa,
-    fontWeight: "900",
-    fontSize: 14,
-  },
-
-  backBtnTextDisabled: {
-    color: "rgba(124, 99, 80, 0.44)",
   },
 
   primaryBtnShell: {
-    flex: 1,
     borderRadius: 18,
     overflow: "hidden",
   },
@@ -979,24 +1035,6 @@ const styles = StyleSheet.create({
     color: Brand.ink,
     fontWeight: "900",
     fontSize: 15,
-  },
-
-  autoAdvanceHint: {
-    flex: 1,
-    minHeight: 56,
-    paddingHorizontal: 16,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.42)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  autoAdvanceHintText: {
-    color: Brand.muted,
-    fontSize: 13,
-    fontWeight: "700",
   },
 
   disabled: {
