@@ -153,6 +153,7 @@ export default function QuestionnaireScreen() {
 
   useEffect(() => {
     const toValue = -currentQuestionIndex * carouselWidth;
+
     Animated.timing(trackX, {
       toValue,
       duration: 340,
@@ -470,7 +471,9 @@ export default function QuestionnaireScreen() {
                       <GlassCard style={styles.questionCard}>
                         <View style={styles.questionTopRow}>
                           <View style={styles.questionMetaPill}>
-                            <Text style={styles.questionMetaPillText}>{questionHelper(question)}</Text>
+                            <Text style={styles.questionMetaPillText}>
+                              {questionHelper(question)}
+                            </Text>
                           </View>
 
                           {answered ? (
