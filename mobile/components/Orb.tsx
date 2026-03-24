@@ -7,11 +7,19 @@ import { Brand } from "@/constants/theme";
 
 type OrbProps = {
   listening: boolean;
-  onPress: () => void;
+  onPress?: () => void;
+  onPressIn?: () => void;
+  onPressOut?: () => void;
   size?: number;
 };
 
-export function Orb({ listening, onPress, size = 168 }: OrbProps) {
+export function Orb({
+  listening,
+  onPress,
+  onPressIn,
+  onPressOut,
+  size = 168,
+}: OrbProps) {
   const floatAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(0)).current;
   const activeAnim = useRef(new Animated.Value(0)).current;
@@ -176,8 +184,11 @@ export function Orb({ listening, onPress, size = 168 }: OrbProps) {
   return (
     <Pressable
       onPress={onPress}
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
       accessibilityRole="button"
-      accessibilityLabel={listening ? "Stop recording" : "Start voice input"}
+      accessibilityLabel={listening ? "Recording, release to stop" : "Hold to start voice input"}
+      accessibilityHint="Press and hold the globe to record. Release to stop recording."
       style={styles.pressable}
     >
       <View

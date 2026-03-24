@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -184,6 +184,10 @@ export default function Home() {
   const [historyItems, setHistoryItems] = useState<Item[]>([]);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
+  const recordingPhaseRef = useRef<"idle" | "starting" | "recording" | "stopping">("idle");
+  const stopWhenReadyRef = useRef(false);
+  const recordingSourceRef = useRef<"orb" | "button" | null>(null);
+
   const isSmallPhone = width < 370 || height < 760;
   const isVerySmallPhone = width < 345 || height < 700;
 
@@ -246,7 +250,7 @@ export default function Home() {
   const resultText = result?.details || result?.raw_text || "";
   const hasConversation = Boolean(lastPrompt || resultText || busy);
   const placeholder = listening
-    ? "Listening... tap stop when you're done"
+    ? "Listening... release the globe or tap stop when you're done"
     : `Message ${assistantLabel}`;
 
   useEffect(() => {
@@ -338,13 +342,21 @@ export default function Home() {
     }
   }
 
-  async function startRecording() {
+  async function startRecording(source: "orb" | "button" = "button") {
+    if (busy || recordingPhaseRef.current !== "idle") return;
+
     try {
+      recordingPhaseRef.current = "starting";
+      recordingSourceRef.current = source;
+      stopWhenReadyRef.current = false;
+
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       setListening(true);
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
+        recordingPhaseRef.current = "idle";
+        recordingSourceRef.current = null;
         setListening(false);
         Alert.alert("Mic permission needed", "Please allow microphone access.");
         return;
@@ -361,24 +373,46 @@ export default function Home() {
       );
       await nextRecording.startAsync();
       setRecording(nextRecording);
+      recordingPhaseRef.current = "recording";
+
+      if (stopWhenReadyRef.current) {
+        stopWhenReadyRef.current = false;
+        await stopAndAnalyze();
+      }
     } catch (error: any) {
+      recordingPhaseRef.current = "idle";
+      recordingSourceRef.current = null;
+      stopWhenReadyRef.current = false;
+      setRecording(null);
       setListening(false);
       Alert.alert("Error", error?.message || "Could not start recording.");
     }
   }
 
   async function stopAndAnalyze() {
-    if (!recording) return;
+    if (recordingPhaseRef.current === "starting") {
+      stopWhenReadyRef.current = true;
+      return;
+    }
+
+    if (!recording || recordingPhaseRef.current !== "recording") {
+      return;
+    }
+
+    const activeRecording = recording;
 
     try {
+      recordingPhaseRef.current = "stopping";
+      stopWhenReadyRef.current = false;
       setBusy(true);
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-
       setRecording(null);
       setListening(false);
+      recordingSourceRef.current = null;
+
+      await activeRecording.stopAndUnloadAsync();
+      const uri = activeRecording.getURI();
 
       if (!uri) {
         throw new Error("No audio file URI");
@@ -419,17 +453,39 @@ export default function Home() {
     } catch (error: any) {
       Alert.alert("Error", error?.message || "Voice analysis failed.");
     } finally {
+      recordingPhaseRef.current = "idle";
+      recordingSourceRef.current = null;
+      stopWhenReadyRef.current = false;
+      setRecording(null);
+      setListening(false);
       setBusy(false);
     }
   }
 
   async function toggleMic() {
-    if (recording) {
+    if (
+      recordingPhaseRef.current === "starting" ||
+      recordingPhaseRef.current === "recording"
+    ) {
       await stopAndAnalyze();
       return;
     }
 
-    await startRecording();
+    await startRecording("button");
+  }
+
+  async function handleOrbPressIn() {
+    if (busy || recordingPhaseRef.current !== "idle") return;
+    await startRecording("orb");
+  }
+
+  async function handleOrbPressOut() {
+    if (
+      recordingSourceRef.current === "orb" ||
+      recordingPhaseRef.current === "starting"
+    ) {
+      await stopAndAnalyze();
+    }
   }
 
   async function confirmScheduleReminder() {
@@ -629,7 +685,12 @@ export default function Home() {
 
             <View style={styles.orbShell}>
               <View style={styles.orbAmbientGlow} />
-              <Orb listening={listening} onPress={toggleMic} size={orbSize} />
+              <Orb
+                listening={listening}
+                onPressIn={handleOrbPressIn}
+                onPressOut={handleOrbPressOut}
+                size={orbSize}
+              />
             </View>
 
             {listening ? (
@@ -699,7 +760,7 @@ export default function Home() {
                   />
                   <Text style={styles.composerHintText}>
                     {listening
-                      ? "Listening... tap stop when finished"
+                      ? "Listening... release the globe or tap stop when finished"
                       : "Try natural prompts like “remind me tomorrow at 9”"}
                   </Text>
                 </View>
