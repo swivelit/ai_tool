@@ -37,6 +37,38 @@ type NoticeState = {
   onPrimaryPress?: () => void;
 } | null;
 
+function getMaxAccessibleQuestionIndex(
+  questions: PersonalityQuestion[],
+  answers: Record<string, string[]>
+) {
+  if (!questions.length) return 0;
+
+  const firstUnansweredIndex = questions.findIndex(
+    (question) => !(answers[question.id] || []).length
+  );
+
+  if (firstUnansweredIndex === -1) {
+    return Math.max(questions.length - 1, 0);
+  }
+
+  return firstUnansweredIndex;
+}
+
+function formatOptionLabel(value: string) {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function questionHelper(question: PersonalityQuestion) {
+  if (question.type === "multi") {
+    return `Choose up to ${question.max_choices || 1} options, then continue`;
+  }
+
+  return "Choose one option to continue";
+}
+
 export default function QuestionnaireScreen() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -45,6 +77,7 @@ export default function QuestionnaireScreen() {
 
   const [questions, setQuestions] = useState<PersonalityQuestion[]>([]);
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
@@ -62,12 +95,7 @@ export default function QuestionnaireScreen() {
     primaryLabel?: string,
     onPrimaryPress?: () => void
   ) {
-    setNotice({
-      title,
-      message,
-      primaryLabel,
-      onPrimaryPress,
-    });
+    setNotice({ title, message, primaryLabel, onPrimaryPress });
   }
 
   function closeNotice() {
@@ -83,6 +111,7 @@ export default function QuestionnaireScreen() {
         const nextQuestions = await getPersonalityQuestions();
         if (!alive) return;
         setQuestions(Array.isArray(nextQuestions) ? nextQuestions : []);
+        setCurrentQuestionIndex(0);
       } catch (error: any) {
         if (!alive) return;
         showNotice("Unable to load questions", error?.message || "Please try again.");
@@ -112,6 +141,20 @@ export default function QuestionnaireScreen() {
   }, [answers]);
 
   const progress = questions.length ? answeredCount / questions.length : 0;
+
+  const maxAccessibleIndex = useMemo(() => {
+    return getMaxAccessibleQuestionIndex(questions, answers);
+  }, [answers, questions]);
+
+  useEffect(() => {
+    setCurrentQuestionIndex((prev) => Math.min(prev, maxAccessibleIndex));
+  }, [maxAccessibleIndex]);
+
+  const currentQuestion = questions[currentQuestionIndex] || null;
+  const selectedOptions = currentQuestion ? answers[currentQuestion.id] || [] : [];
+  const currentAnswered = selectedOptions.length > 0;
+  const canGoBack = currentQuestionIndex > 0;
+  const isLastQuestion = questions.length > 0 && currentQuestionIndex === questions.length - 1;
 
   async function resolveUserId() {
     if (userId) return userId;
@@ -152,24 +195,30 @@ export default function QuestionnaireScreen() {
     return rebuiltProfile?.userId ?? null;
   }
 
-  function toggleOption(question: PersonalityQuestion, option: string) {
+  function toggleOption(question: PersonalityQuestion, option: string, questionIndex: number) {
+    let nextAnswersSnapshot: Record<string, string[]> = answers;
+    let shouldAutoAdvance = false;
+
     setAnswers((prev) => {
       const current = prev[question.id] || [];
 
       if (question.type === "single") {
-        return {
+        nextAnswersSnapshot = {
           ...prev,
           [question.id]: [option],
         };
+        shouldAutoAdvance = true;
+        return nextAnswersSnapshot;
       }
 
       const exists = current.includes(option);
 
       if (exists) {
-        return {
+        nextAnswersSnapshot = {
           ...prev,
           [question.id]: current.filter((item) => item !== option),
         };
+        return nextAnswersSnapshot;
       }
 
       const maxChoices = question.max_choices || current.length + 1;
@@ -179,28 +228,28 @@ export default function QuestionnaireScreen() {
           "Selection limit reached",
           `You can choose up to ${maxChoices} options for this question.`
         );
+        nextAnswersSnapshot = prev;
         return prev;
       }
 
-      return {
+      nextAnswersSnapshot = {
         ...prev,
         [question.id]: [...current, option],
       };
+      return nextAnswersSnapshot;
     });
-  }
 
-  function formatOptionLabel(value: string) {
-    return value
-      .split("_")
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ");
-  }
+    if (shouldAutoAdvance && questionIndex < questions.length - 1) {
+      const nextAccessible = getMaxAccessibleQuestionIndex(questions, nextAnswersSnapshot);
+      const nextIndex = Math.min(questionIndex + 1, nextAccessible);
 
-  function questionHelper(question: PersonalityQuestion) {
-    if (question.type === "multi") {
-      return `Choose up to ${question.max_choices || 1} options`;
+      setTimeout(() => {
+        setCurrentQuestionIndex((prev) => {
+          if (prev !== questionIndex) return prev;
+          return nextIndex;
+        });
+      }, 140);
     }
-    return "Choose one option";
   }
 
   async function submit() {
@@ -212,6 +261,7 @@ export default function QuestionnaireScreen() {
         "Answer all questions",
         `You still have ${missing.length} unanswered question${missing.length > 1 ? "s" : ""}.`
       );
+      setCurrentQuestionIndex(getMaxAccessibleQuestionIndex(questions, answers));
       return;
     }
 
@@ -253,12 +303,57 @@ export default function QuestionnaireScreen() {
       setLoading(true);
       const nextQuestions = await getPersonalityQuestions();
       setQuestions(Array.isArray(nextQuestions) ? nextQuestions : []);
+      setAnswers({});
+      setCurrentQuestionIndex(0);
     } catch (error: any) {
       showNotice("Unable to load questions", error?.message || "Please try again.");
     } finally {
       setLoading(false);
     }
   }
+
+  function goBack() {
+    setCurrentQuestionIndex((prev) => Math.max(prev - 1, 0));
+  }
+
+  function goForward() {
+    if (!currentQuestion) return;
+
+    if (!currentAnswered) {
+      showNotice(
+        "Answer this question first",
+        "Complete the current question to unlock the next one."
+      );
+      return;
+    }
+
+    if (isLastQuestion) {
+      void submit();
+      return;
+    }
+
+    setCurrentQuestionIndex((prev) => Math.min(prev + 1, maxAccessibleIndex));
+  }
+
+  const footerMessage = useMemo(() => {
+    if (!currentQuestion) return "";
+
+    if (isLastQuestion) {
+      return currentAnswered
+        ? "Last question complete. Save your answers and continue."
+        : "Answer the final question to finish setup.";
+    }
+
+    if (currentQuestion.type === "multi") {
+      return currentAnswered
+        ? "Your selections are saved. Continue when you are ready."
+        : "Choose one or more options, then continue to the next question.";
+    }
+
+    return currentAnswered
+      ? "Answer saved. The next question is unlocked."
+      : "Select one option to unlock the next question.";
+  }, [currentAnswered, currentQuestion, isLastQuestion]);
 
   if (loading) {
     return (
@@ -299,14 +394,12 @@ export default function QuestionnaireScreen() {
             <Text style={styles.topBarPillText}>Onboarding</Text>
           </View>
 
-          <View style={styles.topBarRight}>
-            <View style={styles.topBarStepChip}>
-              <Text style={styles.topBarStepText}>Step 2 of 2</Text>
-            </View>
+          <View style={styles.topBarStepChip}>
+            <Text style={styles.topBarStepText}>Step 2 of 2</Text>
           </View>
         </View>
 
-        <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
+        <GlassCard style={styles.heroCard}>
           <View style={styles.heroHeaderRow}>
             <View style={styles.heroPill}>
               <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
@@ -338,7 +431,8 @@ export default function QuestionnaireScreen() {
           </Text>
 
           <Text style={styles.subtitle}>
-            Answer these {questions.length} to make {assistantLabel || "Elli"} more helpful.
+            Questions now appear one by one. You can go back anytime, but upcoming questions stay
+            locked until the current one is answered.
           </Text>
 
           <View style={styles.metricRow}>
@@ -347,11 +441,7 @@ export default function QuestionnaireScreen() {
               value={`${answeredCount}/${questions.length}`}
               icon="checkmark-done-outline"
             />
-            <MetricCard
-              label="Selections"
-              value={String(totalSelected)}
-              icon="albums-outline"
-            />
+            <MetricCard label="Selections" value={String(totalSelected)} icon="albums-outline" />
             <MetricCard
               label="Completion"
               value={`${Math.round(progress * 100)}%`}
@@ -369,14 +459,13 @@ export default function QuestionnaireScreen() {
               <View>
                 <Text style={styles.progressLabel}>Progress</Text>
                 <Text style={styles.progressValue}>
-                  {answeredCount}/{questions.length} answered
+                  Question {Math.min(currentQuestionIndex + 1, Math.max(questions.length, 1))} of{" "}
+                  {questions.length}
                 </Text>
               </View>
 
               <View style={styles.progressBadge}>
-                <Text style={styles.progressBadgeText}>
-                  {Math.round(progress * 100)}%
-                </Text>
+                <Text style={styles.progressBadgeText}>{Math.round(progress * 100)}%</Text>
               </View>
             </View>
 
@@ -390,13 +479,13 @@ export default function QuestionnaireScreen() {
             </View>
 
             <Text style={styles.progressHelper}>
-              Finish all questions to complete your setup.
+              Answer one question at a time. Use Back to review earlier answers.
             </Text>
           </LinearGradient>
         </GlassCard>
 
         {!questions.length ? (
-          <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+          <GlassCard style={styles.emptyCard}>
             <View style={styles.emptyIconWrap}>
               <Ionicons name="help-circle-outline" size={24} color={Brand.bronze} />
             </View>
@@ -405,153 +494,180 @@ export default function QuestionnaireScreen() {
               The questionnaire loaded, but no questions were returned from the API.
             </Text>
 
-            <Pressable
-              onPress={reloadQuestions}
-              style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}
-            >
+            <Pressable onPress={reloadQuestions} style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}>
               <Text style={styles.retryBtnText}>Retry</Text>
             </Pressable>
           </GlassCard>
-        ) : (
-          questions.map((question, index) => {
-            const selected = answers[question.id] || [];
-            const isComplete = selected.length > 0;
-
-            return (
-              <GlassCard key={question.id} style={{ borderRadius: 28, marginTop: 16 }}>
-                <View style={styles.questionHeaderRow}>
-                  <View>
-                    <Text style={styles.questionIndex}>Question {index + 1}</Text>
-                    <Text style={styles.questionText}>{question.prompt}</Text>
-                  </View>
-
-                  <View style={[styles.questionStateChip, isComplete && styles.questionStateChipDone]}>
-                    <Ionicons
-                      name={isComplete ? "checkmark-circle" : "ellipse-outline"}
-                      size={14}
-                      color={isComplete ? Brand.success : Brand.cocoa}
-                    />
-                  </View>
+        ) : currentQuestion ? (
+          <>
+            <GlassCard style={styles.questionCard}>
+              <View style={styles.questionHeaderRow}>
+                <View style={styles.questionHeaderTextWrap}>
+                  <Text style={styles.questionIndex}>Question {currentQuestionIndex + 1}</Text>
+                  <Text style={styles.questionText}>{currentQuestion.prompt}</Text>
                 </View>
 
-                <View style={styles.questionMetaRow}>
-                  <View style={styles.questionTypeChip}>
-                    <Text style={styles.questionTypeChipText}>
-                      {question.type === "multi" ? "Multiple choice" : "Single choice"}
-                    </Text>
-                  </View>
+                <View
+                  style={[
+                    styles.questionStateChip,
+                    currentAnswered && styles.questionStateChipDone,
+                  ]}
+                >
+                  <Ionicons
+                    name={currentAnswered ? "checkmark-circle" : "ellipse-outline"}
+                    size={14}
+                    color={currentAnswered ? Brand.success : Brand.cocoa}
+                  />
+                </View>
+              </View>
 
-                  <Text style={styles.helper}>{questionHelper(question)}</Text>
+              <View style={styles.questionMetaRow}>
+                <View style={styles.questionTypeChip}>
+                  <Text style={styles.questionTypeChipText}>
+                    {currentQuestion.type === "multi" ? "Multiple choice" : "Single choice"}
+                  </Text>
                 </View>
 
-                <View style={{ marginTop: 14 }}>
-                  {question.options.map((option) => {
-                    const active = selected.includes(option);
+                <Text style={styles.helper}>{questionHelper(currentQuestion)}</Text>
+              </View>
 
-                    return (
-                      <Pressable
-                        key={option}
-                        onPress={() => toggleOption(question, option)}
-                        style={({ pressed }) => [
-                          styles.optionBtn,
-                          active && styles.optionBtnActive,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <View style={[styles.optionIconWrap, active && styles.optionIconWrapActive]}>
-                          <Ionicons
-                            name={
-                              question.type === "multi"
-                                ? active
-                                  ? "checkbox"
-                                  : "square-outline"
-                                : active
-                                ? "radio-button-on"
-                                : "radio-button-off"
-                            }
-                            size={18}
-                            color={active ? Brand.ink : Brand.cocoa}
-                          />
-                        </View>
+              <View style={styles.optionList}>
+                {currentQuestion.options.map((option) => {
+                  const active = selectedOptions.includes(option);
 
-                        <View style={{ flex: 1 }}>
-                          <Text style={[styles.optionText, active && styles.optionTextActive]}>
-                            {formatOptionLabel(option)}
-                          </Text>
-                          <Text style={styles.optionSubtext}>
-                            {active ? "Selected" : "Tap to choose"}
-                          </Text>
-                        </View>
-
+                  return (
+                    <Pressable
+                      key={option}
+                      onPress={() => toggleOption(currentQuestion, option, currentQuestionIndex)}
+                      style={({ pressed }) => [
+                        styles.optionBtn,
+                        active && styles.optionBtnActive,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <View style={[styles.optionIconWrap, active && styles.optionIconWrapActive]}>
                         <Ionicons
-                          name="chevron-forward"
-                          size={16}
-                          color={active ? Brand.ink : "rgba(124, 99, 80, 0.56)"}
+                          name={
+                            currentQuestion.type === "multi"
+                              ? active
+                                ? "checkbox"
+                                : "square-outline"
+                              : active
+                              ? "radio-button-on"
+                              : "radio-button-off"
+                          }
+                          size={18}
+                          color={active ? Brand.ink : Brand.cocoa}
                         />
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </GlassCard>
-            );
-          })
-        )}
+                      </View>
 
-        {!!questions.length && (
-          <View style={styles.footerArea}>
-            <GlassCard style={{ borderRadius: 24 }}>
-              <View style={styles.footerSummaryRow}>
-                <View>
-                  <Text style={styles.footerSummaryTitle}>Ready to continue?</Text>
-                  <Text style={styles.footerSummaryText}>
-                    {answeredCount === questions.length
-                      ? "All questions are completed. Save your answers and continue."
-                      : `${questions.length - answeredCount} question${
-                          questions.length - answeredCount > 1 ? "s are" : " is"
-                        } still pending.`}
-                  </Text>
-                </View>
+                      <View style={styles.optionTextWrap}>
+                        <Text style={[styles.optionText, active && styles.optionTextActive]}>
+                          {formatOptionLabel(option)}
+                        </Text>
+                        <Text style={styles.optionSubtext}>
+                          {active
+                            ? "Selected"
+                            : currentQuestion.type === "multi"
+                            ? "Tap to add or remove"
+                            : "Tap to choose"}
+                        </Text>
+                      </View>
 
-                <View style={styles.footerSummaryBadge}>
-                  <Text style={styles.footerSummaryBadgeText}>
-                    {answeredCount}/{questions.length}
-                  </Text>
-                </View>
+                      <Ionicons
+                        name="chevron-forward"
+                        size={16}
+                        color={active ? Brand.ink : "rgba(124, 99, 80, 0.56)"}
+                      />
+                    </Pressable>
+                  );
+                })}
               </View>
             </GlassCard>
 
-            <Pressable
-              onPress={submit}
-              style={({ pressed }) => [
-                styles.submitShell,
-                saving && styles.disabled,
-                pressed && styles.pressed,
-              ]}
-              disabled={saving}
-            >
-              <LinearGradient
-                colors={Brand.gradients.button}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={[styles.submitBtn, { minHeight: isSmallPhone ? 54 : 58 }]}
-              >
-                {saving ? (
-                  <ActivityIndicator color={Brand.ink} />
-                ) : (
-                  <>
-                    <Text style={styles.submitBtnText}>Save answers and continue</Text>
-                    <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
-                  </>
-                )}
-              </LinearGradient>
-            </Pressable>
-          </View>
-        )}
+            <View style={styles.footerArea}>
+              <GlassCard style={styles.footerCard}>
+                <View style={styles.footerSummaryRow}>
+                  <View style={styles.footerSummaryTextWrap}>
+                    <Text style={styles.footerSummaryTitle}>
+                      {isLastQuestion ? "Finish setup" : "Continue to the next question"}
+                    </Text>
+                    <Text style={styles.footerSummaryText}>{footerMessage}</Text>
+                  </View>
+
+                  <View style={styles.footerSummaryBadge}>
+                    <Text style={styles.footerSummaryBadgeText}>
+                      {currentQuestionIndex + 1}/{questions.length}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.footerButtonsRow}>
+                  <Pressable
+                    onPress={goBack}
+                    disabled={!canGoBack}
+                    style={({ pressed }) => [
+                      styles.backBtn,
+                      !canGoBack && styles.backBtnDisabled,
+                      pressed && canGoBack && styles.pressed,
+                    ]}
+                  >
+                    <Ionicons
+                      name="arrow-back"
+                      size={16}
+                      color={canGoBack ? Brand.cocoa : "rgba(124, 99, 80, 0.38)"}
+                    />
+                    <Text
+                      style={[
+                        styles.backBtnText,
+                        !canGoBack && styles.backBtnTextDisabled,
+                      ]}
+                    >
+                      Back
+                    </Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={goForward}
+                    disabled={saving || !currentAnswered}
+                    style={({ pressed }) => [
+                      styles.submitShell,
+                      (saving || !currentAnswered) && styles.disabled,
+                      pressed && currentAnswered && styles.pressed,
+                    ]}
+                  >
+                    <LinearGradient
+                      colors={Brand.gradients.button}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={[styles.submitBtn, { minHeight: isSmallPhone ? 54 : 58 }]}
+                    >
+                      {saving ? (
+                        <ActivityIndicator color={Brand.ink} />
+                      ) : (
+                        <>
+                          <Text style={styles.submitBtnText}>
+                            {isLastQuestion ? "Save answers and continue" : "Continue"}
+                          </Text>
+                          <Ionicons
+                            name={isLastQuestion ? "checkmark" : "arrow-forward"}
+                            size={18}
+                            color={Brand.ink}
+                          />
+                        </>
+                      )}
+                    </LinearGradient>
+                  </Pressable>
+                </View>
+              </GlassCard>
+            </View>
+          </>
+        ) : null}
       </ScrollView>
 
       <Modal transparent visible={!!notice} animationType="fade" onRequestClose={closeNotice}>
         <View style={styles.noticeOverlay}>
-          <GlassCard style={{ borderRadius: 28 }}>
+          <GlassCard style={styles.noticeCard}>
             <View style={styles.noticeIconWrap}>
               <Ionicons name="information-circle" size={22} color={Brand.bronze} />
             </View>
@@ -621,68 +737,62 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 12,
-    paddingHorizontal: 18,
     backgroundColor: "rgba(255,255,255,0.72)",
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: Brand.line,
   },
 
   loaderText: {
-    color: Brand.muted,
+    color: Brand.cocoa,
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
   },
 
   topGlow: {
     position: "absolute",
     top: -90,
-    right: -20,
+    right: -60,
     width: 220,
     height: 220,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.56)",
+    borderRadius: 220,
+    backgroundColor: "rgba(255, 219, 166, 0.34)",
   },
 
   leftGlow: {
     position: "absolute",
-    top: 240,
-    left: -80,
-    width: 200,
-    height: 200,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,229,180,0.34)",
+    left: -90,
+    top: "30%",
+    width: 180,
+    height: 180,
+    borderRadius: 180,
+    backgroundColor: "rgba(255, 232, 194, 0.28)",
   },
 
   bottomGlow: {
     position: "absolute",
-    bottom: -100,
-    right: 10,
-    width: 260,
-    height: 260,
-    borderRadius: 999,
-    backgroundColor: "rgba(215,154,89,0.16)",
+    right: -70,
+    bottom: -40,
+    width: 220,
+    height: 220,
+    borderRadius: 220,
+    backgroundColor: "rgba(239, 191, 124, 0.18)",
   },
 
   topBar: {
-    minHeight: 42,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-  },
-
-  topBarRight: {
-    flexDirection: "row",
-    alignItems: "center",
+    gap: 12,
   },
 
   topBarPill: {
-    minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.62)",
+    backgroundColor: "rgba(255,255,255,0.66)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -710,6 +820,11 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
+  heroCard: {
+    borderRadius: 32,
+    marginTop: 14,
+  },
+
   heroHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -718,7 +833,6 @@ const styles = StyleSheet.create({
   },
 
   heroPill: {
-    alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
@@ -875,6 +989,11 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
 
+  emptyCard: {
+    borderRadius: 28,
+    marginTop: 16,
+  },
+
   emptyIconWrap: {
     width: 56,
     height: 56,
@@ -918,11 +1037,21 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
 
+  questionCard: {
+    borderRadius: 28,
+    marginTop: 16,
+  },
+
   questionHeaderRow: {
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: 10,
+    gap: 12,
+  },
+
+  questionHeaderTextWrap: {
+    flex: 1,
+    paddingRight: 4,
   },
 
   questionIndex: {
@@ -939,7 +1068,6 @@ const styles = StyleSheet.create({
     fontSize: 19,
     lineHeight: 27,
     fontWeight: "800",
-    maxWidth: "92%",
   },
 
   questionStateChip: {
@@ -990,6 +1118,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
+  optionList: {
+    marginTop: 14,
+  },
+
   optionBtn: {
     minHeight: 60,
     borderRadius: 20,
@@ -1021,6 +1153,11 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.82)",
   },
 
+  optionTextWrap: {
+    flex: 1,
+    marginLeft: 12,
+  },
+
   optionText: {
     color: Brand.ink,
     fontSize: 14,
@@ -1043,11 +1180,19 @@ const styles = StyleSheet.create({
     marginTop: 18,
   },
 
+  footerCard: {
+    borderRadius: 24,
+  },
+
   footerSummaryRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
+  },
+
+  footerSummaryTextWrap: {
+    flex: 1,
   },
 
   footerSummaryTitle: {
@@ -1061,7 +1206,6 @@ const styles = StyleSheet.create({
     color: Brand.muted,
     fontSize: 13,
     lineHeight: 19,
-    maxWidth: 250,
   },
 
   footerSummaryBadge: {
@@ -1081,10 +1225,45 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
 
+  footerButtonsRow: {
+    marginTop: 16,
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "center",
+  },
+
+  backBtn: {
+    minHeight: 56,
+    minWidth: 112,
+    paddingHorizontal: 18,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
+
+  backBtnDisabled: {
+    opacity: 0.55,
+  },
+
+  backBtnText: {
+    color: Brand.cocoa,
+    fontWeight: "900",
+    fontSize: 14,
+  },
+
+  backBtnTextDisabled: {
+    color: "rgba(124, 99, 80, 0.44)",
+  },
+
   submitShell: {
+    flex: 1,
     borderRadius: 18,
     overflow: "hidden",
-    marginTop: 16,
   },
 
   submitBtn: {
@@ -1120,6 +1299,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 18,
     backgroundColor: "rgba(72, 46, 18, 0.18)",
+  },
+
+  noticeCard: {
+    borderRadius: 28,
   },
 
   noticeIconWrap: {
