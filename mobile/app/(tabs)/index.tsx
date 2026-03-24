@@ -250,7 +250,7 @@ export default function Home() {
   const resultText = result?.details || result?.raw_text || "";
   const hasConversation = Boolean(lastPrompt || resultText || busy);
   const placeholder = listening
-    ? "Listening... release the globe or tap stop when you're done"
+    ? "Recording... release to stop and send"
     : `Message ${assistantLabel}`;
 
   useEffect(() => {
@@ -462,30 +462,34 @@ export default function Home() {
     }
   }
 
-  async function toggleMic() {
-    if (
-      recordingPhaseRef.current === "starting" ||
-      recordingPhaseRef.current === "recording"
-    ) {
-      await stopAndAnalyze();
-      return;
-    }
-
-    await startRecording("button");
-  }
-
-  async function handleOrbPressIn() {
+  async function handleHoldPressIn(source: "orb" | "button") {
     if (busy || recordingPhaseRef.current !== "idle") return;
-    await startRecording("orb");
+    await startRecording(source);
   }
 
-  async function handleOrbPressOut() {
+  async function handleHoldPressOut(source: "orb" | "button") {
     if (
-      recordingSourceRef.current === "orb" ||
+      recordingSourceRef.current === source ||
       recordingPhaseRef.current === "starting"
     ) {
       await stopAndAnalyze();
     }
+  }
+
+  async function handleOrbPressIn() {
+    await handleHoldPressIn("orb");
+  }
+
+  async function handleOrbPressOut() {
+    await handleHoldPressOut("orb");
+  }
+
+  async function handleMicPressIn() {
+    await handleHoldPressIn("button");
+  }
+
+  async function handleMicPressOut() {
+    await handleHoldPressOut("button");
   }
 
   async function confirmScheduleReminder() {
@@ -760,23 +764,25 @@ export default function Home() {
                   />
                   <Text style={styles.composerHintText}>
                     {listening
-                      ? "Listening... release the globe or tap stop when finished"
-                      : "Try natural prompts like “remind me tomorrow at 9”"}
+                      ? "Recording... release to stop and send"
+                      : "Press and hold the orb or mic to record"}
                   </Text>
                 </View>
 
                 <View style={styles.composerButtonsWrap}>
                   <Pressable
-                    onPress={toggleMic}
+                    onPressIn={handleMicPressIn}
+                    onPressOut={handleMicPressOut}
+                    disabled={busy}
                     style={[
                       styles.composerActionBtn,
-                      recording ? styles.micStopBtn : styles.micIdleBtn,
+                      listening ? styles.micStopBtn : styles.micIdleBtn,
                     ]}
                   >
                     <Ionicons
-                      name={recording ? "stop" : "mic"}
+                      name={listening ? "stop" : "mic"}
                       size={18}
-                      color={recording ? "#fff" : Brand.cocoa}
+                      color={listening ? "#fff" : Brand.cocoa}
                     />
                   </Pressable>
 
@@ -998,16 +1004,18 @@ export default function Home() {
             </Pressable>
 
             <Pressable
-              onPress={toggleMic}
+              onPressIn={handleMicPressIn}
+              onPressOut={handleMicPressOut}
+              disabled={busy}
               style={[
                 styles.dockButton,
-                recording ? styles.dockButtonDanger : null,
+                listening ? styles.dockButtonDanger : null,
               ]}
             >
               <Ionicons
-                name={recording ? "stop" : "mic"}
+                name={listening ? "stop" : "mic"}
                 size={18}
-                color={recording ? "#fff" : Brand.cocoa}
+                color={listening ? "#fff" : Brand.cocoa}
               />
             </Pressable>
 
