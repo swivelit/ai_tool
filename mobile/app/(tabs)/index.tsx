@@ -377,8 +377,19 @@ export default function Home() {
     }
   }
 
-  async function startRecording(source: "orb" | "button" = "button") {
+  async function startRecording(source: "orb" | "button" = "orb") {
     if (busy || recordingPhaseRef.current !== "idle") return;
+
+    if (source !== "orb") {
+      try {
+        await Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Warning
+        );
+      } catch {
+        // ignore
+      }
+      return;
+    }
 
     try {
       recordingPhaseRef.current = "starting";
@@ -526,14 +537,6 @@ export default function Home() {
 
   async function handleOrbPressOut() {
     await handleHoldPressOut("orb");
-  }
-
-  async function handleMicPressIn() {
-    await handleHoldPressIn("button");
-  }
-
-  async function handleMicPressOut() {
-    await handleHoldPressOut("button");
   }
 
   async function confirmScheduleReminder() {
@@ -763,94 +766,78 @@ export default function Home() {
           </GlassCard>
 
           <GlassCard style={styles.composerCard}>
-            <View style={styles.sectionHeaderRow}>
-              <View>
-                <Text style={styles.sectionTitle}>Compose</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Type or speak naturally. The assistant will structure the
-                  result for you.
-                </Text>
-              </View>
-
-              <Pressable onPress={clearConversation} style={styles.ghostChip}>
-                <Ionicons
-                  name="refresh-outline"
-                  size={14}
-                  color={Brand.cocoa}
-                />
-                <Text style={styles.ghostChipText}>Reset</Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.composerBox}>
-              <TextInput
-                value={text}
-                onChangeText={setText}
-                placeholder={placeholder}
-                placeholderTextColor="rgba(124, 99, 80, 0.55)"
-                multiline
-                textAlignVertical="top"
-                style={styles.composerInput}
-              />
-
-              <View style={styles.composerActionsRow}>
-                <View style={styles.composerHintWrap}>
-                  <Ionicons
-                    name={
-                      listening ? "radio" : "chatbubble-ellipses-outline"
-                    }
-                    size={14}
-                    color={Brand.muted}
-                  />
-                  <Text style={styles.composerHintText}>
-                    {listening
-                      ? "Recording... release to stop and send"
-                      : "Press and hold the orb or mic to record"}
+              <View style={styles.sectionHeaderRow}>
+                <View>
+                  <Text style={styles.sectionTitle}>Compose</Text>
+                  <Text style={styles.sectionSubtitle}>
+                    Type naturally or hold the orb to speak. The assistant will
+                    structure the result for you.
                   </Text>
                 </View>
 
-                <View style={styles.composerButtonsWrap}>
-                  <Pressable
-                    onPressIn={handleMicPressIn}
-                    onPressOut={handleMicPressOut}
-                    disabled={busy}
-                    style={[
-                      styles.composerActionBtn,
-                      listening ? styles.micStopBtn : styles.micIdleBtn,
-                    ]}
-                  >
-                    <Ionicons
-                      name={listening ? "stop" : "mic"}
-                      size={18}
-                      color={listening ? "#fff" : Brand.cocoa}
-                    />
-                  </Pressable>
+                <Pressable onPress={clearConversation} style={styles.ghostChip}>
+                  <Ionicons
+                    name="refresh-outline"
+                    size={14}
+                    color={Brand.cocoa}
+                  />
+                  <Text style={styles.ghostChipText}>Reset</Text>
+                </Pressable>
+              </View>
 
-                  <Pressable
-                    onPress={analyzeText}
-                    disabled={busy || !text.trim()}
-                    style={[
-                      styles.composerActionBtn,
-                      text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
-                    ]}
-                  >
-                    {busy ? (
-                      <ActivityIndicator size="small" color={Brand.ink} />
-                    ) : (
-                      <Ionicons
-                        name="arrow-up"
-                        size={18}
-                        color={
-                          text.trim()
-                            ? Brand.ink
-                            : "rgba(124, 99, 80, 0.48)"
-                        }
-                      />
-                    )}
-                  </Pressable>
+              <View style={styles.composerBox}>
+                <TextInput
+                  value={text}
+                  onChangeText={setText}
+                  placeholder={placeholder}
+                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                  multiline
+                  textAlignVertical="top"
+                  style={styles.composerInput}
+                />
+
+                <View style={styles.composerActionsRow}>
+                  <View style={styles.composerHintWrap}>
+                    <Ionicons
+                      name={
+                        listening ? "radio" : "chatbubble-ellipses-outline"
+                      }
+                      size={14}
+                      color={Brand.muted}
+                    />
+                    <Text style={styles.composerHintText}>
+                      {listening
+                        ? "Recording... release to stop and send"
+                        : "Press and hold the orb to record"}
+                    </Text>
+                  </View>
+
+                  <View style={styles.composerButtonsWrap}>
+                    <Pressable
+                      onPress={analyzeText}
+                      disabled={busy || !text.trim()}
+                      style={[
+                        styles.composerActionBtn,
+                        text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
+                      ]}
+                    >
+                      {busy ? (
+                        <ActivityIndicator size="small" color={Brand.ink} />
+                      ) : (
+                        <Ionicons
+                          name="arrow-up"
+                          size={18}
+                          color={
+                            text.trim()
+                              ? Brand.ink
+                              : "rgba(124, 99, 80, 0.48)"
+                          }
+                        />
+                      )}
+                    </Pressable>
+                  </View>
                 </View>
               </View>
-            </View>
           </GlassCard>
 
           {hasConversation ? (
@@ -1041,22 +1028,6 @@ export default function Home() {
               style={styles.dockButton}
             >
               <Ionicons name="time-outline" size={18} color={Brand.cocoa} />
-            </Pressable>
-
-            <Pressable
-              onPressIn={handleMicPressIn}
-              onPressOut={handleMicPressOut}
-              disabled={busy}
-              style={[
-                styles.dockButton,
-                listening ? styles.dockButtonDanger : null,
-              ]}
-            >
-              <Ionicons
-                name={listening ? "stop" : "mic"}
-                size={18}
-                color={listening ? "#fff" : Brand.cocoa}
-              />
             </Pressable>
 
             <Pressable onPress={openSchedule} style={styles.dockButtonPrimary}>
