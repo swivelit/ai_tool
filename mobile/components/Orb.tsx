@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Ionicons } from "@expo/vector-icons";
 import Animated, {
   Easing,
   interpolate,
@@ -16,7 +15,6 @@ import { Brand } from "@/constants/theme";
 
 type OrbProps = {
   listening: boolean;
-  onPress?: () => void;
   onPressIn?: () => void;
   onPressOut?: () => void;
   size?: number;
@@ -29,7 +27,6 @@ type OrbProps = {
  */
 export function Orb({
   listening,
-  onPress,
   onPressIn,
   onPressOut,
   size = 168,
@@ -40,7 +37,6 @@ export function Orb({
   const ring2 = useSharedValue(0);
   const orbit = useSharedValue(0);
   const shimmer = useSharedValue(0);
-  const iconPulse = useSharedValue(0);
 
   const active = useSharedValue(listening ? 1 : 0);
   const pressed = useSharedValue(0);
@@ -89,16 +85,7 @@ export function Orb({
       -1,
       false
     );
-
-    iconPulse.value = withRepeat(
-      withSequence(
-        withTiming(1, { duration: 900, easing: Easing.inOut(Easing.quad) }),
-        withTiming(0, { duration: 900, easing: Easing.inOut(Easing.quad) })
-      ),
-      -1,
-      false
-    );
-  }, [breathe, float, iconPulse, orbit, ring, ring2, shimmer]);
+  }, [breathe, float, orbit, ring, ring2, shimmer]);
 
   useEffect(() => {
     active.value = withTiming(listening ? 1 : 0, {
@@ -187,12 +174,6 @@ export function Orb({
     };
   });
 
-  const iconStyle = useAnimatedStyle(() => {
-    const scale = interpolate(iconPulse.value, [0, 1], [1.0, 1.06]);
-    const activeScale = interpolate(active.value, [0, 1], [1.0, 1.05]);
-    return { transform: [{ scale: scale * activeScale }] };
-  });
-
   const handlePressIn = () => {
     if (pressInFiredRef.current) return;
     pressInFiredRef.current = true;
@@ -205,7 +186,9 @@ export function Orb({
   };
 
   const handlePressOut = () => {
+    if (!pressInFiredRef.current) return;
     pressInFiredRef.current = false;
+
     pressed.value = withTiming(0, {
       duration: 180,
       easing: Easing.out(Easing.quad),
@@ -214,16 +197,20 @@ export function Orb({
   };
 
   return (
-    <Pressable
-      onPress={onPress}
-      onPressIn={handlePressIn}
-      onPressOut={handlePressOut}
+    <View
+      accessible
       accessibilityRole="button"
       accessibilityLabel={
         listening ? "Recording, release to stop" : "Hold the orb to record"
       }
       accessibilityHint="Press and hold the orb to record. Release to stop and send."
       style={styles.pressable}
+      onStartShouldSetResponder={() => true}
+      onResponderGrant={handlePressIn}
+      onResponderRelease={handlePressOut}
+      onResponderTerminate={handlePressOut}
+      onResponderTerminationRequest={() => true}
+      onTouchCancel={handlePressOut}
     >
       <View
         style={{
@@ -451,42 +438,11 @@ export function Orb({
                 end={{ x: 0.82, y: 0.88 }}
                 style={[styles.absFill, { borderRadius: 999 }]}
               />
-
-              <Animated.View
-                pointerEvents="none"
-                style={[styles.absFillCenter, iconStyle]}
-              >
-                <View
-                  style={{
-                    width: size * 0.34,
-                    height: size * 0.34,
-                    borderRadius: 999,
-                    backgroundColor: listening
-                      ? "rgba(255,248,236,0.30)"
-                      : "rgba(255,248,236,0.18)",
-                    borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.30)",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    shadowColor: "#f7d6a0",
-                    shadowOpacity: listening ? 0.28 : 0.2,
-                    shadowRadius: listening ? 14 : 10,
-                    shadowOffset: { width: 0, height: 5 },
-                    elevation: 5,
-                  }}
-                >
-                  <Ionicons
-                    name={listening ? "stop" : "mic"}
-                    size={size * 0.16}
-                    color={Brand.ink}
-                  />
-                </View>
-              </Animated.View>
             </View>
           </LinearGradient>
         </Animated.View>
       </View>
-    </Pressable>
+    </View>
   );
 }
 

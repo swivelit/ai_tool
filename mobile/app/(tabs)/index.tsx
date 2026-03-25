@@ -432,11 +432,10 @@ export default function Home() {
       return;
     }
 
-    if (!recording || recordingPhaseRef.current !== "recording") {
+    const activeRecording = recordingRef.current;
+    if (!activeRecording || recordingPhaseRef.current !== "recording") {
       return;
     }
-
-    const activeRecording = recording;
 
     try {
       recordingPhaseRef.current = "stopping";
