@@ -23,6 +23,23 @@ export default {
         process.env.EXPO_PUBLIC_API_URL ||
         process.env.EXPO_PUBLIC_API_BASE ||
         "https://ai-tool-rrau.onrender.com",
+
+      // phone-local runtime
+      LOCAL_MODEL_BASE_URL:
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL || "http://127.0.0.1:10000/v1",
+      LOCAL_MODEL_API_KEY: process.env.EXPO_PUBLIC_LOCAL_MODEL_API_KEY || "local-phone",
+      LOCAL_MODEL_TIMEOUT_MS: Number(process.env.EXPO_PUBLIC_LOCAL_MODEL_TIMEOUT_MS || 45000),
+
+      // requested models
+      LOCAL_MODEL_GEMMA_4B:
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_GEMMA_4B || "google/gemma-3-4b-it",
+      LOCAL_MODEL_QWEN_8B:
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_QWEN_8B || "Qwen/Qwen3-8B",
+      LOCAL_MODEL_QWEN_14B:
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_QWEN_14B || "Qwen/Qwen3-14B",
+      LOCAL_MODEL_QWEN_EMBED:
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_QWEN_EMBED || "Qwen/Qwen3-Embedding-0.6B",
+
       firebaseApiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
       firebaseAuthDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
       firebaseProjectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
