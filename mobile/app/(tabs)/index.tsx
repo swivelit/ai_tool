@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { runLocalAssistantTurn, saveScheduledTask } from "@/lib/localAgents";
 import {
   ActivityIndicator,
   Alert,
@@ -342,7 +343,7 @@ export default function Home() {
   }
 
   async function analyzeText() {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || !profile?.userId) return;
 
     try {
       setBusy(true);
@@ -350,30 +351,54 @@ export default function Home() {
       const cleaned = stripAssistantTrigger(text);
       setLastPrompt(cleaned);
 
-      const res = await apiPost<AnalyzeResponse>("/analyze-text", {
-        text: cleaned,
-        user_id: profile?.userId ?? null,
-        reply_language: settings.languageMode,
-        meta: { tone: settings.tone, languageMode: settings.languageMode },
+      const res = await runLocalAssistantTurn({
+        userId: profile.userId,
+        message: cleaned,
+        replyLanguage: settings.languageMode === "en" ? "en" : "ta",
+        userProfile: {
+          name: profile?.name || "User",
+          place: profile?.place || "",
+          assistantName: profile?.assistantName || name || "Elli",
+        },
       });
 
-      setResult(res);
       setText("");
-      await loadHistory();
-      await Haptics.notificationAsync(
-        Haptics.NotificationFeedbackType.Success
-      );
 
-      if (res.intent === "reminder" && res.datetime) {
+      if (res.intent === "reminder") {
+        setResult({
+          id: Date.now(),
+          intent: "reminder",
+          category: "Other",
+          raw_text: cleaned,
+          title: res.title || "Reminder",
+          details: res.assistantText,
+          transcript: null,
+          datetime: res.datetimeText || null,
+        });
+
         setPendingReminder({
           title: res.title || "Reminder",
-          details: res.details || res.raw_text,
-          datetimeText: res.datetime,
+          details: res.details || cleaned,
+          datetimeText: res.datetimeText || "",
         });
+
         setConfirmOpen(true);
+      } else {
+        setResult({
+          id: Date.now(),
+          intent: "assistant",
+          category: "Other",
+          raw_text: cleaned,
+          title: formatIntentLabel(res.route),
+          details: res.assistantText,
+          transcript: null,
+          datetime: null,
+        });
       }
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error: any) {
-      Alert.alert("Error", error?.message || "Failed to analyze your request.");
+      Alert.alert("Error", error?.message || "Failed to process your request.");
     } finally {
       setBusy(false);
     }
@@ -525,7 +550,7 @@ export default function Home() {
   }
 
   async function confirmScheduleReminder() {
-    if (!pendingReminder) return;
+    if (!pendingReminder || !profile?.userId) return;
 
     try {
       setBusy(true);
@@ -562,6 +587,15 @@ export default function Home() {
         pendingReminder.details,
         when
       );
+
+      await saveScheduledTask(profile.userId, {
+        title: pendingReminder.title,
+        details: pendingReminder.details,
+        datetimeText: pendingReminder.datetimeText,
+        isoDatetime: parsed.iso,
+        status: "scheduled",
+      });
+
       await Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success
       );
