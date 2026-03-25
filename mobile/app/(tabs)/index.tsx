@@ -185,9 +185,10 @@ export default function Home() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
-  const recordingPhaseRef = useRef<"idle" | "starting" | "recording" | "stopping">("idle");
+  const recordingPhaseRef = useRef<
+    "idle" | "starting" | "recording" | "stopping"
+  >("idle");
   const stopWhenReadyRef = useRef(false);
-  const recordingSourceRef = useRef<"orb" | "button" | null>(null);
 
   const isSmallPhone = width < 370 || height < 760;
   const isVerySmallPhone = width < 345 || height < 700;
@@ -377,23 +378,11 @@ export default function Home() {
     }
   }
 
-  async function startRecording(source: "orb" | "button" = "orb") {
+  async function startRecording() {
     if (busy || recordingPhaseRef.current !== "idle") return;
-
-    if (source !== "orb") {
-      try {
-        await Haptics.notificationAsync(
-          Haptics.NotificationFeedbackType.Warning
-        );
-      } catch {
-        // ignore
-      }
-      return;
-    }
 
     try {
       recordingPhaseRef.current = "starting";
-      recordingSourceRef.current = source;
       stopWhenReadyRef.current = false;
 
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -402,7 +391,6 @@ export default function Home() {
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
         recordingPhaseRef.current = "idle";
-        recordingSourceRef.current = null;
         setListening(false);
         Alert.alert("Mic permission needed", "Please allow microphone access.");
         return;
@@ -429,7 +417,6 @@ export default function Home() {
       }
     } catch (error: any) {
       recordingPhaseRef.current = "idle";
-      recordingSourceRef.current = null;
       stopWhenReadyRef.current = false;
       recordingRef.current = null;
       setRecording(null);
@@ -460,7 +447,6 @@ export default function Home() {
       recordingRef.current = null;
       setRecording(null);
       setListening(false);
-      recordingSourceRef.current = null;
 
       await activeRecording.stopAndUnloadAsync();
       await resetAudioMode();
@@ -507,7 +493,6 @@ export default function Home() {
       Alert.alert("Error", error?.message || "Voice analysis failed.");
     } finally {
       recordingPhaseRef.current = "idle";
-      recordingSourceRef.current = null;
       stopWhenReadyRef.current = false;
       recordingRef.current = null;
       setRecording(null);
@@ -517,26 +502,26 @@ export default function Home() {
     }
   }
 
-  async function handleHoldPressIn(source: "orb" | "button") {
+  async function handleHoldPressIn() {
     if (busy || recordingPhaseRef.current !== "idle") return;
-    await startRecording(source);
+    await startRecording();
   }
 
-  async function handleHoldPressOut(source: "orb" | "button") {
+  async function handleHoldPressOut() {
     if (
-      recordingSourceRef.current === source ||
-      recordingPhaseRef.current === "starting"
+      recordingPhaseRef.current === "starting" ||
+      recordingPhaseRef.current === "recording"
     ) {
       await stopAndAnalyze();
     }
   }
 
   async function handleOrbPressIn() {
-    await handleHoldPressIn("orb");
+    await handleHoldPressIn();
   }
 
   async function handleOrbPressOut() {
-    await handleHoldPressOut("orb");
+    await handleHoldPressOut();
   }
 
   async function confirmScheduleReminder() {
@@ -766,78 +751,76 @@ export default function Home() {
           </GlassCard>
 
           <GlassCard style={styles.composerCard}>
-              <View style={styles.sectionHeaderRow}>
-                <View>
-                  <Text style={styles.sectionTitle}>Compose</Text>
-                  <Text style={styles.sectionSubtitle}>
-                    Type naturally or hold the orb to speak. The assistant will
-                    structure the result for you.
+            <View style={styles.sectionHeaderRow}>
+              <View>
+                <Text style={styles.sectionTitle}>Compose</Text>
+                <Text style={styles.sectionSubtitle}>
+                  Type naturally or hold the orb to speak. The assistant will
+                  structure the result for you.
+                </Text>
+              </View>
+
+              <Pressable onPress={clearConversation} style={styles.ghostChip}>
+                <Ionicons
+                  name="refresh-outline"
+                  size={14}
+                  color={Brand.cocoa}
+                />
+                <Text style={styles.ghostChipText}>Reset</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.composerBox}>
+              <TextInput
+                value={text}
+                onChangeText={setText}
+                placeholder={placeholder}
+                placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                multiline
+                textAlignVertical="top"
+                style={styles.composerInput}
+              />
+
+              <View style={styles.composerActionsRow}>
+                <View style={styles.composerHintWrap}>
+                  <Ionicons
+                    name={listening ? "radio" : "chatbubble-ellipses-outline"}
+                    size={14}
+                    color={Brand.muted}
+                  />
+                  <Text style={styles.composerHintText}>
+                    {listening
+                      ? "Recording... release to stop and send"
+                      : "Press and hold the orb to record"}
                   </Text>
                 </View>
 
-                <Pressable onPress={clearConversation} style={styles.ghostChip}>
-                  <Ionicons
-                    name="refresh-outline"
-                    size={14}
-                    color={Brand.cocoa}
-                  />
-                  <Text style={styles.ghostChipText}>Reset</Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.composerBox}>
-                <TextInput
-                  value={text}
-                  onChangeText={setText}
-                  placeholder={placeholder}
-                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
-                  multiline
-                  textAlignVertical="top"
-                  style={styles.composerInput}
-                />
-
-                <View style={styles.composerActionsRow}>
-                  <View style={styles.composerHintWrap}>
-                    <Ionicons
-                      name={
-                        listening ? "radio" : "chatbubble-ellipses-outline"
-                      }
-                      size={14}
-                      color={Brand.muted}
-                    />
-                    <Text style={styles.composerHintText}>
-                      {listening
-                        ? "Recording... release to stop and send"
-                        : "Press and hold the orb to record"}
-                    </Text>
-                  </View>
-
-                  <View style={styles.composerButtonsWrap}>
-                    <Pressable
-                      onPress={analyzeText}
-                      disabled={busy || !text.trim()}
-                      style={[
-                        styles.composerActionBtn,
-                        text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
-                      ]}
-                    >
-                      {busy ? (
-                        <ActivityIndicator size="small" color={Brand.ink} />
-                      ) : (
-                        <Ionicons
-                          name="arrow-up"
-                          size={18}
-                          color={
-                            text.trim()
-                              ? Brand.ink
-                              : "rgba(124, 99, 80, 0.48)"
-                          }
-                        />
-                      )}
-                    </Pressable>
-                  </View>
+                <View style={styles.composerButtonsWrap}>
+                  <Pressable
+                    onPress={analyzeText}
+                    disabled={busy || !text.trim()}
+                    style={[
+                      styles.composerActionBtn,
+                      text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
+                    ]}
+                  >
+                    {busy ? (
+                      <ActivityIndicator size="small" color={Brand.ink} />
+                    ) : (
+                      <Ionicons
+                        name="arrow-up"
+                        size={18}
+                        color={
+                          text.trim()
+                            ? Brand.ink
+                            : "rgba(124, 99, 80, 0.48)"
+                        }
+                      />
+                    )}
+                  </Pressable>
                 </View>
               </View>
+            </View>
           </GlassCard>
 
           {hasConversation ? (
@@ -928,15 +911,17 @@ export default function Home() {
             <View style={styles.sectionHeaderRow}>
               <View>
                 <Text style={styles.sectionTitle}>Quick actions</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Start with one tap.
-                </Text>
+                <Text style={styles.sectionSubtitle}>Start with one tap.</Text>
               </View>
             </View>
 
             <View style={styles.quickActionsGrid}>
               {SUGGESTIONS.map((item) => (
-                <QuickActionCard key={item.label} item={item} onPress={setText} />
+                <QuickActionCard
+                  key={item.label}
+                  item={item}
+                  onPress={setText}
+                />
               ))}
             </View>
           </View>
@@ -1015,10 +1000,7 @@ export default function Home() {
           ]}
         >
           <LinearGradient
-            colors={[
-              "rgba(255,255,255,0.82)",
-              "rgba(255,240,213,0.84)",
-            ]}
+            colors={["rgba(255,255,255,0.82)", "rgba(255,240,213,0.84)"]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.bottomDockInner}
@@ -1227,9 +1209,7 @@ export default function Home() {
                   {pendingReminder?.title || "Reminder"}
                 </Text>
 
-                <Text
-                  style={[styles.modalInfoLabel, { marginTop: 14 }]}
-                >
+                <Text style={[styles.modalInfoLabel, { marginTop: 14 }]}>
                   Detected time
                 </Text>
                 <Text style={styles.modalInfoValue}>
@@ -1593,16 +1573,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
-  micIdleBtn: {
-    backgroundColor: "rgba(255,255,255,0.72)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  micStopBtn: {
-    backgroundColor: Brand.danger,
-  },
-
   sendBtn: {
     backgroundColor: Brand.peach,
     borderWidth: 1,
@@ -1880,11 +1850,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.7)",
     borderWidth: 1,
     borderColor: Brand.line,
-  },
-
-  dockButtonDanger: {
-    backgroundColor: Brand.danger,
-    borderColor: Brand.danger,
   },
 
   dockButtonPrimary: {
