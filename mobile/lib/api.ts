@@ -25,6 +25,13 @@ const LOCAL_STT_MODEL: string =
   process.env.EXPO_PUBLIC_LOCAL_STT_MODEL ||
   "whisper";
 
+const USE_LOCAL_VOICE_PIPELINE: boolean =
+  String(
+    extra.USE_LOCAL_VOICE_PIPELINE ||
+      process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ||
+      "false"
+  ).toLowerCase() === "true";
+
 type ReplyLanguage = "en" | "ta";
 
 type LocalVoiceTranscription = {
@@ -295,7 +302,7 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
-  if (isTranscribeAndAnalyzePath(path)) {
+  if (USE_LOCAL_VOICE_PIPELINE && isTranscribeAndAnalyzePath(path)) {
     return (await handleLocalTranscribeAndAnalyze(path, form)) as T;
   }
 
