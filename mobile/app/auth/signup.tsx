@@ -21,6 +21,8 @@ import { GlassCard } from "@/components/Glass";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 
+const DEV_TEST_PASSWORD = "Test@123456";
+
 const HIGHLIGHTS = [
   {
     icon: "person-outline" as const,
@@ -54,6 +56,16 @@ function passwordStrengthTone(value: string) {
   if (!value || value.length < 6) return Brand.danger;
   if (value.length < 9) return Brand.bronze;
   return Brand.success;
+}
+
+function buildDevSignupSeed() {
+  const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
+
+  return {
+    name: "Test User",
+    email: `test.user+${stamp}@jai-dev.app`,
+    password: DEV_TEST_PASSWORD,
+  };
 }
 
 export default function SignupScreen() {
@@ -140,6 +152,30 @@ export default function SignupScreen() {
     } catch (error: unknown) {
       setErrorText(
         error instanceof Error ? error.message : "Google sign-in failed."
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDevSignup() {
+    if (!__DEV__) {
+      return;
+    }
+
+    const seed = buildDevSignupSeed();
+
+    try {
+      setBusy(true);
+      setErrorText("");
+      setName(seed.name);
+      setEmail(seed.email);
+      setPassword(seed.password);
+      setConfirmPassword(seed.password);
+      await signUpWithPassword(seed.name, seed.email, seed.password);
+    } catch (error: unknown) {
+      setErrorText(
+        error instanceof Error ? error.message : "Temporary test sign up failed."
       );
     } finally {
       setBusy(false);
@@ -448,6 +484,48 @@ export default function SignupScreen() {
                   )}
                 </LinearGradient>
               </Pressable>
+
+              {__DEV__ ? (
+                <View style={styles.devCard}>
+                  <View style={styles.devCardHeader}>
+                    <View style={styles.devCardBadge}>
+                      <Ionicons
+                        name="flask-outline"
+                        size={14}
+                        color={Brand.bronze}
+                      />
+                      <Text style={styles.devCardBadgeText}>Dev only</Text>
+                    </View>
+                    <Text style={styles.devCardTitle}>Fresh test signup</Text>
+                  </View>
+
+                  <Text style={styles.devCardCopy}>
+                    Creates a brand-new temporary account so you can test sign up and onboarding again.
+                  </Text>
+
+                  <View style={styles.devCredentialRow}>
+                    <Text style={styles.devCredentialLabel}>Password</Text>
+                    <Text style={styles.devCredentialValue}>{DEV_TEST_PASSWORD}</Text>
+                  </View>
+
+                  <Text style={styles.devHint}>
+                    Each tap generates a new email automatically and routes into onboarding.
+                  </Text>
+
+                  <Pressable
+                    onPress={handleDevSignup}
+                    disabled={busy}
+                    style={({ pressed }) => [
+                      styles.devButton,
+                      pressed && styles.pressed,
+                      busy && styles.disabled,
+                    ]}
+                  >
+                    <Ionicons name="sparkles-outline" size={16} color={Brand.ink} />
+                    <Text style={styles.devButtonText}>Create fresh test account</Text>
+                  </Pressable>
+                </View>
+              ) : null}
 
               <View style={styles.dividerRow}>
                 <View style={styles.dividerLine} />
@@ -802,6 +880,94 @@ const styles = StyleSheet.create({
   },
 
   googleButtonText: {
+    color: Brand.ink,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  devCard: {
+    marginTop: 18,
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+    gap: 10,
+  },
+
+  devCardHeader: {
+    gap: 10,
+  },
+
+  devCardBadge: {
+    alignSelf: "flex-start",
+    minHeight: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  devCardBadgeText: {
+    color: Brand.cocoa,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+
+  devCardTitle: {
+    color: Brand.ink,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+
+  devCardCopy: {
+    color: Brand.muted,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+
+  devCredentialRow: {
+    gap: 4,
+  },
+
+  devCredentialLabel: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  devCredentialValue: {
+    color: Brand.ink,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  devHint: {
+    color: Brand.muted,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+
+  devButton: {
+    marginTop: 2,
+    minHeight: 48,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+    backgroundColor: "rgba(255,255,255,0.82)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+
+  devButtonText: {
     color: Brand.ink,
     fontSize: 14,
     fontWeight: "900",
