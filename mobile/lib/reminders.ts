@@ -1,10 +1,11 @@
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
-// Always show notifications even if app is foreground
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
   }),
@@ -13,7 +14,6 @@ Notifications.setNotificationHandler({
 const ANDROID_CHANNEL_ID = "checkins";
 
 export async function ensureNotificationsReady(): Promise<boolean> {
-  // Android needs a channel
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
       name: "Daily Check-ins",
@@ -33,8 +33,6 @@ export async function ensureNotificationsReady(): Promise<boolean> {
 }
 
 export async function scheduleReminder(title: string, body: string, when: Date) {
-  // ✅ SDK 54+: trigger must be object with `type`
-  // ✅ Android: channelId MUST be on trigger (reliable), not only content
   const trigger: Notifications.NotificationTriggerInput =
     Platform.OS === "android"
       ? {
@@ -57,12 +55,10 @@ export async function scheduleReminder(title: string, body: string, when: Date) 
   });
 }
 
-// Useful during onboarding to avoid duplicates
 export async function cancelAllReminders() {
   await Notifications.cancelAllScheduledNotificationsAsync();
 }
 
-// Debug helper: see what is scheduled
 export async function getScheduledReminders() {
   return Notifications.getAllScheduledNotificationsAsync();
 }

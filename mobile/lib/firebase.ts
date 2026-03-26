@@ -1,8 +1,7 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 import { initializeApp, getApp, getApps } from "firebase/app";
-import { getAuth, getReactNativePersistence, initializeAuth } from "firebase/auth";
+import { getAuth, initializeAuth } from "firebase/auth";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
 
@@ -34,9 +33,7 @@ function buildAuth() {
   }
 
   try {
-    return initializeAuth(firebaseApp, {
-      persistence: getReactNativePersistence(AsyncStorage),
-    });
+    return initializeAuth(firebaseApp);
   } catch {
     return getAuth(firebaseApp);
   }
