@@ -16,6 +16,13 @@ type OrchestratorRoute =
   | "local_answer"
   | "fallback_openai";
 
+type LocalUserProfile = {
+  name?: string;
+  place?: string;
+  assistantName?: string;
+  replyLanguage?: ReplyLanguage;
+};
+
 export type LocalChatMessage = {
   role: ChatRole;
   content: string;
@@ -155,6 +162,54 @@ type MemorySyncRow = {
   profile_updates: Record<string, any>;
 };
 
+type PromptCatalog = {
+  profilerOpeningSystem: string;
+  profilerTurnSystem: string;
+  profileSummarySystem: string;
+  orchestratorSystem: string;
+  reminderExtractorSystem: string;
+  alignmentSystem: string;
+  memorySyncSystem: string;
+  localReasonerSystem: string;
+};
+
+type AgentRegistryConfig = {
+  version: number;
+  agents: {
+    profiler: {
+      enabled: boolean;
+      modelKey: keyof LocalModelConfig["models"];
+      description: string;
+      trainingFile: string;
+    };
+    orchestrator: {
+      enabled: boolean;
+      mediumModelKey: keyof LocalModelConfig["models"];
+      largeModelKey: keyof LocalModelConfig["models"];
+      description: string;
+      trainingFile: string;
+    };
+    alignment: {
+      enabled: boolean;
+      modelKey: keyof LocalModelConfig["models"];
+      description: string;
+      trainingFile: string;
+    };
+    memory: {
+      enabled: boolean;
+      embeddingModelKey: keyof LocalModelConfig["models"];
+      summarizerModelKey: keyof LocalModelConfig["models"];
+      description: string;
+      trainingFile: string;
+    };
+    toolAgents: {
+      weather: boolean;
+      calendar: boolean;
+      profile: boolean;
+    };
+  };
+};
+
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
@@ -175,49 +230,174 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
 };
 
 const DEFAULT_PROFILER_SLOTS: ProfilerSlot[] = [
-  { id: "age_group", prompt: "what age group fits you best right now?", type: "single", options: ["18-25", "26-35", "36-45", "46-60", "60+"] },
-  { id: "gender_context", prompt: "which option describes you best?", type: "single", options: ["woman", "man", "non-binary", "prefer_not_to_say", "other"] },
   {
-    id: "life_stage",
-    prompt: "is there any life stage or health context I should be aware of?",
+    id: "preferred_language",
+    prompt: "Which language should I mostly use with you?",
     type: "single",
-    options: ["pregnant", "postpartum_or_breastfeeding", "trying_to_conceive", "none_of_these", "prefer_not_to_say"],
+    options: ["english", "tamil", "hindi", "telugu", "malayalam", "other"],
   },
-  { id: "food_preference", prompt: "what kind of food do you usually prefer?", type: "single", options: ["vegetarian", "non_vegetarian", "eggetarian", "vegan", "mixed_flexible"] },
   {
-    id: "health_conditions",
-    prompt: "any health condition or sensitivity I should keep in mind?",
+    id: "secondary_language",
+    prompt: "Do you speak a second language that I should switch to when it feels natural?",
+    type: "single",
+    options: ["none", "english", "tamil", "hindi", "telugu", "malayalam", "other"],
+  },
+  {
+    id: "occupation",
+    prompt: "What do you do most days—work, study, business, home, or something else?",
+    type: "single",
+    options: ["student", "working_professional", "business_owner", "freelancer_creator", "homemaker_caregiver", "between_roles", "other"],
+  },
+  {
+    id: "industry_or_field",
+    prompt: "Which field or area are you mostly in right now?",
+    type: "single",
+    options: ["technology", "business", "education", "healthcare", "design_media", "sales_marketing", "operations", "other"],
+  },
+  {
+    id: "hobbies",
+    prompt: "What do you enjoy doing in your free time?",
     type: "multi",
-    max_choices: 3,
-    options: ["none", "diabetes_or_sugar_control", "blood_pressure_or_heart_care", "thyroid_or_hormonal_care", "allergy_digestion_kidney_or_other"],
+    max_choices: 4,
+    options: ["music", "movies", "reading", "gaming", "travel", "fitness", "cooking", "sports", "art", "technology"],
   },
   {
-    id: "food_caution",
-    prompt: "are there any foods you actively avoid?",
-    type: "single",
-    options: ["no_special_caution", "avoid_sugary_foods", "avoid_spicy_or_oily_foods", "avoid_packaged_or_junk_foods", "allergy_or_doctor_given_restrictions"],
+    id: "interests",
+    prompt: "What topics do you enjoy talking about or learning about?",
+    type: "multi",
+    max_choices: 4,
+    options: ["ai_technology", "business", "career", "productivity", "finance", "health", "travel", "culture", "education", "self_growth"],
   },
-  { id: "daily_activity", prompt: "how active are you on a normal day?", type: "single", options: ["mostly_sitting", "light_movement", "moderate_walks", "active_work", "fitness_focused"] },
-  { id: "sleep_pattern", prompt: "how is your sleep most of the time?", type: "single", options: ["poor", "inconsistent", "average", "good", "very_good"] },
-  { id: "personality_style", prompt: "what kind of personality do you think matches you most?", type: "single", options: ["calm", "friendly", "practical", "ambitious", "emotional_sensitive"] },
-  { id: "stress_support", prompt: "when you are stressed, what kind of help feels best?", type: "single", options: ["gentle_reassurance", "direct_solution", "step_by_step_plan", "motivation", "space_and_time"] },
-  { id: "communication_tone", prompt: "how should I talk to you?", type: "single", options: ["warm", "respectful", "short_direct", "detailed", "friendly_casual"] },
-  { id: "answer_length", prompt: "how long should my answers usually be?", type: "single", options: ["very_short", "short", "medium", "detailed", "depends_on_question"] },
-  { id: "hobbies", prompt: "what do you enjoy doing in your free time?", type: "multi", max_choices: 3, options: ["music", "movies", "reading", "cooking", "travel"] },
-  { id: "main_goal", prompt: "what matters most to you right now?", type: "single", options: ["health", "family", "career_or_business", "peace_of_mind", "learning_and_growth"] },
-  { id: "family_role", prompt: "what role is closest to your current daily life?", type: "single", options: ["student", "working_professional", "homemaker", "caregiver_parent", "self_employed"] },
+  {
+    id: "communication_tone",
+    prompt: "How should I talk to you most of the time?",
+    type: "single",
+    options: ["warm", "respectful", "short_direct", "detailed", "friendly_casual"],
+  },
+  {
+    id: "answer_length",
+    prompt: "How long should my answers usually be?",
+    type: "single",
+    options: ["very_short", "short", "medium", "detailed", "depends_on_question"],
+  },
+  {
+    id: "personality_style",
+    prompt: "How would you describe your own style or personality?",
+    type: "single",
+    options: ["calm", "friendly", "practical", "ambitious", "curious", "private_reserved"],
+  },
+  {
+    id: "assistant_persona",
+    prompt: "What kind of assistant do you want me to feel like?",
+    type: "single",
+    options: ["coach", "planner", "friend", "tutor", "operator", "straight_shooter"],
+  },
+  {
+    id: "planning_style",
+    prompt: "How do you like planning your day or work?",
+    type: "single",
+    options: ["very_structured", "light_structure", "flexible", "last_minute", "mixed"],
+  },
+  {
+    id: "learning_style",
+    prompt: "When learning something new, what helps you most?",
+    type: "single",
+    options: ["examples", "step_by_step", "big_picture_first", "hands_on", "quick_summary"],
+  },
+  {
+    id: "main_goal",
+    prompt: "What matters most to you right now?",
+    type: "single",
+    options: ["career_growth", "business_growth", "study_success", "health_balance", "relationships_family", "peace_of_mind", "productivity", "learning"],
+  },
+  {
+    id: "dislikes",
+    prompt: "What kind of assistant behavior do you dislike?",
+    type: "multi",
+    max_choices: 4,
+    options: ["too_long", "too_short", "too_formal", "too_casual", "too_many_questions", "too_generic", "too_pushy", "too_much_jargon"],
+  },
+  {
+    id: "work_rhythm",
+    prompt: "When are you usually most active or available?",
+    type: "single",
+    options: ["early_morning", "morning", "afternoon", "evening", "late_night", "irregular"],
+  },
 ];
 
 const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
-  version: 1,
+  version: 2,
   routes: {
-    fastGreetingKeywords: ["hi", "hello", "hey", "vanakkam", "thanks", "thank you", "good morning", "good evening"],
-    calendarKeywords: ["schedule", "agenda", "plan", "today plan", "tomorrow plan", "what do i have", "calendar"],
-    reminderKeywords: ["remind me", "set a reminder", "add reminder", "remember this", "next week at", "today at", "tomorrow at"],
-    weatherKeywords: ["weather", "temperature", "rain", "forecast", "climate"],
-    profileKeywords: ["my name", "who am i", "my hobbies", "my goal", "communication style", "how should you talk", "my place"],
-    liveDataKeywords: ["latest", "news", "current", "today", "live", "score", "stock", "price", "president", "prime minister"],
-    ambiguityKeywords: ["this", "that", "it", "they", "there", "here"],
+    fastGreetingKeywords: [
+      "hi",
+      "hello",
+      "hey",
+      "vanakkam",
+      "thanks",
+      "thank you",
+      "good morning",
+      "good evening",
+      "good night",
+    ],
+    calendarKeywords: [
+      "schedule",
+      "agenda",
+      "plan",
+      "today plan",
+      "tomorrow plan",
+      "what do i have",
+      "calendar",
+      "my reminders",
+      "upcoming tasks",
+    ],
+    reminderKeywords: [
+      "remind me",
+      "set a reminder",
+      "add reminder",
+      "remember this",
+      "next week at",
+      "today at",
+      "tomorrow at",
+      "don't let me forget",
+    ],
+    weatherKeywords: [
+      "weather",
+      "temperature",
+      "rain",
+      "forecast",
+      "climate",
+      "humid",
+      "wind",
+    ],
+    profileKeywords: [
+      "my name",
+      "who am i",
+      "my hobbies",
+      "what do i like",
+      "my goal",
+      "communication style",
+      "how should you talk",
+      "my language",
+      "my job",
+      "my work",
+    ],
+    liveDataKeywords: [
+      "latest",
+      "news",
+      "current",
+      "today",
+      "live",
+      "score",
+      "stock",
+      "price",
+      "president",
+      "prime minister",
+      "election",
+      "internet",
+      "search online",
+      "browse",
+    ],
+    ambiguityKeywords: ["this", "that", "it", "they", "there", "here", "he", "she"],
   },
 };
 
@@ -236,9 +416,159 @@ const DEFAULT_MEMORY_RULES: MemoryRules = {
   maxFactsPerSync: 6,
 };
 
-const DEFAULT_WORKSPACE_MANIFEST = {
+const DEFAULT_PROMPTS: PromptCatalog = {
+  profilerOpeningSystem: [
+    "You are the Profiler Agent using Gemma 3 4B.",
+    "Mission:",
+    "- start onboarding as a natural, warm conversation",
+    "- do NOT say this is a form, checklist, or questionnaire",
+    "- ask for only one thing in the first message",
+    "- reply in {{reply_language_name}}",
+    "- collect these profile slots over time: {{slot_ids}}",
+    "- prefer subtle extraction over direct interrogation",
+  ].join("\n"),
+  profilerTurnSystem: [
+    "You are the Profiler Agent using Gemma 3 4B.",
+    "Mission:",
+    "- collect the required onboarding slots naturally",
+    "- use friendly conversation, never a rigid survey",
+    "- extract updates from the latest user message",
+    "- ask only one best follow-up",
+    "- prefer filling missing slots, but do not force unnatural questions",
+    "- reply in {{reply_language_name}}",
+    "",
+    "Return JSON only:",
+    "{",
+    '  "assistant_reply": "string",',
+    '  "updates": { "slot_id": "value or list" },',
+    '  "missing_slots": ["slot_id"],',
+    '  "completed": false',
+    "}",
+  ].join("\n"),
+  profileSummarySystem: [
+    "You are the Alignment/Profile Summary Agent using Gemma 3 4B.",
+    "Write a compact factual English profile summary.",
+    "Mention only stable user preferences and facts that appear in the input.",
+    "Prioritize: languages, occupation, hobbies, communication style, dislikes, main goals, assistant preference.",
+    "Do not invent anything.",
+  ].join("\n"),
+  orchestratorSystem: [
+    "You are the Orchestrator Agent using Qwen 3 8B.",
+    "Choose exactly one route:",
+    "- fast_greeting",
+    "- clarify",
+    "- profile",
+    "- calendar_query",
+    "- reminder_create",
+    "- weather",
+    "- local_answer",
+    "- fallback_openai",
+    "",
+    "Rules:",
+    "- fallback_openai only when local reasoning is not enough, or the user clearly needs live/public/current/external data that no local tool can answer",
+    "- clarify only when critical context is missing",
+    "- weather if the user asks about weather or forecast",
+    "- calendar_query if the user is asking about reminders, schedule, or agenda",
+    "- profile if the user asks about their own saved preferences, languages, hobbies, job, tone, or goals",
+    "- local_answer for general reasoning that the local model can handle offline",
+    "",
+    "Return JSON only:",
+    "{",
+    '  "route": "local_answer",',
+    '  "reason": "string",',
+    '  "clarifying_question": "",',
+    '  "needs_large_model": false,',
+    '  "needs_live_data": false',
+    "}",
+  ].join("\n"),
+  reminderExtractorSystem: [
+    "You are the reminder extraction tool, powered by Qwen 3 8B.",
+    "Extract reminder details from the user message.",
+    "",
+    "Return JSON only:",
+    "{",
+    '  "title": "string",',
+    '  "details": "string",',
+    '  "datetime_text": "string or null",',
+    '  "assistant_reply": "string"',
+    "}",
+  ].join("\n"),
+  alignmentSystem: [
+    "You are the Alignment Agent using Gemma 3 4B.",
+    "Rewrite the draft so it matches the user's tone, language, and preferences.",
+    "Preserve facts exactly. Do not add new claims.",
+    "If reply_language is ta, final_answer must be Tamil.",
+    "If reply_language is en, final_answer must be English.",
+    "",
+    "Return JSON only:",
+    "{",
+    '  "english_answer": "string",',
+    '  "final_answer": "string"',
+    "}",
+  ].join("\n"),
+  memorySyncSystem: [
+    "You are the Memory & Cache Agent.",
+    "Semantic similarity is handled by Qwen3-Embedding outside this prompt.",
+    "Your job here is to summarize recent conversation facts conservatively.",
+    "Extract only durable user facts and obvious profile updates.",
+    "",
+    "Return JSON only:",
+    "{",
+    '  "summary": "string",',
+    '  "new_facts": ["string"],',
+    '  "profile_updates": {}',
+    "}",
+  ].join("\n"),
+  localReasonerSystem: [
+    "You are the local main assistant.",
+    "Use only the provided context, general offline knowledge, and the user's local memory.",
+    "If the question requires live current/public internet information or a fact you cannot know locally, reply with exactly:",
+    "__OPENAI_FALLBACK__",
+    "",
+    "Do not invent calendar entries, personal facts, or live web facts.",
+  ].join("\n"),
+};
+
+const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
   version: 1,
-  description: "Local phone-first agent workspace",
+  agents: {
+    profiler: {
+      enabled: true,
+      modelKey: "profiler",
+      description: "Natural onboarding and profile extraction",
+      trainingFile: "profiler.jsonl",
+    },
+    orchestrator: {
+      enabled: true,
+      mediumModelKey: "orchestratorMedium",
+      largeModelKey: "orchestratorLarge",
+      description: "Route user intent, tool choice, and local-vs-OpenAI fallback decisions",
+      trainingFile: "orchestrator.jsonl",
+    },
+    alignment: {
+      enabled: true,
+      modelKey: "aligner",
+      description: "Rewrite answers to match the user's tone and language",
+      trainingFile: "alignment.jsonl",
+    },
+    memory: {
+      enabled: true,
+      embeddingModelKey: "embedding",
+      summarizerModelKey: "orchestratorMedium",
+      description: "Semantic cache and long-term profile updates",
+      trainingFile: "memory.jsonl",
+    },
+    toolAgents: {
+      weather: true,
+      calendar: true,
+      profile: true,
+    },
+  },
+};
+
+const DEFAULT_WORKSPACE_MANIFEST = {
+  version: 2,
+  description: "Local phone-first multi-agent workspace",
   folders: [
     "data/config",
     "data/profiles",
@@ -248,6 +578,16 @@ const DEFAULT_WORKSPACE_MANIFEST = {
     "data/tasks",
     "data/rag",
     "data/training",
+  ],
+  files: [
+    "data/config/models.json",
+    "data/config/profiler_slots.json",
+    "data/config/orchestrator_routes.json",
+    "data/config/alignment_rules.json",
+    "data/config/memory_rules.json",
+    "data/config/prompts.json",
+    "data/config/agent_registry.json",
+    "data/config/workspace_manifest.json",
   ],
 };
 
@@ -268,6 +608,8 @@ const SLOTS_PATH = `${CONFIG_DIR}/profiler_slots.json`;
 const ROUTES_PATH = `${CONFIG_DIR}/orchestrator_routes.json`;
 const ALIGNMENT_PATH = `${CONFIG_DIR}/alignment_rules.json`;
 const MEMORY_RULES_PATH = `${CONFIG_DIR}/memory_rules.json`;
+const PROMPTS_PATH = `${CONFIG_DIR}/prompts.json`;
+const AGENT_REGISTRY_PATH = `${CONFIG_DIR}/agent_registry.json`;
 const WORKSPACE_MANIFEST_PATH = `${CONFIG_DIR}/workspace_manifest.json`;
 
 function nowIso() {
@@ -312,15 +654,48 @@ function parseJsonLoose<T>(raw: any, fallback: T): T {
   try {
     return JSON.parse(text) as T;
   } catch {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start >= 0 && end > start) {
+    const objectStart = text.indexOf("{");
+    const objectEnd = text.lastIndexOf("}");
+    if (objectStart >= 0 && objectEnd > objectStart) {
       try {
-        return JSON.parse(text.slice(start, end + 1)) as T;
-      } catch {}
+        return JSON.parse(text.slice(objectStart, objectEnd + 1)) as T;
+      } catch {
+        // keep going
+      }
+    }
+    const arrayStart = text.indexOf("[");
+    const arrayEnd = text.lastIndexOf("]");
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+      try {
+        return JSON.parse(text.slice(arrayStart, arrayEnd + 1)) as T;
+      } catch {
+        // keep going
+      }
     }
     return fallback;
   }
+}
+
+function template(text: string, values: Record<string, any>) {
+  return String(text || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => {
+    const value = values[key];
+    return value == null ? "" : String(value);
+  });
+}
+
+function trimList(value: any) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function displayValue(value: string | string[] | undefined) {
+  if (Array.isArray(value)) return value.join(", ");
+  return String(value || "").trim();
 }
 
 async function exists(path: string) {
@@ -464,33 +839,81 @@ function nextSlot(slots: ProfilerSlot[], answers: Record<string, any>) {
 function profileFactsText(answers: Record<string, any>) {
   return Object.entries(answers)
     .filter(([, value]) => (Array.isArray(value) ? value.length > 0 : String(value || "").trim()))
-    .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(", ") : value}`)
+    .map(([key, value]) => `${key}: ${displayValue(value as any)}`)
     .join("\n");
+}
+
+function languagesSummary(answers: Record<string, any>) {
+  const primary = displayValue(answers.preferred_language);
+  const secondary = displayValue(answers.secondary_language);
+  if (primary && secondary && secondary !== "none" && secondary !== primary) {
+    return `${primary} and ${secondary}`;
+  }
+  return primary || secondary || "";
 }
 
 function heuristicProfileAnswer(
   message: string,
   answers: Record<string, any>,
-  userProfile?: { name?: string; place?: string; assistantName?: string }
+  userProfile?: LocalUserProfile
 ) {
   const normalized = normalizeText(message);
+
   if (/\b(my name|what is my name|who am i)\b/.test(normalized) && userProfile?.name) {
     return `Your name is ${userProfile.name}.`;
   }
+
   if (/\b(my place|where am i from|my hometown|my town)\b/.test(normalized) && userProfile?.place) {
     return `Your place is ${userProfile.place}.`;
   }
+
   if (/\b(hobbies|what do i like|what do i enjoy)\b/.test(normalized) && answers.hobbies) {
-    const hobbies = Array.isArray(answers.hobbies) ? answers.hobbies.join(", ") : answers.hobbies;
-    return `You told me your hobbies include ${hobbies}.`;
+    return `You told me your hobbies include ${displayValue(answers.hobbies)}.`;
   }
-  if (/\b(how should you talk|my tone|communication style)\b/.test(normalized) && answers.communication_tone) {
-    return `You prefer a ${answers.communication_tone} tone.`;
+
+  if (/\b(language|languages|what do i speak|which language)\b/.test(normalized)) {
+    const langs = languagesSummary(answers);
+    if (langs) return `You told me you speak ${langs}.`;
   }
+
+  if (/\b(job|work|occupation|what do i do)\b/.test(normalized) && answers.occupation) {
+    const field = displayValue(answers.industry_or_field);
+    return field
+      ? `You described yourself as ${displayValue(answers.occupation)} in ${field}.`
+      : `You described yourself as ${displayValue(answers.occupation)}.`;
+  }
+
+  if (/\b(goal|focus|priority|what matters)\b/.test(normalized) && answers.main_goal) {
+    return `Right now, your main focus is ${displayValue(answers.main_goal)}.`;
+  }
+
+  if (/\b(communication style|tone|how should you talk|how do i like replies)\b/.test(normalized) && answers.communication_tone) {
+    const length = displayValue(answers.answer_length);
+    return length
+      ? `You prefer a ${displayValue(answers.communication_tone)} tone with ${length} answers.`
+      : `You prefer a ${displayValue(answers.communication_tone)} tone.`;
+  }
+
+  if (/\b(dislike|dont like|don't like|avoid doing)\b/.test(normalized) && answers.dislikes) {
+    return `You said you dislike responses that feel ${displayValue(answers.dislikes)}.`;
+  }
+
   if (/\b(who are you|what can you do)\b/.test(normalized)) {
     return `I’m ${userProfile?.assistantName || "Elli"}, your local-first assistant.`;
   }
+
   return "";
+}
+
+async function safeRecordTrainingSample(
+  agent: LocalTrainingSample["agent"],
+  sample: Omit<LocalTrainingSample, "id" | "agent" | "createdAt">
+) {
+  try {
+    await appendLocalTrainingSample(agent, sample);
+  } catch {
+    // training capture must never break the user flow
+  }
 }
 
 export async function ensureLocalAgentData() {
@@ -509,6 +932,8 @@ export async function ensureLocalAgentData() {
   if (!(await exists(ROUTES_PATH))) await writeJson(ROUTES_PATH, DEFAULT_ORCHESTRATOR_CONFIG);
   if (!(await exists(ALIGNMENT_PATH))) await writeJson(ALIGNMENT_PATH, DEFAULT_ALIGNMENT_RULES);
   if (!(await exists(MEMORY_RULES_PATH))) await writeJson(MEMORY_RULES_PATH, DEFAULT_MEMORY_RULES);
+  if (!(await exists(PROMPTS_PATH))) await writeJson(PROMPTS_PATH, DEFAULT_PROMPTS);
+  if (!(await exists(AGENT_REGISTRY_PATH))) await writeJson(AGENT_REGISTRY_PATH, DEFAULT_AGENT_REGISTRY);
   if (!(await exists(WORKSPACE_MANIFEST_PATH))) await writeJson(WORKSPACE_MANIFEST_PATH, DEFAULT_WORKSPACE_MANIFEST);
 }
 
@@ -535,6 +960,16 @@ async function getAlignmentRules() {
 async function getMemoryRules() {
   await ensureLocalAgentData();
   return readJson<MemoryRules>(MEMORY_RULES_PATH, DEFAULT_MEMORY_RULES);
+}
+
+async function getPromptCatalog() {
+  await ensureLocalAgentData();
+  return readJson<PromptCatalog>(PROMPTS_PATH, DEFAULT_PROMPTS);
+}
+
+async function getAgentRegistry() {
+  await ensureLocalAgentData();
+  return readJson<AgentRegistryConfig>(AGENT_REGISTRY_PATH, DEFAULT_AGENT_REGISTRY);
 }
 
 async function loadAnswers(userId: number) {
@@ -582,7 +1017,7 @@ async function loadSemanticCache(userId: number) {
 }
 
 async function saveSemanticCache(userId: number, rows: SemanticCacheRow[]) {
-  await writeJson(semanticCachePath(userId), rows.slice(-200));
+  await writeJson(userId ? semanticCachePath(userId) : semanticCachePath(0), rows.slice(-200));
 }
 
 async function loadRagChunks(userId: number) {
@@ -704,7 +1139,7 @@ async function saveAnswers(userId: number, answers: Record<string, string | stri
       id: key,
       sourceId: `profile:${key}`,
       sourceType: "profile" as const,
-      text: `${key}: ${Array.isArray(value) ? value.join(", ") : value}`,
+      text: `${key}: ${displayValue(value as any)}`,
       metadata: { slot: key },
     }));
   const embeddings = chunks.length ? await embedTexts(chunks.map((chunk) => chunk.text)) : [];
@@ -739,6 +1174,11 @@ export async function upsertLocalRagChunks(
     updatedAt: createdAt,
   }));
   await saveRagChunks(userId, [...filtered, ...nextRows]);
+  await safeRecordTrainingSample("rag", {
+    input: cleanTexts.join("\n"),
+    label: "upsert",
+    metadata: { userId, sourceId, sourceType: opts?.sourceType || "doc", count: nextRows.length },
+  });
   return nextRows;
 }
 
@@ -793,6 +1233,9 @@ export async function getLocalAgentWorkspaceInfo() {
     trainingDir: TRAINING_DIR,
     manifest: await readJson(WORKSPACE_MANIFEST_PATH, DEFAULT_WORKSPACE_MANIFEST),
     models: await getModelConfig(),
+    prompts: await getPromptCatalog(),
+    registry: await getAgentRegistry(),
+    slots: await getProfilerSlots(),
   };
 }
 
@@ -807,12 +1250,7 @@ function mergeProfilerUpdates(
     const slot = byId.get(key);
     if (!slot) return;
     if (slot.type === "multi") {
-      const next = Array.isArray(value)
-        ? value.map((entry) => String(entry).trim()).filter(Boolean)
-        : String(value || "")
-            .split(",")
-            .map((entry) => entry.trim())
-            .filter(Boolean);
+      const next = trimList(value);
       if (next.length) merged[key] = uniq(next).slice(0, slot.max_choices || 3);
       return;
     }
@@ -829,11 +1267,18 @@ function fallbackProfilerTurn(
   state: LocalProfilerState,
   replyLanguage: ReplyLanguage
 ) {
-  const slot = slots.find((item) => item.id === state.currentTargetSlot) || nextSlot(slots, answers) || slots[0];
+  const slot =
+    slots.find((item) => item.id === state.currentTargetSlot) ||
+    nextSlot(slots, answers) ||
+    slots[0];
   const updated = mergeProfilerUpdates(slots, answers, {
-    [slot.id]: slot.type === "multi"
-      ? String(message).split(",").map((entry) => entry.trim()).filter(Boolean)
-      : String(message).trim(),
+    [slot.id]:
+      slot.type === "multi"
+        ? String(message)
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        : String(message).trim(),
   });
   const remaining = missingSlots(slots, updated);
   const upcoming = slots.find((item) => remaining.includes(item.id));
@@ -862,20 +1307,15 @@ async function syncAnswersToBackend(userId: number, answers: Record<string, stri
   }
 }
 
-async function buildProfileSummaryLocally(
-  userId: number,
-  userProfile?: { name?: string; place?: string; assistantName?: string; replyLanguage?: ReplyLanguage }
-) {
+async function buildProfileSummaryLocally(userId: number, userProfile?: LocalUserProfile) {
   const cfg = await getModelConfig();
+  const prompts = await getPromptCatalog();
   const answers = await loadAnswers(userId);
   const slots = await getProfilerSlots();
   if (missingSlots(slots, answers).length > 0) return "";
   try {
     const summary = await localChatText(
-      `You are the Alignment/Profile Summary Agent using Gemma 3 4B.
-Write a compact factual English profile summary.
-Mention only stable user preferences and facts that appear in the input.
-Do not invent anything.`,
+      prompts.profileSummarySystem,
       JSON.stringify({ user: userProfile || {}, answers }),
       cfg.models.aligner,
       0.1
@@ -884,36 +1324,44 @@ Do not invent anything.`,
       await saveSummary(userId, summary.trim());
       return summary.trim();
     }
-  } catch {}
+  } catch {
+    // use fallback summary below
+  }
+  const languages = languagesSummary(answers);
   const fallback = [
     userProfile?.name ? `${userProfile.name} uses this assistant.` : "",
-    answers.communication_tone ? `Preferred tone: ${answers.communication_tone}.` : "",
-    answers.answer_length ? `Answer length: ${answers.answer_length}.` : "",
-    answers.hobbies ? `Hobbies: ${Array.isArray(answers.hobbies) ? answers.hobbies.join(", ") : answers.hobbies}.` : "",
-    answers.main_goal ? `Main goal: ${answers.main_goal}.` : "",
-  ].filter(Boolean).join(" ");
+    languages ? `Languages: ${languages}.` : "",
+    answers.occupation ? `Occupation: ${displayValue(answers.occupation)}.` : "",
+    answers.communication_tone ? `Preferred tone: ${displayValue(answers.communication_tone)}.` : "",
+    answers.answer_length ? `Answer length: ${displayValue(answers.answer_length)}.` : "",
+    answers.hobbies ? `Hobbies: ${displayValue(answers.hobbies)}.` : "",
+    answers.main_goal ? `Main goal: ${displayValue(answers.main_goal)}.` : "",
+    answers.dislikes ? `Avoid: ${displayValue(answers.dislikes)}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   await saveSummary(userId, fallback);
   return fallback;
 }
 
-async function buildProfilerOpening(
-  replyLanguage: ReplyLanguage,
-  userProfile?: { name?: string; place?: string; assistantName?: string }
-) {
+async function buildProfilerOpening(replyLanguage: ReplyLanguage, userProfile?: LocalUserProfile) {
   const cfg = await getModelConfig();
+  const prompts = await getPromptCatalog();
+  const slots = await getProfilerSlots();
   try {
     const out = await localChatText(
-      `You are the Profiler Agent using Gemma 3 4B.
-Start onboarding as a natural, warm conversation.
-Ask for only one thing in the first message.
-Do not say this is a form or questionnaire.
-Reply in ${replyLanguage === "ta" ? "Tamil" : "English"}.`,
+      template(prompts.profilerOpeningSystem, {
+        reply_language_name: replyLanguage === "ta" ? "Tamil" : "English",
+        slot_ids: slots.map((slot) => slot.id).join(", "),
+      }),
       JSON.stringify({ user: userProfile || {}, mission: "collect the user's profile naturally" }),
       cfg.models.profiler,
       0.2
     );
     if (out.trim()) return out.trim();
-  } catch {}
+  } catch {
+    // use fallback below
+  }
   return replyLanguage === "ta"
     ? `வணக்கம்${userProfile?.name ? ` ${userProfile.name}` : ""}. நம்ம ஒரு சாதாரண உரையாடலாக ஆரம்பிக்கலாம். முதல்ல, உங்களைப் பற்றி கொஞ்சம் சொல்லுங்க.`
     : `Hey${userProfile?.name ? ` ${userProfile.name}` : ""}, let’s start casually. Tell me a little about yourself.`;
@@ -921,7 +1369,7 @@ Reply in ${replyLanguage === "ta" ? "Tamil" : "English"}.`,
 
 export async function startProfilerOnPhone(
   userId: number,
-  opts?: { replyLanguage?: ReplyLanguage; userProfile?: { name?: string; place?: string; assistantName?: string } }
+  opts?: { replyLanguage?: ReplyLanguage; userProfile?: LocalUserProfile }
 ): Promise<LocalProfilerTurnResult> {
   await ensureLocalAgentData();
   const slots = await getProfilerSlots();
@@ -938,10 +1386,20 @@ export async function startProfilerOnPhone(
     startedAt: nowIso(),
     lastUpdatedAt: nowIso(),
     currentTargetSlot: missing[0],
-    history: [{ role: "assistant", content: assistantReply, createdAt: nowIso() }],
+    history: [{ role: "assistant" as const, content: assistantReply, createdAt: nowIso() }],
   };
   await saveProfilerState(userId, state);
   await appendConversation(userId, "assistant", assistantReply);
+  await safeRecordTrainingSample("profiler", {
+    input: "start_profiler",
+    expectedOutput: assistantReply,
+    label: "opening",
+    metadata: {
+      userId,
+      replyLanguage: opts?.replyLanguage || "ta",
+      missingSlots: missing,
+    },
+  });
   return {
     ok: true,
     assistantReply,
@@ -974,13 +1432,14 @@ export async function getProfilerStateOnPhone(userId: number) {
 export async function sendProfilerMessageOnPhone(
   userId: number,
   message: string,
-  opts?: { replyLanguage?: ReplyLanguage; userProfile?: { name?: string; place?: string; assistantName?: string } }
+  opts?: { replyLanguage?: ReplyLanguage; userProfile?: LocalUserProfile }
 ): Promise<LocalProfilerTurnResult> {
   await ensureLocalAgentData();
   const trimmed = String(message || "").trim();
   if (!trimmed) throw new Error("Message is required.");
   const replyLanguage: ReplyLanguage = opts?.replyLanguage === "en" ? "en" : "ta";
   const cfg = await getModelConfig();
+  const prompts = await getPromptCatalog();
   const slots = await getProfilerSlots();
   const currentAnswers = await loadAnswers(userId);
   const currentState = await loadProfilerState(userId);
@@ -989,22 +1448,9 @@ export async function sendProfilerMessageOnPhone(
   let llmOut: any = null;
   try {
     llmOut = await localChatJson(
-      `You are the Profiler Agent using Gemma 3 4B.
-Mission:
-- collect the required onboarding slots naturally
-- use friendly conversation, never a rigid survey
-- extract updates from the latest user message
-- ask only one best follow-up
-- prefer filling missing slots, but do not force unnatural questions
-- reply in ${replyLanguage === "ta" ? "Tamil" : "English"}
-
-Return JSON only:
-{
-  "assistant_reply": "string",
-  "updates": { "slot_id": "value or list" },
-  "missing_slots": ["slot_id"],
-  "completed": false
-}`,
+      template(prompts.profilerTurnSystem, {
+        reply_language_name: replyLanguage === "ta" ? "Tamil" : "English",
+      }),
       JSON.stringify({
         latest_user_message: trimmed,
         current_answers: currentAnswers,
@@ -1015,7 +1461,9 @@ Return JSON only:
       cfg.models.profiler,
       0.2
     );
-  } catch {}
+  } catch {
+    // use fallback below
+  }
 
   if (!llmOut || !llmOut.assistant_reply) {
     llmOut = fallbackProfilerTurn(trimmed, slots, currentAnswers, currentState, replyLanguage);
@@ -1024,7 +1472,8 @@ Return JSON only:
   const merged = mergeProfilerUpdates(slots, currentAnswers, llmOut.updates || {});
   const remaining = missingSlots(slots, merged);
   const done = remaining.length === 0;
-  const assistantReply = String(llmOut.assistant_reply || "").trim() ||
+  const assistantReply =
+    String(llmOut.assistant_reply || "").trim() ||
     (done
       ? replyLanguage === "ta"
         ? "சூப்பர். உங்க ஆரம்ப ப்ரொஃபைல் ரெடி."
@@ -1035,8 +1484,8 @@ Return JSON only:
 
   const history: LocalChatMessage[] = [
     ...currentState.history,
-    { role: "user", content: trimmed, createdAt: nowIso() },
-    { role: "assistant", content: assistantReply, createdAt: nowIso() },
+    { role: "user" as const, content: trimmed, createdAt: nowIso() },
+    { role: "assistant" as const, content: assistantReply, createdAt: nowIso() },
   ].slice(-40);
 
   const nextState: LocalProfilerState = {
@@ -1051,6 +1500,18 @@ Return JSON only:
   await saveProfilerState(userId, nextState);
   await appendConversation(userId, "assistant", assistantReply);
   await syncAnswersToBackend(userId, merged);
+  await safeRecordTrainingSample("profiler", {
+    input: trimmed,
+    expectedOutput: assistantReply,
+    label: done ? "complete" : "turn",
+    metadata: {
+      userId,
+      updates: llmOut.updates || {},
+      mergedAnswers: merged,
+      remainingSlots: remaining,
+      replyLanguage,
+    },
+  });
 
   const summary = done
     ? await buildProfileSummaryLocally(userId, { ...opts?.userProfile, replyLanguage })
@@ -1098,11 +1559,15 @@ function weatherLabelFromCode(code: number) {
 async function fetchWeatherSummary(message: string, userProfile?: { place?: string }) {
   const location = weatherLocationFromMessage(message, userProfile);
   if (!location) return "I need a location to check the weather.";
-  const geo = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`);
+  const geo = await fetch(
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`
+  );
   const geoJson = await geo.json();
   const first = Array.isArray(geoJson?.results) ? geoJson.results[0] : null;
   if (!first) return `I couldn’t find a weather match for ${location}.`;
-  const wx = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${first.latitude}&longitude=${first.longitude}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&timezone=auto`);
+  const wx = await fetch(
+    `https://api.open-meteo.com/v1/forecast?latitude=${first.latitude}&longitude=${first.longitude}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&timezone=auto`
+  );
   const wxJson = await wx.json();
   const current = wxJson?.current || {};
   return `Current weather in ${first.name}, ${first.country}: ${current.temperature_2m}°C, feels like ${current.apparent_temperature}°C, ${weatherLabelFromCode(Number(current.weather_code || 0))}, wind ${current.wind_speed_10m} km/h.`;
@@ -1139,18 +1604,10 @@ async function buildScheduleAnswer(userId: number, message: string) {
 
 async function parseReminderLocally(message: string, replyLanguage: ReplyLanguage) {
   const cfg = await getModelConfig();
+  const prompts = await getPromptCatalog();
   try {
     const out = await localChatJson(
-      `You are the reminder extraction tool, powered by Qwen 3 8B.
-Extract reminder details from the user message.
-
-Return JSON only:
-{
-  "title": "string",
-  "details": "string",
-  "datetime_text": "string or null",
-  "assistant_reply": "string"
-}`,
+      prompts.reminderExtractorSystem,
       JSON.stringify({ message, reply_language: replyLanguage }),
       cfg.models.orchestratorMedium,
       0.1
@@ -1158,21 +1615,26 @@ Return JSON only:
     const title = String(out.title || "Reminder").trim() || "Reminder";
     const details = String(out.details || message).trim() || message;
     const datetimeText = out.datetime_text ? String(out.datetime_text).trim() : null;
-    const assistantReply = String(out.assistant_reply || "").trim() || `Okay, I can set a reminder for ${title}${datetimeText ? ` at ${datetimeText}` : ""}.`;
+    const assistantReply =
+      String(out.assistant_reply || "").trim() ||
+      `Okay, I can set a reminder for ${title}${datetimeText ? ` at ${datetimeText}` : ""}.`;
     return { title, details, datetimeText, assistantReply };
   } catch {
     return {
       title: "Reminder",
       details: message,
       datetimeText: null,
-      assistantReply: replyLanguage === "ta" ? "சரி, இதை ஒரு ரிமைண்டராக வைத்துக்கலாம்." : "Okay, I can treat that as a reminder.",
+      assistantReply:
+        replyLanguage === "ta"
+          ? "சரி, இதை ஒரு ரிமைண்டராக வைத்துக்கலாம்."
+          : "Okay, I can treat that as a reminder.",
     };
   }
 }
 
 function shouldUseLargeReasoner(message: string, config: LocalModelConfig, classification?: any) {
   const normalized = normalizeText(message);
-  if (classification?.needs_large_model === true) return true;
+  if (classification?.needs_large_model === true || classification?.needsLargeModel === true) return true;
   if (message.length >= positiveInt(config.thresholds.largeModelQuestionChars, 180)) return true;
   if (/\b(compare|tradeoff|strategy|architect|design|plan|step by step|analyze|analysis|reason)\b/.test(normalized)) return true;
   return false;
@@ -1180,10 +1642,11 @@ function shouldUseLargeReasoner(message: string, config: LocalModelConfig, class
 
 function fastRouteFromRules(message: string, routes: OrchestratorConfig["routes"]): OrchestratorRoute | null {
   const normalized = normalizeText(message);
-  const hasKeyword = (keywords: string[]) => keywords.some((keyword) => {
-    const clean = normalizeText(keyword);
-    return clean && (normalized === clean || normalized.includes(clean));
-  });
+  const hasKeyword = (keywords: string[]) =>
+    keywords.some((keyword) => {
+      const clean = normalizeText(keyword);
+      return clean && (normalized === clean || normalized.includes(clean));
+    });
   if (hasKeyword(routes.fastGreetingKeywords)) return "fast_greeting";
   if (hasKeyword(routes.reminderKeywords)) return "reminder_create";
   if (hasKeyword(routes.calendarKeywords)) return "calendar_query";
@@ -1200,33 +1663,18 @@ async function classifyRouteWithModel(
   profileSummary: string
 ) {
   const cfg = await getModelConfig();
+  const prompts = await getPromptCatalog();
+  const registry = await getAgentRegistry();
   try {
     const out = await localChatJson(
-      `You are the Orchestrator Agent using Qwen 3 8B.
-Choose exactly one route:
-- fast_greeting
-- clarify
-- profile
-- calendar_query
-- reminder_create
-- weather
-- local_answer
-- fallback_openai
-
-Rules:
-- fallback_openai only when local reasoning is not enough, or the user clearly needs live/public/current/external data
-- clarify only when critical context is missing
-- local_answer for general reasoning that the local model can handle
-
-Return JSON only:
-{
-  "route": "local_answer",
-  "reason": "string",
-  "clarifying_question": "",
-  "needs_large_model": false,
-  "needs_live_data": false
-}`,
-      JSON.stringify({ message, reply_language: replyLanguage, structured_profile: answers, profile_summary: profileSummary }),
+      prompts.orchestratorSystem,
+      JSON.stringify({
+        message,
+        reply_language: replyLanguage,
+        structured_profile: answers,
+        profile_summary: profileSummary,
+        tool_agents_available: registry.agents.toolAgents,
+      }),
       cfg.models.orchestratorMedium,
       0.05
     );
@@ -1254,31 +1702,29 @@ async function alignAnswer(
   route: string,
   answers: Record<string, any>,
   profileSummary: string,
-  userProfile?: { name?: string; place?: string; assistantName?: string }
+  userProfile?: LocalUserProfile
 ) {
   const cfg = await getModelConfig();
   const rules = await getAlignmentRules();
+  const prompts = await getPromptCatalog();
   try {
     const out = await localChatJson(
-      `You are the Alignment Agent using Gemma 3 4B.
-Rewrite the draft so it matches the user's tone, language, and preferences.
-Preserve facts exactly. Do not add new claims.
-If reply_language is ta, final_answer must be Tamil.
-If reply_language is en, final_answer must be English.
-
-Return JSON only:
-{
-  "english_answer": "string",
-  "final_answer": "string"
-}`,
-      JSON.stringify({ rules, route, draft_answer: draft, reply_language: replyLanguage, structured_profile: answers, profile_summary: profileSummary, user: userProfile || {} }),
+      prompts.alignmentSystem,
+      JSON.stringify({
+        rules,
+        route,
+        draft_answer: draft,
+        reply_language: replyLanguage,
+        structured_profile: answers,
+        profile_summary: profileSummary,
+        user: userProfile || {},
+      }),
       cfg.models.aligner,
       0.2
     );
-    return {
-      english: String(out.english_answer || draft).trim() || draft,
-      final: String(out.final_answer || out.english_answer || draft).trim() || draft,
-    };
+    const english = String(out.english_answer || draft).trim() || draft;
+    const final = String(out.final_answer || out.english_answer || draft).trim() || draft;
+    return { english, final };
   } catch {
     return { english: draft, final: draft };
   }
@@ -1318,11 +1764,11 @@ async function writeSemanticCache(userId: number, question: string, answer: stri
   await saveSemanticCache(userId, rows);
 }
 
-async function maybeSyncLocalMemory(
-  userId: number,
-  userProfile?: { name?: string; place?: string; assistantName?: string; replyLanguage?: ReplyLanguage }
-) {
+async function maybeSyncLocalMemory(userId: number, userProfile?: LocalUserProfile) {
   const rules = await getMemoryRules();
+  const registry = await getAgentRegistry();
+  if (!registry.agents.memory.enabled) return;
+
   const turns = await recentConversation(userId, positiveInt(rules.maxTurnsForSync, 18));
   if (turns.length < positiveInt(rules.minTurnsBeforeSync, 6)) return;
   const previous = await readJsonl<MemorySyncRow>(memoryPath(userId));
@@ -1331,39 +1777,53 @@ async function maybeSyncLocalMemory(
     const minutes = (Date.now() - new Date(latestSync).getTime()) / 60000;
     if (minutes < positiveInt(rules.minMinutesBetweenSync, 15)) return;
   }
+
   const answers = await loadAnswers(userId);
   const slots = await getProfilerSlots();
   const cfg = await getModelConfig();
+  const prompts = await getPromptCatalog();
+
   try {
     const out = await localChatJson(
-      `You are the Memory & Cache Agent.
-Use Qwen3-Embedding for semantic similarity and summarize recent conversation facts conservatively.
-Extract only durable user facts and obvious profile updates.
-Return JSON only:
-{
-  "summary": "string",
-  "new_facts": ["string"],
-  "profile_updates": {}
-}`,
-      JSON.stringify({ user: userProfile || {}, current_answers: answers, recent_turns: turns }),
-      cfg.models.orchestratorMedium,
+      prompts.memorySyncSystem,
+      JSON.stringify({
+        user: userProfile || {},
+        current_answers: answers,
+        recent_turns: turns,
+        semantic_memory_model: cfg.models.embedding,
+      }),
+      cfg.models[registry.agents.memory.summarizerModelKey],
       0.1
     );
+
     const updates = mergeProfilerUpdates(slots, answers, out.profile_updates || {});
     const changed = JSON.stringify(updates) !== JSON.stringify(answers);
+
     if (changed) {
       await saveAnswers(userId, updates);
       await syncAnswersToBackend(userId, updates);
       await buildProfileSummaryLocally(userId, userProfile);
     }
-    await appendJsonl(memoryPath(userId), {
+
+    const row: MemorySyncRow = {
       syncedAt: nowIso(),
       summary: String(out.summary || "").trim(),
       facts: Array.isArray(out.new_facts)
-        ? out.new_facts.map((item: any) => String(item || "").trim()).filter(Boolean).slice(0, positiveInt(rules.maxFactsPerSync, 6))
+        ? out.new_facts
+            .map((item: any) => String(item || "").trim())
+            .filter(Boolean)
+            .slice(0, positiveInt(rules.maxFactsPerSync, 6))
         : [],
       profile_updates: out.profile_updates || {},
-    } satisfies MemorySyncRow);
+    };
+
+    await appendJsonl(memoryPath(userId), row);
+    await safeRecordTrainingSample("memory", {
+      input: JSON.stringify({ recent_turns: turns, current_answers: answers }),
+      expectedOutput: JSON.stringify(row),
+      label: changed ? "profile_update" : "memory_sync",
+      metadata: { userId, embeddingModel: cfg.models.embedding },
+    });
   } catch {
     // local-first: skip silently
   }
@@ -1375,21 +1835,20 @@ async function buildLocalReasoningDraft(opts: {
   replyLanguage: ReplyLanguage;
   answers: Record<string, any>;
   profileSummary: string;
-  userProfile?: { name?: string; place?: string; assistantName?: string };
+  userProfile?: LocalUserProfile;
   useLargeModel: boolean;
 }) {
   const cfg = await getModelConfig();
+  const prompts = await getPromptCatalog();
   const memories = await readJsonl<MemorySyncRow>(memoryPath(opts.userId));
   const turns = await recentConversation(opts.userId, 10);
   const ragHits = await searchLocalRag(opts.userId, opts.message, 6);
-  const model = opts.useLargeModel ? cfg.models.orchestratorLarge : cfg.models.orchestratorMedium;
+  const registry = await getAgentRegistry();
+  const model = opts.useLargeModel
+    ? cfg.models[registry.agents.orchestrator.largeModelKey]
+    : cfg.models[registry.agents.orchestrator.mediumModelKey];
   const draft = await localChatText(
-    `You are the local main assistant.
-Use only the provided context, general offline knowledge, and the user's local memory.
-If the question requires live current/public internet information or a fact you cannot know locally, reply with exactly:
-__OPENAI_FALLBACK__
-
-Do not invent calendar entries, personal facts, or live web facts.`,
+    prompts.localReasonerSystem,
     JSON.stringify({
       user_message: opts.message,
       reply_language: opts.replyLanguage,
@@ -1433,7 +1892,7 @@ export async function runLocalAssistantTurn(opts: {
   userId: number;
   message: string;
   replyLanguage?: ReplyLanguage;
-  userProfile?: { name?: string; place?: string; assistantName?: string };
+  userProfile?: LocalUserProfile;
 }) {
   await ensureLocalAgentData();
   const userId = opts.userId;
@@ -1451,6 +1910,12 @@ export async function runLocalAssistantTurn(opts: {
   const semantic = await lookupSemanticCache(userId, message);
   if (semantic) {
     await appendConversation(userId, "assistant", semantic.answer);
+    await safeRecordTrainingSample("memory", {
+      input: message,
+      expectedOutput: semantic.answer,
+      label: "semantic_cache_hit",
+      metadata: { userId, route: semantic.route, score: semantic.score },
+    });
     return {
       route: "semantic_cache",
       source: "semantic_cache",
@@ -1459,16 +1924,40 @@ export async function runLocalAssistantTurn(opts: {
       englishText: semantic.answer,
       intent: "assistant",
       profileSummary,
-      meta: { score: semantic.score, dataFolder: DATA_DIR, trainingFolder: TRAINING_DIR, ragFolder: RAG_DIR },
+      meta: {
+        score: semantic.score,
+        dataFolder: DATA_DIR,
+        trainingFolder: TRAINING_DIR,
+        ragFolder: RAG_DIR,
+      },
     } satisfies LocalAssistantTurnResult;
   }
 
   const routesConfig = await getOrchestratorConfig();
   const cfg = await getModelConfig();
+  const registry = await getAgentRegistry();
   const fast = fastRouteFromRules(message, routesConfig.routes);
   const classified = fast
-    ? { route: fast, reason: "fast_rules", clarifyingQuestion: "", needsLargeModel: false, needsLiveData: false }
+    ? {
+        route: fast,
+        reason: "fast_rules",
+        clarifyingQuestion: "",
+        needsLargeModel: false,
+        needsLiveData: false,
+      }
     : await classifyRouteWithModel(message, replyLanguage, answers, profileSummary);
+
+  await safeRecordTrainingSample("orchestrator", {
+    input: message,
+    expectedOutput: JSON.stringify(classified),
+    label: fast ? "fast_rule_route" : "model_route",
+    metadata: {
+      userId,
+      replyLanguage,
+      profileSummary,
+      availableToolAgents: registry.agents.toolAgents,
+    },
+  });
 
   let route = classified.route;
   let source: LocalAssistantTurnResult["source"] = fast ? "local_rules" : "local_model";
@@ -1480,20 +1969,33 @@ export async function runLocalAssistantTurn(opts: {
   let english = "";
   let final = "";
 
-  if (!["fast_greeting", "clarify", "profile", "calendar_query", "reminder_create", "weather", "local_answer", "fallback_openai"].includes(route)) {
+  if (
+    ![
+      "fast_greeting",
+      "clarify",
+      "profile",
+      "calendar_query",
+      "reminder_create",
+      "weather",
+      "local_answer",
+      "fallback_openai",
+    ].includes(route)
+  ) {
     route = "local_answer";
   }
 
   if (route === "fast_greeting") {
-    draft = replyLanguage === "ta"
-      ? `வணக்கம் ${opts.userProfile?.name || ""}. நான் எப்படி உதவலாம்?`.trim()
-      : `Hi ${opts.userProfile?.name || "there"}, how can I help?`;
+    draft =
+      replyLanguage === "ta"
+        ? `வணக்கம் ${opts.userProfile?.name || ""}. நான் எப்படி உதவலாம்?`.trim()
+        : `Hi ${opts.userProfile?.name || "there"}, how can I help?`;
     english = draft;
     final = draft;
   } else if (route === "clarify") {
     intent = "clarify";
     source = "local_rules";
-    draft = classified.clarifyingQuestion ||
+    draft =
+      classified.clarifyingQuestion ||
       (replyLanguage === "ta"
         ? "கொஞ்சம் இன்னும் தெளிவாக சொல்லுங்களேன், சரியான பதில் தர முடியும்."
         : "Could you give me a bit more detail so I can answer accurately?");
@@ -1501,7 +2003,8 @@ export async function runLocalAssistantTurn(opts: {
     final = draft;
   } else if (route === "profile") {
     source = "local_rules";
-    draft = heuristicProfileAnswer(message, answers, opts.userProfile) ||
+    draft =
+      heuristicProfileAnswer(message, answers, opts.userProfile) ||
       (replyLanguage === "ta"
         ? "உங்களைப் பற்றிய சில தகவல்கள் என்கிட்ட இருக்கு. இதை கொஞ்சம் நேராக கேளுங்கள்."
         : "I do have some profile information about you. Ask that a little more directly.");
@@ -1509,11 +2012,15 @@ export async function runLocalAssistantTurn(opts: {
     english = aligned.english;
     final = aligned.final;
   } else if (route === "calendar_query") {
-    source = "local_rules";
-    draft = await buildScheduleAnswer(userId, message);
-    const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
-    english = aligned.english;
-    final = aligned.final;
+    if (!registry.agents.toolAgents.calendar) {
+      route = "fallback_openai";
+    } else {
+      source = "local_rules";
+      draft = await buildScheduleAnswer(userId, message);
+      const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
+      english = aligned.english;
+      final = aligned.final;
+    }
   } else if (route === "reminder_create") {
     intent = "reminder";
     const parsed = await parseReminderLocally(message, replyLanguage);
@@ -1525,13 +2032,17 @@ export async function runLocalAssistantTurn(opts: {
     english = aligned.english;
     final = aligned.final;
   } else if (route === "weather") {
-    try {
-      draft = await fetchWeatherSummary(message, opts.userProfile);
-      const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
-      english = aligned.english;
-      final = aligned.final;
-    } catch {
+    if (!registry.agents.toolAgents.weather) {
       route = "fallback_openai";
+    } else {
+      try {
+        draft = await fetchWeatherSummary(message, opts.userProfile);
+        const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
+        english = aligned.english;
+        final = aligned.final;
+      } catch {
+        route = "fallback_openai";
+      }
     }
   }
 
@@ -1558,6 +2069,7 @@ export async function runLocalAssistantTurn(opts: {
         route = "fallback_openai";
       }
     }
+
     if (route === "local_answer") {
       const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
       english = aligned.english;
@@ -1572,13 +2084,14 @@ export async function runLocalAssistantTurn(opts: {
       message,
       reply_language: replyLanguage,
     });
-    const backendText = String(
-      backend?.assistant?.text ||
-      backend?.assistant?.english ||
-      backend?.details ||
-      backend?.raw_text ||
-      ""
-    ).trim() || "I couldn’t generate a response.";
+    const backendText =
+      String(
+        backend?.assistant?.text ||
+          backend?.assistant?.english ||
+          backend?.details ||
+          backend?.raw_text ||
+          ""
+      ).trim() || "I couldn’t generate a response.";
     const aligned = await alignAnswer(backendText, replyLanguage, route, answers, profileSummary, opts.userProfile);
     english = aligned.english;
     final = aligned.final;
@@ -1587,9 +2100,23 @@ export async function runLocalAssistantTurn(opts: {
   const assistantText = final || english || draft || "I couldn’t generate a response.";
   await appendConversation(userId, "assistant", assistantText);
 
-  if (route !== "reminder_create" && route !== "clarify" && assistantText.trim()) {
+  if (assistantText.trim() && route !== "reminder_create" && route !== "clarify") {
     await writeSemanticCache(userId, message, assistantText, route);
   }
+
+  await safeRecordTrainingSample("alignment", {
+    input: JSON.stringify({
+      route,
+      draft,
+      english,
+      replyLanguage,
+      profileSummary,
+      answers,
+    }),
+    expectedOutput: assistantText,
+    label: route,
+    metadata: { userId, source },
+  });
 
   await maybeSyncLocalMemory(userId, { ...opts.userProfile, replyLanguage });
 
@@ -1609,6 +2136,8 @@ export async function runLocalAssistantTurn(opts: {
       dataFolder: DATA_DIR,
       trainingFolder: TRAINING_DIR,
       ragFolder: RAG_DIR,
+      promptConfig: PROMPTS_PATH,
+      modelConfig: MODELS_PATH,
     },
   } satisfies LocalAssistantTurnResult;
 }
