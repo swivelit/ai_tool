@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
-import { Stack, router, usePathname } from "expo-router";
+import { Stack, router, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -31,47 +31,54 @@ function BootScreen() {
 }
 
 function RouteGate() {
-  const pathname = usePathname();
+  const segments = useSegments();
   const { user } = useAuth();
   const { profile } = useAssistant();
-  const [gateLoading, setGateLoading] = useState(true);
+  const [gateLoading, setGateLoading] = useState(false);
 
   useEffect(() => {
     let alive = true;
 
     async function syncAndRoute() {
-      try {
-        const inAuth = pathname.startsWith("/auth");
-        const inOnboarding = pathname.startsWith("/onboarding");
-        const atRoot = pathname === "/";
-        const atProfile = pathname === "/onboarding/profile";
-        const atQuestionnaire = pathname === "/onboarding/questionnaire";
-        const atSetup = pathname === "/setup";
+      const first = segments[0];
+      const second = segments[1];
 
+      const atRoot = segments.length === 0;
+      const inTabs = first === "(tabs)";
+      const inAuth = first === "auth";
+      const inOnboarding = first === "onboarding";
+      const atProfile = first === "onboarding" && second === "profile";
+      const atQuestionnaire = first === "onboarding" && second === "questionnaire";
+      const atSetup = first === "setup";
+
+      try {
         if (!user) {
           if (!alive) return;
+
+          setGateLoading(false);
 
           if (!inAuth && !atRoot) {
             router.replace("/");
           }
 
-          setGateLoading(false);
           return;
         }
-
-        setGateLoading(true);
-
-        if (atQuestionnaire) {
-          setGateLoading(false);
-          return;
-        }
-
-        const localProfile = await getProfileForFirebaseUid(user.uid, user.email);
-        if (!alive) return;
 
         const providerProfile = profile?.firebaseUid === user.uid ? profile : null;
-        const activeProfile = providerProfile || localProfile;
 
+        if (!providerProfile) {
+          setGateLoading(true);
+        } else {
+          setGateLoading(false);
+        }
+
+        const localProfile = providerProfile
+          ? null
+          : await getProfileForFirebaseUid(user.uid, user.email);
+
+        if (!alive) return;
+
+        const activeProfile = providerProfile || localProfile;
         const hasProfile = Boolean(activeProfile?.userId);
         const questionnaireCompleted = Boolean(activeProfile?.questionnaireCompleted);
 
@@ -83,12 +90,19 @@ function RouteGate() {
         }
 
         if (!questionnaireCompleted) {
-          router.replace("/onboarding/questionnaire");
+          if (!atQuestionnaire) {
+            router.replace("/onboarding/questionnaire");
+          }
           return;
         }
 
-        if (inAuth || inOnboarding || atRoot || atSetup) {
+        if (inAuth || inOnboarding || atRoot) {
           router.replace("/(tabs)");
+          return;
+        }
+
+        if (atSetup || inTabs) {
+          return;
         }
       } finally {
         if (alive) {
@@ -103,14 +117,15 @@ function RouteGate() {
       alive = false;
     };
   }, [
-    pathname,
+    segments,
     user?.uid,
+    user?.email,
     profile?.firebaseUid,
     profile?.userId,
     profile?.questionnaireCompleted,
   ]);
 
-  if (user && gateLoading && pathname !== "/onboarding/questionnaire") {
+  if (user && gateLoading) {
     return <BootScreen />;
   }
 
