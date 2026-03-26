@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { runLocalAssistantTurn, saveScheduledTask } from "@/lib/localAgents";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -40,35 +43,6 @@ type PendingReminder = {
   details: string;
   datetimeText: string;
 };
-
-type SuggestionItem = {
-  label: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  helper: string;
-};
-
-const SUGGESTIONS: SuggestionItem[] = [
-  {
-    label: "Schedule a meeting tomorrow at 10 AM",
-    icon: "briefcase-outline",
-    helper: "Plan work blocks with clean natural language.",
-  },
-  {
-    label: "Remind me to call mom tonight",
-    icon: "call-outline",
-    helper: "Set personal reminders in seconds.",
-  },
-  {
-    label: "Create a birthday reminder for next week",
-    icon: "gift-outline",
-    helper: "Never miss an important date.",
-  },
-  {
-    label: "Help me plan my day",
-    icon: "sparkles-outline",
-    helper: "Get a clear answer right away.",
-  },
-];
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -137,30 +111,6 @@ function SummaryStat({
   );
 }
 
-function QuickActionCard({
-  item,
-  onPress,
-}: {
-  item: SuggestionItem;
-  onPress: (label: string) => void;
-}) {
-  return (
-    <Pressable
-      onPress={() => onPress(item.label)}
-      style={({ pressed }) => [
-        styles.quickActionCard,
-        pressed && styles.pressed,
-      ]}
-    >
-      <View style={styles.quickActionIconWrap}>
-        <Ionicons name={item.icon} size={18} color={Brand.bronze} />
-      </View>
-      <Text style={styles.quickActionTitle}>{item.label}</Text>
-      <Text style={styles.quickActionHelper}>{item.helper}</Text>
-    </Pressable>
-  );
-}
-
 export default function Home() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -184,9 +134,11 @@ export default function Home() {
   const [historyItems, setHistoryItems] = useState<Item[]>([]);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
-  const recordingPhaseRef = useRef<"idle" | "starting" | "recording" | "stopping">("idle");
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const recordingPhaseRef = useRef<
+    "idle" | "starting" | "recording" | "stopping"
+  >("idle");
   const stopWhenReadyRef = useRef(false);
-  const recordingSourceRef = useRef<"orb" | "button" | null>(null);
 
   const isSmallPhone = width < 370 || height < 760;
   const isVerySmallPhone = width < 345 || height < 700;
@@ -197,11 +149,15 @@ export default function Home() {
   const headlineSize = isVerySmallPhone ? 28 : isSmallPhone ? 31 : 35;
   const headlineLineHeight = isVerySmallPhone ? 34 : isSmallPhone ? 38 : 42;
   const drawerWidth = Math.min(width * 0.86, 360);
+  const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
   const composerBottom =
     keyboardHeight > 0
       ? keyboardHeight + 8
       : Math.max(insets.bottom + 8, 16);
   const pageBottomPadding = composerBottom + 132;
+
+  const drawerProgress = useRef(new Animated.Value(0)).current;
+  const [drawerMounted, setDrawerMounted] = useState(false);
 
   const greetingName = useMemo(
     () => (profile?.name || "there").trim(),
@@ -250,12 +206,26 @@ export default function Home() {
   const resultText = result?.details || result?.raw_text || "";
   const hasConversation = Boolean(lastPrompt || resultText || busy);
   const placeholder = listening
-    ? "Listening... release the globe or tap stop when you're done"
+    ? "Recording... release to stop and send"
     : `Message ${assistantLabel}`;
+
+  const drawerTranslateX = drawerProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-drawerWidth - 28, 0],
+  });
+
+  const drawerScrimOpacity = drawerProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
 
   useEffect(() => {
     void loadHistory();
   }, [profile?.userId]);
+
+  useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
 
   useEffect(() => {
     const showEvent =
@@ -277,6 +247,61 @@ export default function Home() {
       hideSub.remove();
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      const activeRecording = recordingRef.current;
+      if (activeRecording) {
+        void activeRecording.stopAndUnloadAsync().catch(() => undefined);
+      }
+
+      void Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: false,
+      }).catch(() => undefined);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (drawerOpen) {
+      setDrawerMounted(true);
+      Animated.spring(drawerProgress, {
+        toValue: 1,
+        damping: 22,
+        mass: 0.9,
+        stiffness: 190,
+        useNativeDriver: true,
+      }).start();
+      return;
+    }
+
+    if (!drawerMounted) {
+      drawerProgress.setValue(0);
+      return;
+    }
+
+    Animated.timing(drawerProgress, {
+      toValue: 0,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        setDrawerMounted(false);
+      }
+    });
+  }, [drawerMounted, drawerOpen, drawerProgress]);
+
+  async function resetAudioMode() {
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: false,
+      });
+    } catch {
+      // Ignore cleanup failures.
+    }
+  }
 
   async function loadHistory() {
     try {
@@ -304,8 +329,21 @@ export default function Home() {
     return cleaned;
   }
 
+  function openDrawer() {
+    setDrawerOpen(true);
+  }
+
+  function closeDrawer() {
+    setDrawerOpen(false);
+  }
+
+  function closeReminderConfirm() {
+    setConfirmOpen(false);
+    setPendingReminder(null);
+  }
+
   async function analyzeText() {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || !profile?.userId) return;
 
     try {
       setBusy(true);
@@ -313,41 +351,64 @@ export default function Home() {
       const cleaned = stripAssistantTrigger(text);
       setLastPrompt(cleaned);
 
-      const res = await apiPost<AnalyzeResponse>("/analyze-text", {
-        text: cleaned,
-        user_id: profile?.userId ?? null,
-        reply_language: settings.languageMode,
-        meta: { tone: settings.tone, languageMode: settings.languageMode },
+      const res = await runLocalAssistantTurn({
+        userId: profile.userId,
+        message: cleaned,
+        replyLanguage: settings.languageMode === "en" ? "en" : "ta",
+        userProfile: {
+          name: profile?.name || "User",
+          place: profile?.place || "",
+          assistantName: profile?.assistantName || name || "Elli",
+        },
       });
 
-      setResult(res);
       setText("");
-      await loadHistory();
-      await Haptics.notificationAsync(
-        Haptics.NotificationFeedbackType.Success
-      );
 
-      if (res.intent === "reminder" && res.datetime) {
+      if (res.intent === "reminder") {
+        setResult({
+          id: Date.now(),
+          intent: "reminder",
+          category: "Other",
+          raw_text: cleaned,
+          title: res.title || "Reminder",
+          details: res.assistantText,
+          transcript: null,
+          datetime: res.datetimeText || null,
+        });
+
         setPendingReminder({
           title: res.title || "Reminder",
-          details: res.details || res.raw_text,
-          datetimeText: res.datetime,
+          details: res.details || cleaned,
+          datetimeText: res.datetimeText || "",
         });
+
         setConfirmOpen(true);
+      } else {
+        setResult({
+          id: Date.now(),
+          intent: "assistant",
+          category: "Other",
+          raw_text: cleaned,
+          title: formatIntentLabel(res.route),
+          details: res.assistantText,
+          transcript: null,
+          datetime: null,
+        });
       }
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error: any) {
-      Alert.alert("Error", error?.message || "Failed to analyze your request.");
+      Alert.alert("Error", error?.message || "Failed to process your request.");
     } finally {
       setBusy(false);
     }
   }
 
-  async function startRecording(source: "orb" | "button" = "button") {
+  async function startRecording() {
     if (busy || recordingPhaseRef.current !== "idle") return;
 
     try {
       recordingPhaseRef.current = "starting";
-      recordingSourceRef.current = source;
       stopWhenReadyRef.current = false;
 
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -356,7 +417,6 @@ export default function Home() {
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
         recordingPhaseRef.current = "idle";
-        recordingSourceRef.current = null;
         setListening(false);
         Alert.alert("Mic permission needed", "Please allow microphone access.");
         return;
@@ -372,6 +432,8 @@ export default function Home() {
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
       await nextRecording.startAsync();
+
+      recordingRef.current = nextRecording;
       setRecording(nextRecording);
       recordingPhaseRef.current = "recording";
 
@@ -381,10 +443,11 @@ export default function Home() {
       }
     } catch (error: any) {
       recordingPhaseRef.current = "idle";
-      recordingSourceRef.current = null;
       stopWhenReadyRef.current = false;
+      recordingRef.current = null;
       setRecording(null);
       setListening(false);
+      await resetAudioMode();
       Alert.alert("Error", error?.message || "Could not start recording.");
     }
   }
@@ -395,11 +458,10 @@ export default function Home() {
       return;
     }
 
-    if (!recording || recordingPhaseRef.current !== "recording") {
+    const activeRecording = recordingRef.current;
+    if (!activeRecording || recordingPhaseRef.current !== "recording") {
       return;
     }
-
-    const activeRecording = recording;
 
     try {
       recordingPhaseRef.current = "stopping";
@@ -407,11 +469,13 @@ export default function Home() {
       setBusy(true);
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
+      recordingRef.current = null;
       setRecording(null);
       setListening(false);
-      recordingSourceRef.current = null;
 
       await activeRecording.stopAndUnloadAsync();
+      await resetAudioMode();
+
       const uri = activeRecording.getURI();
 
       if (!uri) {
@@ -454,42 +518,39 @@ export default function Home() {
       Alert.alert("Error", error?.message || "Voice analysis failed.");
     } finally {
       recordingPhaseRef.current = "idle";
-      recordingSourceRef.current = null;
       stopWhenReadyRef.current = false;
+      recordingRef.current = null;
       setRecording(null);
       setListening(false);
+      await resetAudioMode();
       setBusy(false);
     }
   }
 
-  async function toggleMic() {
+  async function handleHoldPressIn() {
+    if (busy || recordingPhaseRef.current !== "idle") return;
+    await startRecording();
+  }
+
+  async function handleHoldPressOut() {
     if (
       recordingPhaseRef.current === "starting" ||
       recordingPhaseRef.current === "recording"
     ) {
       await stopAndAnalyze();
-      return;
     }
-
-    await startRecording("button");
   }
 
   async function handleOrbPressIn() {
-    if (busy || recordingPhaseRef.current !== "idle") return;
-    await startRecording("orb");
+    await handleHoldPressIn();
   }
 
   async function handleOrbPressOut() {
-    if (
-      recordingSourceRef.current === "orb" ||
-      recordingPhaseRef.current === "starting"
-    ) {
-      await stopAndAnalyze();
-    }
+    await handleHoldPressOut();
   }
 
   async function confirmScheduleReminder() {
-    if (!pendingReminder) return;
+    if (!pendingReminder || !profile?.userId) return;
 
     try {
       setBusy(true);
@@ -504,23 +565,20 @@ export default function Home() {
           "Confirm time",
           `I couldn’t confidently understand the time.\n\nDetected: "${pendingReminder.datetimeText}".\nPlease type a clearer time.`
         );
-        setConfirmOpen(false);
-        setPendingReminder(null);
+        closeReminderConfirm();
         return;
       }
 
       const when = new Date(parsed.iso);
       if (Number.isNaN(when.getTime())) {
         Alert.alert("Error", "Parsed datetime was invalid.");
-        setConfirmOpen(false);
-        setPendingReminder(null);
+        closeReminderConfirm();
         return;
       }
 
       if (when.getTime() < Date.now() + 30_000) {
         Alert.alert("Time is too soon", "Please choose a future time.");
-        setConfirmOpen(false);
-        setPendingReminder(null);
+        closeReminderConfirm();
         return;
       }
 
@@ -529,6 +587,15 @@ export default function Home() {
         pendingReminder.details,
         when
       );
+
+      await saveScheduledTask(profile.userId, {
+        title: pendingReminder.title,
+        details: pendingReminder.details,
+        datetimeText: pendingReminder.datetimeText,
+        isoDatetime: parsed.iso,
+        status: "scheduled",
+      });
+
       await Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success
       );
@@ -537,8 +604,7 @@ export default function Home() {
       Alert.alert("Error", error?.message || "Failed to schedule reminder.");
     } finally {
       setBusy(false);
-      setConfirmOpen(false);
-      setPendingReminder(null);
+      closeReminderConfirm();
     }
   }
 
@@ -551,16 +617,16 @@ export default function Home() {
   function openHistoryItem(item: Item) {
     setLastPrompt(item.raw_text || item.title || "");
     setResult(item);
-    setDrawerOpen(false);
+    closeDrawer();
   }
 
   function openSchedule() {
-    setDrawerOpen(false);
+    closeDrawer();
     router.push("/(tabs)/explore");
   }
 
   function openRoutine() {
-    setDrawerOpen(false);
+    closeDrawer();
     router.push("/(tabs)/routine");
   }
 
@@ -574,7 +640,7 @@ export default function Home() {
           try {
             await signOutUser();
             await refresh();
-            setDrawerOpen(false);
+            closeDrawer();
             router.replace("/");
           } catch (error: any) {
             Alert.alert("Error", error?.message || "Failed to sign out.");
@@ -602,13 +668,14 @@ export default function Home() {
         <View
           style={[
             styles.topBar,
-            { paddingTop: topPadding, paddingHorizontal: horizontalPadding },
+            {
+              width: contentMaxWidth,
+              paddingTop: topPadding,
+              paddingHorizontal: 0,
+            },
           ]}
         >
-          <Pressable
-            onPress={() => setDrawerOpen(true)}
-            style={styles.topIconBtn}
-          >
+          <Pressable onPress={() => openDrawer()} style={styles.topIconBtn}>
             <Ionicons name="menu" size={19} color={Brand.cocoa} />
           </Pressable>
 
@@ -632,494 +699,314 @@ export default function Home() {
             paddingHorizontal: horizontalPadding,
             paddingTop: 8,
             paddingBottom: pageBottomPadding,
+            alignItems: "center",
           }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <GlassCard style={styles.heroCard}>
-            <View style={styles.heroHeaderRow}>
-              <View style={styles.heroPill}>
-                <Ionicons
-                  name={listening ? "radio-outline" : "sparkles-outline"}
-                  size={14}
-                  color={Brand.bronze}
-                />
-                <Text style={styles.heroPillText}>
-                  {listening ? "Voice mode active" : "Smart assistant"}
-                </Text>
-              </View>
-
-              <View style={styles.heroStatusChip}>
-                {busy ? (
-                  <ActivityIndicator size="small" color={Brand.bronze} />
-                ) : (
+          <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
+            <GlassCard style={styles.heroCard}>
+              <View style={styles.heroHeaderRow}>
+                <View style={styles.heroPill}>
                   <Ionicons
-                    name="checkmark-circle"
-                    size={14}
-                    color={Brand.success}
-                  />
-                )}
-                <Text style={styles.heroStatusText}>
-                  {busy ? "Working" : "Ready"}
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.heroTextWrap}>
-              <Text style={styles.greeting}>{greeting}</Text>
-              <Text
-                style={[
-                  styles.heroHeadline,
-                  {
-                    fontSize: headlineSize,
-                    lineHeight: headlineLineHeight,
-                  },
-                ]}
-              >
-                Everything you need to think, plan, and act.
-              </Text>
-              <Text style={styles.heroSubtitle}>
-                Set reminders, capture ideas, and stay organized with ease.
-              </Text>
-            </View>
-
-            <View style={styles.orbShell}>
-              <View style={styles.orbAmbientGlow} />
-              <Orb
-                listening={listening}
-                onPressIn={handleOrbPressIn}
-                onPressOut={handleOrbPressOut}
-                size={orbSize}
-              />
-            </View>
-
-            {listening ? (
-              <View style={styles.inlineWaveWrap}>
-                <Waveform active />
-              </View>
-            ) : null}
-
-            <View style={styles.summaryRow}>
-              <SummaryStat
-                label="Total requests"
-                value={String(stats.total)}
-                icon="layers-outline"
-              />
-              <SummaryStat
-                label="Upcoming"
-                value={String(stats.upcoming)}
-                icon="time-outline"
-              />
-              <SummaryStat
-                label="Reminders"
-                value={String(stats.reminders)}
-                icon="notifications-outline"
-              />
-            </View>
-          </GlassCard>
-
-          <GlassCard style={styles.composerCard}>
-            <View style={styles.sectionHeaderRow}>
-              <View>
-                <Text style={styles.sectionTitle}>Compose</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Type or speak naturally. The assistant will structure the
-                  result for you.
-                </Text>
-              </View>
-
-              <Pressable onPress={clearConversation} style={styles.ghostChip}>
-                <Ionicons
-                  name="refresh-outline"
-                  size={14}
-                  color={Brand.cocoa}
-                />
-                <Text style={styles.ghostChipText}>Reset</Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.composerBox}>
-              <TextInput
-                value={text}
-                onChangeText={setText}
-                placeholder={placeholder}
-                placeholderTextColor="rgba(124, 99, 80, 0.55)"
-                multiline
-                textAlignVertical="top"
-                style={styles.composerInput}
-              />
-
-              <View style={styles.composerActionsRow}>
-                <View style={styles.composerHintWrap}>
-                  <Ionicons
-                    name={
-                      listening ? "radio" : "chatbubble-ellipses-outline"
-                    }
-                    size={14}
-                    color={Brand.muted}
-                  />
-                  <Text style={styles.composerHintText}>
-                    {listening
-                      ? "Listening... release the globe or tap stop when finished"
-                      : "Try natural prompts like “remind me tomorrow at 9”"}
-                  </Text>
-                </View>
-
-                <View style={styles.composerButtonsWrap}>
-                  <Pressable
-                    onPress={toggleMic}
-                    style={[
-                      styles.composerActionBtn,
-                      recording ? styles.micStopBtn : styles.micIdleBtn,
-                    ]}
-                  >
-                    <Ionicons
-                      name={recording ? "stop" : "mic"}
-                      size={18}
-                      color={recording ? "#fff" : Brand.cocoa}
-                    />
-                  </Pressable>
-
-                  <Pressable
-                    onPress={analyzeText}
-                    disabled={busy || !text.trim()}
-                    style={[
-                      styles.composerActionBtn,
-                      text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
-                    ]}
-                  >
-                    {busy ? (
-                      <ActivityIndicator size="small" color={Brand.ink} />
-                    ) : (
-                      <Ionicons
-                        name="arrow-up"
-                        size={18}
-                        color={
-                          text.trim()
-                            ? Brand.ink
-                            : "rgba(124, 99, 80, 0.48)"
-                        }
-                      />
-                    )}
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          </GlassCard>
-
-          {hasConversation ? (
-            <GlassCard style={styles.conversationCard}>
-              <View style={styles.sectionHeaderRow}>
-                <View>
-                  <Text style={styles.sectionTitle}>Current response</Text>
-                  <Text style={styles.sectionSubtitle}>
-                    Everything from your current request, in one place.
-                  </Text>
-                </View>
-
-                <View style={styles.intentChip}>
-                  <Ionicons
-                    name="sparkles-outline"
+                    name={listening ? "radio-outline" : "sparkles-outline"}
                     size={14}
                     color={Brand.bronze}
                   />
-                  <Text style={styles.intentChipText}>
-                    {formatIntentLabel(result?.intent)}
+                  <Text style={styles.heroPillText}>
+                    {listening ? "Voice mode active" : "Smart assistant"}
+                  </Text>
+                </View>
+
+                <View style={styles.heroStatusChip}>
+                  {busy ? (
+                    <ActivityIndicator size="small" color={Brand.bronze} />
+                  ) : (
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={14}
+                      color={Brand.success}
+                    />
+                  )}
+                  <Text style={styles.heroStatusText}>
+                    {busy ? "Working" : "Ready"}
                   </Text>
                 </View>
               </View>
 
-              {lastPrompt ? (
-                <View style={styles.promptCard}>
-                  <Text style={styles.promptLabel}>You</Text>
-                  <Text style={styles.promptText}>{lastPrompt}</Text>
+              <View style={styles.heroTextWrap}>
+                <Text style={styles.greeting}>{greeting}</Text>
+                <Text
+                  style={[
+                    styles.heroHeadline,
+                    {
+                      fontSize: headlineSize,
+                      lineHeight: headlineLineHeight,
+                    },
+                  ]}
+                >
+                  Everything you need to think, plan, and act.
+                </Text>
+                <Text style={styles.heroSubtitle}>
+                  Set reminders, capture ideas, and stay organized with ease.
+                </Text>
+              </View>
+
+              <View style={styles.orbShell}>
+                <View style={styles.orbAmbientGlow} />
+                <Orb
+                  listening={listening}
+                  onPressIn={handleOrbPressIn}
+                  onPressOut={handleOrbPressOut}
+                  size={orbSize}
+                />
+              </View>
+
+              {listening ? (
+                <View style={styles.inlineWaveWrap}>
+                  <Waveform active />
                 </View>
               ) : null}
 
-              <View style={styles.responseCard}>
-                <View style={styles.responseHeaderRow}>
-                  <View>
-                    <Text style={styles.responseName}>{assistantLabel}</Text>
-                    <Text style={styles.responseMeta}>
-                      {busy && !resultText
-                        ? "Analyzing your request"
-                        : "Response ready"}
-                    </Text>
-                  </View>
-
-                  <View style={styles.responseBadge}>
-                    <Ionicons
-                      name="sparkles"
-                      size={14}
-                      color={Brand.bronze}
-                    />
-                  </View>
-                </View>
-
-                <Text style={styles.responseText}>
-                  {busy && !resultText
-                    ? "Thinking..."
-                    : resultText || "No response yet."}
-                </Text>
-
-                <View style={styles.responseChipsRow}>
-                  {result?.datetime ? (
-                    <View style={styles.metaChip}>
-                      <Ionicons
-                        name="time-outline"
-                        size={14}
-                        color={Brand.bronze}
-                      />
-                      <Text style={styles.metaChipText}>{result.datetime}</Text>
-                    </View>
-                  ) : null}
-
-                  {result?.category ? (
-                    <View style={styles.metaChip}>
-                      <Ionicons
-                        name="albums-outline"
-                        size={14}
-                        color={Brand.bronze}
-                      />
-                      <Text style={styles.metaChipText}>
-                        {formatIntentLabel(result.category)}
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
+              <View style={styles.summaryRow}>
+                <SummaryStat
+                  label="Total requests"
+                  value={String(stats.total)}
+                  icon="layers-outline"
+                />
+                <SummaryStat
+                  label="Upcoming"
+                  value={String(stats.upcoming)}
+                  icon="time-outline"
+                />
+                <SummaryStat
+                  label="Reminders"
+                  value={String(stats.reminders)}
+                  icon="notifications-outline"
+                />
               </View>
             </GlassCard>
-          ) : null}
 
-          <View style={styles.sectionBlock}>
-            <View style={styles.sectionHeaderRow}>
-              <View>
-                <Text style={styles.sectionTitle}>Quick actions</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Start with one tap.
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.quickActionsGrid}>
-              {SUGGESTIONS.map((item) => (
-                <QuickActionCard key={item.label} item={item} onPress={setText} />
-              ))}
-            </View>
-          </View>
-
-          <GlassCard style={styles.historyCard}>
-            <View style={styles.sectionHeaderRow}>
-              <View>
-                <Text style={styles.sectionTitle}>Recent history</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Your latest assistant activity.
-                </Text>
-              </View>
-
-              <Pressable
-                onPress={() => setDrawerOpen(true)}
-                style={styles.ghostChip}
-              >
-                <Ionicons name="time-outline" size={14} color={Brand.cocoa} />
-                <Text style={styles.ghostChipText}>View all</Text>
-              </Pressable>
-            </View>
-
-            {recentHistory.length === 0 ? (
-              <View style={styles.historyEmptyState}>
-                <Ionicons name="time-outline" size={20} color={Brand.muted} />
-                <Text style={styles.historyEmptyTitle}>No history yet</Text>
-                <Text style={styles.historyEmptyText}>
-                  Once you begin, your history will show up here.
-                </Text>
-              </View>
-            ) : (
-              <View style={styles.historyList}>
-                {recentHistory.map((item) => (
-                  <Pressable
-                    key={item.id}
-                    onPress={() => openHistoryItem(item)}
-                    style={({ pressed }) => [
-                      styles.historyRow,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <View style={styles.historyRowIcon}>
-                      <Ionicons
-                        name="sparkles-outline"
-                        size={16}
-                        color={Brand.bronze}
-                      />
-                    </View>
-
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.historyRowTitle} numberOfLines={1}>
-                        {item.raw_text || item.title || "Untitled request"}
-                      </Text>
-                      <Text style={styles.historyRowMeta} numberOfLines={1}>
-                        {formatIntentLabel(item.intent)} ·{" "}
-                        {formatHistoryTime(item.datetime)}
-                      </Text>
-                    </View>
-
-                    <Ionicons
-                      name="chevron-forward"
-                      size={16}
-                      color="rgba(124, 99, 80, 0.56)"
-                    />
-                  </Pressable>
-                ))}
-              </View>
-            )}
-          </GlassCard>
-        </ScrollView>
-
-        <View
-          style={[
-            styles.bottomDock,
-            { bottom: composerBottom, paddingHorizontal: horizontalPadding },
-          ]}
-        >
-          <LinearGradient
-            colors={[
-              "rgba(255,255,255,0.82)",
-              "rgba(255,240,213,0.84)",
-            ]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.bottomDockInner}
-          >
-            <Pressable
-              onPress={() => setDrawerOpen(true)}
-              style={styles.dockButton}
-            >
-              <Ionicons name="time-outline" size={18} color={Brand.cocoa} />
-            </Pressable>
-
-            <Pressable
-              onPress={toggleMic}
-              style={[
-                styles.dockButton,
-                recording ? styles.dockButtonDanger : null,
-              ]}
-            >
-              <Ionicons
-                name={recording ? "stop" : "mic"}
-                size={18}
-                color={recording ? "#fff" : Brand.cocoa}
-              />
-            </Pressable>
-
-            <Pressable onPress={openSchedule} style={styles.dockButtonPrimary}>
-              <Ionicons name="calendar-outline" size={17} color={Brand.ink} />
-              <Text style={styles.dockButtonPrimaryText}>Schedule</Text>
-            </Pressable>
-          </LinearGradient>
-        </View>
-
-        <Modal
-          transparent
-          visible={drawerOpen}
-          animationType="fade"
-          onRequestClose={() => setDrawerOpen(false)}
-        >
-          <View style={styles.drawerBackdrop}>
-            <Pressable
-              style={{ flex: 1 }}
-              onPress={() => setDrawerOpen(false)}
-            />
-
-            <LinearGradient
-              colors={["#fffaf2", "#fff0d2", "#ffe5b4"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={[
-                styles.drawerPanel,
-                {
-                  width: drawerWidth,
-                  paddingTop: Math.max(
-                    insets.top + 14,
-                    Platform.OS === "ios" ? 56 : 28
-                  ),
-                  paddingBottom: Math.max(insets.bottom + 18, 18),
-                },
-              ]}
-            >
-              <View style={styles.drawerHeader}>
-                <View style={styles.drawerSearchWrap}>
-                  <Ionicons
-                    name="search"
-                    size={15}
-                    color="rgba(124, 99, 80, 0.6)"
-                  />
-                  <TextInput
-                    value={historySearch}
-                    onChangeText={setHistorySearch}
-                    placeholder="Search your history"
-                    placeholderTextColor="rgba(124, 99, 80, 0.42)"
-                    style={styles.drawerSearchInput}
-                  />
+            <GlassCard style={styles.composerCard}>
+              <View style={styles.sectionHeaderRow}>
+                <View>
+                  <Text style={styles.sectionTitle}>Compose</Text>
+                  <Text style={styles.sectionSubtitle}>
+                    Type naturally or hold the orb to speak. The assistant will
+                    structure the result for you.
+                  </Text>
                 </View>
 
                 <Pressable
-                  onPress={() => setDrawerOpen(false)}
-                  style={styles.drawerCloseBtn}
+                  onPress={clearConversation}
+                  style={styles.ghostChip}
                 >
-                  <Ionicons name="close" size={18} color={Brand.cocoa} />
+                  <Ionicons
+                    name="refresh-outline"
+                    size={14}
+                    color={Brand.cocoa}
+                  />
+                  <Text style={styles.ghostChipText}>Reset</Text>
                 </Pressable>
               </View>
 
-              <View style={styles.drawerTitleRow}>
-                <View>
-                  <Text style={styles.drawerSectionTitle}>Workspace</Text>
-                  <Text style={styles.drawerSectionSub}>
-                    History, navigation, and account controls.
-                  </Text>
-                </View>
-              </View>
+              <View style={styles.composerBox}>
+                <TextInput
+                  value={text}
+                  onChangeText={setText}
+                  placeholder={placeholder}
+                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                  multiline
+                  textAlignVertical="top"
+                  style={styles.composerInput}
+                />
 
-              <ScrollView
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ paddingBottom: 18 }}
-              >
-                <Text style={styles.drawerLabel}>Recent requests</Text>
-
-                {filteredHistory.length === 0 ? (
-                  <View style={styles.historyEmptyCard}>
+                <View style={styles.composerActionsRow}>
+                  <View style={styles.composerHintWrap}>
                     <Ionicons
-                      name="time-outline"
-                      size={18}
+                      name={listening ? "radio" : "chatbubble-ellipses-outline"}
+                      size={14}
                       color={Brand.muted}
                     />
-                    <Text style={styles.historyEmptyText}>No history yet</Text>
+                    <Text style={styles.composerHintText}>
+                      {listening
+                        ? "Recording... release to stop and send"
+                        : "Press and hold the orb to record"}
+                    </Text>
                   </View>
-                ) : (
-                  filteredHistory.map((item) => (
+
+                  <View style={styles.composerButtonsWrap}>
+                    <Pressable
+                      onPress={analyzeText}
+                      disabled={busy || !text.trim()}
+                      style={[
+                        styles.composerActionBtn,
+                        text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
+                      ]}
+                    >
+                      {busy ? (
+                        <ActivityIndicator size="small" color={Brand.ink} />
+                      ) : (
+                        <Ionicons
+                          name="arrow-up"
+                          size={18}
+                          color={
+                            text.trim()
+                              ? Brand.ink
+                              : "rgba(124, 99, 80, 0.48)"
+                          }
+                        />
+                      )}
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </GlassCard>
+
+            {hasConversation ? (
+              <GlassCard style={styles.conversationCard}>
+                <View style={styles.sectionHeaderRow}>
+                  <View>
+                    <Text style={styles.sectionTitle}>Current response</Text>
+                    <Text style={styles.sectionSubtitle}>
+                      Everything from your current request, in one place.
+                    </Text>
+                  </View>
+
+                  <View style={styles.intentChip}>
+                    <Ionicons
+                      name="sparkles-outline"
+                      size={14}
+                      color={Brand.bronze}
+                    />
+                    <Text style={styles.intentChipText}>
+                      {formatIntentLabel(result?.intent)}
+                    </Text>
+                  </View>
+                </View>
+
+                {lastPrompt ? (
+                  <View style={styles.promptCard}>
+                    <Text style={styles.promptLabel}>You</Text>
+                    <Text style={styles.promptText}>{lastPrompt}</Text>
+                  </View>
+                ) : null}
+
+                <View style={styles.responseCard}>
+                  <View style={styles.responseHeaderRow}>
+                    <View>
+                      <Text style={styles.responseName}>{assistantLabel}</Text>
+                      <Text style={styles.responseMeta}>
+                        {busy && !resultText
+                          ? "Analyzing your request"
+                          : "Response ready"}
+                      </Text>
+                    </View>
+
+                    <View style={styles.responseBadge}>
+                      <Ionicons
+                        name="sparkles"
+                        size={14}
+                        color={Brand.bronze}
+                      />
+                    </View>
+                  </View>
+
+                  <Text style={styles.responseText}>
+                    {busy && !resultText
+                      ? "Thinking..."
+                      : resultText || "No response yet."}
+                  </Text>
+
+                  <View style={styles.responseChipsRow}>
+                    {result?.datetime ? (
+                      <View style={styles.metaChip}>
+                        <Ionicons
+                          name="time-outline"
+                          size={14}
+                          color={Brand.bronze}
+                        />
+                        <Text style={styles.metaChipText}>
+                          {result.datetime}
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    {result?.category ? (
+                      <View style={styles.metaChip}>
+                        <Ionicons
+                          name="albums-outline"
+                          size={14}
+                          color={Brand.bronze}
+                        />
+                        <Text style={styles.metaChipText}>
+                          {formatIntentLabel(result.category)}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+              </GlassCard>
+            ) : null}
+
+            <GlassCard style={styles.historyCard}>
+              <View style={styles.sectionHeaderRow}>
+                <View>
+                  <Text style={styles.sectionTitle}>Recent history</Text>
+                  <Text style={styles.sectionSubtitle}>
+                    Your latest assistant activity.
+                  </Text>
+                </View>
+
+                <Pressable
+                  onPress={() => openDrawer()}
+                  style={styles.ghostChip}
+                >
+                  <Ionicons
+                    name="time-outline"
+                    size={14}
+                    color={Brand.cocoa}
+                  />
+                  <Text style={styles.ghostChipText}>View all</Text>
+                </Pressable>
+              </View>
+
+              {recentHistory.length === 0 ? (
+                <View style={styles.historyEmptyState}>
+                  <Ionicons
+                    name="time-outline"
+                    size={20}
+                    color={Brand.muted}
+                  />
+                  <Text style={styles.historyEmptyTitle}>No history yet</Text>
+                  <Text style={styles.historyEmptyText}>
+                    Once you begin, your history will show up here.
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.historyList}>
+                  {recentHistory.map((item) => (
                     <Pressable
                       key={item.id}
                       onPress={() => openHistoryItem(item)}
-                      style={styles.drawerHistoryItem}
+                      style={({ pressed }) => [
+                        styles.historyRow,
+                        pressed && styles.pressed,
+                      ]}
                     >
-                      <View style={styles.drawerHistoryIcon}>
+                      <View style={styles.historyRowIcon}>
                         <Ionicons
                           name="sparkles-outline"
-                          size={15}
+                          size={16}
                           color={Brand.bronze}
                         />
                       </View>
 
                       <View style={{ flex: 1 }}>
-                        <Text
-                          style={styles.drawerHistoryTitle}
-                          numberOfLines={1}
-                        >
+                        <Text style={styles.historyRowTitle} numberOfLines={1}>
                           {item.raw_text || item.title || "Untitled request"}
                         </Text>
-                        <Text
-                          style={styles.drawerHistoryMeta}
-                          numberOfLines={1}
-                        >
+                        <Text style={styles.historyRowMeta} numberOfLines={1}>
                           {formatIntentLabel(item.intent)} ·{" "}
                           {formatHistoryTime(item.datetime)}
                         </Text>
@@ -1128,55 +1015,236 @@ export default function Home() {
                       <Ionicons
                         name="chevron-forward"
                         size={16}
-                        color="rgba(124, 99, 80, 0.58)"
+                        color="rgba(124, 99, 80, 0.56)"
                       />
                     </Pressable>
-                  ))
-                )}
-              </ScrollView>
+                  ))}
+                </View>
+              )}
+            </GlassCard>
+          </View>
+        </ScrollView>
 
-              <View style={styles.drawerFooter}>
-                <Pressable
-                  onPress={openRoutine}
-                  style={styles.drawerFooterCard}
+        <View
+          style={[
+            styles.bottomDock,
+            {
+              bottom: composerBottom,
+              paddingHorizontal: horizontalPadding,
+            },
+          ]}
+        >
+          <LinearGradient
+            colors={["rgba(255,255,255,0.82)", "rgba(255,240,213,0.84)"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[
+              styles.bottomDockInner,
+              { width: "100%", maxWidth: contentMaxWidth },
+            ]}
+          >
+            <Pressable onPress={() => openDrawer()} style={styles.dockButton}>
+              <Ionicons name="time-outline" size={18} color={Brand.cocoa} />
+            </Pressable>
+
+            <Pressable
+              onPress={openSchedule}
+              style={styles.dockButtonPrimary}
+            >
+              <Ionicons
+                name="calendar-outline"
+                size={17}
+                color={Brand.ink}
+              />
+              <Text style={styles.dockButtonPrimaryText}>Schedule</Text>
+            </Pressable>
+          </LinearGradient>
+        </View>
+
+        <Modal
+          transparent
+          visible={drawerMounted}
+          statusBarTranslucent
+          onRequestClose={closeDrawer}
+        >
+          <View style={styles.drawerModalRoot}>
+            <Animated.View
+              pointerEvents="none"
+              style={[styles.drawerScrim, { opacity: drawerScrimOpacity }]}
+            />
+
+            <View style={styles.drawerBackdrop}>
+              <Animated.View
+                style={[
+                  styles.drawerPanelWrap,
+                  {
+                    width: drawerWidth,
+                    transform: [{ translateX: drawerTranslateX }],
+                  },
+                ]}
+              >
+                <LinearGradient
+                  colors={["#fffaf2", "#fff0d2", "#ffe5b4"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={[
+                    styles.drawerPanel,
+                    {
+                      paddingTop: Math.max(
+                        insets.top + 14,
+                        Platform.OS === "ios" ? 56 : 28
+                      ),
+                      paddingBottom: Math.max(insets.bottom + 18, 18),
+                    },
+                  ]}
                 >
-                  <Ionicons
-                    name="settings-outline"
-                    size={16}
-                    color={Brand.cocoa}
-                  />
-                  <Text style={styles.drawerFooterCardText}>Settings</Text>
-                </Pressable>
+                  <View style={styles.drawerHeader}>
+                    <View style={styles.drawerSearchWrap}>
+                      <Ionicons
+                        name="search"
+                        size={15}
+                        color="rgba(124, 99, 80, 0.6)"
+                      />
+                      <TextInput
+                        value={historySearch}
+                        onChangeText={setHistorySearch}
+                        placeholder="Search your history"
+                        placeholderTextColor="rgba(124, 99, 80, 0.42)"
+                        style={styles.drawerSearchInput}
+                      />
+                    </View>
 
-                <Pressable
-                  onPress={openSchedule}
-                  style={styles.drawerFooterCard}
-                >
-                  <Ionicons
-                    name="calendar-outline"
-                    size={16}
-                    color={Brand.cocoa}
-                  />
-                  <Text style={styles.drawerFooterCardText}>Schedule</Text>
-                </Pressable>
-
-                <View style={styles.accountCard}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.accountTitle}>Account</Text>
-                    <Text style={styles.accountSubtitle} numberOfLines={1}>
-                      {profile?.name || "Local account"}
-                    </Text>
-                    <Text style={styles.accountMeta} numberOfLines={1}>
-                      {profile?.place || profile?.timezone || "Assistant user"}
-                    </Text>
+                    <Pressable
+                      onPress={closeDrawer}
+                      style={styles.drawerCloseBtn}
+                    >
+                      <Ionicons name="close" size={18} color={Brand.cocoa} />
+                    </Pressable>
                   </View>
 
-                  <Pressable onPress={signOut} style={styles.signOutBtn}>
-                    <Text style={styles.signOutBtnText}>Sign out</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </LinearGradient>
+                  <View style={styles.drawerTitleRow}>
+                    <View>
+                      <Text style={styles.drawerSectionTitle}>Workspace</Text>
+                      <Text style={styles.drawerSectionSub}>
+                        History, navigation, and account controls.
+                      </Text>
+                    </View>
+                  </View>
+
+                  <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={{ paddingBottom: 18 }}
+                  >
+                    <Text style={styles.drawerLabel}>Recent requests</Text>
+
+                    {filteredHistory.length === 0 ? (
+                      <View style={styles.historyEmptyCard}>
+                        <Ionicons
+                          name="time-outline"
+                          size={18}
+                          color={Brand.muted}
+                        />
+                        <Text style={styles.historyEmptyText}>
+                          No history yet
+                        </Text>
+                      </View>
+                    ) : (
+                      filteredHistory.map((item) => (
+                        <Pressable
+                          key={item.id}
+                          onPress={() => openHistoryItem(item)}
+                          style={styles.drawerHistoryItem}
+                        >
+                          <View style={styles.drawerHistoryIcon}>
+                            <Ionicons
+                              name="sparkles-outline"
+                              size={15}
+                              color={Brand.bronze}
+                            />
+                          </View>
+
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              style={styles.drawerHistoryTitle}
+                              numberOfLines={1}
+                            >
+                              {item.raw_text ||
+                                item.title ||
+                                "Untitled request"}
+                            </Text>
+                            <Text
+                              style={styles.drawerHistoryMeta}
+                              numberOfLines={1}
+                            >
+                              {formatIntentLabel(item.intent)} ·{" "}
+                              {formatHistoryTime(item.datetime)}
+                            </Text>
+                          </View>
+
+                          <Ionicons
+                            name="chevron-forward"
+                            size={16}
+                            color="rgba(124, 99, 80, 0.58)"
+                          />
+                        </Pressable>
+                      ))
+                    )}
+                  </ScrollView>
+
+                  <View style={styles.drawerFooter}>
+                    <Pressable
+                      onPress={openRoutine}
+                      style={styles.drawerFooterCard}
+                    >
+                      <Ionicons
+                        name="settings-outline"
+                        size={16}
+                        color={Brand.cocoa}
+                      />
+                      <Text style={styles.drawerFooterCardText}>Settings</Text>
+                    </Pressable>
+
+                    <Pressable
+                      onPress={openSchedule}
+                      style={styles.drawerFooterCard}
+                    >
+                      <Ionicons
+                        name="calendar-outline"
+                        size={16}
+                        color={Brand.cocoa}
+                      />
+                      <Text style={styles.drawerFooterCardText}>Schedule</Text>
+                    </Pressable>
+
+                    <View style={styles.accountCard}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.accountTitle}>Account</Text>
+                        <Text
+                          style={styles.accountSubtitle}
+                          numberOfLines={1}
+                        >
+                          {profile?.name || "Local account"}
+                        </Text>
+                        <Text style={styles.accountMeta} numberOfLines={1}>
+                          {profile?.place ||
+                            profile?.timezone ||
+                            "Assistant user"}
+                        </Text>
+                      </View>
+
+                      <Pressable onPress={signOut} style={styles.signOutBtn}>
+                        <Text style={styles.signOutBtnText}>Sign out</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                </LinearGradient>
+              </Animated.View>
+
+              <Pressable
+                style={styles.drawerDismissArea}
+                onPress={closeDrawer}
+              />
+            </View>
           </View>
         </Modal>
 
@@ -1184,7 +1252,7 @@ export default function Home() {
           transparent
           visible={confirmOpen}
           animationType="fade"
-          onRequestClose={() => setConfirmOpen(false)}
+          onRequestClose={closeReminderConfirm}
         >
           <View style={styles.modalBackdrop}>
             <GlassCard style={styles.modalCard}>
@@ -1208,9 +1276,7 @@ export default function Home() {
                   {pendingReminder?.title || "Reminder"}
                 </Text>
 
-                <Text
-                  style={[styles.modalInfoLabel, { marginTop: 14 }]}
-                >
+                <Text style={[styles.modalInfoLabel, { marginTop: 14 }]}>
                   Detected time
                 </Text>
                 <Text style={styles.modalInfoValue}>
@@ -1220,7 +1286,7 @@ export default function Home() {
 
               <View style={styles.modalActionsRow}>
                 <Pressable
-                  onPress={() => setConfirmOpen(false)}
+                  onPress={closeReminderConfirm}
                   style={styles.modalSecondaryBtn}
                 >
                   <Text style={styles.modalSecondaryBtnText}>Cancel</Text>
@@ -1318,7 +1384,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.68)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    maxWidth: 220,
+    maxWidth: "72%",
   },
 
   topBrandText: {
@@ -1497,7 +1563,7 @@ const styles = StyleSheet.create({
     color: Brand.muted,
     fontSize: 13,
     lineHeight: 20,
-    maxWidth: 250,
+    maxWidth: "84%",
   },
 
   ghostChip: {
@@ -1543,6 +1609,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
+    flexWrap: "wrap",
   },
 
   composerHintWrap: {
@@ -1572,16 +1639,6 @@ const styles = StyleSheet.create({
     borderRadius: 23,
     alignItems: "center",
     justifyContent: "center",
-  },
-
-  micIdleBtn: {
-    backgroundColor: "rgba(255,255,255,0.72)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  micStopBtn: {
-    backgroundColor: Brand.danger,
   },
 
   sendBtn: {
@@ -1716,48 +1773,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
-  sectionBlock: {
-    marginTop: 20,
-  },
-
-  quickActionsGrid: {
-    marginTop: 14,
-    gap: 12,
-  },
-
-  quickActionCard: {
-    padding: 16,
-    borderRadius: 24,
-    backgroundColor: "rgba(255,255,255,0.55)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  quickActionIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.68)",
-  },
-
-  quickActionTitle: {
-    marginTop: 14,
-    color: Brand.ink,
-    fontSize: 15,
-    lineHeight: 21,
-    fontWeight: "800",
-  },
-
-  quickActionHelper: {
-    marginTop: 6,
-    color: Brand.muted,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: "500",
-  },
-
   historyCard: {
     marginTop: 20,
     marginBottom: 4,
@@ -1833,6 +1848,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 0,
     right: 0,
+    alignItems: "center",
   },
 
   bottomDockInner: {
@@ -1863,11 +1879,6 @@ const styles = StyleSheet.create({
     borderColor: Brand.line,
   },
 
-  dockButtonDanger: {
-    backgroundColor: Brand.danger,
-    borderColor: Brand.danger,
-  },
-
   dockButtonPrimary: {
     flex: 1,
     minHeight: 48,
@@ -1887,22 +1898,39 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
 
-  drawerBackdrop: {
+  drawerModalRoot: {
     flex: 1,
-    flexDirection: "row",
+  },
+
+  drawerScrim: {
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(47, 33, 24, 0.22)",
   },
 
-  drawerPanel: {
+  drawerBackdrop: {
+    flex: 1,
+    flexDirection: "row",
+  },
+
+  drawerPanelWrap: {
     height: "100%",
+    zIndex: 2,
+  },
+
+  drawerPanel: {
+    flex: 1,
     paddingHorizontal: 16,
-    borderLeftWidth: 1,
-    borderLeftColor: "rgba(255,255,255,0.62)",
+    borderRightWidth: 1,
+    borderRightColor: "rgba(255,255,255,0.62)",
     shadowColor: "#9a5c1e",
     shadowOpacity: 0.16,
     shadowRadius: 20,
-    shadowOffset: { width: -8, height: 0 },
+    shadowOffset: { width: 8, height: 0 },
     elevation: 12,
+  },
+
+  drawerDismissArea: {
+    flex: 1,
   },
 
   drawerHeader: {
