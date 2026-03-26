@@ -24,6 +24,7 @@ from .database import engine, get_session
 from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User, UserProfile
 from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
+from .orchestrator_task import run_orchestrator
 
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = CURRENT_DIR.parent
@@ -1670,10 +1671,61 @@ def sync_memory_agent(user_id: int, payload: AgentMemorySyncRequest, session: Se
     return AGENTIC_SERVICE.maybe_sync_memory(session, user_id, force=bool(payload.force))
 
 
+def _build_direct_answer_pipeline_result(
+    text: str, 
+    intent: str, 
+    route: str,
+    priority: str = "low",
+    confidence: float = 1.0,
+    matched_keyword: str = ""
+) -> Dict[str, Any]:
+    """Helper for the orchestrator to return a fast answer without a full pipeline call."""
+    return _build_pipeline_result(
+        raw_english=text,
+        remodeled_english=text,
+        route_taken=route,
+        predicted_label=intent.lower(),
+        risk_level="high" if intent == "EMERGENCY" else "low",
+        direct_answer_source="orchestrator_fast_exit",
+        direct_answer_confidence=f"{confidence:.4f}",
+        stage_notes=[
+            f"Orchestrator identified intent: {intent}.",
+            f"Matched keyword: '{matched_keyword}'" if matched_keyword else "No keyword matched.",
+            f"Priority level: {priority}."
+        ]
+    )
+
+
 @app.post("/api/chat")
 def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
     text = _resolve_chat_text(payload)
-    pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+
+    # 👮‍♂️ 1. Call Your Orchestrator (The Traffic Cop)
+    routing = run_orchestrator(client, text)
+
+    # 🚑 2. Handle Emergencies (New Feature)
+    if routing["intent"] == "EMERGENCY":
+        res = "🚨 EMERGENCY DETECTED: Please stay safe and contact emergency services (112) immediately."
+        pipeline_result = _build_direct_answer_pipeline_result(
+            res, "EMERGENCY", "orchestrator_emergency", 
+            routing["priority"], routing["confidence"], routing.get("matched_keyword", "")
+        )
+    
+    # 🧩 3. Handle Ambiguity (New Feature)
+    elif routing["intent"] == "AMBIGUOUS":
+        res = routing.get("clarification_question") or "Could you tell me a bit more about what you need?"
+        pipeline_result = _build_direct_answer_pipeline_result(
+            res, "AMBIGUOUS", "orchestrator_clarify",
+            routing["priority"], routing["confidence"], routing.get("matched_keyword", "")
+        )
+
+    # 🤝 4. All Clear → Delegate to TL's Agentic Service (Weather, Calendar, Web Search, Pipeline)
+    else:
+        pipeline_result = _run_agentic_or_pipeline(
+            session, payload.user_id, text, payload.reply_language
+        )
+
+    # Save to history and return response
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
