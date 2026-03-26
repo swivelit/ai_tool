@@ -23,6 +23,7 @@ from sqlmodel import SQLModel, Session, delete, select
 from .database import engine, get_session
 from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User, UserProfile
 from .local_rag_service import LocalRAGService
+from .agentic_service import AgenticService
 
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = CURRENT_DIR.parent
@@ -41,6 +42,7 @@ from stage_behaviour_questions import BehaviourQuestionnaire, QUESTIONS as PIPEL
 from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
+from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
 
 load_dotenv()
 
@@ -66,6 +68,11 @@ STAGE_CORE = OpenAICore()
 STAGE_REMODELER = EnglishRemodeler(STAGE_CORE)
 STAGE_TRANSLATOR = StageTranslator(STAGE_CORE)
 LOCAL_RAG_SERVICE = LocalRAGService()
+AGENTIC_SERVICE = AgenticService(client, LOCAL_RAG_SERVICE)
+SAFETY_FILTER = BehaviouralRAGFilter(
+    openai_api_key=OPENAI_API_KEY,
+    translator=STAGE_TRANSLATOR,
+)
 STAGE_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
@@ -698,6 +705,12 @@ class PipelineChatRequest(BaseModel):
     user_id: int
     message: str
 
+class AgentMessageRequest(BaseModel):
+    message: str
+    reply_language: Optional[str] = None
+
+class AgentMemorySyncRequest(BaseModel):
+    force: bool = False
 
 def _extract_response_text(response: Any) -> str:
     output_text = getattr(response, "output_text", None)
@@ -1155,9 +1168,37 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
             if str(note or "").strip():
                 stage_notes.append(str(note).strip())
 
-    tamil_text = ""
+    # ── RAG Safety Filter ──────────────────────────────────────────────────────
+    # This sits BETWEEN the OpenAI response and the final output sent to the UI.
+    # It checks the user's real profile data (diet, allergies, injuries, activity)
+    # and rewrites / re-translates the response if any conflict is found.
+    _safety_result = {
+        "raw_english": raw_english,
+        "remodeled_english": remodeled_english,
+        "stage_notes": json.dumps(stage_notes, ensure_ascii=False),
+        "risk_level": risk_level,
+    }
+    _safety_result = SAFETY_FILTER.apply(_safety_result, session, user_id)
+
+    raw_english       = _safety_result.get("raw_english", raw_english)
+    remodeled_english = _safety_result.get("remodeled_english", remodeled_english)
+    risk_level        = _safety_result.get("risk_level", risk_level)
+    try:
+        stage_notes = json.loads(_safety_result.get("stage_notes", "[]"))
+    except Exception:
+        pass
+    # If the safety filter already re-translated (MT Task), carry those forward
+    _safety_tamil       = _safety_result.get("tamil_text", "")
+    _safety_theni       = _safety_result.get("theni_tamil_text", "")
+
     theni_tamil_text = ""
-    if resolved_reply_language == "ta":
+    tamil_text = ""
+    if _safety_tamil:
+        # MT Task: safety filter already retranslated → use that directly
+        tamil_text       = _safety_tamil
+        theni_tamil_text = _safety_theni
+        translation_meta = {"source": "safety_filter_retranslation"}
+    elif resolved_reply_language == "ta":
         t0 = time.perf_counter()
         translation_meta = STAGE_TRANSLATOR.english_to_tamil_with_meta(remodeled_english, profile)
         tamil_text = str(translation_meta.get("tamil_text", "")).strip()
@@ -1342,6 +1383,21 @@ def _resolve_chat_text(payload: ChatAPIRequest) -> str:
     return text
 
 
+def _run_agentic_or_pipeline(
+    session: Session,
+    user_id: Optional[int],
+    message: str,
+    reply_language: Optional[str] = None,
+) -> Dict[str, Any]:
+    return AGENTIC_SERVICE.orchestrate_chat(
+        session,
+        user_id,
+        message,
+        reply_language,
+        pipeline_runner=_run_stage_pipeline,
+    )
+
+
 def _transcribe_audio_file(file_path: str) -> str:
     with open(file_path, "rb") as audio_file:
         transcript_obj = client.audio.transcriptions.create(
@@ -1481,6 +1537,7 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
         json.dumps(response_payload, ensure_ascii=False, default=str),
     )
 
+    AGENTIC_SERVICE.persist_profile_snapshot(session, int(user.id))
     return response_payload
 
 
@@ -1584,32 +1641,39 @@ def get_pipeline_profile(user_id: int, session: Session = Depends(get_session)):
 
 @app.post("/api/profile/{user_id}")
 def save_pipeline_profile(user_id: int, payload: PersonalityAnswersIn, session: Session = Depends(get_session)):
-    answers_json = json.dumps(payload.answers, ensure_ascii=False)
-    profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
-    if profile:
-        profile.answers_json = answers_json
-        profile.profile_summary = None
-        profile.questions_version = PERSONALITY_QUESTIONS_VERSION
-        profile.updated_at = datetime.utcnow()
-    else:
-        profile = UserProfile(
-            user_id=user_id,
-            answers_json=answers_json,
-            questions_version=PERSONALITY_QUESTIONS_VERSION,
-            updated_at=datetime.utcnow(),
-        )
-        session.add(profile)
-    session.commit()
-    session.refresh(profile)
+    AGENTIC_SERVICE.sync_answers_to_profile(session, user_id, payload.answers)
     stage_profile = _sync_stage_profile(session, user_id)
     STAGE_CACHE.clear()
     return {"ok": True, "profile": stage_profile}
 
 
+@app.get("/api/agents/profiler/{user_id}")
+def get_profiler_state(user_id: int, session: Session = Depends(get_session)):
+    return AGENTIC_SERVICE.get_profiler_state(session, user_id)
+
+
+@app.post("/api/agents/profiler/{user_id}/start")
+def start_profiler_agent(user_id: int, session: Session = Depends(get_session)):
+    return AGENTIC_SERVICE.start_profiler(session, user_id)
+
+
+@app.post("/api/agents/profiler/{user_id}/message")
+def profiler_agent_message(user_id: int, payload: AgentMessageRequest, session: Session = Depends(get_session)):
+    try:
+        return AGENTIC_SERVICE.profiler_turn(session, user_id, payload.message, payload.reply_language)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/agents/memory/{user_id}/sync")
+def sync_memory_agent(user_id: int, payload: AgentMemorySyncRequest, session: Session = Depends(get_session)):
+    return AGENTIC_SERVICE.maybe_sync_memory(session, user_id, force=bool(payload.force))
+
+
 @app.post("/api/chat")
 def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
     text = _resolve_chat_text(payload)
-    pipeline_result = _run_stage_pipeline(session, payload.user_id, text, payload.reply_language)
+    pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
@@ -1709,6 +1773,7 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
     session.refresh(routine)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
+    AGENTIC_SERVICE.persist_profile_snapshot(session, user_id)
     return routine
 
 
@@ -1722,21 +1787,10 @@ def get_personality(user_id: int, session: Session = Depends(get_session)):
 
 @app.post("/users/{user_id}/personality")
 def save_personality_answers(user_id: int, payload: PersonalityAnswersIn, session: Session = Depends(get_session)):
-    answers_json = json.dumps(payload.answers, ensure_ascii=False)
-    profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
-    if profile:
-        profile.answers_json = answers_json
-        profile.profile_summary = None
-        profile.updated_at = datetime.utcnow()
-    else:
-        profile = UserProfile(user_id=user_id, answers_json=answers_json, updated_at=datetime.utcnow())
-        session.add(profile)
-    session.commit()
-    session.refresh(profile)
+    AGENTIC_SERVICE.sync_answers_to_profile(session, user_id, payload.answers)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
     return {"ok": True}
-
 
 @app.post("/users/{user_id}/personality/generate-summary")
 def generate_personality_summary(user_id: int, session: Session = Depends(get_session)):
@@ -1746,20 +1800,15 @@ def generate_personality_summary(user_id: int, session: Session = Depends(get_se
     answers = json.loads(profile.answers_json or "{}")
     if not answers:
         raise HTTPException(400, "No personality answers provided yet")
-    content = "\n".join(f"{q}: {a}" for q, a in answers.items())
-    profile.profile_summary = llm_text(PERSONALITY_SUMMARY_PROMPT, content, temperature=0.2).strip()
-    profile.updated_at = datetime.utcnow()
-    session.add(profile)
-    session.commit()
+    result = AGENTIC_SERVICE.sync_answers_to_profile(session, user_id, answers)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
-    return {"summary": profile.profile_summary}
-
+    return {"summary": result.get("summary", "")}
 
 @app.post("/analyze-text", response_model=TextAnalysisResponse)
 def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_session)):
     reply_language = payload.reply_language or (payload.meta or {}).get("reply_language")
-    pipeline_result = _run_stage_pipeline(session, payload.user_id, payload.text, reply_language)
+    pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, payload.text, reply_language)
     item, _, _ = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
@@ -1770,7 +1819,6 @@ def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_se
         reply_language=reply_language,
     )
     return item_to_response(item)
-
 
 @app.post("/transcribe-and-analyze")
 async def transcribe_and_analyze(
@@ -1786,7 +1834,7 @@ async def transcribe_and_analyze(
 
     try:
         transcript_text = _transcribe_audio_file(tmp_path)
-        pipeline_result = _run_stage_pipeline(session, user_id, transcript_text, reply_language)
+        pipeline_result = _run_agentic_or_pipeline(session, user_id, transcript_text, reply_language)
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=user_id,
