@@ -10,40 +10,13 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-
-# Centralized workspace under backend/data
-DATABASE_DIR = DATA_DIR / "db"
-RAG_DATA_DIR = DATA_DIR / "rag"
-TRAINING_DATA_DIR = DATA_DIR / "training"
 PROFILES_DIR = DATA_DIR / "profiles"
 LOGS_DIR = DATA_DIR / "logs"
-GENERATED_DOCS_DIR = DATA_DIR / "generated_docs"
-
-# Model artifacts can still live outside data/ because these are code/runtime assets,
-# not user/runtime data.
 MODELS_DIR = BASE_DIR / "models"
-
-# Database + datasets
-DATABASE_PATH = DATABASE_DIR / "ai_tool.sqlite3"
-CLASSIFIER_DATASET_PATH = TRAINING_DATA_DIR / "classifier_dataset.csv"
-FAST_RAG_DATASET_PATH = RAG_DATA_DIR / "fast_rag_replies.csv"
-PIPELINE_QUESTIONS_CSV_PATH = TRAINING_DATA_DIR / "pipeline_questions.csv"
-
-# Agent workspace
-AGENTS_DIR = DATA_DIR / "agents"
-AGENT_CONFIG_DIR = AGENTS_DIR / "config"
-AGENT_STATE_DIR = AGENTS_DIR / "state"
-AGENT_MEMORY_DIR = AGENTS_DIR / "memory"
-AGENT_LOGS_DIR = AGENTS_DIR / "logs"
-AGENT_TRAINING_DIR = AGENTS_DIR / "training"
-AGENT_PROFILE_SNAPSHOT_DIR = AGENTS_DIR / "snapshots"
-AGENT_RAG_EXPORT_DIR = AGENTS_DIR / "rag_exports"
-AGENT_WORKSPACE_MANIFEST_PATH = AGENTS_DIR / "workspace_manifest.json"
-
-AGENT_PROFILER_SCHEMA_PATH = AGENT_CONFIG_DIR / "profiler_slots.json"
-AGENT_ORCHESTRATOR_CONFIG_PATH = AGENT_CONFIG_DIR / "orchestrator_routes.json"
-AGENT_ALIGNMENT_CONFIG_PATH = AGENT_CONFIG_DIR / "alignment_rules.json"
-AGENT_MEMORY_CONFIG_PATH = AGENT_CONFIG_DIR / "memory_settings.json"
+CLASSIFIER_DATASET_PATH = DATA_DIR / "classifier_dataset.csv"
+FAST_RAG_DATASET_PATH = DATA_DIR / "fast_rag_replies.csv"
+PIPELINE_QUESTIONS_CSV_PATH = DATA_DIR / "pipeline_questions.csv"
+GENERATED_DOCS_DIR = DATA_DIR / "generated_docs"
 
 
 def _ensure_dirs(paths: Iterable[Path]) -> None:
@@ -51,26 +24,7 @@ def _ensure_dirs(paths: Iterable[Path]) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
-_ensure_dirs(
-    (
-        DATA_DIR,
-        DATABASE_DIR,
-        RAG_DATA_DIR,
-        TRAINING_DATA_DIR,
-        PROFILES_DIR,
-        LOGS_DIR,
-        MODELS_DIR,
-        GENERATED_DOCS_DIR,
-        AGENTS_DIR,
-        AGENT_CONFIG_DIR,
-        AGENT_STATE_DIR,
-        AGENT_MEMORY_DIR,
-        AGENT_LOGS_DIR,
-        AGENT_TRAINING_DIR,
-        AGENT_PROFILE_SNAPSHOT_DIR,
-        AGENT_RAG_EXPORT_DIR,
-    )
-)
+_ensure_dirs((DATA_DIR, PROFILES_DIR, LOGS_DIR, MODELS_DIR, GENERATED_DOCS_DIR))
 
 
 def _env_str(name: str, default: str = "") -> str:
@@ -226,12 +180,3 @@ RAG_EMBED_CACHE_SIZE = _env_int("RAG_EMBED_CACHE_SIZE", 4096, minimum=256)
 RAG_CONTEXT_INCLUDE_IN_STAGE_CONTEXT = _env_bool("RAG_CONTEXT_INCLUDE_IN_STAGE_CONTEXT", True)
 RAG_CONTEXT_HEADER = _env_str("RAG_CONTEXT_HEADER", "Relevant user memory and knowledge:")
 RAG_CONTEXT_MAX_SNIPPETS = _env_int("RAG_CONTEXT_MAX_SNIPPETS", 6, minimum=1)
-
-# --------------------
-# Agentic architecture feature flags
-# --------------------
-AGENTIC_MODE_ENABLED = _env_bool("AGENTIC_MODE_ENABLED", True)
-PROFILER_AGENT_ENABLED = _env_bool("PROFILER_AGENT_ENABLED", True)
-ORCHESTRATOR_AGENT_ENABLED = _env_bool("ORCHESTRATOR_AGENT_ENABLED", True)
-ALIGNMENT_AGENT_ENABLED = _env_bool("ALIGNMENT_AGENT_ENABLED", True)
-MEMORY_AGENT_ENABLED = _env_bool("MEMORY_AGENT_ENABLED", True)
