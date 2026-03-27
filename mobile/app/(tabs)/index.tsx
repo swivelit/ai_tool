@@ -401,17 +401,17 @@ export default function Home() {
       const cleaned = stripAssistantTrigger(text);
       setLastPrompt(cleaned);
 
-      const response = await apiPostForm<BackendChatResponse>(
-        `/api/transcribe-and-analyze?user_id=${
-          profile?.userId ?? ""
-        }&reply_language=${settings.languageMode}`,
-        form
-      );
+      const response = await apiPost<BackendChatResponse>("/api/chat", {
+        user_id: profile?.userId ?? undefined,
+        message: cleaned,
+        reply_language: settings.languageMode,
+      });
 
-      const nextItem = normalizeChatResponse(response, "Voice request");
+      const nextItem = normalizeChatResponse(response, cleaned);
 
-      setLastPrompt(nextItem.transcript || nextItem.raw_text || "Voice request");
+      setLastPrompt(cleaned);
       setResult(nextItem);
+      setText("");
       await loadHistory();
       await Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success
@@ -425,8 +425,6 @@ export default function Home() {
         });
         setConfirmOpen(true);
       }
-
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error: any) {
       Alert.alert("Error", error?.message || "Failed to process your request.");
     } finally {
