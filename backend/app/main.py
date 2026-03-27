@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -15,21 +16,30 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from openai import OpenAI
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import inspect as sa_inspect, text as sa_text
 from sqlmodel import SQLModel, Session, delete, select
 
-from .database import engine, get_session
-from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User, UserProfile
-from .local_rag_service import LocalRAGService
-from .agentic_service import AgenticService
+from .database import SessionLocal, engine, get_session
+from .job_queue import DBJobQueue
+from .model_runtime import patch_openai_client
+from .models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
+from .observability import bootstrap_observability, clear_request_context, new_request_id, set_request_context
+from .vector_store import VectorStore
 
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = CURRENT_DIR.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+load_dotenv()
+bootstrap_observability()
+patch_openai_client()
+from openai import OpenAI
+
+from .local_rag_service import LocalRAGService
+from .agentic_service import AgenticService
 
 from config import (
     GENERATED_DOCS_DIR,
@@ -44,8 +54,6 @@ from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 
-load_dotenv()
-
 logger = logging.getLogger(__name__)
 
 PERSONALITY_QUESTIONS_VERSION = 1
@@ -53,6 +61,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_JSON_MODEL = os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini")
 
 client: Optional[OpenAI] = None
+JOB_QUEUE: Optional[DBJobQueue] = None
+VECTOR_STORE = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
 
 app = FastAPI(title="J AI Backend")
 app.add_middleware(
@@ -561,6 +571,85 @@ def _ensure_rag_embedding_table() -> None:
         except Exception as exc:
             print(f"[WARN] Could not create rag_embedding user/updated index: {exc}")
 
+def _ensure_job_table() -> None:
+    try:
+        SQLModel.metadata.create_all(engine, tables=[Job.__table__])
+    except Exception as exc:
+        logger.warning("Could not create job table: %s", exc)
+
+
+def _serialize_job(job: Optional[Job]) -> Dict[str, Any]:
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    result_payload = {}
+    if job.result_json:
+        try:
+            result_payload = json.loads(job.result_json)
+        except Exception:
+            result_payload = {"raw": job.result_json}
+    return {
+        "id": job.id,
+        "job_type": job.job_type,
+        "status": job.status,
+        "attempts": job.attempts,
+        "max_attempts": job.max_attempts,
+        "error_message": job.error_message,
+        "result": result_payload,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
+def _get_job_queue() -> DBJobQueue:
+    global JOB_QUEUE
+    if JOB_QUEUE is None:
+        JOB_QUEUE = DBJobQueue(engine, poll_seconds=float(os.getenv("JOB_QUEUE_POLL_SECONDS", "1.0") or 1.0))
+    return JOB_QUEUE
+
+
+def _job_handle_export(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    item_id = int(payload["item_id"])
+    export_format = str(payload["export_format"]).lower().strip()
+    item = session.get(Item, item_id)
+    if not item:
+        raise RuntimeError("Item not found")
+    generators = {
+        "pdf": generate_pdf,
+        "excel": generate_excel,
+        "ppt": generate_ppt,
+        "docx": generate_docx,
+    }
+    generator = generators.get(export_format)
+    if generator is None:
+        raise RuntimeError(f"Unsupported export format: {export_format}")
+    return _build_download_payload(generator(item))
+
+
+def _job_handle_chat(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    message = str(payload.get("message") or payload.get("text") or "").strip()
+    if not message:
+        raise RuntimeError("message is required")
+    user_id = payload.get("user_id")
+    reply_language = payload.get("reply_language")
+    pipeline_result = _run_agentic_or_pipeline(session, user_id, message, reply_language)
+    item, meta, normalized_pipeline = _save_item_from_pipeline(
+        session,
+        user_id=user_id,
+        source="text",
+        raw_text=message,
+        transcript=None,
+        pipeline_result=pipeline_result,
+        reply_language=reply_language,
+    )
+    return _build_chat_response(item, meta, normalized_pipeline)
+
+
+def _register_job_handlers() -> None:
+    queue = _get_job_queue()
+    queue.register("export", _job_handle_export)
+    queue.register("chat", _job_handle_chat)
 
 @app.on_event("startup")
 def ensure_runtime_schema() -> None:
@@ -569,22 +658,41 @@ def ensure_runtime_schema() -> None:
     try:
         _ensure_user_table_auth_columns()
         _ensure_rag_embedding_table()
+        _ensure_job_table()
+        VECTOR_STORE.initialize()
+        _register_job_handlers()
+        if os.getenv("JOB_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
+            _get_job_queue().start()
     except Exception as exc:
-        print(f"[WARN] Runtime schema sync skipped: {exc}")
+        logger.warning("Runtime schema sync skipped: %s", exc)
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    start = datetime.utcnow()
-    body_text = ""
+    request_id = request.headers.get("x-request-id") or new_request_id()
+    start = time.perf_counter()
+    set_request_context(request_id=request_id, route=request.url.path)
     try:
-        body = await request.body()
-        if body:
-            body_text = body.decode("utf-8", errors="ignore")[:1500]
+        response = await call_next(request)
     except Exception:
-        pass
-    response = await call_next(request)
-    ms = int((datetime.utcnow() - start).total_seconds() * 1000)
-    print(f"[REQ] {request.method} {request.url.path} {response.status_code} {ms}ms body={body_text[:300]}")
+        logger.exception(
+            "request failed",
+            extra={"method": request.method, "path": request.url.path},
+        )
+        clear_request_context()
+        raise
+    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    response.headers["x-request-id"] = request_id
+    logger.info(
+        "request completed",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        },
+    )
+    clear_request_context()
     return response
 
 
@@ -1389,6 +1497,19 @@ def _save_item_from_pipeline(
     session.commit()
     session.refresh(item)
 
+    try:
+        source_id, content_text, updated_at = LOCAL_RAG_SERVICE._candidate_from_item(item)
+        LOCAL_RAG_SERVICE._get_or_create_embedding(
+            session,
+            user_id=user_id,
+            source_type="item",
+            source_id=source_id,
+            content_text=content_text,
+            updated_at=updated_at,
+        )
+    except Exception:
+        session.rollback()
+
     normalized_pipeline = _normalized_pipeline_result(pipeline_result)
     payload = {"pipeline": normalized_pipeline, "meta": meta}
     log_conversation(session, user_id, source, raw_text, transcript, payload)
@@ -1731,6 +1852,92 @@ def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
         reply_language=payload.reply_language,
     )
     return _build_chat_response(item, meta, normalized_pipeline)
+
+
+def _run_chat_payload(payload: ChatAPIRequest) -> Dict[str, Any]:
+    with SessionLocal() as session:
+        text = _resolve_chat_text(payload)
+        pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+        item, meta, normalized_pipeline = _save_item_from_pipeline(
+            session,
+            user_id=payload.user_id,
+            source="text",
+            raw_text=text,
+            transcript=None,
+            pipeline_result=pipeline_result,
+            reply_language=payload.reply_language,
+        )
+        return _build_chat_response(item, meta, normalized_pipeline)
+
+
+def _sse_event(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/chat/stream")
+async def api_chat_stream(payload: ChatAPIRequest):
+    async def event_generator():
+        started_at = time.perf_counter()
+        yield _sse_event("status", {"phase": "accepted"})
+        yield _sse_event("status", {"phase": "running"})
+        try:
+            response = await asyncio.to_thread(_run_chat_payload, payload)
+            assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
+            chunk_size = max(12, int(os.getenv("STREAM_CHUNK_SIZE", "32") or 32))
+            for index in range(0, len(assistant_text), chunk_size):
+                yield _sse_event(
+                    "token",
+                    {"delta": assistant_text[index : index + chunk_size]},
+                )
+                await asyncio.sleep(0)
+            yield _sse_event(
+                "done",
+                {
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "response": response,
+                },
+            )
+        except Exception as exc:
+            yield _sse_event("error", {"message": str(exc)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/chat/jobs")
+def enqueue_chat_job(payload: ChatAPIRequest, session: Session = Depends(get_session)):
+    text = _resolve_chat_text(payload)
+    job = _get_job_queue().enqueue(
+        session,
+        job_type="chat",
+        user_id=payload.user_id,
+        payload={
+            "user_id": payload.user_id,
+            "message": text,
+            "reply_language": payload.reply_language,
+        },
+        max_attempts=int(os.getenv("JOB_CHAT_MAX_ATTEMPTS", "3") or 3),
+    )
+    return {"ok": True, "job": _serialize_job(job)}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job_status(job_id: int, session: Session = Depends(get_session)):
+    return {"ok": True, "job": _serialize_job(_get_job_queue().get_job(session, job_id))}
+
+
+@app.get("/api/flags")
+def get_feature_flags():
+    voice_strategy = os.getenv("VOICE_ROUTING_MODE", "backend").strip().lower() or "backend"
+    return {
+        "ok": True,
+        "flags": {
+            "voiceRoutingMode": voice_strategy,
+            "streamingChatEnabled": True,
+            "asyncExportJobsEnabled": True,
+            "asyncChatJobsEnabled": True,
+            "vectorStoreBackend": VECTOR_STORE.mode,
+        },
+    }
 
 
 @app.post("/users/{user_id}/questionnaire")
@@ -2095,8 +2302,29 @@ def generate_ppt(item: Item) -> Path:
     return path
 
 
+def _enqueue_export_job(session: Session, *, item_id: int, export_format: str) -> Dict[str, Any]:
+    item = session.get(Item, item_id)
+    if not item:
+        raise HTTPException(404, "Item not found")
+    job = _get_job_queue().enqueue(
+        session,
+        job_type="export",
+        user_id=item.user_id,
+        payload={"item_id": item_id, "export_format": export_format},
+        max_attempts=int(os.getenv("JOB_EXPORT_MAX_ATTEMPTS", "3") or 3),
+    )
+    return {"ok": True, "job": _serialize_job(job)}
+
+
+@app.post("/items/{item_id}/exports/{export_format}/jobs")
+def item_generate_export_job(item_id: int, export_format: str, session: Session = Depends(get_session)):
+    return _enqueue_export_job(session, item_id=item_id, export_format=export_format)
+
+
 @app.post("/items/{item_id}/generate-pdf")
-def item_generate_pdf(item_id: int, session: Session = Depends(get_session)):
+def item_generate_pdf(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+    if background:
+        return _enqueue_export_job(session, item_id=item_id, export_format="pdf")
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
@@ -2105,7 +2333,9 @@ def item_generate_pdf(item_id: int, session: Session = Depends(get_session)):
 
 
 @app.post("/items/{item_id}/generate-excel")
-def item_generate_excel(item_id: int, session: Session = Depends(get_session)):
+def item_generate_excel(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+    if background:
+        return _enqueue_export_job(session, item_id=item_id, export_format="excel")
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
@@ -2114,7 +2344,9 @@ def item_generate_excel(item_id: int, session: Session = Depends(get_session)):
 
 
 @app.post("/items/{item_id}/generate-ppt")
-def item_generate_ppt(item_id: int, session: Session = Depends(get_session)):
+def item_generate_ppt(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+    if background:
+        return _enqueue_export_job(session, item_id=item_id, export_format="ppt")
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
@@ -2123,7 +2355,9 @@ def item_generate_ppt(item_id: int, session: Session = Depends(get_session)):
 
 
 @app.post("/items/{item_id}/generate-docx")
-def item_generate_docx(item_id: int, session: Session = Depends(get_session)):
+def item_generate_docx(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+    if background:
+        return _enqueue_export_job(session, item_id=item_id, export_format="docx")
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")

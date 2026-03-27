@@ -25,12 +25,26 @@ const LOCAL_STT_MODEL: string =
   process.env.EXPO_PUBLIC_LOCAL_STT_MODEL ||
   "whisper";
 
-const USE_LOCAL_VOICE_PIPELINE: boolean =
+const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean =
   String(
     extra.USE_LOCAL_VOICE_PIPELINE ||
       process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ||
       "false"
   ).toLowerCase() === "true";
+
+type FeatureFlagPayload = {
+  ok?: boolean;
+  flags?: {
+    voiceRoutingMode?: "local" | "backend" | string;
+    streamingChatEnabled?: boolean;
+    asyncExportJobsEnabled?: boolean;
+    asyncChatJobsEnabled?: boolean;
+    vectorStoreBackend?: string;
+  };
+};
+
+let featureFlagsCache: FeatureFlagPayload["flags"] | null = null;
+let featureFlagsFetchedAt = 0;
 
 type ReplyLanguage = "en" | "ta";
 
@@ -142,6 +156,34 @@ function getFormFilePart(form: FormData) {
   }
 
   return null;
+}
+
+async function getFeatureFlags(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && featureFlagsCache && now - featureFlagsFetchedAt < 60_000) {
+    return featureFlagsCache;
+  }
+
+  try {
+    const res = await fetch(buildUrl("/api/flags"));
+    if (!res.ok) throw new Error(`flags ${res.status}`);
+    const payload = (await res.json()) as FeatureFlagPayload;
+    featureFlagsCache = payload?.flags || null;
+    featureFlagsFetchedAt = now;
+    return featureFlagsCache;
+  } catch {
+    return featureFlagsCache;
+  }
+}
+
+async function shouldUseLocalVoicePipeline() {
+  const flags = await getFeatureFlags();
+  const voiceRoutingMode = String(flags?.voiceRoutingMode || "").toLowerCase();
+
+  if (voiceRoutingMode === "local") return true;
+  if (voiceRoutingMode === "backend") return false;
+
+  return USE_LOCAL_VOICE_PIPELINE_DEFAULT;
 }
 
 function isTranscribeAndAnalyzePath(path: string) {
@@ -302,7 +344,7 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
-  if (USE_LOCAL_VOICE_PIPELINE && isTranscribeAndAnalyzePath(path)) {
+  if ((await shouldUseLocalVoicePipeline()) && isTranscribeAndAnalyzePath(path)) {
     return (await handleLocalTranscribeAndAnalyze(path, form)) as T;
   }
 
@@ -333,3 +375,5 @@ export async function apiDelete<T>(path: string): Promise<T> {
   }
   return res.json();
 }
+
+export { getFeatureFlags };

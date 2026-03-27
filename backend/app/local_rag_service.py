@@ -18,7 +18,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlmodel import Session
 
+from .database import engine
 from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User, UserProfile
+from .vector_store import VectorStore
 
 try:
     from openai import OpenAI
@@ -296,6 +298,8 @@ class LocalRAGService:
         self._semantic_enabled = bool(RAG_ENABLED and OpenAI is not None and bool(str(OPENAI_API_KEY or "").strip()))
         self._embedding_model = str(RAG_EMBEDDING_MODEL or "text-embedding-3-small").strip() or "text-embedding-3-small"
         self._openai = OpenAI(api_key=OPENAI_API_KEY) if self._semantic_enabled else None
+        self.vector_store = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
+        self.vector_store.initialize()
         self._embed_cache: "OrderedDict[str, Tuple[List[float], float, float]]" = OrderedDict()
         self._fast_row_vectors: Dict[str, Tuple[List[float], float]] = {}
         self._fast_row_vectors_state: Optional[Dict[Path, Optional[int]]] = None
@@ -605,6 +609,22 @@ class LocalRAGService:
                     )
                 )
                 session.commit()
+            except Exception:
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+            try:
+                self.vector_store.upsert(
+                    session,
+                    user_id=user_id,
+                    source_type=str(source_type),
+                    source_id=str(source_id),
+                    content_hash=content_hash,
+                    content_text=content_text,
+                    embedding=vec,
+                    updated_at=updated_at or datetime.utcnow(),
+                )
             except Exception:
                 try:
                     session.rollback()
@@ -1063,6 +1083,33 @@ class LocalRAGService:
 
         t_fetch = time.perf_counter()
         candidates: List[RagSnippet] = []
+
+        if query_embedding is not None and self.vector_store.mode == "pgvector":
+            try:
+                for row in self.vector_store.search(
+                    session,
+                    user_id=int(user_id),
+                    query_embedding=query_embedding[0],
+                    limit=max(4, int(RAG_TOP_K) * 2),
+                ):
+                    updated_at = row.get("updated_at") or datetime.utcnow()
+                    recency = self._recency_score(updated_at)
+                    semantic = float(row.get("score_semantic", 0.0) or 0.0)
+                    score = semantic * 0.88 + recency * 0.12
+                    candidates.append(
+                        RagSnippet(
+                            str(row.get("source_type") or "vector"),
+                            str(row.get("source_id") or ""),
+                            updated_at,
+                            str(row.get("content_text") or ""),
+                            score,
+                            semantic,
+                            0.0,
+                            recency,
+                        )
+                    )
+            except Exception:
+                pass
 
         items = list(
             session.exec(
