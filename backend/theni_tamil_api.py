@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -63,6 +64,15 @@ def _pick_best_model_dir(root: Path) -> Optional[Path]:
 
 def _cleanup(text: str) -> str:
     return " ".join(str(text or "").strip().split())
+
+
+def _split_into_sentences(text: str) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    return [s.strip() for s in sentences if s.strip()]
 
 
 def _resolved_device() -> str:
@@ -128,18 +138,25 @@ def convert(payload: ConvertRequest):
 
     try:
         _ensure_model_loaded()
-        encoded = _tokenizer(text, return_tensors="pt", truncation=True, max_length=MAX_LENGTH)
+        
+        sentences = _split_into_sentences(text)
+        translated_chunks = []
+        
+        device = _resolved_device() if torch is not None else None
+        
+        for sentence in sentences:
+            encoded = _tokenizer(sentence, return_tensors="pt", truncation=True, max_length=MAX_LENGTH)
+            if device:
+                encoded = {key: value.to(device) for key, value in encoded.items()}
 
-        if torch is not None:
-            device = _resolved_device()
-            encoded = {key: value.to(device) for key, value in encoded.items()}
+            output_ids = _model.generate(**encoded, max_length=MAX_LENGTH, num_beams=NUM_BEAMS)
+            output_text = _tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+            translated_chunks.append(_cleanup(output_text))
 
-        output_ids = _model.generate(**encoded, max_length=MAX_LENGTH, num_beams=NUM_BEAMS)
-        output_text = _tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
         return ConvertResponse(
             ok=True,
             input_text=text,
-            theni_tamil_text=_cleanup(output_text),
+            theni_tamil_text=_cleanup(" ".join(translated_chunks)),
         )
     except Exception as exc:
         raise HTTPException(500, f"Conversion failed: {exc}")
