@@ -1703,7 +1703,7 @@ def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
     # 👮‍♂️ 1. Call Your Orchestrator (The Traffic Cop)
     routing = run_orchestrator(client, text)
 
-    # 🚑 2. Handle Emergencies (New Feature)
+    # 🚑 2. Handle Emergencies (High Priority)
     if routing["intent"] == "EMERGENCY":
         res = "🚨 EMERGENCY DETECTED: Please stay safe and contact emergency services (112) immediately."
         pipeline_result = _build_direct_answer_pipeline_result(
@@ -1711,15 +1711,25 @@ def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
             routing["priority"], routing["confidence"], routing.get("matched_keyword", "")
         )
     
-    # 🧩 3. Handle Ambiguity (New Feature)
+    # 🔍 3. Handle Ambiguity
     elif routing["intent"] == "AMBIGUOUS":
-        res = routing.get("clarification_question") or "Could you tell me a bit more about what you need?"
+        res = routing.get("clarification_question") or "Could you share a bit more so I can assist you better?"
         pipeline_result = _build_direct_answer_pipeline_result(
-            res, "AMBIGUOUS", "orchestrator_clarify",
+            res, "AMBIGUOUS", "orchestrator_clarification",
             routing["priority"], routing["confidence"], routing.get("matched_keyword", "")
         )
 
-    # 🤝 4. All Clear → Delegate to TL's Agentic Service (Weather, Calendar, Web Search, Pipeline)
+    # 👋 4. Intent Passthrough to TL's Fast-Path (Greeting, Profile, Identity)
+    # The Orchestrator tags these, and we let _try_local_fast_path handle the actual response.
+    elif routing["intent"] in {"GREETING", "SMALLTALK", "PROFILE", "IDENTITY"}:
+        tl_fast_res = _try_local_fast_path(session, payload.user_id, text)
+        if tl_fast_res:
+            pipeline_result = tl_fast_res
+        else:
+            # Fallback if TL's RAG file doesn't have the specific answer
+            pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+
+    # 🌐 5. Tool Use or Full Pipeline reasoning
     else:
         pipeline_result = _run_agentic_or_pipeline(
             session, payload.user_id, text, payload.reply_language
