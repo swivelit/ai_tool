@@ -22,6 +22,7 @@ class User(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+
 # --------------------
 # Item (core memory / notes / tasks / reminders)
 # --------------------
@@ -41,7 +42,6 @@ class Item(SQLModel, table=True):
 
     source: str = "text"  # text | voice | system
 
-    # 🔑 Critical for multi-user isolation
     user_id: Optional[int] = Field(
         default=None,
         index=True,
@@ -95,6 +95,7 @@ class QACache(SQLModel, table=True):
     hits: int = Field(default=1)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
+
 # --------------------
 # Daily Routine (editable)
 # --------------------
@@ -106,22 +107,22 @@ class DailyRoutine(SQLModel, table=True):
     user_id: int = Field(
         index=True,
         foreign_key="user.id",
-        unique=True,  # one routine per user
+        unique=True,
     )
 
-    wake_time: str        # "07:30"
-    sleep_time: str       # "23:30"
+    wake_time: str
+    sleep_time: str
 
-    work_start: Optional[str] = None  # "09:30"
-    work_end: Optional[str] = None    # "18:30"
-
-    daily_habits: Optional[str] = None  # comma-separated for now
+    work_start: Optional[str] = None
+    work_end: Optional[str] = None
+    daily_habits: Optional[str] = None
 
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # --------------------
 # User Personality / Character Profile
+# --------------------
 class UserProfile(SQLModel, table=True):
     __tablename__ = "user_profile"
 
@@ -144,30 +145,41 @@ class UserProfile(SQLModel, table=True):
 # RAG Embeddings (persistent semantic index)
 # --------------------
 class RagEmbedding(SQLModel, table=True):
-    """Stores embeddings for different sources (items, conversations, cache, documents).
-
-    We store embedding vectors as JSON text for maximum portability (works on Postgres/SQLite).
-    Similarity search is computed in Python (cosine), which is fast enough for typical per-user sizes.
-    """
-
     __tablename__ = "rag_embedding"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-
-    # Null user_id is allowed for global/shared sources.
     user_id: Optional[int] = Field(default=None, index=True, foreign_key="user.id")
-
-    # e.g. "item" | "conversation" | "qa_cache" | "fast_rag" | "doc_chunk"
     source_type: str = Field(index=True)
-
-    # A string so it can represent int ids or compound keys like "file.pdf#12".
     source_id: str = Field(index=True)
-
-    # Stable id for the embedding row. Unique index is created at runtime.
     content_hash: str = Field(index=True)
-
     content_text: str
     embedding_json: str
     embedding_norm: float = 0.0
-
     updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+# --------------------
+# Background Jobs
+# --------------------
+class Job(SQLModel, table=True):
+    __tablename__ = "job"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, index=True, foreign_key="user.id")
+
+    job_type: str = Field(index=True)
+    status: str = Field(default="queued", index=True)
+
+    payload_json: str
+    result_json: Optional[str] = None
+    error_message: Optional[str] = None
+
+    attempts: int = 0
+    max_attempts: int = 3
+
+    run_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

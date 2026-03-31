@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -14,21 +16,33 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from openai import OpenAI
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import inspect as sa_inspect, text as sa_text
 from sqlmodel import SQLModel, Session, delete, select
 
-from .database import engine, get_session
-from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User, UserProfile
+from .database import SessionLocal, engine, get_session
+from .job_queue import DBJobQueue
+from .model_runtime import patch_openai_client
+from .models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
+from .observability import bootstrap_observability, clear_request_context, new_request_id, set_request_context
+from .vector_store import VectorStore
 from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
+from .orchestrator_task import run_orchestrator
 
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = CURRENT_DIR.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+load_dotenv()
+bootstrap_observability()
+patch_openai_client()
+from openai import OpenAI
+
+from .local_rag_service import LocalRAGService
+from .agentic_service import AgenticService
 
 from config import (
     GENERATED_DOCS_DIR,
@@ -44,15 +58,15 @@ from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 PERSONALITY_QUESTIONS_VERSION = 1
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_JSON_MODEL = os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini")
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is not set (env var missing)")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client: Optional[OpenAI] = None
+JOB_QUEUE: Optional[DBJobQueue] = None
+VECTOR_STORE = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
 
 app = FastAPI(title="J AI Backend")
 app.add_middleware(
@@ -64,16 +78,85 @@ app.add_middleware(
 )
 
 STAGE_BEHAVIOUR = BehaviourQuestionnaire()
-STAGE_CORE = OpenAICore()
-STAGE_REMODELER = EnglishRemodeler(STAGE_CORE)
-STAGE_TRANSLATOR = StageTranslator(STAGE_CORE)
 LOCAL_RAG_SERVICE = LocalRAGService()
-AGENTIC_SERVICE = AgenticService(client, LOCAL_RAG_SERVICE)
-SAFETY_FILTER = BehaviouralRAGFilter(
-    openai_api_key=OPENAI_API_KEY,
-    translator=STAGE_TRANSLATOR,
-)
+STAGE_CORE: Optional[OpenAICore] = None
+STAGE_REMODELER: Optional[EnglishRemodeler] = None
+STAGE_TRANSLATOR: Optional[StageTranslator] = None
+AGENTIC_SERVICE: Optional[AgenticService] = None
+SAFETY_FILTER: Optional[BehaviouralRAGFilter] = None
 STAGE_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _is_openai_configured() -> bool:
+    return bool(OPENAI_API_KEY)
+
+
+def _openai_required_error(operation: str = "This operation") -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=f"{operation} requires OPENAI_API_KEY to be configured on the server.",
+    )
+
+
+def _get_openai_client(*, required: bool = True) -> Optional[OpenAI]:
+    global client
+
+    if not _is_openai_configured():
+        if required:
+            raise _openai_required_error()
+        return None
+
+    if client is None:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+    return client
+
+
+def _get_stage_core(*, required: bool = True) -> Optional[OpenAICore]:
+    global STAGE_CORE
+
+    if STAGE_CORE is None:
+        if not _is_openai_configured():
+            if required:
+                raise _openai_required_error("The stage pipeline")
+            return None
+        STAGE_CORE = OpenAICore()
+
+    return STAGE_CORE
+
+
+def _get_stage_remodeler(*, required: bool = True) -> Optional[EnglishRemodeler]:
+    global STAGE_REMODELER
+
+    core = _get_stage_core(required=required)
+    if core is None:
+        return None
+
+    if STAGE_REMODELER is None:
+        STAGE_REMODELER = EnglishRemodeler(core)
+
+    return STAGE_REMODELER
+
+
+def _get_stage_translator(*, required: bool = True) -> Optional[StageTranslator]:
+    global STAGE_TRANSLATOR
+
+    core = _get_stage_core(required=required)
+    if core is None:
+        return None
+
+    if STAGE_TRANSLATOR is None:
+        STAGE_TRANSLATOR = StageTranslator(core)
+
+    return STAGE_TRANSLATOR
+
+
+def _get_agentic_service() -> AgenticService:
+    global AGENTIC_SERVICE
+
+    if AGENTIC_SERVICE is None:
+        AGENTIC_SERVICE = AgenticService(_get_openai_client(required=False), LOCAL_RAG_SERVICE)
+
+    return AGENTIC_SERVICE
 
 
 def _normalize_reply_language(value: Optional[str]) -> str:
@@ -493,28 +576,128 @@ def _ensure_rag_embedding_table() -> None:
         except Exception as exc:
             print(f"[WARN] Could not create rag_embedding user/updated index: {exc}")
 
+def _ensure_job_table() -> None:
+    try:
+        SQLModel.metadata.create_all(engine, tables=[Job.__table__])
+    except Exception as exc:
+        logger.warning("Could not create job table: %s", exc)
+
+
+def _serialize_job(job: Optional[Job]) -> Dict[str, Any]:
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    result_payload = {}
+    if job.result_json:
+        try:
+            result_payload = json.loads(job.result_json)
+        except Exception:
+            result_payload = {"raw": job.result_json}
+    return {
+        "id": job.id,
+        "job_type": job.job_type,
+        "status": job.status,
+        "attempts": job.attempts,
+        "max_attempts": job.max_attempts,
+        "error_message": job.error_message,
+        "result": result_payload,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
+def _get_job_queue() -> DBJobQueue:
+    global JOB_QUEUE
+    if JOB_QUEUE is None:
+        JOB_QUEUE = DBJobQueue(engine, poll_seconds=float(os.getenv("JOB_QUEUE_POLL_SECONDS", "1.0") or 1.0))
+    return JOB_QUEUE
+
+
+def _job_handle_export(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    item_id = int(payload["item_id"])
+    export_format = str(payload["export_format"]).lower().strip()
+    item = session.get(Item, item_id)
+    if not item:
+        raise RuntimeError("Item not found")
+    generators = {
+        "pdf": generate_pdf,
+        "excel": generate_excel,
+        "ppt": generate_ppt,
+        "docx": generate_docx,
+    }
+    generator = generators.get(export_format)
+    if generator is None:
+        raise RuntimeError(f"Unsupported export format: {export_format}")
+    return _build_download_payload(generator(item))
+
+
+def _job_handle_chat(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    message = str(payload.get("message") or payload.get("text") or "").strip()
+    if not message:
+        raise RuntimeError("message is required")
+    user_id = payload.get("user_id")
+    reply_language = payload.get("reply_language")
+    pipeline_result = _run_agentic_or_pipeline(session, user_id, message, reply_language)
+    item, meta, normalized_pipeline = _save_item_from_pipeline(
+        session,
+        user_id=user_id,
+        source="text",
+        raw_text=message,
+        transcript=None,
+        pipeline_result=pipeline_result,
+        reply_language=reply_language,
+    )
+    return _build_chat_response(item, meta, normalized_pipeline)
+
+
+def _register_job_handlers() -> None:
+    queue = _get_job_queue()
+    queue.register("export", _job_handle_export)
+    queue.register("chat", _job_handle_chat)
 
 @app.on_event("startup")
 def ensure_runtime_schema() -> None:
+    if not _is_openai_configured():
+        logger.warning("OPENAI_API_KEY is not set. OpenAI-dependent endpoints will return HTTP 503 until configured.")
     try:
         _ensure_user_table_auth_columns()
         _ensure_rag_embedding_table()
+        _ensure_job_table()
+        VECTOR_STORE.initialize()
+        _register_job_handlers()
+        if os.getenv("JOB_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
+            _get_job_queue().start()
     except Exception as exc:
-        print(f"[WARN] Runtime schema sync skipped: {exc}")
+        logger.warning("Runtime schema sync skipped: %s", exc)
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    start = datetime.utcnow()
-    body_text = ""
+    request_id = request.headers.get("x-request-id") or new_request_id()
+    start = time.perf_counter()
+    set_request_context(request_id=request_id, route=request.url.path)
     try:
-        body = await request.body()
-        if body:
-            body_text = body.decode("utf-8", errors="ignore")[:1500]
+        response = await call_next(request)
     except Exception:
-        pass
-    response = await call_next(request)
-    ms = int((datetime.utcnow() - start).total_seconds() * 1000)
-    print(f"[REQ] {request.method} {request.url.path} {response.status_code} {ms}ms body={body_text[:300]}")
+        logger.exception(
+            "request failed",
+            extra={"method": request.method, "path": request.url.path},
+        )
+        clear_request_context()
+        raise
+    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    response.headers["x-request-id"] = request_id
+    logger.info(
+        "request completed",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        },
+    )
+    clear_request_context()
     return response
 
 
@@ -729,7 +912,7 @@ def _extract_response_text(response: Any) -> str:
 
 
 def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
-    response = client.responses.create(
+    response = _get_openai_client().responses.create(
         model=OPENAI_JSON_MODEL,
         input=[
             {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
@@ -743,7 +926,7 @@ def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) ->
 
 
 def llm_text(system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
-    response = client.responses.create(
+    response = _get_openai_client().responses.create(
         model=OPENAI_JSON_MODEL,
         input=[
             {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
@@ -1138,20 +1321,23 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         predicted_label = direct_match.label
         stage_notes.append("Used a high-confidence direct answer from the local dataset.")
     else:
+        stage_core = _get_stage_core()
+        stage_remodeler = _get_stage_remodeler()
+
         t0 = time.perf_counter()
-        core_meta = STAGE_CORE.answer_user_query_structured(message, profile_context)
+        core_meta = stage_core.answer_user_query_structured(message, profile_context)
         if isinstance(core_meta, dict):
             core_meta["rag_context"] = rag_context_meta
         timings["core_answer_ms"] = round((time.perf_counter() - t0) * 1000, 2)
         raw_english = str(core_meta.get("answer", "")).strip()
 
         t0 = time.perf_counter()
-        remodel_meta = STAGE_REMODELER.remodel_with_meta(message, raw_english, profile)
+        remodel_meta = stage_remodeler.remodel_with_meta(message, raw_english, profile)
         timings["remodel_ms"] = round((time.perf_counter() - t0) * 1000, 2)
         remodeled_english = str(remodel_meta.get("answer", raw_english)).strip() or raw_english
 
         t0 = time.perf_counter()
-        review_meta = STAGE_CORE.review_answer(message, remodeled_english, profile_context)
+        review_meta = stage_core.review_answer(message, remodeled_english, profile_context)
         if isinstance(review_meta, dict):
             review_meta["rag_context_used"] = bool(rag_context_meta.get("snippet_count", 0))
         timings["review_ms"] = round((time.perf_counter() - t0) * 1000, 2)
@@ -1199,8 +1385,9 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         theni_tamil_text = _safety_theni
         translation_meta = {"source": "safety_filter_retranslation"}
     elif resolved_reply_language == "ta":
+        stage_translator = _get_stage_translator()
         t0 = time.perf_counter()
-        translation_meta = STAGE_TRANSLATOR.english_to_tamil_with_meta(remodeled_english, profile)
+        translation_meta = stage_translator.english_to_tamil_with_meta(remodeled_english, profile)
         tamil_text = str(translation_meta.get("tamil_text", "")).strip()
         timings["english_to_tamil_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
@@ -1342,6 +1529,19 @@ def _save_item_from_pipeline(
     session.commit()
     session.refresh(item)
 
+    try:
+        source_id, content_text, updated_at = LOCAL_RAG_SERVICE._candidate_from_item(item)
+        LOCAL_RAG_SERVICE._get_or_create_embedding(
+            session,
+            user_id=user_id,
+            source_type="item",
+            source_id=source_id,
+            content_text=content_text,
+            updated_at=updated_at,
+        )
+    except Exception:
+        session.rollback()
+
     normalized_pipeline = _normalized_pipeline_result(pipeline_result)
     payload = {"pipeline": normalized_pipeline, "meta": meta}
     log_conversation(session, user_id, source, raw_text, transcript, payload)
@@ -1389,7 +1589,7 @@ def _run_agentic_or_pipeline(
     message: str,
     reply_language: Optional[str] = None,
 ) -> Dict[str, Any]:
-    return AGENTIC_SERVICE.orchestrate_chat(
+    return _get_agentic_service().orchestrate_chat(
         session,
         user_id,
         message,
@@ -1400,7 +1600,7 @@ def _run_agentic_or_pipeline(
 
 def _transcribe_audio_file(file_path: str) -> str:
     with open(file_path, "rb") as audio_file:
-        transcript_obj = client.audio.transcriptions.create(
+        transcript_obj = _get_openai_client().audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
             response_format="json",
@@ -1537,7 +1737,7 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
         json.dumps(response_payload, ensure_ascii=False, default=str),
     )
 
-    AGENTIC_SERVICE.persist_profile_snapshot(session, int(user.id))
+    _get_agentic_service().persist_profile_snapshot(session, int(user.id))
     return response_payload
 
 
@@ -1641,7 +1841,7 @@ def get_pipeline_profile(user_id: int, session: Session = Depends(get_session)):
 
 @app.post("/api/profile/{user_id}")
 def save_pipeline_profile(user_id: int, payload: PersonalityAnswersIn, session: Session = Depends(get_session)):
-    AGENTIC_SERVICE.sync_answers_to_profile(session, user_id, payload.answers)
+    _get_agentic_service().sync_answers_to_profile(session, user_id, payload.answers)
     stage_profile = _sync_stage_profile(session, user_id)
     STAGE_CACHE.clear()
     return {"ok": True, "profile": stage_profile}
@@ -1649,31 +1849,92 @@ def save_pipeline_profile(user_id: int, payload: PersonalityAnswersIn, session: 
 
 @app.get("/api/agents/profiler/{user_id}")
 def get_profiler_state(user_id: int, session: Session = Depends(get_session)):
-    return AGENTIC_SERVICE.get_profiler_state(session, user_id)
+    return _get_agentic_service().get_profiler_state(session, user_id)
 
 
 @app.post("/api/agents/profiler/{user_id}/start")
 def start_profiler_agent(user_id: int, session: Session = Depends(get_session)):
-    return AGENTIC_SERVICE.start_profiler(session, user_id)
+    return _get_agentic_service().start_profiler(session, user_id)
 
 
 @app.post("/api/agents/profiler/{user_id}/message")
 def profiler_agent_message(user_id: int, payload: AgentMessageRequest, session: Session = Depends(get_session)):
     try:
-        return AGENTIC_SERVICE.profiler_turn(session, user_id, payload.message, payload.reply_language)
+        return _get_agentic_service().profiler_turn(session, user_id, payload.message, payload.reply_language)
     except ValueError as exc:
         raise HTTPException(404, str(exc))
 
 
 @app.post("/api/agents/memory/{user_id}/sync")
 def sync_memory_agent(user_id: int, payload: AgentMemorySyncRequest, session: Session = Depends(get_session)):
-    return AGENTIC_SERVICE.maybe_sync_memory(session, user_id, force=bool(payload.force))
+    return _get_agentic_service().maybe_sync_memory(session, user_id, force=bool(payload.force))
+
+
+def _build_direct_answer_pipeline_result(
+    text: str, 
+    intent: str, 
+    route: str,
+    priority: str = "low",
+    confidence: float = 1.0,
+    matched_keyword: str = ""
+) -> Dict[str, Any]:
+    """Helper for the orchestrator to return a fast answer without a full pipeline call."""
+    return _build_pipeline_result(
+        raw_english=text,
+        remodeled_english=text,
+        route_taken=route,
+        predicted_label=intent.lower(),
+        risk_level="high" if intent == "EMERGENCY" else "low",
+        direct_answer_source="orchestrator_fast_exit",
+        direct_answer_confidence=f"{confidence:.4f}",
+        stage_notes=[
+            f"Orchestrator identified intent: {intent}.",
+            f"Matched keyword: '{matched_keyword}'" if matched_keyword else "No keyword matched.",
+            f"Priority level: {priority}."
+        ]
+    )
 
 
 @app.post("/api/chat")
 def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
     text = _resolve_chat_text(payload)
-    pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+
+    # 👮‍♂️ 1. Call Your Orchestrator (The Traffic Cop)
+    routing = run_orchestrator(_get_openai_client(), text)
+
+    # 🚑 2. Handle Emergencies (High Priority)
+    if routing["intent"] == "EMERGENCY":
+        res = "🚨 EMERGENCY DETECTED: Please stay safe and contact emergency services (112) immediately."
+        pipeline_result = _build_direct_answer_pipeline_result(
+            res, "EMERGENCY", "orchestrator_emergency", 
+            routing["priority"], routing["confidence"], routing.get("matched_keyword", "")
+        )
+    
+    # 🔍 3. Handle Ambiguity
+    elif routing["intent"] == "AMBIGUOUS":
+        res = routing.get("clarification_question") or "Could you share a bit more so I can assist you better?"
+        pipeline_result = _build_direct_answer_pipeline_result(
+            res, "AMBIGUOUS", "orchestrator_clarification",
+            routing["priority"], routing["confidence"], routing.get("matched_keyword", "")
+        )
+
+    # 👋 4. Intent Passthrough to TL's Fast-Path (Greeting, Profile, Identity)
+    # The Orchestrator tags these, and we let _try_local_fast_path handle the actual response.
+    elif routing["intent"] in {"GREETING", "SMALLTALK", "PROFILE", "IDENTITY"}:
+        tl_fast_res = _try_local_fast_path(session, payload.user_id, text)
+        if tl_fast_res:
+            pipeline_result = tl_fast_res
+        else:
+            # Fallback if TL's RAG file doesn't have the specific answer
+            pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+
+    # 🌐 5. Tool Use or Full Pipeline reasoning
+    else:
+        pipeline_result = _run_agentic_or_pipeline(
+            session, payload.user_id, text, payload.reply_language
+        )
+
+    # Save to history and return response
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
@@ -1684,6 +1945,92 @@ def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
         reply_language=payload.reply_language,
     )
     return _build_chat_response(item, meta, normalized_pipeline)
+
+
+def _run_chat_payload(payload: ChatAPIRequest) -> Dict[str, Any]:
+    with SessionLocal() as session:
+        text = _resolve_chat_text(payload)
+        pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+        item, meta, normalized_pipeline = _save_item_from_pipeline(
+            session,
+            user_id=payload.user_id,
+            source="text",
+            raw_text=text,
+            transcript=None,
+            pipeline_result=pipeline_result,
+            reply_language=payload.reply_language,
+        )
+        return _build_chat_response(item, meta, normalized_pipeline)
+
+
+def _sse_event(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/chat/stream")
+async def api_chat_stream(payload: ChatAPIRequest):
+    async def event_generator():
+        started_at = time.perf_counter()
+        yield _sse_event("status", {"phase": "accepted"})
+        yield _sse_event("status", {"phase": "running"})
+        try:
+            response = await asyncio.to_thread(_run_chat_payload, payload)
+            assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
+            chunk_size = max(12, int(os.getenv("STREAM_CHUNK_SIZE", "32") or 32))
+            for index in range(0, len(assistant_text), chunk_size):
+                yield _sse_event(
+                    "token",
+                    {"delta": assistant_text[index : index + chunk_size]},
+                )
+                await asyncio.sleep(0)
+            yield _sse_event(
+                "done",
+                {
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "response": response,
+                },
+            )
+        except Exception as exc:
+            yield _sse_event("error", {"message": str(exc)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/chat/jobs")
+def enqueue_chat_job(payload: ChatAPIRequest, session: Session = Depends(get_session)):
+    text = _resolve_chat_text(payload)
+    job = _get_job_queue().enqueue(
+        session,
+        job_type="chat",
+        user_id=payload.user_id,
+        payload={
+            "user_id": payload.user_id,
+            "message": text,
+            "reply_language": payload.reply_language,
+        },
+        max_attempts=int(os.getenv("JOB_CHAT_MAX_ATTEMPTS", "3") or 3),
+    )
+    return {"ok": True, "job": _serialize_job(job)}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job_status(job_id: int, session: Session = Depends(get_session)):
+    return {"ok": True, "job": _serialize_job(_get_job_queue().get_job(session, job_id))}
+
+
+@app.get("/api/flags")
+def get_feature_flags():
+    voice_strategy = os.getenv("VOICE_ROUTING_MODE", "backend").strip().lower() or "backend"
+    return {
+        "ok": True,
+        "flags": {
+            "voiceRoutingMode": voice_strategy,
+            "streamingChatEnabled": True,
+            "asyncExportJobsEnabled": True,
+            "asyncChatJobsEnabled": True,
+            "vectorStoreBackend": VECTOR_STORE.mode,
+        },
+    }
 
 
 @app.post("/users/{user_id}/questionnaire")
@@ -1773,7 +2120,7 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
     session.refresh(routine)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
-    AGENTIC_SERVICE.persist_profile_snapshot(session, user_id)
+    _get_agentic_service().persist_profile_snapshot(session, user_id)
     return routine
 
 
@@ -1787,7 +2134,7 @@ def get_personality(user_id: int, session: Session = Depends(get_session)):
 
 @app.post("/users/{user_id}/personality")
 def save_personality_answers(user_id: int, payload: PersonalityAnswersIn, session: Session = Depends(get_session)):
-    AGENTIC_SERVICE.sync_answers_to_profile(session, user_id, payload.answers)
+    _get_agentic_service().sync_answers_to_profile(session, user_id, payload.answers)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
     return {"ok": True}
@@ -1800,7 +2147,7 @@ def generate_personality_summary(user_id: int, session: Session = Depends(get_se
     answers = json.loads(profile.answers_json or "{}")
     if not answers:
         raise HTTPException(400, "No personality answers provided yet")
-    result = AGENTIC_SERVICE.sync_answers_to_profile(session, user_id, answers)
+    result = _get_agentic_service().sync_answers_to_profile(session, user_id, answers)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
     return {"summary": result.get("summary", "")}
@@ -1910,24 +2257,57 @@ def get_item(item_id: int, session: Session = Depends(get_session)):
     return item_to_response(item)
 
 
-DOCS_BASE_DIR = str(GENERATED_DOCS_DIR)
-PDF_BASE_DIR = os.path.join(DOCS_BASE_DIR, "pdf")
-EXCEL_BASE_DIR = os.path.join(DOCS_BASE_DIR, "excel")
-PPT_BASE_DIR = os.path.join(DOCS_BASE_DIR, "ppt")
-DOCX_BASE_DIR = os.path.join(DOCS_BASE_DIR, "docx")
+DOCS_BASE_DIR = Path(GENERATED_DOCS_DIR).resolve()
+PDF_BASE_DIR = DOCS_BASE_DIR / "pdf"
+EXCEL_BASE_DIR = DOCS_BASE_DIR / "excel"
+PPT_BASE_DIR = DOCS_BASE_DIR / "ppt"
+DOCX_BASE_DIR = DOCS_BASE_DIR / "docx"
 
 
-def ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
+def ensure_dir(path: str | Path) -> None:
+    Path(path).mkdir(parents=True, exist_ok=True)
 
 
-def generate_docx(item: Item) -> str:
+def _safe_export_segment(value: Optional[str], *, default: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._-")
+    return cleaned or default
+
+
+def _category_export_dir(base_dir: Path, category: Optional[str]) -> Path:
+    ensure_dir(base_dir)
+    category_dir = base_dir / _safe_export_segment(category, default="Other")
+    ensure_dir(category_dir)
+    return category_dir
+
+
+def _build_download_payload(path: Path) -> Dict[str, Any]:
+    resolved = path.resolve()
+    relative_path = resolved.relative_to(DOCS_BASE_DIR).as_posix()
+    return {"ok": True, "path": relative_path, "download_url": f"/download?path={relative_path}"}
+
+
+def _resolve_generated_doc_path(raw_path: str) -> Path:
+    relative_path = str(raw_path or "").strip().lstrip("/")
+    if not relative_path:
+        raise HTTPException(400, "Path is required")
+
+    candidate = (DOCS_BASE_DIR / relative_path).resolve()
+    try:
+        candidate.relative_to(DOCS_BASE_DIR)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid download path") from exc
+
+    if not candidate.is_file():
+        raise HTTPException(404, "File not found")
+
+    return candidate
+
+
+def generate_docx(item: Item) -> Path:
     from docx import Document
 
-    ensure_dir(DOCX_BASE_DIR)
-    cat = os.path.join(DOCX_BASE_DIR, item.category or "Other")
-    ensure_dir(cat)
-    path = os.path.join(cat, f"item_{item.id}.docx")
+    category_dir = _category_export_dir(DOCX_BASE_DIR, item.category)
+    path = category_dir / f"item_{item.id}.docx"
     doc = Document()
     doc.add_heading(item.title or f"Item {item.id}", level=1)
     doc.add_paragraph(f"Intent: {item.intent}")
@@ -1935,17 +2315,15 @@ def generate_docx(item: Item) -> str:
     if item.datetime_str:
         doc.add_paragraph(f"When: {item.datetime_str}")
     doc.add_paragraph(item.details or item.raw_text)
-    doc.save(path)
+    doc.save(str(path))
     return path
 
 
-def generate_pdf(item: Item) -> str:
+def generate_pdf(item: Item) -> Path:
     from fpdf import FPDF
 
-    ensure_dir(PDF_BASE_DIR)
-    cat = os.path.join(PDF_BASE_DIR, item.category or "Other")
-    ensure_dir(cat)
-    path = os.path.join(cat, f"item_{item.id}.pdf")
+    category_dir = _category_export_dir(PDF_BASE_DIR, item.category)
+    path = category_dir / f"item_{item.id}.pdf"
 
     pdf = FPDF()
     pdf.add_page()
@@ -1971,17 +2349,15 @@ def generate_pdf(item: Item) -> str:
     pdf.ln(2)
     pdf.multi_cell(0, 8, txt=item.details or item.raw_text)
 
-    pdf.output(path)
+    pdf.output(str(path))
     return path
 
 
-def generate_excel(item: Item) -> str:
+def generate_excel(item: Item) -> Path:
     from openpyxl import Workbook
 
-    ensure_dir(EXCEL_BASE_DIR)
-    cat = os.path.join(EXCEL_BASE_DIR, item.category or "Other")
-    ensure_dir(cat)
-    path = os.path.join(cat, f"item_{item.id}.xlsx")
+    category_dir = _category_export_dir(EXCEL_BASE_DIR, item.category)
+    path = category_dir / f"item_{item.id}.xlsx"
     wb = Workbook()
     ws = wb.active
     ws.title = "Item"
@@ -1996,17 +2372,15 @@ def generate_excel(item: Item) -> str:
     for i, (k, v) in enumerate(rows, start=1):
         ws.cell(row=i, column=1, value=k)
         ws.cell(row=i, column=2, value=v)
-    wb.save(path)
+    wb.save(str(path))
     return path
 
 
-def generate_ppt(item: Item) -> str:
+def generate_ppt(item: Item) -> Path:
     from pptx import Presentation
 
-    ensure_dir(PPT_BASE_DIR)
-    cat = os.path.join(PPT_BASE_DIR, item.category or "Other")
-    ensure_dir(cat)
-    path = os.path.join(cat, f"item_{item.id}.pptx")
+    category_dir = _category_export_dir(PPT_BASE_DIR, item.category)
+    path = category_dir / f"item_{item.id}.pptx"
 
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[1])
@@ -2017,49 +2391,74 @@ def generate_ppt(item: Item) -> str:
         tf.add_paragraph().text = f"When: {item.datetime_str}"
     tf.add_paragraph().text = item.details or item.raw_text
 
-    prs.save(path)
+    prs.save(str(path))
     return path
 
 
+def _enqueue_export_job(session: Session, *, item_id: int, export_format: str) -> Dict[str, Any]:
+    item = session.get(Item, item_id)
+    if not item:
+        raise HTTPException(404, "Item not found")
+    job = _get_job_queue().enqueue(
+        session,
+        job_type="export",
+        user_id=item.user_id,
+        payload={"item_id": item_id, "export_format": export_format},
+        max_attempts=int(os.getenv("JOB_EXPORT_MAX_ATTEMPTS", "3") or 3),
+    )
+    return {"ok": True, "job": _serialize_job(job)}
+
+
+@app.post("/items/{item_id}/exports/{export_format}/jobs")
+def item_generate_export_job(item_id: int, export_format: str, session: Session = Depends(get_session)):
+    return _enqueue_export_job(session, item_id=item_id, export_format=export_format)
+
+
 @app.post("/items/{item_id}/generate-pdf")
-def item_generate_pdf(item_id: int, session: Session = Depends(get_session)):
+def item_generate_pdf(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+    if background:
+        return _enqueue_export_job(session, item_id=item_id, export_format="pdf")
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
     path = generate_pdf(item)
-    return {"ok": True, "path": path, "download_url": f"/download?path={path}"}
+    return _build_download_payload(path)
 
 
 @app.post("/items/{item_id}/generate-excel")
-def item_generate_excel(item_id: int, session: Session = Depends(get_session)):
+def item_generate_excel(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+    if background:
+        return _enqueue_export_job(session, item_id=item_id, export_format="excel")
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
     path = generate_excel(item)
-    return {"ok": True, "path": path, "download_url": f"/download?path={path}"}
+    return _build_download_payload(path)
 
 
 @app.post("/items/{item_id}/generate-ppt")
-def item_generate_ppt(item_id: int, session: Session = Depends(get_session)):
+def item_generate_ppt(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+    if background:
+        return _enqueue_export_job(session, item_id=item_id, export_format="ppt")
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
     path = generate_ppt(item)
-    return {"ok": True, "path": path, "download_url": f"/download?path={path}"}
+    return _build_download_payload(path)
 
 
 @app.post("/items/{item_id}/generate-docx")
-def item_generate_docx(item_id: int, session: Session = Depends(get_session)):
+def item_generate_docx(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+    if background:
+        return _enqueue_export_job(session, item_id=item_id, export_format="docx")
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
     path = generate_docx(item)
-    return {"ok": True, "path": path, "download_url": f"/download?path={path}"}
+    return _build_download_payload(path)
 
 
 @app.get("/download")
-def download_generated(path: str):
-    if not os.path.isfile(path):
-        raise HTTPException(404, "File not found")
-    filename = os.path.basename(path)
-    return FileResponse(path, filename=filename)
+def download_generated(path: str = Query(..., min_length=1)):
+    resolved_path = _resolve_generated_doc_path(path)
+    return FileResponse(str(resolved_path), filename=resolved_path.name)

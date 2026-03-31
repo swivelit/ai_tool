@@ -15,7 +15,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 
 import { GlassCard } from "@/components/Glass";
@@ -297,20 +297,23 @@ export default function ItemDetail() {
       }
 
       const res = await apiPost<any>(`/items/${itemId}/generate-${kind}`);
-      const category = item.category || res?.category || "Other";
-      const filename =
-        kind === "ppt" ? `item_${itemId}.pptx` : `item_${itemId}.docx`;
+      const relativeDownloadUrl = String(res?.download_url || "").trim();
+      const url = relativeDownloadUrl.startsWith("http")
+        ? relativeDownloadUrl
+        : `${API_BASE}${relativeDownloadUrl.startsWith("/") ? "" : "/"}${relativeDownloadUrl}`;
 
-      const url =
-        kind === "ppt"
-          ? `${API_BASE}/files/ppt/${category}/${filename}`
-          : `${API_BASE}/files/docx/${category}/${filename}`;
+      if (!relativeDownloadUrl) {
+        throw new Error("The server did not return a download URL.");
+      }
 
       const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
       if (!baseDir) {
         throw new Error("No writable directory available on this device.");
       }
 
+      const filename =
+        url.split("?")[0]?.split("/").pop() ||
+        `item_${itemId}.${kind === "ppt" ? "pptx" : "docx"}`;
       const localPath = `${baseDir}${filename}`;
       const downloaded = await FileSystem.downloadAsync(url, localPath);
 
