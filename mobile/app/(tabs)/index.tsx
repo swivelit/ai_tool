@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { runLocalAssistantTurn, saveScheduledTask } from "@/lib/localAgents";
+import { saveScheduledTask } from "@/lib/localAgents";
 import {
   ActivityIndicator,
   Alert,
@@ -37,6 +37,56 @@ import { scheduleReminder } from "@/lib/reminders";
 import { Item } from "@/lib/types";
 
 type AnalyzeResponse = Item;
+
+type BackendChatResponse = {
+  ok?: boolean;
+  item?: Item | null;
+  assistant?: {
+    text?: string;
+    english?: string;
+    tamil?: string;
+    theni_tamil?: string;
+  } | null;
+};
+
+function normalizeChatResponse(payload: BackendChatResponse, fallbackRawText: string): Item {
+  const item = payload?.item;
+  if (item && typeof item === "object") {
+    return {
+      id: Number(item.id || Date.now()),
+      intent: String(item.intent || "assistant"),
+      category: String(item.category || "Other"),
+      raw_text: String(item.raw_text || fallbackRawText || ""),
+      transcript: item.transcript ?? null,
+      datetime: item.datetime ?? null,
+      title: item.title ?? null,
+      details:
+        item.details ||
+        payload?.assistant?.text ||
+        payload?.assistant?.theni_tamil ||
+        payload?.assistant?.tamil ||
+        payload?.assistant?.english ||
+        item.raw_text ||
+        fallbackRawText,
+    };
+  }
+
+  return {
+    id: Date.now(),
+    intent: "assistant",
+    category: "Other",
+    raw_text: fallbackRawText,
+    transcript: null,
+    datetime: null,
+    title: "Assistant",
+    details:
+      payload?.assistant?.text ||
+      payload?.assistant?.theni_tamil ||
+      payload?.assistant?.tamil ||
+      payload?.assistant?.english ||
+      fallbackRawText,
+  };
+}
 
 type PendingReminder = {
   title: string;
@@ -351,52 +401,30 @@ export default function Home() {
       const cleaned = stripAssistantTrigger(text);
       setLastPrompt(cleaned);
 
-      const res = await runLocalAssistantTurn({
-        userId: profile.userId,
+      const response = await apiPost<BackendChatResponse>("/api/chat", {
+        user_id: profile?.userId ?? undefined,
         message: cleaned,
-        replyLanguage: settings.languageMode === "en" ? "en" : "ta",
-        userProfile: {
-          name: profile?.name || "User",
-          place: profile?.place || "",
-          assistantName: profile?.assistantName || name || "Elli",
-        },
+        reply_language: settings.languageMode,
       });
 
+      const nextItem = normalizeChatResponse(response, cleaned);
+
+      setLastPrompt(cleaned);
+      setResult(nextItem);
       setText("");
+      await loadHistory();
+      await Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Success
+      );
 
-      if (res.intent === "reminder") {
-        setResult({
-          id: Date.now(),
-          intent: "reminder",
-          category: "Other",
-          raw_text: cleaned,
-          title: res.title || "Reminder",
-          details: res.assistantText,
-          transcript: null,
-          datetime: res.datetimeText || null,
-        });
-
+      if (nextItem.intent === "reminder" && nextItem.datetime) {
         setPendingReminder({
-          title: res.title || "Reminder",
-          details: res.details || cleaned,
-          datetimeText: res.datetimeText || "",
+          title: nextItem.title || "Reminder",
+          details: nextItem.details || nextItem.raw_text,
+          datetimeText: nextItem.datetime,
         });
-
         setConfirmOpen(true);
-      } else {
-        setResult({
-          id: Date.now(),
-          intent: "assistant",
-          category: "Other",
-          raw_text: cleaned,
-          title: formatIntentLabel(res.route),
-          details: res.assistantText,
-          transcript: null,
-          datetime: null,
-        });
       }
-
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error: any) {
       Alert.alert("Error", error?.message || "Failed to process your request.");
     } finally {

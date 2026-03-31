@@ -31,7 +31,7 @@ function BootScreen() {
 }
 
 function RouteGate() {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   const { user } = useAuth();
   const { profile } = useAssistant();
   const [gateLoading, setGateLoading] = useState(false);
@@ -43,7 +43,7 @@ function RouteGate() {
       const first = segments[0];
       const second = segments[1];
 
-      const atRoot = segments.length === 0;
+      const atRoot = !first;
       const inTabs = first === "(tabs)";
       const inAuth = first === "auth";
       const inOnboarding = first === "onboarding";

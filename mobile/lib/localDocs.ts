@@ -1,6 +1,6 @@
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import { Item } from "./types";
 
 /**
@@ -40,7 +40,6 @@ export async function createCsvFromItem(item: Item) {
     ["Details", item.details || item.raw_text || ""],
   ];
 
-  // CSV with proper quoting
   const csv = rows
     .map(([k, v]) => `${csvCell(k)},${csvCell(v)}`)
     .join("\n");
@@ -48,7 +47,6 @@ export async function createCsvFromItem(item: Item) {
   const filename = `item_${item.id}.csv`;
   const path = FileSystem.documentDirectory + filename;
 
-  // UTF-8 (optionally prepend BOM for Excel; helps on some devices/locales)
   const withBom = "\ufeff" + csv;
   await FileSystem.writeAsStringAsync(path, withBom, {
     encoding: FileSystem.EncodingType.UTF8,
@@ -66,7 +64,6 @@ export async function createCsvFromItem(item: Item) {
 
 function csvCell(value: string) {
   const s = String(value ?? "");
-  // Escape quotes, wrap in quotes if needed
   const needsQuotes = /[",\n\r]/.test(s);
   const escaped = s.replace(/"/g, '""');
   return needsQuotes ? `"${escaped}"` : escaped;
