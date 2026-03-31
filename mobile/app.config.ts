@@ -27,10 +27,18 @@ export default {
       // phone-local runtime
       LOCAL_MODEL_BASE_URL:
         process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL || "http://127.0.0.1:10000/v1",
-      LOCAL_MODEL_API_KEY: process.env.EXPO_PUBLIC_LOCAL_MODEL_API_KEY || "local-phone",
-      LOCAL_MODEL_TIMEOUT_MS: Number(process.env.EXPO_PUBLIC_LOCAL_MODEL_TIMEOUT_MS || 45000),
+      LOCAL_MODEL_API_KEY:
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_API_KEY || "local-phone",
+      LOCAL_MODEL_TIMEOUT_MS: Number(
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_TIMEOUT_MS || 45000
+      ),
 
-      // requested models
+      // local speech-to-text model
+      // set this to the exact model name exposed by your local runtime
+      LOCAL_STT_MODEL:
+        process.env.EXPO_PUBLIC_LOCAL_STT_MODEL || "whisper",
+
+      // requested local LLM / embedding models
       LOCAL_MODEL_GEMMA_4B:
         process.env.EXPO_PUBLIC_LOCAL_MODEL_GEMMA_4B || "google/gemma-3-4b-it",
       LOCAL_MODEL_QWEN_8B:
@@ -38,15 +46,18 @@ export default {
       LOCAL_MODEL_QWEN_14B:
         process.env.EXPO_PUBLIC_LOCAL_MODEL_QWEN_14B || "Qwen/Qwen3-14B",
       LOCAL_MODEL_QWEN_EMBED:
-        process.env.EXPO_PUBLIC_LOCAL_MODEL_QWEN_EMBED || "Qwen/Qwen3-Embedding-0.6B",
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_QWEN_EMBED ||
+        "Qwen/Qwen3-Embedding-0.6B",
 
       firebaseApiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
       firebaseAuthDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
       firebaseProjectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
       firebaseStorageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
-      firebaseMessagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+      firebaseMessagingSenderId:
+        process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
       firebaseAppId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
-      googleAndroidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+      googleAndroidClientId:
+        process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
       googleIosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
       googleWebClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
       router: {},
