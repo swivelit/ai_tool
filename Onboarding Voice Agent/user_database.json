@@ -1,0 +1,32 @@
+[
+    {
+        "name": "tamil",
+        "age": "25-34",
+        "career_change": "Yes",
+        "new_field": "Tech/IT",
+        "tech_level": "கொஞ்சம் டிபிகல்ட் தான் இருந்தாலும் கத்துக்கணும்",
+        "biggest_struggle": "ஸ்ட"
+    },
+    {
+        "name": "anto",
+        "age_group": "35-50",
+        "emotion": "stressed",
+        "gender": "male",
+        "communication_style": "friendly",
+        "learning_style": "watching videos",
+        "video_preference": "long detailed tutorials",
+        "goal": "learn something new",
+        "interest": "tech",
+        "specific_skill": "cloud computing",
+        "learning_challenge": "a bit difficult"
+    },
+    {
+        "name": "Yokesh",
+        "age_group": "25-34",
+        "emotion": "Friendly",
+        "learning_style": "Watching videos",
+        "video_preference": "Short (5-10 min)",
+        "goal": "Learn new skills",
+        "interest": "Tech"
+    }
+]

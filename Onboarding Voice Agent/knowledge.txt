@@ -1,0 +1,402 @@
+# Advanced Voice Agent Onboarding (Tanglish + Emotion Based)
+
+START:
+Hey! Welcome 👋 Unga peru enna?
+
+---
+
+AGE:
+Nice to meet you {{name}} 😊
+Unga age group enna?
+
+Options:
+- Under 18
+- 18-24
+- 25-34
+- 35-50
+- 50+
+
+---
+
+EMOTION CHECK:
+Ippo unga life epdi iruku? 😊
+
+Options:
+- Happy 😄
+- Neutral 😐
+- Stressed 😓
+- Confused 🤔
+- Excited 🔥
+
+---
+
+EMOTION RESPONSE:
+
+Happy:
+Super 😄 unga energy ah use pannitu fast ah progress pannalaam!
+
+Stressed:
+Parava illa 😌 calm ah step by step ponom na easy ah irukum
+
+Confused:
+No problem 👍 naan clear ah guide panren
+
+Excited:
+Semma 🔥 unga excitement use pannitu fast ah grow pannalaam
+
+---
+
+GENDER:
+Neenga male ah illa female ah?
+
+Options:
+- Male
+- Female
+- Prefer not to say
+
+---
+
+COMMUNICATION STYLE:
+Ungalukku comfortable ah irukanum na naan epdi pesanum?
+
+Options:
+- Friendly 😄
+- Professional 💼
+- Motivational 💪
+
+---
+
+LEARNING STYLE:
+Neenga eppadi learn panna prefer panreenga?
+
+Options:
+- Watching videos 🎥
+- Reading 📖
+- Practical doing 🛠️
+- Listening 🎧
+
+---
+
+GOAL:
+Neenga inga mainly enna pannalaam nu nenachitu vandhirukeenga?
+
+Options:
+- Learn new skills
+- Get a job
+- Grow my business
+- Just exploring
+
+---
+
+GOAL FOLLOW-UP:
+
+Learn Skills:
+Endha type skill learn panna interest?
+- Tech
+- Creative
+- Communication
+- Business
+
+Get Job:
+Endha field la job venum?
+- IT
+- Marketing
+- Design
+- Any job
+
+Business:
+Unga business type enna?
+- Online
+- Offline
+- Service
+- Planning stage
+
+---
+
+LEARNING STYLE FOLLOW-UP:
+
+IF Watching videos:
+Short videos prefer panreengala illa long detailed tutorials?
+- Short (5-10 min) 🎬
+- Long detailed (30+ min) 📺
+- Both works 👍
+
+IF Reading:
+Eppadi read panna pidikum?
+- Blog articles 📝
+- E-books 📚
+- Step-by-step guides 📋
+
+IF Practical doing:
+Projects try panna eppadi plan panreenga?
+- Small mini projects 🔨
+- Big real-world projects 🏗️
+- Hackathons & challenges 🏆
+
+IF Listening:
+Podcasts ah illa audio courses ah?
+- Podcasts 🎙️
+- Audio courses 🎧
+- Both 🔊
+
+---
+
+MOTIVATION:
+Neenga start pannina work ah complete panna epdi irukeenga?
+
+Options:
+- Always finish 💯
+- Sometimes stop 😅
+- Easily distracted 📱
+
+---
+
+MOTIVATION FOLLOW-UP:
+
+IF Always finish:
+Super 💯 Unga discipline maintain panna enna method use panreenga?
+- To-do lists ✅
+- Deadlines ⏰
+- Self-discipline 🧠
+- Reward system 🎁
+
+IF Sometimes stop:
+Edhunala stop aagum usually?
+- Bore adikum 😴
+- Too difficult 😓
+- Lost interest 🤷
+- Other priorities pop up 📌
+
+IF Easily distracted:
+Biggest distraction enna?
+- Social media 📱
+- Games 🎮
+- YouTube 📺
+- Friends & chat 💬
+
+---
+
+TECH LEVEL:
+Technology use panna comfort level epdi?
+
+Options:
+- Very comfortable 💻
+- Basic 👍
+- Difficult 😅
+
+---
+
+TECH LEVEL FOLLOW-UP:
+
+IF Very comfortable:
+Nice! Coding or technical tools use pannirukkeengala?
+- Yes, regularly 👨‍💻
+- Little bit tried 🔧
+- No, but interested 🤔
+
+IF Basic:
+Learn pannanum na epdi start panreenge usually?
+- YouTube tutorials 🎥
+- Ask friends 👥
+- Google search 🔍
+- Trial and error 🎯
+
+IF Difficult:
+Technology la biggest struggle enna?
+- Apps use panna hard 📱
+- English content puriyathu 🌐
+- Too many options confuse 😵
+- Speed ah kathukka mudiyala ⏳
+
+---
+
+AGE BASED:
+
+Under 18:
+Future la enna aaganum nu yosichirukeengala?
+- Yes
+- Little idea
+- Not sure
+
+IF Under 18 AND Yes:
+Super! Enna field la interested?
+- Doctor/Engineer 🏥
+- Creative field 🎨
+- Business 💼
+- Sports 🏅
+- Don't know yet 🤷
+
+18-24:
+Side income try panna interest iruka?
+- Yes
+- Maybe
+- No
+
+IF 18-24 AND Yes:
+Endha type side income try pannirukeenga?
+- Freelancing 💻
+- Content creation 📸
+- Part-time job 🏪
+- Investing 📈
+- Not started yet 🚀
+
+25-50:
+Career change panna yosichirukeengala?
+- Yes
+- No
+- Maybe
+
+IF 25-50 AND Yes:
+Endha new field ku switch panna plan?
+- Tech/IT 💻
+- Business 📊
+- Creative 🎨
+- Teaching 📚
+- Still deciding 🤔
+
+50+:
+New technology kathuka interest iruka?
+- Yes
+- Konjam
+- No
+
+IF 50+ AND Yes:
+Endha type technology kathuka interest?
+- Smartphone apps 📱
+- Social media 📲
+- Online shopping/banking 💳
+- Video calling 📹
+
+---
+
+SUPPORT:
+Ungalukku support panna yaaravathu iruka?
+
+Options:
+- Friends 👥
+- Family 👨‍👩‍👧
+- No support
+
+---
+
+SUPPORT FOLLOW-UP:
+
+IF Friends:
+Unga friends kooda together learn panreenga illa solo?
+- Together 🤝
+- Solo mostly 🧑
+- Depends on topic 🤷
+
+IF Family:
+Family members la yaaru most support panranga?
+- Parents 👨‍👩‍👦
+- Siblings 👫
+- Spouse/Partner 💑
+- Everyone supports 🏠
+
+IF No support:
+Parava illa! Online community join panna interest iruka?
+- Yes definitely 🌐
+- Maybe 🤔
+- Prefer solo 🧑
+
+---
+
+MOBILE USAGE:
+Daily mobile use evlo neram?
+
+Options:
+- <2 hours
+- 2-5 hours
+- 5+ hours
+
+---
+
+MOBILE USAGE FOLLOW-UP:
+
+IF 5+ hours:
+Mostly enna ku use panreenga?
+- Social media scrolling 📱
+- Learning/reading 📖
+- Entertainment 🎬
+- Work related 💼
+
+IF <2 hours:
+Mobile kammi ah use panreenga because?
+- Busy schedule ⏰
+- Prefer laptop 💻
+- Eye strain 👁️
+- Personal choice 🤷
+
+---
+
+ROUTINE:
+Daily routine follow panreengala?
+
+Options:
+- Yes ⏰
+- No 😅
+
+---
+
+ROUTINE FOLLOW-UP:
+
+IF Yes:
+Morning person ah illa night owl ah?
+- Morning person 🌅
+- Night owl 🦉
+- Flexible ⏳
+
+IF No:
+Routine start panna biggest block enna?
+- Lazy feel 😴
+- Unpredictable schedule 📅
+- Don't know where to start 🤷
+- Tried but failed 😓
+
+---
+
+FINAL MOTIVATION:
+Neenga success aaganum nu biggest reason enna?
+
+Options:
+- Family ❤️
+- Money 💰
+- Passion 🔥
+- Freedom 🕊️
+
+---
+
+FINAL MOTIVATION FOLLOW-UP:
+
+IF Family:
+Family ku proud feel pannanum nu feel panreengala?
+- Yes, definitely ❤️
+- They already support me 🥰
+
+IF Money:
+Financial freedom eppadi define panreenga?
+- Debt free 💳
+- Passive income 📈
+- Luxury lifestyle ✨
+- Basic comfort is enough 🏠
+
+IF Passion:
+Passion follow panna yaravathu discourage panningala?
+- Yes, many times 😞
+- No, everyone supports 💪
+- I don't care about others 🔥
+
+IF Freedom:
+Freedom na ungalukku enna meaning?
+- Work from anywhere 🌍
+- Own boss 👑
+- Time freedom ⏰
+- All of the above 🕊️
+
+---
+
+END MESSAGE:
+{{name}}, unga situation purinjiruku 👍
+Naan unga level ku match ah step-by-step guide panren.
+Stress panna thevai illa — steady ah pona success confirm 💯

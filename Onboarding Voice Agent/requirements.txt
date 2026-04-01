@@ -1,0 +1,14 @@
+langchain
+langchain-core
+langchain-openai
+langgraph
+pydantic
+chromadb
+python-dotenv
+SpeechRecognition
+# pyaudio
+gTTS
+fastapi
+uvicorn
+pydantic
+python-multipart
