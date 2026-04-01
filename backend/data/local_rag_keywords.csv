@@ -1,0 +1,9 @@
+intent,scope,keywords
+schedule,base,schedule|reminder|reminders|task|tasks|todo|plan|plans|upcoming|நினைவூட்டல்|நினைவூட்டல்கள்|அட்டவணை|டாஸ்க்|வேலை
+schedule,today,today|இன்று
+schedule,tomorrow,tomorrow|நாளை
+routine,wake,wake|wake up|get up|wakeup|morning time|எழு|எழுந்திரு|எழுவேன்
+routine,sleep,sleep|sleep time|bedtime|go to bed|தூங்கு|தூக்கம்|தூங்க
+routine,work,work|office|job|work time|working hours|office time|வேலை|ஆபீஸ்
+routine,habits,habit|habits|daily habits|routine habits|பழக்கம்|பழக்கங்கள்
+routine,summary,routine|daily routine|day routine|routine summary|நாள் திட்டம்|தினசரி திட்டம்
