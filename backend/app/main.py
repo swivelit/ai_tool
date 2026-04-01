@@ -57,6 +57,8 @@ from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
+from . import semantic_cache
+from . import continuous_learning
 
 logger = logging.getLogger(__name__)
 
@@ -668,6 +670,10 @@ def ensure_runtime_schema() -> None:
         _register_job_handlers()
         if os.getenv("JOB_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
             _get_job_queue().start()
+        
+        # Start Continuous Learning Background Worker
+        continuous_learning.start_background_learning()
+        logger.info("Continuous Learning Agent started.")
     except Exception as exc:
         logger.warning("Runtime schema sync skipped: %s", exc)
 
@@ -1950,7 +1956,45 @@ def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
 def _run_chat_payload(payload: ChatAPIRequest) -> Dict[str, Any]:
     with SessionLocal() as session:
         text = _resolve_chat_text(payload)
-        pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+        
+        # 1. Update activity for Continuous Learning and Queue Input
+        continuous_learning.last_activity_time = time.time()
+        continuous_learning.memory_queue.put(text)
+        
+        # 2. Semantic Cache Lookup
+        query_emb = semantic_cache.get_embedding(text)
+        score, cached_ans = semantic_cache.search_cache(query_emb)
+        
+        if score >= semantic_cache.THRESHOLD:
+            logger.info(f"Semantic Cache HIT (score: {score:.4f})")
+            # Create a mock pipeline result for the cached answer
+            pipeline_result = _build_pipeline_result(
+                raw_english=cached_ans,
+                remodeled_english=cached_ans,
+                route_taken="semantic_cache_hit",
+                direct_answer_source="semantic_cache",
+                direct_answer_confidence=f"{score:.4f}",
+                cache_hit="true",
+                stage_notes=["Answer pulled from Semantic Memory Agent."]
+            )
+        else:
+            # 3. Cache MISS -> Run full pipeline
+            logger.info(f"Semantic Cache MISS (score: {score:.4f})")
+            
+            # Fetch long-term memory to personalize the prompt if needed
+            # (In a real scenario, we might pass this memory into the agentic service)
+            user_memory = continuous_learning.retrieve_memory(text)
+            if user_memory:
+                logger.info("Retrieved relevant user memory for context.")
+            
+            pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+            
+            # 4. Store newly generated answer in Semantic Cache
+            # We use the raw_english or remodeled_english as the answer to cache
+            final_ans = pipeline_result.get("remodeled_english") or pipeline_result.get("raw_english")
+            if final_ans:
+                semantic_cache.store_cache(text, final_ans, query_emb)
+        
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=payload.user_id,
