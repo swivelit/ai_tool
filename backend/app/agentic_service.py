@@ -176,38 +176,32 @@ class AgenticService:
     # llm helpers
     # -----------------------------
     def _extract_response_text(self, response: Any) -> str:
-        output_text = getattr(response, "output_text", None)
-        if output_text:
-            return str(output_text).strip()
-
-        chunks: List[str] = []
-        for item in getattr(response, "output", None) or []:
-            for part in getattr(item, "content", None) or []:
-                text = getattr(part, "text", None)
-                if text:
-                    chunks.append(str(text))
-                elif isinstance(part, dict) and part.get("text"):
-                    chunks.append(str(part["text"]))
-        return "\n".join(x.strip() for x in chunks if str(x).strip()).strip()
+        """Standard OpenAI Response parsing"""
+        try:
+            if hasattr(response, "choices") and response.choices:
+                return str(response.choices[0].message.content or "").strip()
+            return ""
+        except Exception:
+            return ""
 
     def _llm_json(self, system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
-        response = self.client.responses.create(
+        response = self.client.chat.completions.create(
             model=self.model,
-            input=[
-                {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
-                {"role": "user", "content": [{"type": "input_text", "text": user_content.strip()}]},
+            messages=[
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_content.strip()},
             ],
             temperature=temperature,
-            text={"format": {"type": "json_object"}},
+            response_format={"type": "json_object"},
         )
         return json.loads(self._extract_response_text(response))
 
     def _llm_text(self, system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
-        response = self.client.responses.create(
+        response = self.client.chat.completions.create(
             model=self.model,
-            input=[
-                {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
-                {"role": "user", "content": [{"type": "input_text", "text": user_content.strip()}]},
+            messages=[
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_content.strip()},
             ],
             temperature=temperature,
         )
