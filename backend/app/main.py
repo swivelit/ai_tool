@@ -79,6 +79,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(onboarding_router, prefix="/api/onboarding", tags=["onboarding"])
+
 STAGE_BEHAVIOUR = BehaviourQuestionnaire()
 LOCAL_RAG_SERVICE = LocalRAGService()
 STAGE_CORE: Optional[OpenAICore] = None

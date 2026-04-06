@@ -1,0 +1,93 @@
+# Company Knowledge Base - Voice Agent AI Platform
+
+## About Us
+Voice Agent AI is a next-generation AI-powered onboarding platform. We help businesses create seamless, conversational onboarding experiences using natural language processing and voice technology. Our platform speaks Tanglish (Tamil + English) natively for South Indian users.
+
+## Pricing Plans
+
+### Free Plan
+- 10 onboarding conversations per month
+- Basic analytics dashboard
+- Email support
+- Single user account
+- Price: ₹0 / Free forever
+
+### Pro Plan
+- Unlimited onboarding conversations
+- Advanced analytics and user insights
+- Priority email + chat support
+- Up to 5 team membersCan
+- Custom question flows
+- Price: ₹499 per month
+
+### Enterprise Plan
+- Everything in Pro
+- Custom AI voice cloning
+- Dedicated account manager
+- API access for integration
+- White-label branding
+- SSO and advanced security
+- Price: Custom pricing, contact sales
+
+## Features
+- Voice-first onboarding in Tamil, English, and Tanglish
+- AI-powered conditional question routing
+- Emotion detection and tone adaptation
+- Real-time speech-to-text transcription
+- ChromaDB vector storage for user profiles
+- Dynamic follow-up questions based on user answers
+- Progress tracking with visual indicators
+- Works on Mobile, Laptop, and Tablet
+
+## Supported Languages
+- Tamil (தமிழ்)
+- English
+- Tanglish (Tamil + English mix)
+- More languages coming soon: Hindi, Telugu, Kannada, Malayalam
+
+## Technical Requirements
+- Modern web browser (Chrome, Edge, Safari recommended)
+- Stable internet connection
+- Microphone access for voice input (optional - you can also type)
+- No app installation required - works directly in browser
+
+## Data Privacy & Security
+- All conversations are encrypted end-to-end using AES-256
+- User data is stored securely and never shared with third parties
+- We do NOT use your personal onboarding data to train our AI models
+- GDPR compliant
+- Data can be deleted upon user request
+- SOC 2 Type II certified
+
+## Support & Contact
+- Email: support@voiceagent.ai
+- Phone: 1800-VOICE-AI (toll-free)
+- Live Chat: Available 24/7 on our website
+- Office Hours: Monday to Saturday, 9 AM to 6 PM IST
+- Address: Chennai, Tamil Nadu, India
+
+## Frequently Asked Questions
+
+Q:  I use this on my phone?
+A: Yes! Our platform is fully responsive and works on any mobile browser. No app download needed.
+
+Q: How accurate is the voice recognition?
+A: Our speech-to-text system is optimized for Tamil and Tanglish with over 95% accuracy for clear audio.
+
+Q: Can I customize the questions?
+A: Yes! With the Pro plan and above, you can create custom question flows using our simple script format.
+
+Q: How long does onboarding take?
+A: A typical onboarding session takes 3-5 minutes with 12-15 questions.
+
+Q: Is there a mobile app?
+A: Currently we offer a web-based solution. A native mobile app for Android and iOS is planned for Q3 2026.
+
+Q: Can I integrate this with my existing app?
+A: Yes! Enterprise plan customers get full API access for seamless integration with any platform.
+
+Q: What happens to my data after onboarding?
+A: Your profile data is securely stored and used only to personalize your experience. You can request data deletion anytime.
+
+Q: Do you offer refunds?
+A: Yes, we offer a 30-day money-back guarantee on all paid plans. No questions asked.
