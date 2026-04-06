@@ -902,41 +902,35 @@ class AgentMemorySyncRequest(BaseModel):
     force: bool = False
 
 def _extract_response_text(response: Any) -> str:
-    output_text = getattr(response, "output_text", None)
-    if output_text:
-        return str(output_text).strip()
-
-    chunks: List[str] = []
-    for item in getattr(response, "output", None) or []:
-        for part in getattr(item, "content", None) or []:
-            text = getattr(part, "text", None)
-            if text:
-                chunks.append(str(text))
-            elif isinstance(part, dict) and part.get("text"):
-                chunks.append(str(part["text"]))
-    return "\n".join(part.strip() for part in chunks if str(part).strip()).strip()
+    """Standard OpenAI Response parsing"""
+    try:
+        if hasattr(response, "choices") and response.choices:
+            return str(response.choices[0].message.content or "").strip()
+        return ""
+    except Exception:
+        return ""
 
 
 def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
-    response = _get_openai_client().responses.create(
+    response = _get_openai_client().chat.completions.create(
         model=OPENAI_JSON_MODEL,
-        input=[
-            {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user_content.strip()}]},
+        messages=[
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_content.strip()},
         ],
         temperature=temperature,
-        text={"format": {"type": "json_object"}},
+        response_format={"type": "json_object"},
     )
     raw = _extract_response_text(response)
     return json.loads(raw)
 
 
 def llm_text(system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
-    response = _get_openai_client().responses.create(
+    response = _get_openai_client().chat.completions.create(
         model=OPENAI_JSON_MODEL,
-        input=[
-            {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user_content.strip()}]},
+        messages=[
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_content.strip()},
         ],
         temperature=temperature,
     )
