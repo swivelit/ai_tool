@@ -386,140 +386,22 @@ def _build_schedule_answer(session: Session, user_id: int, normalized_query: str
 
 
 def _try_local_fast_path(session: Session, user_id: Optional[int], message: str) -> Optional[Dict[str, Any]]:
-    normalized = _normalize_lookup_text(message)
-    if not normalized:
-        return None
+    """
+    Refactored: Delegates to the centralized LocalRAGService with safety checks.
+    Ensures 90% confidence and source validity (Friend's Suggestion).
+    """
+    # 🏃 Call the centralized, smart service
+    fast_path = LOCAL_RAG_SERVICE.try_answer(session, user_id, message)
+    
+    if fast_path is not None:
+        confidence = float(fast_path.get("direct_answer_confidence", 0.0))
+        source = str(fast_path.get("direct_answer_source", "")).strip()
 
-    user = session.get(User, user_id) if user_id else None
-    display_name = (user.name if user and user.name else "there").strip() or "there"
-    assistant_name = (user.assistant_name if user and user.assistant_name else "Elli").strip() or "Elli"
-
-    greeting_phrases = {"hi", "hey", "hello", "hai", "vanakkam", "வணக்கம்", "ஹலோ"}
-    if normalized in greeting_phrases or normalized.startswith("good morning") or normalized.startswith("good evening") or normalized.startswith("good afternoon"):
-        if normalized.startswith("good morning"):
-            english = f"Good morning {display_name}, how are you doing?"
-            tamil = f"காலை வணக்கம் {display_name}, எப்படி இருக்கீங்க?"
-        elif normalized.startswith("good evening"):
-            english = f"Good evening {display_name}, how are you doing?"
-            tamil = f"மாலை வணக்கம் {display_name}, எப்படி இருக்கீங்க?"
-        elif normalized.startswith("good afternoon"):
-            english = f"Good afternoon {display_name}, how are you doing?"
-            tamil = f"மதிய வணக்கம் {display_name}, எப்படி இருக்கீங்க?"
-        else:
-            english = f"Hi {display_name}, how are you doing?"
-            tamil = f"ஹாய் {display_name}, எப்படி இருக்கீங்க?"
-
-        return _build_pipeline_result(
-            raw_english=english,
-            remodeled_english=english,
-            tamil_text=tamil,
-            theni_tamil_text=tamil,
-            route_taken="local_greeting",
-            direct_answer_source="instant_greeting_rule",
-            direct_answer_confidence="1.0000",
-            predicted_label="greeting",
-            stage_notes=["Answered with an instant local greeting without calling OpenAI."],
-            timings_ms={"total_ms": 0.0},
-        )
-
-    if normalized in {"how are you", "how r you", "epdi iruka", "எப்படி இருக்கீங்க"}:
-        english = f"I am doing well, {display_name}. How can I help you today?"
-        tamil = f"நான் நல்லா இருக்கேன் {display_name}. இன்று என்ன உதவி வேண்டும்?"
-        return _build_pipeline_result(
-            raw_english=english,
-            remodeled_english=english,
-            tamil_text=tamil,
-            theni_tamil_text=tamil,
-            route_taken="local_smalltalk",
-            direct_answer_source="instant_smalltalk_rule",
-            direct_answer_confidence="1.0000",
-            predicted_label="smalltalk",
-            stage_notes=["Answered a small-talk query locally without calling OpenAI."],
-            timings_ms={"total_ms": 0.0},
-        )
-
-    if normalized in {"thanks", "thank you", "nandri", "நன்றி"}:
-        english = f"You're welcome, {display_name}."
-        tamil = f"பரவாயில்லை {display_name}, உதவியது சந்தோஷம்."
-        return _build_pipeline_result(
-            raw_english=english,
-            remodeled_english=english,
-            tamil_text=tamil,
-            theni_tamil_text=tamil,
-            route_taken="local_smalltalk",
-            direct_answer_source="instant_thanks_rule",
-            direct_answer_confidence="1.0000",
-            predicted_label="smalltalk",
-            stage_notes=["Answered a thank-you query locally without calling OpenAI."],
-            timings_ms={"total_ms": 0.0},
-        )
-
-    if normalized in {"what is my name", "whats my name", "who am i", "my name"}:
-        english = f"Your name is {display_name}."
-        tamil = f"உங்கள் பெயர் {display_name}."
-        return _build_pipeline_result(
-            raw_english=english,
-            remodeled_english=english,
-            tamil_text=tamil,
-            theni_tamil_text=tamil,
-            route_taken="local_profile_rag",
-            direct_answer_source="local_profile_memory",
-            direct_answer_confidence="1.0000",
-            predicted_label="profile",
-            stage_notes=["Answered from the saved user profile without calling OpenAI."],
-            timings_ms={"total_ms": 0.0},
-        )
-
-    if normalized in {"who are you", "what is your name", "whats your name", "your name", "what can you do", "help"}:
-        english = f"I'm {assistant_name}, your assistant. I can help with reminders, schedules, and quick answers."
-        tamil = f"நான் {assistant_name}. நினைவூட்டல்கள், அட்டவணை, மற்றும் விரைவு பதில்களில் நான் உதவ முடியும்."
-        return _build_pipeline_result(
-            raw_english=english,
-            remodeled_english=english,
-            tamil_text=tamil,
-            theni_tamil_text=tamil,
-            route_taken="local_assistant_identity",
-            direct_answer_source="local_assistant_profile",
-            direct_answer_confidence="1.0000",
-            predicted_label="assistant_identity",
-            stage_notes=["Answered from app configuration without calling OpenAI."],
-            timings_ms={"total_ms": 0.0},
-        )
-
-    if user_id:
-        schedule_result = _build_schedule_answer(session, user_id, normalized, user)
-        if schedule_result is not None:
-            return schedule_result
-
-        cache_rows = list(
-            session.exec(
-                select(QACache).where(QACache.user_id == user_id).order_by(QACache.updated_at.desc())
-            ).all()
-        )[:40]
-
-        best_payload: Optional[Dict[str, Any]] = None
-        best_score = 0.0
-        for row in cache_rows:
-            score = _token_overlap_score(normalized, row.question)
-            if _normalize_lookup_text(row.question) == normalized:
-                score = 1.0
-            if score > best_score:
-                try:
-                    payload = json.loads(row.answer or "{}")
-                except Exception:
-                    payload = {}
-                best_payload = _coerce_cached_pipeline(payload)
-                best_score = score
-
-        if best_payload and best_score >= 0.96:
-            best_payload["route_taken"] = "cached_answer"
-            best_payload["direct_answer_source"] = "qa_cache"
-            best_payload["direct_answer_confidence"] = f"{best_score:.4f}"
-            best_payload["cache_hit"] = "true"
-            best_payload["stage_notes"] = json.dumps(
-                ["Reused a cached answer and skipped a new OpenAI call."], ensure_ascii=False
-            )
-            return best_payload
+        # 🛡️ Apply the 90% Safety Filter (The 'Proper Check')
+        if confidence >= 0.90 and source not in ["", "unknown"]:
+            return fast_path
+    
+    return None
 
     return None
 
@@ -1276,21 +1158,22 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         cached["cache_hit"] = "true"
         return cached
 
-    # 🧠 SMARTER FAST-PATH (Fixing the "Dead End" bug)
+    # 🧠 SMARTER FAST-PATH (Fixing the "Dead End" bug with Friend's Suggestion)
     fast_path = LOCAL_RAG_SERVICE.try_answer(session, user_id, message)
     
-    # Only return fast_path if it's HIGH CONFIDENCE (score >= 0.90)
-    # This prevents "I don't know" or low-quality local answers from blocking OpenAI.
     if fast_path is not None:
         confidence = float(fast_path.get("direct_answer_confidence", 0.0))
-        if confidence >= 0.90:
+        source = str(fast_path.get("direct_answer_source", "")).strip()
+
+        # Only accept strong answers from valid sources (90% threshold)
+        if confidence >= 0.90 and source not in ["", "unknown"]:
             STAGE_CACHE[cache_key] = dict(fast_path)
             if len(STAGE_CACHE) > 128:
                 first_key = next(iter(STAGE_CACHE))
                 STAGE_CACHE.pop(first_key, None)
             return fast_path
         else:
-            print(f"[DEBUG] Fast-path skipped due to low confidence ({confidence:.2f}). Falling back to OpenAI.")
+            print(f"[DEBUG] Fast-path skipped (Confidence: {confidence:.2f}, Source: {source}). Falling back to OpenAI.")
 
     profile = _sync_stage_profile(session, user_id)
     total_start = time.perf_counter()

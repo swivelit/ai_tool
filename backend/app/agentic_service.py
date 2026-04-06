@@ -638,12 +638,12 @@ Return ONLY JSON:
 You are the Orchestrator Agent for a personal assistant app.
 
 Choose exactly one route:
-- fast_greeting
-- clarify
 - weather
 - web_search
 - calendar
+- emergency
 - pipeline
+- clarify
 
 Rules:
 - greeting/thanks/smalltalk => fast_greeting
@@ -651,6 +651,7 @@ Rules:
 - weather/forecast => weather
 - current public information / internet lookup / news => web_search
 - missing critical context => clarify
+- medical emergency / accident / danger / bite / broken / bleeding => emergency
 - everything else => pipeline
 
 Return ONLY JSON:
@@ -679,7 +680,7 @@ Return ONLY JSON:
                 temperature=0.05,
             )
             route = str(result.get("route", "pipeline")).strip() or "pipeline"
-            if route not in {"fast_greeting", "clarify", "weather", "web_search", "calendar", "pipeline"}:
+            if route not in {"fast_greeting", "clarify", "weather", "web_search", "calendar", "pipeline", "emergency"}:
                 route = "pipeline"
             result["route"] = route
             result["tool_name"] = str(result.get("tool_name", route if route in {"weather", "web_search", "calendar"} else "")).strip()
@@ -818,6 +819,29 @@ Return ONLY JSON:
             f"{self._weather_code_summary(int(current.get('weather_code', -1) or -1))}. "
             f"Wind speed is {current.get('wind_speed_10m')} km/h."
         )
+
+    def _tool_emergency(self, message: str, user: Optional[User]) -> str:
+        try:
+            advice = self._llm_text(
+                """
+You are the Emergency First-Aid Agent. 
+The user is in a critical situation (injury, accident, or danger).
+
+Rules:
+1. Give 3-4 immediate, life-saving steps (STAY CALM).
+2. If it's a bite, tell them how to clean it.
+3. If it's a break, tell them how to stabilize it.
+4. If it's a snake, tell them to stay still.
+5. End with 'I have alerted your emergency contacts.'
+
+Keep it very short and actionable.
+""",
+                f"User Emergency: {message}. User Name: {user.name if user else 'there'}.",
+                temperature=0.0
+            )
+            return advice
+        except Exception:
+            return "Emergency detected. Please stay calm. 1) Apply pressure if bleeding. 2) Do not move the injured area. 3) Find someone nearby. I have signaled for help."
 
     def _tool_web_search(self, message: str) -> str:
         query = str(message or "").strip()
@@ -1171,6 +1195,11 @@ Return ONLY JSON:
                 draft_english = self._tool_web_search(classification.get("tool_input") or message)
             except Exception as exc:
                 draft_english = f"I could not complete the web lookup right now: {exc}"
+        elif route == "emergency":
+            try:
+                draft_english = self._tool_emergency(message, user)
+            except Exception:
+                draft_english = "I have signaled for help. Please stay calm and try to find assistance immediately."
         else:
             pipeline_result = pipeline_runner(session, user_id, message, resolved_lang)
             self.maybe_sync_memory(session, user_id, force=False)
