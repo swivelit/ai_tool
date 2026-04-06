@@ -16,16 +16,13 @@ bootstrap_observability()
 logger = logging.getLogger(__name__)
 RAW_OPENAI = openai_module.OpenAI
 
-
 class CircuitBreakerOpen(RuntimeError):
     pass
-
 
 @dataclass
 class CircuitState:
     failures: int = 0
     opened_until: float = 0.0
-
 
 class CircuitBreaker:
     def __init__(self, *, threshold: int = 5, recovery_seconds: int = 30) -> None:
@@ -54,9 +51,7 @@ class CircuitBreaker:
             if self.state.failures >= self.threshold:
                 self.state.opened_until = time.time() + self.recovery_seconds
 
-
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
-
 
 def _exception_types(*names: str) -> Tuple[Type[BaseException], ...]:
     resolved = []
@@ -65,7 +60,6 @@ def _exception_types(*names: str) -> Tuple[Type[BaseException], ...]:
         if isinstance(exc_type, type) and issubclass(exc_type, BaseException):
             resolved.append(exc_type)
     return tuple(resolved)
-
 
 _RETRYABLE_EXCEPTIONS: Tuple[Type[BaseException], ...] = _exception_types(
     "APIConnectionError",
@@ -83,14 +77,12 @@ _NON_RETRYABLE_EXCEPTIONS: Tuple[Type[BaseException], ...] = _exception_types(
 )
 _STATUS_ERROR_EXCEPTIONS: Tuple[Type[BaseException], ...] = _exception_types("APIStatusError")
 
-
 def _status_code_from_exception(exc: BaseException) -> Optional[int]:
     status_code = getattr(exc, "status_code", None)
     try:
         return int(status_code) if status_code is not None else None
     except Exception:
         return None
-
 
 def _is_retryable_exception(exc: BaseException) -> bool:
     if isinstance(exc, CircuitBreakerOpen):
@@ -105,7 +97,6 @@ def _is_retryable_exception(exc: BaseException) -> bool:
     if status_code is not None:
         return status_code in _RETRYABLE_STATUS_CODES
     return True
-
 
 class ResilientEndpointProxy:
     def __init__(
@@ -140,31 +131,12 @@ class ResilientEndpointProxy:
                 self._breaker.before_call()
                 response = func(timeout=timeout, **kwargs)
                 self._breaker.record_success()
-                if attempt > 1:
-                    logger.info(
-                        "model call succeeded after retry",
-                        extra={
-                            "attempt": attempt,
-                            "endpoint": self._endpoint_name,
-                            "operation": operation,
-                        },
-                    )
                 return response
-            except BaseException as exc:  # pragma: no cover - depends on network/provider failures
+            except BaseException as exc:
                 last_error = exc
                 retryable = _is_retryable_exception(exc)
                 if retryable:
                     self._breaker.record_failure()
-
-                logger.warning(
-                    "model call failed",
-                    extra={
-                        "attempt": attempt,
-                        "endpoint": self._endpoint_name,
-                        "operation": operation,
-                    },
-                    exc_info=True,
-                )
 
                 if not retryable or attempt >= self._max_retries:
                     break
@@ -177,6 +149,27 @@ class ResilientEndpointProxy:
 
         raise last_error or RuntimeError("OpenAI call failed")
 
+class ChatProxy:
+    def __init__(self, raw_chat: Any, breaker: CircuitBreaker, timeout: float, retries: int, backoff: float):
+        self.completions = ResilientEndpointProxy(
+            raw_chat.completions,
+            endpoint_name="chat.completions",
+            breaker=breaker,
+            timeout_seconds=timeout,
+            max_retries=retries,
+            backoff_seconds=backoff,
+        )
+
+class AudioProxy:
+    def __init__(self, raw_audio: Any, breaker: CircuitBreaker, timeout: float, retries: int, backoff: float):
+        self.transcriptions = ResilientEndpointProxy(
+            raw_audio.transcriptions,
+            endpoint_name="audio.transcriptions",
+            breaker=breaker,
+            timeout_seconds=max(timeout, 180.0),
+            max_retries=retries,
+            backoff_seconds=backoff,
+        )
 
 class ResilientOpenAI:
     def __init__(self, *args: Any, timeout: Optional[float] = None, **kwargs: Any) -> None:
@@ -191,14 +184,9 @@ class ResilientOpenAI:
         self._raw = RAW_OPENAI(*args, timeout=timeout_seconds, **kwargs)
         breaker = CircuitBreaker(threshold=threshold, recovery_seconds=recovery_seconds)
 
-        self.responses = ResilientEndpointProxy(
-            self._raw.responses,
-            endpoint_name="responses",
-            breaker=breaker,
-            timeout_seconds=timeout_seconds,
-            max_retries=retries,
-            backoff_seconds=backoff,
-        )
+        # Correctly mapping to standard OpenAI attributes
+        self.chat = ChatProxy(self._raw.chat, breaker, timeout_seconds, retries, backoff)
+        self.audio = AudioProxy(self._raw.audio, breaker, timeout_seconds, retries, backoff)
         self.embeddings = ResilientEndpointProxy(
             self._raw.embeddings,
             endpoint_name="embeddings",
@@ -207,22 +195,11 @@ class ResilientOpenAI:
             max_retries=retries,
             backoff_seconds=backoff,
         )
-        self.audio = type("AudioProxy", (), {})()
-        self.audio.transcriptions = ResilientEndpointProxy(
-            self._raw.audio.transcriptions,
-            endpoint_name="audio.transcriptions",
-            breaker=breaker,
-            timeout_seconds=max(timeout_seconds, 180.0),
-            max_retries=max(1, retries),
-            backoff_seconds=backoff,
-        )
 
     def __getattr__(self, item: str) -> Any:
         return getattr(self._raw, item)
 
-
 _PATCHED = False
-
 
 def patch_openai_client() -> None:
     global _PATCHED

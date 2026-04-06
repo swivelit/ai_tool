@@ -1,13 +1,10 @@
 """
-orchestrator_task.py — v3 (Production Grade)
+orchestrator_task.py — v3.1 (Emergency Enhanced)
 
 The "Traffic Cop" of the Assistant. 
 Analyzes user intent and routes to specialized agents (Greeting, Tool, or General).
 
-Synced with Team Leader's Architecture:
-- Keywords derived from 'local_rag_service.py' (DEFAULT_FAST_RAG_ROWS)
-- Classification labels match 'stage_english_remodel.py'
-- Urgency mapping aligns low/medium/high with TL's numerical priorities (50/90/100)
+Updated: Added Medical Emergency detection for dog bites, broken bones, and bleeding.
 """
 
 from __future__ import annotations
@@ -18,7 +15,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Constants (Mapped to TL's stage_english & local_rag labels)
+# Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
 VALID_INTENTS = {
@@ -40,7 +37,7 @@ VALID_NEXT_ACTIONS = {
 VALID_TOOLS = {"weather", "web_search", "calendar", "none"}
 VALID_PRIORITIES = {"low", "medium", "high"}
 
-# ── Keywords (Synced with local_rag_service.py) ─────────────────────────────
+# ── Keywords ────────────────────────────────────────────────────────────────
 
 _GREETING_KWS: set = {"hi", "hey", "hello", "vanakkam", "வணக்கம்", "ஹாய்", "hai", "ello", "helo", "vanakam"}
 _GREETING_STARTS: Tuple[str, ...] = ("good morning", "good evening", "good afternoon", "good night")
@@ -55,7 +52,8 @@ _PROFILE_KWS: set = {"name", "place", "location", "who am i", "where do i live"}
 _ASSISTANT_KWS: set = {"who are you", "help", "what can you do", "assistant name"}
 
 _EMERGENCY_KWS: Tuple[str, ...] = (
-    "help me", "danger", "accident", "ambulance", "sos", "emergency", "உதவி", "ஆபத்து"
+    "help me", "danger", "accident", "ambulance", "sos", "emergency", "உதவி", "ஆபத்து",
+    "bite", "bit", "broken", "bleeding", "snake", "dog", "கடி", "உடை", "காயம்", "இரத்தம்"
 )
 
 _WEATHER_KWS: Tuple[str, ...] = ("weather", "rain", "forecast", "வெயில்", "மழை", "வானிலை")
@@ -95,7 +93,7 @@ def _make_result(
     }
 
 def _rule_classify(message: str) -> Optional[Dict[str, Any]]:
-    """Layer 1: Offline Keyword Search (Synchronized with TL's Fast RAG rules)"""
+    """Layer 1: Offline Keyword Search"""
     norm = _normalize(message)
     if not norm:
         return _make_result(
@@ -110,21 +108,21 @@ def _rule_classify(message: str) -> Optional[Dict[str, Any]]:
         if kw in norm:
             return _make_result(intent="EMERGENCY", next_action="Emergency Agent", priority="high", matched_keyword=kw)
 
-    # 2. GREETINGS (Mapping to TL's Priority 100)
+    # 2. GREETINGS
     if norm in _GREETING_KWS or any(norm.startswith(s) for s in _GREETING_STARTS):
         return _make_result(intent="GREETING", next_action="Greeting Agent", priority="low", matched_keyword=norm)
 
-    # 3. SMALLTALK / THANKS (Mapping to TL's Priority 92-95)
+    # 3. SMALLTALK / THANKS
     if any(kw in norm for kw in _SMALLTALK_KWS):
         return _make_result(intent="SMALLTALK", next_action="Greeting Agent", priority="low")
 
-    # 4. PROFILE / ASSISTANT INFO (Mapping to TL's Priority 90-96)
+    # 4. PROFILE / ASSISTANT INFO
     if any(kw in norm for kw in _PROFILE_KWS):
         return _make_result(intent="PROFILE", next_action="Greeting Agent", priority="low")
     if any(kw in norm for kw in _ASSISTANT_KWS):
         return _make_result(intent="IDENTITY", next_action="Greeting Agent", priority="low")
 
-    # 5. TOOLS (Weather, Calendar)
+    # 5. TOOLS
     if any(kw in norm for kw in _WEATHER_KWS):
         return _make_result(intent="TOOL", next_action="Tool Agent", tool="weather", priority="medium")
     if any(kw in norm for kw in _CALENDAR_KWS):
@@ -133,11 +131,12 @@ def _rule_classify(message: str) -> Optional[Dict[str, Any]]:
     return None
 
 def _call_llm(client: Any, message: str) -> Dict[str, Any]:
-    """Layer 2: Online Semantic Router — Only for complex sentences"""
+    """Layer 2: Online Semantic Router"""
     try:
         prompt = """You are an AI Orchestrator. Analyzes the intent and decides what to do next.
 Intents: GREETING, SMALLTALK, PROFILE, IDENTITY, TOOL, EMERGENCY, AMBIGUOUS, GENERAL.
 - If it's a simple greeting, use GREETING.
+- If the query is about medical emergency, dog bites, broken bones, bleeding, or accidents, use EMERGENCY.
 - If the query is ambiguous or a fragment, use AMBIGUOUS and generate a specific clarifying question.
 - If it requires external data (weather, calendar, web search), use TOOL.
 Return JSON ONLY: {"intent": "...", "priority": "low|medium|high", "tool": "weather|calendar|web_search|none", "clarification_question": "optional text"}"""
