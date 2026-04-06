@@ -67,6 +67,7 @@ _CALENDAR_KWS: Tuple[str, ...] = ("schedule", "reminder", "todo", "appointment",
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _normalize(text: str) -> str:
+    if not text: return ""
     text = text.strip().lower()
     text = re.sub(r"[^\w\s\u0B80-\u0BFF]", " ", text) # Tamil-aware
     return re.sub(r"\s+", " ", text).strip()
@@ -87,7 +88,7 @@ def _make_result(
         "next_action": next_action,
         "tool": tool,
         "priority": priority,
-        "confidence": float(round(confidence, 4)),
+        "confidence": round(float(confidence), 4),
         "matched_keyword": matched_keyword,
         "clarification_question": clarification_question,
         "fast_path": fast_path
@@ -97,7 +98,12 @@ def _rule_classify(message: str) -> Optional[Dict[str, Any]]:
     """Layer 1: Offline Keyword Search (Synchronized with TL's Fast RAG rules)"""
     norm = _normalize(message)
     if not norm:
-        return _make_result(intent="AMBIGUOUS", next_action="Clarification Agent", clarification_question="Pardon? Your message seems empty.")
+        return _make_result(
+            intent="AMBIGUOUS", 
+            next_action="Clarification Agent", 
+            clarification_question="Pardon? Your message seems empty. How can I help you today?",
+            fast_path=True
+        )
 
     # 1. EMERGENCY (Signaling high priority)
     for kw in _EMERGENCY_KWS:
@@ -129,31 +135,24 @@ def _rule_classify(message: str) -> Optional[Dict[str, Any]]:
 def _call_llm(client: Any, message: str) -> Dict[str, Any]:
     """Layer 2: Online Semantic Router — Only for complex sentences"""
     try:
-        prompt = """You are an AI Orchestrator. Classify the input.
+        prompt = """You are an AI Orchestrator. Analyzes the intent and decides what to do next.
 Intents: GREETING, SMALLTALK, PROFILE, IDENTITY, TOOL, EMERGENCY, AMBIGUOUS, GENERAL.
-Return JSON ONLY: {"intent": "...", "priority": "low|medium|high", "tool": "weather|calendar|web_search|none", "clarification_question": null}"""
+- If it's a simple greeting, use GREETING.
+- If the query is ambiguous or a fragment, use AMBIGUOUS and generate a specific clarifying question.
+- If it requires external data (weather, calendar, web search), use TOOL.
+Return JSON ONLY: {"intent": "...", "priority": "low|medium|high", "tool": "weather|calendar|web_search|none", "clarification_question": "optional text"}"""
         
-        response = client.responses.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
-            input=[{"role": "system", "content": [{"type": "input_text", "text": prompt}]},
-                   {"role": "user", "content": [{"type": "input_text", "text": message}]}],
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": message}
+            ],
             temperature=0.0,
-            text={"format": {"type": "json_object"}},
+            response_format={"type": "json_object"},
         )
         
-        # Helper to extract text from response
-        raw_text_parts: List[str] = []
-        output_text = getattr(response, "output_text", None)
-        if output_text: 
-            raw_text_parts.append(str(output_text).strip())
-        else:
-            for item in getattr(response, "output", None) or []:
-                for part in getattr(item, "content", None) or []:
-                    text_val = getattr(part, "text", None)
-                    if text_val: 
-                        raw_text_parts.append(str(text_val))
-        
-        raw_text = "".join(raw_text_parts).strip()
+        raw_text = response.choices[0].message.content
         parsed = json.loads(raw_text)
         intent = parsed.get("intent", "GENERAL").upper()
         
@@ -183,3 +182,20 @@ def run_orchestrator(client: Any, message: str) -> Dict[str, Any]:
 
     # 🧠 Semantic AI (Online check)
     return _call_llm(client, message)
+
+if __name__ == "__main__":
+    # Test stub
+    class MockClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    class Choice:
+                        class Message:
+                            content = '{"intent": "TOOL", "priority": "medium", "tool": "web_search"}'
+                        message = Message()
+                    class Resp:
+                        choices = [Choice()]
+                    return Resp()
+    
+    print(run_orchestrator(MockClient(), "What is the capital of France?"))
