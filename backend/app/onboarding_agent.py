@@ -1,7 +1,11 @@
 import os
 import json
-from typing import Annotated, TypedDict
+import time
+from typing import Annotated, TypedDict, Optional, List
 from dotenv import load_dotenv
+
+from fastapi import APIRouter
+from pydantic import BaseModel
 
 from langchain_core.messages import AIMessage, SystemMessage, AnyMessage, HumanMessage
 from langchain_openai import ChatOpenAI
@@ -9,28 +13,19 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
 
-# Load environment variables
-load_dotenv()
-
-# --- 1. Define the Graph State ---
-class AgentState(TypedDict):
-    messages: Annotated[list[AnyMessage], add_messages]
-
-# --- 2. Build LLMs & ChromaDB VectorDB ---
-try:
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-except Exception as e:
-    print(f"Failed to initialize LLM. Make sure OPENAI_API_KEY is in your .env file: {e}")
-    exit(1)
-
 from langchain_openai import OpenAIEmbeddings
 try:
     from langchain_chroma import Chroma
 except ImportError:
     from langchain_community.vectorstores import Chroma
 
-# Initialize persistent ChromaDB for user profiles
-CHROMA_DB_DIR = "chroma_user_db"
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import TextLoader
+
+# Setup directory constraints
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CHROMA_DB_DIR = os.path.join(CURRENT_DIR, "chroma_user_db")
 embeddings = OpenAIEmbeddings()
 
 def get_vectorstore():
@@ -40,14 +35,9 @@ def get_vectorstore():
         persist_directory=CHROMA_DB_DIR
     )
 
-# --- RAG: Company Knowledge Retriever ---
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import TextLoader
-
 def initialize_company_rag():
-    """Embeds company_knowledge.txt into ChromaDB for RAG retrieval."""
     try:
-        kb_file = "company_knowledge.txt"
+        kb_file = os.path.join(CURRENT_DIR, "company_knowledge.txt")
         if not os.path.exists(kb_file):
             print("⚠️  company_knowledge.txt not found. RAG disabled.")
             return None
@@ -59,7 +49,7 @@ def initialize_company_rag():
             documents=splits,
             embedding=embeddings,
             collection_name="company_kb",
-            persist_directory="chroma_company_kb"
+            persist_directory=os.path.join(CURRENT_DIR, "chroma_company_kb")
         )
         print(f"✅ RAG initialized with {len(splits)} chunks from {kb_file}")
         return vectorstore.as_retriever(search_kwargs={"k": 3})
@@ -69,23 +59,21 @@ def initialize_company_rag():
 
 company_retriever = initialize_company_rag()
 
-# --- 3. Node: Conversational Chat Logic ---
+class AgentState(TypedDict):
+    messages: Annotated[list[AnyMessage], add_messages]
+
 def chat_node(state: AgentState):
-    """Dynamically chooses the next question based on the script and previous answers."""
     messages = state.get("messages", [])
     
-    # Count how many questions the AI has asked so far
     ai_question_count = sum(1 for m in messages if isinstance(m, AIMessage) and "DONE" not in m.content.upper())
     
-    # Load the onboarding flow script (direct, not RAG)
     try:
-        with open("knowledge.txt", "r", encoding="utf-8") as f:
+        with open(os.path.join(CURRENT_DIR, "knowledge.txt"), "r", encoding="utf-8") as f:
             flow_script = f.read()
     except Exception as e:
         print(f"Error reading knowledge.txt: {e}")
         flow_script = ""
     
-    # RAG: Retrieve company knowledge if user asked a question
     rag_context = ""
     if messages and company_retriever:
         last_human_msgs = [m for m in reversed(messages) if isinstance(m, HumanMessage)]
@@ -97,7 +85,7 @@ def chat_node(state: AgentState):
                     rag_context = "\n".join([d.page_content for d in docs])
             except Exception as e:
                 print(f"RAG retrieval error: {e}")
-        
+                
     prompt = f"""
     You are a smart Tamil AI onboarding assistant.
     
@@ -175,6 +163,7 @@ def chat_node(state: AgentState):
     {flow_script}
     """
     
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     sys_msg = SystemMessage(content=prompt)
     response = llm.bind(response_format={"type": "json_object"}).invoke([sys_msg] + messages)
     
@@ -190,12 +179,9 @@ def chat_node(state: AgentState):
         
     return {"messages": [AIMessage(content=bot_tanglish, additional_kwargs={"speak_tamil": bot_tamil, "options": bot_options})]}
 
-# --- 4. Node: Database Save Logic (ChromaDB Vector Store) ---
 def save_to_vector_db_node(state: AgentState):
-    """Extracts final JSON profile and saves to ChromaDB vector store + JSON backup."""
     messages = state["messages"]
     
-    # Run a quick extraction to build the final JSON profile from history
     extraction_prompt = f"""
     Based on the following conversation, extract all the answers the user provided into a flat JSON object.
     Map them strictly to logical English keys (like "name", "age", "emotion", "goal", "learning_style", "motivation", "tech_level", etc.) describing the topic.
@@ -213,23 +199,20 @@ def save_to_vector_db_node(state: AgentState):
     except:
         profile = {"raw_text": extracted_data.content}
     
-    # --- Save to ChromaDB Vector Store ---
     try:
         vectorstore = get_vectorstore()
         user_name = profile.get("name", "unknown")
         profile_text = json.dumps(profile, ensure_ascii=False)
-        
         vectorstore.add_texts(
             texts=[profile_text],
             metadatas=[{"name": user_name, "source": "onboarding"}],
-            ids=[f"user_{user_name}_{int(__import__('time').time())}"]
+            ids=[f"user_{user_name}_{int(time.time())}"]
         )
         print(f"✅ Profile saved to ChromaDB for user: {user_name}")
     except Exception as e:
         print(f"❌ ChromaDB save error: {e}")
     
-    # --- Also save to JSON backup ---
-    db_file = "user_database.json"
+    db_file = os.path.join(CURRENT_DIR, "user_database.json")
     try:
         if os.path.exists(db_file):
             with open(db_file, "r", encoding="utf-8") as f:
@@ -247,27 +230,19 @@ def save_to_vector_db_node(state: AgentState):
     final_msg = "Super done! Ellam save aagiduchu 🎉"
     return {"messages": [AIMessage(content=final_msg)]}
 
-# --- 5. Edge routing ---
 def check_if_complete(state: AgentState) -> str:
-    """Routing function: checks if the LLM outputted DONE."""
     messages = state.get("messages", [])
     if not messages:
         return END
-        
     last_msg = messages[-1].content.strip()
-    
     if "DONE" in last_msg.upper():
         return "save_to_db"
     return END
 
-# --- 6. Graph Compilation ---
 workflow = StateGraph(AgentState)
-
 workflow.add_node("Chat_Node", chat_node)
 workflow.add_node("Save_DB_Node", save_to_vector_db_node)
-
 workflow.set_entry_point("Chat_Node")
-
 workflow.add_conditional_edges(
     "Chat_Node",
     check_if_complete,
@@ -276,96 +251,46 @@ workflow.add_conditional_edges(
         END: END
     }
 )
-
 workflow.add_edge("Save_DB_Node", END)
 
-# Add MemorySaver to persist state between loops easily
 memory = MemorySaver()
 onboarding_app = workflow.compile(checkpointer=memory)
 
-# --- Audio/Speech Inputs ---
-import subprocess
+router = APIRouter()
 
-try:
-    import speech_recognition as sr
-    from openai import OpenAI
-    openai_client = OpenAI()
-except ImportError:
-    sr = None
-    openai_client = None
+class ChatRequest(BaseModel):
+    user_id: str
+    message: Optional[str] = None
 
-def get_user_input():
-    """Allows user to type or fallback to voice recording."""
-    user_text = input("\nYou (Type your answer, or simply press Enter to Speak 🎤): ")
-    if user_text.strip() != "":
-        return user_text
-        
-    if not sr or not openai_client:
-        print("Speech libraries not installed. Please run: pip install SpeechRecognition pyaudio openai")
-        return input("\nYou (Type): ")
-        
-    print("🎙️  Recording... (Speak now)")
-    recognizer = sr.Recognizer()
-    try:
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            audio = recognizer.listen(source, timeout=10, phrase_time_limit=15)
-            
-        temp_wav = "temp_input.wav"
-        with open(temp_wav, "wb") as f:
-            f.write(audio.get_wav_data())
-            
-        print("⏳  Transcribing voice...")
-        with open(temp_wav, "rb") as audio_file:
-            transcript = openai_client.audio.transcriptions.create(
-                model="whisper-1", 
-                file=audio_file,
-                prompt="The user is speaking Tanglish (Tamil and English mixing). Transcribe accurately in Latin script."
-            )
-        print(f"[🎤 Voice Transcription]: {transcript.text}")
-        return transcript.text
-    except Exception as e:
-        print(f"Voice input failed: {e}")
-        return input("\nYou (Type): ")
-
-# --- Interation Execution Loop ---
-if __name__ == "__main__":
-    print("-" * 50)
-    print("Welcome to the Onboarding Agent (Now With Voice!) 🗣️")
-    print("-" * 50)
+@router.post("/chat")
+async def onboarding_chat(request: ChatRequest):
+    config = {"configurable": {"thread_id": request.user_id}}
     
-    config = {"configurable": {"thread_id": "1"}}
+    input_data = {"messages": []}
+    if request.message and request.message.strip() != "":
+        input_data = {"messages": [HumanMessage(content=request.message)]}
+        
+    response_text = ""
+    status = "ONGOING"
+    options = []
     
-    # Kick off the first question without any human input
-    first_stream = onboarding_app.stream({"messages": []}, config=config)
-    for event in first_stream:
+    for event in onboarding_app.stream(input_data, config=config):
         for key, value in event.items():
             if key == "Chat_Node":
-                bot_msg = value['messages'][-1]
-                bot_text = bot_msg.content
-                print(f"\nBot: {bot_text}")
+                bot_msg = value["messages"][-1]
+                response_text = bot_msg.content
+                options = bot_msg.additional_kwargs.get("options", [])
+                if "DONE" in response_text.upper():
+                    status = "DONE"
+            elif key == "Save_DB_Node":
+                response_text = value["messages"][-1].content
+                status = "COMPLETED"
 
-    while True:
-        try:
-            user_message = get_user_input()
-            if user_message.lower() in ['exit', 'quit', 'bye', 'stop']:
-                print("Exiting...")
-                break
-                
-            for event in onboarding_app.stream({"messages": [HumanMessage(content=user_message)]}, config=config):
-                for key, value in event.items():
-                    if key == "Chat_Node":
-                        bot_msg = value["messages"][-1]
-                        bot_response = bot_msg.content
-                        if "DONE" not in bot_response.upper():
-                            print(f"\nBot: {bot_response}")
+    if "DONE" in response_text.upper():
+        return {"text": "All set! Your profile has been created.", "options": [], "status": "COMPLETED"}
 
-                    if key == "Save_DB_Node":
-                        bot_response = value["messages"][-1].content
-                        print(f"\nBot: {bot_response}")
-                        print("\n[System]: Process Complete.")
-                        exit(0)
-                        
-        except (KeyboardInterrupt, EOFError):
-            print("\nExiting...")
-            break
+    return {
+        "text": response_text,
+        "options": options,
+        "status": status
+    }

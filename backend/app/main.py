@@ -57,7 +57,7 @@ from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
-
+from .onboarding_agent import router as onboarding_router  # noqa: E402
 logger = logging.getLogger(__name__)
 
 PERSONALITY_QUESTIONS_VERSION = 1
@@ -76,6 +76,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(onboarding_router, prefix="/api/onboarding", tags=["onboarding"])
 
 STAGE_BEHAVIOUR = BehaviourQuestionnaire()
 LOCAL_RAG_SERVICE = LocalRAGService()

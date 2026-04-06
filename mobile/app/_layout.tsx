@@ -47,8 +47,7 @@ function RouteGate() {
       const inTabs = first === "(tabs)";
       const inAuth = first === "auth";
       const inOnboarding = first === "onboarding";
-      const atProfile = first === "onboarding" && second === "profile";
-      const atQuestionnaire = first === "onboarding" && second === "questionnaire";
+      const atAgent = first === "onboarding" && second === "agent";
       const atSetup = first === "setup";
 
       try {
@@ -79,19 +78,13 @@ function RouteGate() {
         if (!alive) return;
 
         const activeProfile = providerProfile || localProfile;
-        const hasProfile = Boolean(activeProfile?.userId);
         const questionnaireCompleted = Boolean(activeProfile?.questionnaireCompleted);
 
-        if (!hasProfile) {
-          if (!atProfile) {
-            router.replace("/onboarding/profile");
-          }
-          return;
-        }
+        const atAgent = first === "onboarding" && second === "agent";
 
         if (!questionnaireCompleted) {
-          if (!atQuestionnaire) {
-            router.replace("/onboarding/questionnaire");
+          if (!atAgent) {
+            router.replace("/onboarding/agent");
           }
           return;
         }
@@ -118,11 +111,8 @@ function RouteGate() {
     };
   }, [
     segments,
-    user?.uid,
-    user?.email,
-    profile?.firebaseUid,
-    profile?.userId,
-    profile?.questionnaireCompleted,
+    user,
+    profile,
   ]);
 
   if (user && gateLoading) {
@@ -151,8 +141,7 @@ function AppShell() {
       >
         <Stack.Screen name="index" />
         <Stack.Screen name="auth" />
-        <Stack.Screen name="onboarding/profile" />
-        <Stack.Screen name="onboarding/questionnaire" />
+        <Stack.Screen name="onboarding/agent" />
         <Stack.Screen name="setup" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="item/[id]" />
