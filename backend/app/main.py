@@ -161,6 +161,19 @@ def _get_agentic_service() -> AgenticService:
     return AGENTIC_SERVICE
 
 
+def _get_safety_filter() -> Optional[BehaviouralRAGFilter]:
+    global SAFETY_FILTER
+
+    if SAFETY_FILTER is None:
+        try:
+            SAFETY_FILTER = BehaviouralRAGFilter()
+        except Exception as exc:
+            print(f"[WARN] Failed to initialize SAFETY_FILTER: {exc}")
+            return None
+
+    return SAFETY_FILTER
+
+
 def _normalize_reply_language(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"en", "english"}:
@@ -1263,13 +1276,21 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         cached["cache_hit"] = "true"
         return cached
 
+    # 🧠 SMARTER FAST-PATH (Fixing the "Dead End" bug)
     fast_path = LOCAL_RAG_SERVICE.try_answer(session, user_id, message)
+    
+    # Only return fast_path if it's HIGH CONFIDENCE (score >= 0.90)
+    # This prevents "I don't know" or low-quality local answers from blocking OpenAI.
     if fast_path is not None:
-        STAGE_CACHE[cache_key] = dict(fast_path)
-        if len(STAGE_CACHE) > 128:
-            first_key = next(iter(STAGE_CACHE))
-            STAGE_CACHE.pop(first_key, None)
-        return fast_path
+        confidence = float(fast_path.get("direct_answer_confidence", 0.0))
+        if confidence >= 0.90:
+            STAGE_CACHE[cache_key] = dict(fast_path)
+            if len(STAGE_CACHE) > 128:
+                first_key = next(iter(STAGE_CACHE))
+                STAGE_CACHE.pop(first_key, None)
+            return fast_path
+        else:
+            print(f"[DEBUG] Fast-path skipped due to low confidence ({confidence:.2f}). Falling back to OpenAI.")
 
     profile = _sync_stage_profile(session, user_id)
     total_start = time.perf_counter()
@@ -1364,7 +1385,13 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         "stage_notes": json.dumps(stage_notes, ensure_ascii=False),
         "risk_level": risk_level,
     }
-    _safety_result = SAFETY_FILTER.apply(_safety_result, session, user_id)
+
+    # FIX: Use the getter and check for None before calling .apply()
+    checker = _get_safety_filter()
+    if checker is not None:
+        _safety_result = checker.apply(_safety_result, session, user_id)
+    else:
+        print("[WARN] Safety filter skip: Filter not initialized.")
 
     raw_english       = _safety_result.get("raw_english", raw_english)
     remodeled_english = _safety_result.get("remodeled_english", remodeled_english)
@@ -1391,8 +1418,9 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         tamil_text = str(translation_meta.get("tamil_text", "")).strip()
         timings["english_to_tamil_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
+        stage_translator = _get_stage_translator()
         t0 = time.perf_counter()
-        theni_tamil_text = STAGE_TRANSLATOR.tamil_to_thenitamil(tamil_text)
+        theni_tamil_text = stage_translator.tamil_to_thenitamil(tamil_text)
         timings["tamil_to_theni_ms"] = round((time.perf_counter() - t0) * 1000, 2)
     else:
         translation_meta = {"skipped": True, "reason": "reply_language_is_english"}
