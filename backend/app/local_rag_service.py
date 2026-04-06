@@ -302,47 +302,7 @@ class LocalRAGService:
     # -----------------------------
     # generic helpers
     # -----------------------------
-    def _build_pipeline_result(
-        self,
-        *,
-        raw_english: str,
-        remodeled_english: Optional[str] = None,
-        tamil_text: str = "",
-        theni_tamil_text: str = "",
-        route_taken: str,
-        direct_answer_source: str = "",
-        direct_answer_confidence: str = "",
-        predicted_label: str = "agentic",
-        risk_level: str = "low",
-        stage_notes: Optional[List[str]] = None,
-        core_meta: Optional[Dict[str, Any]] = None,
-        remodel_meta: Optional[Dict[str, Any]] = None,
-        review_meta: Optional[Dict[str, Any]] = None,
-        translation_meta: Optional[Dict[str, Any]] = None,
-        timings_ms: Optional[Dict[str, Any]] = None,
-        cache_hit: str = "false",
-    ) -> Dict[str, Any]:
-        """Blueprint for consistency across services."""
-        english = str(remodeled_english if remodeled_english is not None else raw_english).strip()
-        return {
-            "pipeline_version": "agentic_v1",
-            "raw_english": str(raw_english or "").strip(),
-            "remodeled_english": english,
-            "tamil_text": str(tamil_text or "").strip(),
-            "theni_tamil_text": str(theni_tamil_text or tamil_text or "").strip(),
-            "direct_answer_source": str(direct_answer_source or ""),
-            "direct_answer_confidence": str(direct_answer_confidence or ""),
-            "predicted_label": str(predicted_label or "agentic"),
-            "risk_level": str(risk_level or "low"),
-            "route_taken": str(route_taken or "agentic"),
-            "cache_hit": str(cache_hit or "false"),
-            "stage_notes": json.dumps(stage_notes or [], ensure_ascii=False),
-            "core_meta": json.dumps(core_meta or {}, ensure_ascii=False),
-            "remodel_meta": json.dumps(remodel_meta or {}, ensure_ascii=False),
-            "review_meta": json.dumps(review_meta or {}, ensure_ascii=False),
-            "translation_meta": json.dumps(translation_meta or {}, ensure_ascii=False),
-            "timings_ms": json.dumps(timings_ms or {"total_ms": 0.0}, ensure_ascii=False),
-        }
+    # (Removed duplicate _build_pipeline_result. Centralized version at bottom.)
         self.vector_store = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
         self.vector_store.initialize()
         self._embed_cache: "OrderedDict[str, Tuple[List[float], float, float]]" = OrderedDict()
@@ -562,8 +522,10 @@ class LocalRAGService:
     def _openai_embed(self, texts: List[str]) -> List[List[float]]:
         if not self._semantic_enabled or self._openai is None or not texts:
             return []
+        
+        client = self._openai
         try:
-            resp = self._openai.embeddings.create(model=self._embedding_model, input=texts)
+            resp = client.embeddings.create(model=self._embedding_model, input=texts)
             data = getattr(resp, "data", None)
             if data is None and isinstance(resp, dict):
                 data = resp.get("data")
