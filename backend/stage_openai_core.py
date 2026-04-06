@@ -54,19 +54,14 @@ class OpenAICore:
 
     @staticmethod
     def _extract_response_text(response: Any) -> str:
-        output_text = getattr(response, "output_text", None)
-        if output_text:
-            return str(output_text).strip()
-
-        collected: List[str] = []
-        for item in getattr(response, "output", None) or []:
-            for part in getattr(item, "content", None) or []:
-                text = getattr(part, "text", None)
-                if text:
-                    collected.append(str(text))
-                elif isinstance(part, dict) and part.get("text"):
-                    collected.append(str(part["text"]))
-        return "\n".join(chunk.strip() for chunk in collected if str(chunk).strip()).strip()
+        """Safely extracts text from a standard OpenAI ChatCompletion response."""
+        try:
+            if hasattr(response, "choices") and response.choices:
+                content = response.choices[0].message.content
+                return str(content or "").strip()
+        except Exception:
+            pass
+        return ""
 
     @staticmethod
     def _contains_health_risk(text: str) -> bool:
@@ -121,14 +116,17 @@ class OpenAICore:
         last_error: Optional[Exception] = None
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
-                payload: Dict[str, Any] = {
-                    "model": self.model,
-                    "input": self._build_input(system_prompt, user_prompt),
-                    "temperature": temperature,
-                    "max_output_tokens": max_output_tokens,
-                    "text": {"format": response_format or {"type": "text"}},
-                }
-                response = self.client.responses.create(**payload)
+                # Use standard chat.completions.create
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt.strip()},
+                        {"role": "user", "content": user_prompt.strip()},
+                    ],
+                    temperature=temperature,
+                    max_tokens=max_output_tokens,
+                    response_format=response_format or {"type": "text"},
+                )
                 text = self._extract_response_text(response)
                 if not text:
                     raise RuntimeError("OpenAI returned empty output.")

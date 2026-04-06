@@ -57,7 +57,9 @@ from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
-from .onboarding_agent import router as onboarding_router  # noqa: E402
+from . import semantic_cache
+from . import continuous_learning
+
 logger = logging.getLogger(__name__)
 
 PERSONALITY_QUESTIONS_VERSION = 1
@@ -159,6 +161,19 @@ def _get_agentic_service() -> AgenticService:
         AGENTIC_SERVICE = AgenticService(_get_openai_client(required=False), LOCAL_RAG_SERVICE)
 
     return AGENTIC_SERVICE
+
+
+def _get_safety_filter() -> Optional[BehaviouralRAGFilter]:
+    global SAFETY_FILTER
+
+    if SAFETY_FILTER is None:
+        try:
+            SAFETY_FILTER = BehaviouralRAGFilter()
+        except Exception as exc:
+            print(f"[WARN] Failed to initialize SAFETY_FILTER: {exc}")
+            return None
+
+    return SAFETY_FILTER
 
 
 def _normalize_reply_language(value: Optional[str]) -> str:
@@ -670,6 +685,10 @@ def ensure_runtime_schema() -> None:
         _register_job_handlers()
         if os.getenv("JOB_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
             _get_job_queue().start()
+        
+        # Start Continuous Learning Background Worker
+        continuous_learning.start_background_learning()
+        logger.info("Continuous Learning Agent started.")
     except Exception as exc:
         logger.warning("Runtime schema sync skipped: %s", exc)
 
@@ -898,41 +917,35 @@ class AgentMemorySyncRequest(BaseModel):
     force: bool = False
 
 def _extract_response_text(response: Any) -> str:
-    output_text = getattr(response, "output_text", None)
-    if output_text:
-        return str(output_text).strip()
-
-    chunks: List[str] = []
-    for item in getattr(response, "output", None) or []:
-        for part in getattr(item, "content", None) or []:
-            text = getattr(part, "text", None)
-            if text:
-                chunks.append(str(text))
-            elif isinstance(part, dict) and part.get("text"):
-                chunks.append(str(part["text"]))
-    return "\n".join(part.strip() for part in chunks if str(part).strip()).strip()
+    """Standard OpenAI Response parsing"""
+    try:
+        if hasattr(response, "choices") and response.choices:
+            return str(response.choices[0].message.content or "").strip()
+        return ""
+    except Exception:
+        return ""
 
 
 def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
-    response = _get_openai_client().responses.create(
+    response = _get_openai_client().chat.completions.create(
         model=OPENAI_JSON_MODEL,
-        input=[
-            {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user_content.strip()}]},
+        messages=[
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_content.strip()},
         ],
         temperature=temperature,
-        text={"format": {"type": "json_object"}},
+        response_format={"type": "json_object"},
     )
     raw = _extract_response_text(response)
     return json.loads(raw)
 
 
 def llm_text(system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
-    response = _get_openai_client().responses.create(
+    response = _get_openai_client().chat.completions.create(
         model=OPENAI_JSON_MODEL,
-        input=[
-            {"role": "system", "content": [{"type": "input_text", "text": system_prompt.strip()}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user_content.strip()}]},
+        messages=[
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_content.strip()},
         ],
         temperature=temperature,
     )
@@ -1265,13 +1278,21 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         cached["cache_hit"] = "true"
         return cached
 
+    # 🧠 SMARTER FAST-PATH (Fixing the "Dead End" bug)
     fast_path = LOCAL_RAG_SERVICE.try_answer(session, user_id, message)
+    
+    # Only return fast_path if it's HIGH CONFIDENCE (score >= 0.90)
+    # This prevents "I don't know" or low-quality local answers from blocking OpenAI.
     if fast_path is not None:
-        STAGE_CACHE[cache_key] = dict(fast_path)
-        if len(STAGE_CACHE) > 128:
-            first_key = next(iter(STAGE_CACHE))
-            STAGE_CACHE.pop(first_key, None)
-        return fast_path
+        confidence = float(fast_path.get("direct_answer_confidence", 0.0))
+        if confidence >= 0.90:
+            STAGE_CACHE[cache_key] = dict(fast_path)
+            if len(STAGE_CACHE) > 128:
+                first_key = next(iter(STAGE_CACHE))
+                STAGE_CACHE.pop(first_key, None)
+            return fast_path
+        else:
+            print(f"[DEBUG] Fast-path skipped due to low confidence ({confidence:.2f}). Falling back to OpenAI.")
 
     profile = _sync_stage_profile(session, user_id)
     total_start = time.perf_counter()
@@ -1366,7 +1387,13 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         "stage_notes": json.dumps(stage_notes, ensure_ascii=False),
         "risk_level": risk_level,
     }
-    _safety_result = SAFETY_FILTER.apply(_safety_result, session, user_id)
+
+    # FIX: Use the getter and check for None before calling .apply()
+    checker = _get_safety_filter()
+    if checker is not None:
+        _safety_result = checker.apply(_safety_result, session, user_id)
+    else:
+        print("[WARN] Safety filter skip: Filter not initialized.")
 
     raw_english       = _safety_result.get("raw_english", raw_english)
     remodeled_english = _safety_result.get("remodeled_english", remodeled_english)
@@ -1393,8 +1420,9 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         tamil_text = str(translation_meta.get("tamil_text", "")).strip()
         timings["english_to_tamil_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
+        stage_translator = _get_stage_translator()
         t0 = time.perf_counter()
-        theni_tamil_text = STAGE_TRANSLATOR.tamil_to_thenitamil(tamil_text)
+        theni_tamil_text = stage_translator.tamil_to_thenitamil(tamil_text)
         timings["tamil_to_theni_ms"] = round((time.perf_counter() - t0) * 1000, 2)
     else:
         translation_meta = {"skipped": True, "reason": "reply_language_is_english"}
@@ -1952,7 +1980,45 @@ def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
 def _run_chat_payload(payload: ChatAPIRequest) -> Dict[str, Any]:
     with SessionLocal() as session:
         text = _resolve_chat_text(payload)
-        pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+        
+        # 1. Update activity for Continuous Learning and Queue Input
+        continuous_learning.last_activity_time = time.time()
+        continuous_learning.memory_queue.put(text)
+        
+        # 2. Semantic Cache Lookup
+        query_emb = semantic_cache.get_embedding(text)
+        score, cached_ans = semantic_cache.search_cache(query_emb)
+        
+        if score >= semantic_cache.THRESHOLD:
+            logger.info(f"Semantic Cache HIT (score: {score:.4f})")
+            # Create a mock pipeline result for the cached answer
+            pipeline_result = _build_pipeline_result(
+                raw_english=cached_ans,
+                remodeled_english=cached_ans,
+                route_taken="semantic_cache_hit",
+                direct_answer_source="semantic_cache",
+                direct_answer_confidence=f"{score:.4f}",
+                cache_hit="true",
+                stage_notes=["Answer pulled from Semantic Memory Agent."]
+            )
+        else:
+            # 3. Cache MISS -> Run full pipeline
+            logger.info(f"Semantic Cache MISS (score: {score:.4f})")
+            
+            # Fetch long-term memory to personalize the prompt if needed
+            # (In a real scenario, we might pass this memory into the agentic service)
+            user_memory = continuous_learning.retrieve_memory(text)
+            if user_memory:
+                logger.info("Retrieved relevant user memory for context.")
+            
+            pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+            
+            # 4. Store newly generated answer in Semantic Cache
+            # We use the raw_english or remodeled_english as the answer to cache
+            final_ans = pipeline_result.get("remodeled_english") or pipeline_result.get("raw_english")
+            if final_ans:
+                semantic_cache.store_cache(text, final_ans, query_emb)
+        
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=payload.user_id,
