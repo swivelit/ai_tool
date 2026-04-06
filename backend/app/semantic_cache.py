@@ -140,7 +140,7 @@ def chat_with_cache(user_query):
 # ==============================
 # RUN LOOP (CLI Testing)
 # ==============================
-if _name_ == "_main_":
+if __name__ == "__main__":
     print("--- Semantic Cache CLI Test ---")
     while True:
         user_input = input("\nAsk (type 'exit' to quit): ")

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 
-logger = logging.getLogger(_name_)
+logger = logging.getLogger(__name__)
 
 # ==============================
 # CONFIG & INIT
@@ -183,7 +183,7 @@ def start_background_learning():
 # ==============================
 # RUN LOOP (CLI Testing)
 # ==============================
-if _name_ == "_main_":
+if __name__ == "__main__":
     start_background_learning()
     print("--- Continuous Learning CLI Test ---")
     while True:
