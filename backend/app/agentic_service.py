@@ -832,7 +832,7 @@ Rules:
 2. If it's a bite, tell them how to clean it.
 3. If it's a break, tell them how to stabilize it.
 4. If it's a snake, tell them to stay still.
-5. End with 'I have alerted your emergency contacts.'
+
 
 Keep it very short and actionable.
 """,
