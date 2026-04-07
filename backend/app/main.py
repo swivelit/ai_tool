@@ -41,8 +41,6 @@ bootstrap_observability()
 patch_openai_client()
 from openai import OpenAI
 
-from .local_rag_service import LocalRAGService
-from .agentic_service import AgenticService
 
 from config import (
     GENERATED_DOCS_DIR,
