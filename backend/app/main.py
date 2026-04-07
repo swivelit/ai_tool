@@ -1797,7 +1797,7 @@ def _build_direct_answer_pipeline_result(
         predicted_label=intent.lower(),
         risk_level="high" if intent == "EMERGENCY" else "low",
         direct_answer_source="orchestrator_fast_exit",
-        direct_answer_confidence=f"{confidence:.4f}",
+        direct_answer_confidence=f"{float(confidence):.4f}",
         stage_notes=[
             f"Orchestrator identified intent: {intent}.",
             f"Matched keyword: '{matched_keyword}'" if matched_keyword else "No keyword matched.",
