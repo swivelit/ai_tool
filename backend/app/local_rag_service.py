@@ -299,10 +299,7 @@ class LocalRAGService:
         self._embedding_model = str(RAG_EMBEDDING_MODEL or "text-embedding-3-small").strip() or "text-embedding-3-small"
         self._openai = OpenAI(api_key=OPENAI_API_KEY) if self._semantic_enabled else None
 
-    # -----------------------------
-    # generic helpers
-    # -----------------------------
-    # (Removed duplicate _build_pipeline_result. Centralized version at bottom.)
+        # Initialize the vector store for RAG
         self.vector_store = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
         self.vector_store.initialize()
         self._embed_cache: "OrderedDict[str, Tuple[List[float], float, float]]" = OrderedDict()
