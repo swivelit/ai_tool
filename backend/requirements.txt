@@ -46,12 +46,3 @@ alembic==1.17.2
 pytest==8.4.2
 sentry-sdk[fastapi]==2.20.0
 pgvector==0.3.6
-
-# Onboarding Agent requirements
-langchain
-langchain-core
-langchain-openai
-langgraph
-chromadb
-langchain-chroma
-langchain-community
