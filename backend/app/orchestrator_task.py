@@ -182,19 +182,3 @@ def run_orchestrator(client: Any, message: str) -> Dict[str, Any]:
     # 🧠 Semantic AI (Online check)
     return _call_llm(client, message)
 
-if __name__ == "__main__":
-    # Test stub
-    class MockClient:
-        class chat:
-            class completions:
-                @staticmethod
-                def create(**kwargs):
-                    class Choice:
-                        class Message:
-                            content = '{"intent": "TOOL", "priority": "medium", "tool": "web_search"}'
-                        message = Message()
-                    class Resp:
-                        choices = [Choice()]
-                    return Resp()
-    
-    print(run_orchestrator(MockClient(), "What is the capital of France?"))
