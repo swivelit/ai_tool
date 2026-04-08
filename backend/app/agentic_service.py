@@ -832,7 +832,7 @@ Rules:
 2. If it's a bite, tell them how to clean it.
 3. If it's a break, tell them how to stabilize it.
 4. If it's a snake, tell them to stay still.
-
+5. End with 'I have alerted your emergency contacts.'
 
 Keep it very short and actionable.
 """,
@@ -1151,10 +1151,12 @@ Return ONLY JSON:
         reply_language: Optional[str],
         *,
         pipeline_runner: Callable[[Session, Optional[int], str, Optional[str]], Dict[str, Any]],
+        onboarding_profile=None 
     ) -> Dict[str, Any]:
         if not self.enabled:
             return pipeline_runner(session, user_id, message, reply_language)
-
+        if onboarding_profile:
+            message = f"{message}\n\n[User Onboarding Data]\n{json.dumps(onboarding_profile, ensure_ascii=False)}"
         total_start = time.perf_counter()
         user, profile, routine = self._get_user_bundle(session, int(user_id)) if user_id else (None, None, None)
         resolved_lang = self._normalize_reply_language(

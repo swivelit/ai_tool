@@ -31,6 +31,7 @@ from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
 from .orchestrator_task import run_orchestrator
 
+
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = CURRENT_DIR.parent
 if str(BACKEND_ROOT) not in sys.path:
@@ -41,6 +42,9 @@ bootstrap_observability()
 patch_openai_client()
 from openai import OpenAI
 
+from .local_rag_service import LocalRAGService
+from .agentic_service import AgenticService
+from .onboarding_agent import router as onboarding_router
 
 from config import (
     GENERATED_DOCS_DIR,
@@ -76,6 +80,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(onboarding_router, prefix="/api/onboarding", tags=["onboarding"])
 
 STAGE_BEHAVIOUR = BehaviourQuestionnaire()
 LOCAL_RAG_SERVICE = LocalRAGService()
@@ -671,7 +677,14 @@ Rules:
 - If routine is missing, ask clarifying questions
 - Never suggest actions outside wake/sleep boundaries unless explicitly asked
 - If a request conflicts with routine, explain and suggest an alternative
-
+- If onboarding_profile is available:
+    - You MUST use it to personalize your response
+    - Refer to user's goals, preferences, and background
+    - Tailor suggestions based on onboarding answers
+    - Do NOT ignore onboarding data
+- If onboarding_profile is available:
+    - You MUST prioritize it over generic responses
+    - Use it to guide decisions, not just tone
 Return ONLY JSON:
 {
   "intent": "reminder|note|task|document|other",
@@ -909,6 +922,32 @@ def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, ans
     )
     session.commit()
 
+# -----------------------------
+# 🔹 ADD YOUR FUNCTION HERE
+# -----------------------------
+import json
+import os
+
+def load_onboarding_profile(user_id: str):
+    db_file = os.path.join(os.path.dirname(__file__), "user_database.json")
+
+    if not os.path.exists(db_file):
+        return {}
+
+    try:
+        with open(db_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # get latest profile (simple approach)
+        for item in reversed(data):
+            if str(item.get("user_id")) == str(user_id):
+                return item
+
+    except Exception:
+        pass
+
+    return {}
+
 
 def build_user_context(session: Session, user_id: int) -> dict:
     user = session.get(User, user_id)
@@ -917,7 +956,7 @@ def build_user_context(session: Session, user_id: int) -> dict:
 
     routine = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
-
+    onboarding_profile = load_onboarding_profile(str(user_id))
     if profile and profile.questions_version != PERSONALITY_QUESTIONS_VERSION:
         personality = "Personality profile outdated. Be neutral and helpful."
     elif profile and profile.profile_summary:
@@ -939,6 +978,8 @@ def build_user_context(session: Session, user_id: int) -> dict:
             "daily_habits": routine.daily_habits if routine else None,
         },
         "personality": personality,
+
+        "onboarding_profile": onboarding_profile
     }
 
 
@@ -1146,6 +1187,7 @@ def _build_augmented_profile_context(
     merged = f"{base_profile_context.strip()}\n\n{RAG_CONTEXT_HEADER.strip()}\n{context_text}".strip()
     return merged, meta
 
+
 def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, reply_language: Optional[str] = None) -> Dict[str, Any]:
     pipeline_user = session.get(User, user_id) if user_id else None
     resolved_reply_language = _normalize_reply_language(reply_language or (pipeline_user.reply_language if pipeline_user else None))
@@ -1174,12 +1216,15 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
             print(f"[DEBUG] Fast-path skipped (Confidence: {confidence:.2f}, Source: {source}). Falling back to OpenAI.")
 
     profile = _sync_stage_profile(session, user_id)
+    onboarding_profile = load_onboarding_profile(str(user_id))
     total_start = time.perf_counter()
     timings: Dict[str, float] = {}
     stage_notes: List[str] = []
 
     t0 = time.perf_counter()
     base_profile_context = STAGE_BEHAVIOUR.build_runtime_context(profile, user_query=message)
+    if onboarding_profile:
+        base_profile_context += f"\n\n[ONBOARDING PROFILE]\n{json.dumps(onboarding_profile, ensure_ascii=False)}"
     profile_context, rag_context_meta = _build_augmented_profile_context(session, user_id, message, base_profile_context)
     timings["context_ms"] = round((time.perf_counter() - t0) * 1000, 2)
     rag_timing_payload = rag_context_meta.get("timings_ms") if isinstance(rag_context_meta, dict) else {}
@@ -1498,12 +1543,16 @@ def _run_agentic_or_pipeline(
     message: str,
     reply_language: Optional[str] = None,
 ) -> Dict[str, Any]:
+    
+    onboarding_profile = load_onboarding_profile(str(user_id))
+
     return _get_agentic_service().orchestrate_chat(
         session,
         user_id,
         message,
         reply_language,
         pipeline_runner=_run_stage_pipeline,
+        onboarding_profile=onboarding_profile
     )
 
 
@@ -1795,7 +1844,7 @@ def _build_direct_answer_pipeline_result(
         predicted_label=intent.lower(),
         risk_level="high" if intent == "EMERGENCY" else "low",
         direct_answer_source="orchestrator_fast_exit",
-        direct_answer_confidence=f"{float(confidence):.4f}",
+        direct_answer_confidence=f"{confidence:.4f}",
         stage_notes=[
             f"Orchestrator identified intent: {intent}.",
             f"Matched keyword: '{matched_keyword}'" if matched_keyword else "No keyword matched.",
