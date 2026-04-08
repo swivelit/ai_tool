@@ -1,0 +1,28 @@
+# Company Knowledge Base - Voice Agent AI Platform
+
+## About Us
+Voice Agent AI is a next-generation AI-powered onboarding platform. We help businesses create seamless, conversational onboarding experiences using natural language processing and voice technology. Our platform speaks Tanglish (Tamil + English) natively for South Indian users.
+
+## Frequently Asked Questions
+
+Q:  I use this on my phone?
+A: Yes! Our platform is fully responsive and works on any mobile browser. No app download needed.
+
+Q: How accurate is the voice recognition?
+A: Our speech-to-text system is optimized for Tamil and Tanglish with over 95% accuracy for clear audio.
+
+Q: Can I customize the questions?
+A: Yes! you can create custom question flows using our simple script format.
+
+Q: How long does onboarding take?
+A: A typical onboarding session takes 3-5 minutes with 12-15 questions.
+
+Q: Is there a mobile app?
+A: Currently we offer a web-based solution. A native mobile app for Android and iOS is planned for Q3 2026.
+
+Q: Can I integrate this with my existing app?
+A: Yes! Enterprise plan customers get full API access for seamless integration with any platform.
+
+Q: What happens to my data after onboarding?
+A: Your profile data is securely stored and used only to personalize your experience. You can request data deletion anytime.
+

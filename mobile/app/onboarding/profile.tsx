@@ -152,7 +152,7 @@ export default function ProfileScreen() {
 
       await saveProfile(upsertedProfile);
       await refresh();
-      router.replace("/onboarding/questionnaire");
+      router.replace("/onboarding/agent");
     } catch (error: any) {
       showNotice("Couldn’t save profile", error?.message || "Failed to save profile.");
     } finally {
