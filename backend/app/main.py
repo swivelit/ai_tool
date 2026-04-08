@@ -600,7 +600,7 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {
         "ok": True,
