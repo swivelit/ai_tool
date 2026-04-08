@@ -1,0 +1,183 @@
+{
+  "company": {
+    "name": "Voice Agent AI",
+    "domain": "AI-powered onboarding platform",
+    "summary": "Voice Agent AI is a next-generation AI-powered onboarding platform that helps businesses create seamless, conversational onboarding experiences using natural language processing and voice technology.",
+    "specialization": "The platform speaks Tanglish (Tamil + English) natively for South Indian users."
+  },
+  "documents": [
+    {
+      "id": "about_company",
+      "category": "company_overview",
+      "question": "What is Voice Agent AI?",
+      "answer": "Voice Agent AI is a next-generation AI-powered onboarding platform that helps businesses create seamless, conversational onboarding experiences using natural language processing and voice technology. It also speaks Tanglish (Tamil + English) natively for South Indian users.",
+      "related_questions": [
+        "Tell me about Voice Agent AI.",
+        "What does your company do?",
+        "What kind of platform is Voice Agent AI?",
+        "How does Voice Agent AI help businesses?",
+        "Do you support Tanglish-speaking users?"
+      ],
+      "keywords": [
+        "company",
+        "overview",
+        "AI onboarding",
+        "voice technology",
+        "NLP",
+        "Tanglish",
+        "Tamil English"
+      ],
+      "source_section": "About Us"
+    },
+    {
+      "id": "mobile_usage",
+      "category": "product_access",
+      "question": "Can I use this on my phone?",
+      "answer": "Yes. The platform is fully responsive and works on any mobile browser, so no app download is needed.",
+      "related_questions": [
+        "Does it work on mobile?",
+        "Can I access the platform from my smartphone?",
+        "Do I need to install an app to use it?",
+        "Is your onboarding platform mobile friendly?",
+        "Can users complete onboarding in a phone browser?"
+      ],
+      "keywords": [
+        "mobile",
+        "phone",
+        "browser",
+        "responsive",
+        "no app"
+      ],
+      "source_section": "Frequently Asked Questions"
+    },
+    {
+      "id": "voice_recognition_accuracy",
+      "category": "voice_ai",
+      "question": "How accurate is the voice recognition?",
+      "answer": "The speech-to-text system is optimized for Tamil and Tanglish and delivers over 95% accuracy for clear audio.",
+      "related_questions": [
+        "How good is your speech recognition?",
+        "What is the voice recognition accuracy?",
+        "Do you support Tamil voice input accurately?",
+        "How accurate is Tanglish speech-to-text?",
+        "Will the system understand clear Tamil audio well?"
+      ],
+      "keywords": [
+        "accuracy",
+        "speech to text",
+        "voice recognition",
+        "Tamil",
+        "Tanglish",
+        "95%"
+      ],
+      "source_section": "Frequently Asked Questions"
+    },
+    {
+      "id": "custom_questions",
+      "category": "customization",
+      "question": "Can I customize the questions?",
+      "answer": "Yes. You can create custom question flows using the platform's simple script format.",
+      "related_questions": [
+        "Can I create my own onboarding questions?",
+        "Is the question flow customizable?",
+        "Can businesses edit the onboarding script?",
+        "How do I customize question flows?",
+        "Can I change the questions asked to users?"
+      ],
+      "keywords": [
+        "customization",
+        "questions",
+        "question flow",
+        "script format",
+        "edit"
+      ],
+      "source_section": "Frequently Asked Questions"
+    },
+    {
+      "id": "onboarding_duration",
+      "category": "onboarding_process",
+      "question": "How long does onboarding take?",
+      "answer": "A typical onboarding session takes 3 to 5 minutes and includes around 12 to 15 questions.",
+      "related_questions": [
+        "How much time does onboarding usually take?",
+        "How many questions are asked during onboarding?",
+        "What is the average onboarding duration?",
+        "Is onboarding quick for new users?",
+        "How long is a standard onboarding session?"
+      ],
+      "keywords": [
+        "duration",
+        "onboarding",
+        "3-5 minutes",
+        "12-15 questions",
+        "time"
+      ],
+      "source_section": "Frequently Asked Questions"
+    },
+    {
+      "id": "mobile_app_availability",
+      "category": "product_roadmap",
+      "question": "Is there a mobile app?",
+      "answer": "Currently, the platform is available as a web-based solution. A native mobile app for Android and iOS is planned for Q3 2026.",
+      "related_questions": [
+        "Do you have an Android app?",
+        "Do you have an iPhone app?",
+        "Is there a native mobile application available?",
+        "When will the mobile app be released?",
+        "Can I use the product without a native app?"
+      ],
+      "keywords": [
+        "mobile app",
+        "Android",
+        "iOS",
+        "web-based",
+        "Q3 2026",
+        "roadmap"
+      ],
+      "source_section": "Frequently Asked Questions"
+    },
+    {
+      "id": "integration_support",
+      "category": "integration",
+      "question": "Can I integrate this with my existing app?",
+      "answer": "Yes. Enterprise plan customers get full API access for seamless integration with any platform.",
+      "related_questions": [
+        "Do you provide API access?",
+        "Can this connect to our existing software?",
+        "Is integration available for enterprise customers?",
+        "Can we embed this into our app?",
+        "Does the enterprise plan support platform integration?"
+      ],
+      "keywords": [
+        "integration",
+        "API",
+        "enterprise",
+        "existing app",
+        "platform"
+      ],
+      "source_section": "Frequently Asked Questions"
+    },
+    {
+      "id": "data_handling",
+      "category": "privacy_and_security",
+      "question": "What happens to my data after onboarding?",
+      "answer": "Profile data is securely stored and used only to personalize the user experience. Users can also request data deletion at any time.",
+      "related_questions": [
+        "How do you store user data?",
+        "Is my onboarding data secure?",
+        "What do you do with profile information?",
+        "Can I request my data to be deleted?",
+        "Do you use onboarding data for personalization only?"
+      ],
+      "keywords": [
+        "data",
+        "privacy",
+        "security",
+        "deletion",
+        "profile data",
+        "personalization"
+      ],
+      "source_section": "Frequently Asked Questions"
+    }
+  ]
+}
