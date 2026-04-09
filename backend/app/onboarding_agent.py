@@ -37,9 +37,9 @@ def get_vectorstore():
 
 def initialize_company_rag():
     try:
-        kb_file = os.path.join(CURRENT_DIR, "company_knowledge.txt")
+        kb_file = os.path.join(CURRENT_DIR, "company_knowledge.json")
         if not os.path.exists(kb_file):
-            print("⚠️  company_knowledge.txt not found. RAG disabled.")
+            print("⚠️  company_knowledge.json not found. RAG disabled.")
             return None
         loader = TextLoader(kb_file, encoding="utf-8")
         docs = loader.load()
@@ -68,10 +68,10 @@ def chat_node(state: AgentState):
     ai_question_count = sum(1 for m in messages if isinstance(m, AIMessage) and "DONE" not in m.content.upper())
     
     try:
-        with open(os.path.join(CURRENT_DIR, "knowledge.txt"), "r", encoding="utf-8") as f:
+        with open(os.path.join(CURRENT_DIR, "knowledge.json"), "r", encoding="utf-8") as f:
             flow_script = f.read()
     except Exception as e:
-        print(f"Error reading knowledge.txt: {e}")
+        print(f"Error reading knowledge.json: {e}")
         flow_script = ""
     
     rag_context = ""
