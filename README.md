@@ -176,6 +176,13 @@ npx expo start
 npm run test:local-agents
 ```
 
+Focused regression tests for auth persistence, boot fail-open behavior, route resolution, and password visibility can also be run with:
+
+```bash
+cd mobile
+npx vitest run test/firebase.test.ts test/appBoot.test.ts test/authUi.test.ts
+```
+
 ### Backend
 
 ```bash
@@ -210,3 +217,20 @@ uvicorn theni_tamil_api:app --host 127.0.0.1 --port 9009
 - Do not treat backend OpenAI-first paths as the main architecture anymore.
 - Keep `/api/chat` stable. Mobile continues to intercept it locally first.
 - If memory or cache config files are missing, tiny in-code fallbacks exist only to keep the local path safe to boot.
+- Native Firebase auth now uses AsyncStorage-backed persistence so login survives app restarts on Android/iOS, while web keeps the default web auth behavior.
+- App boot uses watchdog-style fail-open handling. Optional local seed bootstrap and profile recovery now warn and continue instead of blocking the boot screen forever.
+
+## Manual QA Checklist
+
+- Fresh install on Android/iOS:
+  launch the app with an empty local storage state and confirm the boot screen clears even if local seed bootstrap is slow or unavailable.
+- Login persistence on native:
+  log in with email/password, fully close the app, reopen it, and confirm the user lands back in the authenticated flow without logging in again.
+- Fresh signup flow:
+  create a new account, confirm routing goes `signup -> onboarding/profile -> onboarding/questionnaire -> tabs` without a split or half-rendered transition.
+- Existing account login flow:
+  log in with an already onboarded account and confirm routing goes directly to tabs without flashing onboarding screens.
+- Optional seed bootstrap failure:
+  simulate or force a local seed bootstrap failure and confirm the app logs a warning and still reaches the app shell.
+- Password visibility:
+  verify the login password eye toggle works, and both signup password fields independently toggle visibility with accessible labels.

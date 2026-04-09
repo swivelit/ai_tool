@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GlassCard } from "@/components/Glass";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
+import { getPasswordVisibilityProps } from "@/lib/authUi";
 
 const DEV_TEST_ACCOUNT = {
   name: "Test User",
@@ -81,6 +82,7 @@ export default function LoginScreen() {
     () => email.trim().length > 0 && password.length > 0 && !busy,
     [busy, email, password]
   );
+  const passwordVisibility = getPasswordVisibilityProps(showPassword);
 
   async function handleLogin() {
     const nextEmail = email.trim();
@@ -314,7 +316,7 @@ export default function LoginScreen() {
                       setPassword(value);
                       if (errorText) setErrorText("");
                     }}
-                    secureTextEntry={!showPassword}
+                    secureTextEntry={passwordVisibility.secureTextEntry}
                     autoCapitalize="none"
                     autoCorrect={false}
                     autoComplete="password"
@@ -329,9 +331,13 @@ export default function LoginScreen() {
                   <Pressable
                     onPress={() => setShowPassword((prev) => !prev)}
                     style={styles.visibilityBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel={passwordVisibility.accessibilityLabel}
+                    accessibilityHint={passwordVisibility.accessibilityHint}
+                    hitSlop={10}
                   >
                     <Ionicons
-                      name={showPassword ? "eye-off-outline" : "eye-outline"}
+                      name={passwordVisibility.iconName}
                       size={18}
                       color={Brand.cocoa}
                     />

@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GlassCard } from "@/components/Glass";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
+import { getPasswordVisibilityProps } from "@/lib/authUi";
 
 const DEV_TEST_PASSWORD = "Test@123456";
 
@@ -184,6 +185,8 @@ export default function SignupScreen() {
 
   const passwordTone = passwordStrengthTone(password);
   const passwordLabel = passwordStrengthLabel(password);
+  const passwordVisibility = getPasswordVisibilityProps(showPassword);
+  const confirmPasswordVisibility = getPasswordVisibilityProps(showConfirmPassword);
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
@@ -375,7 +378,7 @@ export default function SignupScreen() {
                       setPassword(value);
                       if (errorText) setErrorText("");
                     }}
-                    secureTextEntry={!showPassword}
+                    secureTextEntry={passwordVisibility.secureTextEntry}
                     autoCapitalize="none"
                     autoCorrect={false}
                     autoComplete="new-password"
@@ -389,9 +392,13 @@ export default function SignupScreen() {
                   <Pressable
                     onPress={() => setShowPassword((prev) => !prev)}
                     style={styles.visibilityBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel={passwordVisibility.accessibilityLabel}
+                    accessibilityHint={passwordVisibility.accessibilityHint}
+                    hitSlop={10}
                   >
                     <Ionicons
-                      name={showPassword ? "eye-off-outline" : "eye-outline"}
+                      name={passwordVisibility.iconName}
                       size={18}
                       color={Brand.cocoa}
                     />
@@ -415,7 +422,7 @@ export default function SignupScreen() {
                       setConfirmPassword(value);
                       if (errorText) setErrorText("");
                     }}
-                    secureTextEntry={!showConfirmPassword}
+                    secureTextEntry={confirmPasswordVisibility.secureTextEntry}
                     autoCapitalize="none"
                     autoCorrect={false}
                     placeholder="Re-enter password"
@@ -430,11 +437,13 @@ export default function SignupScreen() {
                       setShowConfirmPassword((prev) => !prev)
                     }
                     style={styles.visibilityBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel={confirmPasswordVisibility.accessibilityLabel}
+                    accessibilityHint={confirmPasswordVisibility.accessibilityHint}
+                    hitSlop={10}
                   >
                     <Ionicons
-                      name={
-                        showConfirmPassword ? "eye-off-outline" : "eye-outline"
-                      }
+                      name={confirmPasswordVisibility.iconName}
                       size={18}
                       color={Brand.cocoa}
                     />

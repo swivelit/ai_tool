@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
-import { Stack, router, useSegments } from "expo-router";
+import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -8,7 +8,15 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
-import { getProfileForFirebaseUid } from "@/lib/account";
+import { getProfileForFirebaseUid, UserProfile } from "@/lib/account";
+import {
+  APP_BOOT_TIMEOUT_MS,
+  LOCAL_AGENT_SEED_TIMEOUT_MS,
+  PROFILE_BOOT_TIMEOUT_MS,
+  getPendingBootSteps,
+  resolveDesiredRoute,
+  runBootStep,
+} from "@/lib/appBoot";
 import { ensureLocalAgentSeedData } from "@/lib/localAgentBootstrap";
 
 function BootScreen() {
@@ -32,101 +40,87 @@ function BootScreen() {
 }
 
 function RouteGate() {
-  const segments = useSegments() as string[];
+  const pathname = usePathname();
   const { user } = useAuth();
   const { profile } = useAssistant();
-  const [gateLoading, setGateLoading] = useState(false);
+  const [fallbackProfile, setFallbackProfile] = useState<UserProfile | null>(null);
+  const [profileLookupLoading, setProfileLookupLoading] = useState(false);
+  const lastNavigationRef = useRef<string | null>(null);
+
+  const providerProfile = user && profile?.firebaseUid === user.uid ? profile : null;
 
   useEffect(() => {
-    let alive = true;
-
-    async function syncAndRoute() {
-      const first = segments[0];
-      const second = segments[1];
-
-      const atRoot = !first;
-      const inTabs = first === "(tabs)";
-      const inAuth = first === "auth";
-      const inOnboarding = first === "onboarding";
-      const atProfile = first === "onboarding" && second === "profile";
-      const atQuestionnaire = first === "onboarding" && second === "questionnaire";
-      const atSetup = first === "setup";
-
-      try {
-        if (!user) {
-          if (!alive) return;
-
-          setGateLoading(false);
-
-          if (!inAuth && !atRoot) {
-            router.replace("/");
-          }
-
-          return;
-        }
-
-        const providerProfile = profile?.firebaseUid === user.uid ? profile : null;
-
-        if (!providerProfile) {
-          setGateLoading(true);
-        } else {
-          setGateLoading(false);
-        }
-
-        const localProfile = providerProfile
-          ? null
-          : await getProfileForFirebaseUid(user.uid, user.email);
-
-        if (!alive) return;
-
-        const activeProfile = providerProfile || localProfile;
-        const hasProfile = Boolean(activeProfile?.userId);
-        const questionnaireCompleted = Boolean(activeProfile?.questionnaireCompleted);
-
-        if (!hasProfile) {
-          if (!atProfile) {
-            router.replace("/onboarding/profile");
-          }
-          return;
-        }
-
-        if (!questionnaireCompleted) {
-          if (!atQuestionnaire) {
-            router.replace("/onboarding/questionnaire");
-          }
-          return;
-        }
-
-        if (inAuth || inOnboarding || atRoot) {
-          router.replace("/(tabs)");
-          return;
-        }
-
-        if (atSetup || inTabs) {
-          return;
-        }
-      } finally {
-        if (alive) {
-          setGateLoading(false);
-        }
-      }
+    if (!user) {
+      setFallbackProfile(null);
+      setProfileLookupLoading(false);
+      return;
     }
 
-    void syncAndRoute();
+    if (providerProfile) {
+      setFallbackProfile(null);
+      setProfileLookupLoading(false);
+      return;
+    }
+
+    let alive = true;
+    setProfileLookupLoading(true);
+
+    void (async () => {
+      const result = await runBootStep(
+        "profile bootstrap",
+        () => getProfileForFirebaseUid(user.uid, user.email),
+        {
+          timeoutMs: PROFILE_BOOT_TIMEOUT_MS,
+          optional: true,
+        }
+      );
+
+      if (!alive) {
+        return;
+      }
+
+      if (result.status === "completed") {
+        setFallbackProfile(result.value ?? null);
+      } else {
+        setFallbackProfile(null);
+      }
+
+      setProfileLookupLoading(false);
+    })();
 
     return () => {
       alive = false;
     };
-  }, [
-    segments,
-    user?.uid,
-    user?.email,
-    profile?.firebaseUid,
-    profile?.userId,
-    profile?.questionnaireCompleted,
-  ]);
+  }, [providerProfile, user?.email, user?.uid]);
 
-  if (user && gateLoading) {
+  const activeProfile = providerProfile || fallbackProfile;
+
+  const targetRoute = useMemo(
+    () =>
+      resolveDesiredRoute({
+        pathname,
+        hasUser: Boolean(user),
+        hasProfile: Boolean(activeProfile?.userId),
+        questionnaireCompleted: Boolean(activeProfile?.questionnaireCompleted),
+      }),
+    [activeProfile?.questionnaireCompleted, activeProfile?.userId, pathname, user]
+  );
+
+  useEffect(() => {
+    if (!targetRoute || targetRoute === pathname) {
+      lastNavigationRef.current = null;
+      return;
+    }
+
+    if (lastNavigationRef.current === targetRoute) {
+      return;
+    }
+
+    lastNavigationRef.current = targetRoute;
+    router.replace(targetRoute);
+  }, [pathname, targetRoute]);
+
+  if (user && !activeProfile && profileLookupLoading) {
     return <BootScreen />;
   }
 
@@ -137,26 +131,56 @@ function AppShell() {
   const { loading: authLoading } = useAuth();
   const { loading: profileLoading } = useAssistant();
   const [localAgentLoading, setLocalAgentLoading] = useState(true);
+  const [bootTimedOut, setBootTimedOut] = useState(false);
 
   useEffect(() => {
     let alive = true;
 
-    async function bootstrapLocalAgentData() {
-      try {
-        await ensureLocalAgentSeedData();
-      } finally {
-        if (alive) setLocalAgentLoading(false);
-      }
-    }
+    void (async () => {
+      await runBootStep("local agent seed bootstrap", ensureLocalAgentSeedData, {
+        timeoutMs: LOCAL_AGENT_SEED_TIMEOUT_MS,
+        optional: true,
+      });
 
-    void bootstrapLocalAgentData();
+      if (alive) {
+        setLocalAgentLoading(false);
+      }
+    })();
 
     return () => {
       alive = false;
     };
   }, []);
 
-  if (authLoading || profileLoading || localAgentLoading) {
+  const pendingBootSteps = useMemo(
+    () =>
+      getPendingBootSteps({
+        authLoading,
+        profileLoading,
+        localSeedLoading: localAgentLoading,
+      }),
+    [authLoading, localAgentLoading, profileLoading]
+  );
+
+  useEffect(() => {
+    if (!pendingBootSteps.length) {
+      setBootTimedOut(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      console.warn(
+        `[boot] App boot watchdog tripped after ${APP_BOOT_TIMEOUT_MS}ms. Continuing with pending steps: ${pendingBootSteps.join(
+          ", "
+        )}.`
+      );
+      setBootTimedOut(true);
+    }, APP_BOOT_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [pendingBootSteps]);
+
+  if (!bootTimedOut && pendingBootSteps.length) {
     return <BootScreen />;
   }
 
