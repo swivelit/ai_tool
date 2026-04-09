@@ -1,0 +1,161 @@
+{
+  "flow_name": "Onboarding_Agent",
+  "start": {
+    "message": "Hey! Welcome 👋 Unga peru enna?",
+    "variable": "name"
+  },
+  "steps": [
+    {
+      "id": "age",
+      "question": "Nice to meet you {{name}} 😊 Unga age group enna?",
+      "type": "choice",
+      "options": [
+        "Under 18",
+        "18-24",
+        "25-34",
+        "35-50",
+        "50+"
+      ]
+    },
+    {
+      "id": "emotion",
+      "question": "Ippo unga life epdi iruku? 😊",
+      "type": "choice",
+      "options": [
+        "Happy 😄",
+        "Neutral 😐",
+        "Stressed 😓",
+        "Confused 🤔",
+        "Excited 🔥"
+      ],
+      "ai_response": {
+        "enabled": true,
+        "prompt": "User feels {{emotion}}. Respond in Tanglish with empathy, motivation, and short friendly tone."
+      }
+    },
+    {
+      "id": "gender",
+      "question": "Neenga male ah illa female ah?",
+      "type": "choice",
+      "options": [
+        "Male",
+        "Female",
+        "Prefer not to say"
+      ]
+    },
+    {
+      "id": "communication_style",
+      "question": "Ungalukku comfortable ah irukanum na naan epdi pesanum?",
+      "type": "choice",
+      "options": [
+        "Friendly 😄",
+        "Professional 💼",
+        "Motivational 💪"
+      ]
+    },
+    {
+      "id": "learning_style",
+      "question": "Neenga eppadi learn panna prefer panreenga?",
+      "type": "choice",
+      "options": [
+        "Watching videos 🎥",
+        "Reading 📖",
+        "Practical doing 🛠️",
+        "Listening 🎧"
+      ]
+    },
+    {
+      "id": "goal",
+      "question": "Neenga inga mainly enna pannalaam nu nenachitu vandhirukeenga?",
+      "type": "choice",
+      "options": [
+        "Learn new skills",
+        "Get a job",
+        "Grow my business",
+        "Just exploring"
+      ]
+    },
+    {
+      "id": "skill_level",
+      "question": "Indha area la unga current level enna? 🎯",
+      "type": "choice",
+      "options": [
+        "Beginner 🐣",
+        "Intermediate 🚶",
+        "Advanced 🚀"
+      ]
+    },
+    {
+      "id": "time_commitment",
+      "question": "Daily evlo time spend panna mudiyum? ⏳",
+      "type": "choice",
+      "options": [
+        "Less than 1 hour",
+        "1-2 hours",
+        "2-4 hours",
+        "More than 4 hours"
+      ]
+    },
+    {
+      "id": "challenge",
+      "question": "Ipdi varikum unga biggest struggle enna? 😔",
+      "type": "choice",
+      "options": [
+        "No time ⏳",
+        "Lack of clarity 🤔",
+        "No motivation 😴",
+        "Fear of failure 😟",
+        "Don’t know where to start 🚧"
+      ],
+      "ai_response": {
+        "enabled": true,
+        "prompt": "User's biggest challenge is {{challenge}}. Give a short, supportive, motivational reply in Tanglish. Make user feel understood and confident."
+      }
+    },
+    {
+      "id": "urgency",
+      "question": "Evlo fast result venum? ⚡",
+      "type": "choice",
+      "options": 
+        "As soon as possible 🚀",
+        "Within few months 📆",
+        "No rush 🙂"
+    },
+    {
+      "id": "device",
+      "question": "Neenga mostly edhula work panreenga? 💻",
+      "type": "choice",
+      "options": [
+        "Mobile 📱",
+        "Laptop 💻",
+        "Both 🔄"
+      ]
+    },
+    {
+      "id": "language",
+      "question": "Neenga edha language la learn panna comfortable? 🌍",
+      "type": "choice",
+      "options": [
+        "Tamil 🇮🇳",
+        "English 🌐",
+        "Tanglish 🔄"
+      ]
+    },
+    {
+      "id": "income_goal",
+      "question": "Future la income goal iruka? 💰",
+      "type": "choice",
+      "options": [
+        "Side income 💵",
+        "Full-time income 💼",
+        "Just learning now 📚"
+      ]
+    }
+  ],
+  "end": {
+    "ai_summary": {
+      "enabled": true,
+      "prompt": "User name is {{name}}. Their goal is {{goal}}, skill level is {{skill_level}}, challenge is {{challenge}}. Give a personalized motivational summary in Tanglish with clear next step."
+    }
+  }
+}
