@@ -30,32 +30,44 @@ export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseC
 
 type NativeInitializeAuthOptions = NonNullable<Parameters<typeof initializeAuth>[1]>;
 type NativePersistenceValue = NonNullable<NativeInitializeAuthOptions["persistence"]>;
+type GetPersistenceFactory = (storage: typeof AsyncStorage) => NativePersistenceValue;
 
-export function createNativePersistence(
-  getPersistenceFactory?: (storage: typeof AsyncStorage) => NativePersistenceValue
-) {
+export function createNativePersistence(getPersistenceFactory?: GetPersistenceFactory) {
   if (getPersistenceFactory) {
     return getPersistenceFactory(AsyncStorage);
   }
 
-  const { getReactNativePersistence } =
-    require("firebase/auth/react-native") as {
-      getReactNativePersistence: (storage: typeof AsyncStorage) => NativePersistenceValue;
+  try {
+    const firebaseAuthModule = require("firebase/auth") as {
+      getReactNativePersistence?: GetPersistenceFactory;
     };
 
-  return getReactNativePersistence(AsyncStorage);
+    if (typeof firebaseAuthModule.getReactNativePersistence === "function") {
+      return firebaseAuthModule.getReactNativePersistence(AsyncStorage);
+    }
+  } catch {
+    // Fall through to the no-persistence fallback below.
+  }
+
+  return undefined;
 }
 
 export function getInitializeAuthOptions(
   platformOS: string,
-  getPersistenceFactory?: (storage: typeof AsyncStorage) => NativePersistenceValue
+  getPersistenceFactory?: GetPersistenceFactory
 ): NativeInitializeAuthOptions | undefined {
   if (platformOS === "web") {
     return undefined;
   }
 
+  const persistence = createNativePersistence(getPersistenceFactory);
+
+  if (!persistence) {
+    return undefined;
+  }
+
   return {
-    persistence: createNativePersistence(getPersistenceFactory),
+    persistence,
   };
 }
 
