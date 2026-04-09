@@ -465,7 +465,7 @@ export default function LoginScreen() {
 
               <View style={styles.footerRow}>
                 <Text style={styles.footerCopy}>Don’t have an account yet?</Text>
-                <Pressable onPress={() => router.replace("/auth/signup")}>
+                <Pressable onPress={() => router.replace("./signup")}>
                   <Text style={styles.footerLink}>Create account</Text>
                 </Pressable>
               </View>

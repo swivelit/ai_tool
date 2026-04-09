@@ -186,7 +186,14 @@ export default function LandingScreen() {
             </LinearGradient>
 
             <Pressable
-              onPress={() => router.push(user ? "/(tabs)" : "/auth/login")}
+              onPress={() => {
+                if (user) {
+                  router.push("/(tabs)");
+                  return;
+                }
+
+                router.push("./auth/login");
+              }}
               style={({ pressed }) => [
                 styles.buttonShell,
                 pressed && styles.pressed,
@@ -208,7 +215,7 @@ export default function LandingScreen() {
 
             {!user ? (
               <Pressable
-                onPress={() => router.push("/auth/signup")}
+                onPress={() => router.push("./auth/signup")}
                 style={({ pressed }) => [
                   styles.secondaryButton,
                   pressed && styles.pressed,
