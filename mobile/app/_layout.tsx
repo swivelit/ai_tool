@@ -9,6 +9,7 @@ import { AssistantProvider, useAssistant } from "@/components/AssistantProvider"
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
 import { getProfileForFirebaseUid } from "@/lib/account";
+import { ensureLocalAgentSeedData } from "@/lib/localAgentBootstrap";
 
 function BootScreen() {
   return (
@@ -135,8 +136,27 @@ function RouteGate() {
 function AppShell() {
   const { loading: authLoading } = useAuth();
   const { loading: profileLoading } = useAssistant();
+  const [localAgentLoading, setLocalAgentLoading] = useState(true);
 
-  if (authLoading || profileLoading) {
+  useEffect(() => {
+    let alive = true;
+
+    async function bootstrapLocalAgentData() {
+      try {
+        await ensureLocalAgentSeedData();
+      } finally {
+        if (alive) setLocalAgentLoading(false);
+      }
+    }
+
+    void bootstrapLocalAgentData();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (authLoading || profileLoading || localAgentLoading) {
     return <BootScreen />;
   }
 

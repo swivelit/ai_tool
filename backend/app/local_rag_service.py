@@ -30,6 +30,8 @@ except Exception:  # pragma: no cover
 try:
     from config import (
         FAST_RAG_DATASET_PATH,
+        LOCAL_RAG_KEYWORDS_PATH,
+        LOCAL_RAG_SYNONYMS_PATH,
         OPENAI_API_KEY,
         RAG_ENABLED,
         RAG_EMBED_CACHE_SIZE,
@@ -47,7 +49,11 @@ try:
     )
 except Exception:  # pragma: no cover
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    FAST_RAG_DATASET_PATH = str(Path(__file__).resolve().parent.parent / "data" / "fast_rag_replies.csv")
+    _repo_root = Path(__file__).resolve().parents[2]
+    _seed_rag_dir = _repo_root / "mobile" / "data" / "rag" / "seed"
+    FAST_RAG_DATASET_PATH = str(_seed_rag_dir / "fast_rag_replies.csv")
+    LOCAL_RAG_KEYWORDS_PATH = _seed_rag_dir / "local_rag_keywords.csv"
+    LOCAL_RAG_SYNONYMS_PATH = _seed_rag_dir / "local_rag_synonyms.csv"
 
     def _env_bool(name: str, default: bool) -> bool:
         value = os.getenv(name)
@@ -82,11 +88,9 @@ except Exception:  # pragma: no cover
     RAG_EMBED_CACHE_SIZE = max(256, _env_int("RAG_EMBED_CACHE_SIZE", 4096))
 
 CURRENT_DIR = Path(__file__).resolve().parent
-BACKEND_ROOT = CURRENT_DIR.parent
-DATA_DIR = BACKEND_ROOT / "data"
 FAST_RAG_DATASET_PATH = Path(FAST_RAG_DATASET_PATH)
-LOCAL_RAG_KEYWORDS_PATH = DATA_DIR / "local_rag_keywords.csv"
-LOCAL_RAG_SYNONYMS_PATH = DATA_DIR / "local_rag_synonyms.csv"
+LOCAL_RAG_KEYWORDS_PATH = Path(LOCAL_RAG_KEYWORDS_PATH)
+LOCAL_RAG_SYNONYMS_PATH = Path(LOCAL_RAG_SYNONYMS_PATH)
 
 
 def _env_bool(name: str, default: bool) -> bool:

@@ -1,0 +1,2 @@
+{"id":"alignment_seed_1","agent":"alignment","input":"{\"route\":\"profile\",\"draft\":\"You prefer short direct answers.\",\"replyLanguage\":\"en\"}","expectedOutput":"You prefer short, direct answers.","label":"english_alignment","metadata":{"source":"seed"}}
+{"id":"alignment_seed_2","agent":"alignment","input":"{\"route\":\"calendar_query\",\"draft\":\"You do not have any reminders for today.\",\"replyLanguage\":\"ta\"}","expectedOutput":"இன்றைக்கு உங்களிடம் சேமித்த நினைவூட்டல்கள் இல்லை.","label":"tamil_alignment","metadata":{"source":"seed"}}

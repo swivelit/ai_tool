@@ -1,0 +1,43 @@
+{
+  "version": 3,
+  "seedVersion": "2026-04-09-phone-local-primary",
+  "description": "Phone-local agent workspace seed manifest",
+  "architecture": {
+    "primaryRuntime": "phone_local_agents",
+    "backendRole": "mirror_support_openai_fallback",
+    "stableContract": "/api/chat remains unchanged"
+  },
+  "checkedInSeedFolders": [
+    "config",
+    "training/seed",
+    "rag/seed"
+  ],
+  "runtimeFolders": [
+    "profiles",
+    "cache",
+    "memory",
+    "conversations",
+    "tasks",
+    "rag/runtime",
+    "training/captures"
+  ],
+  "files": [
+    "config/models.json",
+    "config/profiler_slots.json",
+    "config/orchestrator_routes.json",
+    "config/alignment_rules.json",
+    "config/memory_rules.json",
+    "config/prompts.json",
+    "config/agent_registry.json",
+    "training/seed/classifier_dataset.csv",
+    "training/seed/pipeline_questions.csv",
+    "training/seed/profiler.jsonl",
+    "training/seed/orchestrator.jsonl",
+    "training/seed/alignment.jsonl",
+    "training/seed/memory.jsonl",
+    "training/seed/rag.jsonl",
+    "rag/seed/fast_rag_replies.csv",
+    "rag/seed/local_rag_keywords.csv",
+    "rag/seed/local_rag_synonyms.csv"
+  ]
+}

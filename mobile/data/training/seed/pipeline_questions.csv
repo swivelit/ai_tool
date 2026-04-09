@@ -1,0 +1,16 @@
+id,prompt,type,max_choices,options
+age_group,What is your age group?,single,,18-25|26-35|36-45|46-60|60+
+gender_context,Which option fits you best?,single,,woman|man|non-binary|prefer_not_to_say|other
+life_stage,Which life-stage or health context fits you right now?,single,,pregnant|postpartum_or_breastfeeding|trying_to_conceive|none_of_these|prefer_not_to_say
+food_preference,What best describes your food preference?,single,,vegetarian|non_vegetarian|eggetarian|vegan|mixed_flexible
+health_conditions,Pick up to 3 health conditions or sensitivities that matter most.,multi,3,none|diabetes_or_sugar_control|blood_pressure_or_heart_care|thyroid_or_hormonal_care|allergy_digestion_kidney_or_other
+food_caution,Which food caution best matches you?,single,,no_special_caution|avoid_sugary_foods|avoid_spicy_or_oily_foods|avoid_packaged_or_junk_foods|allergy_or_doctor_given_restrictions
+daily_activity,How active are you on most days?,single,,mostly_sitting|light_movement|moderate_walks|active_work|fitness_focused
+sleep_pattern,How is your sleep usually?,single,,poor|inconsistent|average|good|very_good
+personality_style,Which personality style sounds most like you?,single,,calm|friendly|practical|ambitious|emotional_sensitive
+stress_support,"When stressed, what kind of support helps you most?",single,,gentle_reassurance|direct_solution|step_by_step_plan|motivation|space_and_time
+communication_tone,How should the assistant talk to you?,single,,warm|respectful|short_direct|detailed|friendly_casual
+answer_length,How long should answers usually be?,single,,very_short|short|medium|detailed|depends_on_question
+hobbies,Pick up to 3 things you enjoy most.,multi,3,music|movies|reading|cooking|travel
+main_goal,What matters most to you right now?,single,,health|family|career_or_business|peace_of_mind|learning_and_growth
+family_role,Which role sounds closest to your current daily life?,single,,student|working_professional|homemaker|caregiver_parent|self_employed

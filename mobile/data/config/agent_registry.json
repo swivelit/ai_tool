@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "runtime": {
+    "primary": "phone_local",
+    "backendRole": "mirror_support_openai_fallback"
+  },
+  "agents": {
+    "profiler": {
+      "enabled": true,
+      "modelKey": "profiler",
+      "description": "Natural onboarding and profile extraction",
+      "trainingFile": "training/seed/profiler.jsonl"
+    },
+    "orchestrator": {
+      "enabled": true,
+      "mediumModelKey": "orchestratorMedium",
+      "largeModelKey": "orchestratorLarge",
+      "description": "Route user intent, tool choice, and local-vs-backend fallback decisions",
+      "trainingFile": "training/seed/orchestrator.jsonl"
+    },
+    "alignment": {
+      "enabled": true,
+      "modelKey": "aligner",
+      "description": "Rewrite answers to match the user's tone and language",
+      "trainingFile": "training/seed/alignment.jsonl"
+    },
+    "memory": {
+      "enabled": true,
+      "embeddingModelKey": "embedding",
+      "summarizerModelKey": "orchestratorMedium",
+      "description": "Semantic cache and long-term profile updates",
+      "trainingFile": "training/seed/memory.jsonl"
+    },
+    "toolAgents": {
+      "weather": true,
+      "calendar": true,
+      "profile": true
+    }
+  }
+}

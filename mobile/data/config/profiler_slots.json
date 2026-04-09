@@ -1,0 +1,95 @@
+[
+  {
+    "id": "preferred_language",
+    "prompt": "Which language should I mostly use with you?",
+    "type": "single",
+    "options": ["english", "tamil", "hindi", "telugu", "malayalam", "other"]
+  },
+  {
+    "id": "secondary_language",
+    "prompt": "Do you speak a second language that I should switch to when it feels natural?",
+    "type": "single",
+    "options": ["none", "english", "tamil", "hindi", "telugu", "malayalam", "other"]
+  },
+  {
+    "id": "occupation",
+    "prompt": "What do you do most days-work, study, business, home, or something else?",
+    "type": "single",
+    "options": ["student", "working_professional", "business_owner", "freelancer_creator", "homemaker_caregiver", "between_roles", "other"]
+  },
+  {
+    "id": "industry_or_field",
+    "prompt": "Which field or area are you mostly in right now?",
+    "type": "single",
+    "options": ["technology", "business", "education", "healthcare", "design_media", "sales_marketing", "operations", "other"]
+  },
+  {
+    "id": "hobbies",
+    "prompt": "What do you enjoy doing in your free time?",
+    "type": "multi",
+    "max_choices": 4,
+    "options": ["music", "movies", "reading", "gaming", "travel", "fitness", "cooking", "sports", "art", "technology"]
+  },
+  {
+    "id": "interests",
+    "prompt": "What topics do you enjoy talking about or learning about?",
+    "type": "multi",
+    "max_choices": 4,
+    "options": ["ai_technology", "business", "career", "productivity", "finance", "health", "travel", "culture", "education", "self_growth"]
+  },
+  {
+    "id": "communication_tone",
+    "prompt": "How should I talk to you most of the time?",
+    "type": "single",
+    "options": ["warm", "respectful", "short_direct", "detailed", "friendly_casual"]
+  },
+  {
+    "id": "answer_length",
+    "prompt": "How long should my answers usually be?",
+    "type": "single",
+    "options": ["very_short", "short", "medium", "detailed", "depends_on_question"]
+  },
+  {
+    "id": "personality_style",
+    "prompt": "How would you describe your own style or personality?",
+    "type": "single",
+    "options": ["calm", "friendly", "practical", "ambitious", "curious", "private_reserved"]
+  },
+  {
+    "id": "assistant_persona",
+    "prompt": "What kind of assistant do you want me to feel like?",
+    "type": "single",
+    "options": ["coach", "planner", "friend", "tutor", "operator", "straight_shooter"]
+  },
+  {
+    "id": "planning_style",
+    "prompt": "How do you like planning your day or work?",
+    "type": "single",
+    "options": ["very_structured", "light_structure", "flexible", "last_minute", "mixed"]
+  },
+  {
+    "id": "learning_style",
+    "prompt": "When learning something new, what helps you most?",
+    "type": "single",
+    "options": ["examples", "step_by_step", "big_picture_first", "hands_on", "quick_summary"]
+  },
+  {
+    "id": "main_goal",
+    "prompt": "What matters most to you right now?",
+    "type": "single",
+    "options": ["career_growth", "business_growth", "study_success", "health_balance", "relationships_family", "peace_of_mind", "productivity", "learning"]
+  },
+  {
+    "id": "dislikes",
+    "prompt": "What kind of assistant behavior do you dislike?",
+    "type": "multi",
+    "max_choices": 4,
+    "options": ["too_long", "too_short", "too_formal", "too_casual", "too_many_questions", "too_generic", "too_pushy", "too_much_jargon"]
+  },
+  {
+    "id": "work_rhythm",
+    "prompt": "When are you usually most active or available?",
+    "type": "single",
+    "options": ["early_morning", "morning", "afternoon", "evening", "late_night", "irregular"]
+  }
+]

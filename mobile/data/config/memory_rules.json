@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "semanticCacheThreshold": 0.95,
+  "minTurnsBeforeSync": 6,
+  "minMinutesBetweenSync": 15,
+  "maxTurnsForSync": 18,
+  "maxFactsPerSync": 6
+}

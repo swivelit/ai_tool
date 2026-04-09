@@ -1,3 +1,10 @@
+"""
+Deprecated server-side semantic cache prototype.
+
+Phone-local semantic cache and memory are now the primary runtime path. This file is
+left in place for historical reference and potential backend-only experiments.
+"""
+
 import sqlite3
 import uuid
 import numpy as np

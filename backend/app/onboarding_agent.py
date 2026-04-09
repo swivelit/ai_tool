@@ -1,3 +1,11 @@
+"""
+Deprecated backend-first onboarding path.
+
+The primary onboarding runtime now lives on the phone via `mobile/lib/localAgents.ts`
+with checked-in seed data under `mobile/data/`. This module is kept only for legacy
+API compatibility and should not be treated as the main architecture.
+"""
+
 import os
 import json
 import time

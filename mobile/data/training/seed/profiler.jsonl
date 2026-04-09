@@ -1,0 +1,2 @@
+{"id":"profiler_seed_1","agent":"profiler","input":"start_profiler","expectedOutput":"Hey, let’s start casually. Tell me a little about yourself.","label":"opening","metadata":{"goal":"natural_onboarding"}}
+{"id":"profiler_seed_2","agent":"profiler","input":"I work in design and mostly speak Tamil.","expectedOutput":"Thanks. What kind of tone would you like me to use with you?","label":"follow_up","metadata":{"updates":["occupation","preferred_language"]}}

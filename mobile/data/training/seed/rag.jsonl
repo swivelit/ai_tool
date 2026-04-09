@@ -1,0 +1,1 @@
+{"id":"rag_seed_1","agent":"rag","input":"local phone-first assistant architecture","expectedOutput":"Use phone-local agents first. Use backend only for sync, support, or fallback.","label":"architecture_seed","metadata":{"source":"seed"}}
