@@ -1,12 +1,29 @@
 {
-  "version": 2,
+  "version": 3,
   "routes": {
-    "fastGreetingKeywords": ["hi", "hello", "hey", "vanakkam", "thanks", "thank you", "good morning", "good evening", "good night"],
-    "calendarKeywords": ["schedule", "agenda", "plan", "today plan", "tomorrow plan", "what do i have", "calendar", "my reminders", "upcoming tasks"],
-    "reminderKeywords": ["remind me", "set a reminder", "add reminder", "remember this", "next week at", "today at", "tomorrow at", "don't let me forget"],
+    "fastGreetingKeywords": ["hi", "hello", "hey", "vanakkam", "thanks", "thank you", "good morning", "good evening", "good night", "good afternoon", "okay thanks", "cool thanks"],
+    "smallTalkKeywords": ["how are you", "what's up", "whats up", "how is it going", "nice to meet you"],
+    "calendarKeywords": ["schedule", "agenda", "plan", "today plan", "tomorrow plan", "what do i have", "calendar", "my reminders", "upcoming tasks", "my tasks"],
+    "reminderKeywords": ["remind me", "set a reminder", "add reminder", "remember this", "next week at", "today at", "tomorrow at", "don't let me forget", "create a task"],
     "weatherKeywords": ["weather", "temperature", "rain", "forecast", "climate", "humid", "wind"],
-    "profileKeywords": ["my name", "who am i", "my hobbies", "what do i like", "my goal", "communication style", "how should you talk", "my language", "my job", "my work"],
-    "liveDataKeywords": ["latest", "news", "current", "today", "live", "score", "stock", "price", "president", "prime minister", "election", "internet", "search online", "browse"],
-    "ambiguityKeywords": ["this", "that", "it", "they", "there", "here", "he", "she"]
+    "profileKeywords": ["my name", "who am i", "my hobbies", "what do i like", "my goal", "communication style", "how should you talk", "my language", "my job", "my work", "my preferences", "what do you know about me"],
+    "liveDataKeywords": ["latest", "news", "current", "today", "live", "score", "stock", "price", "president", "prime minister", "election", "internet", "search online", "browse", "breaking", "market cap", "exchange rate"],
+    "ambiguityKeywords": ["this", "that", "it", "they", "there", "here", "he", "she", "those", "these"],
+    "multiStepKeywords": ["compare", "tradeoff", "strategy", "architect", "design", "plan", "step by step", "analyze", "analysis", "reason", "debug", "evaluate", "pros and cons"]
+  },
+  "clarificationRules": {
+    "shortMessageTokenThreshold": 4,
+    "pronounOnlyTokenThreshold": 6
+  },
+  "complexityThresholds": {
+    "largeModelQuestionChars": 180,
+    "largeModelConversationTurns": 8
+  },
+  "fallbackPolicy": {
+    "openAiAllowedWhen": [
+      "local_reasoner_returns___OPENAI_FALLBACK__",
+      "orchestrator_needs_live_data",
+      "no_safe_local_tool_or_model_path"
+    ]
   }
 }

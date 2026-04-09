@@ -1,7 +1,15 @@
 {
-  "version": 1,
+  "version": 2,
   "preserveFacts": true,
   "avoidNewClaims": true,
   "matchTone": true,
-  "preferUserLanguage": true
+  "preferUserLanguage": true,
+  "fallbackToDraftOnFactDrift": true,
+  "keepEnglishMirror": true,
+  "toneByPreference": {
+    "short_direct": "Keep the answer compact, direct, and low-fluff.",
+    "warm": "Keep the answer warm and supportive without adding facts.",
+    "friendly_casual": "Keep the answer conversational and casual without becoming vague.",
+    "detailed": "Keep the answer clear and more explanatory, but still grounded to the draft."
+  }
 }
