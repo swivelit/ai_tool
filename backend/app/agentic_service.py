@@ -31,15 +31,16 @@ try:
     )
 except Exception:  # pragma: no cover
     BASE_DIR = Path(__file__).resolve().parent.parent
+    REPO_ROOT = BASE_DIR.parent
     DATA_DIR = BASE_DIR / "data"
-    AGENT_CONFIG_DIR = DATA_DIR / "agents" / "config"
+    AGENT_CONFIG_DIR = REPO_ROOT / "mobile" / "data" / "config"
     AGENT_STATE_DIR = DATA_DIR / "agents" / "state"
     AGENT_MEMORY_DIR = DATA_DIR / "agents" / "memory"
     AGENT_LOGS_DIR = DATA_DIR / "agents" / "logs"
     AGENT_PROFILER_SCHEMA_PATH = AGENT_CONFIG_DIR / "profiler_slots.json"
     AGENT_ORCHESTRATOR_CONFIG_PATH = AGENT_CONFIG_DIR / "orchestrator_routes.json"
     AGENT_ALIGNMENT_CONFIG_PATH = AGENT_CONFIG_DIR / "alignment_rules.json"
-    AGENT_MEMORY_CONFIG_PATH = AGENT_CONFIG_DIR / "memory_settings.json"
+    AGENT_MEMORY_CONFIG_PATH = AGENT_CONFIG_DIR / "memory_rules.json"
     AGENTIC_MODE_ENABLED = True
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 

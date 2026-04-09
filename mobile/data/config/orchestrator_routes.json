@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "routes": {
+    "fastGreetingKeywords": ["hi", "hello", "hey", "vanakkam", "thanks", "thank you", "good morning", "good evening", "good night"],
+    "calendarKeywords": ["schedule", "agenda", "plan", "today plan", "tomorrow plan", "what do i have", "calendar", "my reminders", "upcoming tasks"],
+    "reminderKeywords": ["remind me", "set a reminder", "add reminder", "remember this", "next week at", "today at", "tomorrow at", "don't let me forget"],
+    "weatherKeywords": ["weather", "temperature", "rain", "forecast", "climate", "humid", "wind"],
+    "profileKeywords": ["my name", "who am i", "my hobbies", "what do i like", "my goal", "communication style", "how should you talk", "my language", "my job", "my work"],
+    "liveDataKeywords": ["latest", "news", "current", "today", "live", "score", "stock", "price", "president", "prime minister", "election", "internet", "search online", "browse"],
+    "ambiguityKeywords": ["this", "that", "it", "they", "there", "here", "he", "she"]
+  }
+}

@@ -9,12 +9,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+REPO_ROOT = BASE_DIR.parent
 
-# Centralized workspace under backend/data
+# Checked-in source of truth for phone-local agent config/training/RAG seeds.
+SHARED_SEED_DATA_DIR = REPO_ROOT / "mobile" / "data"
+SHARED_CONFIG_DIR = SHARED_SEED_DATA_DIR / "config"
+RAG_DATA_DIR = SHARED_SEED_DATA_DIR / "rag" / "seed"
+TRAINING_DATA_DIR = SHARED_SEED_DATA_DIR / "training" / "seed"
+
+# Backend runtime workspace remains local to the backend and is not intended as
+# the primary product runtime architecture.
+DATA_DIR = BASE_DIR / "data"
 DATABASE_DIR = DATA_DIR / "db"
-RAG_DATA_DIR = DATA_DIR / "rag"
-TRAINING_DATA_DIR = DATA_DIR / "training"
 PROFILES_DIR = DATA_DIR / "profiles"
 LOGS_DIR = DATA_DIR / "logs"
 GENERATED_DOCS_DIR = DATA_DIR / "generated_docs"
@@ -28,22 +34,25 @@ DATABASE_PATH = DATABASE_DIR / "ai_tool.sqlite3"
 CLASSIFIER_DATASET_PATH = TRAINING_DATA_DIR / "classifier_dataset.csv"
 FAST_RAG_DATASET_PATH = RAG_DATA_DIR / "fast_rag_replies.csv"
 PIPELINE_QUESTIONS_CSV_PATH = TRAINING_DATA_DIR / "pipeline_questions.csv"
+LOCAL_RAG_KEYWORDS_PATH = RAG_DATA_DIR / "local_rag_keywords.csv"
+LOCAL_RAG_SYNONYMS_PATH = RAG_DATA_DIR / "local_rag_synonyms.csv"
 
-# Agent workspace
+# Agent config comes from shared checked-in seed data. Runtime state stays under
+# backend/data so the backend remains a support/fallback mirror.
 AGENTS_DIR = DATA_DIR / "agents"
-AGENT_CONFIG_DIR = AGENTS_DIR / "config"
+AGENT_CONFIG_DIR = SHARED_CONFIG_DIR
 AGENT_STATE_DIR = AGENTS_DIR / "state"
 AGENT_MEMORY_DIR = AGENTS_DIR / "memory"
 AGENT_LOGS_DIR = AGENTS_DIR / "logs"
 AGENT_TRAINING_DIR = AGENTS_DIR / "training"
 AGENT_PROFILE_SNAPSHOT_DIR = AGENTS_DIR / "snapshots"
 AGENT_RAG_EXPORT_DIR = AGENTS_DIR / "rag_exports"
-AGENT_WORKSPACE_MANIFEST_PATH = AGENTS_DIR / "workspace_manifest.json"
+AGENT_WORKSPACE_MANIFEST_PATH = AGENT_CONFIG_DIR / "workspace_manifest.json"
 
 AGENT_PROFILER_SCHEMA_PATH = AGENT_CONFIG_DIR / "profiler_slots.json"
 AGENT_ORCHESTRATOR_CONFIG_PATH = AGENT_CONFIG_DIR / "orchestrator_routes.json"
 AGENT_ALIGNMENT_CONFIG_PATH = AGENT_CONFIG_DIR / "alignment_rules.json"
-AGENT_MEMORY_CONFIG_PATH = AGENT_CONFIG_DIR / "memory_settings.json"
+AGENT_MEMORY_CONFIG_PATH = AGENT_CONFIG_DIR / "memory_rules.json"
 
 
 def _ensure_dirs(paths: Iterable[Path]) -> None:
@@ -53,10 +62,12 @@ def _ensure_dirs(paths: Iterable[Path]) -> None:
 
 _ensure_dirs(
     (
-        DATA_DIR,
-        DATABASE_DIR,
+        SHARED_SEED_DATA_DIR,
+        SHARED_CONFIG_DIR,
         RAG_DATA_DIR,
         TRAINING_DATA_DIR,
+        DATA_DIR,
+        DATABASE_DIR,
         PROFILES_DIR,
         LOGS_DIR,
         MODELS_DIR,

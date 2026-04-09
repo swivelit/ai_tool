@@ -1,0 +1,9 @@
+text,label,answer
+hi,greeting,"Hi there, how are you doing?"
+hello,greeting,"Hi there, how are you doing?"
+hey,greeting,"Hi there, how are you doing?"
+how are you,smalltalk,I am doing well. How can I help you today?
+thanks,smalltalk,You're welcome.
+what is my name,profile,I can read your saved profile to tell you your name.
+who are you,assistant_identity,"I'm your assistant. I can help with reminders, schedules, and quick answers."
+help,assistant_identity,"I can help with reminders, schedules, and quick answers."

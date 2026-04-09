@@ -2,5 +2,14 @@
 .venv
 backend/tamil_voice_ai.db
 backend/generated_docs
+backend/data/db/
+backend/data/logs/
+backend/data/generated_docs/
+backend/data/agents/state/
+backend/data/agents/memory/
+backend/data/agents/logs/
+backend/data/agents/training/
+backend/data/agents/snapshots/
+backend/data/agents/rag_exports/
 dist/
 dist/*.apk

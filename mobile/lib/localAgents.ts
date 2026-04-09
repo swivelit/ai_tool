@@ -2,6 +2,7 @@ import Constants from "expo-constants";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { apiPost } from "./api";
+import { ensureLocalAgentSeedData, LOCAL_AGENT_DATA_DIR } from "./localAgentBootstrap";
 
 type ReplyLanguage = "en" | "ta";
 type ChatRole = "system" | "user" | "assistant";
@@ -213,15 +214,15 @@ type AgentRegistryConfig = {
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
-  baseUrl: String(extra.LOCAL_MODEL_BASE_URL || "http://127.0.0.1:10000/v1"),
-  apiKey: String(extra.LOCAL_MODEL_API_KEY || "local-phone"),
-  timeoutMs: Number(extra.LOCAL_MODEL_TIMEOUT_MS || 45000),
+  baseUrl: "http://127.0.0.1:10000/v1",
+  apiKey: "local-phone",
+  timeoutMs: 45000,
   models: {
-    profiler: String(extra.LOCAL_MODEL_GEMMA_4B || "google/gemma-3-4b-it"),
-    orchestratorMedium: String(extra.LOCAL_MODEL_QWEN_8B || "Qwen/Qwen3-8B"),
-    orchestratorLarge: String(extra.LOCAL_MODEL_QWEN_14B || "Qwen/Qwen3-14B"),
-    aligner: String(extra.LOCAL_MODEL_GEMMA_4B || "google/gemma-3-4b-it"),
-    embedding: String(extra.LOCAL_MODEL_QWEN_EMBED || "Qwen/Qwen3-Embedding-0.6B"),
+    profiler: "google/gemma-3-4b-it",
+    orchestratorMedium: "Qwen/Qwen3-8B",
+    orchestratorLarge: "Qwen/Qwen3-14B",
+    aligner: "google/gemma-3-4b-it",
+    embedding: "Qwen/Qwen3-Embedding-0.6B",
   },
   thresholds: {
     semanticCache: 0.95,
@@ -234,169 +235,31 @@ const DEFAULT_PROFILER_SLOTS: ProfilerSlot[] = [
     id: "preferred_language",
     prompt: "Which language should I mostly use with you?",
     type: "single",
-    options: ["english", "tamil", "hindi", "telugu", "malayalam", "other"],
-  },
-  {
-    id: "secondary_language",
-    prompt: "Do you speak a second language that I should switch to when it feels natural?",
-    type: "single",
-    options: ["none", "english", "tamil", "hindi", "telugu", "malayalam", "other"],
-  },
-  {
-    id: "occupation",
-    prompt: "What do you do most days—work, study, business, home, or something else?",
-    type: "single",
-    options: ["student", "working_professional", "business_owner", "freelancer_creator", "homemaker_caregiver", "between_roles", "other"],
-  },
-  {
-    id: "industry_or_field",
-    prompt: "Which field or area are you mostly in right now?",
-    type: "single",
-    options: ["technology", "business", "education", "healthcare", "design_media", "sales_marketing", "operations", "other"],
-  },
-  {
-    id: "hobbies",
-    prompt: "What do you enjoy doing in your free time?",
-    type: "multi",
-    max_choices: 4,
-    options: ["music", "movies", "reading", "gaming", "travel", "fitness", "cooking", "sports", "art", "technology"],
-  },
-  {
-    id: "interests",
-    prompt: "What topics do you enjoy talking about or learning about?",
-    type: "multi",
-    max_choices: 4,
-    options: ["ai_technology", "business", "career", "productivity", "finance", "health", "travel", "culture", "education", "self_growth"],
+    options: ["english", "tamil", "other"],
   },
   {
     id: "communication_tone",
     prompt: "How should I talk to you most of the time?",
     type: "single",
-    options: ["warm", "respectful", "short_direct", "detailed", "friendly_casual"],
-  },
-  {
-    id: "answer_length",
-    prompt: "How long should my answers usually be?",
-    type: "single",
-    options: ["very_short", "short", "medium", "detailed", "depends_on_question"],
-  },
-  {
-    id: "personality_style",
-    prompt: "How would you describe your own style or personality?",
-    type: "single",
-    options: ["calm", "friendly", "practical", "ambitious", "curious", "private_reserved"],
-  },
-  {
-    id: "assistant_persona",
-    prompt: "What kind of assistant do you want me to feel like?",
-    type: "single",
-    options: ["coach", "planner", "friend", "tutor", "operator", "straight_shooter"],
-  },
-  {
-    id: "planning_style",
-    prompt: "How do you like planning your day or work?",
-    type: "single",
-    options: ["very_structured", "light_structure", "flexible", "last_minute", "mixed"],
-  },
-  {
-    id: "learning_style",
-    prompt: "When learning something new, what helps you most?",
-    type: "single",
-    options: ["examples", "step_by_step", "big_picture_first", "hands_on", "quick_summary"],
+    options: ["warm", "short_direct", "friendly_casual"],
   },
   {
     id: "main_goal",
     prompt: "What matters most to you right now?",
     type: "single",
-    options: ["career_growth", "business_growth", "study_success", "health_balance", "relationships_family", "peace_of_mind", "productivity", "learning"],
-  },
-  {
-    id: "dislikes",
-    prompt: "What kind of assistant behavior do you dislike?",
-    type: "multi",
-    max_choices: 4,
-    options: ["too_long", "too_short", "too_formal", "too_casual", "too_many_questions", "too_generic", "too_pushy", "too_much_jargon"],
-  },
-  {
-    id: "work_rhythm",
-    prompt: "When are you usually most active or available?",
-    type: "single",
-    options: ["early_morning", "morning", "afternoon", "evening", "late_night", "irregular"],
+    options: ["career_growth", "peace_of_mind", "learning"],
   },
 ];
 
 const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
-  version: 2,
+  version: 1,
   routes: {
-    fastGreetingKeywords: [
-      "hi",
-      "hello",
-      "hey",
-      "vanakkam",
-      "thanks",
-      "thank you",
-      "good morning",
-      "good evening",
-      "good night",
-    ],
-    calendarKeywords: [
-      "schedule",
-      "agenda",
-      "plan",
-      "today plan",
-      "tomorrow plan",
-      "what do i have",
-      "calendar",
-      "my reminders",
-      "upcoming tasks",
-    ],
-    reminderKeywords: [
-      "remind me",
-      "set a reminder",
-      "add reminder",
-      "remember this",
-      "next week at",
-      "today at",
-      "tomorrow at",
-      "don't let me forget",
-    ],
-    weatherKeywords: [
-      "weather",
-      "temperature",
-      "rain",
-      "forecast",
-      "climate",
-      "humid",
-      "wind",
-    ],
-    profileKeywords: [
-      "my name",
-      "who am i",
-      "my hobbies",
-      "what do i like",
-      "my goal",
-      "communication style",
-      "how should you talk",
-      "my language",
-      "my job",
-      "my work",
-    ],
-    liveDataKeywords: [
-      "latest",
-      "news",
-      "current",
-      "today",
-      "live",
-      "score",
-      "stock",
-      "price",
-      "president",
-      "prime minister",
-      "election",
-      "internet",
-      "search online",
-      "browse",
-    ],
+    fastGreetingKeywords: ["hi", "hello", "hey", "vanakkam", "thanks"],
+    calendarKeywords: ["schedule", "agenda", "calendar", "reminders"],
+    reminderKeywords: ["remind me", "set a reminder", "add reminder"],
+    weatherKeywords: ["weather", "temperature", "rain", "forecast"],
+    profileKeywords: ["my name", "my goal", "my language", "my hobbies"],
+    liveDataKeywords: ["latest", "news", "current", "today", "live", "browse"],
     ambiguityKeywords: ["this", "that", "it", "they", "there", "here", "he", "she"],
   },
 };
@@ -417,116 +280,21 @@ const DEFAULT_MEMORY_RULES: MemoryRules = {
 };
 
 const DEFAULT_PROMPTS: PromptCatalog = {
-  profilerOpeningSystem: [
-    "You are the Profiler Agent using Gemma 3 4B.",
-    "Mission:",
-    "- start onboarding as a natural, warm conversation",
-    "- do NOT say this is a form, checklist, or questionnaire",
-    "- ask for only one thing in the first message",
-    "- reply in {{reply_language_name}}",
-    "- collect these profile slots over time: {{slot_ids}}",
-    "- prefer subtle extraction over direct interrogation",
-  ].join("\n"),
-  profilerTurnSystem: [
-    "You are the Profiler Agent using Gemma 3 4B.",
-    "Mission:",
-    "- collect the required onboarding slots naturally",
-    "- use friendly conversation, never a rigid survey",
-    "- extract updates from the latest user message",
-    "- ask only one best follow-up",
-    "- prefer filling missing slots, but do not force unnatural questions",
-    "- reply in {{reply_language_name}}",
-    "",
-    "Return JSON only:",
-    "{",
-    '  "assistant_reply": "string",',
-    '  "updates": { "slot_id": "value or list" },',
-    '  "missing_slots": ["slot_id"],',
-    '  "completed": false',
-    "}",
-  ].join("\n"),
-  profileSummarySystem: [
-    "You are the Alignment/Profile Summary Agent using Gemma 3 4B.",
-    "Write a compact factual English profile summary.",
-    "Mention only stable user preferences and facts that appear in the input.",
-    "Prioritize: languages, occupation, hobbies, communication style, dislikes, main goals, assistant preference.",
-    "Do not invent anything.",
-  ].join("\n"),
-  orchestratorSystem: [
-    "You are the Orchestrator Agent using Qwen 3 8B.",
-    "Choose exactly one route:",
-    "- fast_greeting",
-    "- clarify",
-    "- profile",
-    "- calendar_query",
-    "- reminder_create",
-    "- weather",
-    "- local_answer",
-    "- fallback_openai",
-    "",
-    "Rules:",
-    "- fallback_openai only when local reasoning is not enough, or the user clearly needs live/public/current/external data that no local tool can answer",
-    "- clarify only when critical context is missing",
-    "- weather if the user asks about weather or forecast",
-    "- calendar_query if the user is asking about reminders, schedule, or agenda",
-    "- profile if the user asks about their own saved preferences, languages, hobbies, job, tone, or goals",
-    "- local_answer for general reasoning that the local model can handle offline",
-    "",
-    "Return JSON only:",
-    "{",
-    '  "route": "local_answer",',
-    '  "reason": "string",',
-    '  "clarifying_question": "",',
-    '  "needs_large_model": false,',
-    '  "needs_live_data": false',
-    "}",
-  ].join("\n"),
-  reminderExtractorSystem: [
-    "You are the reminder extraction tool, powered by Qwen 3 8B.",
-    "Extract reminder details from the user message.",
-    "",
-    "Return JSON only:",
-    "{",
-    '  "title": "string",',
-    '  "details": "string",',
-    '  "datetime_text": "string or null",',
-    '  "assistant_reply": "string"',
-    "}",
-  ].join("\n"),
-  alignmentSystem: [
-    "You are the Alignment Agent using Gemma 3 4B.",
-    "Rewrite the draft so it matches the user's tone, language, and preferences.",
-    "Preserve facts exactly. Do not add new claims.",
-    "If reply_language is ta, final_answer must be Tamil.",
-    "If reply_language is en, final_answer must be English.",
-    "",
-    "Return JSON only:",
-    "{",
-    '  "english_answer": "string",',
-    '  "final_answer": "string"',
-    "}",
-  ].join("\n"),
-  memorySyncSystem: [
-    "You are the Memory & Cache Agent.",
-    "Semantic similarity is handled by Qwen3-Embedding outside this prompt.",
-    "Your job here is to summarize recent conversation facts conservatively.",
-    "Extract only durable user facts and obvious profile updates.",
-    "",
-    "Return JSON only:",
-    "{",
-    '  "summary": "string",',
-    '  "new_facts": ["string"],',
-    '  "profile_updates": {}',
-    "}",
-  ].join("\n"),
-  localReasonerSystem: [
-    "You are the local main assistant.",
-    "Use only the provided context, general offline knowledge, and the user's local memory.",
-    "If the question requires live current/public internet information or a fact you cannot know locally, reply with exactly:",
-    "__OPENAI_FALLBACK__",
-    "",
-    "Do not invent calendar entries, personal facts, or live web facts.",
-  ].join("\n"),
+  profilerOpeningSystem:
+    "You are the Profiler Agent. Start naturally in {{reply_language_name}} and collect: {{slot_ids}}.",
+  profilerTurnSystem:
+    "You are the Profiler Agent. Return JSON with assistant_reply, updates, missing_slots, completed.",
+  profileSummarySystem:
+    "Write a compact factual English profile summary. Do not invent details.",
+  orchestratorSystem: "Choose one route and return JSON only.",
+  reminderExtractorSystem:
+    "Extract reminder title, details, datetime_text, and assistant_reply as JSON.",
+  alignmentSystem:
+    "Rewrite the answer to match user tone and language without changing facts.",
+  memorySyncSystem:
+    "Summarize recent durable user facts and profile_updates as JSON.",
+  localReasonerSystem:
+    "Use only local context. Reply __OPENAI_FALLBACK__ if live public data is required.",
 };
 
 const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
@@ -536,27 +304,27 @@ const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
       enabled: true,
       modelKey: "profiler",
       description: "Natural onboarding and profile extraction",
-      trainingFile: "profiler.jsonl",
+      trainingFile: "training/seed/profiler.jsonl",
     },
     orchestrator: {
       enabled: true,
       mediumModelKey: "orchestratorMedium",
       largeModelKey: "orchestratorLarge",
-      description: "Route user intent, tool choice, and local-vs-OpenAI fallback decisions",
-      trainingFile: "orchestrator.jsonl",
+      description: "Route user intent, tool choice, and local-vs-backend fallback decisions",
+      trainingFile: "training/seed/orchestrator.jsonl",
     },
     alignment: {
       enabled: true,
       modelKey: "aligner",
       description: "Rewrite answers to match the user's tone and language",
-      trainingFile: "alignment.jsonl",
+      trainingFile: "training/seed/alignment.jsonl",
     },
     memory: {
       enabled: true,
       embeddingModelKey: "embedding",
       summarizerModelKey: "orchestratorMedium",
       description: "Semantic cache and long-term profile updates",
-      trainingFile: "memory.jsonl",
+      trainingFile: "training/seed/memory.jsonl",
     },
     toolAgents: {
       weather: true,
@@ -567,41 +335,44 @@ const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
 };
 
 const DEFAULT_WORKSPACE_MANIFEST = {
-  version: 2,
-  description: "Local phone-first multi-agent workspace",
-  folders: [
-    "data/config",
-    "data/profiles",
-    "data/cache",
-    "data/memory",
-    "data/conversations",
-    "data/tasks",
-    "data/rag",
-    "data/training",
+  version: 3,
+  architecture: {
+    primaryRuntime: "phone_local_agents",
+    backendRole: "mirror_support_openai_fallback",
+  },
+  checkedInSeedFolders: ["config", "training/seed", "rag/seed"],
+  runtimeFolders: [
+    "profiles",
+    "cache",
+    "memory",
+    "conversations",
+    "tasks",
+    "rag/runtime",
+    "training/captures",
   ],
   files: [
-    "data/config/models.json",
-    "data/config/profiler_slots.json",
-    "data/config/orchestrator_routes.json",
-    "data/config/alignment_rules.json",
-    "data/config/memory_rules.json",
-    "data/config/prompts.json",
-    "data/config/agent_registry.json",
-    "data/config/workspace_manifest.json",
+    "config/models.json",
+    "config/profiler_slots.json",
+    "config/orchestrator_routes.json",
+    "config/alignment_rules.json",
+    "config/memory_rules.json",
+    "config/prompts.json",
+    "config/agent_registry.json",
+    "config/workspace_manifest.json",
   ],
 };
 
-const documentDir = FileSystem.documentDirectory || "";
-const DATA_DIR = `${documentDir}data`;
-export const LOCAL_AGENT_DATA_DIR = DATA_DIR;
+const DATA_DIR = LOCAL_AGENT_DATA_DIR;
 const CONFIG_DIR = `${DATA_DIR}/config`;
 const PROFILES_DIR = `${DATA_DIR}/profiles`;
 const CACHE_DIR = `${DATA_DIR}/cache`;
 const MEMORY_DIR = `${DATA_DIR}/memory`;
 const CONVERSATIONS_DIR = `${DATA_DIR}/conversations`;
 const TASKS_DIR = `${DATA_DIR}/tasks`;
-const RAG_DIR = `${DATA_DIR}/rag`;
-const TRAINING_DIR = `${DATA_DIR}/training`;
+const RAG_DIR = `${DATA_DIR}/rag/runtime`;
+const RAG_SEED_DIR = `${DATA_DIR}/rag/seed`;
+const TRAINING_DIR = `${DATA_DIR}/training/captures`;
+const TRAINING_SEED_DIR = `${DATA_DIR}/training/seed`;
 
 const MODELS_PATH = `${CONFIG_DIR}/models.json`;
 const SLOTS_PATH = `${CONFIG_DIR}/profiler_slots.json`;
@@ -917,6 +688,7 @@ async function safeRecordTrainingSample(
 }
 
 export async function ensureLocalAgentData() {
+  await ensureLocalAgentSeedData();
   await ensureDir(DATA_DIR);
   await ensureDir(CONFIG_DIR);
   await ensureDir(PROFILES_DIR);
@@ -925,7 +697,9 @@ export async function ensureLocalAgentData() {
   await ensureDir(CONVERSATIONS_DIR);
   await ensureDir(TASKS_DIR);
   await ensureDir(RAG_DIR);
+  await ensureDir(RAG_SEED_DIR);
   await ensureDir(TRAINING_DIR);
+  await ensureDir(TRAINING_SEED_DIR);
 
   if (!(await exists(MODELS_PATH))) await writeJson(MODELS_PATH, DEFAULT_MODEL_CONFIG);
   if (!(await exists(SLOTS_PATH))) await writeJson(SLOTS_PATH, DEFAULT_PROFILER_SLOTS);
@@ -939,7 +713,38 @@ export async function ensureLocalAgentData() {
 
 async function getModelConfig() {
   await ensureLocalAgentData();
-  return readJson<LocalModelConfig>(MODELS_PATH, DEFAULT_MODEL_CONFIG);
+  const fileConfig = await readJson<LocalModelConfig>(MODELS_PATH, DEFAULT_MODEL_CONFIG);
+  return {
+    ...fileConfig,
+    baseUrl: String(extra.LOCAL_MODEL_BASE_URL || fileConfig.baseUrl || DEFAULT_MODEL_CONFIG.baseUrl),
+    apiKey: String(extra.LOCAL_MODEL_API_KEY || fileConfig.apiKey || DEFAULT_MODEL_CONFIG.apiKey),
+    timeoutMs: Number(extra.LOCAL_MODEL_TIMEOUT_MS || fileConfig.timeoutMs || DEFAULT_MODEL_CONFIG.timeoutMs),
+    models: {
+      ...DEFAULT_MODEL_CONFIG.models,
+      ...(fileConfig.models || {}),
+      profiler: String(extra.LOCAL_MODEL_GEMMA_4B || fileConfig.models?.profiler || DEFAULT_MODEL_CONFIG.models.profiler),
+      orchestratorMedium: String(
+        extra.LOCAL_MODEL_QWEN_8B ||
+          fileConfig.models?.orchestratorMedium ||
+          DEFAULT_MODEL_CONFIG.models.orchestratorMedium
+      ),
+      orchestratorLarge: String(
+        extra.LOCAL_MODEL_QWEN_14B ||
+          fileConfig.models?.orchestratorLarge ||
+          DEFAULT_MODEL_CONFIG.models.orchestratorLarge
+      ),
+      aligner: String(extra.LOCAL_MODEL_GEMMA_4B || fileConfig.models?.aligner || DEFAULT_MODEL_CONFIG.models.aligner),
+      embedding: String(
+        extra.LOCAL_MODEL_QWEN_EMBED ||
+          fileConfig.models?.embedding ||
+          DEFAULT_MODEL_CONFIG.models.embedding
+      ),
+    },
+    thresholds: {
+      ...DEFAULT_MODEL_CONFIG.thresholds,
+      ...(fileConfig.thresholds || {}),
+    },
+  };
 }
 
 async function getProfilerSlots() {
@@ -1185,9 +990,9 @@ export async function upsertLocalRagChunks(
 export async function searchLocalRag(userId: number, query: string, limit = 6) {
   await ensureLocalAgentData();
   const clean = String(query || "").trim();
-  if (!clean) return [] as Array<LocalRagChunk & { score: number }>;
+  if (!clean) return [] as (LocalRagChunk & { score: number })[];
   const rows = await loadRagChunks(userId);
-  if (!rows.length) return [] as Array<LocalRagChunk & { score: number }>;
+  if (!rows.length) return [] as (LocalRagChunk & { score: number })[];
   const [queryVec] = await embedTexts([clean]);
   return rows
     .map((row) => ({ ...row, score: cosine(queryVec, Array.isArray(row.embedding) ? row.embedding : []) }))
@@ -1230,7 +1035,9 @@ export async function getLocalAgentWorkspaceInfo() {
     conversationsDir: CONVERSATIONS_DIR,
     tasksDir: TASKS_DIR,
     ragDir: RAG_DIR,
+    ragSeedDir: RAG_SEED_DIR,
     trainingDir: TRAINING_DIR,
+    trainingSeedDir: TRAINING_SEED_DIR,
     manifest: await readJson(WORKSPACE_MANIFEST_PATH, DEFAULT_WORKSPACE_MANIFEST),
     models: await getModelConfig(),
     prompts: await getPromptCatalog(),

@@ -1,223 +1,121 @@
-# ai_tool
-#Whenever you work on backend in a new terminal 
-
-cd /Users/hari/Documents/my_git/ai_tool/backend
-source .venv/bin/activate
-uvicorn app.main:app --reload
-
 # AI Tool
 
-This project has 3 parts:
+## Architecture
 
-1. **Mobile App (APK / Expo app)**
-2. **Main Backend API** (`backend/app/main.py`)
-3. **Local Theni-Tamil Model API** (`backend/theni_tamil_api.py`)
+The primary runtime is now **phone-local agents** in the Expo app.
 
-## Important
+- `mobile/lib/localAgents.ts` is the main agent runtime.
+- `mobile/lib/api.ts` keeps the existing `/api/chat` contract stable and intercepts it locally by default.
+- `mobile/data/` is the checked-in source of truth for agent configs, prompts, training seeds, and RAG seeds.
+- On first launch, the app bootstraps those checked-in seed files into `Expo FileSystem.documentDirectory/data`.
+- Live phone runtime data stays only in `documentDirectory/data` and is not stored in git.
+- The backend is now a **mirror / support / OpenAI fallback** path, not the primary architecture.
 
-The app can open and run, but for **cost-free Theni-Tamil conversion** you should also run the **local model API** on your machine/server.
-
-- **Without the local model API:** the backend can fall back to OpenAI for Tamil → Theni-Tamil conversion.
-- **With the local model API:** the backend will use your local trained model instead, which avoids extra OpenAI cost for that conversion stage.
-
-> Complex answers may still use OpenAI depending on your architecture.
-> Greetings / small-talk / cached / local-RAG answers can be handled locally and may not call OpenAI.
-
----
-
-## Project Structure
+## Folder Map
 
 ```text
-ai_tool-main/
+ai_tool/
+├── mobile/
+│   ├── app/
+│   ├── data/
+│   │   ├── config/
+│   │   │   ├── agent_registry.json
+│   │   │   ├── alignment_rules.json
+│   │   │   ├── memory_rules.json
+│   │   │   ├── models.json
+│   │   │   ├── orchestrator_routes.json
+│   │   │   ├── profiler_slots.json
+│   │   │   ├── prompts.json
+│   │   │   └── workspace_manifest.json
+│   │   ├── rag/
+│   │   │   └── seed/
+│   │   │       ├── fast_rag_replies.csv
+│   │   │       ├── local_rag_keywords.csv
+│   │   │       └── local_rag_synonyms.csv
+│   │   └── training/
+│   │       └── seed/
+│   │           ├── alignment.jsonl
+│   │           ├── classifier_dataset.csv
+│   │           ├── memory.jsonl
+│   │           ├── orchestrator.jsonl
+│   │           ├── pipeline_questions.csv
+│   │           ├── profiler.jsonl
+│   │           └── rag.jsonl
+│   └── lib/
+│       ├── api.ts
+│       ├── localAgentBootstrap.ts
+│       ├── localAgentSeedManifest.ts
+│       └── localAgents.ts
 ├── backend/
 │   ├── app/
-│   │   ├── main.py
-│   │   └── local_rag_service.py
-│   ├── data/
-│   │   ├── fast_rag_replies.csv
-│   │   ├── classifier_dataset.csv
-│   │   └── pipeline_questions.csv
-│   ├── models/
-│   │   └── stage_tamil_thenitamil_model/
-│   ├── theni_tamil_api.py
-│   ├── requirements.txt
-│   └── .venv/
-├── mobile/
+│   ├── config.py
+│   └── data/
+│       └── ... runtime-only backend state/db/logs ...
 └── README.md
+```
 
+## Phone Bootstrap Flow
 
-1. Backend setup
+1. The checked-in seed files live under `mobile/data/`.
+2. `mobile/lib/localAgentBootstrap.ts` copies those files into `documentDirectory/data` on first launch, or when the checked-in seed version changes.
+3. `mobile/lib/localAgents.ts` reads runtime config from `documentDirectory/data`.
+4. Runtime folders such as profiles, cache, memory, conversations, tasks, `rag/runtime`, and `training/captures` are created on-device only.
 
-Open a terminal and go to backend:
+## Backend Role
 
-cd backend
+The backend still supports:
 
-Create and activate virtual environment:
+- existing API screens and sync behavior
+- OpenAI fallback when a phone-local agent explicitly cannot answer
+- backend RAG/training consumers that now read shared seed files from `mobile/data`
 
-python3 -m venv .venv
-source .venv/bin/activate
+Backend runtime state remains under `backend/data/`:
 
-Install backend dependencies:
+- database files
+- generated docs
+- logs
+- backend agent mirror state
 
-pip install -r requirements.txt
+## Running Locally
 
-Install local model dependencies also:
+### Mobile
 
-pip install transformers torch sentencepiece accelerate
-2. Create the local model folder
-
-Create this folder inside backend:
-
-mkdir -p backend/models/stage_tamil_thenitamil_model
-
-Put your Tamil → Theni-Tamil Hugging Face model files inside:
-
-backend/models/stage_tamil_thenitamil_model/
-├── config.json
-├── generation_config.json          (optional)
-├── tokenizer.json / tokenizer_config.json
-├── special_tokens_map.json         (optional)
-├── sentencepiece.bpe.model         (if used by your tokenizer)
-├── pytorch_model.bin
-# or
-├── model.safetensors
-Note
-
-The folder must contain a valid Hugging Face model directory.
-At minimum, it should usually have:
-
-config.json
-
-tokenizer files
-
-model weights (.bin or .safetensors)
-
-If your model is inside a nested subfolder, the API will try to find it automatically.
-
-3. Environment variables
-
-Create a backend/.env file if it does not already exist.
-
-Example:
-
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4.1-mini
-
-# Main backend will call the local Theni API here
-THENI_TAMIL_API_URL=http://127.0.0.1:9009/convert
-THENI_TAMIL_API_TIMEOUT=90
-Important
-
-THENI_TAMIL_API_URL is used by the main backend
-
-THENI_MODEL_ROOT is used by the local model API process
-
-4. Run the local Theni-Tamil model API
-
-From the backend/ folder:
-
-source .venv/bin/activate
-export THENI_MODEL_ROOT=./models/stage_tamil_thenitamil_model
-uvicorn theni_tamil_api:app --host 127.0.0.1 --port 9009
-
-Health check:
-
-curl http://127.0.0.1:9009/health
-
-If everything is correct, you should see JSON showing the resolved model folder.
-
-5. Run the main backend
-
-Open another terminal:
-
-cd backend
-source .venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-6. Run the mobile app
-
-Open another terminal:
-
+```bash
 cd mobile
 npm install
 npx expo start
+```
 
-Or build/install your APK as usual.
+### Backend
 
-7. How the response pipeline works
-Fast local flow
-
-Some simple inputs can be answered without OpenAI:
-
-greetings (hi, hello, hey)
-
-small-talk
-
-saved/cached answers
-
-local CSV-based RAG replies
-
-reminder/schedule summary answers from local DB
-
-These are handled by:
-
-backend/app/local_rag_service.py
-
-backend/data/fast_rag_replies.csv
-
-backend/data/classifier_dataset.csv
-
-Main flow
-
-For complex questions:
-
-User sends query
-
-Main backend generates English answer
-
-English is translated to Tamil
-
-Tamil is converted to Theni-Tamil
-
-first tries local model API
-
-if unavailable, may fall back to other configured logic
-
-8. What happens if the local model API is not running?
-
-The app and backend can still run.
-
-But:
-
-Tamil → Theni-Tamil local conversion will not use your local trained model
-
-the system may fall back to OpenAI or other fallback logic
-
-this can increase API cost
-
-So for the best low-cost setup, run both:
-
-main backend
-
-local Theni-Tamil model API
-
-9. One-command local model startup script
-
-You can create this file:
-
-backend/run_local_model_api.sh
-
-Make it executable:
-
-chmod +x backend/run_local_model_api.sh
-
-Then run:
-
+```bash
 cd backend
-./run_local_model_api.sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
+### Optional local Theni-Tamil API
 
-THENI_TAMIL_API_URL=http://127.0.0.1:8010/convert
-THENI_TAMIL_API_TIMEOUT=90
-ENABLE_LOCAL_DIALECT_MODEL=false
-TAMIL_TO_THENI_MODEL_ROOT=./models/stage_tamil_thenitamil_model
-uvicorn theni_tamil_api:app --host 0.0.0.0 --port 8010
+```bash
+cd backend
+source .venv/bin/activate
+export THENI_MODEL_ROOT=./models/stage_tamil_thenitamil_model
+uvicorn theni_tamil_api:app --host 127.0.0.1 --port 9009
+```
+
+## Legacy Paths Left In Place
+
+- `backend/app/onboarding_agent.py`
+  Kept for legacy backend onboarding API compatibility. Marked deprecated.
+- `backend/app/semantic_cache.py`
+  Kept as an old backend-side prototype/reference. Marked deprecated.
+- `backend/data/`
+  Still used for backend runtime state. It is no longer the checked-in source of truth for agent seeds.
+
+## Notes
+
+- Do not add live phone data to git. The app stores that under Expo document storage, outside the repo.
+- Do not treat backend OpenAI-first paths as the main architecture anymore.
+- Keep `/api/chat` stable. Mobile continues to intercept it locally first.
