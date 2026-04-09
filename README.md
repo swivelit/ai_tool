@@ -61,6 +61,27 @@ ai_tool/
 3. `mobile/lib/localAgents.ts` reads runtime config from `documentDirectory/data`.
 4. Runtime folders such as profiles, cache, memory, conversations, tasks, `rag/runtime`, and `training/captures` are created on-device only.
 
+## Profiler Runtime Artifacts
+
+The Profiler Agent is local-first and writes its runtime state under `documentDirectory/data` on the phone:
+
+- `profiles/{userId}/answers.json`
+  Structured slot values collected during onboarding.
+- `profiles/{userId}/summary.json`
+  Compact factual profile summary plus confidence and note metadata.
+- `profiles/{userId}/profiler_state.json`
+  Conversation state, current target slot, missing slots, confidence-by-slot, and profiler notes.
+- `conversations/{userId}.jsonl`
+  Append-only onboarding chat transcript.
+- `rag/runtime/{userId}_profile_rag.json`
+  Profile summary bundle with retrieval-ready chunks and metadata.
+- `rag/runtime/{userId}_chunks.json`
+  Flattened runtime RAG chunks, including the generated profile chunks.
+- `training/captures/profiler.jsonl`
+  Non-blocking training captures from profiler turns and completions.
+
+Profiler completion happens on-device first. The backend mirror remains secondary and must not be treated as source of truth.
+
 ## Backend Role
 
 The backend still supports:
@@ -68,6 +89,12 @@ The backend still supports:
 - existing API screens and sync behavior
 - OpenAI fallback when a phone-local agent explicitly cannot answer
 - backend RAG/training consumers that now read shared seed files from `mobile/data`
+
+Deprecated backend onboarding remains optional for legacy API compatibility only:
+
+- the backend must boot even if deprecated onboarding extras are missing
+- legacy onboarding import failures should only disable that deprecated route, not `/health` or `/api/chat`
+- after Render deploy, verify boot with the health endpoint at `/health`
 
 Backend runtime state remains under `backend/data/`:
 
@@ -84,6 +111,7 @@ Backend runtime state remains under `backend/data/`:
 cd mobile
 npm install
 npx expo start
+npm run test:profiler
 ```
 
 ### Backend

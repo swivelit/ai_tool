@@ -1,0 +1,229 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import profilerSlots from "../data/config/profiler_slots.json";
+import prompts from "../data/config/prompts.json";
+
+const mockedState = vi.hoisted(() => ({
+  files: new Map<string, string>(),
+  directories: new Set<string>(["file:///mock", "file:///mock/data"]),
+  fetchQueue: [] as Array<() => Promise<any>>,
+}));
+
+function normalizeDir(path: string) {
+  return path.replace(/\/+$/, "");
+}
+
+function parentDirs(path: string) {
+  const parts = path.split("/").filter(Boolean);
+  const dirs: string[] = [];
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    dirs.push(`file:///${parts.slice(0, i + 1).join("/")}`);
+  }
+  return dirs;
+}
+
+vi.mock("expo-constants", () => ({
+  default: {
+    expoConfig: {
+      extra: {},
+    },
+  },
+}));
+
+vi.mock("expo-file-system/legacy", () => ({
+  documentDirectory: "file:///mock/",
+  EncodingType: {
+    UTF8: "utf8",
+  },
+  getInfoAsync: vi.fn(async (path: string) => ({
+    exists:
+      mockedState.files.has(path) ||
+      mockedState.directories.has(normalizeDir(path)) ||
+      Array.from(mockedState.files.keys()).some((filePath) => filePath.startsWith(`${normalizeDir(path)}/`)),
+  })),
+  makeDirectoryAsync: vi.fn(async (path: string) => {
+    mockedState.directories.add(normalizeDir(path));
+  }),
+  writeAsStringAsync: vi.fn(async (path: string, content: string) => {
+    parentDirs(path).forEach((dir) => mockedState.directories.add(dir));
+    mockedState.files.set(path, content);
+  }),
+  readAsStringAsync: vi.fn(async (path: string) => {
+    if (!mockedState.files.has(path)) {
+      throw new Error(`Missing file: ${path}`);
+    }
+    return mockedState.files.get(path) as string;
+  }),
+  deleteAsync: vi.fn(async (path: string) => {
+    mockedState.files.delete(path);
+  }),
+}));
+
+vi.mock("../lib/localAgentBootstrap", () => ({
+  LOCAL_AGENT_DATA_DIR: "file:///mock/data",
+  ensureLocalAgentSeedData: vi.fn(async () => ({
+    dataDir: "file:///mock/data",
+    seedVersion: "test-seed",
+  })),
+}));
+
+vi.mock("../lib/api", () => ({
+  apiPost: vi.fn(async () => ({ ok: true })),
+}));
+
+global.fetch = vi.fn(async () => {
+  const next = mockedState.fetchQueue.shift();
+  if (!next) {
+    throw new Error("Unexpected fetch");
+  }
+  return next();
+}) as any;
+
+function queueChatResponse(content: string) {
+  mockedState.fetchQueue.push(async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content } }],
+    }),
+  }));
+}
+
+function queueEmbeddingFailure() {
+  mockedState.fetchQueue.push(async () => {
+    throw new Error("embedding unavailable");
+  });
+}
+
+function readJson(path: string) {
+  return JSON.parse(mockedState.files.get(path) || "null");
+}
+
+const dataRoot = "file:///mock/data";
+
+describe("local profiler", () => {
+  beforeEach(() => {
+    mockedState.files.clear();
+    mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
+    mockedState.fetchQueue.length = 0;
+    vi.clearAllMocks();
+    mockedState.files.set(
+      `${dataRoot}/config/profiler_slots.json`,
+      JSON.stringify(profilerSlots, null, 2)
+    );
+    mockedState.files.set(`${dataRoot}/config/prompts.json`, JSON.stringify(prompts, null, 2));
+  });
+
+  it("starts the profiler and persists state", async () => {
+    queueChatResponse("Hey Hari, tell me a little about yourself.");
+
+    const { startProfilerOnPhone } = await import("../lib/localAgents");
+    const result = await startProfilerOnPhone(7, {
+      replyLanguage: "en",
+      userProfile: { name: "Hari", assistantName: "Elli" },
+    });
+
+    expect(result.history[0]?.content).toContain("Hari");
+    expect(result.totalSlots).toBe(15);
+    expect(readJson(`${dataRoot}/profiles/7/profiler_state.json`).status).toBe("active");
+    expect(mockedState.files.get(`${dataRoot}/conversations/7.jsonl`)).toContain("assistant");
+  });
+
+  it("extracts structured updates from free-form replies with deterministic fallback", async () => {
+    queueChatResponse("Tell me a little about yourself.");
+
+    const { startProfilerOnPhone, sendProfilerMessageOnPhone } = await import("../lib/localAgents");
+    await startProfilerOnPhone(8, {
+      replyLanguage: "en",
+      userProfile: { name: "Hari" },
+    });
+
+    mockedState.fetchQueue.push(async () => {
+      throw new Error("model unavailable");
+    });
+
+    const result = await sendProfilerMessageOnPhone(
+      8,
+      "I prefer English, I work as a software engineer, and I enjoy music and travel.",
+      { replyLanguage: "en", userProfile: { name: "Hari" } }
+    );
+
+    expect(result.answers.preferred_language).toBe("english");
+    expect(result.answers.occupation).toBe("working_professional");
+    expect(result.answers.industry_or_field).toBe("technology");
+    expect(result.answers.hobbies).toEqual(expect.arrayContaining(["music", "travel"]));
+    expect(readJson(`${dataRoot}/profiles/8/profiler_state.json`).confidenceBySlot.preferred_language).toBeGreaterThan(0.7);
+  });
+
+  it("recovers from malformed model JSON by falling back to deterministic extraction", async () => {
+    queueChatResponse("Tell me a little about yourself.");
+
+    const { startProfilerOnPhone, sendProfilerMessageOnPhone } = await import("../lib/localAgents");
+    await startProfilerOnPhone(9, { replyLanguage: "en" });
+
+    queueChatResponse("{ definitely not valid profiler json");
+
+    const result = await sendProfilerMessageOnPhone(9, "Please use English and keep it direct.", {
+      replyLanguage: "en",
+    });
+
+    expect(result.answers.preferred_language).toBe("english");
+    expect(result.answers.communication_tone).toBe("short_direct");
+    expect(readJson(`${dataRoot}/profiles/9/profiler_state.json`).lastRunSource).toBe("fallback");
+  });
+
+  it("completes after all 15 slots are filled and writes summary plus rag artifacts", async () => {
+    const { getLocalAgentWorkspaceInfo, sendProfilerMessageOnPhone } = await import("../lib/localAgents");
+    const workspace = await getLocalAgentWorkspaceInfo();
+    expect(workspace.slots).toHaveLength(15);
+
+    const prefilledAnswers = {
+      preferred_language: "english",
+      secondary_language: "tamil",
+      occupation: "working_professional",
+      industry_or_field: "technology",
+      hobbies: ["music", "reading"],
+      interests: ["ai_technology", "productivity"],
+      communication_tone: "short_direct",
+      answer_length: "short",
+      personality_style: "practical",
+      assistant_persona: "coach",
+      planning_style: "light_structure",
+      learning_style: "step_by_step",
+      main_goal: "career_growth",
+      dislikes: ["too_generic"],
+    };
+
+    mockedState.files.set(`${dataRoot}/profiles/10/answers.json`, JSON.stringify(prefilledAnswers, null, 2));
+    mockedState.files.set(
+      `${dataRoot}/profiles/10/profiler_state.json`,
+      JSON.stringify(
+        {
+          status: "active",
+          currentTargetSlot: "work_rhythm",
+          confidenceBySlot: Object.fromEntries(Object.keys(prefilledAnswers).map((key) => [key, 0.9])),
+          history: [],
+        },
+        null,
+        2
+      )
+    );
+
+    mockedState.fetchQueue.push(async () => {
+      throw new Error("model unavailable");
+    });
+    mockedState.fetchQueue.push(async () => {
+      throw new Error("summary unavailable");
+    });
+    queueEmbeddingFailure();
+
+    const result = await sendProfilerMessageOnPhone(10, "I am usually most active in the evening.", {
+      replyLanguage: "en",
+      userProfile: { name: "Hari" },
+    });
+
+    expect(result.done).toBe(true);
+    expect(result.answers.work_rhythm).toBe("evening");
+    expect(readJson(`${dataRoot}/profiles/10/summary.json`).summary).toContain("career_growth");
+    expect(readJson(`${dataRoot}/rag/runtime/10_profile_rag.json`).chunks.length).toBeGreaterThan(0);
+    expect(readJson(`${dataRoot}/rag/runtime/10_chunks.json`).some((row: any) => row.sourceType === "profile")).toBe(true);
+  });
+});
