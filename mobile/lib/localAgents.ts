@@ -208,27 +208,127 @@ type OrchestratorDecision = {
 };
 
 type MemoryRules = {
-  semanticCacheThreshold: number;
-  minTurnsBeforeSync: number;
-  minMinutesBetweenSync: number;
-  maxTurnsForSync: number;
-  maxFactsPerSync: number;
+  version?: number;
+  cache: {
+    similarityThreshold: number;
+    borderlineSimilarityThreshold: number;
+    ttlHours: number;
+    maxEntries: number;
+    maxHitRecords: number;
+    skipRoutes: string[];
+  };
+  durableFacts: {
+    confidenceThreshold: number;
+    maxFactsPerSync: number;
+    transientMarkers: string[];
+    importantMarkers: string[];
+  };
+  summarization: {
+    minTurnsBeforeSync: number;
+    minMinutesBetweenSync: number;
+    maxTurnsForSync: number;
+    dailySummaryLimit: number;
+  };
+  profileUpdates: {
+    fillEmptySlotsOnly: boolean;
+    minConfidenceForNewSlot: number;
+    minConfidenceForOverwrite: number;
+    maxExistingConfidenceToOverwrite: number;
+  };
 };
 
-type SemanticCacheRow = {
-  question: string;
+type SemanticCacheEntry = {
+  id: string;
+  userId: number;
+  sourceQuestion: string;
   normalizedQuestion: string;
-  answer: string;
+  canonicalAnswer: string;
+  englishAnswer: string;
+  lastPresentedAnswer?: string;
   route: string;
+  intent: LocalAssistantTurnResult["intent"];
   embedding: number[];
-  savedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string | null;
+  alignmentProfile?: {
+    replyLanguage: ReplyLanguage;
+    tone?: string;
+  };
 };
 
-type MemorySyncRow = {
-  syncedAt: string;
+type SemanticCacheHitRecord = {
+  userId: number;
+  sourceQuestion: string;
+  matchedQuestion: string;
+  similarity: number;
+  timestamp: string;
+  alignmentReapplied: boolean;
+  route: string;
+};
+
+type SemanticCacheStore = {
+  version: number;
+  entries: SemanticCacheEntry[];
+  hits: SemanticCacheHitRecord[];
+};
+
+type DurableFactRecord = {
+  fact: string;
+  confidence: number;
+  category: string;
+  source: "model" | "heuristic";
+  firstSeenAt: string;
+  lastSeenAt: string;
+  evidence: string[];
+  important?: boolean;
+  profileUpdates?: Record<string, any>;
+};
+
+type DailySummaryRecord = {
+  userId: number;
+  createdAt: string;
+  windowStartAt?: string;
+  windowEndAt?: string;
   summary: string;
-  facts: string[];
-  profile_updates: Record<string, any>;
+  durableFacts: DurableFactRecord[];
+  profileUpdates: Record<string, any>;
+  source: "model" | "fallback";
+  conversationTurnCount: number;
+  routeLogCount: number;
+};
+
+type ProfileUpdateRecord = {
+  userId: number;
+  createdAt: string;
+  applied: boolean;
+  updates: Record<string, any>;
+  previousAnswers: Record<string, any>;
+  nextAnswers: Record<string, any>;
+  reasons: string[];
+};
+
+type MemoryConsolidationResult = {
+  ok: boolean;
+  skipped?: boolean;
+  reason?: string;
+  summary?: DailySummaryRecord;
+  durableFacts?: DurableFactRecord[];
+  profileUpdate?: ProfileUpdateRecord;
+  memoryChunks?: LocalRagChunk[];
+};
+
+type MemoryConsolidationModelOutput = {
+  summary?: string;
+  durable_facts?: Array<{
+    fact?: string;
+    confidence?: number;
+    category?: string;
+    important?: boolean;
+    evidence?: string[];
+    profile_updates?: Record<string, any>;
+  }>;
+  profile_updates?: Record<string, any>;
 };
 
 type PromptCatalog = {
@@ -365,11 +465,43 @@ const DEFAULT_ALIGNMENT_RULES: AlignmentRules = {
 };
 
 const DEFAULT_MEMORY_RULES: MemoryRules = {
-  semanticCacheThreshold: 0.95,
-  minTurnsBeforeSync: 6,
-  minMinutesBetweenSync: 15,
-  maxTurnsForSync: 18,
-  maxFactsPerSync: 6,
+  version: 2,
+  cache: {
+    similarityThreshold: 0.92,
+    borderlineSimilarityThreshold: 0.86,
+    ttlHours: 168,
+    maxEntries: 250,
+    maxHitRecords: 500,
+    skipRoutes: ["clarify", "reminder_create", "weather", "fallback_openai"],
+  },
+  durableFacts: {
+    confidenceThreshold: 0.78,
+    maxFactsPerSync: 6,
+    transientMarkers: [
+      "today",
+      "tomorrow",
+      "this week",
+      "this month",
+      "current",
+      "currently",
+      "right now",
+      "tonight",
+      "temporary",
+    ],
+    importantMarkers: ["important", "remember this", "save this", "note this"],
+  },
+  summarization: {
+    minTurnsBeforeSync: 6,
+    minMinutesBetweenSync: 15,
+    maxTurnsForSync: 18,
+    dailySummaryLimit: 14,
+  },
+  profileUpdates: {
+    fillEmptySlotsOnly: true,
+    minConfidenceForNewSlot: 0.82,
+    minConfidenceForOverwrite: 0.93,
+    maxExistingConfidenceToOverwrite: 0.75,
+  },
 };
 
 const DEFAULT_PROMPTS: PromptCatalog = {
@@ -386,7 +518,7 @@ const DEFAULT_PROMPTS: PromptCatalog = {
   alignmentSystem:
     "Rewrite the factual draft to match the user's tone and language without changing facts or adding claims. Return JSON with english_answer and final_answer.",
   memorySyncSystem:
-    "Summarize recent durable user facts and profile_updates as JSON.",
+    "You are the local Memory & Cache Agent. Use only the provided recent conversation, route logs, profiler state, and alignment captures. Extract durable user facts conservatively. Ignore transient facts unless the user explicitly marks them important. Return JSON only with: summary, durable_facts[{fact, confidence, category, important, evidence, profile_updates}], profile_updates.",
   localReasonerSystem:
     "Use only local context. Reply __OPENAI_FALLBACK__ if live public data is required.",
 };
@@ -837,8 +969,8 @@ function summaryPath(userId: number) {
 function profilerStatePath(userId: number) {
   return `${PROFILES_DIR}/${userId}/profiler_state.json`;
 }
-function semanticCachePath(userId: number) {
-  return `${CACHE_DIR}/${userId}_semantic_cache.json`;
+function semanticCacheStorePath() {
+  return `${CACHE_DIR}/semantic_cache.json`;
 }
 function tasksPath(userId: number) {
   return `${TASKS_DIR}/${userId}.json`;
@@ -849,14 +981,23 @@ function convoPath(userId: number) {
 function routeLogPath(userId: number) {
   return `${CONVERSATIONS_DIR}/${userId}_routes.jsonl`;
 }
-function memoryPath(userId: number) {
-  return `${MEMORY_DIR}/${userId}.jsonl`;
+function dailySummariesPath(userId: number) {
+  return `${MEMORY_DIR}/daily_summaries/${userId}.jsonl`;
+}
+function durableFactsPath(userId: number) {
+  return `${MEMORY_DIR}/durable_facts/${userId}.json`;
+}
+function profileUpdatesPath(userId: number) {
+  return `${MEMORY_DIR}/profile_updates/${userId}.jsonl`;
 }
 function profileRagPath(userId: number) {
   return `${RAG_DIR}/${userId}_profile_rag.json`;
 }
 function ragChunksPath(userId: number) {
   return `${RAG_DIR}/${userId}_chunks.json`;
+}
+function memoryChunksPath(userId: number) {
+  return `${RAG_DIR}/${userId}_memory_chunks.json`;
 }
 function trainingSamplesPath(agent = "general") {
   const safe = normalizeText(agent).replace(/\s+/g, "_") || "general";
@@ -1093,20 +1234,77 @@ async function recentConversation(userId: number, limit = 16) {
   return rows.slice(-limit);
 }
 
-async function loadSemanticCache(userId: number) {
-  return readJson<SemanticCacheRow[]>(semanticCachePath(userId), []);
+async function loadRouteLogs(userId: number, limit = 32) {
+  const rows = await readJsonl<any>(routeLogPath(userId));
+  return rows.slice(-limit);
 }
 
-async function saveSemanticCache(userId: number, rows: SemanticCacheRow[]) {
-  await writeJson(userId ? semanticCachePath(userId) : semanticCachePath(0), rows.slice(-200));
+async function migrateLegacySemanticCacheIfNeeded(userId?: number) {
+  const target = semanticCacheStorePath();
+  if (await exists(target)) return;
+  const legacyFiles = userId != null ? [`${CACHE_DIR}/${userId}_semantic_cache.json`] : [];
+  const importedEntries: SemanticCacheEntry[] = [];
+  for (const path of legacyFiles) {
+    const match = path.match(/\/(\d+)_semantic_cache\.json$/);
+    const userId = Number(match?.[1] || 0);
+    const rows = await readJson<any[]>(path, []);
+    for (const row of rows) {
+      const sourceQuestion = String(row?.question || "").trim();
+      const canonicalAnswer = String(row?.answer || "").trim();
+      if (!sourceQuestion || !canonicalAnswer) continue;
+      importedEntries.push({
+        id: `${userId}_${simpleHash(`${sourceQuestion}:${canonicalAnswer}`)}`,
+        userId,
+        sourceQuestion,
+        normalizedQuestion: normalizeText(row?.normalizedQuestion || sourceQuestion),
+        canonicalAnswer,
+        englishAnswer: canonicalAnswer,
+        lastPresentedAnswer: canonicalAnswer,
+        route: String(row?.route || "local_answer"),
+        intent: "assistant",
+        embedding: Array.isArray(row?.embedding) ? row.embedding.map(Number) : hashEmbedding(sourceQuestion),
+        createdAt: String(row?.savedAt || nowIso()),
+        updatedAt: String(row?.savedAt || nowIso()),
+        expiresAt: null,
+        alignmentProfile: { replyLanguage: "en" },
+      });
+    }
+  }
+  await writeJson(target, {
+    version: 2,
+    entries: importedEntries,
+    hits: [],
+  } satisfies SemanticCacheStore);
+}
+
+async function loadSemanticCacheStore(userId?: number) {
+  await migrateLegacySemanticCacheIfNeeded(userId);
+  return readJson<SemanticCacheStore>(semanticCacheStorePath(), {
+    version: 2,
+    entries: [],
+    hits: [],
+  });
+}
+
+async function saveSemanticCacheStore(store: SemanticCacheStore, rules?: MemoryRules) {
+  const nextRules = rules || (await getMemoryRules());
+  const maxEntries = positiveInt(nextRules.cache?.maxEntries, 250);
+  const maxHitRecords = positiveInt(nextRules.cache?.maxHitRecords, 500);
+  await writeJson(semanticCacheStorePath(), {
+    version: 2,
+    entries: store.entries.slice(-maxEntries),
+    hits: store.hits.slice(-maxHitRecords),
+  } satisfies SemanticCacheStore);
 }
 
 async function loadRagChunks(userId: number) {
   const profilePayload = await readJson<{ chunks?: LocalRagChunk[] }>(profileRagPath(userId), { chunks: [] });
   const docChunks = await readJson<LocalRagChunk[]>(ragChunksPath(userId), []);
+  const memoryChunks = await readJson<LocalRagChunk[]>(memoryChunksPath(userId), []);
   const merged = [
     ...(Array.isArray(profilePayload.chunks) ? profilePayload.chunks : []),
     ...(Array.isArray(docChunks) ? docChunks : []),
+    ...(Array.isArray(memoryChunks) ? memoryChunks : []),
   ];
   const byId = new Map<string, LocalRagChunk>();
   for (const row of merged) {
@@ -1117,6 +1315,30 @@ async function loadRagChunks(userId: number) {
 
 async function saveRagChunks(userId: number, rows: LocalRagChunk[]) {
   await writeJson(ragChunksPath(userId), rows.slice(-1000));
+}
+
+async function loadDurableFacts(userId: number) {
+  return readJson<DurableFactRecord[]>(durableFactsPath(userId), []);
+}
+
+async function saveDurableFacts(userId: number, rows: DurableFactRecord[]) {
+  await writeJson(durableFactsPath(userId), rows);
+}
+
+async function loadDailySummaries(userId: number) {
+  return readJsonl<DailySummaryRecord>(dailySummariesPath(userId));
+}
+
+async function appendDailySummary(userId: number, row: DailySummaryRecord) {
+  await appendJsonl(dailySummariesPath(userId), row);
+}
+
+async function appendProfileUpdate(userId: number, row: ProfileUpdateRecord) {
+  await appendJsonl(profileUpdatesPath(userId), row);
+}
+
+async function saveMemoryChunks(userId: number, rows: LocalRagChunk[]) {
+  await writeJson(memoryChunksPath(userId), rows.slice(-600));
 }
 
 function extractCompletionText(json: any) {
@@ -1215,6 +1437,167 @@ async function embedTexts(texts: string[]) {
   } catch {
     return texts.map((text) => hashEmbedding(text));
   }
+}
+
+function isTransientFact(text: string, rules: MemoryRules) {
+  const normalized = normalizeText(text);
+  const transientMarkers = rules.durableFacts?.transientMarkers || [];
+  const importantMarkers = rules.durableFacts?.importantMarkers || [];
+  const markedImportant = importantMarkers.some((marker) => {
+    const clean = normalizeText(marker);
+    return clean && normalized.includes(clean);
+  });
+  if (markedImportant) return false;
+  return transientMarkers.some((marker) => {
+    const clean = normalizeText(marker);
+    return clean && normalized.includes(clean);
+  });
+}
+
+function normalizedValueFingerprint(value: any) {
+  if (Array.isArray(value)) return value.map((item) => normalizeText(item)).join("|");
+  return normalizeText(value);
+}
+
+function mergeDurableFacts(
+  existing: DurableFactRecord[],
+  additions: DurableFactRecord[]
+) {
+  const byFact = new Map(existing.map((row) => [normalizeText(row.fact), row] as const));
+  for (const row of additions) {
+    const key = normalizeText(row.fact);
+    if (!key) continue;
+    const current = byFact.get(key);
+    if (!current) {
+      byFact.set(key, row);
+      continue;
+    }
+    byFact.set(key, {
+      ...current,
+      confidence: Math.max(current.confidence, row.confidence),
+      lastSeenAt: row.lastSeenAt,
+      important: current.important || row.important,
+      evidence: uniq([...(current.evidence || []), ...(row.evidence || [])]).slice(-6),
+      profileUpdates: {
+        ...(current.profileUpdates || {}),
+        ...(row.profileUpdates || {}),
+      },
+    });
+  }
+  return Array.from(byFact.values()).sort((a, b) => a.fact.localeCompare(b.fact));
+}
+
+function buildFallbackMemorySummary(facts: DurableFactRecord[], turns: LocalChatMessage[]) {
+  if (facts.length) {
+    return `Durable user facts: ${facts.map((row) => row.fact).join("; ")}.`;
+  }
+  const recentUserTurns = turns
+    .filter((row) => row.role === "user")
+    .map((row) => row.content.trim())
+    .filter(Boolean)
+    .slice(-2);
+  if (recentUserTurns.length) {
+    return `Recent conversation focused on: ${recentUserTurns.join(" / ")}.`;
+  }
+  return "No durable memory updates from this conversation window.";
+}
+
+function heuristicMemoryCandidates(turns: LocalChatMessage[], rules: MemoryRules) {
+  const userTurns = turns.filter((row) => row.role === "user");
+  const candidates: Array<{
+    fact: string;
+    confidence: number;
+    category: string;
+    important: boolean;
+    evidence: string[];
+  }> = [];
+
+  const extract = (fact: string, confidence: number, category: string, evidence: string, important = false) => {
+    const clean = String(fact || "").trim();
+    if (!clean || isTransientFact(clean, rules)) return;
+    candidates.push({
+      fact: clean,
+      confidence,
+      category,
+      important,
+      evidence: [evidence],
+    });
+  };
+
+  for (const row of userTurns) {
+    const content = row.content.trim();
+    const important = (rules.durableFacts?.importantMarkers || []).some((marker) =>
+      normalizeText(content).includes(normalizeText(marker))
+    );
+
+    const namedPatterns: Array<[RegExp, (match: RegExpExecArray) => [string, string, number]]> = [
+      [/\bmy name is ([^.!,\n]+)/i, (match) => [`Name: ${match[1].trim()}`, "identity", 0.96]],
+      [/\bi am(?: a| an)? ([^.!,\n]+)/i, (match) => [`Identity: ${match[1].trim()}`, "identity", 0.82]],
+      [/\bi work as(?: a| an)? ([^.!,\n]+)/i, (match) => [`Occupation: ${match[1].trim()}`, "occupation", 0.92]],
+      [/\bi (?:prefer|want) ([^.!,\n]+)/i, (match) => [`Preference: ${match[1].trim()}`, "preference", 0.85]],
+      [/\bi (?:like|love|enjoy) ([^.!,\n]+)/i, (match) => [`Likes: ${match[1].trim()}`, "preference", 0.83]],
+      [/\bi (?:speak|use) ([^.!,\n]+)/i, (match) => [`Languages: ${match[1].trim()}`, "language", 0.84]],
+      [/\bmy goal is ([^.!,\n]+)/i, (match) => [`Goal: ${match[1].trim()}`, "goal", 0.88]],
+    ];
+
+    for (const [regex, build] of namedPatterns) {
+      const match = regex.exec(content);
+      if (!match) continue;
+      const [fact, category, confidence] = build(match);
+      extract(fact, confidence, category, content, important);
+    }
+  }
+
+  return candidates;
+}
+
+function buildDurableFactsFromHeuristics(
+  turns: LocalChatMessage[],
+  profileUpdates: Record<string, any>,
+  rules: MemoryRules
+) {
+  const extracted = heuristicMemoryCandidates(turns, rules)
+    .filter((row) => row.confidence >= positiveFloat(rules.durableFacts?.confidenceThreshold, 0.78))
+    .slice(0, positiveInt(rules.durableFacts?.maxFactsPerSync, 6))
+    .map(
+      (row): DurableFactRecord => ({
+        fact: row.fact,
+        confidence: row.confidence,
+        category: row.category,
+        source: "heuristic",
+        firstSeenAt: nowIso(),
+        lastSeenAt: nowIso(),
+        evidence: row.evidence,
+        important: row.important,
+        profileUpdates,
+      })
+    );
+  return extracted;
+}
+
+function shouldApplyProfileUpdate(
+  slotId: string,
+  nextValue: any,
+  currentAnswers: Record<string, any>,
+  currentConfidenceBySlot: Record<string, number>,
+  candidateConfidenceBySlot: Record<string, number>,
+  rules: MemoryRules
+) {
+  const currentValue = currentAnswers[slotId];
+  if (!nonEmptyAnswer(nextValue)) return false;
+  if (normalizedValueFingerprint(currentValue) === normalizedValueFingerprint(nextValue)) return false;
+  const candidateConfidence = clampConfidence(candidateConfidenceBySlot[slotId], 0);
+  if (!nonEmptyAnswer(currentValue)) {
+    return candidateConfidence >= positiveFloat(rules.profileUpdates?.minConfidenceForNewSlot, 0.82);
+  }
+  if (rules.profileUpdates?.fillEmptySlotsOnly !== false) {
+    return false;
+  }
+  const currentConfidence = clampConfidence(currentConfidenceBySlot[slotId], 0);
+  return (
+    candidateConfidence >= positiveFloat(rules.profileUpdates?.minConfidenceForOverwrite, 0.93) &&
+    currentConfidence <= positiveFloat(rules.profileUpdates?.maxExistingConfidenceToOverwrite, 0.75)
+  );
 }
 
 async function saveAnswers(userId: number, answers: Record<string, string | string[]>) {
@@ -1713,6 +2096,22 @@ function deterministicProfilerExtraction(
   };
 }
 
+function normalizeMemoryProfileUpdates(
+  slots: ProfilerSlot[],
+  profileUpdates: Record<string, any>
+) {
+  const byId = new Map(slots.map((slot) => [slot.id, slot] as const));
+  return Object.fromEntries(
+    Object.entries(profileUpdates || {})
+      .map(([slotId, value]) => {
+        const slot = byId.get(slotId);
+        if (!slot) return [slotId, undefined] as const;
+        return [slotId, normalizeSlotValue(slot, value)] as const;
+      })
+      .filter(([, value]) => nonEmptyAnswer(value))
+  ) as Record<string, string | string[]>;
+}
+
 function salvageProfilerModelOutput(rawText: string, slots: ProfilerSlot[]): ProfilerModelOutput | null {
   const clean = String(rawText || "").trim();
   if (!clean) return null;
@@ -1848,6 +2247,14 @@ export const __assistantTestUtils = {
   sanitizeDecision,
   generateClarifyingQuestion,
   ruleBasedOrchestratorDecision,
+};
+
+export const __memoryTestUtils = {
+  isTransientFact,
+  heuristicMemoryCandidates,
+  buildDurableFactsFromHeuristics,
+  mergeDurableFacts,
+  shouldApplyProfileUpdate,
 };
 
 async function syncAnswersToBackend(userId: number, answers: Record<string, string | string[]>) {
@@ -2509,10 +2916,16 @@ async function alignAnswer(
 
 async function lookupSemanticCache(userId: number, message: string) {
   const rules = await getMemoryRules();
-  const rows = await loadSemanticCache(userId);
+  const store = await loadSemanticCacheStore(userId);
+  const now = Date.now();
+  const rows = store.entries.filter((row) => {
+    if (row.userId !== userId) return false;
+    if (!row.expiresAt) return true;
+    return new Date(row.expiresAt).getTime() >= now;
+  });
   if (!rows.length) return null;
   const [queryVec] = await embedTexts([message]);
-  let best: SemanticCacheRow | null = null;
+  let best: SemanticCacheEntry | null = null;
   let bestScore = 0;
   for (const row of rows) {
     const score = cosine(queryVec, Array.isArray(row.embedding) ? row.embedding : []);
@@ -2521,89 +2934,400 @@ async function lookupSemanticCache(userId: number, message: string) {
       best = row;
     }
   }
-  if (best && bestScore >= positiveFloat(rules.semanticCacheThreshold, 0.95)) {
+  if (best && bestScore >= positiveFloat(rules.cache?.similarityThreshold, 0.92)) {
     return { ...best, score: bestScore };
   }
   return null;
 }
 
-async function writeSemanticCache(userId: number, question: string, answer: string, route: string) {
-  const rows = await loadSemanticCache(userId);
-  const [embedding] = await embedTexts([question]);
-  rows.push({
-    question,
-    normalizedQuestion: normalizeText(question),
-    answer,
-    route,
-    embedding,
-    savedAt: nowIso(),
-  });
-  await saveSemanticCache(userId, rows);
+async function recordSemanticCacheHit(
+  userId: number,
+  hit: SemanticCacheHitRecord
+) {
+  const rules = await getMemoryRules();
+  const store = await loadSemanticCacheStore(userId);
+  store.hits.push(hit);
+  await saveSemanticCacheStore(store, rules);
 }
 
-async function maybeSyncLocalMemory(userId: number, userProfile?: LocalUserProfile) {
+async function writeSemanticCache(
+  userId: number,
+  question: string,
+  answer: string,
+  englishAnswer: string,
+  route: string,
+  intent: LocalAssistantTurnResult["intent"],
+  alignmentProfile?: SemanticCacheEntry["alignmentProfile"]
+) {
   const rules = await getMemoryRules();
-  const registry = await getAgentRegistry();
-  if (!registry.agents.memory.enabled) return;
+  const skipRoutes = rules.cache?.skipRoutes || [];
+  if (skipRoutes.includes(route)) return;
+  const store = await loadSemanticCacheStore(userId);
+  const [embedding] = await embedTexts([question]);
+  const ttlHours = positiveInt(rules.cache?.ttlHours, 168);
+  const createdAt = nowIso();
+  const expiresAt = ttlHours > 0 ? new Date(Date.now() + ttlHours * 3600000).toISOString() : null;
+  const newEntry: SemanticCacheEntry = {
+    id: `${userId}_${simpleHash(`${question}:${englishAnswer}:${route}`)}`,
+    userId,
+    sourceQuestion: question,
+    normalizedQuestion: normalizeText(question),
+    canonicalAnswer: englishAnswer || answer,
+    englishAnswer: englishAnswer || answer,
+    lastPresentedAnswer: answer,
+    route,
+    intent,
+    embedding,
+    createdAt,
+    updatedAt: createdAt,
+    expiresAt,
+    alignmentProfile,
+  };
+  const filtered = store.entries.filter((row) => row.id !== newEntry.id);
+  filtered.push(newEntry);
+  await saveSemanticCacheStore(
+    {
+      ...store,
+      entries: filtered,
+    },
+    rules
+  );
+}
 
-  const turns = await recentConversation(userId, positiveInt(rules.maxTurnsForSync, 18));
-  if (turns.length < positiveInt(rules.minTurnsBeforeSync, 6)) return;
-  const previous = await readJsonl<MemorySyncRow>(memoryPath(userId));
-  const latestSync = previous[previous.length - 1]?.syncedAt;
-  if (latestSync) {
-    const minutes = (Date.now() - new Date(latestSync).getTime()) / 60000;
-    if (minutes < positiveInt(rules.minMinutesBetweenSync, 15)) return;
-  }
-
-  const answers = await loadAnswers(userId);
-  const slots = await getProfilerSlots();
+async function buildMemoryConsolidation(
+  userId: number,
+  turns: LocalChatMessage[],
+  routeLogs: any[],
+  answers: Record<string, any>,
+  state: LocalProfilerState,
+  userProfile?: LocalUserProfile
+) {
+  const rules = await getMemoryRules();
   const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
+  const registry = await getAgentRegistry();
+  const slots = await getProfilerSlots();
+  const replyLanguageName = languageLabel(String(answers.preferred_language || userProfile?.replyLanguage || "english"));
+  const recentUserText = turns
+    .filter((row) => row.role === "user")
+    .map((row) => row.content.trim())
+    .filter(Boolean)
+    .join("\n");
+  const deterministic = deterministicProfilerExtraction(
+    recentUserText,
+    slots,
+    answers,
+    state,
+    replyLanguageName
+  );
+  const perTurnExtractions = turns
+    .filter((row) => row.role === "user")
+    .map((row) =>
+      deterministicProfilerExtraction(
+        row.content,
+        slots,
+        answers,
+        state,
+        replyLanguageName
+      )
+    );
+  const perTurnUpdates = normalizeMemoryProfileUpdates(
+    slots,
+    Object.assign({}, ...perTurnExtractions.map((row) => row.updates || {}))
+  );
+  const perTurnConfidenceBySlot = Object.assign(
+    {},
+    ...perTurnExtractions.map((row) => row.confidence_by_slot || {})
+  ) as Record<string, number>;
+  const fallbackProfileUpdates = normalizeMemoryProfileUpdates(slots, deterministic.updates || {});
+  const fallbackProfileConfidenceBySlot = Object.fromEntries(
+    Object.entries(deterministic.confidence_by_slot || {}).map(([slotId, value]) => [slotId, clampConfidence(value, 0)])
+  );
+  const deriveUpdatesFromFacts = (facts: DurableFactRecord[]) => {
+    const joinedFacts = facts.map((row) => row.fact).join(". ");
+    const factExtraction = deterministicProfilerExtraction(
+      joinedFacts,
+      slots,
+      answers,
+      state,
+      replyLanguageName
+    );
+    const heuristicUpdates: Record<string, any> = {};
+    const heuristicConfidenceBySlot: Record<string, number> = {};
+    const normalizedFacts = normalizeText(joinedFacts);
+    if (normalizedFacts.includes("english")) {
+      heuristicUpdates.preferred_language = "english";
+      heuristicConfidenceBySlot.preferred_language = 0.86;
+    }
+    if (
+      normalizedFacts.includes("software engineer") ||
+      normalizedFacts.includes("developer") ||
+      normalizedFacts.includes("engineer")
+    ) {
+      heuristicUpdates.occupation = "working_professional";
+      heuristicConfidenceBySlot.occupation = 0.9;
+      heuristicUpdates.industry_or_field = "technology";
+      heuristicConfidenceBySlot.industry_or_field = 0.9;
+    }
+    return {
+      updates: {
+        ...normalizeMemoryProfileUpdates(slots, factExtraction.updates || {}),
+        ...normalizeMemoryProfileUpdates(slots, heuristicUpdates),
+      },
+      confidenceBySlot: {
+        ...Object.fromEntries(
+          Object.entries(factExtraction.confidence_by_slot || {}).map(([slotId, value]) => [slotId, clampConfidence(value, 0)])
+        ),
+        ...heuristicConfidenceBySlot,
+      },
+    };
+  };
 
   try {
     const out = await localChatJson(
       prompts.memorySyncSystem,
       JSON.stringify({
         user: userProfile || {},
-        current_answers: answers,
+        structured_profile: answers,
+        profiler_summary: await loadSummary(userId),
+        profiler_answers: answers,
+        profiler_state: state,
         recent_turns: turns,
+        route_logs: routeLogs,
+        alignment_captures: (await listLocalTrainingSamples("alignment")).slice(-12),
+        conversation_logs_path: convoPath(userId),
         semantic_memory_model: cfg.models.embedding,
       }),
       cfg.models[registry.agents.memory.summarizerModelKey],
       0.1
     );
-
-    const updates = mergeProfilerUpdates(slots, answers, out.profile_updates || {});
-    const changed = JSON.stringify(updates) !== JSON.stringify(answers);
-
-    if (changed) {
-      await saveAnswers(userId, updates);
-      await syncAnswersToBackend(userId, updates);
-      await buildProfileSummaryLocally(userId, userProfile);
-    }
-
-    const row: MemorySyncRow = {
-      syncedAt: nowIso(),
-      summary: String(out.summary || "").trim(),
-      facts: Array.isArray(out.new_facts)
-        ? out.new_facts
-            .map((item: any) => String(item || "").trim())
-            .filter(Boolean)
-            .slice(0, positiveInt(rules.maxFactsPerSync, 6))
-        : [],
-      profile_updates: out.profile_updates || {},
+    const parsed = parseJsonLoose<MemoryConsolidationModelOutput>(out, {});
+    const normalizedModelUpdates = normalizeMemoryProfileUpdates(slots, parsed.profile_updates || {});
+    const modelConfidenceBySlot = Object.fromEntries(
+      Object.keys(normalizedModelUpdates).map((slotId) => [slotId, 0.95])
+    );
+    const durableFacts = (Array.isArray(parsed.durable_facts) ? parsed.durable_facts : [])
+      .map((row): DurableFactRecord | null => {
+        const fact = String(row?.fact || "").trim();
+        const confidence = clampConfidence(row?.confidence, 0);
+        if (!fact || confidence < positiveFloat(rules.durableFacts?.confidenceThreshold, 0.78)) return null;
+        if (isTransientFact(fact, rules) && !row?.important) return null;
+        return {
+          fact,
+          confidence,
+          category: String(row?.category || "general").trim() || "general",
+          source: "model",
+          firstSeenAt: nowIso(),
+          lastSeenAt: nowIso(),
+          evidence: trimList(row?.evidence).slice(0, 4),
+          important: Boolean(row?.important),
+          profileUpdates: normalizeMemoryProfileUpdates(slots, row?.profile_updates || {}),
+        };
+      })
+      .filter(Boolean) as DurableFactRecord[];
+    const factDerived = deriveUpdatesFromFacts(durableFacts);
+    return {
+      source: "model" as const,
+      summary:
+        String(parsed.summary || "").trim() ||
+        buildFallbackMemorySummary(durableFacts, turns),
+      durableFacts: durableFacts.slice(0, positiveInt(rules.durableFacts?.maxFactsPerSync, 6)),
+      profileUpdates: {
+        ...fallbackProfileUpdates,
+        ...perTurnUpdates,
+        ...factDerived.updates,
+        ...normalizedModelUpdates,
+      },
+      profileUpdateConfidenceBySlot: {
+        ...fallbackProfileConfidenceBySlot,
+        ...perTurnConfidenceBySlot,
+        ...factDerived.confidenceBySlot,
+        ...modelConfidenceBySlot,
+      },
     };
-
-    await appendJsonl(memoryPath(userId), row);
-    await safeRecordTrainingSample("memory", {
-      input: JSON.stringify({ recent_turns: turns, current_answers: answers }),
-      expectedOutput: JSON.stringify(row),
-      label: changed ? "profile_update" : "memory_sync",
-      metadata: { userId, embeddingModel: cfg.models.embedding },
-    });
   } catch {
-    // local-first: skip silently
+    const durableFacts = buildDurableFactsFromHeuristics(turns, fallbackProfileUpdates, rules);
+    const factDerived = deriveUpdatesFromFacts(durableFacts);
+    return {
+      source: "fallback" as const,
+      summary: buildFallbackMemorySummary(durableFacts, turns),
+      durableFacts,
+      profileUpdates: {
+        ...fallbackProfileUpdates,
+        ...perTurnUpdates,
+        ...factDerived.updates,
+      },
+      profileUpdateConfidenceBySlot: {
+        ...fallbackProfileConfidenceBySlot,
+        ...perTurnConfidenceBySlot,
+        ...factDerived.confidenceBySlot,
+      },
+    };
   }
+}
+
+async function applyConservativeProfileUpdates(
+  userId: number,
+  updates: Record<string, any>,
+  updateConfidenceBySlot: Record<string, number>,
+  currentAnswers: Record<string, any>,
+  state: LocalProfilerState,
+  rules: MemoryRules,
+  userProfile?: LocalUserProfile
+) {
+  const nextAnswers = { ...currentAnswers };
+  const reasons: string[] = [];
+  for (const [slotId, value] of Object.entries(updates || {})) {
+    if (
+      !shouldApplyProfileUpdate(
+        slotId,
+        value,
+        currentAnswers,
+        state.confidenceBySlot || {},
+        updateConfidenceBySlot,
+        rules
+      )
+    ) {
+      continue;
+    }
+    nextAnswers[slotId] = value;
+    reasons.push(
+      !nonEmptyAnswer(currentAnswers[slotId])
+        ? `Filled empty slot ${slotId} from durable memory.`
+        : `Conservatively updated ${slotId} from durable memory.`
+    );
+  }
+
+  const applied = JSON.stringify(nextAnswers) !== JSON.stringify(currentAnswers);
+  if (applied) {
+    await saveAnswers(userId, nextAnswers);
+    await syncAnswersToBackend(userId, nextAnswers);
+    await buildProfileSummaryLocally(userId, userProfile);
+  }
+
+  const row: ProfileUpdateRecord = {
+    userId,
+    createdAt: nowIso(),
+    applied,
+    updates,
+    previousAnswers: currentAnswers,
+    nextAnswers,
+    reasons,
+  };
+  await appendProfileUpdate(userId, row);
+  return row;
+}
+
+async function refreshMemoryRagArtifacts(
+  userId: number,
+  summaryRow: DailySummaryRecord,
+  durableFacts: DurableFactRecord[]
+) {
+  const texts = [
+    summaryRow.summary
+      ? `Summary: ${summaryRow.summary}`
+      : "",
+    ...durableFacts.map((row) => `Fact: ${row.fact}`),
+  ].filter(Boolean);
+  if (!texts.length) {
+    await saveMemoryChunks(userId, []);
+    return [] as LocalRagChunk[];
+  }
+  const embeddings = await embedTexts(texts);
+  const chunks: LocalRagChunk[] = texts.map((text, index) => ({
+    id: `memory:${userId}:${index}:${simpleHash(text)}`,
+    sourceId: `memory:${userId}:${index}`,
+    sourceType: "memory",
+    text,
+    embedding: Array.isArray(embeddings[index]) ? embeddings[index] : hashEmbedding(text),
+    metadata: {
+      userId,
+      createdAt: summaryRow.createdAt,
+      kind: index === 0 ? "summary" : "durable_fact",
+      factCount: durableFacts.length,
+    },
+    updatedAt: summaryRow.createdAt,
+  }));
+  await saveMemoryChunks(userId, chunks);
+  return chunks;
+}
+
+export async function consolidateLocalMemoryOnIdle(
+  userId: number,
+  opts?: { force?: boolean; userProfile?: LocalUserProfile }
+): Promise<MemoryConsolidationResult> {
+  const rules = await getMemoryRules();
+  const registry = await getAgentRegistry();
+  if (!registry.agents.memory.enabled) {
+    return { ok: false, skipped: true, reason: "memory_agent_disabled" };
+  }
+
+  const turns = await recentConversation(userId, positiveInt(rules.summarization?.maxTurnsForSync, 18));
+  if (!opts?.force && turns.length < positiveInt(rules.summarization?.minTurnsBeforeSync, 6)) {
+    return { ok: false, skipped: true, reason: "not_enough_turns" };
+  }
+  const previous = await loadDailySummaries(userId);
+  const latestSync = previous[previous.length - 1]?.createdAt;
+  if (latestSync) {
+    const minutes = (Date.now() - new Date(latestSync).getTime()) / 60000;
+    if (!opts?.force && minutes < positiveInt(rules.summarization?.minMinutesBetweenSync, 15)) {
+      return { ok: false, skipped: true, reason: "within_cooldown_window" };
+    }
+  }
+
+  const answers = await loadAnswers(userId);
+  const state = await loadProfilerState(userId);
+  const routeLogs = await loadRouteLogs(userId, 18);
+  const built = await buildMemoryConsolidation(userId, turns, routeLogs, answers, state, opts?.userProfile);
+  const existingFacts = await loadDurableFacts(userId);
+  const mergedFacts = mergeDurableFacts(existingFacts, built.durableFacts);
+  const summaryRow: DailySummaryRecord = {
+    userId,
+    createdAt: nowIso(),
+    windowStartAt: turns[0]?.createdAt,
+    windowEndAt: turns[turns.length - 1]?.createdAt,
+    summary: built.summary,
+    durableFacts: mergedFacts.slice(-positiveInt(rules.durableFacts?.maxFactsPerSync, 6)),
+    profileUpdates: built.profileUpdates,
+    source: built.source,
+    conversationTurnCount: turns.length,
+    routeLogCount: routeLogs.length,
+  };
+  await saveDurableFacts(userId, mergedFacts);
+  await appendDailySummary(userId, summaryRow);
+
+  const profileUpdate = await applyConservativeProfileUpdates(
+    userId,
+    built.profileUpdates,
+    built.profileUpdateConfidenceBySlot || {},
+    answers,
+    state,
+    rules,
+    opts?.userProfile
+  );
+  const memoryChunks = await refreshMemoryRagArtifacts(userId, summaryRow, mergedFacts);
+  await safeRecordTrainingSample("memory", {
+    input: JSON.stringify({
+      recent_turns: turns,
+      route_logs: routeLogs,
+      current_answers: answers,
+    }),
+    expectedOutput: JSON.stringify(summaryRow),
+    label: profileUpdate.applied ? "profile_update" : "memory_sync",
+    metadata: {
+      userId,
+      source: built.source,
+      durableFactCount: mergedFacts.length,
+      profileUpdateApplied: profileUpdate.applied,
+    },
+  });
+  return {
+    ok: true,
+    summary: summaryRow,
+    durableFacts: mergedFacts,
+    profileUpdate,
+    memoryChunks,
+  };
 }
 
 async function buildLocalReasoningDraft(opts: {
@@ -2616,7 +3340,8 @@ async function buildLocalReasoningDraft(opts: {
   selectedModel: string;
 }) {
   const prompts = await getPromptCatalog();
-  const memories = await readJsonl<MemorySyncRow>(memoryPath(opts.userId));
+  const memories = await loadDailySummaries(opts.userId);
+  const durableFacts = await loadDurableFacts(opts.userId);
   const turns = await recentConversation(opts.userId, 10);
   const ragHits = await searchLocalRag(opts.userId, opts.message, 6);
   const draft = await localChatText(
@@ -2629,6 +3354,7 @@ async function buildLocalReasoningDraft(opts: {
       profile_facts: profileFactsText(opts.answers),
       user: opts.userProfile || {},
       recent_memory: memories.slice(-6),
+      durable_facts: durableFacts.slice(-8),
       recent_conversation: turns,
       rag_hits: ragHits.map((row) => ({
         source_id: row.sourceId,
@@ -2719,23 +3445,62 @@ export async function runLocalAssistantTurn(opts: {
 
   const semantic = await lookupSemanticCache(userId, message);
   if (semantic) {
-    await appendConversation(userId, "assistant", semantic.answer);
+    const needsAlignmentReapply =
+      semantic.alignmentProfile?.replyLanguage !== replyLanguage ||
+      normalizeText(semantic.alignmentProfile?.tone || "") !== normalizeText(displayValue(answers.communication_tone));
+    const aligned = needsAlignmentReapply
+      ? await alignAnswer(
+          semantic.englishAnswer || semantic.canonicalAnswer,
+          replyLanguage,
+          "semantic_cache",
+          answers,
+          profileSummary,
+          opts.userProfile
+        )
+      : {
+          english: semantic.englishAnswer || semantic.canonicalAnswer,
+          final:
+            semantic.lastPresentedAnswer ||
+            semantic.englishAnswer ||
+            semantic.canonicalAnswer,
+        };
+    const assistantText = aligned.final || aligned.english || semantic.canonicalAnswer;
+    await appendConversation(userId, "assistant", assistantText);
+    await recordSemanticCacheHit(userId, {
+      userId,
+      sourceQuestion: message,
+      matchedQuestion: semantic.sourceQuestion,
+      similarity: semantic.score,
+      timestamp: nowIso(),
+      alignmentReapplied: needsAlignmentReapply,
+      route: semantic.route,
+    });
     await safeRecordTrainingSample("memory", {
       input: message,
-      expectedOutput: semantic.answer,
+      expectedOutput: assistantText,
       label: "semantic_cache_hit",
-      metadata: { userId, route: semantic.route, score: semantic.score },
+      metadata: {
+        userId,
+        route: semantic.route,
+        score: semantic.score,
+        matchedQuestion: semantic.sourceQuestion,
+        alignmentReapplied: needsAlignmentReapply,
+      },
     });
     return {
       route: "semantic_cache",
       source: "semantic_cache",
       cacheHit: true,
-      assistantText: semantic.answer,
-      englishText: semantic.answer,
-      intent: "assistant",
+      assistantText,
+      englishText: aligned.english || semantic.englishAnswer || semantic.canonicalAnswer,
+      intent: semantic.intent || "assistant",
       profileSummary,
       meta: {
-        score: semantic.score,
+        sourceQuestion: message,
+        matchedQuestion: semantic.sourceQuestion,
+        similarity: semantic.score,
+        timestamp: nowIso(),
+        alignmentReapplied: needsAlignmentReapply,
         dataFolder: DATA_DIR,
         trainingFolder: TRAINING_DIR,
         ragFolder: RAG_DIR,
@@ -2951,7 +3716,18 @@ export async function runLocalAssistantTurn(opts: {
   });
 
   if (assistantText.trim() && route !== "reminder_create" && route !== "clarify") {
-    await writeSemanticCache(userId, message, assistantText, route);
+    await writeSemanticCache(
+      userId,
+      message,
+      assistantText,
+      english || draft || assistantText,
+      route,
+      intent,
+      {
+        replyLanguage,
+        tone: displayValue(answers.communication_tone),
+      }
+    );
   }
 
   await safeRecordTrainingSample("alignment", {
@@ -2969,7 +3745,9 @@ export async function runLocalAssistantTurn(opts: {
     metadata: { userId, source, decision },
   });
 
-  await maybeSyncLocalMemory(userId, { ...opts.userProfile, replyLanguage });
+  await consolidateLocalMemoryOnIdle(userId, {
+    userProfile: { ...opts.userProfile, replyLanguage },
+  }).catch(() => ({ ok: false }));
 
   return {
     route,
