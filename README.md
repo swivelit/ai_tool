@@ -9,6 +9,8 @@ The primary runtime is now **phone-local agents** in the Expo app.
 - The Orchestrator Agent is now the local-first traffic cop.
   It routes greeting/small-talk, clarification, profile, reminders/tasks, weather/live-tool requests, offline reasoning, and only then considers backend fallback.
 - The Alignment Agent now rewrites local or fallback drafts to the user's preferred tone/language while preserving facts.
+- The Memory & Cache Agent is now the final local-first intelligence layer.
+  It owns semantic cache lookup, durable memory consolidation, conservative profile updates, and memory chunk persistence on-device.
 - `mobile/data/` is the checked-in source of truth for agent configs, prompts, training seeds, and RAG seeds.
 - On first launch, the app bootstraps those checked-in seed files into `Expo FileSystem.documentDirectory/data`.
 - Live phone runtime data stays only in `documentDirectory/data` and is not stored in git.
@@ -113,6 +115,35 @@ Runtime artifacts added for the new agents:
 - `conversations/{userId}_routes.jsonl`
   Append-only route decision log with route metadata and fallback-policy context.
 
+## Memory And Cache Runtime
+
+The semantic cache is now a single phone-local runtime path inside `mobile/lib/localAgents.ts`.
+
+- Cache lookup uses the configured embedding model, currently `Qwen/Qwen3-Embedding-0.6B`.
+- Cache hits are based on semantic similarity, not exact text match.
+- Cache reuse happens before orchestrator routing, backend calls, or OpenAI fallback.
+- Cached factual content is preserved in English form, and alignment may be reapplied only for style/language presentation.
+- Older backend semantic-cache prototypes remain deprecated and are not the primary mobile decision path.
+
+Runtime files:
+
+- `cache/semantic_cache.json`
+  Shared semantic cache store with entries plus hit metadata such as source question, matched question, similarity, timestamp, and whether alignment was reapplied.
+- `memory/daily_summaries/{userId}.jsonl`
+  Append-only consolidation summaries for recent conversation windows.
+- `memory/durable_facts/{userId}.json`
+  Conservatively filtered durable user facts.
+- `memory/profile_updates/{userId}.jsonl`
+  Applied or skipped conservative profile update decisions.
+- `rag/runtime/{userId}_memory_chunks.json`
+  Retrieval-ready memory chunks embedded with the same configured embedding model used by semantic cache and local RAG search.
+- `training/captures/memory.jsonl`
+  Non-blocking memory/cache training captures.
+
+Idle-safe consolidation is exposed from `mobile/lib/localAgents.ts` through `consolidateLocalMemoryOnIdle(...)`.
+It can be called manually or from future background scheduling hooks.
+It summarizes recent conversations, extracts durable facts, updates the profile conservatively, refreshes memory chunks, and writes training captures without making OpenAI the default path.
+
 ## Backend Role
 
 The backend still supports:
@@ -169,7 +200,7 @@ uvicorn theni_tamil_api:app --host 127.0.0.1 --port 9009
 - `backend/app/onboarding_agent.py`
   Kept for legacy backend onboarding API compatibility. Marked deprecated.
 - `backend/app/semantic_cache.py`
-  Kept as an old backend-side prototype/reference. Marked deprecated.
+  Kept as an old backend-side prototype/reference only. Marked deprecated and no longer the primary semantic-cache path.
 - `backend/data/`
   Still used for backend runtime state. It is no longer the checked-in source of truth for agent seeds.
 
@@ -178,3 +209,4 @@ uvicorn theni_tamil_api:app --host 127.0.0.1 --port 9009
 - Do not add live phone data to git. The app stores that under Expo document storage, outside the repo.
 - Do not treat backend OpenAI-first paths as the main architecture anymore.
 - Keep `/api/chat` stable. Mobile continues to intercept it locally first.
+- If memory or cache config files are missing, tiny in-code fallbacks exist only to keep the local path safe to boot.
