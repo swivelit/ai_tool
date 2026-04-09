@@ -43,6 +43,10 @@ export type LocalProfilerState = {
   startedAt?: string;
   lastUpdatedAt?: string;
   currentTargetSlot?: string;
+  missingSlots?: string[];
+  confidenceBySlot?: Record<string, number>;
+  optionalProfileNotes?: string[];
+  lastRunSource?: "model_json" | "model_salvage" | "fallback";
   history: LocalChatMessage[];
 };
 
@@ -56,6 +60,42 @@ export type LocalProfilerTurnResult = {
   done: boolean;
   history: LocalChatMessage[];
   summary?: string;
+};
+
+type ProfilerModelOutput = {
+  assistant_reply: string;
+  updates: Record<string, string | string[]>;
+  missing_slots: string[];
+  completed: boolean;
+  confidence_by_slot: Record<string, number>;
+  optional_profile_notes?: string[];
+};
+
+type ProfilerTurnProcessingResult = {
+  output: ProfilerModelOutput;
+  source: "model_json" | "model_salvage" | "fallback";
+  rawText?: string;
+};
+
+type ProfileSummaryRecord = {
+  userId: number;
+  source: "profiler";
+  completed: boolean;
+  summary: string;
+  facts: string[];
+  confidenceBySlot: Record<string, number>;
+  optionalProfileNotes: string[];
+  updatedAt: string;
+};
+
+type ProfileRagRecord = {
+  userId: number;
+  source: "profiler";
+  summary: string;
+  facts: string[];
+  metadata: Record<string, any>;
+  chunks: LocalRagChunk[];
+  updatedAt: string;
 };
 
 export type LocalTaskRecord = {
@@ -281,11 +321,11 @@ const DEFAULT_MEMORY_RULES: MemoryRules = {
 
 const DEFAULT_PROMPTS: PromptCatalog = {
   profilerOpeningSystem:
-    "You are the Profiler Agent. Start naturally in {{reply_language_name}} and collect: {{slot_ids}}.",
+    "You are the Profiler Agent using Gemma 3 4B. Start onboarding as a natural chat in {{reply_language_name}}. Do not mention forms or questionnaires. Ask only one thing in the opening turn. Collect these slots over time: {{slot_ids}}.",
   profilerTurnSystem:
-    "You are the Profiler Agent. Return JSON with assistant_reply, updates, missing_slots, completed.",
+    "You are the Profiler Agent using Gemma 3 4B. Continue onboarding as a natural chat in {{reply_language_name}}. Extract structured updates from the latest free-form user reply, avoid re-asking high-confidence known facts, and choose the next best question from the remaining slots. If all slots are collected, stop asking questions. Return JSON only with: assistant_reply, updates, missing_slots, completed, confidence_by_slot, optional_profile_notes.",
   profileSummarySystem:
-    "Write a compact factual English profile summary. Do not invent details.",
+    "Write a compact factual English profile summary from the provided onboarding facts. Mention only grounded user facts and stable preferences. Do not invent anything.",
   orchestratorSystem: "Choose one route and return JSON only.",
   reminderExtractorSystem:
     "Extract reminder title, details, datetime_text, and assistant_reply as JSON.",
@@ -467,6 +507,185 @@ function trimList(value: any) {
 function displayValue(value: string | string[] | undefined) {
   if (Array.isArray(value)) return value.join(", ");
   return String(value || "").trim();
+}
+
+function clampConfidence(value: any, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(1, n));
+}
+
+function nonEmptyAnswer(value: any) {
+  return Array.isArray(value) ? value.length > 0 : String(value || "").trim().length > 0;
+}
+
+function languageLabel(language: string) {
+  const normalized = normalizeText(language);
+  if (normalized === "ta" || normalized === "tamil") return "Tamil";
+  if (normalized === "hindi") return "Hindi";
+  if (normalized === "telugu") return "Telugu";
+  if (normalized === "malayalam") return "Malayalam";
+  return "English";
+}
+
+function fallbackReplyLanguageCode(language: string) {
+  return normalizeText(language) === "tamil" ? "ta" : "en";
+}
+
+function cleanupTrailingJson(text: string) {
+  return text.replace(/,\s*([}\]])/g, "$1");
+}
+
+function repairJsonFragment(fragment: string) {
+  const text = cleanupTrailingJson(String(fragment || "").trim());
+  if (!text) return text;
+  let inString = false;
+  let escape = false;
+  let braces = 0;
+  let brackets = 0;
+  for (const char of text) {
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "{") braces += 1;
+    if (char === "}") braces = Math.max(0, braces - 1);
+    if (char === "[") brackets += 1;
+    if (char === "]") brackets = Math.max(0, brackets - 1);
+  }
+  return cleanupTrailingJson(`${text}${"]".repeat(brackets)}${"}".repeat(braces)}`);
+}
+
+function parseJsonFragment<T>(fragment: string, fallback: T): T {
+  return parseJsonLoose<T>(repairJsonFragment(fragment), fallback);
+}
+
+function findFieldValueFragment(text: string, key: string) {
+  const match = new RegExp(`["']?${key}["']?\\s*:`, "i").exec(text);
+  if (!match || match.index < 0) return null;
+  let index = match.index + match[0].length;
+  while (/\s/.test(text[index] || "")) index += 1;
+  const start = index;
+  const first = text[start];
+  if (!first) return null;
+  if (first === "\"") {
+    index += 1;
+    let escape = false;
+    while (index < text.length) {
+      const char = text[index];
+      if (escape) {
+        escape = false;
+      } else if (char === "\\") {
+        escape = true;
+      } else if (char === "\"") {
+        index += 1;
+        break;
+      }
+      index += 1;
+    }
+    return text.slice(start, index);
+  }
+  if (first === "{" || first === "[") {
+    const stack = [first];
+    index += 1;
+    let inString = false;
+    let escape = false;
+    while (index < text.length) {
+      const char = text[index];
+      if (escape) {
+        escape = false;
+      } else if (char === "\\") {
+        escape = true;
+      } else if (char === "\"") {
+        inString = !inString;
+      } else if (!inString) {
+        if (char === "{" || char === "[") stack.push(char);
+        if (char === "}" || char === "]") stack.pop();
+        if (!stack.length) {
+          index += 1;
+          break;
+        }
+      }
+      index += 1;
+    }
+    return text.slice(start, index);
+  }
+  while (index < text.length && !/[,\n}]/.test(text[index])) {
+    index += 1;
+  }
+  return text.slice(start, index).trim();
+}
+
+function normalizeSlotValue(slot: ProfilerSlot, value: any): string | string[] | undefined {
+  if (!nonEmptyAnswer(value)) return undefined;
+  if (slot.type === "multi") {
+    const normalizedOptions = slot.options.map((option) => normalizeText(option));
+    const normalizedValues = trimList(value)
+      .map((item) => normalizeText(item).replace(/\s+/g, "_"))
+      .map((item) => {
+        const matchedIndex = normalizedOptions.findIndex((option) => option === item || option === item.replace(/_/g, " "));
+        if (matchedIndex >= 0) return slot.options[matchedIndex];
+        return item;
+      })
+      .filter(Boolean);
+    return uniq(normalizedValues).slice(0, slot.max_choices || 4);
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return undefined;
+  const normalizedRaw = normalizeText(raw).replace(/\s+/g, "_");
+  const normalizedOptions = slot.options.map((option) => normalizeText(option).replace(/\s+/g, "_"));
+  const matchedIndex = normalizedOptions.findIndex((option) => option === normalizedRaw);
+  return matchedIndex >= 0 ? slot.options[matchedIndex] : raw;
+}
+
+function slotPriorityAfterUpdate(lastUpdatedSlotIds: string[]) {
+  const priorities: string[] = [];
+  const add = (slotId: string) => {
+    if (!priorities.includes(slotId)) priorities.push(slotId);
+  };
+  for (const slotId of lastUpdatedSlotIds) {
+    if (slotId === "preferred_language") add("secondary_language");
+    if (slotId === "occupation") add("industry_or_field");
+    if (slotId === "hobbies") add("interests");
+    if (slotId === "communication_tone") add("answer_length");
+    if (slotId === "personality_style") add("assistant_persona");
+    if (slotId === "planning_style") add("work_rhythm");
+  }
+  return priorities;
+}
+
+function chooseNextProfilerSlot(
+  slots: ProfilerSlot[],
+  answers: Record<string, any>,
+  confidenceBySlot: Record<string, number>,
+  lastUpdatedSlotIds: string[]
+) {
+  const remaining = missingSlots(slots, answers);
+  if (!remaining.length) return null;
+  const prioritized = slotPriorityAfterUpdate(lastUpdatedSlotIds);
+  for (const slotId of prioritized) {
+    const candidate = slots.find((slot) => slot.id === slotId && remaining.includes(slot.id));
+    if (candidate) return candidate;
+  }
+  const lowConfidenceMissing = slots.find(
+    (slot) => remaining.includes(slot.id) && clampConfidence(confidenceBySlot[slot.id], 0) < 0.55
+  );
+  return lowConfidenceMissing || slots.find((slot) => remaining.includes(slot.id)) || null;
+}
+
+function formatSlotFacts(slots: ProfilerSlot[], answers: Record<string, any>) {
+  return slots
+    .filter((slot) => nonEmptyAnswer(answers[slot.id]))
+    .map((slot) => `${slot.id}: ${displayValue(answers[slot.id])}`);
 }
 
 async function exists(path: string) {
@@ -782,12 +1001,12 @@ async function loadAnswers(userId: number) {
 }
 
 async function loadSummary(userId: number) {
-  const payload = await readJson<{ summary?: string }>(summaryPath(userId), { summary: "" });
+  const payload = await readJson<ProfileSummaryRecord | { summary?: string }>(summaryPath(userId), { summary: "" });
   return String(payload.summary || "").trim();
 }
 
-async function saveSummary(userId: number, summary: string) {
-  await writeJson(summaryPath(userId), { summary: summary.trim(), updatedAt: nowIso() });
+async function saveSummaryRecord(userId: number, payload: ProfileSummaryRecord) {
+  await writeJson(summaryPath(userId), payload);
 }
 
 async function loadProfilerState(userId: number): Promise<LocalProfilerState> {
@@ -828,10 +1047,15 @@ async function saveSemanticCache(userId: number, rows: SemanticCacheRow[]) {
 async function loadRagChunks(userId: number) {
   const profilePayload = await readJson<{ chunks?: LocalRagChunk[] }>(profileRagPath(userId), { chunks: [] });
   const docChunks = await readJson<LocalRagChunk[]>(ragChunksPath(userId), []);
-  return [
+  const merged = [
     ...(Array.isArray(profilePayload.chunks) ? profilePayload.chunks : []),
     ...(Array.isArray(docChunks) ? docChunks : []),
   ];
+  const byId = new Map<string, LocalRagChunk>();
+  for (const row of merged) {
+    if (row?.id) byId.set(String(row.id), row);
+  }
+  return Array.from(byId.values());
 }
 
 async function saveRagChunks(userId: number, rows: LocalRagChunk[]) {
@@ -938,22 +1162,153 @@ async function embedTexts(texts: string[]) {
 
 async function saveAnswers(userId: number, answers: Record<string, string | string[]>) {
   await writeJson(answersPath(userId), answers);
-  const chunks = Object.entries(answers)
-    .filter(([, value]) => (Array.isArray(value) ? value.length > 0 : String(value || "").trim()))
-    .map(([key, value]) => ({
-      id: key,
-      sourceId: `profile:${key}`,
-      sourceType: "profile" as const,
-      text: `${key}: ${displayValue(value as any)}`,
-      metadata: { slot: key },
-    }));
-  const embeddings = chunks.length ? await embedTexts(chunks.map((chunk) => chunk.text)) : [];
-  const ragRows: LocalRagChunk[] = chunks.map((chunk, index) => ({
-    ...chunk,
+}
+
+function slotConfidenceMap(
+  slots: ProfilerSlot[],
+  previous: Record<string, number>,
+  updates: Record<string, number>,
+  answers: Record<string, any>
+) {
+  return Object.fromEntries(
+    slots.map((slot) => {
+      const explicit = updates[slot.id];
+      const previousValue = clampConfidence(previous[slot.id], 0);
+      const fallback = nonEmptyAnswer(answers[slot.id]) ? Math.max(previousValue, 0.7) : 0;
+      return [slot.id, explicit != null ? clampConfidence(explicit, fallback || 0.7) : fallback];
+    })
+  );
+}
+
+function buildSummaryFacts(slots: ProfilerSlot[], answers: Record<string, any>) {
+  return slots
+    .filter((slot) => nonEmptyAnswer(answers[slot.id]))
+    .map((slot) => `${slot.id}: ${displayValue(answers[slot.id])}`);
+}
+
+function buildFallbackProfileSummary(answers: Record<string, any>, userProfile?: LocalUserProfile) {
+  const facts = [
+    userProfile?.name ? `${userProfile.name} uses this assistant.` : "",
+    languagesSummary(answers) ? `Preferred languages: ${languagesSummary(answers)}.` : "",
+    answers.occupation ? `Occupation: ${displayValue(answers.occupation)}.` : "",
+    answers.industry_or_field ? `Field: ${displayValue(answers.industry_or_field)}.` : "",
+    answers.communication_tone ? `Preferred tone: ${displayValue(answers.communication_tone)}.` : "",
+    answers.answer_length ? `Typical answer length: ${displayValue(answers.answer_length)}.` : "",
+    answers.assistant_persona ? `Assistant persona: ${displayValue(answers.assistant_persona)}.` : "",
+    answers.hobbies ? `Hobbies: ${displayValue(answers.hobbies)}.` : "",
+    answers.interests ? `Interests: ${displayValue(answers.interests)}.` : "",
+    answers.main_goal ? `Current goal: ${displayValue(answers.main_goal)}.` : "",
+    answers.dislikes ? `Avoid: ${displayValue(answers.dislikes)}.` : "",
+    answers.work_rhythm ? `Most active: ${displayValue(answers.work_rhythm)}.` : "",
+  ].filter(Boolean);
+  return facts.join(" ");
+}
+
+function profileChunkBlueprints(answers: Record<string, any>, summary: string, optionalProfileNotes: string[]) {
+  return [
+    {
+      id: "profile_summary",
+      text: summary,
+      metadata: { kind: "summary", slotIds: Object.keys(answers) },
+    },
+    {
+      id: "profile_identity",
+      text: [
+        answers.occupation ? `Occupation: ${displayValue(answers.occupation)}` : "",
+        answers.industry_or_field ? `Field: ${displayValue(answers.industry_or_field)}` : "",
+        answers.personality_style ? `Style: ${displayValue(answers.personality_style)}` : "",
+        answers.work_rhythm ? `Work rhythm: ${displayValue(answers.work_rhythm)}` : "",
+      ]
+        .filter(Boolean)
+        .join(". "),
+      metadata: { kind: "identity", slotIds: ["occupation", "industry_or_field", "personality_style", "work_rhythm"] },
+    },
+    {
+      id: "profile_preferences",
+      text: [
+        languagesSummary(answers) ? `Languages: ${languagesSummary(answers)}` : "",
+        answers.communication_tone ? `Tone: ${displayValue(answers.communication_tone)}` : "",
+        answers.answer_length ? `Answer length: ${displayValue(answers.answer_length)}` : "",
+        answers.assistant_persona ? `Assistant persona: ${displayValue(answers.assistant_persona)}` : "",
+        answers.dislikes ? `Avoid: ${displayValue(answers.dislikes)}` : "",
+      ]
+        .filter(Boolean)
+        .join(". "),
+      metadata: {
+        kind: "preferences",
+        slotIds: ["preferred_language", "secondary_language", "communication_tone", "answer_length", "assistant_persona", "dislikes"],
+      },
+    },
+    {
+      id: "profile_interests",
+      text: [
+        answers.hobbies ? `Hobbies: ${displayValue(answers.hobbies)}` : "",
+        answers.interests ? `Interests: ${displayValue(answers.interests)}` : "",
+        answers.learning_style ? `Learning style: ${displayValue(answers.learning_style)}` : "",
+        answers.planning_style ? `Planning style: ${displayValue(answers.planning_style)}` : "",
+        answers.main_goal ? `Main goal: ${displayValue(answers.main_goal)}` : "",
+      ]
+        .filter(Boolean)
+        .join(". "),
+      metadata: { kind: "interests", slotIds: ["hobbies", "interests", "learning_style", "planning_style", "main_goal"] },
+    },
+    {
+      id: "profile_notes",
+      text: optionalProfileNotes.join(" "),
+      metadata: { kind: "notes", slotIds: [] },
+    },
+  ].filter((chunk) => String(chunk.text || "").trim());
+}
+
+async function persistProfileArtifacts(
+  userId: number,
+  slots: ProfilerSlot[],
+  answers: Record<string, string | string[]>,
+  summary: string,
+  confidenceBySlot: Record<string, number>,
+  optionalProfileNotes: string[],
+  replyLanguageName: string
+) {
+  const facts = buildSummaryFacts(slots, answers);
+  const chunkBlueprints = profileChunkBlueprints(answers, summary, optionalProfileNotes);
+  const embeddings = chunkBlueprints.length
+    ? await embedTexts(chunkBlueprints.map((chunk) => chunk.text))
+    : [];
+  const updatedAt = nowIso();
+  const chunks: LocalRagChunk[] = chunkBlueprints.map((chunk, index) => ({
+    id: `profile:${chunk.id}`,
+    sourceId: `profile:${chunk.id}`,
+    sourceType: "profile",
+    text: chunk.text,
     embedding: Array.isArray(embeddings[index]) ? embeddings[index] : hashEmbedding(chunk.text),
-    updatedAt: nowIso(),
+    metadata: {
+      ...chunk.metadata,
+      userId,
+      replyLanguage: replyLanguageName,
+      confidenceBySlot,
+      generatedBy: "profiler",
+    },
+    updatedAt,
   }));
-  await writeJson(profileRagPath(userId), { updatedAt: nowIso(), chunks: ragRows });
+  const profileRagRecord: ProfileRagRecord = {
+    userId,
+    source: "profiler",
+    summary,
+    facts,
+    metadata: {
+      generatedBy: "local_profiler",
+      replyLanguage: replyLanguageName,
+      slotCount: facts.length,
+      confidenceBySlot,
+      optionalProfileNotes,
+    },
+    chunks,
+    updatedAt,
+  };
+  await writeJson(profileRagPath(userId), profileRagRecord);
+  const existingRuntimeChunks = await readJson<LocalRagChunk[]>(ragChunksPath(userId), []);
+  const preserved = existingRuntimeChunks.filter((chunk) => !String(chunk.sourceId || "").startsWith("profile:"));
+  await saveRagChunks(userId, [...preserved, ...chunks]);
 }
 
 export async function upsertLocalRagChunks(
@@ -1067,41 +1422,368 @@ function mergeProfilerUpdates(
   return merged;
 }
 
-function fallbackProfilerTurn(
+function buildProfilerAssistantReply(
+  replyLanguageName: string,
+  nextSlotPrompt: string | undefined,
+  done: boolean
+) {
+  const fallbackCode = fallbackReplyLanguageCode(replyLanguageName);
+  if (done) {
+    return fallbackCode === "ta"
+      ? "சூப்பர். உங்கள் ஆரம்ப ப்ரொஃபைல் தயார். இதை அடுத்த உரையாடல்களில் பயன்படுத்துவேன்."
+      : "Perfect. Your starter profile is ready, and I’ll use it in future chats.";
+  }
+  return fallbackCode === "ta"
+    ? `சரி. இன்னொரு விஷயம் மட்டும் — ${nextSlotPrompt || "உங்களைப் பற்றி இன்னும் கொஞ்சம் சொல்லுங்கள்."}`
+    : `Got it. One more thing — ${nextSlotPrompt || "Tell me a bit more about yourself."}`;
+}
+
+const SLOT_KEYWORD_MAP: Record<string, Record<string, string[]>> = {
+  preferred_language: {
+    english: ["english", "speak english", "reply in english"],
+    tamil: ["tamil", "tamizh"],
+    hindi: ["hindi"],
+    telugu: ["telugu"],
+    malayalam: ["malayalam"],
+  },
+  secondary_language: {
+    none: ["none", "no second language", "only one language"],
+    english: ["english"],
+    tamil: ["tamil", "tamizh"],
+    hindi: ["hindi"],
+    telugu: ["telugu"],
+    malayalam: ["malayalam"],
+  },
+  occupation: {
+    student: ["student", "studying", "college", "school"],
+    working_professional: ["working professional", "employee", "software engineer", "engineer", "developer", "job"],
+    business_owner: ["business owner", "founder", "run a business", "entrepreneur"],
+    freelancer_creator: ["freelancer", "creator", "content creator", "consultant"],
+    homemaker_caregiver: ["homemaker", "caregiver", "taking care of home"],
+    between_roles: ["between roles", "job hunting", "not working right now", "career break"],
+  },
+  industry_or_field: {
+    technology: ["technology", "tech", "software", "it", "engineering"],
+    business: ["business", "startup", "operations"],
+    education: ["education", "teaching", "student"],
+    healthcare: ["healthcare", "medical", "doctor", "nurse"],
+    design_media: ["design", "media", "creative", "marketing content"],
+    sales_marketing: ["sales", "marketing", "growth"],
+    operations: ["operations", "supply chain", "admin"],
+  },
+  hobbies: {
+    music: ["music", "songs"],
+    movies: ["movies", "films", "cinema"],
+    reading: ["reading", "books"],
+    gaming: ["gaming", "games"],
+    travel: ["travel", "travelling", "trips"],
+    fitness: ["fitness", "gym", "workout"],
+    cooking: ["cooking", "cook"],
+    sports: ["sports", "cricket", "football"],
+    art: ["art", "drawing", "painting"],
+    technology: ["technology", "tech", "gadgets"],
+  },
+  interests: {
+    ai_technology: ["ai", "technology", "tech", "artificial intelligence"],
+    business: ["business", "startup"],
+    career: ["career", "job growth"],
+    productivity: ["productivity", "planning", "efficiency"],
+    finance: ["finance", "money", "investing"],
+    health: ["health", "wellness"],
+    travel: ["travel"],
+    culture: ["culture", "history", "society"],
+    education: ["education", "learning"],
+    self_growth: ["self growth", "self-improvement", "personal growth"],
+  },
+  communication_tone: {
+    warm: ["warm"],
+    respectful: ["respectful", "polite"],
+    short_direct: ["short and direct", "direct", "straight to the point"],
+    detailed: ["detailed", "deep"],
+    friendly_casual: ["casual", "friendly"],
+  },
+  answer_length: {
+    very_short: ["very short", "super short"],
+    short: ["short", "brief"],
+    medium: ["medium"],
+    detailed: ["detailed", "long"],
+    depends_on_question: ["depends", "depends on the question"],
+  },
+  personality_style: {
+    calm: ["calm"],
+    friendly: ["friendly"],
+    practical: ["practical"],
+    ambitious: ["ambitious"],
+    curious: ["curious"],
+    private_reserved: ["private", "reserved", "introvert"],
+  },
+  assistant_persona: {
+    coach: ["coach"],
+    planner: ["planner"],
+    friend: ["friend"],
+    tutor: ["tutor", "teacher"],
+    operator: ["operator", "assistant that executes"],
+    straight_shooter: ["straight shooter", "blunt", "direct helper"],
+  },
+  planning_style: {
+    very_structured: ["very structured", "structured", "strict plan"],
+    light_structure: ["light structure", "some structure"],
+    flexible: ["flexible"],
+    last_minute: ["last minute"],
+    mixed: ["mixed", "depends"],
+  },
+  learning_style: {
+    examples: ["examples"],
+    step_by_step: ["step by step"],
+    big_picture_first: ["big picture", "overview first"],
+    hands_on: ["hands on", "practice"],
+    quick_summary: ["quick summary", "summary first"],
+  },
+  main_goal: {
+    career_growth: ["career growth", "career", "promotion"],
+    business_growth: ["business growth", "grow my business"],
+    study_success: ["study success", "exams", "study"],
+    health_balance: ["health", "balance", "wellbeing"],
+    relationships_family: ["family", "relationships"],
+    peace_of_mind: ["peace of mind", "less stress", "calm"],
+    productivity: ["productivity", "be productive"],
+    learning: ["learning", "learn more"],
+  },
+  dislikes: {
+    too_long: ["too long", "long replies"],
+    too_short: ["too short"],
+    too_formal: ["too formal"],
+    too_casual: ["too casual"],
+    too_many_questions: ["too many questions"],
+    too_generic: ["generic"],
+    too_pushy: ["pushy"],
+    too_much_jargon: ["jargon", "too much jargon"],
+  },
+  work_rhythm: {
+    early_morning: ["early morning", "very early"],
+    morning: ["morning"],
+    afternoon: ["afternoon"],
+    evening: ["evening"],
+    late_night: ["late night", "night", "midnight"],
+    irregular: ["irregular", "varies", "no fixed schedule"],
+  },
+};
+
+function matchedOptionsForSlot(slot: ProfilerSlot, normalizedMessage: string) {
+  const keywordMap = SLOT_KEYWORD_MAP[slot.id] || {};
+  return slot.options.filter((option) =>
+    (keywordMap[option] || [option])
+      .map((phrase) => normalizeText(phrase))
+      .some((phrase) => phrase && normalizedMessage.includes(phrase))
+  );
+}
+
+function deterministicProfilerExtraction(
   message: string,
   slots: ProfilerSlot[],
   answers: Record<string, string | string[]>,
   state: LocalProfilerState,
-  replyLanguage: ReplyLanguage
-) {
-  const slot =
-    slots.find((item) => item.id === state.currentTargetSlot) ||
-    nextSlot(slots, answers) ||
-    slots[0];
-  const updated = mergeProfilerUpdates(slots, answers, {
-    [slot.id]:
-      slot.type === "multi"
-        ? String(message)
-            .split(",")
-            .map((entry) => entry.trim())
-            .filter(Boolean)
-        : String(message).trim(),
-  });
-  const remaining = missingSlots(slots, updated);
-  const upcoming = slots.find((item) => remaining.includes(item.id));
+  replyLanguageName: string
+): ProfilerModelOutput {
+  const normalizedMessage = normalizeText(message);
+  const updates: Record<string, string | string[]> = {};
+  const confidenceBySlot: Record<string, number> = {};
+  const notes: string[] = [];
+
+  const explicitLanguages = ["english", "tamil", "hindi", "telugu", "malayalam"].filter((language) =>
+    normalizedMessage.includes(language)
+  );
+  if (explicitLanguages.length >= 1 && !nonEmptyAnswer(answers.preferred_language)) {
+    updates.preferred_language = explicitLanguages[0];
+    confidenceBySlot.preferred_language = normalizedMessage.includes("mostly") ? 0.94 : 0.82;
+  }
+  if (explicitLanguages.length >= 2 && !nonEmptyAnswer(answers.secondary_language)) {
+    updates.secondary_language = explicitLanguages[1];
+    confidenceBySlot.secondary_language = 0.86;
+  }
+  if (/\bonly (english|tamil|hindi|telugu|malayalam)\b/.test(normalizedMessage) && !nonEmptyAnswer(answers.secondary_language)) {
+    updates.secondary_language = "none";
+    confidenceBySlot.secondary_language = 0.72;
+  }
+
+  for (const slot of slots) {
+    if (nonEmptyAnswer(updates[slot.id])) continue;
+    const matches = matchedOptionsForSlot(slot, normalizedMessage);
+    if (!matches.length) continue;
+    updates[slot.id] = slot.type === "multi" ? matches.slice(0, slot.max_choices || 4) : matches[0];
+    confidenceBySlot[slot.id] = slot.type === "multi" ? 0.78 : 0.8;
+  }
+
+  if (normalizedMessage.includes("software") || normalizedMessage.includes("developer") || normalizedMessage.includes("engineer")) {
+    if (!nonEmptyAnswer(updates.occupation) && !nonEmptyAnswer(answers.occupation)) {
+      updates.occupation = "working_professional";
+      confidenceBySlot.occupation = 0.85;
+    }
+    if (!nonEmptyAnswer(updates.industry_or_field) && !nonEmptyAnswer(answers.industry_or_field)) {
+      updates.industry_or_field = "technology";
+      confidenceBySlot.industry_or_field = 0.88;
+    }
+  }
+
+  if (!Object.keys(updates).length) {
+    const fallbackSlot =
+      slots.find((slot) => slot.id === state.currentTargetSlot) ||
+      chooseNextProfilerSlot(slots, answers, state.confidenceBySlot || {}, []);
+    if (fallbackSlot) {
+      const normalizedValue = normalizeSlotValue(fallbackSlot, fallbackSlot.type === "multi" ? trimList(message) : message);
+      if (normalizedValue) {
+        updates[fallbackSlot.id] = normalizedValue;
+        confidenceBySlot[fallbackSlot.id] = fallbackSlot.type === "multi" ? 0.52 : 0.48;
+      }
+    }
+  }
+
+  const merged = mergeProfilerUpdates(slots, answers, updates);
+  const remaining = missingSlots(slots, merged);
+  const nextSlotCandidate = chooseNextProfilerSlot(slots, merged, { ...(state.confidenceBySlot || {}), ...confidenceBySlot }, Object.keys(updates));
+
+  if (/i\b.*\b(work|study|prefer|like|dislike|usually)\b/.test(normalizedMessage)) {
+    notes.push(message.trim());
+  }
+
   return {
-    assistant_reply: upcoming
-      ? replyLanguage === "ta"
-        ? `சரி. இன்னொரு விஷயம் மட்டும் — ${upcoming.prompt}`
-        : `Got it. One more thing — ${upcoming.prompt}`
-      : replyLanguage === "ta"
-        ? "சூப்பர். உங்க ஆரம்ப ப்ரொஃபைல் ரெடி."
-        : "Perfect. Your starter profile is ready.",
-    updates: { [slot.id]: updated[slot.id] },
+    assistant_reply: buildProfilerAssistantReply(replyLanguageName, nextSlotCandidate?.prompt, remaining.length === 0),
+    updates,
     missing_slots: remaining,
     completed: remaining.length === 0,
+    confidence_by_slot: confidenceBySlot,
+    optional_profile_notes: notes.slice(0, 3),
   };
 }
+
+function salvageProfilerModelOutput(rawText: string, slots: ProfilerSlot[]): ProfilerModelOutput | null {
+  const clean = String(rawText || "").trim();
+  if (!clean) return null;
+  const parsed = parseJsonLoose<ProfilerModelOutput | null>(clean, null);
+  if (parsed && typeof parsed === "object") {
+    return {
+      assistant_reply: String(parsed.assistant_reply || "").trim(),
+      updates: typeof parsed.updates === "object" && parsed.updates ? parsed.updates : {},
+      missing_slots: Array.isArray(parsed.missing_slots) ? parsed.missing_slots.map(String) : [],
+      completed: Boolean(parsed.completed),
+      confidence_by_slot:
+        parsed.confidence_by_slot && typeof parsed.confidence_by_slot === "object"
+          ? Object.fromEntries(
+              Object.entries(parsed.confidence_by_slot).map(([slotId, value]) => [slotId, clampConfidence(value, 0.5)])
+            )
+          : {},
+      optional_profile_notes: Array.isArray(parsed.optional_profile_notes)
+        ? parsed.optional_profile_notes.map((note) => String(note || "").trim()).filter(Boolean)
+        : [],
+    };
+  }
+
+  const updatesFragment = findFieldValueFragment(clean, "updates");
+  const missingFragment = findFieldValueFragment(clean, "missing_slots");
+  const confidenceFragment = findFieldValueFragment(clean, "confidence_by_slot");
+  const assistantFragment = findFieldValueFragment(clean, "assistant_reply");
+  const completedFragment = findFieldValueFragment(clean, "completed");
+  const notesFragment = findFieldValueFragment(clean, "optional_profile_notes");
+
+  const assistantMatch = clean.match(/["']?assistant_reply["']?\s*:\s*"([^"]*)"/i);
+  const assistantReply = String(
+    assistantMatch?.[1] || parseJsonFragment<string>(assistantFragment || "\"\"", "")
+  ).trim();
+  const updatesRaw = parseJsonFragment<Record<string, any>>(updatesFragment || "{}", {});
+  const confidenceRaw = parseJsonFragment<Record<string, any>>(confidenceFragment || "{}", {});
+  const missingRaw = parseJsonFragment<string[]>(missingFragment || "[]", []);
+  const notesRaw = parseJsonFragment<string[]>(notesFragment || "[]", []);
+  const completedValue = /^true$/i.test(String(completedFragment || "").trim()) || String(completedFragment || "").trim() === "1";
+  let normalizedUpdates = Object.fromEntries(
+    slots
+      .map((slot) => [slot.id, normalizeSlotValue(slot, updatesRaw?.[slot.id])] as const)
+      .filter(([, value]) => nonEmptyAnswer(value))
+  ) as Record<string, string | string[]>;
+  if (!Object.keys(normalizedUpdates).length) {
+    normalizedUpdates = Object.fromEntries(
+      slots
+        .map((slot) => {
+          const slotMatch = clean.match(
+            new RegExp(`["']${slot.id}["']\\s*:\\s*(\\[[^\\]]*\\]|"[^"]*"|[^,}\\n]+)`, "i")
+          );
+          const rawValue = slotMatch?.[1] || "";
+          const parsedValue =
+            rawValue.startsWith("[") || rawValue.startsWith("\"")
+              ? parseJsonFragment<any>(rawValue, rawValue)
+              : rawValue.trim();
+          return [slot.id, normalizeSlotValue(slot, parsedValue)] as const;
+        })
+        .filter(([, value]) => nonEmptyAnswer(value))
+    ) as Record<string, string | string[]>;
+  }
+  const confidenceBySlot = Object.fromEntries(
+    Object.entries(confidenceRaw || {}).map(([slotId, value]) => [slotId, clampConfidence(value, 0.5)])
+  );
+  if (!assistantReply && !Object.keys(normalizedUpdates).length && !missingRaw.length) {
+    return null;
+  }
+  return {
+    assistant_reply: assistantReply,
+    updates: normalizedUpdates,
+    missing_slots: missingRaw.map(String),
+    completed: completedValue,
+    confidence_by_slot: confidenceBySlot,
+    optional_profile_notes: notesRaw.map((note) => String(note || "").trim()).filter(Boolean),
+  };
+}
+
+async function runProfilerTurnModel(
+  trimmed: string,
+  replyLanguageName: string,
+  currentAnswers: Record<string, string | string[]>,
+  currentState: LocalProfilerState,
+  slots: ProfilerSlot[],
+  userProfile: LocalUserProfile | undefined
+) {
+  const cfg = await getModelConfig();
+  const prompts = await getPromptCatalog();
+  try {
+    const raw = await localChatRaw(
+      template(prompts.profilerTurnSystem, {
+        reply_language_name: replyLanguageName,
+      }),
+      JSON.stringify({
+        latest_user_message: trimmed,
+        current_answers: currentAnswers,
+        current_confidence_by_slot: currentState.confidenceBySlot || {},
+        current_target_slot: currentState.currentTargetSlot || null,
+        missing_slots: missingSlots(slots, currentAnswers),
+        known_slots: formatSlotFacts(slots, currentAnswers),
+        history: currentState.history.slice(-10),
+        slots,
+        user_profile: userProfile || {},
+      }),
+      cfg.models.profiler,
+      0.2
+    );
+    const rawText = extractCompletionText(raw);
+    const salvaged = salvageProfilerModelOutput(rawText, slots);
+    if (salvaged) {
+      return {
+        output: salvaged,
+        source: parseJsonLoose<any>(rawText, null) ? "model_json" : "model_salvage",
+        rawText,
+      } satisfies ProfilerTurnProcessingResult;
+    }
+  } catch {
+    // deterministic fallback below
+  }
+  return {
+    output: deterministicProfilerExtraction(trimmed, slots, currentAnswers, currentState, replyLanguageName),
+    source: "fallback",
+  } satisfies ProfilerTurnProcessingResult;
+}
+
+export const __profilerTestUtils = {
+  salvageProfilerModelOutput,
+  deterministicProfilerExtraction,
+  buildProfilerAssistantReply,
+};
 
 async function syncAnswersToBackend(userId: number, answers: Record<string, string | string[]>) {
   const normalized = Object.fromEntries(
@@ -1119,46 +1801,62 @@ async function buildProfileSummaryLocally(userId: number, userProfile?: LocalUse
   const prompts = await getPromptCatalog();
   const answers = await loadAnswers(userId);
   const slots = await getProfilerSlots();
+  const state = await loadProfilerState(userId);
   if (missingSlots(slots, answers).length > 0) return "";
+  const facts = buildSummaryFacts(slots, answers);
+  const optionalProfileNotes = Array.isArray(state.optionalProfileNotes)
+    ? state.optionalProfileNotes.map((note) => String(note || "").trim()).filter(Boolean)
+    : [];
+  let summary = "";
   try {
-    const summary = await localChatText(
+    summary = await localChatText(
       prompts.profileSummarySystem,
-      JSON.stringify({ user: userProfile || {}, answers }),
+      JSON.stringify({
+        user: userProfile || {},
+        answers,
+        facts,
+        optional_profile_notes: optionalProfileNotes,
+      }),
       cfg.models.aligner,
       0.1
     );
-    if (summary.trim()) {
-      await saveSummary(userId, summary.trim());
-      return summary.trim();
-    }
+    summary = summary.trim();
   } catch {
-    // use fallback summary below
+    summary = "";
   }
-  const languages = languagesSummary(answers);
-  const fallback = [
-    userProfile?.name ? `${userProfile.name} uses this assistant.` : "",
-    languages ? `Languages: ${languages}.` : "",
-    answers.occupation ? `Occupation: ${displayValue(answers.occupation)}.` : "",
-    answers.communication_tone ? `Preferred tone: ${displayValue(answers.communication_tone)}.` : "",
-    answers.answer_length ? `Answer length: ${displayValue(answers.answer_length)}.` : "",
-    answers.hobbies ? `Hobbies: ${displayValue(answers.hobbies)}.` : "",
-    answers.main_goal ? `Main goal: ${displayValue(answers.main_goal)}.` : "",
-    answers.dislikes ? `Avoid: ${displayValue(answers.dislikes)}.` : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  await saveSummary(userId, fallback);
-  return fallback;
+  if (!summary) {
+    summary = buildFallbackProfileSummary(answers, userProfile);
+  }
+  await saveSummaryRecord(userId, {
+    userId,
+    source: "profiler",
+    completed: true,
+    summary,
+    facts,
+    confidenceBySlot: state.confidenceBySlot || {},
+    optionalProfileNotes,
+    updatedAt: nowIso(),
+  });
+  await persistProfileArtifacts(
+    userId,
+    slots,
+    answers,
+    summary,
+    state.confidenceBySlot || {},
+    optionalProfileNotes,
+    languageLabel(String(answers.preferred_language || userProfile?.replyLanguage || "english"))
+  );
+  return summary;
 }
 
-async function buildProfilerOpening(replyLanguage: ReplyLanguage, userProfile?: LocalUserProfile) {
+async function buildProfilerOpening(replyLanguageName: string, userProfile?: LocalUserProfile) {
   const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
   const slots = await getProfilerSlots();
   try {
     const out = await localChatText(
       template(prompts.profilerOpeningSystem, {
-        reply_language_name: replyLanguage === "ta" ? "Tamil" : "English",
+        reply_language_name: replyLanguageName,
         slot_ids: slots.map((slot) => slot.id).join(", "),
       }),
       JSON.stringify({ user: userProfile || {}, mission: "collect the user's profile naturally" }),
@@ -1169,7 +1867,7 @@ async function buildProfilerOpening(replyLanguage: ReplyLanguage, userProfile?: 
   } catch {
     // use fallback below
   }
-  return replyLanguage === "ta"
+  return fallbackReplyLanguageCode(replyLanguageName) === "ta"
     ? `வணக்கம்${userProfile?.name ? ` ${userProfile.name}` : ""}. நம்ம ஒரு சாதாரண உரையாடலாக ஆரம்பிக்கலாம். முதல்ல, உங்களைப் பற்றி கொஞ்சம் சொல்லுங்க.`
     : `Hey${userProfile?.name ? ` ${userProfile.name}` : ""}, let’s start casually. Tell me a little about yourself.`;
 }
@@ -1181,18 +1879,33 @@ export async function startProfilerOnPhone(
   await ensureLocalAgentData();
   const slots = await getProfilerSlots();
   const answers = await loadAnswers(userId);
-  const summary = await loadSummary(userId);
   const missing = missingSlots(slots, answers);
+  const summary =
+    missing.length === 0
+      ? await buildProfileSummaryLocally(userId, {
+          ...opts?.userProfile,
+          replyLanguage: fallbackReplyLanguageCode(
+            languageLabel(String(answers.preferred_language || opts?.replyLanguage || "english"))
+          ) as ReplyLanguage,
+        })
+      : await loadSummary(userId);
+  const replyLanguageName = languageLabel(String(answers.preferred_language || opts?.replyLanguage || "english"));
   const assistantReply = missing.length
-    ? await buildProfilerOpening(opts?.replyLanguage === "en" ? "en" : "ta", opts?.userProfile)
-    : opts?.replyLanguage === "ta"
-      ? "உங்கள் ப்ரொஃபைல் ஏற்கனவே ரெடி. பேசிக்கொண்டே அதை இன்னும் மேம்படுத்தலாம்."
+    ? await buildProfilerOpening(replyLanguageName, opts?.userProfile)
+    : fallbackReplyLanguageCode(replyLanguageName) === "ta"
+      ? "உங்கள் ப்ரொஃபைல் ஏற்கனவே தயார். பேசிக்கொண்டே அதை இன்னும் மேம்படுத்தலாம்."
       : "Your profile is already ready. We can still improve it as we chat.";
   const state: LocalProfilerState = {
     status: missing.length ? "active" : "complete",
     startedAt: nowIso(),
     lastUpdatedAt: nowIso(),
     currentTargetSlot: missing[0],
+    missingSlots: missing,
+    confidenceBySlot: Object.fromEntries(
+      slots.map((slot) => [slot.id, nonEmptyAnswer(answers[slot.id]) ? 0.7 : 0])
+    ),
+    optionalProfileNotes: [],
+    lastRunSource: "model_json",
     history: [{ role: "assistant" as const, content: assistantReply, createdAt: nowIso() }],
   };
   await saveProfilerState(userId, state);
@@ -1203,7 +1916,7 @@ export async function startProfilerOnPhone(
     label: "opening",
     metadata: {
       userId,
-      replyLanguage: opts?.replyLanguage || "ta",
+      replyLanguage: replyLanguageName,
       missingSlots: missing,
     },
   });
@@ -1244,50 +1957,42 @@ export async function sendProfilerMessageOnPhone(
   await ensureLocalAgentData();
   const trimmed = String(message || "").trim();
   if (!trimmed) throw new Error("Message is required.");
-  const replyLanguage: ReplyLanguage = opts?.replyLanguage === "en" ? "en" : "ta";
-  const cfg = await getModelConfig();
-  const prompts = await getPromptCatalog();
   const slots = await getProfilerSlots();
   const currentAnswers = await loadAnswers(userId);
   const currentState = await loadProfilerState(userId);
+  const replyLanguageName = languageLabel(
+    String(currentAnswers.preferred_language || opts?.replyLanguage || "english")
+  );
   await appendConversation(userId, "user", trimmed);
-
-  let llmOut: any = null;
-  try {
-    llmOut = await localChatJson(
-      template(prompts.profilerTurnSystem, {
-        reply_language_name: replyLanguage === "ta" ? "Tamil" : "English",
-      }),
-      JSON.stringify({
-        latest_user_message: trimmed,
-        current_answers: currentAnswers,
-        current_target_slot: currentState.currentTargetSlot || null,
-        history: currentState.history.slice(-10),
-        slots,
-      }),
-      cfg.models.profiler,
-      0.2
-    );
-  } catch {
-    // use fallback below
-  }
-
-  if (!llmOut || !llmOut.assistant_reply) {
-    llmOut = fallbackProfilerTurn(trimmed, slots, currentAnswers, currentState, replyLanguage);
-  }
-
+  const processed = await runProfilerTurnModel(
+    trimmed,
+    replyLanguageName,
+    currentAnswers,
+    currentState,
+    slots,
+    { ...opts?.userProfile, replyLanguage: fallbackReplyLanguageCode(replyLanguageName) as ReplyLanguage }
+  );
+  const llmOut = processed.output;
   const merged = mergeProfilerUpdates(slots, currentAnswers, llmOut.updates || {});
+  const mergedConfidenceBySlot = slotConfidenceMap(
+    slots,
+    currentState.confidenceBySlot || {},
+    llmOut.confidence_by_slot || {},
+    merged
+  );
   const remaining = missingSlots(slots, merged);
   const done = remaining.length === 0;
+  const chosenNextSlot =
+    slots.find((slot) => Array.isArray(llmOut.missing_slots) && llmOut.missing_slots.includes(slot.id)) ||
+    chooseNextProfilerSlot(slots, merged, mergedConfidenceBySlot, Object.keys(llmOut.updates || {}));
   const assistantReply =
     String(llmOut.assistant_reply || "").trim() ||
-    (done
-      ? replyLanguage === "ta"
-        ? "சூப்பர். உங்க ஆரம்ப ப்ரொஃபைல் ரெடி."
-        : "Perfect. Your starter profile is ready."
-      : replyLanguage === "ta"
-        ? `சரி. இன்னொரு விஷயம் மட்டும் — ${nextSlot(slots, merged)?.prompt || "உங்களைப் பற்றி இன்னும் கொஞ்சம் சொல்லுங்க."}`
-        : `Got it. One more thing — ${nextSlot(slots, merged)?.prompt || "Tell me a bit more about yourself."}`);
+    buildProfilerAssistantReply(replyLanguageName, chosenNextSlot?.prompt, done);
+  const optionalProfileNotes = uniq(
+    [...(currentState.optionalProfileNotes || []), ...((llmOut.optional_profile_notes || []).map(String))]
+      .map((note) => note.trim())
+      .filter(Boolean)
+  ).slice(-20);
 
   const history: LocalChatMessage[] = [
     ...currentState.history,
@@ -1299,7 +2004,11 @@ export async function sendProfilerMessageOnPhone(
     status: done ? "complete" : "active",
     startedAt: currentState.startedAt || nowIso(),
     lastUpdatedAt: nowIso(),
-    currentTargetSlot: done ? undefined : remaining[0],
+    currentTargetSlot: done ? undefined : chosenNextSlot?.id || remaining[0],
+    missingSlots: remaining,
+    confidenceBySlot: mergedConfidenceBySlot,
+    optionalProfileNotes,
+    lastRunSource: processed.source,
     history,
   };
 
@@ -1313,15 +2022,22 @@ export async function sendProfilerMessageOnPhone(
     label: done ? "complete" : "turn",
     metadata: {
       userId,
+      source: processed.source,
+      rawText: processed.rawText || null,
       updates: llmOut.updates || {},
       mergedAnswers: merged,
+      confidenceBySlot: mergedConfidenceBySlot,
+      optionalProfileNotes,
       remainingSlots: remaining,
-      replyLanguage,
+      replyLanguage: replyLanguageName,
     },
   });
 
   const summary = done
-    ? await buildProfileSummaryLocally(userId, { ...opts?.userProfile, replyLanguage })
+    ? await buildProfileSummaryLocally(userId, {
+        ...opts?.userProfile,
+        replyLanguage: fallbackReplyLanguageCode(replyLanguageName) as ReplyLanguage,
+      })
     : await loadSummary(userId);
 
   return {

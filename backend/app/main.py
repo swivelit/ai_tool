@@ -44,7 +44,6 @@ from openai import BadRequestError, OpenAI
 
 from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
-from .onboarding_agent import router as onboarding_router
 
 from config import (
     GENERATED_DOCS_DIR,
@@ -79,8 +78,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _include_optional_legacy_onboarding_router() -> None:
+    try:
+        from . import onboarding_agent
+
+        app.include_router(
+            onboarding_agent.router,
+            prefix="/api/onboarding",
+            tags=["deprecated-onboarding"],
+        )
+
+        if getattr(onboarding_agent, "LEGACY_ONBOARDING_AVAILABLE", True):
+            logger.info("Deprecated onboarding router loaded for compatibility only.")
+        else:
+            logger.warning(
+                "Deprecated onboarding router loaded in compatibility mode only; legacy extras are unavailable: %s",
+                getattr(onboarding_agent, "LEGACY_ONBOARDING_IMPORT_ERROR", "unknown import error"),
+            )
+    except Exception as exc:
+        logger.warning(
+            "Deprecated onboarding router was not included because it failed to import. Backend boot will continue without it: %s",
+            exc,
+        )
+
+
 # Legacy compatibility route. Phone-local onboarding is the primary runtime path.
-app.include_router(onboarding_router, prefix="/api/onboarding", tags=["deprecated-onboarding"])
+_include_optional_legacy_onboarding_router()
 
 STAGE_BEHAVIOUR = BehaviourQuestionnaire()
 LOCAL_RAG_SERVICE = LocalRAGService()

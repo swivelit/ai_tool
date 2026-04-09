@@ -339,7 +339,7 @@ class LocalRAGService:
         return state
 
     def _ensure_default_files(self) -> None:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self.dataset_path.parent.mkdir(parents=True, exist_ok=True)
         self._write_csv_if_missing(
             self.dataset_path,
             [
