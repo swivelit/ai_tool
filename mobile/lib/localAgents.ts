@@ -139,7 +139,7 @@ export type LocalAssistantTurnResult = {
   details?: string | null;
   datetimeText?: string | null;
   profileSummary?: string;
-  meta?: Record<string, any>;
+  meta?: Record<string, any> & { orchestratorDecision?: OrchestratorDecision };
 };
 
 type LocalModelConfig = {
@@ -163,20 +163,48 @@ type OrchestratorConfig = {
   version: number;
   routes: {
     fastGreetingKeywords: string[];
+    smallTalkKeywords?: string[];
     calendarKeywords: string[];
     reminderKeywords: string[];
     weatherKeywords: string[];
     profileKeywords: string[];
     liveDataKeywords: string[];
     ambiguityKeywords: string[];
+    multiStepKeywords?: string[];
+  };
+  clarificationRules?: {
+    shortMessageTokenThreshold?: number;
+    pronounOnlyTokenThreshold?: number;
+  };
+  complexityThresholds?: {
+    largeModelQuestionChars?: number;
+    largeModelConversationTurns?: number;
+  };
+  fallbackPolicy?: {
+    openAiAllowedWhen?: string[];
   };
 };
 
 type AlignmentRules = {
+  version?: number;
   preserveFacts: boolean;
   avoidNewClaims: boolean;
   matchTone: boolean;
   preferUserLanguage: boolean;
+  fallbackToDraftOnFactDrift?: boolean;
+  keepEnglishMirror?: boolean;
+  toneByPreference?: Record<string, string>;
+};
+
+type OrchestratorDecision = {
+  route: OrchestratorRoute;
+  reason: string;
+  confidence: number;
+  needsClarification: boolean;
+  clarificationQuestion: string;
+  needsLiveData: boolean;
+  selectedModel: string;
+  fallbackAllowed: boolean;
 };
 
 type MemoryRules = {
@@ -292,15 +320,32 @@ const DEFAULT_PROFILER_SLOTS: ProfilerSlot[] = [
 ];
 
 const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
-  version: 1,
+  version: 3,
   routes: {
     fastGreetingKeywords: ["hi", "hello", "hey", "vanakkam", "thanks"],
+    smallTalkKeywords: ["how are you", "what's up", "whats up"],
     calendarKeywords: ["schedule", "agenda", "calendar", "reminders"],
     reminderKeywords: ["remind me", "set a reminder", "add reminder"],
     weatherKeywords: ["weather", "temperature", "rain", "forecast"],
     profileKeywords: ["my name", "my goal", "my language", "my hobbies"],
     liveDataKeywords: ["latest", "news", "current", "today", "live", "browse"],
     ambiguityKeywords: ["this", "that", "it", "they", "there", "here", "he", "she"],
+    multiStepKeywords: ["compare", "tradeoff", "strategy", "analyze", "reason"],
+  },
+  clarificationRules: {
+    shortMessageTokenThreshold: 4,
+    pronounOnlyTokenThreshold: 6,
+  },
+  complexityThresholds: {
+    largeModelQuestionChars: 180,
+    largeModelConversationTurns: 8,
+  },
+  fallbackPolicy: {
+    openAiAllowedWhen: [
+      "local_reasoner_returns___OPENAI_FALLBACK__",
+      "orchestrator_needs_live_data",
+      "no_safe_local_tool_or_model_path",
+    ],
   },
 };
 
@@ -309,6 +354,14 @@ const DEFAULT_ALIGNMENT_RULES: AlignmentRules = {
   avoidNewClaims: true,
   matchTone: true,
   preferUserLanguage: true,
+  fallbackToDraftOnFactDrift: true,
+  keepEnglishMirror: true,
+  toneByPreference: {
+    short_direct: "Keep the answer compact, direct, and low-fluff.",
+    warm: "Keep the answer warm and supportive without adding facts.",
+    friendly_casual: "Keep the answer conversational and casual without becoming vague.",
+    detailed: "Keep the answer clear and more explanatory, but still grounded to the draft.",
+  },
 };
 
 const DEFAULT_MEMORY_RULES: MemoryRules = {
@@ -326,11 +379,12 @@ const DEFAULT_PROMPTS: PromptCatalog = {
     "You are the Profiler Agent using Gemma 3 4B. Continue onboarding as a natural chat in {{reply_language_name}}. Extract structured updates from the latest free-form user reply, avoid re-asking high-confidence known facts, and choose the next best question from the remaining slots. If all slots are collected, stop asking questions. Return JSON only with: assistant_reply, updates, missing_slots, completed, confidence_by_slot, optional_profile_notes.",
   profileSummarySystem:
     "Write a compact factual English profile summary from the provided onboarding facts. Mention only grounded user facts and stable preferences. Do not invent anything.",
-  orchestratorSystem: "Choose one route and return JSON only.",
+  orchestratorSystem:
+    "You are the Orchestrator Agent using Qwen 3. Route the request local-first and return JSON only with: route, reason, confidence, needs_clarification, clarification_question, needs_live_data, selected_model, fallback_allowed.",
   reminderExtractorSystem:
     "Extract reminder title, details, datetime_text, and assistant_reply as JSON.",
   alignmentSystem:
-    "Rewrite the answer to match user tone and language without changing facts.",
+    "Rewrite the factual draft to match the user's tone and language without changing facts or adding claims. Return JSON with english_answer and final_answer.",
   memorySyncSystem:
     "Summarize recent durable user facts and profile_updates as JSON.",
   localReasonerSystem:
@@ -791,6 +845,9 @@ function tasksPath(userId: number) {
 }
 function convoPath(userId: number) {
   return `${CONVERSATIONS_DIR}/${userId}.jsonl`;
+}
+function routeLogPath(userId: number) {
+  return `${CONVERSATIONS_DIR}/${userId}_routes.jsonl`;
 }
 function memoryPath(userId: number) {
   return `${MEMORY_DIR}/${userId}.jsonl`;
@@ -1785,6 +1842,14 @@ export const __profilerTestUtils = {
   buildProfilerAssistantReply,
 };
 
+export const __assistantTestUtils = {
+  extractProtectedFactTokens,
+  preservesFacts,
+  sanitizeDecision,
+  generateClarifyingQuestion,
+  ruleBasedOrchestratorDecision,
+};
+
 async function syncAnswersToBackend(userId: number, answers: Record<string, string | string[]>) {
   const normalized = Object.fromEntries(
     Object.entries(answers).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") : String(value || "")])
@@ -2054,7 +2119,9 @@ export async function sendProfilerMessageOnPhone(
 }
 
 function weatherLocationFromMessage(message: string, userProfile?: { place?: string }) {
-  const raw = String(message || "").trim();
+  const raw = String(message || "")
+    .trim()
+    .replace(/[?!.,]+$/g, "");
   const match =
     raw.match(/\bin\s+([a-zA-Z\s,.-]{2,})$/i) ||
     raw.match(/\bfor\s+([a-zA-Z\s,.-]{2,})$/i) ||
@@ -2155,37 +2222,205 @@ async function parseReminderLocally(message: string, replyLanguage: ReplyLanguag
   }
 }
 
-function shouldUseLargeReasoner(message: string, config: LocalModelConfig, classification?: any) {
+function selectedReasonerModel(
+  cfg: LocalModelConfig,
+  routesConfig: OrchestratorConfig,
+  message: string,
+  recentTurns: number,
+  forcedModel?: string
+) {
+  if (forcedModel) return forcedModel;
   const normalized = normalizeText(message);
-  if (classification?.needs_large_model === true || classification?.needsLargeModel === true) return true;
-  if (message.length >= positiveInt(config.thresholds.largeModelQuestionChars, 180)) return true;
-  if (/\b(compare|tradeoff|strategy|architect|design|plan|step by step|analyze|analysis|reason)\b/.test(normalized)) return true;
-  return false;
+  const largeChars = positiveInt(
+    routesConfig.complexityThresholds?.largeModelQuestionChars,
+    cfg.thresholds?.largeModelQuestionChars || 180
+  );
+  const longConversationThreshold = positiveInt(
+    routesConfig.complexityThresholds?.largeModelConversationTurns,
+    8
+  );
+  const multiStepKeywords = routesConfig.routes.multiStepKeywords || [];
+  const hasMultiStepCue = multiStepKeywords.some((keyword) => {
+    const clean = normalizeText(keyword);
+    return clean && normalized.includes(clean);
+  });
+  if (message.length >= largeChars || hasMultiStepCue || recentTurns >= longConversationThreshold) {
+    return cfg.models.orchestratorLarge;
+  }
+  return cfg.models.orchestratorMedium;
 }
 
-function fastRouteFromRules(message: string, routes: OrchestratorConfig["routes"]): OrchestratorRoute | null {
+function hasKeywordMatch(message: string, keywords: string[]) {
   const normalized = normalizeText(message);
-  const hasKeyword = (keywords: string[]) =>
-    keywords.some((keyword) => {
-      const clean = normalizeText(keyword);
-      return clean && (normalized === clean || normalized.includes(clean));
-    });
-  if (hasKeyword(routes.fastGreetingKeywords)) return "fast_greeting";
-  if (hasKeyword(routes.reminderKeywords)) return "reminder_create";
-  if (hasKeyword(routes.calendarKeywords)) return "calendar_query";
-  if (hasKeyword(routes.weatherKeywords)) return "weather";
-  if (hasKeyword(routes.profileKeywords)) return "profile";
-  if (normalized.length < 16 && hasKeyword(routes.ambiguityKeywords)) return "clarify";
+  return keywords.some((keyword) => {
+    const clean = normalizeText(keyword);
+    if (!clean) return false;
+    const escaped = clean.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|\\s)${escaped}(\\s|$)`, "i").test(normalized);
+  });
+}
+
+function generateClarifyingQuestion(message: string, replyLanguage: ReplyLanguage) {
+  const normalized = normalizeText(message);
+  if (/\b(this|that|it|these|those)\b/.test(normalized)) {
+    return replyLanguage === "ta"
+      ? "‘இது’ என்று சொல்வதில் எந்த விஷயத்தை குறிப்பிடுகிறீர்கள்?"
+      : "What does that refer to exactly?";
+  }
+  if (/\b(he|she|they)\b/.test(normalized)) {
+    return replyLanguage === "ta"
+      ? "நீங்கள் சொல்வது எந்த நபர் அல்லது குழுவைப் பற்றி?"
+      : "Who are you referring to?";
+  }
+  return replyLanguage === "ta"
+    ? "கொஞ்சம் மேலும் குறிப்பாக சொல்ல முடியுமா?"
+    : "Could you be a bit more specific?";
+}
+
+function ruleBasedOrchestratorDecision(
+  message: string,
+  replyLanguage: ReplyLanguage,
+  routesConfig: OrchestratorConfig,
+  selectedModel: string
+): OrchestratorDecision | null {
+  const normalized = normalizeText(message);
+  const tokenCount = normalized ? normalized.split(/\s+/).filter(Boolean).length : 0;
+  const shortThreshold = positiveInt(routesConfig.clarificationRules?.shortMessageTokenThreshold, 4);
+  const pronounThreshold = positiveInt(routesConfig.clarificationRules?.pronounOnlyTokenThreshold, 6);
+  const ambiguousPronounOnly =
+    tokenCount > 0 &&
+    tokenCount <= pronounThreshold &&
+    hasKeywordMatch(message, routesConfig.routes.ambiguityKeywords) &&
+    !hasKeywordMatch(message, routesConfig.routes.profileKeywords) &&
+    !hasKeywordMatch(message, routesConfig.routes.calendarKeywords) &&
+    !hasKeywordMatch(message, routesConfig.routes.reminderKeywords) &&
+    !hasKeywordMatch(message, routesConfig.routes.weatherKeywords);
+
+  if (
+    hasKeywordMatch(message, [
+      ...(routesConfig.routes.fastGreetingKeywords || []),
+      ...((routesConfig.routes.smallTalkKeywords || []) as string[]),
+    ])
+  ) {
+    return {
+      route: "fast_greeting",
+      reason: "matched_greeting_or_small_talk_rule",
+      confidence: 0.99,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel: "rules",
+      fallbackAllowed: false,
+    };
+  }
+
+  if (hasKeywordMatch(message, routesConfig.routes.reminderKeywords)) {
+    return {
+      route: "reminder_create",
+      reason: "matched_local_reminder_tool_rule",
+      confidence: 0.96,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel,
+      fallbackAllowed: false,
+    };
+  }
+
+  if (hasKeywordMatch(message, routesConfig.routes.calendarKeywords)) {
+    return {
+      route: "calendar_query",
+      reason: "matched_local_calendar_tool_rule",
+      confidence: 0.95,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel: "rules",
+      fallbackAllowed: false,
+    };
+  }
+
+  if (hasKeywordMatch(message, routesConfig.routes.weatherKeywords)) {
+    return {
+      route: "weather",
+      reason: "matched_weather_live_tool_rule",
+      confidence: 0.97,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: true,
+      selectedModel: "rules",
+      fallbackAllowed: false,
+    };
+  }
+
+  if (hasKeywordMatch(message, routesConfig.routes.profileKeywords)) {
+    return {
+      route: "profile",
+      reason: "matched_local_profile_rule",
+      confidence: 0.95,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel,
+      fallbackAllowed: false,
+    };
+  }
+
+  if (ambiguousPronounOnly || tokenCount <= shortThreshold) {
+    return {
+      route: "clarify",
+      reason: "critical_context_missing",
+      confidence: 0.92,
+      needsClarification: true,
+      clarificationQuestion: generateClarifyingQuestion(message, replyLanguage),
+      needsLiveData: false,
+      selectedModel: "rules",
+      fallbackAllowed: false,
+    };
+  }
+
   return null;
+}
+
+function sanitizeDecision(
+  raw: Partial<OrchestratorDecision> & Record<string, any>,
+  selectedModel: string,
+  replyLanguage: ReplyLanguage
+): OrchestratorDecision {
+  const route = String(raw.route || "local_answer") as OrchestratorRoute;
+  const safeRoute: OrchestratorRoute = [
+    "fast_greeting",
+    "clarify",
+    "profile",
+    "calendar_query",
+    "reminder_create",
+    "weather",
+    "local_answer",
+    "fallback_openai",
+  ].includes(route)
+    ? route
+    : "local_answer";
+  const needsClarification = Boolean(raw.needsClarification ?? raw.needs_clarification);
+  return {
+    route: safeRoute,
+    reason: String(raw.reason || "model_route").trim() || "model_route",
+    confidence: clampConfidence(raw.confidence, 0.65),
+    needsClarification,
+    clarificationQuestion: String(raw.clarificationQuestion || raw.clarifyingQuestion || raw.clarification_question || "")
+      .trim() || (needsClarification ? generateClarifyingQuestion("", replyLanguage) : ""),
+    needsLiveData: Boolean(raw.needsLiveData ?? raw.needs_live_data),
+    selectedModel: String(raw.selectedModel || raw.selected_model || selectedModel).trim() || selectedModel,
+    fallbackAllowed: Boolean(raw.fallbackAllowed ?? raw.fallback_allowed),
+  };
 }
 
 async function classifyRouteWithModel(
   message: string,
   replyLanguage: ReplyLanguage,
   answers: Record<string, any>,
-  profileSummary: string
+  profileSummary: string,
+  selectedModel: string
 ) {
-  const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
   const registry = await getAgentRegistry();
   try {
@@ -2198,25 +2433,35 @@ async function classifyRouteWithModel(
         profile_summary: profileSummary,
         tool_agents_available: registry.agents.toolAgents,
       }),
-      cfg.models.orchestratorMedium,
+      selectedModel,
       0.05
     );
-    return {
-      route: String(out.route || "local_answer") as OrchestratorRoute,
-      reason: String(out.reason || ""),
-      clarifyingQuestion: String(out.clarifying_question || "").trim(),
-      needsLargeModel: Boolean(out.needs_large_model),
-      needsLiveData: Boolean(out.needs_live_data),
-    };
+    return sanitizeDecision(out, selectedModel, replyLanguage);
   } catch {
-    return {
-      route: "local_answer" as OrchestratorRoute,
-      reason: "fallback",
-      clarifyingQuestion: "",
-      needsLargeModel: false,
-      needsLiveData: false,
-    };
+    return sanitizeDecision({ route: "local_answer", reason: "model_classifier_failed" }, selectedModel, replyLanguage);
   }
+}
+
+function extractProtectedFactTokens(text: string) {
+  const tokens = new Set<string>();
+  const source = String(text || "");
+  const addMatches = (regex: RegExp) => {
+    const matches = source.match(regex) || [];
+    matches.forEach((match) => {
+      const clean = match.trim();
+      if (clean) tokens.add(clean);
+    });
+  };
+  addMatches(/\b\d+(?::\d+)?(?:\s?(?:am|pm|AM|PM))?\b/g);
+  addMatches(/\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi);
+  addMatches(/\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/gi);
+  addMatches(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/g);
+  return Array.from(tokens);
+}
+
+function preservesFacts(draft: string, english: string) {
+  const protectedTokens = extractProtectedFactTokens(draft);
+  return protectedTokens.every((token) => english.includes(token));
 }
 
 async function alignAnswer(
@@ -2230,6 +2475,11 @@ async function alignAnswer(
   const cfg = await getModelConfig();
   const rules = await getAlignmentRules();
   const prompts = await getPromptCatalog();
+  const tonePreference = displayValue(answers.communication_tone);
+  const toneInstruction =
+    (tonePreference && rules.toneByPreference?.[tonePreference]) ||
+    (tonePreference && rules.toneByPreference?.[normalizeText(tonePreference)]) ||
+    "";
   try {
     const out = await localChatJson(
       prompts.alignmentSystem,
@@ -2241,12 +2491,16 @@ async function alignAnswer(
         structured_profile: answers,
         profile_summary: profileSummary,
         user: userProfile || {},
+        tone_instruction: toneInstruction,
       }),
       cfg.models.aligner,
       0.2
     );
     const english = String(out.english_answer || draft).trim() || draft;
     const final = String(out.final_answer || out.english_answer || draft).trim() || draft;
+    if (rules.fallbackToDraftOnFactDrift !== false && !preservesFacts(draft, english)) {
+      return { english: draft, final: replyLanguage === "ta" ? draft : draft };
+    }
     return { english, final };
   } catch {
     return { english: draft, final: draft };
@@ -2359,17 +2613,12 @@ async function buildLocalReasoningDraft(opts: {
   answers: Record<string, any>;
   profileSummary: string;
   userProfile?: LocalUserProfile;
-  useLargeModel: boolean;
+  selectedModel: string;
 }) {
-  const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
   const memories = await readJsonl<MemorySyncRow>(memoryPath(opts.userId));
   const turns = await recentConversation(opts.userId, 10);
   const ragHits = await searchLocalRag(opts.userId, opts.message, 6);
-  const registry = await getAgentRegistry();
-  const model = opts.useLargeModel
-    ? cfg.models[registry.agents.orchestrator.largeModelKey]
-    : cfg.models[registry.agents.orchestrator.mediumModelKey];
   const draft = await localChatText(
     prompts.localReasonerSystem,
     JSON.stringify({
@@ -2389,10 +2638,48 @@ async function buildLocalReasoningDraft(opts: {
         metadata: row.metadata || {},
       })),
     }),
-    model,
+    opts.selectedModel,
     0.25
   );
   return draft.trim();
+}
+
+async function buildProfileGroundedDraft(opts: {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  answers: Record<string, any>;
+  profileSummary: string;
+  userProfile?: LocalUserProfile;
+  selectedModel: string;
+}) {
+  const direct = heuristicProfileAnswer(opts.message, opts.answers, opts.userProfile);
+  if (direct) return direct;
+  return buildLocalReasoningDraft(opts);
+}
+
+function canUseOpenAiFallback(opts: {
+  decision: OrchestratorDecision;
+  localReasonerRequestedFallback: boolean;
+  noSafeLocalPath: boolean;
+}) {
+  return Boolean(
+    opts.localReasonerRequestedFallback || opts.decision.needsLiveData || opts.noSafeLocalPath
+  );
+}
+
+async function appendRouteDecisionLog(
+  userId: number,
+  message: string,
+  decision: OrchestratorDecision,
+  extra?: Record<string, any>
+) {
+  await appendJsonl(routeLogPath(userId), {
+    createdAt: nowIso(),
+    message,
+    decision,
+    ...extra,
+  });
 }
 
 export async function saveScheduledTask(
@@ -2459,31 +2746,39 @@ export async function runLocalAssistantTurn(opts: {
   const routesConfig = await getOrchestratorConfig();
   const cfg = await getModelConfig();
   const registry = await getAgentRegistry();
-  const fast = fastRouteFromRules(message, routesConfig.routes);
-  const classified = fast
-    ? {
-        route: fast,
-        reason: "fast_rules",
-        clarifyingQuestion: "",
-        needsLargeModel: false,
-        needsLiveData: false,
-      }
-    : await classifyRouteWithModel(message, replyLanguage, answers, profileSummary);
+  const turns = await recentConversation(userId, 10);
+  const preferredSelectedModel = selectedReasonerModel(cfg, routesConfig, message, turns.length);
+  const fastDecision = ruleBasedOrchestratorDecision(
+    message,
+    replyLanguage,
+    routesConfig,
+    preferredSelectedModel
+  );
+  let decision = fastDecision
+    ? fastDecision
+    : await classifyRouteWithModel(
+        message,
+        replyLanguage,
+        answers,
+        profileSummary,
+        preferredSelectedModel
+      );
 
   await safeRecordTrainingSample("orchestrator", {
     input: message,
-    expectedOutput: JSON.stringify(classified),
-    label: fast ? "fast_rule_route" : "model_route",
+    expectedOutput: JSON.stringify(decision),
+    label: fastDecision ? "fast_rule_route" : "model_route",
     metadata: {
       userId,
       replyLanguage,
       profileSummary,
       availableToolAgents: registry.agents.toolAgents,
+      selectedModel: preferredSelectedModel,
     },
   });
 
-  let route = classified.route;
-  let source: LocalAssistantTurnResult["source"] = fast ? "local_rules" : "local_model";
+  let route = decision.route;
+  let source: LocalAssistantTurnResult["source"] = fastDecision ? "local_rules" : "local_model";
   let intent: LocalAssistantTurnResult["intent"] = "assistant";
   let title: string | null | undefined;
   let details: string | null | undefined;
@@ -2491,20 +2786,11 @@ export async function runLocalAssistantTurn(opts: {
   let draft = "";
   let english = "";
   let final = "";
+  let localReasonerRequestedFallback = false;
+  let noSafeLocalPath = false;
 
-  if (
-    ![
-      "fast_greeting",
-      "clarify",
-      "profile",
-      "calendar_query",
-      "reminder_create",
-      "weather",
-      "local_answer",
-      "fallback_openai",
-    ].includes(route)
-  ) {
-    route = "local_answer";
+  if (decision.needsLiveData && route !== "weather") {
+    route = "fallback_openai";
   }
 
   if (route === "fast_greeting") {
@@ -2514,28 +2800,38 @@ export async function runLocalAssistantTurn(opts: {
         : `Hi ${opts.userProfile?.name || "there"}, how can I help?`;
     english = draft;
     final = draft;
-  } else if (route === "clarify") {
+  } else if (route === "clarify" || decision.needsClarification) {
+    route = "clarify";
     intent = "clarify";
     source = "local_rules";
     draft =
-      classified.clarifyingQuestion ||
+      decision.clarificationQuestion ||
       (replyLanguage === "ta"
         ? "கொஞ்சம் இன்னும் தெளிவாக சொல்லுங்களேன், சரியான பதில் தர முடியும்."
         : "Could you give me a bit more detail so I can answer accurately?");
     english = draft;
     final = draft;
   } else if (route === "profile") {
-    source = "local_rules";
-    draft =
-      heuristicProfileAnswer(message, answers, opts.userProfile) ||
-      (replyLanguage === "ta"
-        ? "உங்களைப் பற்றிய சில தகவல்கள் என்கிட்ட இருக்கு. இதை கொஞ்சம் நேராக கேளுங்கள்."
-        : "I do have some profile information about you. Ask that a little more directly.");
+    draft = await buildProfileGroundedDraft({
+      userId,
+      message,
+      replyLanguage,
+      answers,
+      profileSummary,
+      userProfile: opts.userProfile,
+      selectedModel: decision.selectedModel,
+    }).catch(
+      () =>
+        replyLanguage === "ta"
+          ? "உங்களைப் பற்றிய சில தகவல்கள் என்கிட்ட இருக்கு. இதை கொஞ்சம் நேராக கேளுங்கள்."
+          : "I do have some profile information about you. Ask that a little more directly."
+    );
     const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
     english = aligned.english;
     final = aligned.final;
   } else if (route === "calendar_query") {
     if (!registry.agents.toolAgents.calendar) {
+      noSafeLocalPath = true;
       route = "fallback_openai";
     } else {
       source = "local_rules";
@@ -2556,6 +2852,7 @@ export async function runLocalAssistantTurn(opts: {
     final = aligned.final;
   } else if (route === "weather") {
     if (!registry.agents.toolAgents.weather) {
+      noSafeLocalPath = true;
       route = "fallback_openai";
     } else {
       try {
@@ -2564,64 +2861,94 @@ export async function runLocalAssistantTurn(opts: {
         english = aligned.english;
         final = aligned.final;
       } catch {
+        noSafeLocalPath = true;
         route = "fallback_openai";
       }
     }
+  } else if (route === "fallback_openai") {
+    // defer backend gating until the fallback policy check below
+  } else {
+    route = "local_answer";
   }
 
   if (route === "local_answer") {
-    const directProfile = heuristicProfileAnswer(message, answers, opts.userProfile);
-    if (directProfile) {
-      source = "local_rules";
-      draft = directProfile;
-    } else {
-      try {
-        draft = await buildLocalReasoningDraft({
-          userId,
-          message,
-          replyLanguage,
-          answers,
-          profileSummary,
-          userProfile: opts.userProfile,
-          useLargeModel: shouldUseLargeReasoner(message, cfg, classified),
-        });
-        if (draft === "__OPENAI_FALLBACK__" || classified.needsLiveData) {
-          route = "fallback_openai";
-        }
-      } catch {
+    try {
+      draft = await buildLocalReasoningDraft({
+        userId,
+        message,
+        replyLanguage,
+        answers,
+        profileSummary,
+        userProfile: opts.userProfile,
+        selectedModel: decision.selectedModel,
+      });
+      if (draft === "__OPENAI_FALLBACK__") {
+        localReasonerRequestedFallback = true;
         route = "fallback_openai";
+      } else {
+        const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
+        english = aligned.english;
+        final = aligned.final;
       }
-    }
-
-    if (route === "local_answer") {
-      const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
-      english = aligned.english;
-      final = aligned.final;
+    } catch {
+      noSafeLocalPath = true;
+      route = "fallback_openai";
     }
   }
 
   if (route === "fallback_openai") {
-    source = "openai_fallback";
-    const backend = await apiPost<any>("/api/chat", {
-      user_id: userId,
-      message,
-      reply_language: replyLanguage,
-    });
-    const backendText =
-      String(
-        backend?.assistant?.text ||
-          backend?.assistant?.english ||
-          backend?.details ||
-          backend?.raw_text ||
-          ""
-      ).trim() || "I couldn’t generate a response.";
-    const aligned = await alignAnswer(backendText, replyLanguage, route, answers, profileSummary, opts.userProfile);
-    english = aligned.english;
-    final = aligned.final;
+    decision = {
+      ...decision,
+      route: "fallback_openai",
+      fallbackAllowed: canUseOpenAiFallback({
+        decision,
+        localReasonerRequestedFallback,
+        noSafeLocalPath,
+      }),
+    };
+    if (decision.fallbackAllowed) {
+      source = "openai_fallback";
+      const backend = await apiPost<any>("/api/chat", {
+        user_id: userId,
+        message,
+        reply_language: replyLanguage,
+      });
+      const backendText =
+        String(
+          backend?.assistant?.text ||
+            backend?.assistant?.english ||
+            backend?.details ||
+            backend?.raw_text ||
+            ""
+        ).trim() || "I couldn’t generate a response.";
+      const aligned = await alignAnswer(backendText, replyLanguage, route, answers, profileSummary, opts.userProfile);
+      english = aligned.english;
+      final = aligned.final;
+    } else {
+      route = "clarify";
+      decision = {
+        ...decision,
+        route: "clarify",
+        reason: "openai_fallback_blocked_by_policy",
+        needsClarification: true,
+        clarificationQuestion: generateClarifyingQuestion(message, replyLanguage),
+      };
+      source = "local_rules";
+      intent = "clarify";
+      draft = decision.clarificationQuestion;
+      english = draft;
+      final = draft;
+    }
   }
 
   const assistantText = final || english || draft || "I couldn’t generate a response.";
   await appendConversation(userId, "assistant", assistantText);
+  await appendRouteDecisionLog(userId, message, decision, {
+    routeUsed: route,
+    source,
+    localReasonerRequestedFallback,
+    noSafeLocalPath,
+  });
 
   if (assistantText.trim() && route !== "reminder_create" && route !== "clarify") {
     await writeSemanticCache(userId, message, assistantText, route);
@@ -2635,10 +2962,11 @@ export async function runLocalAssistantTurn(opts: {
       replyLanguage,
       profileSummary,
       answers,
+      decision,
     }),
     expectedOutput: assistantText,
     label: route,
-    metadata: { userId, source },
+    metadata: { userId, source, decision },
   });
 
   await maybeSyncLocalMemory(userId, { ...opts.userProfile, replyLanguage });
@@ -2655,7 +2983,8 @@ export async function runLocalAssistantTurn(opts: {
     datetimeText,
     profileSummary,
     meta: {
-      classified,
+      classified: decision,
+      orchestratorDecision: decision,
       dataFolder: DATA_DIR,
       trainingFolder: TRAINING_DIR,
       ragFolder: RAG_DIR,

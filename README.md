@@ -6,6 +6,9 @@ The primary runtime is now **phone-local agents** in the Expo app.
 
 - `mobile/lib/localAgents.ts` is the main agent runtime.
 - `mobile/lib/api.ts` keeps the existing `/api/chat` contract stable and intercepts it locally by default.
+- The Orchestrator Agent is now the local-first traffic cop.
+  It routes greeting/small-talk, clarification, profile, reminders/tasks, weather/live-tool requests, offline reasoning, and only then considers backend fallback.
+- The Alignment Agent now rewrites local or fallback drafts to the user's preferred tone/language while preserving facts.
 - `mobile/data/` is the checked-in source of truth for agent configs, prompts, training seeds, and RAG seeds.
 - On first launch, the app bootstraps those checked-in seed files into `Expo FileSystem.documentDirectory/data`.
 - Live phone runtime data stays only in `documentDirectory/data` and is not stored in git.
@@ -82,6 +85,34 @@ The Profiler Agent is local-first and writes its runtime state under `documentDi
 
 Profiler completion happens on-device first. The backend mirror remains secondary and must not be treated as source of truth.
 
+## Orchestrator And Alignment Runtime
+
+The chat path still enters through `/api/chat`, but the main decision tree now runs locally inside `mobile/lib/localAgents.ts`.
+
+Routing order:
+
+1. Semantic cache hit, if available.
+2. Fast local rules for greeting/small-talk, reminders, schedule/tasks, weather, profile requests, and obvious ambiguity.
+3. Qwen3 local orchestrator decision with explicit typed output:
+   `route`, `reason`, `confidence`, `needsClarification`, `clarificationQuestion`, `needsLiveData`, `selectedModel`, `fallbackAllowed`.
+4. Local tool or local reasoning execution:
+   - `Qwen3 8B` by default
+   - `Qwen3 14B` for longer or more multi-step/context-heavy prompts
+5. Gemma 3 4B alignment rewrite using local profile summary, answers, preferences, and language settings.
+6. Backend/OpenAI fallback only when one of these is true:
+   - the local reasoner returns `__OPENAI_FALLBACK__`
+   - the orchestrator marks `needsLiveData = true`
+   - no safe local tool/model path can answer
+
+Runtime artifacts added for the new agents:
+
+- `training/captures/orchestrator.jsonl`
+  Route decisions and training captures for the local orchestrator.
+- `training/captures/alignment.jsonl`
+  Draft-to-final alignment captures.
+- `conversations/{userId}_routes.jsonl`
+  Append-only route decision log with route metadata and fallback-policy context.
+
 ## Backend Role
 
 The backend still supports:
@@ -111,7 +142,7 @@ Backend runtime state remains under `backend/data/`:
 cd mobile
 npm install
 npx expo start
-npm run test:profiler
+npm run test:local-agents
 ```
 
 ### Backend
