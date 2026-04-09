@@ -2,6 +2,7 @@ import Constants from "expo-constants";
 import { Platform } from "react-native";
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { getAuth, initializeAuth } from "firebase/auth";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
 
@@ -27,13 +28,46 @@ if (missingKeys.length) {
 
 export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
+type NativeInitializeAuthOptions = NonNullable<Parameters<typeof initializeAuth>[1]>;
+type NativePersistenceValue = NonNullable<NativeInitializeAuthOptions["persistence"]>;
+
+export function createNativePersistence(
+  getPersistenceFactory?: (storage: typeof AsyncStorage) => NativePersistenceValue
+) {
+  if (getPersistenceFactory) {
+    return getPersistenceFactory(AsyncStorage);
+  }
+
+  const { getReactNativePersistence } =
+    require("firebase/auth/react-native") as {
+      getReactNativePersistence: (storage: typeof AsyncStorage) => NativePersistenceValue;
+    };
+
+  return getReactNativePersistence(AsyncStorage);
+}
+
+export function getInitializeAuthOptions(
+  platformOS: string,
+  getPersistenceFactory?: (storage: typeof AsyncStorage) => NativePersistenceValue
+): NativeInitializeAuthOptions | undefined {
+  if (platformOS === "web") {
+    return undefined;
+  }
+
+  return {
+    persistence: createNativePersistence(getPersistenceFactory),
+  };
+}
+
 function buildAuth() {
-  if (Platform.OS === "web") {
+  const options = getInitializeAuthOptions(Platform.OS);
+
+  if (!options) {
     return getAuth(firebaseApp);
   }
 
   try {
-    return initializeAuth(firebaseApp);
+    return initializeAuth(firebaseApp, options);
   } catch {
     return getAuth(firebaseApp);
   }
