@@ -39,7 +39,7 @@ if str(BACKEND_ROOT) not in sys.path:
 load_dotenv()
 bootstrap_observability()
 patch_openai_client()
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 
 from config import (
@@ -1501,14 +1501,47 @@ def _run_agentic_or_pipeline(
     )
 
 
+def _extract_openai_error_message(exc: Exception) -> str:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error_payload = body.get("error") or {}
+        message = str(error_payload.get("message") or "").strip()
+        if message:
+            return message
+    message = str(exc).strip()
+    return message or "OpenAI request failed"
+
+
+def _is_audio_too_short_error(exc: Exception) -> bool:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error_payload = body.get("error") or {}
+        code = str(error_payload.get("code") or "").strip().lower()
+        message = str(error_payload.get("message") or "").strip().lower()
+        if code == "audio_too_short":
+            return True
+        if "audio file is too short" in message:
+            return True
+    return "audio file is too short" in str(exc).lower()
+
+
 def _transcribe_audio_file(file_path: str) -> str:
-    with open(file_path, "rb") as audio_file:
-        transcript_obj = _get_openai_client().audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            response_format="json",
-            language="ta",
-        )
+    try:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) <= 0:
+            raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
+
+        with open(file_path, "rb") as audio_file:
+            transcript_obj = _get_openai_client().audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="json",
+                language="ta",
+            )
+    except BadRequestError as exc:
+        if _is_audio_too_short_error(exc):
+            raise HTTPException(400, "Audio file is too short. Please record for at least a moment and try again.") from exc
+        raise HTTPException(400, _extract_openai_error_message(exc)) from exc
+
     text = str(getattr(transcript_obj, "text", "") or "").strip()
     if not text:
         raise HTTPException(400, "Failed to transcribe audio")
@@ -1707,6 +1740,8 @@ def delete_user_account(user_id: int, session: Session = Depends(get_session)):
         session.exec(delete(QACache).where(QACache.user_id == user_id))
         session.exec(delete(DailyRoutine).where(DailyRoutine.user_id == user_id))
         session.exec(delete(UserProfile).where(UserProfile.user_id == user_id))
+        session.exec(delete(RagEmbedding).where(RagEmbedding.user_id == user_id))
+        session.exec(delete(Job).where(Job.user_id == user_id))
         session.delete(user)
         session.commit()
     except Exception as exc:
