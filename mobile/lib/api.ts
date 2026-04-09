@@ -32,6 +32,15 @@ const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean =
       "false"
   ).toLowerCase() === "true";
 
+const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean =
+  String(
+    extra.USE_LOCAL_CHAT_PIPELINE ||
+      process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ||
+      "true"
+  ).toLowerCase() === "true";
+
+let localChatInterceptionDepth = 0;
+
 type FeatureFlagPayload = {
   ok?: boolean;
   flags?: {
@@ -64,6 +73,26 @@ type LocalAnalyzeResponse = {
   datetime?: string | null;
   title?: string | null;
   details?: string | null;
+};
+
+type LocalChatProxyResponse = {
+  ok: boolean;
+  item: {
+    id: number;
+    intent: string;
+    category: string;
+    raw_text: string;
+    transcript?: string | null;
+    datetime?: string | null;
+    title?: string | null;
+    details?: string | null;
+  };
+  assistant: {
+    text: string;
+    english: string;
+    tamil?: string;
+    theni_tamil?: string;
+  };
 };
 
 function buildUrl(path: string) {
@@ -317,6 +346,56 @@ async function handleLocalTranscribeAndAnalyze(
   };
 }
 
+function isChatPath(path: string) {
+  const normalized = String(path || "");
+  return normalized === "/api/chat" || normalized.startsWith("/api/chat?");
+}
+
+async function shouldUseLocalChatPipeline() {
+  return USE_LOCAL_CHAT_PIPELINE_DEFAULT;
+}
+
+async function handleLocalChat(path: string, body?: any): Promise<LocalChatProxyResponse> {
+  const userId = Number(body?.user_id ?? body?.userId ?? 0);
+  const message = String(body?.message ?? body?.text ?? "").trim();
+  const replyLanguage: ReplyLanguage =
+    body?.reply_language === "en" || body?.replyLanguage === "en" ? "en" : "ta";
+
+  if (!Number.isFinite(userId) || userId <= 0 || !message) {
+    throw new Error("Valid user_id and message are required for local chat routing.");
+  }
+
+  const { runLocalAssistantTurn } = await import("./localAgents");
+  const turn = await runLocalAssistantTurn({
+    userId,
+    message,
+    replyLanguage,
+  });
+
+  return {
+    ok: true,
+    item: {
+      id: Date.now(),
+      intent: turn.intent === "reminder" ? "reminder" : "assistant",
+      category: "Other",
+      raw_text: message,
+      transcript: null,
+      datetime: turn.datetimeText || null,
+      title:
+        turn.intent === "reminder"
+          ? turn.title || "Reminder"
+          : formatIntentLabel(turn.route),
+      details: turn.assistantText,
+    },
+    assistant: {
+      text: turn.assistantText,
+      english: turn.englishText || turn.assistantText,
+      tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
+      theni_tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
+    },
+  };
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(buildUrl(path));
   if (!res.ok) {
@@ -329,6 +408,19 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
+  if (
+    localChatInterceptionDepth === 0 &&
+    (await shouldUseLocalChatPipeline()) &&
+    isChatPath(path)
+  ) {
+    localChatInterceptionDepth += 1;
+    try {
+      return (await handleLocalChat(path, body)) as T;
+    } finally {
+      localChatInterceptionDepth = Math.max(0, localChatInterceptionDepth - 1);
+    }
+  }
+
   const res = await fetch(buildUrl(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
