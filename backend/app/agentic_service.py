@@ -275,8 +275,37 @@ class AgenticService:
     def _write_state(self, user_id: int, agent_name: str, payload: Dict[str, Any]) -> None:
         self._write_json(self._state_path(user_id, agent_name), payload)
 
+    def _normalize_slot_list(self, slots: Any) -> List[Dict[str, Any]]:
+        if not isinstance(slots, list):
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            sid = str(slot.get("id", "")).strip()
+            if not sid:
+                continue
+            out.append(slot)
+        return out
+
     def _profiler_schema(self) -> Dict[str, Any]:
-        return self._read_json(Path(AGENT_PROFILER_SCHEMA_PATH), DEFAULT_PROFILER_SCHEMA)
+        raw = self._read_json(Path(AGENT_PROFILER_SCHEMA_PATH), DEFAULT_PROFILER_SCHEMA)
+
+        if isinstance(raw, list):
+            schema = dict(DEFAULT_PROFILER_SCHEMA)
+            schema["required_slots"] = self._normalize_slot_list(raw)
+            return schema
+
+        if not isinstance(raw, dict):
+            return dict(DEFAULT_PROFILER_SCHEMA)
+
+        schema = dict(raw)
+        schema.setdefault("version", DEFAULT_PROFILER_SCHEMA["version"])
+        schema.setdefault("slot_instructions", DEFAULT_PROFILER_SCHEMA["slot_instructions"])
+        schema["required_slots"] = self._normalize_slot_list(raw.get("required_slots"))
+        schema["optional_slots"] = self._normalize_slot_list(raw.get("optional_slots"))
+        return schema
 
     def _route_config(self) -> Dict[str, Any]:
         return self._read_json(Path(AGENT_ORCHESTRATOR_CONFIG_PATH), DEFAULT_ORCHESTRATOR_CONFIG)
@@ -317,7 +346,8 @@ class AgenticService:
         return [str(x.get("id", "")).strip() for x in list(self._profiler_schema().get("required_slots") or []) if str(x.get("id", "")).strip()]
 
     def _missing_slots(self, answers: Dict[str, Any]) -> List[str]:
-        return [sid for sid in self._required_slot_ids() if answers.get(sid) in (None, "", [], {})]
+        safe_answers = answers if isinstance(answers, dict) else {}
+        return [sid for sid in self._required_slot_ids() if safe_answers.get(sid) in (None, "", [], {})]
 
     def _completed_count(self, answers: Dict[str, Any]) -> int:
         return len(self._required_slot_ids()) - len(self._missing_slots(answers))

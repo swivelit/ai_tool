@@ -655,7 +655,7 @@ export default function Home() {
 
   function openRoutine() {
     closeDrawer();
-    router.push("/(tabs)/routine");
+    router.push("./routine");
   }
 
   async function signOut() {

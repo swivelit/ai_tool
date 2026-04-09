@@ -583,7 +583,7 @@ export default function SignupScreen() {
 
               <View style={styles.footerRow}>
                 <Text style={styles.footerCopy}>Already have an account?</Text>
-                <Pressable onPress={() => router.replace("/auth/login")}>
+                <Pressable onPress={() => router.replace("./login")}>
                   <Text style={styles.footerLink}>Login</Text>
                 </Pressable>
               </View>

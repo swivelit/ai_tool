@@ -23,7 +23,11 @@ function parentDirs(path: string) {
   return dirs;
 }
 
-const apiPostMock = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+const apiPostMock = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(async () => ({
+    ok: true,
+  }))
+);
 
 vi.mock("expo-constants", () => ({
   default: {
