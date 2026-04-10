@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -21,6 +21,7 @@ import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
+import profilerSlotsSeed from "@/data/config/profiler_slots.json";
 import {
   createProfileOnBackend,
   getProfile,
@@ -30,9 +31,24 @@ import {
 import {
   getProfilerStateOnPhone,
   LocalChatMessage,
+  ProfilerSlot,
   sendProfilerMessageOnPhone,
   startProfilerOnPhone,
 } from "@/lib/localAgents";
+
+const PROFILER_SLOTS = profilerSlotsSeed as ProfilerSlot[];
+
+function humanizeOption(option: string) {
+  const clean = String(option || "").trim();
+  if (!clean) return "";
+  const spaced = clean.replace(/_/g, " ");
+  if (spaced.toLowerCase() === "ai technology") return "AI & Technology";
+  return spaced.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatSelectedOptions(options: string[]) {
+  return options.map(humanizeOption).join(", ");
+}
 
 export default function QuestionnaireScreen() {
   const insets = useSafeAreaInsets();
@@ -47,10 +63,22 @@ export default function QuestionnaireScreen() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState(false);
+  const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
+  const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const [, setCompletedSlots] = useState(0);
   const [, setTotalSlots] = useState(15);
 
   const replyLanguage = settings.languageMode === "en" ? "en" : "ta";
+
+  const activeSlot = useMemo(
+    () => PROFILER_SLOTS.find((slot) => slot.id === activeSlotId) ?? null,
+    [activeSlotId]
+  );
+
+  function syncCurrentStep(nextSlotId?: string | null) {
+    setActiveSlotId(nextSlotId || null);
+    setSelectedOptions([]);
+  }
 
   useEffect(() => {
     let alive = true;
@@ -114,6 +142,7 @@ export default function QuestionnaireScreen() {
         setCompletedSlots(current.completedSlots);
         setTotalSlots(current.totalSlots);
         setDone(current.missingSlots.length === 0);
+        syncCurrentStep(current.state.currentTargetSlot || current.missingSlots[0] || null);
 
         if (current.state.history?.length) {
           setMessages(current.state.history);
@@ -131,6 +160,7 @@ export default function QuestionnaireScreen() {
           setCompletedSlots(started.completedSlots);
           setTotalSlots(started.totalSlots);
           setDone(started.done);
+          syncCurrentStep(started.missingSlots[0] || null);
         }
       } catch (error: any) {
         if (!alive) return;
@@ -153,12 +183,14 @@ export default function QuestionnaireScreen() {
     }, 80);
 
     return () => clearTimeout(timer);
-  }, [messages]);
+  }, [messages, activeSlotId, selectedOptions]);
 
-  async function handleSend() {
-    if (!resolvedUserId || !input.trim() || sending) return;
+  async function handleSend(overrideMessage?: string) {
+    if (!resolvedUserId || sending) return;
 
-    const userMessage = input.trim();
+    const userMessage = String(overrideMessage ?? input).trim();
+    if (!userMessage) return;
+
     setInput("");
     setSending(true);
 
@@ -176,6 +208,7 @@ export default function QuestionnaireScreen() {
       setCompletedSlots(next.completedSlots);
       setTotalSlots(next.totalSlots);
       setDone(next.done);
+      syncCurrentStep(next.missingSlots[0] || null);
 
       if (next.done) {
         await markQuestionnaireCompleted(true);
@@ -183,7 +216,9 @@ export default function QuestionnaireScreen() {
       }
     } catch (error: any) {
       Alert.alert("Couldn’t continue", error?.message || "Please try again.");
-      setInput(userMessage);
+      if (!overrideMessage) {
+        setInput(userMessage);
+      }
     } finally {
       setSending(false);
     }
@@ -191,6 +226,30 @@ export default function QuestionnaireScreen() {
 
   function continueToApp() {
     router.replace("/(tabs)");
+  }
+
+  function toggleMultiOption(option: string) {
+    if (!activeSlot || activeSlot.type !== "multi") return;
+    const maxChoices = activeSlot.max_choices || 4;
+    setSelectedOptions((current) => {
+      if (current.includes(option)) {
+        return current.filter((item) => item !== option);
+      }
+      if (current.length >= maxChoices) {
+        return current;
+      }
+      return [...current, option];
+    });
+  }
+
+  async function handleSingleOptionPress(option: string) {
+    if (sending) return;
+    await handleSend(humanizeOption(option));
+  }
+
+  async function handleMultiOptionSubmit() {
+    if (!activeSlot || activeSlot.type !== "multi" || selectedOptions.length === 0 || sending) return;
+    await handleSend(formatSelectedOptions(selectedOptions));
   }
 
   return (
@@ -251,6 +310,64 @@ export default function QuestionnaireScreen() {
                   );
                 })}
 
+                {!done && activeSlot ? (
+                  <GlassCard style={styles.optionsCard}>
+                    <Text style={styles.optionsTitle}>{activeSlot.prompt}</Text>
+                    <Text style={styles.optionsSubtitle}>
+                      {activeSlot.type === "multi"
+                        ? `Choose up to ${activeSlot.max_choices || 4} options.`
+                        : "Tap one option to continue instantly."}
+                    </Text>
+
+                    <View style={styles.chipsWrap}>
+                      {activeSlot.options.map((option) => {
+                        const selected = selectedOptions.includes(option);
+                        return (
+                          <Pressable
+                            key={`${activeSlot.id}_${option}`}
+                            style={[
+                              styles.optionChip,
+                              activeSlot.type === "multi" && selected && styles.optionChipSelected,
+                            ]}
+                            disabled={sending}
+                            onPress={() => {
+                              if (activeSlot.type === "multi") {
+                                toggleMultiOption(option);
+                                return;
+                              }
+                              void handleSingleOptionPress(option);
+                            }}
+                          >
+                            <Text
+                              style={[
+                                styles.optionChipText,
+                                activeSlot.type === "multi" && selected && styles.optionChipTextSelected,
+                              ]}
+                            >
+                              {humanizeOption(option)}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+
+                    {activeSlot.type === "multi" ? (
+                      <Pressable
+                        style={[
+                          styles.multiSubmitButton,
+                          (selectedOptions.length === 0 || sending) && styles.multiSubmitButtonDisabled,
+                        ]}
+                        disabled={selectedOptions.length === 0 || sending}
+                        onPress={() => void handleMultiOptionSubmit()}
+                      >
+                        <Text style={styles.multiSubmitButtonText}>
+                          {sending ? "Saving…" : `Continue with ${selectedOptions.length} selected`}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                  </GlassCard>
+                ) : null}
+
                 {done ? (
                   <GlassCard style={styles.doneCard}>
                     <Text style={styles.doneTitle}>Profile ready</Text>
@@ -269,6 +386,11 @@ export default function QuestionnaireScreen() {
 
           {!done ? (
             <GlassCard style={styles.composerCard}>
+              <Text style={styles.composerHint}>
+                {replyLanguage === "ta"
+                  ? "அல்லது உங்கள் சொற்களில் பதில் எழுதலாம்…"
+                  : "Or answer in your own words…"}
+              </Text>
               <View style={styles.composerRow}>
                 <TextInput
                   value={input}
@@ -282,7 +404,7 @@ export default function QuestionnaireScreen() {
                 <Pressable
                   style={[styles.sendButton, (!input.trim() || sending) && styles.sendButtonDisabled]}
                   disabled={!input.trim() || sending}
-                  onPress={handleSend}
+                  onPress={() => void handleSend()}
                 >
                   {sending ? (
                     <ActivityIndicator color="#fff" />
@@ -369,6 +491,61 @@ const styles = StyleSheet.create({
   userBubbleText: {
     color: "#fff",
   },
+  optionsCard: {
+    padding: 16,
+    gap: 12,
+  },
+  optionsTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: Brand.text,
+  },
+  optionsSubtitle: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: Brand.textMuted,
+  },
+  chipsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  optionChip: {
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(135,70,40,0.14)",
+  },
+  optionChipSelected: {
+    backgroundColor: Brand.bronze,
+    borderColor: Brand.bronze,
+  },
+  optionChipText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: Brand.text,
+  },
+  optionChipTextSelected: {
+    color: "#fff",
+  },
+  multiSubmitButton: {
+    marginTop: 2,
+    borderRadius: 14,
+    backgroundColor: Brand.bronze,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    alignItems: "center",
+  },
+  multiSubmitButtonDisabled: {
+    opacity: 0.5,
+  },
+  multiSubmitButtonText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 14,
+  },
   doneCard: {
     marginTop: 8,
     padding: 18,
@@ -399,6 +576,12 @@ const styles = StyleSheet.create({
   },
   composerCard: {
     padding: 10,
+    gap: 8,
+  },
+  composerHint: {
+    fontSize: 12,
+    color: Brand.textMuted,
+    paddingHorizontal: 4,
   },
   composerRow: {
     flexDirection: "row",
