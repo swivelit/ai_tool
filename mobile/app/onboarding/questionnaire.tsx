@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -47,15 +47,10 @@ export default function QuestionnaireScreen() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState(false);
-  const [completedSlots, setCompletedSlots] = useState(0);
-  const [totalSlots, setTotalSlots] = useState(15);
+  const [, setCompletedSlots] = useState(0);
+  const [, setTotalSlots] = useState(15);
 
   const replyLanguage = settings.languageMode === "en" ? "en" : "ta";
-
-  const progress = useMemo(() => {
-    if (!totalSlots) return 0;
-    return Math.min(1, completedSlots / totalSlots);
-  }, [completedSlots, totalSlots]);
 
   useEffect(() => {
     let alive = true;
@@ -212,36 +207,11 @@ export default function QuestionnaireScreen() {
             { paddingTop: insets.top + 16, paddingBottom: Math.max(insets.bottom + 14, 18) },
           ]}
         >
-          <GlassCard style={styles.headerCard}>
-            <View style={styles.headerRow}>
-              <View style={styles.headerCopy}>
-                <Text style={styles.kicker}>Profiler Agent</Text>
-                <Text style={styles.title}>Natural onboarding</Text>
-                <Text style={styles.subtitle}>
-                  No static 15-question form. The assistant collects your profile through a casual chat.
-                </Text>
-              </View>
-
-              <View style={styles.sparkWrap}>
-                <Ionicons name="sparkles" size={22} color={Brand.bronze} />
-              </View>
-            </View>
-
-            <View style={styles.progressWrap}>
-              <View style={styles.progressTrack}>
-                <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
-              </View>
-              <Text style={styles.progressText}>
-                {completedSlots}/{totalSlots} collected
-              </Text>
-            </View>
-          </GlassCard>
-
           <View style={styles.chatWrap}>
             {loading ? (
               <View style={styles.loadingWrap}>
                 <ActivityIndicator color={Brand.bronze} />
-                <Text style={styles.loadingText}>Starting your local profiler…</Text>
+                <Text style={styles.loadingText}>Getting things ready…</Text>
               </View>
             ) : (
               <ScrollView
@@ -285,7 +255,7 @@ export default function QuestionnaireScreen() {
                   <GlassCard style={styles.doneCard}>
                     <Text style={styles.doneTitle}>Profile ready</Text>
                     <Text style={styles.doneText}>
-                      The Profiler Agent has enough context to personalize responses.
+                      We have enough context to personalize responses.
                     </Text>
 
                     <Pressable style={styles.doneButton} onPress={continueToApp}>
@@ -336,63 +306,6 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 18,
     gap: 14,
-  },
-  headerCard: {
-    padding: 18,
-    gap: 14,
-  },
-  headerRow: {
-    flexDirection: "row",
-    gap: 14,
-    alignItems: "flex-start",
-  },
-  headerCopy: {
-    flex: 1,
-    gap: 6,
-  },
-  sparkWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(218, 165, 32, 0.14)",
-  },
-  kicker: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: Brand.bronze,
-    textTransform: "uppercase",
-    letterSpacing: 1.2,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: Brand.text,
-  },
-  subtitle: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: Brand.textMuted,
-  },
-  progressWrap: {
-    gap: 8,
-  },
-  progressTrack: {
-    height: 10,
-    borderRadius: 999,
-    backgroundColor: "rgba(135, 70, 40, 0.12)",
-    overflow: "hidden",
-  },
-  progressFill: {
-    height: "100%",
-    borderRadius: 999,
-    backgroundColor: Brand.bronze,
-  },
-  progressText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: Brand.textMuted,
   },
   chatWrap: {
     flex: 1,
