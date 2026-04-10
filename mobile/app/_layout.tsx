@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Animated,
+  Easing,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
@@ -19,7 +26,95 @@ import {
 } from "@/lib/appBoot";
 import { ensureLocalAgentSeedData } from "@/lib/localAgentBootstrap";
 
-function BootScreen() {
+const TOTAL_BOOT_STEPS = 3;
+
+function buildBootCopy(params: {
+  pendingBootSteps?: string[];
+  profileLookupLoading?: boolean;
+}) {
+  if (params.profileLookupLoading) {
+    return {
+      title: "Loading J AI...",
+      text: "Checking your account and getting your onboarding ready.",
+    };
+  }
+
+  const pending = params.pendingBootSteps || [];
+
+  if (pending.includes("auth state")) {
+    return {
+      title: "Loading J AI...",
+      text: "Checking sign-in status.",
+    };
+  }
+
+  if (pending.includes("assistant profile")) {
+    return {
+      title: "Loading J AI...",
+      text: "Restoring your assistant profile.",
+    };
+  }
+
+  if (pending.includes("local agent seed data")) {
+    return {
+      title: "Loading J AI...",
+      text: "Preparing local assistant data.",
+    };
+  }
+
+  return {
+    title: "Loading J AI...",
+    text: "Setting things up.",
+  };
+}
+
+function getBootProgress(params: {
+  pendingBootSteps?: string[];
+  profileLookupLoading?: boolean;
+}) {
+  if (params.profileLookupLoading) {
+    return 0.9;
+  }
+
+  const pendingCount = (params.pendingBootSteps || []).length;
+  const completedRatio = (TOTAL_BOOT_STEPS - pendingCount) / TOTAL_BOOT_STEPS;
+
+  return Math.max(0.18, Math.min(0.96, completedRatio));
+}
+
+function BootScreen({
+  pendingBootSteps,
+  profileLookupLoading = false,
+}: {
+  pendingBootSteps?: string[];
+  profileLookupLoading?: boolean;
+}) {
+  const progress = useMemo(
+    () => getBootProgress({ pendingBootSteps, profileLookupLoading }),
+    [pendingBootSteps, profileLookupLoading]
+  );
+
+  const copy = useMemo(
+    () => buildBootCopy({ pendingBootSteps, profileLookupLoading }),
+    [pendingBootSteps, profileLookupLoading]
+  );
+
+  const progressAnim = useRef(new Animated.Value(progress)).current;
+
+  useEffect(() => {
+    Animated.timing(progressAnim, {
+      toValue: progress,
+      duration: 360,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [progress, progressAnim]);
+
+  const barWidth = progressAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0%", "100%"],
+  });
+
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.bootPage}>
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -28,11 +123,19 @@ function BootScreen() {
         <View style={styles.bottomGlow} />
       </View>
 
-      <GlassCard style={{ borderRadius: 28, minWidth: 240 }}>
+      <GlassCard style={styles.bootCardShell}>
         <View style={styles.bootCard}>
           <ActivityIndicator size="small" color={Brand.bronze} />
-          <Text style={styles.bootTitle}>Loading J AI...</Text>
-          <Text style={styles.bootText}>Setting things up.</Text>
+          <Text style={styles.bootTitle}>{copy.title}</Text>
+          <Text style={styles.bootText}>{copy.text}</Text>
+
+          <View style={styles.progressTrack}>
+            <Animated.View style={[styles.progressFill, { width: barWidth }]} />
+          </View>
+
+          <Text style={styles.progressLabel}>
+            {Math.round(progress * 100)}% complete
+          </Text>
         </View>
       </GlassCard>
     </LinearGradient>
@@ -121,7 +224,7 @@ function RouteGate() {
   }, [pathname, targetRoute]);
 
   if (user && !activeProfile && profileLookupLoading) {
-    return <BootScreen />;
+    return <BootScreen profileLookupLoading />;
   }
 
   return null;
@@ -181,7 +284,7 @@ function AppShell() {
   }, [pendingBootSteps]);
 
   if (!bootTimedOut && pendingBootSteps.length) {
-    return <BootScreen />;
+    return <BootScreen pendingBootSteps={pendingBootSteps} />;
   }
 
   return (
@@ -230,8 +333,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
   },
 
+  bootCardShell: {
+    borderRadius: 28,
+    minWidth: 260,
+    width: "100%",
+    maxWidth: 320,
+  },
+
   bootCard: {
-    minHeight: 120,
+    minHeight: 154,
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
@@ -248,6 +358,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     textAlign: "center",
+    maxWidth: 220,
+  },
+
+  progressTrack: {
+    width: "100%",
+    height: 8,
+    marginTop: 6,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor: "rgba(124, 99, 80, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(124, 99, 80, 0.08)",
+  },
+
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: Brand.bronze,
+  },
+
+  progressLabel: {
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
   },
 
   topGlow: {
