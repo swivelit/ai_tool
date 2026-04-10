@@ -203,7 +203,8 @@ export default function QuestionnaireScreen() {
       <StatusBar style="dark" />
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 12}
       >
         <View
           style={[
@@ -248,6 +249,8 @@ export default function QuestionnaireScreen() {
                 style={styles.chatScroll}
                 contentContainerStyle={styles.chatContent}
                 keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+                showsVerticalScrollIndicator={false}
               >
                 {messages.map((message, index) => {
                   const mine = message.role === "user";
@@ -304,6 +307,7 @@ export default function QuestionnaireScreen() {
                   placeholderTextColor={Brand.textMuted}
                   style={styles.input}
                   multiline
+                  textAlignVertical="top"
                 />
                 <Pressable
                   style={[styles.sendButton, (!input.trim() || sending) && styles.sendButtonDisabled]}
@@ -408,6 +412,7 @@ const styles = StyleSheet.create({
   },
   chatContent: {
     paddingVertical: 6,
+    paddingBottom: 8,
     gap: 10,
   },
   bubbleRow: {
