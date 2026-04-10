@@ -26,7 +26,7 @@ import {
 } from "@/lib/appBoot";
 import { ensureLocalAgentSeedData } from "@/lib/localAgentBootstrap";
 
-const TOTAL_BOOT_STEPS = 3;
+const TOTAL_BOOT_STEPS = 2;
 
 function buildBootCopy(params: {
   pendingBootSteps?: string[];
@@ -45,13 +45,6 @@ function buildBootCopy(params: {
     return {
       title: "Loading J AI...",
       text: "Checking sign-in status.",
-    };
-  }
-
-  if (pending.includes("assistant profile")) {
-    return {
-      title: "Loading J AI...",
-      text: "Restoring your assistant profile.",
     };
   }
 
@@ -232,7 +225,6 @@ function RouteGate() {
 
 function AppShell() {
   const { loading: authLoading } = useAuth();
-  const { loading: profileLoading } = useAssistant();
   const [localAgentLoading, setLocalAgentLoading] = useState(true);
   const [bootTimedOut, setBootTimedOut] = useState(false);
 
@@ -259,10 +251,10 @@ function AppShell() {
     () =>
       getPendingBootSteps({
         authLoading,
-        profileLoading,
+        profileLoading: false,
         localSeedLoading: localAgentLoading,
       }),
-    [authLoading, localAgentLoading, profileLoading]
+    [authLoading, localAgentLoading]
   );
 
   useEffect(() => {
