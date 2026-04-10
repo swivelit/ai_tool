@@ -53,9 +53,10 @@ function mapBackendUserToProfile(user: any): UserProfile | null {
     firebaseUid: typeof user.firebase_uid === "string" ? user.firebase_uid : undefined,
     name: String(user.name || "User"),
     place: typeof user.place === "string" ? user.place : "",
-    timezone: typeof user.timezone === "string" && user.timezone.trim()
-      ? user.timezone
-      : "Asia/Kolkata",
+    timezone:
+      typeof user.timezone === "string" && user.timezone.trim()
+        ? user.timezone
+        : "Asia/Kolkata",
     assistantName:
       typeof user.assistant_name === "string" && user.assistant_name.trim()
         ? user.assistant_name
@@ -87,7 +88,9 @@ async function resolveProfileFromBackendByAuth(
     query.set("email", normalizedEmail);
   }
 
-  const response = await apiGet<BackendResolvedUserResponse>(`/users/resolve?${query.toString()}`);
+  const response = await apiGet<BackendResolvedUserResponse>(
+    `/users/resolve?${query.toString()}`
+  );
 
   if (!response?.found || !response.user) {
     return null;
@@ -247,6 +250,53 @@ function safeStringify(value: any) {
   }
 }
 
+function mergeProfileWithAuth(
+  profile: UserProfile,
+  firebaseUid?: string | null,
+  email?: string | null
+): UserProfile {
+  const normalizedUid = (firebaseUid || "").trim() || undefined;
+  const normalizedEmail = normalizeEmail(email);
+
+  return {
+    ...profile,
+    firebaseUid: normalizedUid || profile.firebaseUid,
+    email: normalizedEmail || normalizeEmail(profile.email) || undefined,
+  };
+}
+
+function getAuthMatchKind(
+  profile: UserProfile,
+  firebaseUid?: string | null,
+  email?: string | null
+): "uid" | "email" | null {
+  const normalizedUid = (firebaseUid || "").trim();
+  const normalizedEmail = normalizeEmail(email);
+  const profileUid = (profile.firebaseUid || "").trim();
+  const profileEmail = normalizeEmail(profile.email);
+
+  if (normalizedUid && profileUid && normalizedUid === profileUid) {
+    return "uid";
+  }
+
+  if (normalizedEmail && profileEmail && normalizedEmail === profileEmail) {
+    if (!profileUid || !normalizedUid || profileUid === normalizedUid) {
+      return "email";
+    }
+  }
+
+  return null;
+}
+
+async function clearCachedProfileKeys() {
+  await Promise.all([
+    AsyncStorage.removeItem(KEY),
+    AsyncStorage.removeItem(BACKUP_KEY),
+    AsyncStorage.removeItem(LAST_USER_ID_KEY),
+    AsyncStorage.removeItem(LAST_FIREBASE_UID_KEY),
+  ]);
+}
+
 async function writeProfileCache(profile: UserProfile) {
   const writes: Promise<any>[] = [
     AsyncStorage.setItem(KEY, JSON.stringify(profile)),
@@ -264,40 +314,7 @@ async function writeProfileCache(profile: UserProfile) {
   await Promise.all(writes);
 }
 
-async function restoreProfileFromBackup(): Promise<UserProfile | null> {
-  const [backupRaw, lastUserIdRaw, lastFirebaseUid] = await Promise.all([
-    AsyncStorage.getItem(BACKUP_KEY),
-    AsyncStorage.getItem(LAST_USER_ID_KEY),
-    AsyncStorage.getItem(LAST_FIREBASE_UID_KEY),
-  ]);
-
-  const backupProfile = safeParseProfile(backupRaw);
-  if (backupProfile) {
-    await AsyncStorage.setItem(KEY, JSON.stringify(backupProfile));
-    return backupProfile;
-  }
-
-  const numericUserId = lastUserIdRaw ? Number(lastUserIdRaw) : NaN;
-  if (Number.isFinite(numericUserId) && numericUserId > 0) {
-    const rebuilt: UserProfile = {
-      userId: numericUserId,
-      firebaseUid: lastFirebaseUid || undefined,
-      name: "User",
-      place: "",
-      timezone: "Asia/Kolkata",
-      assistantName: "Elli",
-      questionnaireCompleted: false,
-      replyLanguage: "ta",
-    };
-
-    await writeProfileCache(rebuilt);
-    return rebuilt;
-  }
-
-  return null;
-}
-
-export async function getProfile(): Promise<UserProfile | null> {
+async function readCachedProfile(): Promise<UserProfile | null> {
   const raw = await AsyncStorage.getItem(KEY);
   const parsed = safeParseProfile(raw);
 
@@ -305,7 +322,19 @@ export async function getProfile(): Promise<UserProfile | null> {
     return parsed;
   }
 
-  return restoreProfileFromBackup();
+  const backupRaw = await AsyncStorage.getItem(BACKUP_KEY);
+  const backup = safeParseProfile(backupRaw);
+
+  if (backup) {
+    await AsyncStorage.setItem(KEY, JSON.stringify(backup));
+    return backup;
+  }
+
+  return null;
+}
+
+export async function getProfile(): Promise<UserProfile | null> {
+  return readCachedProfile();
 }
 
 export async function getProfileForFirebaseUid(
@@ -317,42 +346,30 @@ export async function getProfileForFirebaseUid(
 
   if (!normalizedUid && !normalizedEmail) return null;
 
-  const profile = await getProfile();
+  const cachedProfile = await readCachedProfile();
+  const cachedMatch = cachedProfile
+    ? getAuthMatchKind(cachedProfile, normalizedUid, normalizedEmail)
+    : null;
 
-  if (profile) {
-    const sameUid = normalizedUid && profile.firebaseUid === normalizedUid;
-    const sameEmail = normalizedEmail && normalizeEmail(profile.email) === normalizedEmail;
+  if (cachedProfile && cachedMatch) {
+    const patched = mergeProfileWithAuth(cachedProfile, normalizedUid, normalizedEmail);
+    await writeProfileCache(patched);
+    return patched;
+  }
 
-    if (sameUid || sameEmail) {
-      const patched: UserProfile = {
-        ...profile,
-        firebaseUid: normalizedUid || profile.firebaseUid,
-        email: normalizedEmail || profile.email,
-      };
-      await writeProfileCache(patched);
-      return patched;
-    }
+  if (cachedProfile) {
+    console.warn(
+      "[account] Cached profile belongs to a different auth identity. Clearing stale local profile.",
+      safeStringify({
+        cachedUserId: cachedProfile.userId,
+        cachedFirebaseUid: cachedProfile.firebaseUid || null,
+        cachedEmail: normalizeEmail(cachedProfile.email) || null,
+        authFirebaseUid: normalizedUid || null,
+        authEmail: normalizedEmail || null,
+      })
+    );
 
-    if (!profile.firebaseUid && normalizedUid) {
-      const patched: UserProfile = {
-        ...profile,
-        firebaseUid: normalizedUid,
-        email: normalizedEmail || profile.email,
-      };
-      await writeProfileCache(patched);
-      return patched;
-    }
-
-    const lastFirebaseUid = await AsyncStorage.getItem(LAST_FIREBASE_UID_KEY);
-    if (normalizedUid && lastFirebaseUid === normalizedUid && profile.userId) {
-      const patched: UserProfile = {
-        ...profile,
-        firebaseUid: normalizedUid,
-        email: normalizedEmail || profile.email,
-      };
-      await writeProfileCache(patched);
-      return patched;
-    }
+    await clearCachedProfileKeys();
   }
 
   try {
@@ -362,12 +379,7 @@ export async function getProfileForFirebaseUid(
       return null;
     }
 
-    const merged: UserProfile = {
-      ...restored,
-      firebaseUid: normalizedUid || restored.firebaseUid,
-      email: normalizedEmail || restored.email,
-    };
-
+    const merged = mergeProfileWithAuth(restored, normalizedUid, normalizedEmail);
     await writeProfileCache(merged);
     return merged;
   } catch (error) {
@@ -381,17 +393,12 @@ export async function saveProfile(profile: UserProfile) {
 }
 
 export async function clearProfile() {
-  await Promise.all([
-    AsyncStorage.removeItem(KEY),
-    AsyncStorage.removeItem(BACKUP_KEY),
-    AsyncStorage.removeItem(LAST_USER_ID_KEY),
-    AsyncStorage.removeItem(LAST_FIREBASE_UID_KEY),
-  ]);
+  await clearCachedProfileKeys();
 }
 
 export async function createProfileOnBackend(profile: UserProfile) {
   const requestBody = {
-    user_id: profile.userId,
+    user_id: profile.userId && profile.firebaseUid ? profile.userId : undefined,
     firebase_uid: profile.firebaseUid,
     email: normalizeEmail(profile.email) || undefined,
     name: profile.name,
