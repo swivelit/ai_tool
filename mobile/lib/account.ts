@@ -250,6 +250,21 @@ function safeStringify(value: any) {
   }
 }
 
+function resolveQuestionnaireCompleted(
+  localValue?: boolean,
+  remoteValue?: boolean
+): boolean {
+  if (typeof localValue === "boolean") {
+    return localValue;
+  }
+
+  if (typeof remoteValue === "boolean") {
+    return remoteValue;
+  }
+
+  return false;
+}
+
 function mergeProfileWithAuth(
   profile: UserProfile,
   firebaseUid?: string | null,
@@ -351,8 +366,15 @@ export async function getProfileForFirebaseUid(
     ? getAuthMatchKind(cachedProfile, normalizedUid, normalizedEmail)
     : null;
 
-  if (cachedProfile && cachedMatch) {
-    const patched = mergeProfileWithAuth(cachedProfile, normalizedUid, normalizedEmail);
+  const matchedCachedProfile = cachedProfile && cachedMatch ? cachedProfile : null;
+
+  if (matchedCachedProfile) {
+    const patched = mergeProfileWithAuth(
+      matchedCachedProfile,
+      normalizedUid,
+      normalizedEmail
+    );
+
     await writeProfileCache(patched);
     return patched;
   }
@@ -379,7 +401,14 @@ export async function getProfileForFirebaseUid(
       return null;
     }
 
-    const merged = mergeProfileWithAuth(restored, normalizedUid, normalizedEmail);
+    const merged: UserProfile = {
+      ...mergeProfileWithAuth(restored, normalizedUid, normalizedEmail),
+      questionnaireCompleted: resolveQuestionnaireCompleted(
+        matchedCachedProfile?.questionnaireCompleted,
+        restored.questionnaireCompleted
+      ),
+    };
+
     await writeProfileCache(merged);
     return merged;
   } catch (error) {
@@ -432,8 +461,10 @@ export async function createProfileOnBackend(profile: UserProfile) {
     userId: resolvedUserId,
     firebaseUid: profile.firebaseUid || backendProfile?.firebaseUid,
     email: normalizeEmail(profile.email) || backendProfile?.email,
-    questionnaireCompleted:
-      backendProfile?.questionnaireCompleted ?? profile.questionnaireCompleted ?? false,
+    questionnaireCompleted: resolveQuestionnaireCompleted(
+      profile.questionnaireCompleted,
+      backendProfile?.questionnaireCompleted
+    ),
     replyLanguage: backendProfile?.replyLanguage || profile.replyLanguage || "ta",
   };
 
@@ -462,7 +493,10 @@ export async function getPersonalityQuestions(): Promise<PersonalityQuestion[]> 
   return Array.isArray(out?.questions) ? out.questions : [];
 }
 
-export async function savePersonalityAnswers(userId: number, answers: PersonalityAnswers) {
+export async function savePersonalityAnswers(
+  userId: number,
+  answers: PersonalityAnswers
+) {
   const normalized = Object.fromEntries(
     Object.entries(answers).map(([key, value]) => [
       key,
