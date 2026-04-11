@@ -126,9 +126,7 @@ function BootScreen({
             <Animated.View style={[styles.progressFill, { width: barWidth }]} />
           </View>
 
-          <Text style={styles.progressLabel}>
-            {Math.round(progress * 100)}% complete
-          </Text>
+          <Text style={styles.progressLabel}>{Math.round(progress * 100)}% complete</Text>
         </View>
       </GlassCard>
     </LinearGradient>
@@ -217,7 +215,11 @@ function RouteGate() {
   }, [pathname, targetRoute]);
 
   if (user && !activeProfile && profileLookupLoading) {
-    return <BootScreen profileLookupLoading />;
+    return (
+      <View style={styles.routeGateOverlay}>
+        <BootScreen profileLookupLoading />
+      </View>
+    );
   }
 
   return null;
@@ -280,9 +282,8 @@ function AppShell() {
   }
 
   return (
-    <>
+    <View style={styles.appShell}>
       <StatusBar style="dark" />
-      <RouteGate />
       <Stack
         screenOptions={{
           headerShown: false,
@@ -297,7 +298,8 @@ function AppShell() {
         <Stack.Screen name="item/[id]" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
-    </>
+      <RouteGate />
+    </View>
   );
 }
 
@@ -318,11 +320,21 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
+  appShell: {
+    flex: 1,
+  },
+
   bootPage: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 18,
+  },
+
+  routeGateOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 100,
+    elevation: 100,
   },
 
   bootCardShell: {

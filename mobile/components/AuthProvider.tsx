@@ -207,19 +207,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const provider = detectProvider(authUser);
       const restoredProfile = await getProfileForFirebaseUid(authUser.uid, authUser.email);
 
+      if (!restoredProfile) {
+        if (provider === "google") {
+          // Brand-new Google users should go through profile onboarding first.
+          return null;
+        }
+
+        const createdProfile = await createProfileOnBackend({
+          userId: undefined,
+          firebaseUid: authUser.uid,
+          firebaseEmailVerified: authUser.emailVerified,
+          email: authUser.email || "",
+          avatarUrl: authUser.photoURL || undefined,
+          authProvider: provider,
+          name: buildFallbackName(authUser),
+          place: "",
+          assistantName: "Elli",
+          timezone: "Asia/Kolkata",
+          questionnaireCompleted: false,
+        });
+
+        return createdProfile;
+      }
+
+      const normalizedAuthEmail = normalizeEmail(authUser.email);
+      const normalizedProfileEmail = normalizeEmail(restoredProfile.email);
+      const fallbackName = buildFallbackName(authUser);
+
+      const shouldSyncBackend =
+        restoredProfile.firebaseUid !== authUser.uid ||
+        normalizedProfileEmail !== normalizedAuthEmail ||
+        !restoredProfile.name?.trim() ||
+        restoredProfile.firebaseEmailVerified !== authUser.emailVerified;
+
+      if (!shouldSyncBackend) {
+        return restoredProfile;
+      }
+
       const upsertedProfile = await createProfileOnBackend({
-        ...(restoredProfile || {}),
-        userId: restoredProfile?.userId,
+        ...restoredProfile,
+        userId: restoredProfile.userId,
         firebaseUid: authUser.uid,
         firebaseEmailVerified: authUser.emailVerified,
-        email: authUser.email || restoredProfile?.email || "",
-        avatarUrl: authUser.photoURL || restoredProfile?.avatarUrl,
+        email: authUser.email || restoredProfile.email || "",
+        avatarUrl: authUser.photoURL || restoredProfile.avatarUrl,
         authProvider: provider,
-        name: restoredProfile?.name || buildFallbackName(authUser),
-        place: restoredProfile?.place || "",
-        assistantName: restoredProfile?.assistantName || "Elli",
-        timezone: restoredProfile?.timezone || "Asia/Kolkata",
-        questionnaireCompleted: restoredProfile?.questionnaireCompleted ?? false,
+        name: restoredProfile.name || fallbackName,
+        place: restoredProfile.place || "",
+        assistantName: restoredProfile.assistantName || "Elli",
+        timezone: restoredProfile.timezone || "Asia/Kolkata",
+        questionnaireCompleted: restoredProfile.questionnaireCompleted ?? false,
+        replyLanguage: restoredProfile.replyLanguage,
       });
 
       return upsertedProfile;
@@ -454,10 +492,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function clearLocalSession(options?: { revokeGoogleAccess?: boolean }) {
+  async function primeLocalSignedOutState() {
     pendingGoogleLink = null;
     setUser(null);
     setLoading(false);
+    await clearProfile();
+  }
+
+  async function clearLocalSession(options?: { revokeGoogleAccess?: boolean }) {
+    await primeLocalSignedOutState();
 
     try {
       await signOut(auth);
@@ -480,8 +523,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Ignore Google SDK sign-out errors during forced local cleanup.
       }
     }
-
-    await clearProfile();
   }
 
   async function signOutUser() {
@@ -497,24 +538,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const restoredProfile = await getProfileForFirebaseUid(currentUser.uid, currentUser.email);
     const resolvedBackendUserId = backendUserId || restoredProfile?.userId;
+    const shouldCleanupGoogleSdk =
+      Platform.OS !== "web" && hasProvider(currentUser, "google.com");
+
+    // Make the app leave the signed-in UI immediately.
+    await primeLocalSignedOutState();
+
+    const taskResults = await Promise.allSettled([
+      deleteUser(currentUser),
+      resolvedBackendUserId
+        ? deleteAccountOnBackend(resolvedBackendUserId)
+        : Promise.resolve({ ok: true }),
+    ]);
 
     try {
-      await deleteUser(currentUser);
-    } catch (error) {
-      throw new Error(mapFirebaseError(error));
+      await signOut(auth);
+    } catch {
+      // Ignore sign-out errors after account deletion attempts.
     }
 
-    await clearLocalSession({ revokeGoogleAccess: true });
-
-    if (resolvedBackendUserId) {
+    if (shouldCleanupGoogleSdk) {
       try {
-        await deleteAccountOnBackend(resolvedBackendUserId);
-      } catch (error: any) {
-        throw new Error(
-          error?.message ||
-            "Your login account was deleted, but backend cleanup failed. Please remove the remaining profile data from the server."
-        );
+        await GoogleSignin.revokeAccess();
+      } catch {
+        // Ignore revoke errors after account deletion attempts.
       }
+
+      try {
+        await GoogleSignin.signOut();
+      } catch {
+        // Ignore Google SDK sign-out errors after account deletion attempts.
+      }
+    }
+
+    const [firebaseDeletion, backendDeletion] = taskResults;
+
+    if (firebaseDeletion.status === "rejected") {
+      throw new Error(mapFirebaseError(firebaseDeletion.reason));
+    }
+
+    if (backendDeletion.status === "rejected") {
+      throw new Error(
+        backendDeletion.reason?.message ||
+          "Your login account was deleted, but backend cleanup failed. Please remove the remaining profile data from the server."
+      );
     }
   }
 

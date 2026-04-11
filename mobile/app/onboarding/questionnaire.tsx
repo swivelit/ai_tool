@@ -54,7 +54,7 @@ export default function QuestionnaireScreen() {
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView | null>(null);
 
-  const { profile, userId, refresh, settings, name: assistantName } = useAssistant();
+  const { profile, userId, refresh, settings, updateSettings, name: assistantName } = useAssistant();
   const { user } = useAuth();
 
   const [resolvedUserId, setResolvedUserId] = useState<number | null>(userId || profile?.userId || null);
@@ -64,16 +64,52 @@ export default function QuestionnaireScreen() {
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState(false);
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
+  const [sessionReplyLanguage, setSessionReplyLanguage] = useState<"en" | "ta">(
+    settings.languageMode === "en" ? "en" : "ta"
+  );
   const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const [, setCompletedSlots] = useState(0);
   const [, setTotalSlots] = useState(15);
-
-  const replyLanguage = settings.languageMode === "en" ? "en" : "ta";
 
   const activeSlot = useMemo(
     () => PROFILER_SLOTS.find((slot) => slot.id === activeSlotId) ?? null,
     [activeSlotId]
   );
+
+  useEffect(() => {
+    setSessionReplyLanguage(settings.languageMode === "en" ? "en" : "ta");
+  }, [settings.languageMode]);
+
+  function inferReplyLanguageFromAnswer(message: string): "en" | "ta" {
+    if (activeSlotId !== "preferred_language") {
+      return sessionReplyLanguage;
+    }
+
+    const normalized = String(message || "").trim().toLowerCase();
+
+    if (["en", "english", "speak english", "reply in english", "only english"].includes(normalized)) {
+      return "en";
+    }
+
+    if (["ta", "tamil", "tamizh", "தமிழ்", "தமிழ் மட்டும்"].includes(normalized)) {
+      return "ta";
+    }
+
+    return sessionReplyLanguage;
+  }
+
+  function persistReplyLanguage(nextReplyLanguage: "en" | "ta") {
+    if (nextReplyLanguage === settings.languageMode) {
+      return;
+    }
+
+    void updateSettings({
+      ...settings,
+      languageMode: nextReplyLanguage,
+    }).catch((error) => {
+      console.warn("[questionnaire] Failed to sync reply language:", error);
+    });
+  }
 
   function syncCurrentStep(nextSlotId?: string | null) {
     setActiveSlotId(nextSlotId || null);
@@ -118,7 +154,7 @@ export default function QuestionnaireScreen() {
               assistantName: profile?.assistantName || assistantName || "Elli",
               timezone: profile?.timezone || "Asia/Kolkata",
               questionnaireCompleted: false,
-              replyLanguage,
+              replyLanguage: sessionReplyLanguage,
             });
 
             nextUserId = rebuilt?.userId ?? null;
@@ -148,7 +184,7 @@ export default function QuestionnaireScreen() {
           setMessages(current.state.history);
         } else {
           const started = await startProfilerOnPhone(nextUserId, {
-            replyLanguage,
+            replyLanguage: sessionReplyLanguage,
             userProfile: {
               name: profile?.name || user?.displayName || "User",
               place: profile?.place || "",
@@ -175,7 +211,7 @@ export default function QuestionnaireScreen() {
     return () => {
       alive = false;
     };
-  }, [assistantName, profile?.assistantName, profile?.name, profile?.place, profile?.timezone, profile?.userId, replyLanguage, user, userId]);
+  }, [assistantName, profile?.assistantName, profile?.name, profile?.place, profile?.timezone, profile?.userId, user, userId]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -191,12 +227,19 @@ export default function QuestionnaireScreen() {
     const userMessage = String(overrideMessage ?? input).trim();
     if (!userMessage) return;
 
+    const nextReplyLanguage = inferReplyLanguageFromAnswer(userMessage);
+
+    if (nextReplyLanguage !== sessionReplyLanguage) {
+      setSessionReplyLanguage(nextReplyLanguage);
+      persistReplyLanguage(nextReplyLanguage);
+    }
+
     setInput("");
     setSending(true);
 
     try {
       const next = await sendProfilerMessageOnPhone(resolvedUserId, userMessage, {
-        replyLanguage,
+        replyLanguage: nextReplyLanguage,
         userProfile: {
           name: profile?.name || user?.displayName || "User",
           place: profile?.place || "",
@@ -387,7 +430,7 @@ export default function QuestionnaireScreen() {
           {!done ? (
             <GlassCard style={styles.composerCard}>
               <Text style={styles.composerHint}>
-                {replyLanguage === "ta"
+                {sessionReplyLanguage === "ta"
                   ? "அல்லது உங்கள் சொற்களில் பதில் எழுதலாம்…"
                   : "Or answer in your own words…"}
               </Text>
@@ -395,7 +438,7 @@ export default function QuestionnaireScreen() {
                 <TextInput
                   value={input}
                   onChangeText={setInput}
-                  placeholder={replyLanguage === "ta" ? "உங்களைப் பற்றி பதில் சொல்லுங்கள்…" : "Reply naturally…"}
+                  placeholder={sessionReplyLanguage === "ta" ? "உங்களைப் பற்றி பதில் சொல்லுங்கள்…" : "Reply naturally…"}
                   placeholderTextColor={Brand.textMuted}
                   style={styles.input}
                   multiline
