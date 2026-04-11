@@ -454,19 +454,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function signOutUser() {
+  async function clearLocalSession(options?: { revokeGoogleAccess?: boolean }) {
     pendingGoogleLink = null;
+    setUser(null);
+    setLoading(false);
+
+    try {
+      await signOut(auth);
+    } catch {
+      // Ignore Firebase sign-out errors during forced local cleanup.
+    }
 
     if (Platform.OS !== "web") {
+      if (options?.revokeGoogleAccess) {
+        try {
+          await GoogleSignin.revokeAccess();
+        } catch {
+          // Ignore revoke errors.
+        }
+      }
+
       try {
         await GoogleSignin.signOut();
       } catch {
-        // Ignore Google SDK sign-out errors and continue signing out from Firebase.
+        // Ignore Google SDK sign-out errors during forced local cleanup.
       }
     }
 
-    await signOut(auth);
     await clearProfile();
+  }
+
+  async function signOutUser() {
+    await clearLocalSession();
   }
 
   async function deleteCurrentAccount(backendUserId?: number) {
@@ -485,6 +504,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(mapFirebaseError(error));
     }
 
+    await clearLocalSession({ revokeGoogleAccess: true });
+
     if (resolvedBackendUserId) {
       try {
         await deleteAccountOnBackend(resolvedBackendUserId);
@@ -495,24 +516,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         );
       }
     }
-
-    pendingGoogleLink = null;
-
-    if (Platform.OS !== "web") {
-      try {
-        await GoogleSignin.revokeAccess();
-      } catch {
-        // Ignore revoke errors.
-      }
-
-      try {
-        await GoogleSignin.signOut();
-      } catch {
-        // Ignore Google SDK sign-out errors after deletion.
-      }
-    }
-
-    await clearProfile();
   }
 
   const value = useMemo(
