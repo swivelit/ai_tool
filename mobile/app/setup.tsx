@@ -57,12 +57,12 @@ export default function Setup() {
   async function onContinue() {
     const trimmed = input.trim();
     await updateName(trimmed.length ? trimmed : "Elli");
-    router.replace("/(tabs)");
+    router.replace("/");
   }
 
   async function onSkip() {
     await updateName("Elli");
-    router.replace("/(tabs)");
+    router.replace("/");
   }
 
   return (
