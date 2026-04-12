@@ -1,11 +1,12 @@
-import React from "react";
-import { Platform, StyleSheet, View } from "react-native";
-import { Tabs } from "expo-router";
+import React, { useEffect } from "react";
+import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
+import { Tabs, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 
 import { HapticTab } from "@/components/haptic-tab";
+import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 
 function TabIcon({
@@ -35,7 +36,27 @@ function TabIcon({
   );
 }
 
+function SignedOutRedirectScreen() {
+  return (
+    <LinearGradient colors={Brand.gradients.page} style={styles.redirectPage}>
+      <ActivityIndicator size="small" color={Brand.bronze} />
+    </LinearGradient>
+  );
+}
+
 export default function TabLayout() {
+  const { user, loading } = useAuth();
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.replace("/");
+    }
+  }, [loading, user]);
+
+  if (loading || !user) {
+    return <SignedOutRedirectScreen />;
+  }
+
   return (
     <Tabs
       screenOptions={{
@@ -119,6 +140,12 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
+  redirectPage: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
   topBorder: {
     position: "absolute",
     top: 0,
