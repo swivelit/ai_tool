@@ -1,4 +1,11 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 import {
@@ -84,7 +91,7 @@ function mapFirebaseError(error: any) {
       return "Network error. Please check your internet connection.";
 
     case "auth/requires-recent-login":
-      return "For security, please sign out, log in again, and then try this action once more.";
+      return "For security, please log in again and then try deleting the account.";
 
     default:
       return message || "Authentication failed. Please try again.";
@@ -158,11 +165,14 @@ type AuthContextType = {
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [googleReady, setGoogleReady] = useState(false);
+  const [locallySignedOut, setLocallySignedOut] = useState(false);
+  const blockAuthRestoreRef = useRef(false);
 
   const googleConfigured = Platform.OS !== "web" && Boolean(googleWebClientId);
+  const user = locallySignedOut ? null : firebaseUser;
 
   useEffect(() => {
     if (Platform.OS === "web") {
@@ -185,8 +195,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
-      setUser(nextUser);
+      setFirebaseUser(nextUser);
       setLoading(false);
+
+      if (!nextUser) {
+        blockAuthRestoreRef.current = false;
+        setLocallySignedOut(false);
+        return;
+      }
+
+      if (!blockAuthRestoreRef.current) {
+        setLocallySignedOut(false);
+      }
     });
 
     return unsubscribe;
@@ -269,7 +289,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function finalizeAuthenticatedUser(authUser: User) {
     const freshUser = await reloadUser(authUser);
-    setUser(freshUser);
+    blockAuthRestoreRef.current = false;
+    setLocallySignedOut(false);
+    setFirebaseUser(freshUser);
+    setLoading(false);
     await syncProfileForAuthenticatedUser(freshUser);
     return freshUser;
   }
@@ -494,9 +517,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function primeLocalSignedOutState() {
     pendingGoogleLink = null;
-    setUser(null);
+    blockAuthRestoreRef.current = true;
+    setLocallySignedOut(true);
     setLoading(false);
     await clearProfile();
+  }
+
+  async function cleanupGoogleSdk(options?: { revokeGoogleAccess?: boolean }) {
+    if (Platform.OS === "web") {
+      return;
+    }
+
+    if (options?.revokeGoogleAccess) {
+      try {
+        await GoogleSignin.revokeAccess();
+      } catch {
+        // Ignore revoke errors.
+      }
+    }
+
+    try {
+      await GoogleSignin.signOut();
+    } catch {
+      // Ignore Google SDK sign-out errors.
+    }
   }
 
   async function clearLocalSession(options?: { revokeGoogleAccess?: boolean }) {
@@ -508,21 +552,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Ignore Firebase sign-out errors during forced local cleanup.
     }
 
-    if (Platform.OS !== "web") {
-      if (options?.revokeGoogleAccess) {
-        try {
-          await GoogleSignin.revokeAccess();
-        } catch {
-          // Ignore revoke errors.
-        }
-      }
-
-      try {
-        await GoogleSignin.signOut();
-      } catch {
-        // Ignore Google SDK sign-out errors during forced local cleanup.
-      }
-    }
+    await cleanupGoogleSdk(options);
   }
 
   async function signOutUser() {
@@ -538,18 +568,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const restoredProfile = await getProfileForFirebaseUid(currentUser.uid, currentUser.email);
     const resolvedBackendUserId = backendUserId || restoredProfile?.userId;
-    const shouldCleanupGoogleSdk =
-      Platform.OS !== "web" && hasProvider(currentUser, "google.com");
+    const shouldCleanupGoogleSdk = hasProvider(currentUser, "google.com");
 
-    // Make the app leave the signed-in UI immediately.
     await primeLocalSignedOutState();
 
-    const taskResults = await Promise.allSettled([
-      deleteUser(currentUser),
-      resolvedBackendUserId
-        ? deleteAccountOnBackend(resolvedBackendUserId)
-        : Promise.resolve({ ok: true }),
-    ]);
+    try {
+      await deleteUser(currentUser);
+    } catch (error) {
+      blockAuthRestoreRef.current = false;
+      setLocallySignedOut(false);
+      throw new Error(mapFirebaseError(error));
+    }
+
+    try {
+      if (resolvedBackendUserId) {
+        await deleteAccountOnBackend(resolvedBackendUserId);
+      }
+    } catch (error: any) {
+      try {
+        await signOut(auth);
+      } catch {
+        // Ignore sign-out errors after account deletion attempts.
+      }
+
+      await cleanupGoogleSdk({ revokeGoogleAccess: shouldCleanupGoogleSdk });
+
+      throw new Error(
+        error?.message ||
+          "Your login account was deleted, but backend cleanup failed. Please remove the remaining profile data from the server."
+      );
+    }
 
     try {
       await signOut(auth);
@@ -557,32 +605,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Ignore sign-out errors after account deletion attempts.
     }
 
-    if (shouldCleanupGoogleSdk) {
-      try {
-        await GoogleSignin.revokeAccess();
-      } catch {
-        // Ignore revoke errors after account deletion attempts.
-      }
-
-      try {
-        await GoogleSignin.signOut();
-      } catch {
-        // Ignore Google SDK sign-out errors after account deletion attempts.
-      }
-    }
-
-    const [firebaseDeletion, backendDeletion] = taskResults;
-
-    if (firebaseDeletion.status === "rejected") {
-      throw new Error(mapFirebaseError(firebaseDeletion.reason));
-    }
-
-    if (backendDeletion.status === "rejected") {
-      throw new Error(
-        backendDeletion.reason?.message ||
-          "Your login account was deleted, but backend cleanup failed. Please remove the remaining profile data from the server."
-      );
-    }
+    await cleanupGoogleSdk({ revokeGoogleAccess: shouldCleanupGoogleSdk });
   }
 
   const value = useMemo(
