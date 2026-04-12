@@ -7,7 +7,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { Stack, router, usePathname } from "expo-router";
+import { Stack, router, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -21,7 +21,6 @@ import {
   LOCAL_AGENT_SEED_TIMEOUT_MS,
   PROFILE_BOOT_TIMEOUT_MS,
   getPendingBootSteps,
-  resolveDesiredRoute,
   runBootStep,
 } from "@/lib/appBoot";
 import { ensureLocalAgentSeedData } from "@/lib/localAgentBootstrap";
@@ -133,14 +132,55 @@ function BootScreen({
   );
 }
 
+function resolveRouteFromSegments(input: {
+  segments: string[];
+  hasUser: boolean;
+  hasProfile: boolean;
+  questionnaireCompleted: boolean;
+}) {
+  const [root, second] = input.segments;
+
+  const atRoot = input.segments.length === 0;
+  const inAuth = root === "auth";
+  const inOnboarding = root === "onboarding";
+  const atProfile = root === "onboarding" && second === "profile";
+  const atQuestionnaire = root === "onboarding" && second === "questionnaire";
+  const inTabs = root === "(tabs)";
+  const atSetup = root === "setup";
+
+  if (!input.hasUser) {
+    return atRoot || inAuth ? null : "/";
+  }
+
+  if (!input.hasProfile) {
+    return atProfile ? null : "/onboarding/profile";
+  }
+
+  if (!input.questionnaireCompleted) {
+    return atQuestionnaire ? null : "/onboarding/questionnaire";
+  }
+
+  if (atRoot || inAuth || inOnboarding) {
+    return "/(tabs)";
+  }
+
+  if (inTabs || atSetup) {
+    return null;
+  }
+
+  return null;
+}
+
 function RouteGate() {
-  const pathname = usePathname();
+  const segments = useSegments();
   const { user } = useAuth();
   const { profile } = useAssistant();
   const [fallbackProfile, setFallbackProfile] = useState<UserProfile | null>(null);
   const [profileLookupLoading, setProfileLookupLoading] = useState(false);
   const lastNavigationRef = useRef<string | null>(null);
 
+  const routeSegments = useMemo(() => segments.map(String), [segments]);
+  const routeKey = routeSegments.join("/") || "index";
   const providerProfile = user && profile?.firebaseUid === user.uid ? profile : null;
 
   useEffect(() => {
@@ -191,28 +231,35 @@ function RouteGate() {
 
   const targetRoute = useMemo(
     () =>
-      resolveDesiredRoute({
-        pathname,
+      resolveRouteFromSegments({
+        segments: routeSegments,
         hasUser: Boolean(user),
         hasProfile: Boolean(activeProfile?.userId),
         questionnaireCompleted: Boolean(activeProfile?.questionnaireCompleted),
       }),
-    [activeProfile?.questionnaireCompleted, activeProfile?.userId, pathname, user]
+    [
+      activeProfile?.questionnaireCompleted,
+      activeProfile?.userId,
+      routeKey,
+      user,
+    ]
   );
 
   useEffect(() => {
-    if (!targetRoute || targetRoute === pathname) {
+    if (!targetRoute) {
       lastNavigationRef.current = null;
       return;
     }
 
-    if (lastNavigationRef.current === targetRoute) {
+    const navigationKey = `${routeKey}->${targetRoute}`;
+
+    if (lastNavigationRef.current === navigationKey) {
       return;
     }
 
-    lastNavigationRef.current = targetRoute;
-    router.replace(targetRoute);
-  }, [pathname, targetRoute]);
+    lastNavigationRef.current = navigationKey;
+    router.replace(targetRoute as any);
+  }, [routeKey, targetRoute]);
 
   if (user && !activeProfile && profileLookupLoading) {
     return (
@@ -290,7 +337,8 @@ function AppShell() {
         }}
       >
         <Stack.Screen name="index" />
-        <Stack.Screen name="auth" />
+        <Stack.Screen name="auth/login" />
+        <Stack.Screen name="auth/signup" />
         <Stack.Screen name="onboarding/profile" />
         <Stack.Screen name="onboarding/questionnaire" />
         <Stack.Screen name="setup" />
