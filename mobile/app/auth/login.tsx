@@ -134,7 +134,10 @@ export default function LoginScreen() {
       setPassword(DEV_TEST_ACCOUNT.password);
 
       try {
-        await signInWithPassword(DEV_TEST_ACCOUNT.email, DEV_TEST_ACCOUNT.password);
+        await signInWithPassword(
+          DEV_TEST_ACCOUNT.email,
+          DEV_TEST_ACCOUNT.password
+        );
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "";
 
@@ -169,7 +172,8 @@ export default function LoginScreen() {
 
       <KeyboardAvoidingView
         style={styles.page}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 12}
       >
         <ScrollView
           style={styles.page}
@@ -181,6 +185,9 @@ export default function LoginScreen() {
             justifyContent: height > 780 ? "center" : "flex-start",
           }}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={
+            Platform.OS === "ios" ? "interactive" : "on-drag"
+          }
           showsVerticalScrollIndicator={false}
         >
           <View
@@ -390,17 +397,22 @@ export default function LoginScreen() {
                   </View>
 
                   <Text style={styles.devCardCopy}>
-                    Reuse this account while you develop without typing Google email each time.
+                    Reuse this account while you develop without typing Google
+                    email each time.
                   </Text>
 
                   <View style={styles.devCredentialRow}>
                     <Text style={styles.devCredentialLabel}>Test ID</Text>
-                    <Text style={styles.devCredentialValue}>{DEV_TEST_ACCOUNT.email}</Text>
+                    <Text style={styles.devCredentialValue}>
+                      {DEV_TEST_ACCOUNT.email}
+                    </Text>
                   </View>
 
                   <View style={styles.devCredentialRow}>
                     <Text style={styles.devCredentialLabel}>Password</Text>
-                    <Text style={styles.devCredentialValue}>{DEV_TEST_ACCOUNT.password}</Text>
+                    <Text style={styles.devCredentialValue}>
+                      {DEV_TEST_ACCOUNT.password}
+                    </Text>
                   </View>
 
                   <Pressable
@@ -430,12 +442,15 @@ export default function LoginScreen() {
                 style={({ pressed }) => [
                   styles.googleButton,
                   pressed && styles.pressed,
-                  (busy || !googleReady || !googleConfigured) && styles.disabled,
+                  (busy || !googleReady || !googleConfigured) &&
+                    styles.disabled,
                   { minHeight: buttonHeight },
                 ]}
               >
                 <Ionicons name="logo-google" size={18} color={Brand.ink} />
-                <Text style={styles.googleButtonText}>Continue with Google</Text>
+                <Text style={styles.googleButtonText}>
+                  Continue with Google
+                </Text>
               </Pressable>
 
               {!googleConfigured ? (
