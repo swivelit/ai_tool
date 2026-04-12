@@ -2,7 +2,7 @@ export const APP_BOOT_TIMEOUT_MS = 10000;
 export const LOCAL_AGENT_SEED_TIMEOUT_MS = 4000;
 export const PROFILE_BOOT_TIMEOUT_MS = 5000;
 
-const SIGNED_OUT_ENTRY_ROUTE = "/auth/login";
+const SIGNED_OUT_ENTRY_ROUTE = "/";
 
 type BootLogger = (message: string, error?: unknown) => void;
 
@@ -122,7 +122,11 @@ export function resolveDesiredRoute(input: {
   const atSetup = pathname === "/setup";
 
   if (!input.hasUser) {
-    return inAuth ? null : SIGNED_OUT_ENTRY_ROUTE;
+    if (pathname === "/" || inAuth) {
+      return null;
+    }
+
+    return SIGNED_OUT_ENTRY_ROUTE;
   }
 
   if (!input.hasProfile) {
