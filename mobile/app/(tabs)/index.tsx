@@ -667,9 +667,10 @@ export default function Home() {
         onPress: async () => {
           try {
             await signOutUser();
-            await refresh();
-            closeDrawer();
-            router.replace("/");
+            // Do not call refresh() here.
+            // Do not call closeDrawer() here after sign-out.
+            // Do not call router.replace("/") here.
+            // Root app/_layout.tsx RouteGate should handle navigation.
           } catch (error: any) {
             Alert.alert("Error", error?.message || "Failed to sign out.");
           }

@@ -303,8 +303,9 @@ export default function RoutineScreen() {
           try {
             setSigningOut(true);
             await signOutUser();
-            await refresh();
-            router.replace("/");
+            // Do not call refresh() here.
+            // Do not call router.replace("/") here.
+            // Root app/_layout.tsx RouteGate should handle the redirect.
           } catch (error: any) {
             showNotice("Sign out failed", error?.message || "Failed to sign out.");
           } finally {
@@ -330,8 +331,9 @@ export default function RoutineScreen() {
             try {
               setDeleting(true);
               await deleteCurrentAccount(targetUserId || undefined);
-              await refresh();
-              router.replace("/");
+              // Do not call refresh() here.
+              // Do not call router.replace("/") here.
+              // Root app/_layout.tsx RouteGate should handle the redirect.
             } catch (error: any) {
               showNotice("Delete failed", error?.message || "Failed to delete account.");
             } finally {
