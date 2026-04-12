@@ -1,6 +1,6 @@
-import React, { useEffect } from "react";
+import React from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
-import { Tabs, router } from "expo-router";
+import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
@@ -47,12 +47,11 @@ function SignedOutRedirectScreen() {
 export default function TabLayout() {
   const { user, loading } = useAuth();
 
-  useEffect(() => {
-    if (!loading && !user) {
-      router.replace("/");
-    }
-  }, [loading, user]);
-
+  // Important:
+  // Do not call router.replace("/") here.
+  // Root app/_layout.tsx already handles signed-out redirects.
+  // Having both the root layout and the tabs layout redirect at the same
+  // time causes the "Maximum update depth exceeded" crash during account deletion.
   if (loading || !user) {
     return <SignedOutRedirectScreen />;
   }
