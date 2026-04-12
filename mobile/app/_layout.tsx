@@ -1,12 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Animated,
-  Easing,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import React, { useEffect, useMemo } from "react";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { Stack, router, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
@@ -15,98 +8,8 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
-import { getProfileForFirebaseUid, UserProfile } from "@/lib/account";
-import {
-  APP_BOOT_TIMEOUT_MS,
-  LOCAL_AGENT_SEED_TIMEOUT_MS,
-  PROFILE_BOOT_TIMEOUT_MS,
-  getPendingBootSteps,
-  runBootStep,
-} from "@/lib/appBoot";
-import { ensureLocalAgentSeedData } from "@/lib/localAgentBootstrap";
 
-const TOTAL_BOOT_STEPS = 2;
-
-function buildBootCopy(params: {
-  pendingBootSteps?: string[];
-  profileLookupLoading?: boolean;
-}) {
-  if (params.profileLookupLoading) {
-    return {
-      title: "Loading J AI...",
-      text: "Checking your account and getting your onboarding ready.",
-    };
-  }
-
-  const pending = params.pendingBootSteps || [];
-
-  if (pending.includes("auth state")) {
-    return {
-      title: "Loading J AI...",
-      text: "Checking sign-in status.",
-    };
-  }
-
-  if (pending.includes("local agent seed data")) {
-    return {
-      title: "Loading J AI...",
-      text: "Preparing local assistant data.",
-    };
-  }
-
-  return {
-    title: "Loading J AI...",
-    text: "Setting things up.",
-  };
-}
-
-function getBootProgress(params: {
-  pendingBootSteps?: string[];
-  profileLookupLoading?: boolean;
-}) {
-  if (params.profileLookupLoading) {
-    return 0.9;
-  }
-
-  const pendingCount = (params.pendingBootSteps || []).length;
-  const completedRatio = (TOTAL_BOOT_STEPS - pendingCount) / TOTAL_BOOT_STEPS;
-
-  return Math.max(0.18, Math.min(0.96, completedRatio));
-}
-
-function BootScreen({
-  pendingBootSteps,
-  profileLookupLoading = false,
-}: {
-  pendingBootSteps?: string[];
-  profileLookupLoading?: boolean;
-}) {
-  const progress = useMemo(
-    () => getBootProgress({ pendingBootSteps, profileLookupLoading }),
-    [pendingBootSteps, profileLookupLoading]
-  );
-
-  const copy = useMemo(
-    () => buildBootCopy({ pendingBootSteps, profileLookupLoading }),
-    [pendingBootSteps, profileLookupLoading]
-  );
-
-  const progressAnim = useRef(new Animated.Value(progress)).current;
-
-  useEffect(() => {
-    Animated.timing(progressAnim, {
-      toValue: progress,
-      duration: 360,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start();
-  }, [progress, progressAnim]);
-
-  const barWidth = progressAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0%", "100%"],
-  });
-
+function BootScreen() {
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.bootPage}>
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -118,224 +21,87 @@ function BootScreen({
       <GlassCard style={styles.bootCardShell}>
         <View style={styles.bootCard}>
           <ActivityIndicator size="small" color={Brand.bronze} />
-          <Text style={styles.bootTitle}>{copy.title}</Text>
-          <Text style={styles.bootText}>{copy.text}</Text>
-
-          <View style={styles.progressTrack}>
-            <Animated.View style={[styles.progressFill, { width: barWidth }]} />
-          </View>
-
-          <Text style={styles.progressLabel}>{Math.round(progress * 100)}% complete</Text>
+          <Text style={styles.bootTitle}>Loading J AI...</Text>
+          <Text style={styles.bootText}>Setting things up.</Text>
         </View>
       </GlassCard>
     </LinearGradient>
   );
 }
 
-function resolveRouteFromSegments(input: {
-  segments: string[];
-  hasUser: boolean;
-  hasProfile: boolean;
-  questionnaireCompleted: boolean;
-}) {
-  const [root, second] = input.segments;
-
-  const atRoot = input.segments.length === 0;
-  const inAuth = root === "auth";
-  const inOnboarding = root === "onboarding";
-  const atProfile = root === "onboarding" && second === "profile";
-  const atQuestionnaire = root === "onboarding" && second === "questionnaire";
-  const inTabs = root === "(tabs)";
-  const atSetup = root === "setup";
-
-  if (!input.hasUser) {
-    return atRoot || inAuth ? null : "/";
-  }
-
-  if (!input.hasProfile) {
-    return atProfile ? null : "/onboarding/profile";
-  }
-
-  if (!input.questionnaireCompleted) {
-    return atQuestionnaire ? null : "/onboarding/questionnaire";
-  }
-
-  if (atRoot || inAuth || inOnboarding) {
-    return "/(tabs)";
-  }
-
-  if (inTabs || atSetup) {
-    return null;
-  }
-
-  return null;
-}
-
 function RouteGate() {
   const segments = useSegments();
   const { user } = useAuth();
   const { profile } = useAssistant();
-  const [fallbackProfile, setFallbackProfile] = useState<UserProfile | null>(null);
-  const [profileLookupLoading, setProfileLookupLoading] = useState(false);
-  const lastNavigationRef = useRef<string | null>(null);
 
-  const routeSegments = useMemo(() => segments.map(String), [segments]);
-  const routeKey = routeSegments.join("/") || "index";
-  const providerProfile = user && profile?.firebaseUid === user.uid ? profile : null;
+  const routeKey = segments.join("/");
+  const root = String(segments[0] || "");
+  const second = String(segments[1] || "");
 
-  useEffect(() => {
+  const targetRoute = useMemo(() => {
+    const atRoot = segments.length === 0;
+    const inAuth = root === "auth";
+    const inOnboarding = root === "onboarding";
+    const atProfile = root === "onboarding" && second === "profile";
+    const atQuestionnaire = root === "onboarding" && second === "questionnaire";
+    const inTabs = root === "(tabs)";
+    const atSetup = root === "setup";
+
     if (!user) {
-      setFallbackProfile(null);
-      setProfileLookupLoading(false);
-      return;
+      return atRoot || inAuth ? null : "/";
     }
 
-    if (providerProfile) {
-      setFallbackProfile(null);
-      setProfileLookupLoading(false);
-      return;
+    const activeProfile = profile?.firebaseUid === user.uid ? profile : null;
+
+    if (!activeProfile?.userId) {
+      return atProfile ? null : "/onboarding/profile";
     }
 
-    let alive = true;
-    setProfileLookupLoading(true);
+    if (!activeProfile.questionnaireCompleted) {
+      return atQuestionnaire ? null : "/onboarding/questionnaire";
+    }
 
-    void (async () => {
-      const result = await runBootStep(
-        "profile bootstrap",
-        () => getProfileForFirebaseUid(user.uid, user.email),
-        {
-          timeoutMs: PROFILE_BOOT_TIMEOUT_MS,
-          optional: true,
-        }
-      );
+    if (atRoot || inAuth || inOnboarding || atSetup) {
+      return "/(tabs)";
+    }
 
-      if (!alive) {
-        return;
-      }
+    if (inTabs) {
+      return null;
+    }
 
-      if (result.status === "completed") {
-        setFallbackProfile(result.value ?? null);
-      } else {
-        setFallbackProfile(null);
-      }
-
-      setProfileLookupLoading(false);
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [providerProfile, user?.email, user?.uid]);
-
-  const activeProfile = providerProfile || fallbackProfile;
-
-  const targetRoute = useMemo(
-    () =>
-      resolveRouteFromSegments({
-        segments: routeSegments,
-        hasUser: Boolean(user),
-        hasProfile: Boolean(activeProfile?.userId),
-        questionnaireCompleted: Boolean(activeProfile?.questionnaireCompleted),
-      }),
-    [
-      activeProfile?.questionnaireCompleted,
-      activeProfile?.userId,
-      routeKey,
-      user,
-    ]
-  );
+    return null;
+  }, [
+    routeKey,
+    root,
+    second,
+    user?.uid,
+    profile?.firebaseUid,
+    profile?.userId,
+    profile?.questionnaireCompleted,
+  ]);
 
   useEffect(() => {
-    if (!targetRoute) {
-      lastNavigationRef.current = null;
-      return;
+    if (targetRoute) {
+      router.replace(targetRoute as any);
     }
-
-    const navigationKey = `${routeKey}->${targetRoute}`;
-
-    if (lastNavigationRef.current === navigationKey) {
-      return;
-    }
-
-    lastNavigationRef.current = navigationKey;
-    router.replace(targetRoute as any);
-  }, [routeKey, targetRoute]);
-
-  if (user && !activeProfile && profileLookupLoading) {
-    return (
-      <View style={styles.routeGateOverlay}>
-        <BootScreen profileLookupLoading />
-      </View>
-    );
-  }
+  }, [targetRoute]);
 
   return null;
 }
 
 function AppShell() {
   const { loading: authLoading } = useAuth();
-  const [localAgentLoading, setLocalAgentLoading] = useState(true);
-  const [bootTimedOut, setBootTimedOut] = useState(false);
+  const { loading: profileLoading } = useAssistant();
 
-  useEffect(() => {
-    let alive = true;
-
-    void (async () => {
-      await runBootStep("local agent seed bootstrap", ensureLocalAgentSeedData, {
-        timeoutMs: LOCAL_AGENT_SEED_TIMEOUT_MS,
-        optional: true,
-      });
-
-      if (alive) {
-        setLocalAgentLoading(false);
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const pendingBootSteps = useMemo(
-    () =>
-      getPendingBootSteps({
-        authLoading,
-        profileLoading: false,
-        localSeedLoading: localAgentLoading,
-      }),
-    [authLoading, localAgentLoading]
-  );
-
-  useEffect(() => {
-    if (!pendingBootSteps.length) {
-      setBootTimedOut(false);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      console.warn(
-        `[boot] App boot watchdog tripped after ${APP_BOOT_TIMEOUT_MS}ms. Continuing with pending steps: ${pendingBootSteps.join(
-          ", "
-        )}.`
-      );
-      setBootTimedOut(true);
-    }, APP_BOOT_TIMEOUT_MS);
-
-    return () => clearTimeout(timer);
-  }, [pendingBootSteps]);
-
-  if (!bootTimedOut && pendingBootSteps.length) {
-    return <BootScreen pendingBootSteps={pendingBootSteps} />;
+  if (authLoading || profileLoading) {
+    return <BootScreen />;
   }
 
   return (
     <View style={styles.appShell}>
       <StatusBar style="dark" />
-      <Stack
-        screenOptions={{
-          headerShown: false,
-        }}
-      >
+
+      <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="auth/login" />
         <Stack.Screen name="auth/signup" />
@@ -346,6 +112,7 @@ function AppShell() {
         <Stack.Screen name="item/[id]" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
+
       <RouteGate />
     </View>
   );
@@ -379,21 +146,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
   },
 
-  routeGateOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 100,
-    elevation: 100,
-  },
-
   bootCardShell: {
     borderRadius: 28,
-    minWidth: 260,
-    width: "100%",
-    maxWidth: 320,
+    minWidth: 240,
   },
 
   bootCard: {
-    minHeight: 154,
+    minHeight: 120,
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
@@ -410,30 +169,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     textAlign: "center",
-    maxWidth: 220,
-  },
-
-  progressTrack: {
-    width: "100%",
-    height: 8,
-    marginTop: 6,
-    borderRadius: 999,
-    overflow: "hidden",
-    backgroundColor: "rgba(124, 99, 80, 0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(124, 99, 80, 0.08)",
-  },
-
-  progressFill: {
-    height: "100%",
-    borderRadius: 999,
-    backgroundColor: Brand.bronze,
-  },
-
-  progressLabel: {
-    color: Brand.muted,
-    fontSize: 12,
-    fontWeight: "700",
   },
 
   topGlow: {
