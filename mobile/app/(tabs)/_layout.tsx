@@ -1,6 +1,6 @@
 import React from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
-import { Tabs } from "expo-router";
+import { Redirect, Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
@@ -36,9 +36,9 @@ function TabIcon({
   );
 }
 
-function SignedOutRedirectScreen() {
+function LoadingScreen() {
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.redirectPage}>
+    <LinearGradient colors={Brand.gradients.page} style={styles.loadingPage}>
       <ActivityIndicator size="small" color={Brand.bronze} />
     </LinearGradient>
   );
@@ -47,13 +47,15 @@ function SignedOutRedirectScreen() {
 export default function TabLayout() {
   const { user, loading } = useAuth();
 
-  // Important:
-  // Do not call router.replace("/") here.
-  // Root app/_layout.tsx already handles signed-out redirects.
-  // Having both the root layout and the tabs layout redirect at the same
-  // time causes the "Maximum update depth exceeded" crash during account deletion.
-  if (loading || !user) {
-    return <SignedOutRedirectScreen />;
+  // While auth is still restoring, show a lightweight loading screen.
+  if (loading) {
+    return <LoadingScreen />;
+  }
+
+  // After sign-out or account deletion, leave the tabs group immediately.
+  // Rendering a spinner here causes the app to appear stuck on a blank page.
+  if (!user) {
+    return <Redirect href="/" />;
   }
 
   return (
@@ -139,7 +141,7 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
-  redirectPage: {
+  loadingPage: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
