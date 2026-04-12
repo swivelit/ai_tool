@@ -1,6 +1,6 @@
 import React from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
-import { Tabs } from "expo-router";
+import { Redirect, Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
@@ -47,15 +47,14 @@ function LoadingScreen() {
 export default function TabLayout() {
   const { user, loading } = useAuth();
 
-  // While auth is still restoring, show a lightweight loading screen.
   if (loading) {
     return <LoadingScreen />;
   }
 
   // After sign-out or account deletion, leave the tabs group immediately.
-  // Rendering a spinner here causes the app to appear stuck on a blank page.
+  // Returning null here leaves the app stuck on a blank screen.
   if (!user) {
-    return null;
+    return <Redirect href="/" />;
   }
 
   return (
