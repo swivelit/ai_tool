@@ -3,6 +3,8 @@ export const LOCAL_AGENT_SEED_TIMEOUT_MS = 4000;
 export const PROFILE_BOOT_TIMEOUT_MS = 5000;
 
 const SIGNED_OUT_ENTRY_ROUTE = "/";
+const SIGNED_IN_HOME_ROUTE = "/";
+const TAB_ROUTES = new Set(["/", "/explore", "/routine"]);
 
 type BootLogger = (message: string, error?: unknown) => void;
 
@@ -99,12 +101,29 @@ export function getPendingBootSteps(flags: {
 }
 
 export function normalizePathname(pathname?: string | null) {
-  if (!pathname || pathname === "/") {
+  if (!pathname) {
     return "/";
   }
 
   const trimmed = pathname.trim();
-  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  if (!trimmed || trimmed === "/") {
+    return "/";
+  }
+
+  const normalized = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+
+  // Expo Router group paths like "/(tabs)" are not stable user-facing paths.
+  // Normalize them to their actual pathname equivalents.
+  if (normalized === "/(tabs)") {
+    return "/";
+  }
+
+  if (normalized.startsWith("/(tabs)/")) {
+    const stripped = normalized.replace("/(tabs)", "");
+    return stripped || "/";
+  }
+
+  return normalized;
 }
 
 export function resolveDesiredRoute(input: {
@@ -114,15 +133,16 @@ export function resolveDesiredRoute(input: {
   questionnaireCompleted: boolean;
 }) {
   const pathname = normalizePathname(input.pathname);
+
   const inAuth = pathname === "/auth" || pathname.startsWith("/auth/");
   const inOnboarding = pathname === "/onboarding" || pathname.startsWith("/onboarding/");
   const atProfile = pathname === "/onboarding/profile";
   const atQuestionnaire = pathname === "/onboarding/questionnaire";
-  const inTabs = pathname === "/(tabs)" || pathname.startsWith("/(tabs)/");
   const atSetup = pathname === "/setup";
+  const inTabs = TAB_ROUTES.has(pathname);
 
   if (!input.hasUser) {
-    if (pathname === "/" || inAuth) {
+    if (pathname === SIGNED_OUT_ENTRY_ROUTE || inAuth) {
       return null;
     }
 
@@ -137,8 +157,11 @@ export function resolveDesiredRoute(input: {
     return atQuestionnaire ? null : "/onboarding/questionnaire";
   }
 
-  if (pathname === "/" || inAuth || inOnboarding) {
-    return "/(tabs)";
+  // Signed-in users should never be redirected to "/(tabs)" because the actual
+  // home tab pathname resolves to "/". Redirecting from "/" -> "/(tabs)" causes
+  // an infinite replace loop in RouteGate.
+  if (inAuth || inOnboarding) {
+    return SIGNED_IN_HOME_ROUTE;
   }
 
   if (inTabs || atSetup) {
