@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
-import { Stack, router, useSegments } from "expo-router";
+import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
+import { resolveDesiredRoute } from "@/lib/appBoot";
 
 function BootScreen() {
   return (
@@ -30,61 +31,53 @@ function BootScreen() {
 }
 
 function RouteGate() {
-  const segments = useSegments();
-  const { user } = useAuth();
-  const { profile } = useAssistant();
+  const pathname = usePathname();
+  const { user, loading: authLoading } = useAuth();
+  const { profile, loading: profileLoading } = useAssistant();
+  const lastRedirectRef = useRef<string | null>(null);
 
-  const routeKey = segments.join("/");
-  const root = String(segments[0] || "");
-  const second = String(segments[1] || "");
+  const activeProfile = useMemo(() => {
+    if (!user) return null;
+    if (!profile) return null;
+    if (profile.firebaseUid && profile.firebaseUid !== user.uid) return null;
+    return profile;
+  }, [profile, user]);
 
-  const targetRoute = useMemo(() => {
-    const atRoot = segments.length === 0;
-    const inAuth = root === "auth";
-    const inOnboarding = root === "onboarding";
-    const atProfile = root === "onboarding" && second === "profile";
-    const atQuestionnaire = root === "onboarding" && second === "questionnaire";
-    const inTabs = root === "(tabs)";
-    const atSetup = root === "setup";
-
-    if (!user) {
-      return atRoot || inAuth ? null : "/";
-    }
-
-    const activeProfile = profile?.firebaseUid === user.uid ? profile : null;
-
-    if (!activeProfile?.userId) {
-      return atProfile ? null : "/onboarding/profile";
-    }
-
-    if (!activeProfile.questionnaireCompleted) {
-      return atQuestionnaire ? null : "/onboarding/questionnaire";
-    }
-
-    if (atRoot || inAuth || inOnboarding || atSetup) {
-      return "/(tabs)";
-    }
-
-    if (inTabs) {
-      return null;
-    }
-
-    return null;
-  }, [
-    routeKey,
-    root,
-    second,
-    user?.uid,
-    profile?.firebaseUid,
-    profile?.userId,
-    profile?.questionnaireCompleted,
-  ]);
+  const targetRoute = useMemo(
+    () =>
+      resolveDesiredRoute({
+        pathname,
+        hasUser: Boolean(user),
+        hasProfile: Boolean(activeProfile?.userId),
+        questionnaireCompleted: Boolean(activeProfile?.questionnaireCompleted),
+      }),
+    [pathname, user, activeProfile?.userId, activeProfile?.questionnaireCompleted]
+  );
 
   useEffect(() => {
-    if (targetRoute) {
-      router.replace(targetRoute as any);
+    if (authLoading || profileLoading) {
+      return;
     }
-  }, [targetRoute]);
+
+    if (!targetRoute) {
+      lastRedirectRef.current = null;
+      return;
+    }
+
+    if (pathname === targetRoute) {
+      lastRedirectRef.current = null;
+      return;
+    }
+
+    const redirectKey = `${pathname || "/"}->${targetRoute}`;
+
+    if (lastRedirectRef.current === redirectKey) {
+      return;
+    }
+
+    lastRedirectRef.current = redirectKey;
+    router.replace(targetRoute as any);
+  }, [authLoading, profileLoading, pathname, targetRoute]);
 
   return null;
 }
