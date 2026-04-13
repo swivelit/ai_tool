@@ -13,7 +13,7 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
-import { normalizePathname, resolveDesiredRoute } from "@/lib/appBoot";
+import { resolveDesiredRoute } from "@/lib/appBoot";
 
 function BootScreen() {
   return (
@@ -33,6 +33,19 @@ function BootScreen() {
       </GlassCard>
     </LinearGradient>
   );
+}
+
+function toRawPath(path?: string | null) {
+  if (!path) {
+    return "/";
+  }
+
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return "/";
+  }
+
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
 function AppShell() {
@@ -75,8 +88,12 @@ function AppShell() {
       return;
     }
 
-    const currentPath = normalizePathname(pathname);
-    const nextPath = normalizePathname(targetRoute);
+    // Important:
+    // Compare RAW routes here, not normalized routes.
+    // normalizePathname("/(tabs)") becomes "/", which incorrectly suppresses
+    // the redirect from "/(tabs)" -> "/" after sign-out/account deletion.
+    const currentPath = toRawPath(pathname);
+    const nextPath = toRawPath(targetRoute);
 
     if (currentPath === nextPath) {
       lastRedirectRef.current = null;
@@ -182,31 +199,31 @@ const styles = StyleSheet.create({
 
   topGlow: {
     position: "absolute",
-    top: -90,
-    right: -20,
-    width: 220,
-    height: 220,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.56)",
+    top: -120,
+    right: -80,
+    width: 260,
+    height: 260,
+    borderRadius: 160,
+    backgroundColor: "rgba(244, 191, 117, 0.18)",
   },
 
   leftGlow: {
     position: "absolute",
-    top: 240,
-    left: -80,
-    width: 200,
-    height: 200,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,229,180,0.34)",
+    left: -110,
+    top: 110,
+    width: 220,
+    height: 220,
+    borderRadius: 140,
+    backgroundColor: "rgba(236, 206, 152, 0.12)",
   },
 
   bottomGlow: {
     position: "absolute",
-    bottom: -100,
-    right: 10,
+    bottom: -130,
+    left: 20,
     width: 260,
     height: 260,
-    borderRadius: 999,
-    backgroundColor: "rgba(215,154,89,0.16)",
+    borderRadius: 180,
+    backgroundColor: "rgba(212, 154, 79, 0.10)",
   },
 });

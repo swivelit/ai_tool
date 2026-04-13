@@ -51,14 +51,12 @@ export default function TabLayout() {
     return <LoadingScreen />;
   }
 
-  // Important:
-  // Do NOT redirect from the tabs layout when the user becomes null.
-  // Root app/_layout.tsx already owns auth-based redirects.
-  // Having both root _layout.tsx and tabs _layout.tsx redirect to "/"
-  // during account deletion creates a redirect loop and triggers:
-  // "Maximum update depth exceeded".
+  // Root app/_layout.tsx owns auth redirects.
+  // When auth becomes null inside tabs, keep rendering a lightweight loading
+  // screen instead of returning null. Returning null can leave the UI looking
+  // broken while the root route transition is happening.
   if (!user) {
-    return null;
+    return <LoadingScreen />;
   }
 
   return (
