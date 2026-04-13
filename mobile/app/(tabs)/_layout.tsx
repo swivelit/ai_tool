@@ -1,6 +1,6 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
-import { Tabs } from "expo-router";
+import { Tabs, router, useRootNavigationState } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
@@ -46,15 +46,42 @@ function LoadingScreen() {
 
 export default function TabLayout() {
   const { user, loading } = useAuth();
+  const rootNavigationState = useRootNavigationState();
+  const hasRedirectedRef = useRef(false);
+
+  const navigatorReady = Boolean(rootNavigationState?.key);
+
+  useEffect(() => {
+    if (loading || user || !navigatorReady) {
+      hasRedirectedRef.current = false;
+      return;
+    }
+
+    if (hasRedirectedRef.current) {
+      return;
+    }
+
+    hasRedirectedRef.current = true;
+
+    const frame = requestAnimationFrame(() => {
+      // Important:
+      // "/" is ambiguous in this app because both:
+      // - app/index.tsx
+      // - app/(tabs)/index.tsx
+      // resolve there.
+      //
+      // After delete/sign-out, use an unambiguous public route so we always
+      // escape the tabs tree instead of getting stuck on the tabs loading screen.
+      router.replace("/auth/login");
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [loading, navigatorReady, user]);
 
   if (loading) {
     return <LoadingScreen />;
   }
 
-  // Root app/_layout.tsx owns auth redirects.
-  // When auth becomes null inside tabs, keep rendering a lightweight loading
-  // screen instead of returning null. Returning null can leave the UI looking
-  // broken while the root route transition is happening.
   if (!user) {
     return <LoadingScreen />;
   }
