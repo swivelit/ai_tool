@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useMemo } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
-import { Stack, router, usePathname } from "expo-router";
+import { Redirect, Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -30,11 +30,10 @@ function BootScreen() {
   );
 }
 
-function RouteGate() {
+function AppShell() {
   const pathname = usePathname();
   const { user, loading: authLoading } = useAuth();
   const { profile, loading: profileLoading } = useAssistant();
-  const lastRedirectRef = useRef<string | null>(null);
 
   const activeProfile = useMemo(() => {
     if (!user) return null;
@@ -54,40 +53,16 @@ function RouteGate() {
     [pathname, user, activeProfile?.userId, activeProfile?.questionnaireCompleted]
   );
 
-  useEffect(() => {
-    if (authLoading || profileLoading) {
-      return;
-    }
-
-    if (!targetRoute) {
-      lastRedirectRef.current = null;
-      return;
-    }
-
-    if (pathname === targetRoute) {
-      lastRedirectRef.current = null;
-      return;
-    }
-
-    const redirectKey = `${pathname || "/"}->${targetRoute}`;
-
-    if (lastRedirectRef.current === redirectKey) {
-      return;
-    }
-
-    lastRedirectRef.current = redirectKey;
-    router.replace(targetRoute as any);
-  }, [authLoading, profileLoading, pathname, targetRoute]);
-
-  return null;
-}
-
-function AppShell() {
-  const { loading: authLoading } = useAuth();
-  const { loading: profileLoading } = useAssistant();
-
   if (authLoading || profileLoading) {
     return <BootScreen />;
+  }
+
+  // Important:
+  // Use declarative redirects here instead of router.replace() inside useEffect.
+  // The previous imperative redirect loop is what caused:
+  // "Maximum update depth exceeded" during account deletion / sign-out transitions.
+  if (targetRoute) {
+    return <Redirect href={targetRoute as any} />;
   }
 
   return (
@@ -105,8 +80,6 @@ function AppShell() {
         <Stack.Screen name="item/[id]" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
-
-      <RouteGate />
     </View>
   );
 }
