@@ -538,36 +538,7 @@ export default function RoutineScreen() {
 
           <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
             <View style={styles.heroHeaderRow}>
-              <View style={styles.heroPill}>
-                <Ionicons name="settings-outline" size={14} color={Brand.bronze} />
-                <Text style={styles.heroPillText}>Control center</Text>
-              </View>
-
-              <View style={styles.heroStatusChip}>
-                {loading ? (
-                  <ActivityIndicator size="small" color={Brand.bronze} />
-                ) : (
-                  <Ionicons name="checkmark-circle" size={14} color={Brand.success} />
-                )}
-                <Text style={styles.heroStatusText}>{loading ? "Syncing" : "Ready"}</Text>
-              </View>
             </View>
-
-            <Text
-              style={[
-                styles.heroTitle,
-                {
-                  fontSize: heroTitleSize,
-                  lineHeight: heroTitleLineHeight,
-                },
-              ]}
-            >
-              Adjust your assistant, routine, and account settings here.
-            </Text>
-
-            <Text style={styles.heroSubtitle}>
-              Make changes easily and stay in control.
-            </Text>
 
             <View style={styles.metricRow}>
               <OverviewMetric
@@ -593,10 +564,6 @@ export default function RoutineScreen() {
               end={{ x: 1, y: 1 }}
               style={styles.heroInsightCard}
             >
-              <View style={styles.heroInsightBadge}>
-                <Ionicons name="flash-outline" size={14} color={Brand.bronze} />
-                <Text style={styles.heroInsightBadgeText}>Current rhythm</Text>
-              </View>
 
               <Text style={styles.heroInsightTitle}>{stats.mode}</Text>
               <Text style={styles.heroInsightText}>
@@ -611,12 +578,8 @@ export default function RoutineScreen() {
           <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
             <View style={styles.sectionHeaderRow}>
               <View>
-                <Text style={styles.sectionTitle}>Assistant preferences</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Control how the assistant appears and responds across the app.
-                </Text>
+                <Text style={styles.sectionTitle}>Customise</Text>
               </View>
-              <SectionPill label="Brand" />
             </View>
 
             <Field
@@ -624,7 +587,6 @@ export default function RoutineScreen() {
               value={assistantNameInput}
               onChangeText={setAssistantNameInput}
               placeholder="Elli"
-              icon="sparkles-outline"
             />
 
             <View style={{ marginTop: 18 }}>
@@ -686,8 +648,7 @@ export default function RoutineScreen() {
                   <ActivityIndicator color={Brand.ink} />
                 ) : (
                   <>
-                    <Text style={styles.primaryButtonText}>Save assistant preferences</Text>
-                    <Ionicons name="sparkles" size={16} color={Brand.ink} />
+                    <Text style={styles.primaryButtonText}>Save</Text>
                   </>
                 )}
               </LinearGradient>
@@ -698,9 +659,6 @@ export default function RoutineScreen() {
             <View style={styles.sectionHeaderRow}>
               <View>
                 <Text style={styles.sectionTitle}>Account & security</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Review profile details and control how this account signs in.
-                </Text>
               </View>
               <SectionPill label="Secure" />
             </View>
@@ -919,12 +877,8 @@ export default function RoutineScreen() {
           <GlassCard style={{ borderRadius: 28, marginTop: 16, marginBottom: 10 }}>
             <View style={styles.sectionHeaderRow}>
               <View>
-                <Text style={styles.sectionTitle}>Danger zone</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Sensitive account actions live here and are visually separated for safety.
-                </Text>
+                <Text style={styles.sectionTitle}> Leave us </Text>
               </View>
-              <SectionPill label="Careful" danger />
             </View>
 
             <Pressable

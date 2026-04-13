@@ -28,23 +28,6 @@ const DEV_TEST_ACCOUNT = {
   password: "Test@123456",
 };
 
-const BENEFITS = [
-  {
-    icon: "shield-checkmark-outline" as const,
-    title: "Secure access",
-    copy: "Built for secure and easy access.",
-  },
-  {
-    icon: "sparkles-outline" as const,
-    title: "Your control center",
-    copy: "Step back into your assistant in seconds.",
-  },
-  {
-    icon: "time-outline" as const,
-    title: "Fast re-entry",
-    copy: "Built for speed and simplicity.",
-  },
-];
 
 function emailLooksValid(value: string) {
   return /\S+@\S+\.\S+/.test(value.trim());
@@ -209,14 +192,6 @@ export default function LoginScreen() {
             </Pressable>
 
             <View style={styles.headerBlock}>
-              <View style={styles.titlePill}>
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={14}
-                  color={Brand.bronze}
-                />
-                <Text style={styles.titlePillText}>Secure access</Text>
-              </View>
 
               <Text
                 style={[
@@ -229,22 +204,6 @@ export default function LoginScreen() {
               >
                 Good to see you again.
               </Text>
-
-              <Text style={styles.subtitle}>
-                Fast, simple, and secure from the start.
-              </Text>
-
-              <View style={styles.metricRow}>
-                <View style={styles.metricChip}>
-                  <Text style={styles.metricText}>Fast sign-in</Text>
-                </View>
-                <View style={styles.metricChip}>
-                  <Text style={styles.metricText}>Secure flow</Text>
-                </View>
-                <View style={styles.metricChip}>
-                  <Text style={styles.metricText}>Easy to use</Text>
-                </View>
-              </View>
             </View>
 
             <GlassCard style={{ borderRadius: 30 }}>
@@ -254,15 +213,6 @@ export default function LoginScreen() {
                   <Text style={styles.cardSubtitle}>
                     Return to your assistant.
                   </Text>
-                </View>
-
-                <View style={styles.cardBadge}>
-                  <Ionicons
-                    name="sparkles-outline"
-                    size={14}
-                    color={Brand.bronze}
-                  />
-                  <Text style={styles.cardBadgeText}>Ready</Text>
                 </View>
               </View>
 
@@ -459,24 +409,6 @@ export default function LoginScreen() {
                   to enable Google sign-in.
                 </Text>
               ) : null}
-
-              <View style={styles.benefitList}>
-                {BENEFITS.map((item) => (
-                  <View key={item.title} style={styles.benefitRow}>
-                    <View style={styles.benefitIconWrap}>
-                      <Ionicons
-                        name={item.icon}
-                        size={16}
-                        color={Brand.bronze}
-                      />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.benefitTitle}>{item.title}</Text>
-                      <Text style={styles.benefitCopy}>{item.copy}</Text>
-                    </View>
-                  </View>
-                ))}
-              </View>
 
               <View style={styles.footerRow}>
                 <Text style={styles.footerCopy}>Don’t have an account yet?</Text>

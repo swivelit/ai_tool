@@ -715,7 +715,6 @@ export default function Home() {
                 {assistantLabel}
               </Text>
             </View>
-            <Text style={styles.topBrandCaption}>Home</Text>
           </View>
 
           <Pressable onPress={openRoutine} style={styles.topIconBtn}>
@@ -736,16 +735,6 @@ export default function Home() {
           <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
             <GlassCard style={styles.heroCard}>
               <View style={styles.heroHeaderRow}>
-                <View style={styles.heroPill}>
-                  <Ionicons
-                    name={listening ? "radio-outline" : "sparkles-outline"}
-                    size={14}
-                    color={Brand.bronze}
-                  />
-                  <Text style={styles.heroPillText}>
-                    {listening ? "Voice mode active" : "Smart assistant"}
-                  </Text>
-                </View>
 
                 <View style={styles.heroStatusChip}>
                   {busy ? (
@@ -820,10 +809,6 @@ export default function Home() {
               <View style={styles.sectionHeaderRow}>
                 <View>
                   <Text style={styles.sectionTitle}>Compose</Text>
-                  <Text style={styles.sectionSubtitle}>
-                    Type naturally or hold the orb to speak. The assistant will
-                    structure the result for you.
-                  </Text>
                 </View>
 
                 <Pressable
@@ -978,79 +963,6 @@ export default function Home() {
               </GlassCard>
             ) : null}
 
-            <GlassCard style={styles.historyCard}>
-              <View style={styles.sectionHeaderRow}>
-                <View>
-                  <Text style={styles.sectionTitle}>Recent history</Text>
-                  <Text style={styles.sectionSubtitle}>
-                    Your latest assistant activity.
-                  </Text>
-                </View>
-
-                <Pressable
-                  onPress={() => openDrawer()}
-                  style={styles.ghostChip}
-                >
-                  <Ionicons
-                    name="time-outline"
-                    size={14}
-                    color={Brand.cocoa}
-                  />
-                  <Text style={styles.ghostChipText}>View all</Text>
-                </Pressable>
-              </View>
-
-              {recentHistory.length === 0 ? (
-                <View style={styles.historyEmptyState}>
-                  <Ionicons
-                    name="time-outline"
-                    size={20}
-                    color={Brand.muted}
-                  />
-                  <Text style={styles.historyEmptyTitle}>No history yet</Text>
-                  <Text style={styles.historyEmptyText}>
-                    Once you begin, your history will show up here.
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.historyList}>
-                  {recentHistory.map((item) => (
-                    <Pressable
-                      key={item.id}
-                      onPress={() => openHistoryItem(item)}
-                      style={({ pressed }) => [
-                        styles.historyRow,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <View style={styles.historyRowIcon}>
-                        <Ionicons
-                          name="sparkles-outline"
-                          size={16}
-                          color={Brand.bronze}
-                        />
-                      </View>
-
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.historyRowTitle} numberOfLines={1}>
-                          {item.raw_text || item.title || "Untitled request"}
-                        </Text>
-                        <Text style={styles.historyRowMeta} numberOfLines={1}>
-                          {formatIntentLabel(item.intent)} ·{" "}
-                          {formatHistoryTime(item.datetime)}
-                        </Text>
-                      </View>
-
-                      <Ionicons
-                        name="chevron-forward"
-                        size={16}
-                        color="rgba(124, 99, 80, 0.56)"
-                      />
-                    </Pressable>
-                  ))}
-                </View>
-              )}
-            </GlassCard>
           </View>
         </ScrollView>
 
@@ -1154,9 +1066,6 @@ export default function Home() {
                   <View style={styles.drawerTitleRow}>
                     <View>
                       <Text style={styles.drawerSectionTitle}>Workspace</Text>
-                      <Text style={styles.drawerSectionSub}>
-                        History, navigation, and account controls.
-                      </Text>
                     </View>
                   </View>
 

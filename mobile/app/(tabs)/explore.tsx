@@ -513,19 +513,8 @@ export default function Explore() {
         ListHeaderComponent={
           <>
             <View style={styles.topBar}>
-              <Pressable
-                onPress={() => router.replace("/(tabs)")}
-                style={styles.topIconBtn}
-              >
-                <Ionicons
-                  name="sparkles-outline"
-                  size={18}
-                  color={Brand.cocoa}
-                />
-              </Pressable>
 
               <View style={styles.topCenter}>
-                <Text style={styles.topCaption}>Planner</Text>
                 <Text style={styles.topTitle}>Schedule</Text>
               </View>
 
@@ -540,14 +529,6 @@ export default function Explore() {
 
             <GlassCard style={{ borderRadius: heroRadius, marginTop: 14 }}>
               <View style={styles.heroHeaderRow}>
-                <View style={styles.heroPill}>
-                  <Ionicons
-                    name="calendar-clear-outline"
-                    size={14}
-                    color={Brand.bronze}
-                  />
-                  <Text style={styles.heroPillText}>Schedule overview</Text>
-                </View>
 
                 <View style={styles.heroStatusPill}>
                   <Ionicons
@@ -571,10 +552,6 @@ export default function Explore() {
                 ]}
               >
                 See your day, your way.
-              </Text>
-
-              <Text style={styles.heroSubtitle}>
-                Stay focused on what is next and find anything quickly.
               </Text>
 
               <View style={styles.metricGrid}>
@@ -606,11 +583,6 @@ export default function Explore() {
               >
                 <View style={styles.nextUpHeader}>
                   <View style={styles.nextUpBadge}>
-                    <Ionicons
-                      name="flash-outline"
-                      size={14}
-                      color={Brand.bronze}
-                    />
                     <Text style={styles.nextUpBadgeText}>Next up</Text>
                   </View>
 
@@ -645,9 +617,6 @@ export default function Explore() {
                 ) : (
                   <View>
                     <Text style={styles.nextUpTitle}>Nothing upcoming yet</Text>
-                    <Text style={styles.nextUpDetails}>
-                      Anything you add will show up here automatically.
-                    </Text>
                   </View>
                 )}
               </LinearGradient>
@@ -745,7 +714,7 @@ export default function Explore() {
             <Text style={styles.emptySub}>
               {q.trim()
                 ? "Try a different keyword or switch filters to widen your schedule search."
-                : "New reminders will show up here as soon as they are added."}
+                : ""}
             </Text>
 
             {!q.trim() ? (
