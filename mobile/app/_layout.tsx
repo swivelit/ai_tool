@@ -1,6 +1,11 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
-import { Redirect, Stack, usePathname } from "expo-router";
+import {
+  Stack,
+  router,
+  usePathname,
+  useRootNavigationState,
+} from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -8,7 +13,7 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
-import { resolveDesiredRoute } from "@/lib/appBoot";
+import { normalizePathname, resolveDesiredRoute } from "@/lib/appBoot";
 
 function BootScreen() {
   return (
@@ -30,10 +35,14 @@ function BootScreen() {
   );
 }
 
-function RouteGate() {
+function AppShell() {
   const pathname = usePathname();
+  const rootNavigationState = useRootNavigationState();
+
   const { user, loading: authLoading } = useAuth();
   const { profile, loading: profileLoading } = useAssistant();
+
+  const lastRedirectRef = useRef<string | null>(null);
 
   const activeProfile = useMemo(() => {
     if (!user) return null;
@@ -53,26 +62,41 @@ function RouteGate() {
     [pathname, user, activeProfile?.userId, activeProfile?.questionnaireCompleted]
   );
 
-  // Let AppShell handle the boot screen.
-  // RouteGate should only redirect after the Stack navigator is already mounted.
-  if (authLoading || profileLoading) {
-    return null;
-  }
+  const isNavigatorReady = Boolean(rootNavigationState?.key);
+  const shouldShowBoot = authLoading || profileLoading || !isNavigatorReady;
 
-  if (!targetRoute) {
-    return null;
-  }
+  useEffect(() => {
+    if (shouldShowBoot) {
+      return;
+    }
 
-  return <Redirect href={targetRoute as any} />;
-}
+    if (!targetRoute) {
+      lastRedirectRef.current = null;
+      return;
+    }
 
-function AppShell() {
-  const { loading: authLoading } = useAuth();
-  const { loading: profileLoading } = useAssistant();
+    const currentPath = normalizePathname(pathname);
+    const nextPath = normalizePathname(targetRoute);
 
-  if (authLoading || profileLoading) {
-    return <BootScreen />;
-  }
+    if (currentPath === nextPath) {
+      lastRedirectRef.current = null;
+      return;
+    }
+
+    const redirectKey = `${currentPath}->${nextPath}`;
+
+    if (lastRedirectRef.current === redirectKey) {
+      return;
+    }
+
+    lastRedirectRef.current = redirectKey;
+
+    const frame = requestAnimationFrame(() => {
+      router.replace(targetRoute as any);
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [shouldShowBoot, pathname, targetRoute]);
 
   return (
     <View style={styles.appShell}>
@@ -90,7 +114,11 @@ function AppShell() {
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
 
-      <RouteGate />
+      {shouldShowBoot ? (
+        <View style={styles.bootOverlay}>
+          <BootScreen />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -114,6 +142,10 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   appShell: {
     flex: 1,
+  },
+
+  bootOverlay: {
+    ...StyleSheet.absoluteFillObject,
   },
 
   bootPage: {

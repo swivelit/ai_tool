@@ -404,7 +404,7 @@ export async function getProfileForFirebaseUid(
     const merged: UserProfile = {
       ...mergeProfileWithAuth(restored, normalizedUid, normalizedEmail),
       questionnaireCompleted: resolveQuestionnaireCompleted(
-        matchedCachedProfile?.questionnaireCompleted,
+        undefined,
         restored.questionnaireCompleted
       ),
     };
