@@ -3,8 +3,9 @@ export const LOCAL_AGENT_SEED_TIMEOUT_MS = 4000;
 export const PROFILE_BOOT_TIMEOUT_MS = 5000;
 
 const SIGNED_OUT_ENTRY_ROUTE = "/";
-const SIGNED_IN_HOME_ROUTE = "/";
+const SIGNED_IN_HOME_ROUTE = "/(tabs)";
 const TAB_ROUTES = new Set(["/", "/explore", "/routine"]);
+const TAB_GROUP_ROOT_ROUTE = "/(tabs)";
 
 type BootLogger = (message: string, error?: unknown) => void;
 
@@ -112,12 +113,6 @@ export function normalizePathname(pathname?: string | null) {
 
   const normalized = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 
-  // Expo Router group paths like "/(tabs)" are not stable user-facing paths.
-  // Normalize them to their actual pathname equivalents.
-  if (normalized === "/(tabs)") {
-    return "/";
-  }
-
   if (normalized.startsWith("/(tabs)/")) {
     const stripped = normalized.replace("/(tabs)", "");
     return stripped || "/";
@@ -126,23 +121,38 @@ export function normalizePathname(pathname?: string | null) {
   return normalized;
 }
 
+function normalizeRawPathname(pathname?: string | null) {
+  if (!pathname) {
+    return "/";
+  }
+
+  const trimmed = pathname.trim();
+  if (!trimmed) {
+    return "/";
+  }
+
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
 export function resolveDesiredRoute(input: {
   pathname?: string | null;
   hasUser: boolean;
   hasProfile: boolean;
   questionnaireCompleted: boolean;
 }) {
-  const pathname = normalizePathname(input.pathname);
+  const rawPathname = normalizeRawPathname(input.pathname);
+  const pathname = normalizePathname(rawPathname);
 
+  const atTabsGroupRoot = rawPathname === TAB_GROUP_ROOT_ROUTE;
   const inAuth = pathname === "/auth" || pathname.startsWith("/auth/");
   const inOnboarding = pathname === "/onboarding" || pathname.startsWith("/onboarding/");
   const atProfile = pathname === "/onboarding/profile";
   const atQuestionnaire = pathname === "/onboarding/questionnaire";
   const atSetup = pathname === "/setup";
-  const inTabs = TAB_ROUTES.has(pathname);
+  const inTabs = atTabsGroupRoot || TAB_ROUTES.has(pathname);
 
   if (!input.hasUser) {
-    if (pathname === SIGNED_OUT_ENTRY_ROUTE || inAuth) {
+    if ((pathname === SIGNED_OUT_ENTRY_ROUTE && !atTabsGroupRoot) || inAuth) {
       return null;
     }
 
@@ -157,9 +167,6 @@ export function resolveDesiredRoute(input: {
     return atQuestionnaire ? null : "/onboarding/questionnaire";
   }
 
-  // Signed-in users should never be redirected to "/(tabs)" because the actual
-  // home tab pathname resolves to "/". Redirecting from "/" -> "/(tabs)" causes
-  // an infinite replace loop in RouteGate.
   if (inAuth || inOnboarding) {
     return SIGNED_IN_HOME_ROUTE;
   }
