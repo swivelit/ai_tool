@@ -30,7 +30,7 @@ function BootScreen() {
   );
 }
 
-function AppShell() {
+function RouteGate() {
   const pathname = usePathname();
   const { user, loading: authLoading } = useAuth();
   const { profile, loading: profileLoading } = useAssistant();
@@ -53,16 +53,25 @@ function AppShell() {
     [pathname, user, activeProfile?.userId, activeProfile?.questionnaireCompleted]
   );
 
+  // Let AppShell handle the boot screen.
+  // RouteGate should only redirect after the Stack navigator is already mounted.
   if (authLoading || profileLoading) {
-    return <BootScreen />;
+    return null;
   }
 
-  // Important:
-  // Use declarative redirects here instead of router.replace() inside useEffect.
-  // The previous imperative redirect loop is what caused:
-  // "Maximum update depth exceeded" during account deletion / sign-out transitions.
-  if (targetRoute) {
-    return <Redirect href={targetRoute as any} />;
+  if (!targetRoute) {
+    return null;
+  }
+
+  return <Redirect href={targetRoute as any} />;
+}
+
+function AppShell() {
+  const { loading: authLoading } = useAuth();
+  const { loading: profileLoading } = useAssistant();
+
+  if (authLoading || profileLoading) {
+    return <BootScreen />;
   }
 
   return (
@@ -80,6 +89,8 @@ function AppShell() {
         <Stack.Screen name="item/[id]" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
+
+      <RouteGate />
     </View>
   );
 }
