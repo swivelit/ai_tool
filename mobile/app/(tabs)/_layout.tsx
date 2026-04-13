@@ -1,6 +1,6 @@
 import React from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
-import { Redirect, Tabs } from "expo-router";
+import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
@@ -51,10 +51,14 @@ export default function TabLayout() {
     return <LoadingScreen />;
   }
 
-  // After sign-out or account deletion, leave the tabs group immediately.
-  // Returning null here leaves the app stuck on a blank screen.
+  // Important:
+  // Do NOT redirect from the tabs layout when the user becomes null.
+  // Root app/_layout.tsx already owns auth-based redirects.
+  // Having both root _layout.tsx and tabs _layout.tsx redirect to "/"
+  // during account deletion creates a redirect loop and triggers:
+  // "Maximum update depth exceeded".
   if (!user) {
-    return <Redirect href="/" />;
+    return null;
   }
 
   return (
