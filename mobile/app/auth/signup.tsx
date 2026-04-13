@@ -254,21 +254,6 @@ export default function SignupScreen() {
                 Start here and make it yours.
               </Text>
 
-              <Text style={styles.subtitle}>
-                Sign up once and let your assistant take it from there.
-              </Text>
-
-              <View style={styles.metricRow}>
-                <View style={styles.metricChip}>
-                  <Text style={styles.metricText}>Quick start</Text>
-                </View>
-                <View style={styles.metricChip}>
-                  <Text style={styles.metricText}>Clear validation</Text>
-                </View>
-                <View style={styles.metricChip}>
-                  <Text style={styles.metricText}>Smooth experience</Text>
-                </View>
-              </View>
             </View>
 
             <GlassCard style={{ borderRadius: 30 }}>
@@ -278,15 +263,6 @@ export default function SignupScreen() {
                   <Text style={styles.cardSubtitle}>
                     Sign up and keep going.
                   </Text>
-                </View>
-
-                <View style={styles.cardBadge}>
-                  <Ionicons
-                    name="sparkles-outline"
-                    size={14}
-                    color={Brand.bronze}
-                  />
-                  <Text style={styles.cardBadgeText}>New</Text>
                 </View>
               </View>
 
@@ -317,7 +293,7 @@ export default function SignupScreen() {
                       setName(value);
                       if (errorText) setErrorText("");
                     }}
-                    placeholder="Hari"
+                    placeholder="your name"
                     placeholderTextColor="rgba(124, 99, 80, 0.55)"
                     style={styles.input}
                     editable={!busy}
@@ -451,17 +427,6 @@ export default function SignupScreen() {
                 </View>
               </View>
 
-              <View style={styles.infoBanner}>
-                <Ionicons
-                  name="checkmark-circle-outline"
-                  size={16}
-                  color={Brand.success}
-                />
-                <Text style={styles.infoBannerText}>
-                  Next, we will help you personalize your assistant.
-                </Text>
-              </View>
-
               <Pressable
                 onPress={handleSignup}
                 disabled={!canSubmit}
@@ -562,24 +527,6 @@ export default function SignupScreen() {
                   to enable Google sign-in.
                 </Text>
               ) : null}
-
-              <View style={styles.highlightList}>
-                {HIGHLIGHTS.map((item) => (
-                  <View key={item.title} style={styles.highlightRow}>
-                    <View style={styles.highlightIconWrap}>
-                      <Ionicons
-                        name={item.icon}
-                        size={16}
-                        color={Brand.bronze}
-                      />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.highlightTitle}>{item.title}</Text>
-                      <Text style={styles.highlightCopy}>{item.copy}</Text>
-                    </View>
-                  </View>
-                ))}
-              </View>
 
               <View style={styles.footerRow}>
                 <Text style={styles.footerCopy}>Already have an account?</Text>
