@@ -648,15 +648,6 @@ export default function Home() {
               <Ionicons name="menu" size={19} color={Brand.cocoa} />
             </Pressable>
 
-            <View style={styles.topBrandWrap}>
-              <View style={styles.topBrandPill}>
-                <Ionicons name="sparkles" size={13} color={Brand.bronze} />
-                <Text style={styles.topBrandText} numberOfLines={1}>
-                  {assistantLabel}
-                </Text>
-              </View>
-            </View>
-
             <Pressable onPress={openRoutine} style={styles.topIconBtn}>
               <Ionicons name="options-outline" size={18} color={Brand.cocoa} />
             </Pressable>
