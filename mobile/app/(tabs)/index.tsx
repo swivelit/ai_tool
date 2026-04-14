@@ -146,7 +146,11 @@ export default function Home() {
   const { name, settings, profile } = useAssistant();
   const { signOutUser } = useAuth();
 
+  const minComposerInputHeight = 24;
   const [text, setText] = useState("");
+  const [composerInputHeight, setComposerInputHeight] = useState(
+    minComposerInputHeight
+  );
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [listening, setListening] = useState(false);
@@ -208,6 +212,7 @@ export default function Home() {
   const placeholder = listening
     ? "Recording... release to stop and send"
     : `Message ${assistantLabel}`;
+  const maxComposerInputHeight = 220;
 
   const drawerTranslateX = drawerProgress.interpolate({
     inputRange: [0, 1],
@@ -341,6 +346,7 @@ export default function Home() {
       setLastPrompt(cleaned);
       setResult(nextItem);
       setText("");
+      setComposerInputHeight(minComposerInputHeight);
       await loadHistory();
       await Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success
@@ -569,6 +575,7 @@ export default function Home() {
     setResult(null);
     setLastPrompt("");
     setText("");
+    setComposerInputHeight(minComposerInputHeight);
   }
 
   function openHistoryItem(item: Item) {
@@ -704,25 +711,7 @@ export default function Home() {
 
             </GlassCard>
 
-            <GlassCard style={styles.composerCard}>
-              <View style={styles.sectionHeaderRow}>
-                <View>
-                  <Text style={styles.sectionTitle}>Compose</Text>
-                </View>
-
-                <Pressable
-                  onPress={clearConversation}
-                  style={styles.ghostChip}
-                >
-                  <Ionicons
-                    name="refresh-outline"
-                    size={14}
-                    color={Brand.cocoa}
-                  />
-                  <Text style={styles.ghostChipText}>Reset</Text>
-                </Pressable>
-              </View>
-
+            <View style={styles.composerWrap}>
               <View style={styles.composerBox}>
                 <TextInput
                   value={text}
@@ -730,8 +719,23 @@ export default function Home() {
                   placeholder={placeholder}
                   placeholderTextColor="rgba(124, 99, 80, 0.55)"
                   multiline
+                  scrollEnabled={composerInputHeight >= maxComposerInputHeight}
                   textAlignVertical="top"
-                  style={styles.composerInput}
+                  onContentSizeChange={(event) => {
+                    const measuredHeight = Math.ceil(
+                      event.nativeEvent.contentSize.height
+                    );
+                    const nextHeight = clamp(
+                      measuredHeight,
+                      minComposerInputHeight,
+                      maxComposerInputHeight
+                    );
+                    setComposerInputHeight(nextHeight);
+                  }}
+                  style={[
+                    styles.composerInput,
+                    { height: composerInputHeight },
+                  ]}
                 />
 
                 <View style={styles.composerActionsRow}>
@@ -749,6 +753,18 @@ export default function Home() {
                   </View>
 
                   <View style={styles.composerButtonsWrap}>
+                    <Pressable
+                      onPress={clearConversation}
+                      style={styles.composerSecondaryBtn}
+                      accessibilityLabel="Clear message"
+                    >
+                      <Ionicons
+                        name="refresh-outline"
+                        size={16}
+                        color={Brand.cocoa}
+                      />
+                    </Pressable>
+
                     <Pressable
                       onPress={analyzeText}
                       disabled={busy || !text.trim()}
@@ -774,7 +790,7 @@ export default function Home() {
                   </View>
                 </View>
               </View>
-            </GlassCard>
+            </View>
 
             {hasConversation ? (
               <GlassCard style={styles.conversationCard}>
@@ -1299,9 +1315,8 @@ const styles = StyleSheet.create({
     borderColor: Brand.line,
   },
 
-  composerCard: {
+  composerWrap: {
     marginTop: 16,
-    borderRadius: 28,
   },
 
   sectionHeaderRow: {
@@ -1344,7 +1359,6 @@ const styles = StyleSheet.create({
   },
 
   composerBox: {
-    marginTop: 18,
     padding: 14,
     borderRadius: 24,
     backgroundColor: "rgba(255,255,255,0.62)",
@@ -1353,13 +1367,12 @@ const styles = StyleSheet.create({
   },
 
   composerInput: {
-    minHeight: 112,
-    maxHeight: 180,
     color: Brand.ink,
     fontSize: 15,
     fontWeight: "500",
     lineHeight: 22,
-    paddingTop: 4,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
 
   composerActionsRow: {
@@ -1398,6 +1411,17 @@ const styles = StyleSheet.create({
     borderRadius: 23,
     alignItems: "center",
     justifyContent: "center",
+  },
+
+  composerSecondaryBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
   },
 
   sendBtn: {
