@@ -666,7 +666,9 @@ export default function Home() {
             showsVerticalScrollIndicator={false}
           >
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
-              <GlassCard style={styles.heroCard}>
+              <View style={styles.heroStage}>
+                <View pointerEvents="none" style={styles.heroAmbientTop} />
+
                 <View style={styles.heroHeaderRow}>
                   <View style={styles.heroStatusChip}>
                     {busy ? (
@@ -689,7 +691,23 @@ export default function Home() {
                 </View>
 
                 <View style={styles.orbShell}>
-                  <View style={styles.orbAmbientGlow} />
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={[
+                      "rgba(255,255,255,0.70)",
+                      "rgba(255,240,212,0.30)",
+                      "rgba(215,154,89,0.10)",
+                      "rgba(215,154,89,0.00)",
+                    ]}
+                    start={{ x: 0.2, y: 0.08 }}
+                    end={{ x: 0.82, y: 1 }}
+                    style={styles.orbAmbientDisc}
+                  />
+                  <View pointerEvents="none" style={styles.orbAmbientGlow} />
+                  <View
+                    pointerEvents="none"
+                    style={styles.orbAmbientGlowSoft}
+                  />
                   <Orb
                     listening={listening}
                     onPressIn={handleOrbPressIn}
@@ -703,7 +721,7 @@ export default function Home() {
                     <Waveform active />
                   </View>
                 ) : null}
-              </GlassCard>
+              </View>
 
               {hasConversation ? (
                 <GlassCard style={styles.conversationCard}>
@@ -1228,9 +1246,21 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  heroCard: {
+  heroStage: {
     marginTop: 12,
-    borderRadius: 30,
+    paddingTop: 4,
+    paddingBottom: 18,
+    position: "relative",
+  },
+
+  heroAmbientTop: {
+    position: "absolute",
+    top: -40,
+    right: -16,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.22)",
   },
 
   heroHeaderRow: {
@@ -1302,18 +1332,35 @@ const styles = StyleSheet.create({
   },
 
   orbShell: {
-    marginTop: 26,
+    marginTop: 22,
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 230,
+    minHeight: 270,
+  },
+
+  orbAmbientDisc: {
+    position: "absolute",
+    width: 330,
+    height: 330,
+    borderRadius: 999,
   },
 
   orbAmbientGlow: {
     position: "absolute",
-    width: 240,
-    height: 240,
+    width: 272,
+    height: 272,
     borderRadius: 999,
     backgroundColor: "rgba(255, 229, 180, 0.18)",
+  },
+
+  orbAmbientGlowSoft: {
+    position: "absolute",
+    width: 236,
+    height: 236,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(214, 167, 113, 0.12)",
+    backgroundColor: "rgba(255,255,255,0.12)",
   },
 
   inlineWaveWrap: {
