@@ -5,7 +5,6 @@ import {
   Alert,
   Animated,
   Easing,
-  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -141,30 +140,10 @@ function formatHistoryTime(value?: string | null) {
   })} · ${timeText}`;
 }
 
-function SummaryStat({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: string;
-  icon: keyof typeof Ionicons.glyphMap;
-}) {
-  return (
-    <View style={styles.summaryStatCard}>
-      <View style={styles.summaryStatIcon}>
-        <Ionicons name={icon} size={16} color={Brand.bronze} />
-      </View>
-      <Text style={styles.summaryStatValue}>{value}</Text>
-      <Text style={styles.summaryStatLabel}>{label}</Text>
-    </View>
-  );
-}
-
 export default function Home() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
-  const { name, settings, profile, refresh } = useAssistant();
+  const { name, settings, profile } = useAssistant();
   const { signOutUser } = useAuth();
 
   const [text, setText] = useState("");
@@ -182,7 +161,6 @@ export default function Home() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [historyItems, setHistoryItems] = useState<Item[]>([]);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const recordingPhaseRef = useRef<
@@ -191,20 +169,12 @@ export default function Home() {
   const stopWhenReadyRef = useRef(false);
 
   const isSmallPhone = width < 370 || height < 760;
-  const isVerySmallPhone = width < 345 || height < 700;
-
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 8 : 12);
   const orbSize = clamp(width * 0.42, 156, 220);
-  const headlineSize = isVerySmallPhone ? 28 : isSmallPhone ? 31 : 35;
-  const headlineLineHeight = isVerySmallPhone ? 34 : isSmallPhone ? 38 : 42;
   const drawerWidth = Math.min(width * 0.86, 360);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
-  const composerBottom =
-    keyboardHeight > 0
-      ? keyboardHeight + 8
-      : Math.max(insets.bottom + 8, 16);
-  const pageBottomPadding = composerBottom + 132;
+  const pageBottomPadding = Math.max(insets.bottom + 32, 40);
 
   const drawerProgress = useRef(new Animated.Value(0)).current;
   const [drawerMounted, setDrawerMounted] = useState(false);
@@ -233,26 +203,6 @@ export default function Home() {
 
   const recentHistory = useMemo(() => historyItems.slice(0, 3), [historyItems]);
 
-  const stats = useMemo(() => {
-    const now = Date.now();
-
-    const upcoming = historyItems.filter((item) => {
-      if (!item.datetime) return false;
-      const date = new Date(item.datetime);
-      return !Number.isNaN(date.getTime()) && date.getTime() >= now;
-    }).length;
-
-    const reminders = historyItems.filter(
-      (item) => item.intent === "reminder"
-    ).length;
-
-    return {
-      upcoming,
-      reminders,
-      total: historyItems.length,
-    };
-  }, [historyItems]);
-
   const resultText = result?.details || result?.raw_text || "";
   const hasConversation = Boolean(lastPrompt || resultText || busy);
   const placeholder = listening
@@ -276,27 +226,6 @@ export default function Home() {
   useEffect(() => {
     recordingRef.current = recording;
   }, [recording]);
-
-  useEffect(() => {
-    const showEvent =
-      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvent =
-      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-
-    const showSub = Keyboard.addListener(showEvent, (event) => {
-      const heightValue = event.endCoordinates?.height ?? 0;
-      setKeyboardHeight(heightValue);
-    });
-
-    const hideSub = Keyboard.addListener(hideEvent, () => {
-      setKeyboardHeight(0);
-    });
-
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -773,23 +702,6 @@ export default function Home() {
                 </View>
               ) : null}
 
-              <View style={styles.summaryRow}>
-                <SummaryStat
-                  label="Total requests"
-                  value={String(stats.total)}
-                  icon="layers-outline"
-                />
-                <SummaryStat
-                  label="Upcoming"
-                  value={String(stats.upcoming)}
-                  icon="time-outline"
-                />
-                <SummaryStat
-                  label="Reminders"
-                  value={String(stats.reminders)}
-                  icon="notifications-outline"
-                />
-              </View>
             </GlassCard>
 
             <GlassCard style={styles.composerCard}>
@@ -952,42 +864,6 @@ export default function Home() {
 
           </View>
         </ScrollView>
-
-        <View
-          style={[
-            styles.bottomDock,
-            {
-              bottom: composerBottom,
-              paddingHorizontal: horizontalPadding,
-            },
-          ]}
-        >
-          <LinearGradient
-            colors={["rgba(255,255,255,0.82)", "rgba(255,240,213,0.84)"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={[
-              styles.bottomDockInner,
-              { width: "100%", maxWidth: contentMaxWidth },
-            ]}
-          >
-            <Pressable onPress={() => openDrawer()} style={styles.dockButton}>
-              <Ionicons name="time-outline" size={18} color={Brand.cocoa} />
-            </Pressable>
-
-            <Pressable
-              onPress={openSchedule}
-              style={styles.dockButtonPrimary}
-            >
-              <Ionicons
-                name="calendar-outline"
-                size={17}
-                color={Brand.ink}
-              />
-              <Text style={styles.dockButtonPrimaryText}>Schedule</Text>
-            </Pressable>
-          </LinearGradient>
-        </View>
 
         <Modal
           transparent
@@ -1423,48 +1299,6 @@ const styles = StyleSheet.create({
     borderColor: Brand.line,
   },
 
-  summaryRow: {
-    marginTop: 20,
-    flexDirection: "row",
-    gap: 10,
-    flexWrap: "wrap",
-  },
-
-  summaryStatCard: {
-    flexGrow: 1,
-    minWidth: 96,
-    flexBasis: 0,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.58)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  summaryStatIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.68)",
-    marginBottom: 12,
-  },
-
-  summaryStatValue: {
-    color: Brand.ink,
-    fontSize: 18,
-    fontWeight: "900",
-  },
-
-  summaryStatLabel: {
-    marginTop: 4,
-    color: Brand.muted,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-
   composerCard: {
     marginTop: 16,
     borderRadius: 28,
@@ -1767,60 +1601,6 @@ const styles = StyleSheet.create({
     color: Brand.muted,
     fontSize: 12,
     fontWeight: "600",
-  },
-
-  bottomDock: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    alignItems: "center",
-  },
-
-  bottomDockInner: {
-    minHeight: 72,
-    borderRadius: 26,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.56)",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    shadowColor: "#c78742",
-    shadowOpacity: 0.16,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 10,
-  },
-
-  dockButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.7)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  dockButtonPrimary: {
-    flex: 1,
-    minHeight: 48,
-    borderRadius: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: Brand.peach,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.56)",
-  },
-
-  dockButtonPrimaryText: {
-    color: Brand.ink,
-    fontSize: 14,
-    fontWeight: "900",
   },
 
   drawerModalRoot: {
