@@ -754,20 +754,7 @@ export default function Home() {
 
               <View style={styles.heroTextWrap}>
                 <Text style={styles.greeting}>{greeting}</Text>
-                <Text
-                  style={[
-                    styles.heroHeadline,
-                    {
-                      fontSize: headlineSize,
-                      lineHeight: headlineLineHeight,
-                    },
-                  ]}
-                >
-                  Everything you need to think, plan, and act.
-                </Text>
-                <Text style={styles.heroSubtitle}>
-                  Set reminders, capture ideas, and stay organized with ease.
-                </Text>
+          
               </View>
 
               <View style={styles.orbShell}>
