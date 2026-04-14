@@ -48,7 +48,10 @@ type BackendChatResponse = {
   } | null;
 };
 
-function normalizeChatResponse(payload: BackendChatResponse, fallbackRawText: string): Item {
+function normalizeChatResponse(
+  payload: BackendChatResponse,
+  fallbackRawText: string
+): Item {
   const item = payload?.item;
   if (item && typeof item === "object") {
     return {
@@ -146,7 +149,11 @@ export default function Home() {
   const { name, settings, profile } = useAssistant();
   const { signOutUser } = useAuth();
 
+  const minComposerInputHeight = 24;
   const [text, setText] = useState("");
+  const [composerInputHeight, setComposerInputHeight] = useState(
+    minComposerInputHeight
+  );
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [listening, setListening] = useState(false);
@@ -174,7 +181,8 @@ export default function Home() {
   const orbSize = clamp(width * 0.42, 156, 220);
   const drawerWidth = Math.min(width * 0.86, 360);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
-  const pageBottomPadding = Math.max(insets.bottom + 32, 40);
+  const composerBottomPadding = Math.max(insets.bottom + 12, 16);
+  const scrollBottomPadding = 28;
 
   const drawerProgress = useRef(new Animated.Value(0)).current;
   const [drawerMounted, setDrawerMounted] = useState(false);
@@ -201,13 +209,12 @@ export default function Home() {
     });
   }, [historyItems, historySearch]);
 
-  const recentHistory = useMemo(() => historyItems.slice(0, 3), [historyItems]);
-
   const resultText = result?.details || result?.raw_text || "";
   const hasConversation = Boolean(lastPrompt || resultText || busy);
   const placeholder = listening
     ? "Recording... release to stop and send"
     : `Message ${assistantLabel}`;
+  const maxComposerInputHeight = 220;
 
   const drawerTranslateX = drawerProgress.interpolate({
     inputRange: [0, 1],
@@ -341,6 +348,7 @@ export default function Home() {
       setLastPrompt(cleaned);
       setResult(nextItem);
       setText("");
+      setComposerInputHeight(minComposerInputHeight);
       await loadHistory();
       await Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success
@@ -569,6 +577,7 @@ export default function Home() {
     setResult(null);
     setLastPrompt("");
     setText("");
+    setComposerInputHeight(minComposerInputHeight);
   }
 
   function openHistoryItem(item: Item) {
@@ -623,247 +632,271 @@ export default function Home() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={0}
       >
-        <View
-          style={[
-            styles.topBar,
-            {
-              width: contentMaxWidth,
-              paddingTop: topPadding,
-              paddingHorizontal: 0,
-            },
-          ]}
-        >
-          <Pressable onPress={() => openDrawer()} style={styles.topIconBtn}>
-            <Ionicons name="menu" size={19} color={Brand.cocoa} />
-          </Pressable>
+        <View style={styles.screen}>
+          <View
+            style={[
+              styles.topBar,
+              {
+                width: contentMaxWidth,
+                paddingTop: topPadding,
+                paddingHorizontal: 0,
+                alignSelf: "center",
+              },
+            ]}
+          >
+            <Pressable onPress={() => openDrawer()} style={styles.topIconBtn}>
+              <Ionicons name="menu" size={19} color={Brand.cocoa} />
+            </Pressable>
 
-          <View style={styles.topBrandWrap}>
-            <View style={styles.topBrandPill}>
-              <Ionicons name="sparkles" size={13} color={Brand.bronze} />
-              <Text style={styles.topBrandText} numberOfLines={1}>
-                {assistantLabel}
-              </Text>
+            <View style={styles.topBrandWrap}>
+              <View style={styles.topBrandPill}>
+                <Ionicons name="sparkles" size={13} color={Brand.bronze} />
+                <Text style={styles.topBrandText} numberOfLines={1}>
+                  {assistantLabel}
+                </Text>
+              </View>
             </View>
+
+            <Pressable onPress={openRoutine} style={styles.topIconBtn}>
+              <Ionicons name="options-outline" size={18} color={Brand.cocoa} />
+            </Pressable>
           </View>
 
-          <Pressable onPress={openRoutine} style={styles.topIconBtn}>
-            <Ionicons name="options-outline" size={18} color={Brand.cocoa} />
-          </Pressable>
-        </View>
-
-        <ScrollView
-          contentContainerStyle={{
-            paddingHorizontal: horizontalPadding,
-            paddingTop: 8,
-            paddingBottom: pageBottomPadding,
-            alignItems: "center",
-          }}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
-            <GlassCard style={styles.heroCard}>
-              <View style={styles.heroHeaderRow}>
-
-                <View style={styles.heroStatusChip}>
-                  {busy ? (
-                    <ActivityIndicator size="small" color={Brand.bronze} />
-                  ) : (
-                    <Ionicons
-                      name="checkmark-circle"
-                      size={14}
-                      color={Brand.success}
-                    />
-                  )}
-                  <Text style={styles.heroStatusText}>
-                    {busy ? "Working" : "Ready"}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.heroTextWrap}>
-                <Text style={styles.greeting}>{greeting}</Text>
-          
-              </View>
-
-              <View style={styles.orbShell}>
-                <View style={styles.orbAmbientGlow} />
-                <Orb
-                  listening={listening}
-                  onPressIn={handleOrbPressIn}
-                  onPressOut={handleOrbPressOut}
-                  size={orbSize}
-                />
-              </View>
-
-              {listening ? (
-                <View style={styles.inlineWaveWrap}>
-                  <Waveform active />
-                </View>
-              ) : null}
-
-            </GlassCard>
-
-            <GlassCard style={styles.composerCard}>
-              <View style={styles.sectionHeaderRow}>
-                <View>
-                  <Text style={styles.sectionTitle}>Compose</Text>
+          <ScrollView
+            style={styles.scrollArea}
+            contentContainerStyle={{
+              flexGrow: 1,
+              paddingHorizontal: horizontalPadding,
+              paddingTop: 8,
+              paddingBottom: scrollBottomPadding,
+              alignItems: "center",
+            }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
+              <GlassCard style={styles.heroCard}>
+                <View style={styles.heroHeaderRow}>
+                  <View style={styles.heroStatusChip}>
+                    {busy ? (
+                      <ActivityIndicator size="small" color={Brand.bronze} />
+                    ) : (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={14}
+                        color={Brand.success}
+                      />
+                    )}
+                    <Text style={styles.heroStatusText}>
+                      {busy ? "Working" : "Ready"}
+                    </Text>
+                  </View>
                 </View>
 
-                <Pressable
-                  onPress={clearConversation}
-                  style={styles.ghostChip}
-                >
-                  <Ionicons
-                    name="refresh-outline"
-                    size={14}
-                    color={Brand.cocoa}
+                <View style={styles.heroTextWrap}>
+                  <Text style={styles.greeting}>{greeting}</Text>
+                </View>
+
+                <View style={styles.orbShell}>
+                  <View style={styles.orbAmbientGlow} />
+                  <Orb
+                    listening={listening}
+                    onPressIn={handleOrbPressIn}
+                    onPressOut={handleOrbPressOut}
+                    size={orbSize}
                   />
-                  <Text style={styles.ghostChipText}>Reset</Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.composerBox}>
-                <TextInput
-                  value={text}
-                  onChangeText={setText}
-                  placeholder={placeholder}
-                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
-                  multiline
-                  textAlignVertical="top"
-                  style={styles.composerInput}
-                />
-
-                <View style={styles.composerActionsRow}>
-                  <View style={styles.composerHintWrap}>
-                    <Ionicons
-                      name={listening ? "radio" : "chatbubble-ellipses-outline"}
-                      size={14}
-                      color={Brand.muted}
-                    />
-                    <Text style={styles.composerHintText}>
-                      {listening
-                        ? "Recording... release to stop and send"
-                        : "Press and hold the orb to record"}
-                    </Text>
-                  </View>
-
-                  <View style={styles.composerButtonsWrap}>
-                    <Pressable
-                      onPress={analyzeText}
-                      disabled={busy || !text.trim()}
-                      style={[
-                        styles.composerActionBtn,
-                        text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
-                      ]}
-                    >
-                      {busy ? (
-                        <ActivityIndicator size="small" color={Brand.ink} />
-                      ) : (
-                        <Ionicons
-                          name="arrow-up"
-                          size={18}
-                          color={
-                            text.trim()
-                              ? Brand.ink
-                              : "rgba(124, 99, 80, 0.48)"
-                          }
-                        />
-                      )}
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-            </GlassCard>
-
-            {hasConversation ? (
-              <GlassCard style={styles.conversationCard}>
-                <View style={styles.sectionHeaderRow}>
-                  <View>
-                    <Text style={styles.sectionTitle}>Current response</Text>
-                    <Text style={styles.sectionSubtitle}>
-                      Everything from your current request, in one place.
-                    </Text>
-                  </View>
-
-                  <View style={styles.intentChip}>
-                    <Ionicons
-                      name="sparkles-outline"
-                      size={14}
-                      color={Brand.bronze}
-                    />
-                    <Text style={styles.intentChipText}>
-                      {formatIntentLabel(result?.intent)}
-                    </Text>
-                  </View>
                 </View>
 
-                {lastPrompt ? (
-                  <View style={styles.promptCard}>
-                    <Text style={styles.promptLabel}>You</Text>
-                    <Text style={styles.promptText}>{lastPrompt}</Text>
+                {listening ? (
+                  <View style={styles.inlineWaveWrap}>
+                    <Waveform active />
                   </View>
                 ) : null}
+              </GlassCard>
 
-                <View style={styles.responseCard}>
-                  <View style={styles.responseHeaderRow}>
+              {hasConversation ? (
+                <GlassCard style={styles.conversationCard}>
+                  <View style={styles.sectionHeaderRow}>
                     <View>
-                      <Text style={styles.responseName}>{assistantLabel}</Text>
-                      <Text style={styles.responseMeta}>
-                        {busy && !resultText
-                          ? "Analyzing your request"
-                          : "Response ready"}
+                      <Text style={styles.sectionTitle}>Current response</Text>
+                      <Text style={styles.sectionSubtitle}>
+                        Everything from your current request, in one place.
                       </Text>
                     </View>
 
-                    <View style={styles.responseBadge}>
+                    <View style={styles.intentChip}>
                       <Ionicons
-                        name="sparkles"
+                        name="sparkles-outline"
                         size={14}
                         color={Brand.bronze}
                       />
+                      <Text style={styles.intentChipText}>
+                        {formatIntentLabel(result?.intent)}
+                      </Text>
                     </View>
                   </View>
 
-                  <Text style={styles.responseText}>
-                    {busy && !resultText
-                      ? "Thinking..."
-                      : resultText || "No response yet."}
-                  </Text>
+                  {lastPrompt ? (
+                    <View style={styles.promptCard}>
+                      <Text style={styles.promptLabel}>You</Text>
+                      <Text style={styles.promptText}>{lastPrompt}</Text>
+                    </View>
+                  ) : null}
 
-                  <View style={styles.responseChipsRow}>
-                    {result?.datetime ? (
-                      <View style={styles.metaChip}>
+                  <View style={styles.responseCard}>
+                    <View style={styles.responseHeaderRow}>
+                      <View>
+                        <Text style={styles.responseName}>{assistantLabel}</Text>
+                        <Text style={styles.responseMeta}>
+                          {busy && !resultText
+                            ? "Analyzing your request"
+                            : "Response ready"}
+                        </Text>
+                      </View>
+
+                      <View style={styles.responseBadge}>
                         <Ionicons
-                          name="time-outline"
+                          name="sparkles"
                           size={14}
                           color={Brand.bronze}
                         />
-                        <Text style={styles.metaChipText}>
-                          {result.datetime}
-                        </Text>
                       </View>
-                    ) : null}
+                    </View>
 
-                    {result?.category ? (
-                      <View style={styles.metaChip}>
+                    <Text style={styles.responseText}>
+                      {busy && !resultText
+                        ? "Thinking..."
+                        : resultText || "No response yet."}
+                    </Text>
+
+                    <View style={styles.responseChipsRow}>
+                      {result?.datetime ? (
+                        <View style={styles.metaChip}>
+                          <Ionicons
+                            name="time-outline"
+                            size={14}
+                            color={Brand.bronze}
+                          />
+                          <Text style={styles.metaChipText}>
+                            {result.datetime}
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {result?.category ? (
+                        <View style={styles.metaChip}>
+                          <Ionicons
+                            name="albums-outline"
+                            size={14}
+                            color={Brand.bronze}
+                          />
+                          <Text style={styles.metaChipText}>
+                            {formatIntentLabel(result.category)}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+                </GlassCard>
+              ) : null}
+            </View>
+          </ScrollView>
+
+          <View
+            style={[
+              styles.bottomComposerShell,
+              {
+                paddingHorizontal: horizontalPadding,
+                paddingBottom: composerBottomPadding,
+              },
+            ]}
+          >
+            <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
+              <View style={styles.composerWrap}>
+                <View style={styles.composerBox}>
+                  <TextInput
+                    value={text}
+                    onChangeText={setText}
+                    placeholder={placeholder}
+                    placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                    multiline
+                    scrollEnabled={composerInputHeight >= maxComposerInputHeight}
+                    textAlignVertical="top"
+                    onContentSizeChange={(event) => {
+                      const measuredHeight = Math.ceil(
+                        event.nativeEvent.contentSize.height
+                      );
+                      const nextHeight = clamp(
+                        measuredHeight,
+                        minComposerInputHeight,
+                        maxComposerInputHeight
+                      );
+                      setComposerInputHeight(nextHeight);
+                    }}
+                    style={[
+                      styles.composerInput,
+                      { height: composerInputHeight },
+                    ]}
+                  />
+
+                  <View style={styles.composerActionsRow}>
+                    <View style={styles.composerHintWrap}>
+                      <Ionicons
+                        name={
+                          listening ? "radio" : "chatbubble-ellipses-outline"
+                        }
+                        size={14}
+                        color={Brand.muted}
+                      />
+                      <Text style={styles.composerHintText}>
+                        {listening
+                          ? "Recording... release to stop and send"
+                          : "Press and hold the orb to record"}
+                      </Text>
+                    </View>
+
+                    <View style={styles.composerButtonsWrap}>
+                      <Pressable
+                        onPress={clearConversation}
+                        style={styles.composerSecondaryBtn}
+                        accessibilityLabel="Clear message"
+                      >
                         <Ionicons
-                          name="albums-outline"
-                          size={14}
-                          color={Brand.bronze}
+                          name="refresh-outline"
+                          size={16}
+                          color={Brand.cocoa}
                         />
-                        <Text style={styles.metaChipText}>
-                          {formatIntentLabel(result.category)}
-                        </Text>
-                      </View>
-                    ) : null}
+                      </Pressable>
+
+                      <Pressable
+                        onPress={analyzeText}
+                        disabled={busy || !text.trim()}
+                        style={[
+                          styles.composerActionBtn,
+                          text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
+                        ]}
+                      >
+                        {busy ? (
+                          <ActivityIndicator size="small" color={Brand.ink} />
+                        ) : (
+                          <Ionicons
+                            name="arrow-up"
+                            size={18}
+                            color={
+                              text.trim()
+                                ? Brand.ink
+                                : "rgba(124, 99, 80, 0.48)"
+                            }
+                          />
+                        )}
+                      </Pressable>
+                    </View>
                   </View>
                 </View>
-              </GlassCard>
-            ) : null}
-
+              </View>
+            </View>
           </View>
-        </ScrollView>
+        </View>
 
         <Modal
           transparent
@@ -1122,6 +1155,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  scrollArea: {
+    flex: 1,
+  },
+
   topGlow: {
     position: "absolute",
     top: -100,
@@ -1299,9 +1336,14 @@ const styles = StyleSheet.create({
     borderColor: Brand.line,
   },
 
-  composerCard: {
-    marginTop: 16,
-    borderRadius: 28,
+  bottomComposerShell: {
+    width: "100%",
+    alignItems: "center",
+    paddingTop: 12,
+  },
+
+  composerWrap: {
+    marginTop: 0,
   },
 
   sectionHeaderRow: {
@@ -1344,7 +1386,6 @@ const styles = StyleSheet.create({
   },
 
   composerBox: {
-    marginTop: 18,
     padding: 14,
     borderRadius: 24,
     backgroundColor: "rgba(255,255,255,0.62)",
@@ -1353,13 +1394,12 @@ const styles = StyleSheet.create({
   },
 
   composerInput: {
-    minHeight: 112,
-    maxHeight: 180,
     color: Brand.ink,
     fontSize: 15,
     fontWeight: "500",
     lineHeight: 22,
-    paddingTop: 4,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
 
   composerActionsRow: {
@@ -1398,6 +1438,17 @@ const styles = StyleSheet.create({
     borderRadius: 23,
     alignItems: "center",
     justifyContent: "center",
+  },
+
+  composerSecondaryBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
   },
 
   sendBtn: {
