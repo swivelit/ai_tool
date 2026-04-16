@@ -233,26 +233,6 @@ export default function SignupScreen() {
             </Pressable>
 
             <View style={styles.headerBlock}>
-              <View style={styles.titlePill}>
-                <Ionicons
-                  name="person-add-outline"
-                  size={14}
-                  color={Brand.bronze}
-                />
-                <Text style={styles.titlePillText}>Create your account</Text>
-              </View>
-
-              <Text
-                style={[
-                  styles.title,
-                  {
-                    fontSize: isVeryCompact ? 30 : isCompact ? 34 : 38,
-                    lineHeight: isVeryCompact ? 36 : isCompact ? 39 : 44,
-                  },
-                ]}
-              >
-                Start here and make it yours.
-              </Text>
 
             </View>
 
@@ -260,9 +240,6 @@ export default function SignupScreen() {
               <View style={styles.cardHeaderRow}>
                 <View>
                   <Text style={styles.cardTitle}>Create account</Text>
-                  <Text style={styles.cardSubtitle}>
-                    Sign up and keep going.
-                  </Text>
                 </View>
               </View>
 
@@ -458,48 +435,6 @@ export default function SignupScreen() {
                   )}
                 </LinearGradient>
               </Pressable>
-
-              {__DEV__ ? (
-                <View style={styles.devCard}>
-                  <View style={styles.devCardHeader}>
-                    <View style={styles.devCardBadge}>
-                      <Ionicons
-                        name="flask-outline"
-                        size={14}
-                        color={Brand.bronze}
-                      />
-                      <Text style={styles.devCardBadgeText}>Dev only</Text>
-                    </View>
-                    <Text style={styles.devCardTitle}>Fresh test signup</Text>
-                  </View>
-
-                  <Text style={styles.devCardCopy}>
-                    Creates a brand-new temporary account so you can test sign up and onboarding again.
-                  </Text>
-
-                  <View style={styles.devCredentialRow}>
-                    <Text style={styles.devCredentialLabel}>Password</Text>
-                    <Text style={styles.devCredentialValue}>{DEV_TEST_PASSWORD}</Text>
-                  </View>
-
-                  <Text style={styles.devHint}>
-                    Each tap generates a new email automatically and routes into onboarding.
-                  </Text>
-
-                  <Pressable
-                    onPress={handleDevSignup}
-                    disabled={busy}
-                    style={({ pressed }) => [
-                      styles.devButton,
-                      pressed && styles.pressed,
-                      busy && styles.disabled,
-                    ]}
-                  >
-                    <Ionicons name="sparkles-outline" size={16} color={Brand.ink} />
-                    <Text style={styles.devButtonText}>Create fresh test account</Text>
-                  </Pressable>
-                </View>
-              ) : null}
 
               <View style={styles.dividerRow}>
                 <View style={styles.dividerLine} />
