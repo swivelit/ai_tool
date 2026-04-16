@@ -317,48 +317,6 @@ export default function LoginScreen() {
                 </LinearGradient>
               </Pressable>
 
-              {__DEV__ ? (
-                <View style={styles.devCard}>
-                  <View style={styles.devCardHeader}>
-                    <View style={styles.devCardBadge}>
-                      <Ionicons
-                        name="flask-outline"
-                        size={14}
-                        color={Brand.bronze}
-                      />
-                      <Text style={styles.devCardBadgeText}>Dev only</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.devCredentialRow}>
-                    <Text style={styles.devCredentialLabel}>Test ID</Text>
-                    <Text style={styles.devCredentialValue}>
-                      {DEV_TEST_ACCOUNT.email}
-                    </Text>
-                  </View>
-
-                  <View style={styles.devCredentialRow}>
-                    <Text style={styles.devCredentialLabel}>Password</Text>
-                    <Text style={styles.devCredentialValue}>
-                      {DEV_TEST_ACCOUNT.password}
-                    </Text>
-                  </View>
-
-                  <Pressable
-                    onPress={handleDevLogin}
-                    disabled={busy}
-                    style={({ pressed }) => [
-                      styles.devButton,
-                      pressed && styles.pressed,
-                      busy && styles.disabled,
-                    ]}
-                  >
-                    <Ionicons name="flash-outline" size={16} color={Brand.ink} />
-                    <Text style={styles.devButtonText}>Use test account</Text>
-                  </Pressable>
-                </View>
-              ) : null}
-
               <View style={styles.dividerRow}>
                 <View style={styles.dividerLine} />
                 <Text style={styles.dividerText}>or continue with</Text>
