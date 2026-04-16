@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { saveScheduledTask } from "@/lib/localAgents";
 import {
   ActivityIndicator,
   Alert,
@@ -30,16 +29,28 @@ import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
-import { parseDatetime } from "@/lib/datetime";
 import { apiGet, apiPost, apiPostForm } from "@/lib/api";
+import { parseDatetime } from "@/lib/datetime";
+import { saveScheduledTask } from "@/lib/localAgents";
 import { scheduleReminder } from "@/lib/reminders";
 import { Item } from "@/lib/types";
 
-type AnalyzeResponse = Item;
+type ChatHistoryItem = Item & {
+  created_at?: string | null;
+  source?: string | null;
+};
+
+type ConversationGroup = {
+  id: string;
+  items: ChatHistoryItem[];
+  title: string;
+  preview: string;
+  updatedAt: string | null;
+};
 
 type BackendChatResponse = {
   ok?: boolean;
-  item?: Item | null;
+  item?: (Item & { created_at?: string | null; source?: string | null }) | null;
   assistant?: {
     text?: string;
     english?: string;
@@ -48,53 +59,15 @@ type BackendChatResponse = {
   } | null;
 };
 
-function normalizeChatResponse(
-  payload: BackendChatResponse,
-  fallbackRawText: string
-): Item {
-  const item = payload?.item;
-  if (item && typeof item === "object") {
-    return {
-      id: Number(item.id || Date.now()),
-      intent: String(item.intent || "assistant"),
-      category: String(item.category || "Other"),
-      raw_text: String(item.raw_text || fallbackRawText || ""),
-      transcript: item.transcript ?? null,
-      datetime: item.datetime ?? null,
-      title: item.title ?? null,
-      details:
-        item.details ||
-        payload?.assistant?.text ||
-        payload?.assistant?.theni_tamil ||
-        payload?.assistant?.tamil ||
-        payload?.assistant?.english ||
-        item.raw_text ||
-        fallbackRawText,
-    };
-  }
-
-  return {
-    id: Date.now(),
-    intent: "assistant",
-    category: "Other",
-    raw_text: fallbackRawText,
-    transcript: null,
-    datetime: null,
-    title: "Assistant",
-    details:
-      payload?.assistant?.text ||
-      payload?.assistant?.theni_tamil ||
-      payload?.assistant?.tamil ||
-      payload?.assistant?.english ||
-      fallbackRawText,
-  };
-}
-
 type PendingReminder = {
   title: string;
   details: string;
   datetimeText: string;
 };
+
+const CONTINUATION_WINDOW_MS = 30 * 60 * 1000;
+const MIN_INPUT_HEIGHT = 24;
+const MAX_INPUT_HEIGHT = 220;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -116,6 +89,17 @@ function formatIntentLabel(value?: string | null) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function toMillis(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.getTime();
+}
+
+function getHistoryTimestamp(item: ChatHistoryItem) {
+  return item.created_at || item.datetime || null;
 }
 
 function formatHistoryTime(value?: string | null) {
@@ -143,37 +127,146 @@ function formatHistoryTime(value?: string | null) {
   })} · ${timeText}`;
 }
 
+function formatConversationCount(count: number) {
+  return `${count} ${count === 1 ? "turn" : "turns"}`;
+}
+
+function buildConversationGroups(items: ChatHistoryItem[]): ConversationGroup[] {
+  if (!items.length) return [];
+
+  const sorted = [...items].sort((left, right) => {
+    const leftTime = toMillis(getHistoryTimestamp(left)) ?? 0;
+    const rightTime = toMillis(getHistoryTimestamp(right)) ?? 0;
+
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    return left.id - right.id;
+  });
+
+  const groups: ConversationGroup[] = [];
+  let current: ChatHistoryItem[] = [];
+  let lastTime: number | null = null;
+
+  const flush = () => {
+    if (!current.length) return;
+
+    const first = current[0];
+    const latest = current[current.length - 1];
+
+    groups.push({
+      id: `conversation-${first.id}-${latest.id}`,
+      items: [...current],
+      title: first.raw_text || first.title || "Untitled conversation",
+      preview: latest.details || latest.raw_text || "No response yet",
+      updatedAt: getHistoryTimestamp(latest),
+    });
+
+    current = [];
+    lastTime = null;
+  };
+
+  for (const item of sorted) {
+    const currentTime = toMillis(getHistoryTimestamp(item));
+
+    if (!current.length) {
+      current = [item];
+      lastTime = currentTime;
+      continue;
+    }
+
+    const isContinuous =
+      currentTime !== null &&
+      lastTime !== null &&
+      currentTime >= lastTime &&
+      currentTime - lastTime <= CONTINUATION_WINDOW_MS;
+
+    if (!isContinuous) {
+      flush();
+      current = [item];
+      lastTime = currentTime;
+      continue;
+    }
+
+    current.push(item);
+    lastTime = currentTime;
+  }
+
+  flush();
+  return groups.reverse();
+}
+
+function normalizeChatResponse(
+  payload: BackendChatResponse,
+  fallbackRawText: string
+): ChatHistoryItem {
+  const item = payload?.item;
+
+  if (item && typeof item === "object") {
+    return {
+      id: Number(item.id || Date.now()),
+      intent: String(item.intent || "assistant"),
+      category: String(item.category || "Other"),
+      raw_text: String(item.raw_text || fallbackRawText || ""),
+      transcript: item.transcript ?? null,
+      datetime: item.datetime ?? null,
+      title: item.title ?? null,
+      details:
+        item.details ||
+        payload?.assistant?.text ||
+        payload?.assistant?.theni_tamil ||
+        payload?.assistant?.tamil ||
+        payload?.assistant?.english ||
+        item.raw_text ||
+        fallbackRawText,
+      created_at: item.created_at ?? new Date().toISOString(),
+      source: item.source ?? "text",
+    };
+  }
+
+  return {
+    id: Date.now(),
+    intent: "assistant",
+    category: "Other",
+    raw_text: fallbackRawText,
+    transcript: null,
+    datetime: null,
+    title: "Assistant",
+    details:
+      payload?.assistant?.text ||
+      payload?.assistant?.theni_tamil ||
+      payload?.assistant?.tamil ||
+      payload?.assistant?.english ||
+      fallbackRawText,
+    created_at: new Date().toISOString(),
+    source: "text",
+  };
+}
+
 export default function Home() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const { name, settings, profile } = useAssistant();
   const { signOutUser } = useAuth();
 
-  const minComposerInputHeight = 24;
   const [text, setText] = useState("");
-  const [composerInputHeight, setComposerInputHeight] = useState(
-    minComposerInputHeight
-  );
+  const [composerInputHeight, setComposerInputHeight] =
+    useState(MIN_INPUT_HEIGHT);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [listening, setListening] = useState(false);
-
-  const [result, setResult] = useState<AnalyzeResponse | null>(null);
-  const [lastPrompt, setLastPrompt] = useState("");
-
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingReminder, setPendingReminder] =
     useState<PendingReminder | null>(null);
-
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
-  const [historyItems, setHistoryItems] = useState<Item[]>([]);
+  const [historyItems, setHistoryItems] = useState<ChatHistoryItem[]>([]);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const recordingPhaseRef = useRef<
     "idle" | "starting" | "recording" | "stopping"
   >("idle");
   const stopWhenReadyRef = useRef(false);
+  const drawerProgress = useRef(new Animated.Value(0)).current;
+  const [drawerMounted, setDrawerMounted] = useState(false);
 
   const isSmallPhone = width < 370 || height < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
@@ -183,9 +276,6 @@ export default function Home() {
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
   const composerBottomPadding = Math.max(insets.bottom + 12, 16);
   const scrollBottomPadding = 28;
-
-  const drawerProgress = useRef(new Animated.Value(0)).current;
-  const [drawerMounted, setDrawerMounted] = useState(false);
 
   const greetingName = useMemo(
     () => (profile?.name || "there").trim(),
@@ -197,25 +287,6 @@ export default function Home() {
     [greetingName]
   );
 
-  const filteredHistory = useMemo(() => {
-    const query = historySearch.trim().toLowerCase();
-    if (!query) return historyItems.slice(0, 24);
-
-    return historyItems.filter((item) => {
-      const blob = `${item.title || ""} ${item.details || ""} ${
-        item.raw_text || ""
-      } ${item.intent || ""}`.toLowerCase();
-      return blob.includes(query);
-    });
-  }, [historyItems, historySearch]);
-
-  const resultText = result?.details || result?.raw_text || "";
-  const hasConversation = Boolean(lastPrompt || resultText || busy);
-  const placeholder = listening
-    ? "Recording... release to stop and send"
-    : `Message ${assistantLabel}`;
-  const maxComposerInputHeight = 220;
-
   const drawerTranslateX = drawerProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [-drawerWidth - 28, 0],
@@ -225,6 +296,33 @@ export default function Home() {
     inputRange: [0, 1],
     outputRange: [0, 1],
   });
+
+  const conversationGroups = useMemo(
+    () => buildConversationGroups(historyItems),
+    [historyItems]
+  );
+
+  const filteredHistory = useMemo(() => {
+    const query = historySearch.trim().toLowerCase();
+    if (!query) return conversationGroups.slice(0, 24);
+
+    return conversationGroups.filter((group) => {
+      const blob = group.items
+        .map((item) =>
+          `${item.title || ""} ${item.details || ""} ${item.raw_text || ""} ${
+            item.intent || ""
+          } ${item.category || ""}`
+        )
+        .join(" ")
+        .toLowerCase();
+
+      return blob.includes(query);
+    });
+  }, [conversationGroups, historySearch]);
+
+  const placeholder = listening
+    ? "Recording... release to stop and send"
+    : `Message ${assistantLabel}`;
 
   useEffect(() => {
     void loadHistory();
@@ -285,14 +383,14 @@ export default function Home() {
         playsInSilentModeIOS: false,
       });
     } catch {
-      // Ignore cleanup failures.
+      // ignore
     }
   }
 
   async function loadHistory() {
     try {
       const suffix = profile?.userId ? `?user_id=${profile.userId}` : "";
-      const data = await apiGet<Item[]>(`/items${suffix}`);
+      const data = await apiGet<ChatHistoryItem[]>(`/items${suffix}`);
       setHistoryItems(Array.isArray(data) ? data : []);
     } catch {
       setHistoryItems([]);
@@ -335,21 +433,18 @@ export default function Home() {
       setBusy(true);
 
       const cleaned = stripAssistantTrigger(text);
-      setLastPrompt(cleaned);
-
       const response = await apiPost<BackendChatResponse>("/api/chat", {
-        user_id: profile?.userId ?? undefined,
+        user_id: profile.userId,
         message: cleaned,
         reply_language: settings.languageMode,
       });
 
       const nextItem = normalizeChatResponse(response, cleaned);
 
-      setLastPrompt(cleaned);
-      setResult(nextItem);
       setText("");
-      setComposerInputHeight(minComposerInputHeight);
+      setComposerInputHeight(MIN_INPUT_HEIGHT);
       await loadHistory();
+      openDrawer();
       await Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success
       );
@@ -442,10 +537,7 @@ export default function Home() {
       await resetAudioMode();
 
       const uri = activeRecording.getURI();
-
-      if (!uri) {
-        throw new Error("No audio file URI");
-      }
+      if (!uri) throw new Error("No audio file URI");
 
       const form = new FormData();
       form.append(
@@ -457,16 +549,15 @@ export default function Home() {
         } as any
       );
 
-      const res = await apiPostForm<AnalyzeResponse>(
+      const res = await apiPostForm<Item>(
         `/transcribe-and-analyze?user_id=${
           profile?.userId ?? ""
         }&reply_language=${settings.languageMode}`,
         form
       );
 
-      setLastPrompt(res.transcript || "Voice request");
-      setResult(res);
       await loadHistory();
+      openDrawer();
       await Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success
       );
@@ -492,12 +583,12 @@ export default function Home() {
     }
   }
 
-  async function handleHoldPressIn() {
+  async function handleOrbPressIn() {
     if (busy || recordingPhaseRef.current !== "idle") return;
     await startRecording();
   }
 
-  async function handleHoldPressOut() {
+  async function handleOrbPressOut() {
     if (
       recordingPhaseRef.current === "starting" ||
       recordingPhaseRef.current === "recording"
@@ -506,24 +597,13 @@ export default function Home() {
     }
   }
 
-  async function handleOrbPressIn() {
-    await handleHoldPressIn();
-  }
-
-  async function handleOrbPressOut() {
-    await handleHoldPressOut();
-  }
-
   async function confirmScheduleReminder() {
     if (!pendingReminder || !profile?.userId) return;
 
     try {
       setBusy(true);
       const timezone = profile?.timezone || "Asia/Kolkata";
-      const parsed = await parseDatetime(
-        pendingReminder.datetimeText,
-        timezone
-      );
+      const parsed = await parseDatetime(pendingReminder.datetimeText, timezone);
 
       if (!parsed.iso || parsed.confidence < 0.35) {
         Alert.alert(
@@ -573,17 +653,17 @@ export default function Home() {
     }
   }
 
-  function clearConversation() {
-    setResult(null);
-    setLastPrompt("");
+  function clearComposer() {
     setText("");
-    setComposerInputHeight(minComposerInputHeight);
+    setComposerInputHeight(MIN_INPUT_HEIGHT);
   }
 
-  function openHistoryItem(item: Item) {
-    setLastPrompt(item.raw_text || item.title || "");
-    setResult(item);
+  function openHistoryItem(group: ConversationGroup) {
+    const latestItem = group.items[group.items.length - 1];
+    if (!latestItem) return;
+
     closeDrawer();
+    router.push(`/item/${latestItem.id}`);
   }
 
   function openSchedule() {
@@ -605,10 +685,6 @@ export default function Home() {
         onPress: async () => {
           try {
             await signOutUser();
-            // Do not call refresh() here.
-            // Do not call closeDrawer() here after sign-out.
-            // Do not call router.replace("/") here.
-            // Root app/_layout.tsx RouteGate should handle navigation.
           } catch (error: any) {
             Alert.alert("Error", error?.message || "Failed to sign out.");
           }
@@ -639,12 +715,11 @@ export default function Home() {
               {
                 width: contentMaxWidth,
                 paddingTop: topPadding,
-                paddingHorizontal: 0,
                 alignSelf: "center",
               },
             ]}
           >
-            <Pressable onPress={() => openDrawer()} style={styles.topIconBtn}>
+            <Pressable onPress={openDrawer} style={styles.topIconBtn}>
               <Ionicons name="menu" size={19} color={Brand.cocoa} />
             </Pressable>
 
@@ -722,92 +797,6 @@ export default function Home() {
                   </View>
                 ) : null}
               </View>
-
-              {hasConversation ? (
-                <GlassCard style={styles.conversationCard}>
-                  <View style={styles.sectionHeaderRow}>
-                    <View>
-                      <Text style={styles.sectionTitle}>Current response</Text>
-                      <Text style={styles.sectionSubtitle}>
-                        Everything from your current request, in one place.
-                      </Text>
-                    </View>
-
-                    <View style={styles.intentChip}>
-                      <Ionicons
-                        name="sparkles-outline"
-                        size={14}
-                        color={Brand.bronze}
-                      />
-                      <Text style={styles.intentChipText}>
-                        {formatIntentLabel(result?.intent)}
-                      </Text>
-                    </View>
-                  </View>
-
-                  {lastPrompt ? (
-                    <View style={styles.promptCard}>
-                      <Text style={styles.promptLabel}>You</Text>
-                      <Text style={styles.promptText}>{lastPrompt}</Text>
-                    </View>
-                  ) : null}
-
-                  <View style={styles.responseCard}>
-                    <View style={styles.responseHeaderRow}>
-                      <View>
-                        <Text style={styles.responseName}>{assistantLabel}</Text>
-                        <Text style={styles.responseMeta}>
-                          {busy && !resultText
-                            ? "Analyzing your request"
-                            : "Response ready"}
-                        </Text>
-                      </View>
-
-                      <View style={styles.responseBadge}>
-                        <Ionicons
-                          name="sparkles"
-                          size={14}
-                          color={Brand.bronze}
-                        />
-                      </View>
-                    </View>
-
-                    <Text style={styles.responseText}>
-                      {busy && !resultText
-                        ? "Thinking..."
-                        : resultText || "No response yet."}
-                    </Text>
-
-                    <View style={styles.responseChipsRow}>
-                      {result?.datetime ? (
-                        <View style={styles.metaChip}>
-                          <Ionicons
-                            name="time-outline"
-                            size={14}
-                            color={Brand.bronze}
-                          />
-                          <Text style={styles.metaChipText}>
-                            {result.datetime}
-                          </Text>
-                        </View>
-                      ) : null}
-
-                      {result?.category ? (
-                        <View style={styles.metaChip}>
-                          <Ionicons
-                            name="albums-outline"
-                            size={14}
-                            color={Brand.bronze}
-                          />
-                          <Text style={styles.metaChipText}>
-                            {formatIntentLabel(result.category)}
-                          </Text>
-                        </View>
-                      ) : null}
-                    </View>
-                  </View>
-                </GlassCard>
-              ) : null}
             </View>
           </ScrollView>
 
@@ -821,85 +810,83 @@ export default function Home() {
             ]}
           >
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
-              <View style={styles.composerWrap}>
-                <View style={styles.composerBox}>
-                  <TextInput
-                    value={text}
-                    onChangeText={setText}
-                    placeholder={placeholder}
-                    placeholderTextColor="rgba(124, 99, 80, 0.55)"
-                    multiline
-                    scrollEnabled={composerInputHeight >= maxComposerInputHeight}
-                    textAlignVertical="top"
-                    onContentSizeChange={(event) => {
-                      const measuredHeight = Math.ceil(
-                        event.nativeEvent.contentSize.height
-                      );
-                      const nextHeight = clamp(
-                        measuredHeight,
-                        minComposerInputHeight,
-                        maxComposerInputHeight
-                      );
-                      setComposerInputHeight(nextHeight);
-                    }}
-                    style={[
-                      styles.composerInput,
-                      { height: composerInputHeight },
-                    ]}
-                  />
+              <View style={styles.composerBox}>
+                <TextInput
+                  value={text}
+                  onChangeText={setText}
+                  placeholder={placeholder}
+                  placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                  multiline
+                  scrollEnabled={composerInputHeight >= MAX_INPUT_HEIGHT}
+                  textAlignVertical="top"
+                  onContentSizeChange={(event) => {
+                    const measuredHeight = Math.ceil(
+                      event.nativeEvent.contentSize.height
+                    );
+                    const nextHeight = clamp(
+                      measuredHeight,
+                      MIN_INPUT_HEIGHT,
+                      MAX_INPUT_HEIGHT
+                    );
+                    setComposerInputHeight(nextHeight);
+                  }}
+                  style={[
+                    styles.composerInput,
+                    { height: composerInputHeight },
+                  ]}
+                />
 
-                  <View style={styles.composerActionsRow}>
-                    <View style={styles.composerHintWrap}>
+                <View style={styles.composerActionsRow}>
+                  <View style={styles.composerHintWrap}>
+                    <Ionicons
+                      name={
+                        listening ? "radio" : "chatbubble-ellipses-outline"
+                      }
+                      size={14}
+                      color={Brand.muted}
+                    />
+                    <Text style={styles.composerHintText}>
+                      {listening
+                        ? "Recording... release to stop and send"
+                        : "Send text or hold the orb for voice"}
+                    </Text>
+                  </View>
+
+                  <View style={styles.composerButtonsWrap}>
+                    <Pressable
+                      onPress={clearComposer}
+                      style={styles.composerSecondaryBtn}
+                      accessibilityLabel="Clear message"
+                    >
                       <Ionicons
-                        name={
-                          listening ? "radio" : "chatbubble-ellipses-outline"
-                        }
-                        size={14}
-                        color={Brand.muted}
+                        name="refresh-outline"
+                        size={16}
+                        color={Brand.cocoa}
                       />
-                      <Text style={styles.composerHintText}>
-                        {listening
-                          ? "Recording... release to stop and send"
-                          : "Press and hold the orb to record"}
-                      </Text>
-                    </View>
+                    </Pressable>
 
-                    <View style={styles.composerButtonsWrap}>
-                      <Pressable
-                        onPress={clearConversation}
-                        style={styles.composerSecondaryBtn}
-                        accessibilityLabel="Clear message"
-                      >
+                    <Pressable
+                      onPress={analyzeText}
+                      disabled={busy || !text.trim()}
+                      style={[
+                        styles.composerActionBtn,
+                        text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
+                      ]}
+                    >
+                      {busy ? (
+                        <ActivityIndicator size="small" color={Brand.ink} />
+                      ) : (
                         <Ionicons
-                          name="refresh-outline"
-                          size={16}
-                          color={Brand.cocoa}
+                          name="arrow-up"
+                          size={18}
+                          color={
+                            text.trim()
+                              ? Brand.ink
+                              : "rgba(124, 99, 80, 0.48)"
+                          }
                         />
-                      </Pressable>
-
-                      <Pressable
-                        onPress={analyzeText}
-                        disabled={busy || !text.trim()}
-                        style={[
-                          styles.composerActionBtn,
-                          text.trim() ? styles.sendBtn : styles.sendBtnDisabled,
-                        ]}
-                      >
-                        {busy ? (
-                          <ActivityIndicator size="small" color={Brand.ink} />
-                        ) : (
-                          <Ionicons
-                            name="arrow-up"
-                            size={18}
-                            color={
-                              text.trim()
-                                ? Brand.ink
-                                : "rgba(124, 99, 80, 0.48)"
-                            }
-                          />
-                        )}
-                      </Pressable>
-                    </View>
+                      )}
+                    </Pressable>
                   </View>
                 </View>
               </View>
@@ -954,32 +941,25 @@ export default function Home() {
                       <TextInput
                         value={historySearch}
                         onChangeText={setHistorySearch}
-                        placeholder="Search your history"
+                        placeholder="Search chat history"
                         placeholderTextColor="rgba(124, 99, 80, 0.42)"
                         style={styles.drawerSearchInput}
                       />
                     </View>
 
-                    <Pressable
-                      onPress={closeDrawer}
-                      style={styles.drawerCloseBtn}
-                    >
+                    <Pressable onPress={closeDrawer} style={styles.drawerCloseBtn}>
                       <Ionicons name="close" size={18} color={Brand.cocoa} />
                     </Pressable>
                   </View>
 
                   <View style={styles.drawerTitleRow}>
-                    <View>
-                      <Text style={styles.drawerSectionTitle}>Workspace</Text>
-                    </View>
+                    <Text style={styles.drawerSectionTitle}>Chat history</Text>
                   </View>
 
                   <ScrollView
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={{ paddingBottom: 18 }}
                   >
-                    <Text style={styles.drawerLabel}>Recent requests</Text>
-
                     {filteredHistory.length === 0 ? (
                       <View style={styles.historyEmptyCard}>
                         <Ionicons
@@ -987,20 +967,20 @@ export default function Home() {
                           size={18}
                           color={Brand.muted}
                         />
-                        <Text style={styles.historyEmptyText}>
+                        <Text style={styles.historyEmptyTitle}>
                           No history yet
                         </Text>
                       </View>
                     ) : (
-                      filteredHistory.map((item) => (
+                      filteredHistory.map((group) => (
                         <Pressable
-                          key={item.id}
-                          onPress={() => openHistoryItem(item)}
+                          key={group.id}
+                          onPress={() => openHistoryItem(group)}
                           style={styles.drawerHistoryItem}
                         >
                           <View style={styles.drawerHistoryIcon}>
                             <Ionicons
-                              name="sparkles-outline"
+                              name="chatbubbles-outline"
                               size={15}
                               color={Brand.bronze}
                             />
@@ -1011,16 +991,20 @@ export default function Home() {
                               style={styles.drawerHistoryTitle}
                               numberOfLines={1}
                             >
-                              {item.raw_text ||
-                                item.title ||
-                                "Untitled request"}
+                              {group.title}
                             </Text>
                             <Text
                               style={styles.drawerHistoryMeta}
                               numberOfLines={1}
                             >
-                              {formatIntentLabel(item.intent)} ·{" "}
-                              {formatHistoryTime(item.datetime)}
+                              {formatConversationCount(group.items.length)} ·{" "}
+                              {formatHistoryTime(group.updatedAt)}
+                            </Text>
+                            <Text
+                              style={styles.drawerHistoryPreview}
+                              numberOfLines={2}
+                            >
+                              {group.preview}
                             </Text>
                           </View>
 
@@ -1035,10 +1019,7 @@ export default function Home() {
                   </ScrollView>
 
                   <View style={styles.drawerFooter}>
-                    <Pressable
-                      onPress={openRoutine}
-                      style={styles.drawerFooterCard}
-                    >
+                    <Pressable onPress={openRoutine} style={styles.drawerFooterCard}>
                       <Ionicons
                         name="settings-outline"
                         size={16}
@@ -1047,10 +1028,7 @@ export default function Home() {
                       <Text style={styles.drawerFooterCardText}>Settings</Text>
                     </Pressable>
 
-                    <Pressable
-                      onPress={openSchedule}
-                      style={styles.drawerFooterCard}
-                    >
+                    <Pressable onPress={openSchedule} style={styles.drawerFooterCard}>
                       <Ionicons
                         name="calendar-outline"
                         size={16}
@@ -1062,10 +1040,7 @@ export default function Home() {
                     <View style={styles.accountCard}>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.accountTitle}>Account</Text>
-                        <Text
-                          style={styles.accountSubtitle}
-                          numberOfLines={1}
-                        >
+                        <Text style={styles.accountSubtitle} numberOfLines={1}>
                           {profile?.name || "Local account"}
                         </Text>
                         <Text style={styles.accountMeta} numberOfLines={1}>
@@ -1215,37 +1190,6 @@ const styles = StyleSheet.create({
     borderColor: Brand.line,
   },
 
-  topBrandWrap: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 5,
-  },
-
-  topBrandPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.68)",
-    borderWidth: 1,
-    borderColor: Brand.lineStrong,
-    maxWidth: "72%",
-  },
-
-  topBrandText: {
-    color: Brand.ink,
-    fontSize: 13,
-    fontWeight: "800",
-  },
-
-  topBrandCaption: {
-    color: Brand.muted,
-    fontSize: 11,
-    fontWeight: "700",
-  },
-
   heroStage: {
     marginTop: 12,
     paddingTop: 4,
@@ -1267,25 +1211,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
-  },
-
-  heroPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.66)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  heroPillText: {
-    color: Brand.cocoa,
-    fontSize: 12,
-    fontWeight: "800",
   },
 
   heroStatusChip: {
@@ -1317,9 +1242,10 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 
-  heroHeadline: {
+  heroTitle: {
     marginTop: 10,
     color: Brand.ink,
+    fontSize: 32,
     fontWeight: "900",
   },
 
@@ -1329,6 +1255,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 22,
     fontWeight: "500",
+    maxWidth: 420,
   },
 
   orbShell: {
@@ -1378,49 +1305,6 @@ const styles = StyleSheet.create({
     width: "100%",
     alignItems: "center",
     paddingTop: 12,
-  },
-
-  composerWrap: {
-    marginTop: 0,
-  },
-
-  sectionHeaderRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-
-  sectionTitle: {
-    color: Brand.ink,
-    fontSize: 20,
-    fontWeight: "900",
-  },
-
-  sectionSubtitle: {
-    marginTop: 6,
-    color: Brand.muted,
-    fontSize: 13,
-    lineHeight: 20,
-    maxWidth: "84%",
-  },
-
-  ghostChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.6)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  ghostChipText: {
-    color: Brand.cocoa,
-    fontSize: 12,
-    fontWeight: "800",
   },
 
   composerBox: {
@@ -1499,197 +1383,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.52)",
     borderWidth: 1,
     borderColor: Brand.line,
-  },
-
-  conversationCard: {
-    marginTop: 16,
-    borderRadius: 28,
-  },
-
-  intentChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.6)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  intentChipText: {
-    color: Brand.cocoa,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-
-  promptCard: {
-    marginTop: 18,
-    marginLeft: "auto",
-    maxWidth: "92%",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderRadius: 22,
-    backgroundColor: Brand.ink,
-  },
-
-  promptLabel: {
-    color: "rgba(255,255,255,0.68)",
-    fontSize: 11,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-
-  promptText: {
-    marginTop: 6,
-    color: "#fff8ec",
-    fontSize: 14,
-    lineHeight: 21,
-    fontWeight: "600",
-  },
-
-  responseCard: {
-    marginTop: 14,
-    padding: 16,
-    borderRadius: 24,
-    backgroundColor: "rgba(255,255,255,0.68)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  responseHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-
-  responseName: {
-    color: Brand.ink,
-    fontSize: 15,
-    fontWeight: "900",
-  },
-
-  responseMeta: {
-    marginTop: 3,
-    color: Brand.muted,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-
-  responseBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.68)",
-  },
-
-  responseText: {
-    marginTop: 14,
-    color: Brand.ink,
-    fontSize: 15,
-    lineHeight: 23,
-    fontWeight: "500",
-  },
-
-  responseChipsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginTop: 16,
-  },
-
-  metaChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,248,236,0.9)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  metaChipText: {
-    color: Brand.cocoa,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-
-  historyCard: {
-    marginTop: 20,
-    marginBottom: 4,
-    borderRadius: 28,
-  },
-
-  historyEmptyState: {
-    marginTop: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 24,
-    paddingHorizontal: 16,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: Brand.line,
-    backgroundColor: "rgba(255,255,255,0.5)",
-  },
-
-  historyEmptyTitle: {
-    marginTop: 10,
-    color: Brand.ink,
-    fontSize: 15,
-    fontWeight: "800",
-  },
-
-  historyEmptyText: {
-    marginTop: 6,
-    color: Brand.muted,
-    fontSize: 13,
-    lineHeight: 19,
-    textAlign: "center",
-  },
-
-  historyList: {
-    marginTop: 16,
-    gap: 12,
-  },
-
-  historyRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    padding: 14,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.55)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  historyRowIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.7)",
-  },
-
-  historyRowTitle: {
-    color: Brand.ink,
-    fontSize: 14,
-    fontWeight: "800",
-  },
-
-  historyRowMeta: {
-    marginTop: 4,
-    color: Brand.muted,
-    fontSize: 12,
-    fontWeight: "600",
   },
 
   drawerModalRoot: {
@@ -1782,15 +1475,6 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
 
-  drawerLabel: {
-    marginBottom: 10,
-    color: Brand.cocoa,
-    fontSize: 12,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-
   historyEmptyCard: {
     padding: 16,
     borderRadius: 20,
@@ -1800,6 +1484,20 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.52)",
     borderWidth: 1,
     borderColor: Brand.line,
+  },
+
+  historyEmptyTitle: {
+    marginTop: 4,
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+
+  historyEmptyText: {
+    color: Brand.muted,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: "center",
   },
 
   drawerHistoryItem: {
@@ -1834,6 +1532,14 @@ const styles = StyleSheet.create({
     color: Brand.muted,
     fontSize: 12,
     fontWeight: "600",
+  },
+
+  drawerHistoryPreview: {
+    marginTop: 6,
+    color: Brand.cocoa,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "500",
   },
 
   drawerFooter: {
@@ -1986,7 +1692,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.62)",
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: Brand.line,
   },
 
   modalSecondaryBtnText: {
@@ -2012,10 +1718,5 @@ const styles = StyleSheet.create({
     color: Brand.ink,
     fontSize: 15,
     fontWeight: "900",
-  },
-
-  pressed: {
-    opacity: 0.92,
-    transform: [{ scale: 0.995 }],
   },
 });
