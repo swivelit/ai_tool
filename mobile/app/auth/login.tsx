@@ -192,27 +192,12 @@ export default function LoginScreen() {
             </Pressable>
 
             <View style={styles.headerBlock}>
-
-              <Text
-                style={[
-                  styles.title,
-                  {
-                    fontSize: isVeryCompact ? 30 : isCompact ? 34 : 38,
-                    lineHeight: isVeryCompact ? 36 : isCompact ? 39 : 44,
-                  },
-                ]}
-              >
-                Good to see you again.
-              </Text>
             </View>
 
             <GlassCard style={{ borderRadius: 30 }}>
               <View style={styles.cardHeaderRow}>
                 <View>
                   <Text style={styles.cardTitle}>Login</Text>
-                  <Text style={styles.cardSubtitle}>
-                    Return to your assistant.
-                  </Text>
                 </View>
               </View>
 
@@ -343,13 +328,7 @@ export default function LoginScreen() {
                       />
                       <Text style={styles.devCardBadgeText}>Dev only</Text>
                     </View>
-                    <Text style={styles.devCardTitle}>Temporary test login</Text>
                   </View>
-
-                  <Text style={styles.devCardCopy}>
-                    Reuse this account while you develop without typing Google
-                    email each time.
-                  </Text>
 
                   <View style={styles.devCredentialRow}>
                     <Text style={styles.devCredentialLabel}>Test ID</Text>
