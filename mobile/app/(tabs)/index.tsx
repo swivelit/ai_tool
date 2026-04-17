@@ -22,6 +22,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { GlassCard } from "@/components/Glass";
 import { Orb } from "@/components/Orb";
@@ -68,6 +69,7 @@ type PendingReminder = {
 const CONTINUATION_WINDOW_MS = 30 * 60 * 1000;
 const MIN_INPUT_HEIGHT = 24;
 const MAX_INPUT_HEIGHT = 220;
+const HISTORY_HIDDEN_IDS_KEY_PREFIX = "chat_history_hidden_item_ids";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -129,6 +131,10 @@ function formatHistoryTime(value?: string | null) {
 
 function formatConversationCount(count: number) {
   return `${count} ${count === 1 ? "turn" : "turns"}`;
+}
+
+function getHiddenHistoryStorageKey(userId?: number | null) {
+  return `${HISTORY_HIDDEN_IDS_KEY_PREFIX}:${userId || "guest"}`;
 }
 
 function buildConversationGroups(items: ChatHistoryItem[]): ConversationGroup[] {
@@ -259,6 +265,7 @@ export default function Home() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [historyItems, setHistoryItems] = useState<ChatHistoryItem[]>([]);
+  const [hiddenHistoryItemIds, setHiddenHistoryItemIds] = useState<number[]>([]);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const recordingPhaseRef = useRef<
@@ -282,6 +289,10 @@ export default function Home() {
     [profile?.name]
   );
   const assistantLabel = useMemo(() => (name || "Elli").trim(), [name]);
+  const hiddenHistoryStorageKey = useMemo(
+    () => getHiddenHistoryStorageKey(profile?.userId),
+    [profile?.userId]
+  );
   const greeting = useMemo(
     () => `${getDayPart()}, ${greetingName}`,
     [greetingName]
@@ -297,9 +308,16 @@ export default function Home() {
     outputRange: [0, 1],
   });
 
+  const visibleHistoryItems = useMemo(() => {
+    if (!hiddenHistoryItemIds.length) return historyItems;
+
+    const hiddenIds = new Set(hiddenHistoryItemIds);
+    return historyItems.filter((item) => !hiddenIds.has(item.id));
+  }, [hiddenHistoryItemIds, historyItems]);
+
   const conversationGroups = useMemo(
-    () => buildConversationGroups(historyItems),
-    [historyItems]
+    () => buildConversationGroups(visibleHistoryItems),
+    [visibleHistoryItems]
   );
 
   const filteredHistory = useMemo(() => {
@@ -327,6 +345,10 @@ export default function Home() {
   useEffect(() => {
     void loadHistory();
   }, [profile?.userId]);
+
+  useEffect(() => {
+    void loadHiddenHistoryItemIds();
+  }, [hiddenHistoryStorageKey]);
 
   useEffect(() => {
     recordingRef.current = recording;
@@ -395,6 +417,37 @@ export default function Home() {
     } catch {
       setHistoryItems([]);
     }
+  }
+
+  async function loadHiddenHistoryItemIds() {
+    try {
+      const raw = await AsyncStorage.getItem(hiddenHistoryStorageKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const normalized = Array.isArray(parsed)
+        ? parsed
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value) && value > 0)
+        : [];
+      setHiddenHistoryItemIds(normalized);
+    } catch {
+      setHiddenHistoryItemIds([]);
+    }
+  }
+
+  async function persistHiddenHistoryItemIds(nextIds: number[]) {
+    const normalized = Array.from(
+      new Set(
+        nextIds
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value) && value > 0)
+      )
+    );
+
+    setHiddenHistoryItemIds(normalized);
+    await AsyncStorage.setItem(
+      hiddenHistoryStorageKey,
+      JSON.stringify(normalized)
+    );
   }
 
   function stripAssistantTrigger(input: string) {
@@ -664,6 +717,45 @@ export default function Home() {
 
     closeDrawer();
     router.push(`/item/${latestItem.id}`);
+  }
+
+  function confirmDeleteConversation(group: ConversationGroup) {
+    const itemIds = group.items
+      .map((item) => Number(item.id))
+      .filter((value) => Number.isFinite(value) && value > 0);
+
+    if (!itemIds.length) return;
+
+    Alert.alert(
+      "Delete conversation",
+      "This will remove this conversation from chat history on this device.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const nextHiddenIds = Array.from(
+                new Set([...hiddenHistoryItemIds, ...itemIds])
+              );
+              await persistHiddenHistoryItemIds(nextHiddenIds);
+              setHistoryItems((current) =>
+                current.filter((item) => !itemIds.includes(Number(item.id)))
+              );
+              await Haptics.notificationAsync(
+                Haptics.NotificationFeedbackType.Success
+              );
+            } catch (error: any) {
+              Alert.alert(
+                "Delete failed",
+                error?.message || "Could not delete this conversation."
+              );
+            }
+          },
+        },
+      ]
+    );
   }
 
   function openSchedule() {
@@ -973,47 +1065,60 @@ export default function Home() {
                       </View>
                     ) : (
                       filteredHistory.map((group) => (
-                        <Pressable
-                          key={group.id}
-                          onPress={() => openHistoryItem(group)}
-                          style={styles.drawerHistoryItem}
-                        >
-                          <View style={styles.drawerHistoryIcon}>
+                        <View key={group.id} style={styles.drawerHistoryItem}>
+                          <Pressable
+                            onPress={() => openHistoryItem(group)}
+                            style={styles.drawerHistoryMain}
+                          >
+                            <View style={styles.drawerHistoryIcon}>
+                              <Ionicons
+                                name="chatbubbles-outline"
+                                size={15}
+                                color={Brand.bronze}
+                              />
+                            </View>
+
+                            <View style={{ flex: 1 }}>
+                              <Text
+                                style={styles.drawerHistoryTitle}
+                                numberOfLines={1}
+                              >
+                                {group.title}
+                              </Text>
+                              <Text
+                                style={styles.drawerHistoryMeta}
+                                numberOfLines={1}
+                              >
+                                {formatConversationCount(group.items.length)} ·{" "}
+                                {formatHistoryTime(group.updatedAt)}
+                              </Text>
+                              <Text
+                                style={styles.drawerHistoryPreview}
+                                numberOfLines={2}
+                              >
+                                {group.preview}
+                              </Text>
+                            </View>
+
                             <Ionicons
-                              name="chatbubbles-outline"
-                              size={15}
-                              color={Brand.bronze}
+                              name="chevron-forward"
+                              size={16}
+                              color="rgba(124, 99, 80, 0.58)"
                             />
-                          </View>
+                          </Pressable>
 
-                          <View style={{ flex: 1 }}>
-                            <Text
-                              style={styles.drawerHistoryTitle}
-                              numberOfLines={1}
-                            >
-                              {group.title}
-                            </Text>
-                            <Text
-                              style={styles.drawerHistoryMeta}
-                              numberOfLines={1}
-                            >
-                              {formatConversationCount(group.items.length)} ·{" "}
-                              {formatHistoryTime(group.updatedAt)}
-                            </Text>
-                            <Text
-                              style={styles.drawerHistoryPreview}
-                              numberOfLines={2}
-                            >
-                              {group.preview}
-                            </Text>
-                          </View>
-
-                          <Ionicons
-                            name="chevron-forward"
-                            size={16}
-                            color="rgba(124, 99, 80, 0.58)"
-                          />
-                        </Pressable>
+                          <Pressable
+                            onPress={() => confirmDeleteConversation(group)}
+                            style={styles.drawerHistoryDeleteBtn}
+                            hitSlop={8}
+                          >
+                            <Ionicons
+                              name="trash-outline"
+                              size={16}
+                              color="#a45933"
+                            />
+                          </Pressable>
+                        </View>
                       ))
                     )}
                   </ScrollView>
@@ -1502,14 +1607,33 @@ const styles = StyleSheet.create({
 
   drawerHistoryItem: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    padding: 14,
+    alignItems: "stretch",
+    gap: 10,
+    padding: 10,
     borderRadius: 20,
     marginBottom: 10,
     backgroundColor: "rgba(255,255,255,0.54)",
     borderWidth: 1,
     borderColor: Brand.line,
+  },
+
+  drawerHistoryMain: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+
+  drawerHistoryDeleteBtn: {
+    width: 40,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,245,238,0.9)",
+    borderWidth: 1,
+    borderColor: "rgba(164,89,51,0.16)",
   },
 
   drawerHistoryIcon: {
