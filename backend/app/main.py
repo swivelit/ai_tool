@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import tempfile
+import requests
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -64,6 +65,7 @@ logger = logging.getLogger(__name__)
 PERSONALITY_QUESTIONS_VERSION = 1
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_JSON_MODEL = os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini")
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
 
 client: Optional[OpenAI] = None
 JOB_QUEUE: Optional[DBJobQueue] = None
@@ -753,6 +755,10 @@ Each check-in must include:
 Return ONLY JSON:
 { "checkins": [ { "title":"...", "when":"08:00", "message":"..." } ] }
 """
+
+
+class TTSRequest(BaseModel):
+    text: str
 
 
 class ParseDatetimeRequest(BaseModel):
@@ -2046,6 +2052,42 @@ def get_feature_flags():
             "vectorStoreBackend": VECTOR_STORE.mode,
         },
     }
+
+@app.post("/api/tts")
+def api_tts(payload: TTSRequest):
+    if not SARVAM_API_KEY:
+        raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
+    
+    url = "https://api.sarvam.ai/text-to-speech"
+    headers = {
+        "api-subscription-key": SARVAM_API_KEY,
+        "Content-Type": "application/json"
+    }
+    
+    req_payload = {
+        "inputs": [payload.text],
+        "target_language_code": "ta-IN",
+        "speaker": "manisha",
+        "model": "bulbul:v2",
+        "pace": 0.85
+    }
+    
+    response = requests.post(url, headers=headers, json=req_payload)
+    
+    # Fallback to "text" instead of "inputs" if the API format diverges
+    if response.status_code in [422, 400] and "inputs" in req_payload:
+        req_payload["text"] = payload.text
+        del req_payload["inputs"]
+        response = requests.post(url, headers=headers, json=req_payload)
+        
+    if response.status_code == 200:
+        data = response.json()
+        if "audios" in data and len(data["audios"]) > 0:
+            return {"audio_base64": data["audios"][0]}
+        else:
+            raise HTTPException(status_code=500, detail="Response did not contain 'audios' field.")
+    else:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
 
 
 @app.post("/users/{user_id}/questionnaire")
