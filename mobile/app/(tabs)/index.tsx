@@ -134,6 +134,26 @@ function formatHistoryTime(value?: string | null) {
   });
 }
 
+function getHistoryTitle(item: ChatHistoryItem) {
+  const title = String(item.title || "").trim();
+  if (title) return title;
+
+  const raw = String(item.raw_text || "").trim();
+  if (raw) return raw;
+
+  return item.source === "text" ? "Chat" : "Voice note";
+}
+
+function getHistoryPreview(item: ChatHistoryItem) {
+  const details = String(item.details || "").trim();
+  if (details) return details;
+
+  const raw = String(item.raw_text || "").trim();
+  if (raw) return raw;
+
+  return "Assistant response";
+}
+
 export default function Home() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -155,6 +175,7 @@ export default function Home() {
   const [activeSurface, setActiveSurface] = useState<RecorderSurface | null>(
     null
   );
+  const [historySearch, setHistorySearch] = useState("");
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const recordingPhaseRef = useRef<"idle" | "starting" | "recording" | "stopping">(
@@ -169,7 +190,7 @@ export default function Home() {
   const topPadding = insets.top + (isSmallPhone ? 10 : 16);
   const bottomPadding = Math.max(insets.bottom + 10, 16);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
-  const drawerWidth = Math.min(width * 0.86, 360);
+  const drawerWidth = Math.min(width * 0.84, 360);
   const orbSize = clamp(width * 0.38, 156, 208);
 
   const assistantLabel = useMemo(() => (name || "Elli").trim(), [name]);
@@ -183,9 +204,26 @@ export default function Home() {
   );
 
   const latestHistory = useMemo(
-    () => [...historyItems].sort((a, b) => Number(b.id) - Number(a.id)).slice(0, 12),
+    () => [...historyItems].sort((a, b) => Number(b.id) - Number(a.id)).slice(0, 20),
     [historyItems]
   );
+
+  const filteredHistory = useMemo(() => {
+    const query = historySearch.trim().toLowerCase();
+    if (!query) return latestHistory;
+
+    return latestHistory.filter((item) => {
+      const haystack = [
+        getHistoryTitle(item),
+        getHistoryPreview(item),
+        String(item.raw_text || ""),
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(query);
+    });
+  }, [historySearch, latestHistory]);
 
   const latestReply = latestHistory.find((item) => {
     const details = String(item.details || "").trim();
@@ -306,6 +344,18 @@ export default function Home() {
   function closeReminderConfirm() {
     setConfirmOpen(false);
     setPendingReminder(null);
+  }
+
+  function startNewChat() {
+    setText("");
+    setComposerInputHeight(MIN_INPUT_HEIGHT);
+    setHistorySearch("");
+    closeDrawer();
+  }
+
+  function openSettings() {
+    closeDrawer();
+    router.push("/(tabs)/routine");
   }
 
   async function playAgentReply(textValue: string) {
@@ -655,38 +705,8 @@ export default function Home() {
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
               <GlassCard style={styles.heroCard}>
                 <View style={styles.heroStatusRow}>
-                  <View style={styles.heroChip}>
-                    <Ionicons
-                      name={busy ? "sync-outline" : "chatbubble-ellipses-outline"}
-                      size={14}
-                      color={Brand.bronze}
-                    />
-                    <Text style={styles.heroChipText}>{busy ? "Working" : "Chat ready"}</Text>
-                  </View>
-
-                  <View style={styles.heroChip}>
-                    <Ionicons name="mic-outline" size={14} color={Brand.bronze} />
-                    <Text style={styles.heroChipText}>Voice ready</Text>
-                  </View>
                 </View>
 
-                <Text style={styles.greeting}>{greeting}</Text>
-                <Text style={styles.heroTitle}>Use text chat or voice from the same index page.</Text>
-                <Text style={styles.heroSubtitle}>
-                  Type a message, tap the mic for a quick voice note, or open the live
-                  voice screen for a full talking mode.
-                </Text>
-
-                <View style={styles.previewPanelRow}>
-                  <View style={styles.previewStepCard}>
-                    <Text style={styles.previewLabel}>Chat option</Text>
-                    <Text style={styles.previewValue}>Type and send instantly</Text>
-                  </View>
-                  <View style={styles.previewStepCard}>
-                    <Text style={styles.previewLabel}>Voice option</Text>
-                    <Text style={styles.previewValue}>Tap mic or use live voice</Text>
-                  </View>
-                </View>
               </GlassCard>
 
               {latestReply ? (
@@ -840,71 +860,81 @@ export default function Home() {
               ]}
             >
               <LinearGradient colors={Brand.gradients.softCard} style={styles.drawerGradient}>
-                <View style={styles.drawerHeader}>
-                  <View>
-                    <Text style={styles.drawerTitle}>History</Text>
-                    <Text style={styles.drawerSubtitle}>Recent chats and voice items</Text>
-                  </View>
-
-                  <Pressable onPress={closeDrawer} style={styles.drawerCloseButton}>
-                    <Ionicons name="close" size={18} color={Brand.cocoa} />
-                  </Pressable>
+                <View style={styles.drawerSearchWrap}>
+                  <Ionicons name="search-outline" size={18} color="rgba(124, 99, 80, 0.56)" />
+                  <TextInput
+                    value={historySearch}
+                    onChangeText={setHistorySearch}
+                    placeholder="Search chat history"
+                    placeholderTextColor="rgba(124, 99, 80, 0.56)"
+                    style={styles.drawerSearchInput}
+                  />
                 </View>
 
-                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-                  {latestHistory.length === 0 ? (
-                    <GlassCard style={styles.emptyCard}>
-                      <Text style={styles.emptyCardTitle}>No history yet</Text>
-                      <Text style={styles.emptyCardText}>
-                        Start with a text prompt or a voice recording.
+                <Pressable onPress={startNewChat} style={styles.newChatRow}>
+                  <Text style={styles.newChatText}>Create your New chat</Text>
+                  <View style={styles.newChatIconWrap}>
+                    <Ionicons name="create-outline" size={16} color={Brand.cocoa} />
+                  </View>
+                </Pressable>
+
+                <View style={styles.drawerSectionHeader}>
+                  <Text style={styles.drawerSectionTitle}>Chats</Text>
+                </View>
+
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.drawerScrollContent}
+                >
+                  {filteredHistory.length === 0 ? (
+                    <View style={styles.drawerEmptyState}>
+                      <Text style={styles.drawerEmptyTitle}>
+                        {historySearch.trim() ? "No matching chats" : "No history yet"}
                       </Text>
-                    </GlassCard>
+                      <Text style={styles.drawerEmptyText}>
+                        {historySearch.trim()
+                          ? "Try a different keyword."
+                          : "Start with a text prompt or a voice recording."}
+                      </Text>
+                    </View>
                   ) : (
-                    latestHistory.map((item) => (
+                    filteredHistory.map((item, index) => (
                       <Pressable
                         key={item.id}
                         onPress={() => openHistoryItem(item)}
-                        style={styles.historyRow}
+                        style={[
+                          styles.chatListItem,
+                          index === 0 && styles.chatListItemActive,
+                        ]}
                       >
-                        <View style={styles.historyIcon}>
-                          <Ionicons
-                            name={item.source === "text" ? "chatbubble-outline" : "mic-outline"}
-                            size={16}
-                            color={Brand.bronze}
-                          />
-                        </View>
-
-                        <View style={{ flex: 1 }}>
-                          <Text numberOfLines={1} style={styles.historyTitle}>
-                            {item.title || item.raw_text || "Assistant message"}
-                          </Text>
-                          <Text numberOfLines={2} style={styles.historyPreview}>
-                            {item.details || item.raw_text}
-                          </Text>
-                          <Text style={styles.historyMeta}>
-                            {formatHistoryTime(item.created_at || item.datetime)}
-                          </Text>
-                        </View>
+                        <Text numberOfLines={1} style={styles.chatListTitle}>
+                          {getHistoryTitle(item)}
+                        </Text>
                       </Pressable>
                     ))
                   )}
                 </ScrollView>
 
-                <View style={styles.drawerFooter}>
-                  <Pressable
-                    onPress={() => {
-                      closeDrawer();
-                      setVoiceSheetOpen(true);
-                    }}
-                    style={styles.drawerFooterButton}
-                  >
-                    <Ionicons name="sparkles-outline" size={16} color={Brand.cocoa} />
-                    <Text style={styles.drawerFooterButtonText}>Open voice</Text>
-                  </Pressable>
+                <Pressable onPress={openSettings} style={styles.settingsCard}>
+                  <View style={styles.settingsIconWrap}>
+                    <Ionicons name="settings-outline" size={16} color={Brand.cocoa} />
+                  </View>
+                  <Text style={styles.settingsText}>Settings</Text>
+                </Pressable>
 
-                  <Pressable onPress={signOut} style={styles.drawerFooterButton}>
-                    <Ionicons name="log-out-outline" size={16} color={Brand.cocoa} />
-                    <Text style={styles.drawerFooterButtonText}>Sign out</Text>
+                <View style={styles.accountCard}>
+                  <View style={styles.accountInfo}>
+                    <Text style={styles.accountLabel}>ACCOUNT</Text>
+                    <Text numberOfLines={1} style={styles.accountName}>
+                      {profile?.name || "Your account"}
+                    </Text>
+                    <Text numberOfLines={1} style={styles.accountMeta}>
+                      {assistantLabel} assistant
+                    </Text>
+                  </View>
+
+                  <Pressable onPress={signOut} style={styles.accountSignOutButton}>
+                    <Text style={styles.accountSignOutText}>Sign out</Text>
                   </Pressable>
                 </View>
               </LinearGradient>
@@ -1414,124 +1444,192 @@ const styles = StyleSheet.create({
 
   drawerGradient: {
     flex: 1,
-    paddingTop: 64,
-    paddingHorizontal: 18,
-    paddingBottom: 22,
+    paddingTop: 54,
+    paddingHorizontal: 14,
+    paddingBottom: 18,
   },
 
-  drawerHeader: {
+  drawerSearchWrap: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 18,
+    gap: 10,
+    height: 52,
+    paddingHorizontal: 16,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.74)",
+    borderWidth: 1,
+    borderColor: Brand.line,
   },
 
-  drawerTitle: {
+  drawerSearchInput: {
+    flex: 1,
     color: Brand.ink,
-    fontSize: 20,
-    fontWeight: "900",
-  },
-
-  drawerSubtitle: {
-    marginTop: 4,
-    color: Brand.textMuted,
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: "700",
   },
 
-  drawerCloseButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.72)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  emptyCard: {
-    padding: 16,
-    borderRadius: 20,
-  },
-
-  emptyCardTitle: {
-    color: Brand.ink,
-    fontSize: 15,
-    fontWeight: "900",
-  },
-
-  emptyCardText: {
-    marginTop: 8,
-    color: Brand.textMuted,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: "600",
-  },
-
-  historyRow: {
+  newChatRow: {
+    marginTop: 14,
+    minHeight: 54,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(124, 99, 80, 0.14)",
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.76)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  historyIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
     alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255, 239, 213, 0.92)",
+    justifyContent: "space-between",
+    paddingHorizontal: 6,
   },
 
-  historyTitle: {
+  newChatText: {
     color: Brand.ink,
     fontSize: 14,
     fontWeight: "900",
   },
 
-  historyPreview: {
-    marginTop: 4,
-    color: Brand.cocoa,
+  newChatIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(124, 99, 80, 0.32)",
+    backgroundColor: "rgba(255,255,255,0.4)",
+  },
+
+  drawerSectionHeader: {
+    marginTop: 18,
+    marginBottom: 10,
+    paddingHorizontal: 6,
+  },
+
+  drawerSectionTitle: {
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  drawerScrollContent: {
+    gap: 6,
+    paddingBottom: 14,
+  },
+
+  drawerEmptyState: {
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+  },
+
+  drawerEmptyTitle: {
+    color: Brand.ink,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  drawerEmptyText: {
+    marginTop: 6,
+    color: Brand.textMuted,
     fontSize: 12,
     lineHeight: 18,
     fontWeight: "600",
   },
 
-  historyMeta: {
-    marginTop: 6,
+  chatListItem: {
+    minHeight: 48,
+    justifyContent: "center",
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+
+  chatListItemActive: {
+    backgroundColor: "rgba(124, 99, 80, 0.10)",
+  },
+
+  chatListTitle: {
+    color: Brand.ink,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "800",
+  },
+
+  settingsCard: {
+    marginTop: 10,
+    minHeight: 58,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 16,
+  },
+
+  settingsIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 239, 213, 0.9)",
+  },
+
+  settingsText: {
+    color: Brand.cocoa,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  accountCard: {
+    marginTop: 14,
+    borderRadius: 22,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+    padding: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  accountInfo: {
+    flex: 1,
+  },
+
+  accountLabel: {
     color: Brand.textMuted,
     fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+  },
+
+  accountName: {
+    marginTop: 6,
+    color: Brand.ink,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  accountMeta: {
+    marginTop: 4,
+    color: Brand.textMuted,
+    fontSize: 12,
     fontWeight: "700",
   },
 
-  drawerFooter: {
-    marginTop: 18,
-    flexDirection: "row",
-    gap: 10,
-  },
-
-  drawerFooterButton: {
-    flex: 1,
+  accountSignOutButton: {
+    minWidth: 110,
     minHeight: 46,
-    flexDirection: "row",
+    paddingHorizontal: 18,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    borderRadius: 16,
-    backgroundColor: "rgba(255,255,255,0.76)",
-    borderWidth: 1,
-    borderColor: Brand.line,
+    backgroundColor: "#2c1d13",
   },
 
-  drawerFooterButtonText: {
-    color: Brand.cocoa,
-    fontSize: 13,
+  accountSignOutText: {
+    color: Brand.cream,
+    fontSize: 14,
     fontWeight: "900",
   },
 
