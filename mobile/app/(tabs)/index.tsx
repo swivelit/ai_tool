@@ -79,6 +79,7 @@ const MIN_INPUT_HEIGHT = 24;
 const MAX_INPUT_HEIGHT = 130;
 const CHAT_SESSIONS_STORAGE_PREFIX = "chat_sessions_v2";
 const HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX = "hidden_chat_session_ids_v2";
+const HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX = "hidden_chat_item_ids_v1";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -189,6 +190,18 @@ function uniqueNumberList(values: number[]) {
   return Array.from(
     new Set(values.map((value) => Number(value)).filter((value) => Number.isFinite(value)))
   );
+}
+
+function filterHistoryItemsByHiddenItemIds(
+  items: ChatHistoryItem[],
+  hiddenItemIdSet: Set<number>
+) {
+  if (!hiddenItemIdSet.size) return items;
+
+  return items.filter((item) => {
+    const itemId = Number(item.id);
+    return !Number.isFinite(itemId) || !hiddenItemIdSet.has(itemId);
+  });
 }
 
 function sessionTimeValue(value?: string | null) {
@@ -330,6 +343,7 @@ export default function Home() {
   );
   const [historySearch, setHistorySearch] = useState("");
   const [hiddenChatSessionIds, setHiddenChatSessionIds] = useState<string[]>([]);
+  const [hiddenChatItemIds, setHiddenChatItemIds] = useState<number[]>([]);
   const [chatActionsOpen, setChatActionsOpen] = useState(false);
   const [selectedHistoryItem, setSelectedHistoryItem] =
     useState<ChatSessionListItem | null>(null);
@@ -363,9 +377,17 @@ export default function Home() {
     () => `${HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
     [profile?.userId]
   );
+  const hiddenChatItemStorageKey = useMemo(
+    () => `${HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
+    [profile?.userId]
+  );
   const hiddenChatSessionIdSet = useMemo(
     () => new Set(hiddenChatSessionIds),
     [hiddenChatSessionIds]
+  );
+  const hiddenChatItemIdSet = useMemo(
+    () => new Set(uniqueNumberList(hiddenChatItemIds)),
+    [hiddenChatItemIds]
   );
   const historyItemsById = useMemo(() => {
     const next = new Map<number, ChatHistoryItem>();
@@ -453,7 +475,7 @@ export default function Home() {
 
   useEffect(() => {
     void bootstrapChatState();
-  }, [chatSessionStorageKey, hiddenChatStorageKey, profile?.userId]);
+  }, [chatSessionStorageKey, hiddenChatStorageKey, hiddenChatItemStorageKey, profile?.userId]);
 
   useEffect(() => {
     recordingRef.current = recording;
@@ -601,6 +623,19 @@ export default function Home() {
     }
   }
 
+  async function readHiddenChatItemIds(): Promise<number[]> {
+    try {
+      const raw = await AsyncStorage.getItem(hiddenChatItemStorageKey);
+      if (!raw) return [];
+
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+
+      return uniqueNumberList(parsed);
+    } catch {
+      return [];
+    }
+  }
 
   async function persistHiddenChatSessionIds(nextIds: string[]) {
     const normalized = Array.from(
@@ -616,22 +651,55 @@ export default function Home() {
     }
   }
 
+  async function persistHiddenChatItemIds(nextIds: number[]) {
+    const normalized = uniqueNumberList(nextIds);
+
+    setHiddenChatItemIds(normalized);
+
+    try {
+      await AsyncStorage.setItem(hiddenChatItemStorageKey, JSON.stringify(normalized));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
   async function bootstrapChatState() {
-    const [itemsFromApi, storedSessions, storedHiddenIds] = await Promise.all([
-      readChatHistoryFromApi(),
-      readStoredChatSessions(),
-      readHiddenChatSessionIds(),
+    const [itemsFromApi, storedSessions, storedHiddenSessionIds, storedHiddenItemIds] =
+      await Promise.all([
+        readChatHistoryFromApi(),
+        readStoredChatSessions(),
+        readHiddenChatSessionIds(),
+        readHiddenChatItemIds(),
+      ]);
+
+    const migratedHiddenItemIds = uniqueNumberList([
+      ...storedHiddenItemIds,
+      ...storedSessions
+        .filter((session) => storedHiddenSessionIds.includes(session.id))
+        .flatMap((session) => session.itemIds),
     ]);
+    const migratedHiddenItemIdSet = new Set(migratedHiddenItemIds);
+    const visibleItemsFromApi = filterHistoryItemsByHiddenItemIds(
+      itemsFromApi,
+      migratedHiddenItemIdSet
+    );
 
-    setHistoryItems(itemsFromApi);
-    setHiddenChatSessionIds(storedHiddenIds);
+    setHistoryItems(visibleItemsFromApi);
+    setHiddenChatSessionIds(storedHiddenSessionIds);
+    setHiddenChatItemIds(migratedHiddenItemIds);
 
-    const reconciled = reconcileChatSessions(itemsFromApi, storedSessions);
+    const reconciled = reconcileChatSessions(visibleItemsFromApi, storedSessions);
     setChatSessions(reconciled);
     setActiveChatSessionId(null);
 
     try {
-      await AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(reconciled));
+      await Promise.all([
+        AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(reconciled)),
+        AsyncStorage.setItem(
+          hiddenChatItemStorageKey,
+          JSON.stringify(migratedHiddenItemIds)
+        ),
+      ]);
     } catch {
       // ignore storage failures
     }
@@ -640,9 +708,14 @@ export default function Home() {
   async function refreshHistoryAndSessions(extraItems: ChatHistoryItem[] = []) {
     const itemsFromApi = await readChatHistoryFromApi();
     const mergedItems = upsertHistoryItems(itemsFromApi, extraItems);
-    setHistoryItems(mergedItems);
+    const visibleMergedItems = filterHistoryItemsByHiddenItemIds(
+      mergedItems,
+      hiddenChatItemIdSet
+    );
 
-    const reconciled = reconcileChatSessions(mergedItems, chatSessions);
+    setHistoryItems(visibleMergedItems);
+
+    const reconciled = reconcileChatSessions(visibleMergedItems, chatSessions);
     setChatSessions(reconciled);
 
     try {
@@ -651,7 +724,7 @@ export default function Home() {
       // ignore storage failures
     }
 
-    return mergedItems;
+    return visibleMergedItems;
   }
 
   async function attachItemToCurrentChat(
@@ -744,6 +817,14 @@ export default function Home() {
     if (!selectedHistoryItem) return;
 
     const targetItem = selectedHistoryItem;
+    const deletedItemIds = uniqueNumberList(targetItem.items.map((item) => Number(item.id)));
+    const nextHiddenChatSessionIds = Array.from(
+      new Set([...hiddenChatSessionIds, targetItem.id])
+    );
+    const nextHiddenChatItemIds = uniqueNumberList([
+      ...hiddenChatItemIds,
+      ...deletedItemIds,
+    ]);
 
     Alert.alert(
       "Delete chat",
@@ -757,7 +838,19 @@ export default function Home() {
             if (activeChatSessionId === targetItem.id) {
               setActiveChatSessionId(null);
             }
-            await persistHiddenChatSessionIds([...hiddenChatSessionIds, targetItem.id]);
+
+            setHistoryItems((prev) =>
+              filterHistoryItemsByHiddenItemIds(prev, new Set(nextHiddenChatItemIds))
+            );
+            setChatSessions((prev) =>
+              prev.filter((session) => session.id !== targetItem.id)
+            );
+
+            await Promise.all([
+              persistHiddenChatSessionIds(nextHiddenChatSessionIds),
+              persistHiddenChatItemIds(nextHiddenChatItemIds),
+            ]);
+
             closeHistoryItemActions();
           },
         },
