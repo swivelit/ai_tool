@@ -41,6 +41,21 @@ type ChatHistoryItem = Item & {
   source?: string | null;
 };
 
+type ChatSessionRecord = {
+  id: string;
+  itemIds: number[];
+  createdAt: string;
+  updatedAt: string;
+  title?: string | null;
+};
+
+type ChatSessionListItem = ChatSessionRecord & {
+  items: ChatHistoryItem[];
+  title: string;
+  preview: string;
+  sortTime: string;
+};
+
 type BackendChatResponse = {
   ok?: boolean;
   item?: (Item & { created_at?: string | null; source?: string | null }) | null;
@@ -62,7 +77,8 @@ type RecorderSurface = "quick" | "live";
 
 const MIN_INPUT_HEIGHT = 24;
 const MAX_INPUT_HEIGHT = 130;
-const HIDDEN_CHAT_IDS_STORAGE_PREFIX = "hidden_chat_ids_v1";
+const CHAT_SESSIONS_STORAGE_PREFIX = "chat_sessions_v2";
+const HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX = "hidden_chat_session_ids_v2";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -115,6 +131,26 @@ function normalizeChatResponse(
   };
 }
 
+function normalizeChatTurnPayload(
+  payload: BackendChatResponse | ChatHistoryItem,
+  fallbackRawText = ""
+): ChatHistoryItem {
+  if (payload && typeof payload === "object" && ("item" in payload || "assistant" in payload)) {
+    return normalizeChatResponse(payload as BackendChatResponse, fallbackRawText);
+  }
+
+  const item = payload as ChatHistoryItem;
+  return normalizeChatResponse(
+    {
+      item,
+      assistant: {
+        text: item.details || fallbackRawText,
+      },
+    },
+    item.raw_text || fallbackRawText
+  );
+}
+
 function formatHistoryTime(value?: string | null) {
   if (!value) return "Just now";
 
@@ -149,6 +185,126 @@ function getHistoryPreview(item: ChatHistoryItem) {
   return "Assistant response";
 }
 
+function uniqueNumberList(values: number[]) {
+  return Array.from(
+    new Set(values.map((value) => Number(value)).filter((value) => Number.isFinite(value)))
+  );
+}
+
+function sessionTimeValue(value?: string | null) {
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortSessionsByRecent(a: ChatSessionRecord, b: ChatSessionRecord) {
+  return (
+    sessionTimeValue(b.updatedAt || b.createdAt) - sessionTimeValue(a.updatedAt || a.createdAt)
+  );
+}
+
+function normalizeChatSessionRecord(value: unknown): ChatSessionRecord | null {
+  if (!value || typeof value !== "object") return null;
+
+  const raw = value as Partial<ChatSessionRecord>;
+  const id = String(raw.id || "").trim();
+  if (!id) return null;
+
+  const itemIds = uniqueNumberList(Array.isArray(raw.itemIds) ? raw.itemIds : []);
+  const createdAt = String(raw.createdAt || raw.updatedAt || new Date().toISOString());
+  const updatedAt = String(raw.updatedAt || raw.createdAt || createdAt);
+
+  return {
+    id,
+    itemIds,
+    createdAt,
+    updatedAt,
+    title: typeof raw.title === "string" ? raw.title : null,
+  };
+}
+
+function createChatSessionFromItem(item: ChatHistoryItem): ChatSessionRecord {
+  const timestamp = item.created_at || item.datetime || new Date().toISOString();
+  return {
+    id: `chat_${Number(item.id) || Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    itemIds: [Number(item.id)],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    title: getHistoryTitle(item),
+  };
+}
+
+function upsertHistoryItems(existing: ChatHistoryItem[], additions: ChatHistoryItem[]) {
+  const map = new Map<number, ChatHistoryItem>();
+
+  [...existing, ...additions].forEach((item) => {
+    const itemId = Number(item?.id);
+    if (!Number.isFinite(itemId)) return;
+    map.set(itemId, {
+      ...(map.get(itemId) || {}),
+      ...item,
+      id: itemId,
+    } as ChatHistoryItem);
+  });
+
+  return Array.from(map.values()).sort((a, b) => Number(b.id) - Number(a.id));
+}
+
+function reconcileChatSessions(
+  items: ChatHistoryItem[],
+  sessions: ChatSessionRecord[]
+): ChatSessionRecord[] {
+  const itemMap = new Map<number, ChatHistoryItem>();
+  items.forEach((item) => {
+    const itemId = Number(item.id);
+    if (Number.isFinite(itemId)) {
+      itemMap.set(itemId, item);
+    }
+  });
+
+  const claimedItemIds = new Set<number>();
+  const normalizedSessions: ChatSessionRecord[] = [];
+
+  sessions.forEach((value) => {
+    const session = normalizeChatSessionRecord(value);
+    if (!session) return;
+
+    const itemIds = session.itemIds.filter((itemId) => {
+      if (!itemMap.has(itemId) || claimedItemIds.has(itemId)) return false;
+      claimedItemIds.add(itemId);
+      return true;
+    });
+
+    if (!itemIds.length) return;
+
+    const firstItem = itemMap.get(itemIds[0]);
+    const lastItem = itemMap.get(itemIds[itemIds.length - 1]);
+    normalizedSessions.push({
+      ...session,
+      itemIds,
+      createdAt:
+        session.createdAt || firstItem?.created_at || firstItem?.datetime || new Date().toISOString(),
+      updatedAt:
+        lastItem?.created_at ||
+        lastItem?.datetime ||
+        session.updatedAt ||
+        session.createdAt ||
+        new Date().toISOString(),
+      title: session.title || (firstItem ? getHistoryTitle(firstItem) : "Chat"),
+    });
+  });
+
+  const migratedSessions = items
+    .filter((item) => {
+      const itemId = Number(item.id);
+      return Number.isFinite(itemId) && !claimedItemIds.has(itemId);
+    })
+    .sort((a, b) => Number(b.id) - Number(a.id))
+    .map((item) => createChatSessionFromItem(item));
+
+  return [...normalizedSessions, ...migratedSessions].sort(sortSessionsByRecent);
+}
+
 export default function Home() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -167,15 +323,16 @@ export default function Home() {
   const [pendingReminder, setPendingReminder] =
     useState<PendingReminder | null>(null);
   const [historyItems, setHistoryItems] = useState<ChatHistoryItem[]>([]);
-  const [activeChatStartId, setActiveChatStartId] = useState<number | null>(null);
+  const [chatSessions, setChatSessions] = useState<ChatSessionRecord[]>([]);
+  const [activeChatSessionId, setActiveChatSessionId] = useState<string | null>(null);
   const [activeSurface, setActiveSurface] = useState<RecorderSurface | null>(
     null
   );
   const [historySearch, setHistorySearch] = useState("");
-  const [hiddenChatIds, setHiddenChatIds] = useState<number[]>([]);
+  const [hiddenChatSessionIds, setHiddenChatSessionIds] = useState<string[]>([]);
   const [chatActionsOpen, setChatActionsOpen] = useState(false);
   const [selectedHistoryItem, setSelectedHistoryItem] =
-    useState<ChatHistoryItem | null>(null);
+    useState<ChatSessionListItem | null>(null);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const replySoundRef = useRef<Audio.Sound | null>(null);
@@ -198,40 +355,80 @@ export default function Home() {
   const orbSize = clamp(width * 0.38, 156, 208);
 
   const assistantLabel = useMemo(() => (name || "Elli").trim(), [name]);
-  const hiddenChatStorageKey = useMemo(
-    () => `${HIDDEN_CHAT_IDS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
+  const chatSessionStorageKey = useMemo(
+    () => `${CHAT_SESSIONS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
     [profile?.userId]
   );
-  const hiddenChatIdSet = useMemo(() => new Set(hiddenChatIds), [hiddenChatIds]);
-
-  const latestHistory = useMemo(
-    () =>
-      [...historyItems]
-        .filter((item) => !hiddenChatIdSet.has(Number(item.id)))
-        .sort((a, b) => Number(b.id) - Number(a.id))
-        .slice(0, 40),
-    [hiddenChatIdSet, historyItems]
+  const hiddenChatStorageKey = useMemo(
+    () => `${HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
+    [profile?.userId]
   );
+  const hiddenChatSessionIdSet = useMemo(
+    () => new Set(hiddenChatSessionIds),
+    [hiddenChatSessionIds]
+  );
+  const historyItemsById = useMemo(() => {
+    const next = new Map<number, ChatHistoryItem>();
+    historyItems.forEach((item) => {
+      const itemId = Number(item.id);
+      if (Number.isFinite(itemId)) {
+        next.set(itemId, item);
+      }
+    });
+    return next;
+  }, [historyItems]);
 
-  const visibleChatHistory = useMemo(() => {
-    if (activeChatStartId == null) return latestHistory;
-    return latestHistory.filter((item) => Number(item.id) > activeChatStartId);
-  }, [activeChatStartId, latestHistory]);
+  const latestHistory = useMemo(() => {
+    return chatSessions
+      .filter((session) => !hiddenChatSessionIdSet.has(session.id))
+      .map((session) => {
+        const items = session.itemIds
+          .map((itemId) => historyItemsById.get(itemId))
+          .filter(Boolean) as ChatHistoryItem[];
+
+        if (!items.length) return null;
+
+        const sortedItems = [...items].sort((a, b) => Number(a.id) - Number(b.id));
+        const firstItem = sortedItems[0];
+        const lastItem = sortedItems[sortedItems.length - 1];
+
+        return {
+          ...session,
+          items: sortedItems,
+          title: session.title || getHistoryTitle(firstItem),
+          preview: getHistoryPreview(lastItem),
+          sortTime:
+            lastItem.created_at ||
+            lastItem.datetime ||
+            session.updatedAt ||
+            session.createdAt ||
+            new Date().toISOString(),
+        } satisfies ChatSessionListItem;
+      })
+      .filter(Boolean)
+      .sort((a, b) => sessionTimeValue(b.sortTime) - sessionTimeValue(a.sortTime))
+      .slice(0, 40) as ChatSessionListItem[];
+  }, [chatSessions, hiddenChatSessionIdSet, historyItemsById]);
+
+  const activeChatSession = useMemo(() => {
+    if (!activeChatSessionId) return null;
+    return latestHistory.find((session) => session.id === activeChatSessionId) || null;
+  }, [activeChatSessionId, latestHistory]);
 
   const chatTimeline = useMemo(
-    () => [...visibleChatHistory].sort((a, b) => Number(a.id) - Number(b.id)),
-    [visibleChatHistory]
+    () => activeChatSession?.items || [],
+    [activeChatSession]
   );
 
   const filteredHistory = useMemo(() => {
     const query = historySearch.trim().toLowerCase();
     if (!query) return latestHistory;
 
-    return latestHistory.filter((item) => {
+    return latestHistory.filter((session) => {
       const haystack = [
-        getHistoryTitle(item),
-        getHistoryPreview(item),
-        String(item.raw_text || ""),
+        session.title,
+        session.preview,
+        ...session.items.map((item) => `${item.raw_text || ""} ${item.details || ""}`),
       ]
         .join(" ")
         .toLowerCase();
@@ -255,13 +452,8 @@ export default function Home() {
   });
 
   useEffect(() => {
-    setActiveChatStartId(null);
-    void loadHistory();
-  }, [profile?.userId]);
-
-  useEffect(() => {
-    void loadHiddenChatIds();
-  }, [hiddenChatStorageKey]);
+    void bootstrapChatState();
+  }, [chatSessionStorageKey, hiddenChatStorageKey, profile?.userId]);
 
   useEffect(() => {
     recordingRef.current = recording;
@@ -363,49 +555,150 @@ export default function Home() {
     }
   }
 
-  async function loadHistory() {
+  async function readChatHistoryFromApi(): Promise<ChatHistoryItem[]> {
     try {
       const suffix = profile?.userId ? `?user_id=${profile.userId}` : "";
       const data = await apiGet<ChatHistoryItem[]>(`/items${suffix}`);
-      setHistoryItems(Array.isArray(data) ? data : []);
+      return Array.isArray(data) ? data : [];
     } catch {
-      setHistoryItems([]);
+      return [];
     }
   }
 
-  async function loadHiddenChatIds() {
+  async function readStoredChatSessions(): Promise<ChatSessionRecord[]> {
     try {
-      const raw = await AsyncStorage.getItem(hiddenChatStorageKey);
-      if (!raw) {
-        setHiddenChatIds([]);
-        return;
-      }
+      const raw = await AsyncStorage.getItem(chatSessionStorageKey);
+      if (!raw) return [];
 
       const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        setHiddenChatIds([]);
-        return;
-      }
+      if (!Array.isArray(parsed)) return [];
 
-      const normalized = parsed
-        .map((value) => Number(value))
-        .filter((value) => Number.isFinite(value));
-
-      setHiddenChatIds(Array.from(new Set(normalized)));
+      return parsed
+        .map((value) => normalizeChatSessionRecord(value))
+        .filter(Boolean) as ChatSessionRecord[];
     } catch {
-      setHiddenChatIds([]);
+      return [];
     }
   }
 
-  async function persistHiddenChatIds(nextIds: number[]) {
+  async function readHiddenChatSessionIds(): Promise<string[]> {
+    try {
+      const raw = await AsyncStorage.getItem(hiddenChatStorageKey);
+      if (!raw) return [];
+
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+
+      return Array.from(
+        new Set(
+          parsed
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+        )
+      );
+    } catch {
+      return [];
+    }
+  }
+
+
+  async function persistHiddenChatSessionIds(nextIds: string[]) {
     const normalized = Array.from(
-      new Set(nextIds.map((value) => Number(value)).filter((value) => Number.isFinite(value)))
+      new Set(nextIds.map((value) => String(value || "").trim()).filter(Boolean))
     );
 
-    setHiddenChatIds(normalized);
+    setHiddenChatSessionIds(normalized);
 
     try {
       await AsyncStorage.setItem(hiddenChatStorageKey, JSON.stringify(normalized));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  async function bootstrapChatState() {
+    const [itemsFromApi, storedSessions, storedHiddenIds] = await Promise.all([
+      readChatHistoryFromApi(),
+      readStoredChatSessions(),
+      readHiddenChatSessionIds(),
+    ]);
+
+    setHistoryItems(itemsFromApi);
+    setHiddenChatSessionIds(storedHiddenIds);
+
+    const reconciled = reconcileChatSessions(itemsFromApi, storedSessions);
+    setChatSessions(reconciled);
+    setActiveChatSessionId(null);
+
+    try {
+      await AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(reconciled));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  async function refreshHistoryAndSessions(extraItems: ChatHistoryItem[] = []) {
+    const itemsFromApi = await readChatHistoryFromApi();
+    const mergedItems = upsertHistoryItems(itemsFromApi, extraItems);
+    setHistoryItems(mergedItems);
+
+    const reconciled = reconcileChatSessions(mergedItems, chatSessions);
+    setChatSessions(reconciled);
+
+    try {
+      await AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(reconciled));
+    } catch {
+      // ignore storage failures
+    }
+
+    return mergedItems;
+  }
+
+  async function attachItemToCurrentChat(
+    item: ChatHistoryItem,
+    latestItems: ChatHistoryItem[]
+  ) {
+    const itemId = Number(item.id);
+    if (!Number.isFinite(itemId)) return;
+
+    let workingSessions = reconcileChatSessions(latestItems, chatSessions)
+      .map((session) => ({
+        ...session,
+        itemIds: session.itemIds.filter((value) => value !== itemId),
+      }))
+      .filter((session) => session.itemIds.length > 0);
+
+    const timestamp = item.created_at || item.datetime || new Date().toISOString();
+
+    if (activeChatSessionId) {
+      const targetIndex = workingSessions.findIndex(
+        (session) => session.id === activeChatSessionId
+      );
+
+      if (targetIndex >= 0) {
+        const targetSession = workingSessions[targetIndex];
+        workingSessions[targetIndex] = {
+          ...targetSession,
+          itemIds: [...targetSession.itemIds, itemId],
+          updatedAt: timestamp,
+          title: targetSession.title || getHistoryTitle(item),
+        };
+      } else {
+        const nextSession = createChatSessionFromItem(item);
+        workingSessions = [nextSession, ...workingSessions];
+        setActiveChatSessionId(nextSession.id);
+      }
+    } else {
+      const nextSession = createChatSessionFromItem(item);
+      workingSessions = [nextSession, ...workingSessions];
+      setActiveChatSessionId(nextSession.id);
+    }
+
+    workingSessions = workingSessions.sort(sortSessionsByRecent);
+    setChatSessions(workingSessions);
+
+    try {
+      await AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(workingSessions));
     } catch {
       // ignore storage failures
     }
@@ -435,7 +728,7 @@ export default function Home() {
     setDrawerOpen(false);
   }
 
-  function openHistoryItemActions(item: ChatHistoryItem) {
+  function openHistoryItemActions(item: ChatSessionListItem) {
     historyLongPressTriggeredRef.current = true;
     setSelectedHistoryItem(item);
     setChatActionsOpen(true);
@@ -454,14 +747,17 @@ export default function Home() {
 
     Alert.alert(
       "Delete chat",
-      `Remove "${getHistoryTitle(targetItem)}" from chat history on this device?`,
+      `Remove "${targetItem.title}" from chat history on this device?`,
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Delete",
           style: "destructive",
           onPress: async () => {
-            await persistHiddenChatIds([...hiddenChatIds, Number(targetItem.id)]);
+            if (activeChatSessionId === targetItem.id) {
+              setActiveChatSessionId(null);
+            }
+            await persistHiddenChatSessionIds([...hiddenChatSessionIds, targetItem.id]);
             closeHistoryItemActions();
           },
         },
@@ -475,15 +771,22 @@ export default function Home() {
   }
 
   function startNewChat() {
-    const latestVisibleId = latestHistory.length
-      ? Math.max(...latestHistory.map((item) => Number(item.id) || 0))
-      : 0;
-
-    setActiveChatStartId(latestVisibleId);
+    setActiveChatSessionId(null);
     setText("");
     setComposerInputHeight(MIN_INPUT_HEIGHT);
     setHistorySearch("");
+    closeHistoryItemActions();
     closeDrawer();
+    setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+  }
+
+  function openHistoryItem(item: ChatSessionListItem) {
+    closeDrawer();
+    closeHistoryItemActions();
+    setHistorySearch("");
+    setActiveChatSessionId(item.id);
     setTimeout(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
     }, 100);
@@ -559,11 +862,13 @@ export default function Home() {
         reply_language: settings.languageMode,
       });
 
-      const nextItem = normalizeChatResponse(response, cleaned);
+      const nextItem = normalizeChatTurnPayload(response, cleaned);
 
       setText("");
       setComposerInputHeight(MIN_INPUT_HEIGHT);
-      await loadHistory();
+
+      const mergedHistory = await refreshHistoryAndSessions([nextItem]);
+      await attachItemToCurrentChat(nextItem, mergedHistory);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       if (nextItem.details) {
@@ -678,25 +983,27 @@ export default function Home() {
         } as any
       );
 
-      const res = await apiPostForm<Item>(
+      const res = await apiPostForm<BackendChatResponse | ChatHistoryItem>(
         `/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
           settings.languageMode
         }`,
         form
       );
 
-      await loadHistory();
+      const nextItem = normalizeChatTurnPayload(res);
+      const mergedHistory = await refreshHistoryAndSessions([nextItem]);
+      await attachItemToCurrentChat(nextItem, mergedHistory);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-      if (res.details) {
-        void playAgentReply(res.details);
+      if (nextItem.details) {
+        void playAgentReply(nextItem.details);
       }
 
-      if (res.intent === "reminder" && res.datetime) {
+      if (nextItem.intent === "reminder" && nextItem.datetime) {
         setPendingReminder({
-          title: res.title || "Reminder",
-          details: res.details || res.raw_text,
-          datetimeText: res.datetime,
+          title: nextItem.title || "Reminder",
+          details: nextItem.details || nextItem.raw_text,
+          datetimeText: nextItem.datetime,
         });
         setConfirmOpen(true);
       }
@@ -800,10 +1107,6 @@ export default function Home() {
     setComposerInputHeight(MIN_INPUT_HEIGHT);
   }
 
-  function openHistoryItem(item: ChatHistoryItem) {
-    closeDrawer();
-    router.push(`/item/${item.id}`);
-  }
 
   async function signOut() {
     Alert.alert("Sign out", "Do you want to sign out from this account?", [
@@ -1113,7 +1416,7 @@ export default function Home() {
                       </Text>
                     </View>
                   ) : (
-                    filteredHistory.map((item, index) => (
+                    filteredHistory.map((item) => (
                       <Pressable
                         key={item.id}
                         onPress={() => {
@@ -1128,16 +1431,16 @@ export default function Home() {
                         delayLongPress={220}
                         style={[
                           styles.chatListItem,
-                          index === 0 && styles.chatListItemActive,
+                          item.id === activeChatSessionId && styles.chatListItemActive,
                         ]}
                       >
                         <View style={styles.chatListRow}>
                           <View style={styles.chatListTextWrap}>
                             <Text numberOfLines={1} style={styles.chatListTitle}>
-                              {getHistoryTitle(item)}
+                              {item.title}
                             </Text>
                             <Text numberOfLines={1} style={styles.chatListPreview}>
-                              {getHistoryPreview(item)}
+                              {item.preview}
                             </Text>
                           </View>
 
@@ -1192,7 +1495,7 @@ export default function Home() {
               <View style={styles.actionSheetHandle} />
 
               <Text numberOfLines={1} style={styles.actionSheetTitle}>
-                {selectedHistoryItem ? getHistoryTitle(selectedHistoryItem) : "Chat"}
+                {selectedHistoryItem ? selectedHistoryItem.title : "Chat"}
               </Text>
               <Text numberOfLines={2} style={styles.actionSheetSubtitle}>
                 Long press chat history to manage conversations.
