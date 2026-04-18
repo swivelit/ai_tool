@@ -66,13 +66,6 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-function getDayPart() {
-  const hour = new Date().getHours();
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
-}
-
 function normalizeChatResponse(
   payload: BackendChatResponse,
   fallbackRawText: string
@@ -184,6 +177,7 @@ export default function Home() {
   const stopWhenReadyRef = useRef(false);
   const drawerProgress = useRef(new Animated.Value(0)).current;
   const [drawerMounted, setDrawerMounted] = useState(false);
+  const scrollViewRef = useRef<ScrollView | null>(null);
 
   const isSmallPhone = width < 370 || height < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
@@ -194,18 +188,15 @@ export default function Home() {
   const orbSize = clamp(width * 0.38, 156, 208);
 
   const assistantLabel = useMemo(() => (name || "Elli").trim(), [name]);
-  const greetingName = useMemo(
-    () => (profile?.name || "there").trim(),
-    [profile?.name]
-  );
-  const greeting = useMemo(
-    () => `${getDayPart()}, ${greetingName}`,
-    [greetingName]
-  );
 
   const latestHistory = useMemo(
-    () => [...historyItems].sort((a, b) => Number(b.id) - Number(a.id)).slice(0, 20),
+    () => [...historyItems].sort((a, b) => Number(b.id) - Number(a.id)).slice(0, 40),
     [historyItems]
+  );
+
+  const chatTimeline = useMemo(
+    () => [...latestHistory].sort((a, b) => Number(a.id) - Number(b.id)),
+    [latestHistory]
   );
 
   const filteredHistory = useMemo(() => {
@@ -224,11 +215,6 @@ export default function Home() {
       return haystack.includes(query);
     });
   }, [historySearch, latestHistory]);
-
-  const latestReply = latestHistory.find((item) => {
-    const details = String(item.details || "").trim();
-    return Boolean(details);
-  });
 
   const placeholder = listening
     ? "Recording... stop to send"
@@ -251,6 +237,14 @@ export default function Home() {
   useEffect(() => {
     recordingRef.current = recording;
   }, [recording]);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 120);
+
+    return () => clearTimeout(timeout);
+  }, [chatTimeline.length, listening, busy]);
 
   useEffect(() => {
     return () => {
@@ -351,6 +345,9 @@ export default function Home() {
     setComposerInputHeight(MIN_INPUT_HEIGHT);
     setHistorySearch("");
     closeDrawer();
+    setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 100);
   }
 
   function openSettings() {
@@ -691,37 +688,91 @@ export default function Home() {
           </View>
 
           <ScrollView
+            ref={scrollViewRef}
             style={styles.scrollArea}
             contentContainerStyle={{
               flexGrow: 1,
               paddingHorizontal: horizontalPadding,
               paddingTop: 8,
-              paddingBottom: 190,
+              paddingBottom: 210,
               alignItems: "center",
             }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
-              <GlassCard style={styles.heroCard}>
-                <View style={styles.heroStatusRow}>
-                </View>
-
-              </GlassCard>
-
-              {latestReply ? (
-                <GlassCard style={styles.latestReplyCard}>
-                  <View style={styles.sectionHeaderRow}>
-                    <Text style={styles.sectionTitle}>Latest response</Text>
-                    <Text style={styles.sectionMeta}>
-                      {formatHistoryTime(latestReply.created_at || latestReply.datetime)}
-                    </Text>
+              {chatTimeline.length === 0 ? (
+                <GlassCard style={styles.emptyChatCard}>
+                  <View style={styles.emptyChatIconWrap}>
+                    <Ionicons name="chatbubble-ellipses-outline" size={22} color={Brand.cocoa} />
                   </View>
-                  <Text style={styles.latestReplyText} numberOfLines={4}>
-                    {latestReply.details || latestReply.raw_text}
+                  <Text style={styles.emptyChatTitle}>Start chatting with {assistantLabel}</Text>
+                  <Text style={styles.emptyChatText}>
+                    Type a message or use the mic. New messages will appear here like a real
+                    conversation.
                   </Text>
                 </GlassCard>
-              ) : null}
+              ) : (
+                <View style={styles.chatThread}>
+                  {chatTimeline.map((item) => {
+                    const userMessage = String(item.raw_text || "").trim();
+                    const assistantMessage = String(item.details || item.raw_text || "").trim();
+                    const timeLabel = formatHistoryTime(item.created_at || item.datetime);
+
+                    return (
+                      <View key={item.id} style={styles.messagePair}>
+                        {userMessage ? (
+                          <View style={[styles.messageRow, styles.messageRowUser]}>
+                            <View style={[styles.messageBubble, styles.userBubble]}>
+                              <Text style={[styles.messageText, styles.userMessageText]}>
+                                {userMessage}
+                              </Text>
+                            </View>
+                          </View>
+                        ) : null}
+
+                        {assistantMessage ? (
+                          <View style={[styles.messageRow, styles.messageRowAssistant]}>
+                            <View style={styles.assistantAvatar}>
+                              <Text style={styles.assistantAvatarText}>
+                                {assistantLabel.slice(0, 1).toUpperCase()}
+                              </Text>
+                            </View>
+
+                            <View style={styles.assistantMessageBlock}>
+                              <Text style={styles.messageSender}>{assistantLabel}</Text>
+                              <View style={[styles.messageBubble, styles.assistantBubble]}>
+                                <Text style={[styles.messageText, styles.assistantMessageText]}>
+                                  {assistantMessage}
+                                </Text>
+                              </View>
+                              <Text style={styles.messageMeta}>{timeLabel}</Text>
+                            </View>
+                          </View>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+
+                  {busy && !listening ? (
+                    <View style={[styles.messageRow, styles.messageRowAssistant]}>
+                      <View style={styles.assistantAvatar}>
+                        <Text style={styles.assistantAvatarText}>
+                          {assistantLabel.slice(0, 1).toUpperCase()}
+                        </Text>
+                      </View>
+
+                      <View style={styles.assistantMessageBlock}>
+                        <Text style={styles.messageSender}>{assistantLabel}</Text>
+                        <View style={[styles.messageBubble, styles.assistantBubble, styles.typingBubble]}>
+                          <ActivityIndicator size="small" color={Brand.cocoa} />
+                          <Text style={styles.typingText}>Thinking…</Text>
+                        </View>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+              )}
 
               {activeSurface === "quick" && listening ? (
                 <GlassCard style={styles.quickRecorderCard}>
@@ -795,7 +846,7 @@ export default function Home() {
                   <Text style={styles.composerHintText}>
                     {listening
                       ? "Recording in progress... tap stop or release the orb"
-                      : "Text chat + quick mic + live voice"}
+                      : ""}
                   </Text>
 
                   <View style={styles.composerActionButtons}>
@@ -1175,52 +1226,32 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
 
-  heroCard: {
-    padding: 20,
-    borderRadius: 28,
+  emptyChatCard: {
     marginTop: 10,
+    padding: 22,
+    borderRadius: 28,
   },
 
-  heroStatusRow: {
-    flexDirection: "row",
-    gap: 10,
-    flexWrap: "wrap",
-  },
-
-  heroChip: {
-    flexDirection: "row",
+  emptyChatIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 239, 213, 0.92)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
 
-  heroChipText: {
-    color: Brand.cocoa,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-
-  greeting: {
-    marginTop: 18,
-    color: Brand.textMuted,
-    fontSize: 15,
-    fontWeight: "800",
-  },
-
-  heroTitle: {
-    marginTop: 10,
+  emptyChatTitle: {
+    marginTop: 16,
     color: Brand.ink,
-    fontSize: 30,
-    lineHeight: 36,
+    fontSize: 22,
+    lineHeight: 28,
     fontWeight: "900",
   },
 
-  heroSubtitle: {
+  emptyChatText: {
     marginTop: 10,
     color: Brand.textMuted,
     fontSize: 14,
@@ -1228,72 +1259,121 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  previewPanelRow: {
-    marginTop: 18,
-    flexDirection: "row",
-    gap: 12,
-    flexWrap: "wrap",
+  chatThread: {
+    marginTop: 10,
+    gap: 16,
   },
 
-  previewStepCard: {
-    flex: 1,
-    minWidth: 150,
-    padding: 14,
-    borderRadius: 20,
+  messagePair: {
+    gap: 8,
+  },
+
+  messageRow: {
+    width: "100%",
+    flexDirection: "row",
+  },
+
+  messageRowUser: {
+    justifyContent: "flex-end",
+  },
+
+  messageRowAssistant: {
+    justifyContent: "flex-start",
+    alignItems: "flex-end",
+    gap: 10,
+  },
+
+  assistantAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.74)",
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: Brand.lineStrong,
+    marginBottom: 18,
   },
 
-  previewLabel: {
+  assistantAvatarText: {
+    color: Brand.cocoa,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+
+  assistantMessageBlock: {
+    maxWidth: "82%",
+  },
+
+  messageSender: {
+    marginLeft: 4,
+    marginBottom: 6,
     color: Brand.textMuted,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "800",
   },
 
-  previewValue: {
+  messageBubble: {
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+
+  userBubble: {
+    maxWidth: "82%",
+    backgroundColor: Brand.cocoa,
+    borderBottomRightRadius: 8,
+    shadowColor: "#6f4928",
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 3,
+  },
+
+  assistantBubble: {
+    backgroundColor: "rgba(255,255,255,0.82)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+    borderBottomLeftRadius: 8,
+  },
+
+  messageText: {
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "600",
+  },
+
+  userMessageText: {
+    color: Brand.cream,
+  },
+
+  assistantMessageText: {
+    color: Brand.ink,
+  },
+
+  messageMeta: {
     marginTop: 6,
-    color: Brand.ink,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: "900",
-  },
-
-  latestReplyCard: {
-    marginTop: 14,
-    padding: 18,
-    borderRadius: 24,
-  },
-
-  sectionHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-
-  sectionTitle: {
-    color: Brand.ink,
-    fontSize: 15,
-    fontWeight: "900",
-  },
-
-  sectionMeta: {
+    marginLeft: 4,
     color: Brand.textMuted,
     fontSize: 11,
     fontWeight: "700",
   },
 
-  latestReplyText: {
-    marginTop: 10,
-    color: Brand.cocoa,
+  typingBubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    minHeight: 48,
+  },
+
+  typingText: {
+    color: Brand.textMuted,
     fontSize: 14,
-    lineHeight: 21,
-    fontWeight: "600",
+    fontWeight: "700",
   },
 
   quickRecorderCard: {
-    marginTop: 14,
+    marginTop: 16,
     padding: 16,
     borderRadius: 24,
   },
