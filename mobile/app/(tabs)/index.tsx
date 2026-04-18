@@ -363,7 +363,7 @@ export default function Home() {
   const isSmallPhone = width < 370 || height < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 10 : 16);
-  const bottomPadding = Math.max(insets.bottom + 10, 16);
+  const bottomPadding = Math.max(Math.min(insets.bottom, 18), 10);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
   const drawerWidth = Math.min(width * 0.84, 360);
   const orbSize = clamp(width * 0.38, 156, 208);
