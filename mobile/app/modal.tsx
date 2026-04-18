@@ -160,7 +160,7 @@ export default function SettingsModal() {
             <Text style={styles.closeText}>Close</Text>
           </Pressable>
 
-          <Text style={styles.title}>Quick settings</Text>
+          <Text style={styles.title}>Settings</Text>
 
           <GlassCard style={{ borderRadius: 24, marginTop: 14 }}>
             <Text style={styles.sectionTitle}>Assistant name</Text>

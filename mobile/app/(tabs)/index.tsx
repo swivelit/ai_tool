@@ -29,6 +29,7 @@ import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
+import { useIsFocused } from "@react-navigation/native";
 
 import { GlassCard } from "@/components/Glass";
 import { Orb } from "@/components/Orb";
@@ -433,6 +434,7 @@ export default function Home() {
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 10 : 16);
   const bottomPadding = Platform.OS === "ios" ? Math.max(insets.bottom, 8) : 20;
+  const isScreenFocused = useIsFocused();
   const composerBottomOffset =
     Platform.OS === "ios"
       ? -Math.max(tabBarHeight - insets.bottom, 0)
@@ -459,7 +461,8 @@ export default function Home() {
     () => (settings.languageMode === "ta" ? "ta-IN" : "en-IN"),
     [settings.languageMode]
   );
-  const handsFreeForegroundEnabled = settings.handsFreeEnabled && appState === "active";
+  const handsFreeForegroundEnabled =
+    settings.handsFreeEnabled && appState === "active" && isScreenFocused;
   const chatSessionStorageKey = useMemo(
     () => `${CHAT_SESSIONS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
     [profile?.userId]
