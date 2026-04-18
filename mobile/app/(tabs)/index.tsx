@@ -369,7 +369,7 @@ export default function Home() {
   const composerBottomOffset =
     Platform.OS === "ios"
       ? -Math.max(tabBarHeight - insets.bottom, 0)
-      : -Math.max(tabBarHeight - 6, 0);
+      : -Math.max(tabBarHeight - 24, 0);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
   const drawerWidth = Math.min(width * 0.84, 360);
   const orbSize = clamp(width * 0.38, 156, 208);
