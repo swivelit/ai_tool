@@ -691,7 +691,6 @@ export default function Home() {
 
             <View style={styles.topBarCenter}>
               <Text style={styles.topBarTitle}>{assistantLabel}</Text>
-              <Text style={styles.topBarSubtitle}>Chat and voice assistant</Text>
             </View>
 
             <Pressable onPress={() => setVoiceSheetOpen(true)} style={styles.iconButton}>
