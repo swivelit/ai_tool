@@ -15,8 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from .database import engine
 from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User, UserProfile
