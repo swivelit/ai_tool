@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   Easing,
   KeyboardAvoidingView,
   Modal,
@@ -410,6 +411,7 @@ export default function Home() {
   const [handsFreeActive, setHandsFreeActive] = useState(false);
   const [handsFreeTranscript, setHandsFreeTranscript] = useState("");
   const [handsFreeStatus, setHandsFreeStatus] = useState("");
+  const [appState, setAppState] = useState(AppState.currentState);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const replySoundRef = useRef<Audio.Sound | null>(null);
@@ -457,6 +459,7 @@ export default function Home() {
     () => (settings.languageMode === "ta" ? "ta-IN" : "en-IN"),
     [settings.languageMode]
   );
+  const handsFreeForegroundEnabled = settings.handsFreeEnabled && appState === "active";
   const chatSessionStorageKey = useMemo(
     () => `${CHAT_SESSIONS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
     [profile?.userId]
@@ -579,7 +582,7 @@ export default function Home() {
     const nextMode = handsFreeDesiredModeRef.current;
     if (nextMode === "off") return;
 
-    if (!voiceSheetOpen || !settings.handsFreeEnabled || busy || listening || replySoundRef.current) {
+    if (!handsFreeForegroundEnabled || busy || listening || replySoundRef.current) {
       return;
     }
 
@@ -616,6 +619,7 @@ export default function Home() {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
 
     if (matched.command) {
+      setVoiceSheetOpen(true);
       handsFreeDesiredModeRef.current = "wake";
       setHandsFreeMode("wake");
       setHandsFreeStatus("Working on it…");
@@ -623,6 +627,7 @@ export default function Home() {
       return;
     }
 
+    setVoiceSheetOpen(true);
     handsFreeDesiredModeRef.current = "command";
     setHandsFreeMode("command");
     setHandsFreeStatus("Listening for your request…");
@@ -650,13 +655,13 @@ export default function Home() {
     setHandsFreeMode("wake");
     setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
 
-    if (voiceSheetOpen && settings.handsFreeEnabled && !busy && !listening && !replySoundRef.current) {
+    if (handsFreeForegroundEnabled && !busy && !listening && !replySoundRef.current) {
       queueHandsFreeRestart("wake", 500);
     }
   });
 
   useEffect(() => {
-    if (voiceSheetOpen && settings.handsFreeEnabled) {
+    if (handsFreeForegroundEnabled) {
       handsFreeDesiredModeRef.current = "wake";
       setHandsFreeMode("wake");
       setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
@@ -665,10 +670,10 @@ export default function Home() {
     }
 
     void shutdownHandsFree(true);
-  }, [voiceSheetOpen, settings.handsFreeEnabled, handsFreeLocale, handsFreeWakePhrase, handsFreeWakeVariants.join("|")]);
+  }, [handsFreeForegroundEnabled, handsFreeLocale, handsFreeWakePhrase, handsFreeWakeVariants.join("|")]);
 
   useEffect(() => {
-    if (!voiceSheetOpen || !settings.handsFreeEnabled) return;
+    if (!handsFreeForegroundEnabled) return;
 
     if (busy || listening || replySoundRef.current) {
       void abortHandsFreeRecognizer(false);
@@ -678,18 +683,18 @@ export default function Home() {
     if (!handsFreeActive && !handsFreeStartingRef.current && handsFreeDesiredModeRef.current !== "off") {
       queueHandsFreeRestart(handsFreeDesiredModeRef.current, 220);
     }
-  }, [busy, listening, voiceSheetOpen, settings.handsFreeEnabled, handsFreeActive]);
+  }, [busy, listening, handsFreeForegroundEnabled, handsFreeActive]);
 
   useEffect(() => {
-    if (!voiceSheetOpen || !settings.handsFreeEnabled) return;
+    if (!handsFreeForegroundEnabled) return;
     setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
-  }, [handsFreeWakePhrase, settings.handsFreeEnabled, voiceSheetOpen]);
+  }, [handsFreeWakePhrase, handsFreeForegroundEnabled]);
 
   useEffect(() => {
-    if (!busy && !listening && voiceSheetOpen && settings.handsFreeEnabled) {
+    if (!busy && !listening && handsFreeForegroundEnabled) {
       queueHandsFreeRestart("wake", 450);
     }
-  }, [busy, listening, settings.handsFreeEnabled, voiceSheetOpen]);
+  }, [busy, listening, handsFreeForegroundEnabled]);
 
   useEffect(() => {
     void bootstrapChatState();
@@ -698,6 +703,16 @@ export default function Home() {
   useEffect(() => {
     recordingRef.current = recording;
   }, [recording]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      setAppState(nextState);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -763,7 +778,7 @@ export default function Home() {
       replySoundRef.current = null;
     }
 
-    if (voiceSheetOpen && settings.handsFreeEnabled && handsFreeDesiredModeRef.current !== "off") {
+    if (handsFreeForegroundEnabled && handsFreeDesiredModeRef.current !== "off") {
       queueHandsFreeRestart("wake", 320);
     }
   }
@@ -817,7 +832,7 @@ export default function Home() {
   }
 
   function queueHandsFreeRestart(nextMode: "wake" | "command" = "wake", delay = 350) {
-    if (!voiceSheetOpen || !settings.handsFreeEnabled) return;
+    if (!handsFreeForegroundEnabled) return;
 
     clearHandsFreeRestartTimer();
     handsFreeDesiredModeRef.current = nextMode;
@@ -861,7 +876,7 @@ export default function Home() {
   }
 
   async function startHandsFreeRecognizer(nextMode: "wake" | "command") {
-    if (!voiceSheetOpen || !settings.handsFreeEnabled || !profile?.userId) return;
+    if (!handsFreeForegroundEnabled || !profile?.userId) return;
     if (busy || listening || replySoundRef.current || handsFreeStartingRef.current) return;
 
     clearHandsFreeRestartTimer();
@@ -1331,7 +1346,7 @@ export default function Home() {
     } finally {
       setBusy(false);
 
-      if (voiceSheetOpen && settings.handsFreeEnabled) {
+      if (handsFreeForegroundEnabled) {
         setHandsFreeMode("wake");
         setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
         queueHandsFreeRestart("wake", 520);
