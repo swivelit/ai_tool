@@ -713,18 +713,7 @@ export default function Home() {
             showsVerticalScrollIndicator={false}
           >
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
-              {chatTimeline.length === 0 ? (
-                <GlassCard style={styles.emptyChatCard}>
-                  <View style={styles.emptyChatIconWrap}>
-                    <Ionicons name="chatbubble-ellipses-outline" size={22} color={Brand.cocoa} />
-                  </View>
-                  <Text style={styles.emptyChatTitle}>Start chatting with {assistantLabel}</Text>
-                  <Text style={styles.emptyChatText}>
-                    Type a message or use the mic. New messages will appear here like a real
-                    conversation.
-                  </Text>
-                </GlassCard>
-              ) : (
+              {chatTimeline.length > 0 || (busy && !listening) ? (
                 <View style={styles.chatThread}>
                   {chatTimeline.map((item) => {
                     const userMessage = String(item.raw_text || "").trim();
@@ -784,7 +773,7 @@ export default function Home() {
                     </View>
                   ) : null}
                 </View>
-              )}
+              ) : null}
 
               {activeSurface === "quick" && listening ? (
                 <GlassCard style={styles.quickRecorderCard}>
@@ -1236,39 +1225,6 @@ const styles = StyleSheet.create({
 
   iconButtonDisabled: {
     opacity: 0.45,
-  },
-
-  emptyChatCard: {
-    marginTop: 10,
-    padding: 22,
-    borderRadius: 28,
-  },
-
-  emptyChatIconWrap: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255, 239, 213, 0.92)",
-    borderWidth: 1,
-    borderColor: Brand.line,
-  },
-
-  emptyChatTitle: {
-    marginTop: 16,
-    color: Brand.ink,
-    fontSize: 22,
-    lineHeight: 28,
-    fontWeight: "900",
-  },
-
-  emptyChatText: {
-    marginTop: 10,
-    color: Brand.textMuted,
-    fontSize: 14,
-    lineHeight: 21,
-    fontWeight: "600",
   },
 
   chatThread: {
