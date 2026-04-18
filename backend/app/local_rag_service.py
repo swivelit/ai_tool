@@ -1267,6 +1267,52 @@ class LocalRAGService:
             return None
 
         user = session.get(User, user_id) if user_id else None
+
+        def _extract_cached_pipeline(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            if not isinstance(payload, dict):
+                return None
+
+            # Newer cache rows are saved as:
+            # {"pipeline": {...}, "meta": {...}}
+            # Older code expected the pipeline fields at top level.
+            pipeline = payload.get("pipeline") if isinstance(payload.get("pipeline"), dict) else payload
+            if not isinstance(pipeline, dict):
+                return None
+
+            raw_english = (
+                str(pipeline.get("raw_english", "")).strip()
+                or str(pipeline.get("remodeled_english", "")).strip()
+            )
+            remodeled_english = (
+                str(pipeline.get("remodeled_english", "")).strip()
+                or raw_english
+            )
+            tamil_text = str(pipeline.get("tamil_text", "")).strip()
+            theni_tamil_text = (
+                str(pipeline.get("theni_tamil_text", "")).strip()
+                or tamil_text
+            )
+
+            # Hard guard:
+            # if the cached row has no assistant text at all, ignore it.
+            # This prevents fallback-to-user-message mirroring.
+            if not (raw_english or remodeled_english or tamil_text or theni_tamil_text):
+                return None
+
+            return {
+                "raw_english": raw_english,
+                "remodeled_english": remodeled_english,
+                "tamil_text": tamil_text,
+                "theni_tamil_text": theni_tamil_text,
+                "predicted_label": str(pipeline.get("predicted_label", "cached")).strip() or "cached",
+                "risk_level": str(pipeline.get("risk_level", "low")).strip() or "low",
+                "core_meta": pipeline.get("core_meta") if isinstance(pipeline.get("core_meta"), dict) else {},
+                "remodel_meta": pipeline.get("remodel_meta") if isinstance(pipeline.get("remodel_meta"), dict) else {},
+                "review_meta": pipeline.get("review_meta") if isinstance(pipeline.get("review_meta"), dict) else {},
+                "translation_meta": pipeline.get("translation_meta") if isinstance(pipeline.get("translation_meta"), dict) else {},
+                "timings_ms": pipeline.get("timings_ms") if isinstance(pipeline.get("timings_ms"), dict) else {"total_ms": 0.0},
+            }
+
         if user_id:
             schedule_answer = self._build_schedule_answer(session, int(user_id), normalized, user)
             if schedule_answer is not None:
@@ -1281,46 +1327,54 @@ class LocalRAGService:
                     select(QACache).where(QACache.user_id == int(user_id)).order_by(QACache.updated_at.desc())
                 ).all()
             )[: int(FAST_RAG_MAX_CACHE_ROWS)]
+
             best_payload: Optional[Dict[str, Any]] = None
             best_score = 0.0
+
             for row in cache_rows:
                 q_norm = self.normalize_lookup_text(row.question)
                 if not q_norm:
                     continue
+
                 overlap = self._set_overlap(set(self._tokens(normalized)), set(self._tokens(q_norm)))
                 seq = self._string_similarity(normalized, q_norm)
                 score = max(overlap, seq)
+
                 if q_norm == normalized:
                     score = 1.0
-                if score > best_score:
-                    try:
-                        payload = json.loads(row.answer or "{}")
-                    except Exception:
-                        payload = {}
-                    if isinstance(payload, dict):
-                        best_payload = payload
-                        best_score = score
+
+                if score <= best_score:
+                    continue
+
+                try:
+                    payload = json.loads(row.answer or "{}")
+                except Exception:
+                    payload = {}
+
+                cached_pipeline = _extract_cached_pipeline(payload)
+                if cached_pipeline is None:
+                    continue
+
+                best_payload = cached_pipeline
+                best_score = score
+
             if best_payload and best_score >= FAST_RAG_CACHE_MATCH_THRESHOLD:
-                raw_english = str(best_payload.get("raw_english", "")).strip() or str(best_payload.get("remodeled_english", "")).strip()
-                remodeled_english = str(best_payload.get("remodeled_english", "")).strip() or raw_english
-                tamil_text = str(best_payload.get("tamil_text", "")).strip()
-                theni_tamil_text = str(best_payload.get("theni_tamil_text", "")).strip() or tamil_text
                 return self._build_pipeline_result(
-                    raw_english=raw_english,
-                    remodeled_english=remodeled_english,
-                    tamil_text=tamil_text,
-                    theni_tamil_text=theni_tamil_text,
+                    raw_english=best_payload["raw_english"],
+                    remodeled_english=best_payload["remodeled_english"],
+                    tamil_text=best_payload["tamil_text"],
+                    theni_tamil_text=best_payload["theni_tamil_text"],
                     route_taken="cached_answer",
                     direct_answer_source="qa_cache",
                     direct_answer_confidence=f"{best_score:.4f}",
-                    predicted_label=str(best_payload.get("predicted_label", "cached")).strip() or "cached",
-                    risk_level=str(best_payload.get("risk_level", "low")).strip() or "low",
+                    predicted_label=best_payload["predicted_label"],
+                    risk_level=best_payload["risk_level"],
                     stage_notes=["Reused a cached answer and skipped a new OpenAI call."],
-                    core_meta=best_payload.get("core_meta") if isinstance(best_payload.get("core_meta"), dict) else {},
-                    remodel_meta=best_payload.get("remodel_meta") if isinstance(best_payload.get("remodel_meta"), dict) else {},
-                    review_meta=best_payload.get("review_meta") if isinstance(best_payload.get("review_meta"), dict) else {},
-                    translation_meta=best_payload.get("translation_meta") if isinstance(best_payload.get("translation_meta"), dict) else {},
-                    timings_ms=best_payload.get("timings_ms") if isinstance(best_payload.get("timings_ms"), dict) else {"total_ms": 0.0},
+                    core_meta=best_payload["core_meta"],
+                    remodel_meta=best_payload["remodel_meta"],
+                    review_meta=best_payload["review_meta"],
+                    translation_meta=best_payload["translation_meta"],
+                    timings_ms=best_payload["timings_ms"],
                     cache_hit="true",
                 )
 
@@ -1331,11 +1385,13 @@ class LocalRAGService:
         match = self._match_fast_row(normalized, user)
         if match is None:
             return None
+
         row, score, source = match
         user_name = (user.name if user and user.name else "there").strip() or "there"
         assistant_name = (user.assistant_name if user and user.assistant_name else "Ellie").strip() or "Ellie"
         place = (user.place if user and user.place else "your saved place").strip() or "your saved place"
         english, tamil, theni = self._row_language_text(row, "ta", user_name, assistant_name, place)
+
         return self._build_pipeline_result(
             raw_english=english,
             remodeled_english=english,
