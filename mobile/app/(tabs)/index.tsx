@@ -1831,7 +1831,7 @@ export default function Home() {
                 </View>
 
                 <Pressable onPress={startNewChat} style={styles.newChatRow}>
-                  <Text style={styles.newChatText}>Create your New chat</Text>
+                  <Text style={styles.newChatText}>New chat</Text>
                   <View style={styles.newChatIconWrap}>
                     <Ionicons name="create-outline" size={16} color={Brand.cocoa} />
                   </View>

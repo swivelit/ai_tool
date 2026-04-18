@@ -161,9 +161,6 @@ export default function SettingsModal() {
           </Pressable>
 
           <Text style={styles.title}>Quick settings</Text>
-          <Text style={styles.subtitle}>
-            Turn on hands-free wake mode and train a wake phrase for your assistant.
-          </Text>
 
           <GlassCard style={{ borderRadius: 24, marginTop: 14 }}>
             <Text style={styles.sectionTitle}>Assistant name</Text>
@@ -203,20 +200,12 @@ export default function SettingsModal() {
                 onPress={() => setLanguageMode("ta")}
               />
             </Row>
-
-            <Text style={styles.helperText}>
-              New replies will follow this language preference.
-            </Text>
           </GlassCard>
 
           <GlassCard style={{ borderRadius: 24, marginTop: 14 }}>
             <View style={styles.switchRow}>
               <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={styles.sectionTitle}>Hands-free voice mode</Text>
-                <Text style={styles.helperText}>
-                  When the live voice page is open, saying the wake phrase will start listening
-                  without holding the orb.
-                </Text>
+                <Text style={styles.sectionTitle}>Hands free</Text>
               </View>
               <Switch
                 value={handsFreeEnabled}
@@ -249,11 +238,6 @@ export default function SettingsModal() {
                 {trainingWakePhrase ? "Listening for wake phrase…" : "Train wake phrase with your voice"}
               </Text>
             </Pressable>
-
-            <Text style={styles.helperText}>
-              This captures wake phrase samples for phrase matching. It does not do biometric
-              voice verification yet.
-            </Text>
 
             {trainingTranscript ? (
               <View style={styles.trainingResultCard}>
