@@ -178,6 +178,8 @@ export default function Home() {
     useState<ChatHistoryItem | null>(null);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
+  const replySoundRef = useRef<Audio.Sound | null>(null);
+  const replyPlaybackTokenRef = useRef(0);
   const recordingPhaseRef = useRef<"idle" | "starting" | "recording" | "stopping">(
     "idle"
   );
@@ -275,6 +277,8 @@ export default function Home() {
 
   useEffect(() => {
     return () => {
+      void releaseReplySound();
+
       const activeRecording = recordingRef.current;
       if (activeRecording) {
         void activeRecording.stopAndUnloadAsync().catch(() => undefined);
@@ -286,6 +290,37 @@ export default function Home() {
       }).catch(() => undefined);
     };
   }, []);
+
+  async function releaseReplySound(soundToRelease?: Audio.Sound | null) {
+    const target = soundToRelease ?? replySoundRef.current;
+    if (!target) return;
+
+    if (!soundToRelease || replySoundRef.current === target) {
+      replySoundRef.current = null;
+    }
+
+    try {
+      target.setOnPlaybackStatusUpdate(null);
+    } catch {
+      // ignore
+    }
+
+    try {
+      await target.stopAsync();
+    } catch {
+      // ignore
+    }
+
+    try {
+      await target.unloadAsync();
+    } catch {
+      // ignore
+    }
+
+    if (replySoundRef.current === target) {
+      replySoundRef.current = null;
+    }
+  }
 
   useEffect(() => {
     if (drawerOpen) {
@@ -461,15 +496,51 @@ export default function Home() {
 
   async function playAgentReply(textValue: string) {
     if (!textValue) return;
+
+    const playbackToken = replyPlaybackTokenRef.current + 1;
+    replyPlaybackTokenRef.current = playbackToken;
+
+    await releaseReplySound();
+
     try {
       const data = await apiPost<{ audio_base64?: string }>("/api/tts", {
         text: textValue,
       });
-      if (data.audio_base64) {
-        const uri = `data:audio/wav;base64,${data.audio_base64}`;
-        const { sound } = await Audio.Sound.createAsync({ uri });
-        await sound.playAsync();
+
+      if (!data.audio_base64 || replyPlaybackTokenRef.current !== playbackToken) {
+        return;
       }
+
+      const uri = `data:audio/wav;base64,${data.audio_base64}`;
+      const sound = new Audio.Sound();
+
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) {
+          if (replySoundRef.current === sound) {
+            replySoundRef.current = null;
+          }
+          return;
+        }
+
+        if (status.didJustFinish) {
+          void releaseReplySound(sound);
+        }
+      });
+
+      await sound.loadAsync(
+        { uri },
+        {
+          shouldPlay: true,
+          progressUpdateIntervalMillis: 250,
+        }
+      );
+
+      if (replyPlaybackTokenRef.current !== playbackToken) {
+        await releaseReplySound(sound);
+        return;
+      }
+
+      replySoundRef.current = sound;
     } catch {
       // ignore playback failures
     }
@@ -520,6 +591,7 @@ export default function Home() {
     if (busy || recordingPhaseRef.current !== "idle") return;
 
     try {
+      await releaseReplySound();
       recordingPhaseRef.current = "starting";
       stopWhenReadyRef.current = false;
       setActiveSurface(surface);
