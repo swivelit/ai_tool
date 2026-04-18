@@ -165,6 +165,7 @@ export default function Home() {
   const [pendingReminder, setPendingReminder] =
     useState<PendingReminder | null>(null);
   const [historyItems, setHistoryItems] = useState<ChatHistoryItem[]>([]);
+  const [activeChatStartId, setActiveChatStartId] = useState<number | null>(null);
   const [activeSurface, setActiveSurface] = useState<RecorderSurface | null>(
     null
   );
@@ -194,9 +195,14 @@ export default function Home() {
     [historyItems]
   );
 
+  const visibleChatHistory = useMemo(() => {
+    if (activeChatStartId == null) return latestHistory;
+    return latestHistory.filter((item) => Number(item.id) > activeChatStartId);
+  }, [activeChatStartId, latestHistory]);
+
   const chatTimeline = useMemo(
-    () => [...latestHistory].sort((a, b) => Number(a.id) - Number(b.id)),
-    [latestHistory]
+    () => [...visibleChatHistory].sort((a, b) => Number(a.id) - Number(b.id)),
+    [visibleChatHistory]
   );
 
   const filteredHistory = useMemo(() => {
@@ -231,6 +237,7 @@ export default function Home() {
   });
 
   useEffect(() => {
+    setActiveChatStartId(null);
     void loadHistory();
   }, [profile?.userId]);
 
@@ -341,6 +348,11 @@ export default function Home() {
   }
 
   function startNewChat() {
+    const latestVisibleId = latestHistory.length
+      ? Math.max(...latestHistory.map((item) => Number(item.id) || 0))
+      : 0;
+
+    setActiveChatStartId(latestVisibleId);
     setText("");
     setComposerInputHeight(MIN_INPUT_HEIGHT);
     setHistorySearch("");
