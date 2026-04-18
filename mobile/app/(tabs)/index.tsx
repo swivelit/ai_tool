@@ -365,7 +365,7 @@ export default function Home() {
   const isSmallPhone = width < 370 || height < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 10 : 16);
-  const bottomPadding = Platform.OS === "ios" ? Math.max(insets.bottom, 8) : 4;
+  const bottomPadding = Platform.OS === "ios" ? Math.max(insets.bottom, 8) : 25;
   const composerBottomOffset =
     Platform.OS === "ios"
       ? -Math.max(tabBarHeight - insets.bottom, 0)
