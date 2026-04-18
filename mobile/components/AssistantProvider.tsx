@@ -41,6 +41,24 @@ function normalizeName(value?: string | null) {
   return trimmed || DEFAULTS.name;
 }
 
+function normalizeWakePhrase(value?: string | null) {
+  const trimmed = String(value || "").trim();
+  return trimmed || DEFAULTS.settings.wakePhrase;
+}
+
+function normalizeWakeTrainingSamples(value?: string[] | null) {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(
+    new Set(
+      value
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .slice(0, 5)
+    )
+  );
+}
+
 function normalizeSettings(value?: Partial<AssistantSettings> | null): AssistantSettings {
   return {
     tone: value?.tone === "friendly" ? "friendly" : DEFAULTS.settings.tone,
@@ -48,6 +66,9 @@ function normalizeSettings(value?: Partial<AssistantSettings> | null): Assistant
       value?.languageMode === "en" || value?.languageMode === "ta"
         ? value.languageMode
         : DEFAULTS.settings.languageMode,
+    handsFreeEnabled: Boolean(value?.handsFreeEnabled),
+    wakePhrase: normalizeWakePhrase(value?.wakePhrase),
+    wakeTrainingSamples: normalizeWakeTrainingSamples(value?.wakeTrainingSamples),
   };
 }
 
@@ -60,10 +81,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    const [storedName, storedSettings] = await Promise.all([
-      getAssistantName(),
-      getSettings(),
-    ]);
+    const [storedName, storedSettings] = await Promise.all([getAssistantName(), getSettings()]);
 
     const normalizedStoredName = normalizeName(storedName);
     const normalizedStoredSettings = normalizeSettings(storedSettings);
@@ -96,10 +114,15 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       await setAssistantName(resolvedName);
     }
 
-    if (
+    const settingsChanged =
       resolvedSettings.tone !== normalizedStoredSettings.tone ||
-      resolvedSettings.languageMode !== normalizedStoredSettings.languageMode
-    ) {
+      resolvedSettings.languageMode !== normalizedStoredSettings.languageMode ||
+      resolvedSettings.handsFreeEnabled !== normalizedStoredSettings.handsFreeEnabled ||
+      resolvedSettings.wakePhrase !== normalizedStoredSettings.wakePhrase ||
+      JSON.stringify(resolvedSettings.wakeTrainingSamples) !==
+        JSON.stringify(normalizedStoredSettings.wakeTrainingSamples);
+
+    if (settingsChanged) {
       await setSettings(resolvedSettings);
     }
 

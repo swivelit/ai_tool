@@ -1,8 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
+  Alert,
+  Platform,
   Pressable,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -11,11 +15,26 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from "expo-speech-recognition";
 
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { AssistantSettings } from "@/lib/storage";
 import { Brand } from "@/constants/theme";
+
+function uniqueSamples(values: string[]) {
+  return Array.from(
+    new Set(
+      values
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .slice(0, 5)
+    )
+  );
+}
 
 export default function SettingsModal() {
   const { name, settings, updateName, updateSettings } = useAssistant();
@@ -24,16 +43,104 @@ export default function SettingsModal() {
   const [languageMode, setLanguageMode] = useState<AssistantSettings["languageMode"]>(
     settings.languageMode
   );
+  const [handsFreeEnabled, setHandsFreeEnabled] = useState(settings.handsFreeEnabled);
+  const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase || `Hey ${name || "Elli"}`);
+  const [wakeTrainingSamples, setWakeTrainingSamples] = useState<string[]>(
+    settings.wakeTrainingSamples || []
+  );
+  const [trainingWakePhrase, setTrainingWakePhrase] = useState(false);
+  const [trainingTranscript, setTrainingTranscript] = useState("");
 
   useEffect(() => {
     setN(name);
     setTone(settings.tone);
     setLanguageMode(settings.languageMode);
-  }, [name, settings.languageMode, settings.tone]);
+    setHandsFreeEnabled(settings.handsFreeEnabled);
+    setWakePhrase(settings.wakePhrase || `Hey ${name || "Elli"}`);
+    setWakeTrainingSamples(settings.wakeTrainingSamples || []);
+  }, [name, settings]);
+
+  const wakePrompt = useMemo(
+    () => wakePhrase.trim() || `Hey ${n.trim() || "Elli"}`,
+    [n, wakePhrase]
+  );
+
+  const speechLocale = languageMode === "ta" ? "ta-IN" : "en-IN";
+
+  useSpeechRecognitionEvent("result", (event: any) => {
+    if (!trainingWakePhrase) return;
+    const transcript = String(event?.results?.[0]?.transcript || "").trim();
+    if (!transcript) return;
+
+    setTrainingTranscript(transcript);
+
+    if (event?.isFinal) {
+      setWakePhrase(transcript);
+      setWakeTrainingSamples((prev) => uniqueSamples([transcript, ...prev]));
+      setTrainingWakePhrase(false);
+      ExpoSpeechRecognitionModule.abort();
+    }
+  });
+
+  useSpeechRecognitionEvent("error", (event: any) => {
+    if (!trainingWakePhrase) return;
+
+    setTrainingWakePhrase(false);
+
+    if (event?.error && event.error !== "aborted") {
+      Alert.alert(
+        "Voice training failed",
+        event?.message || "Could not capture the wake phrase sample."
+      );
+    }
+  });
+
+  useSpeechRecognitionEvent("end", () => {
+    if (trainingWakePhrase) {
+      setTrainingWakePhrase(false);
+    }
+  });
+
+  async function startWakePhraseTraining() {
+    try {
+      setTrainingTranscript("");
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          "Permissions needed",
+          "Please allow microphone and speech recognition access to train the wake phrase."
+        );
+        return;
+      }
+
+      setTrainingWakePhrase(true);
+      ExpoSpeechRecognitionModule.start({
+        lang: speechLocale,
+        interimResults: true,
+        maxAlternatives: 1,
+        continuous: false,
+        requiresOnDeviceRecognition: Platform.OS === "ios",
+      });
+    } catch (error: unknown) {
+      setTrainingWakePhrase(false);
+      const message =
+        error instanceof Error ? error.message : "Could not start wake phrase training.";
+      Alert.alert("Voice training failed", message);
+    }
+  }
 
   async function save() {
-    await updateName(n.trim() || "Elli");
-    await updateSettings({ tone, languageMode });
+    const nextName = n.trim() || "Elli";
+    const nextWakePhrase = wakePrompt;
+
+    await updateName(nextName);
+    await updateSettings({
+      tone,
+      languageMode,
+      handsFreeEnabled,
+      wakePhrase: nextWakePhrase,
+      wakeTrainingSamples: uniqueSamples(wakeTrainingSamples),
+    });
     router.back();
   }
 
@@ -47,7 +154,7 @@ export default function SettingsModal() {
           <View style={styles.bottomGlow} />
         </View>
 
-        <View style={styles.content}>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <Pressable onPress={() => router.back()} style={styles.closeBtn}>
             <Ionicons name="close" size={18} color={Brand.cocoa} />
             <Text style={styles.closeText}>Close</Text>
@@ -55,7 +162,7 @@ export default function SettingsModal() {
 
           <Text style={styles.title}>Quick settings</Text>
           <Text style={styles.subtitle}>
-            Everything you need to fine-tune your assistant.
+            Turn on hands-free wake mode and train a wake phrase for your assistant.
           </Text>
 
           <GlassCard style={{ borderRadius: 24, marginTop: 14 }}>
@@ -102,7 +209,77 @@ export default function SettingsModal() {
             </Text>
           </GlassCard>
 
-          <Pressable onPress={save} style={({ pressed }) => [styles.saveShell, pressed && styles.pressed]}>
+          <GlassCard style={{ borderRadius: 24, marginTop: 14 }}>
+            <View style={styles.switchRow}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={styles.sectionTitle}>Hands-free voice mode</Text>
+                <Text style={styles.helperText}>
+                  When the live voice page is open, saying the wake phrase will start listening
+                  without holding the orb.
+                </Text>
+              </View>
+              <Switch
+                value={handsFreeEnabled}
+                onValueChange={setHandsFreeEnabled}
+                trackColor={{ false: "rgba(124, 99, 80, 0.18)", true: "rgba(215,154,89,0.55)" }}
+                thumbColor="#fff7ef"
+              />
+            </View>
+
+            <Text style={[styles.sectionTitle, { marginTop: 16 }]}>Wake phrase</Text>
+            <TextInput
+              value={wakePhrase}
+              onChangeText={setWakePhrase}
+              placeholder={`Hey ${n.trim() || "Elli"}`}
+              placeholderTextColor="rgba(124, 99, 80, 0.52)"
+              autoCapitalize="words"
+              style={styles.input}
+            />
+
+            <Pressable
+              onPress={startWakePhraseTraining}
+              style={({ pressed }) => [styles.trainingButton, pressed && styles.pressed]}
+            >
+              <Ionicons
+                name={trainingWakePhrase ? "mic" : "radio-outline"}
+                size={16}
+                color={Brand.cocoa}
+              />
+              <Text style={styles.trainingButtonText}>
+                {trainingWakePhrase ? "Listening for wake phrase…" : "Train wake phrase with your voice"}
+              </Text>
+            </Pressable>
+
+            <Text style={styles.helperText}>
+              This captures wake phrase samples for phrase matching. It does not do biometric
+              voice verification yet.
+            </Text>
+
+            {trainingTranscript ? (
+              <View style={styles.trainingResultCard}>
+                <Text style={styles.trainingResultLabel}>Latest captured phrase</Text>
+                <Text style={styles.trainingResultValue}>{trainingTranscript}</Text>
+              </View>
+            ) : null}
+
+            {wakeTrainingSamples.length ? (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.trainingSamplesTitle}>Saved wake phrase samples</Text>
+                <View style={styles.sampleWrap}>
+                  {wakeTrainingSamples.map((sample) => (
+                    <View key={sample} style={styles.samplePill}>
+                      <Text style={styles.samplePillText}>{sample}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+          </GlassCard>
+
+          <Pressable
+            onPress={save}
+            style={({ pressed }) => [styles.saveShell, pressed && styles.pressed]}
+          >
             <LinearGradient
               colors={Brand.gradients.button}
               start={{ x: 0, y: 0 }}
@@ -112,7 +289,7 @@ export default function SettingsModal() {
               <Text style={styles.saveText}>Save</Text>
             </LinearGradient>
           </Pressable>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     </LinearGradient>
   );
@@ -151,8 +328,8 @@ const styles = StyleSheet.create({
   },
 
   content: {
-    flex: 1,
     padding: 16,
+    paddingBottom: 28,
   },
 
   topGlow: {
@@ -264,6 +441,83 @@ const styles = StyleSheet.create({
     color: Brand.muted,
     fontSize: 13,
     lineHeight: 19,
+  },
+
+  switchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  trainingButton: {
+    marginTop: 14,
+    minHeight: 46,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Brand.line,
+    backgroundColor: "rgba(255,255,255,0.62)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+  },
+
+  trainingButtonText: {
+    color: Brand.cocoa,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  trainingResultCard: {
+    marginTop: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Brand.line,
+    backgroundColor: "rgba(255,255,255,0.7)",
+    padding: 12,
+  },
+
+  trainingResultLabel: {
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+
+  trainingResultValue: {
+    marginTop: 6,
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+
+  trainingSamplesTitle: {
+    color: Brand.ink,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+
+  sampleWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+
+  samplePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  samplePillText: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    fontWeight: "800",
   },
 
   saveShell: {

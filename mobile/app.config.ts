@@ -94,6 +94,15 @@ export default {
       "expo-router",
       "@react-native-google-signin/google-signin",
       [
+        "expo-speech-recognition",
+        {
+          microphonePermission: "Allow $(PRODUCT_NAME) to use the microphone for hands-free voice mode.",
+          speechRecognitionPermission:
+            "Allow $(PRODUCT_NAME) to recognize speech for hands-free voice mode.",
+          androidSpeechServicePackages: ["com.google.android.googlequicksearchbox"],
+        },
+      ],
+      [
         "expo-splash-screen",
         {
           image: "./assets/images/splash-icon.png",
