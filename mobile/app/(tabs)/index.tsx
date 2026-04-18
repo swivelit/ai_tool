@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   ActivityIndicator,
   Alert,
@@ -61,6 +62,7 @@ type RecorderSurface = "quick" | "live";
 
 const MIN_INPUT_HEIGHT = 24;
 const MAX_INPUT_HEIGHT = 130;
+const HIDDEN_CHAT_IDS_STORAGE_PREFIX = "hidden_chat_ids_v1";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -170,6 +172,10 @@ export default function Home() {
     null
   );
   const [historySearch, setHistorySearch] = useState("");
+  const [hiddenChatIds, setHiddenChatIds] = useState<number[]>([]);
+  const [chatActionsOpen, setChatActionsOpen] = useState(false);
+  const [selectedHistoryItem, setSelectedHistoryItem] =
+    useState<ChatHistoryItem | null>(null);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const recordingPhaseRef = useRef<"idle" | "starting" | "recording" | "stopping">(
@@ -179,6 +185,7 @@ export default function Home() {
   const drawerProgress = useRef(new Animated.Value(0)).current;
   const [drawerMounted, setDrawerMounted] = useState(false);
   const scrollViewRef = useRef<ScrollView | null>(null);
+  const historyLongPressTriggeredRef = useRef(false);
 
   const isSmallPhone = width < 370 || height < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
@@ -189,10 +196,19 @@ export default function Home() {
   const orbSize = clamp(width * 0.38, 156, 208);
 
   const assistantLabel = useMemo(() => (name || "Elli").trim(), [name]);
+  const hiddenChatStorageKey = useMemo(
+    () => `${HIDDEN_CHAT_IDS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
+    [profile?.userId]
+  );
+  const hiddenChatIdSet = useMemo(() => new Set(hiddenChatIds), [hiddenChatIds]);
 
   const latestHistory = useMemo(
-    () => [...historyItems].sort((a, b) => Number(b.id) - Number(a.id)).slice(0, 40),
-    [historyItems]
+    () =>
+      [...historyItems]
+        .filter((item) => !hiddenChatIdSet.has(Number(item.id)))
+        .sort((a, b) => Number(b.id) - Number(a.id))
+        .slice(0, 40),
+    [hiddenChatIdSet, historyItems]
   );
 
   const visibleChatHistory = useMemo(() => {
@@ -240,6 +256,10 @@ export default function Home() {
     setActiveChatStartId(null);
     void loadHistory();
   }, [profile?.userId]);
+
+  useEffect(() => {
+    void loadHiddenChatIds();
+  }, [hiddenChatStorageKey]);
 
   useEffect(() => {
     recordingRef.current = recording;
@@ -318,6 +338,44 @@ export default function Home() {
     }
   }
 
+  async function loadHiddenChatIds() {
+    try {
+      const raw = await AsyncStorage.getItem(hiddenChatStorageKey);
+      if (!raw) {
+        setHiddenChatIds([]);
+        return;
+      }
+
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        setHiddenChatIds([]);
+        return;
+      }
+
+      const normalized = parsed
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value));
+
+      setHiddenChatIds(Array.from(new Set(normalized)));
+    } catch {
+      setHiddenChatIds([]);
+    }
+  }
+
+  async function persistHiddenChatIds(nextIds: number[]) {
+    const normalized = Array.from(
+      new Set(nextIds.map((value) => Number(value)).filter((value) => Number.isFinite(value)))
+    );
+
+    setHiddenChatIds(normalized);
+
+    try {
+      await AsyncStorage.setItem(hiddenChatStorageKey, JSON.stringify(normalized));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
   function stripAssistantTrigger(input: string) {
     const cleaned = input.trim();
     if (!cleaned) return cleaned;
@@ -340,6 +398,40 @@ export default function Home() {
 
   function closeDrawer() {
     setDrawerOpen(false);
+  }
+
+  function openHistoryItemActions(item: ChatHistoryItem) {
+    historyLongPressTriggeredRef.current = true;
+    setSelectedHistoryItem(item);
+    setChatActionsOpen(true);
+    void Haptics.selectionAsync().catch(() => undefined);
+  }
+
+  function closeHistoryItemActions() {
+    setChatActionsOpen(false);
+    setSelectedHistoryItem(null);
+  }
+
+  function deleteSelectedHistoryItem() {
+    if (!selectedHistoryItem) return;
+
+    const targetItem = selectedHistoryItem;
+
+    Alert.alert(
+      "Delete chat",
+      `Remove "${getHistoryTitle(targetItem)}" from chat history on this device?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            await persistHiddenChatIds([...hiddenChatIds, Number(targetItem.id)]);
+            closeHistoryItemActions();
+          },
+        },
+      ]
+    );
   }
 
   function closeReminderConfirm() {
@@ -952,15 +1044,33 @@ export default function Home() {
                     filteredHistory.map((item, index) => (
                       <Pressable
                         key={item.id}
-                        onPress={() => openHistoryItem(item)}
+                        onPress={() => {
+                          if (historyLongPressTriggeredRef.current) {
+                            historyLongPressTriggeredRef.current = false;
+                            return;
+                          }
+
+                          openHistoryItem(item);
+                        }}
+                        onLongPress={() => openHistoryItemActions(item)}
+                        delayLongPress={220}
                         style={[
                           styles.chatListItem,
                           index === 0 && styles.chatListItemActive,
                         ]}
                       >
-                        <Text numberOfLines={1} style={styles.chatListTitle}>
-                          {getHistoryTitle(item)}
-                        </Text>
+                        <View style={styles.chatListRow}>
+                          <View style={styles.chatListTextWrap}>
+                            <Text numberOfLines={1} style={styles.chatListTitle}>
+                              {getHistoryTitle(item)}
+                            </Text>
+                            <Text numberOfLines={1} style={styles.chatListPreview}>
+                              {getHistoryPreview(item)}
+                            </Text>
+                          </View>
+
+                          <Ionicons name="ellipsis-horizontal" size={16} color={Brand.textMuted} />
+                        </View>
                       </Pressable>
                     ))
                   )}
@@ -992,6 +1102,41 @@ export default function Home() {
             </Animated.View>
 
             <Pressable style={styles.drawerDismissArea} onPress={closeDrawer} />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={chatActionsOpen}
+        animationType="slide"
+        onRequestClose={closeHistoryItemActions}
+      >
+        <View style={styles.actionSheetBackdrop}>
+          <Pressable style={StyleSheet.absoluteFillObject} onPress={closeHistoryItemActions} />
+
+          <View style={styles.actionSheetWrap}>
+            <LinearGradient colors={Brand.gradients.softCard} style={styles.actionSheetCard}>
+              <View style={styles.actionSheetHandle} />
+
+              <Text numberOfLines={1} style={styles.actionSheetTitle}>
+                {selectedHistoryItem ? getHistoryTitle(selectedHistoryItem) : "Chat"}
+              </Text>
+              <Text numberOfLines={2} style={styles.actionSheetSubtitle}>
+                Long press chat history to manage conversations.
+              </Text>
+
+              <Pressable onPress={deleteSelectedHistoryItem} style={styles.actionSheetRow}>
+                <View style={[styles.actionSheetIconWrap, styles.actionSheetDeleteIconWrap]}>
+                  <Ionicons name="trash-outline" size={18} color="#fff5ef" />
+                </View>
+                <Text style={styles.actionSheetDeleteText}>Delete</Text>
+              </Pressable>
+
+              <Pressable onPress={closeHistoryItemActions} style={styles.actionSheetCancelButton}>
+                <Text style={styles.actionSheetCancelText}>Cancel</Text>
+              </Pressable>
+            </LinearGradient>
           </View>
         </View>
       </Modal>
@@ -1580,11 +1725,21 @@ const styles = StyleSheet.create({
   },
 
   chatListItem: {
-    minHeight: 48,
+    minHeight: 58,
     justifyContent: "center",
     borderRadius: 14,
     paddingHorizontal: 10,
     paddingVertical: 10,
+  },
+
+  chatListRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+
+  chatListTextWrap: {
+    flex: 1,
   },
 
   chatListItemActive: {
@@ -1596,6 +1751,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     fontWeight: "800",
+  },
+
+  chatListPreview: {
+    marginTop: 2,
+    color: Brand.textMuted,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
   },
 
   settingsCard: {
@@ -1682,6 +1845,97 @@ const styles = StyleSheet.create({
 
   drawerDismissArea: {
     flex: 1,
+  },
+
+  actionSheetBackdrop: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(47, 33, 24, 0.18)",
+  },
+
+  actionSheetWrap: {
+    paddingHorizontal: 12,
+    paddingBottom: 16,
+  },
+
+  actionSheetCard: {
+    borderRadius: 28,
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 14,
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
+
+  actionSheetHandle: {
+    alignSelf: "center",
+    width: 42,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(124, 99, 80, 0.28)",
+    marginBottom: 12,
+  },
+
+  actionSheetTitle: {
+    color: Brand.ink,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+
+  actionSheetSubtitle: {
+    marginTop: 6,
+    color: Brand.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+
+  actionSheetRow: {
+    marginTop: 18,
+    minHeight: 58,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  actionSheetIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  actionSheetDeleteIconWrap: {
+    backgroundColor: "#a34a34",
+  },
+
+  actionSheetDeleteText: {
+    color: "#8b2f1f",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  actionSheetCancelButton: {
+    minHeight: 52,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 12,
+    backgroundColor: "rgba(255,255,255,0.52)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  actionSheetCancelText: {
+    color: Brand.ink,
+    fontSize: 14,
+    fontWeight: "900",
   },
 
   voiceScreen: {
