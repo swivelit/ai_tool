@@ -1428,14 +1428,6 @@ export default function Home() {
                       />
                     </Pressable>
 
-                    <Pressable
-                      onPress={() => setVoiceSheetOpen(true)}
-                      disabled={busy && !listening}
-                      style={[styles.roundAction, busy && !listening && styles.iconButtonDisabled]}
-                    >
-                      <Ionicons name="sparkles-outline" size={18} color={Brand.cocoa} />
-                    </Pressable>
-
                     {!!text.trim() ? (
                       <Pressable onPress={clearComposer} style={styles.roundAction}>
                         <Ionicons name="close-outline" size={18} color={Brand.cocoa} />
