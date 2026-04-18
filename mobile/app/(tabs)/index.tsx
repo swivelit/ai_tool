@@ -365,11 +365,11 @@ export default function Home() {
   const isSmallPhone = width < 370 || height < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 10 : 16);
-  const bottomPadding = Platform.OS === "ios" ? Math.max(insets.bottom, 8) : 25;
+  const bottomPadding = Platform.OS === "ios" ? Math.max(insets.bottom, 8) : 20;
   const composerBottomOffset =
     Platform.OS === "ios"
       ? -Math.max(tabBarHeight - insets.bottom, 0)
-      : -Math.max(tabBarHeight - 24, 0);
+      : -Math.max(tabBarHeight - 12, 0);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
   const drawerWidth = Math.min(width * 0.84, 360);
   const orbSize = clamp(width * 0.38, 156, 208);
@@ -1238,7 +1238,8 @@ export default function Home() {
 
       <KeyboardAvoidingView
         style={styles.screen}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        enabled={Platform.OS === "ios"}
       >
         <View style={styles.screen}>
           <View
