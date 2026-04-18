@@ -23,6 +23,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 
 import { GlassCard } from "@/components/Glass";
 import { Orb } from "@/components/Orb";
@@ -320,6 +321,7 @@ function reconcileChatSessions(
 
 export default function Home() {
   const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
   const { width, height } = useWindowDimensions();
   const { name, settings, profile } = useAssistant();
   const { signOutUser } = useAuth();
@@ -363,7 +365,11 @@ export default function Home() {
   const isSmallPhone = width < 370 || height < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 10 : 16);
-  const bottomPadding = Math.max(Math.min(insets.bottom, 18), 10);
+  const bottomPadding = Platform.OS === "ios" ? Math.max(insets.bottom, 8) : 4;
+  const composerBottomOffset =
+    Platform.OS === "ios"
+      ? -Math.max(tabBarHeight - insets.bottom, 0)
+      : -Math.max(tabBarHeight - 6, 0);
   const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
   const drawerWidth = Math.min(width * 0.84, 360);
   const orbSize = clamp(width * 0.38, 156, 208);
@@ -1358,6 +1364,7 @@ export default function Home() {
               {
                 paddingHorizontal: horizontalPadding,
                 paddingBottom: bottomPadding,
+                bottom: composerBottomOffset,
               },
             ]}
           >
@@ -1385,7 +1392,7 @@ export default function Home() {
                     }}
                     style={[
                       styles.composerInput,
-                      { minHeight: Math.max(composerInputHeight, 44), height: Math.max(composerInputHeight, 44) },
+                      { minHeight: Math.max(composerInputHeight, 36), height: Math.max(composerInputHeight, 36) },
                     ]}
                   />
 
@@ -1810,9 +1817,9 @@ const styles = StyleSheet.create({
   },
 
   iconButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.74)",
@@ -1991,7 +1998,8 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 250, 242, 0.92)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    padding: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
     shadowColor: "#6f4928",
     shadowOpacity: 0.12,
     shadowRadius: 18,
@@ -2002,9 +2010,9 @@ const styles = StyleSheet.create({
   composerMainRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 4,
-    paddingVertical: 4,
+    gap: 8,
+    paddingHorizontal: 2,
+    paddingVertical: 0,
   },
 
   composerInput: {
@@ -2014,9 +2022,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     fontWeight: "600",
-    paddingTop: 10,
-    paddingBottom: 10,
-    paddingHorizontal: 10,
+    paddingTop: 0,
+    paddingBottom: 0,
+    paddingHorizontal: 8,
   },
 
   sendButton: {
@@ -2043,13 +2051,13 @@ const styles = StyleSheet.create({
   composerInlineActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
   },
 
   roundAction: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: Brand.soft,
