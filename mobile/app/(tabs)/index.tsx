@@ -1528,8 +1528,6 @@ export default function Home() {
                               {item.preview}
                             </Text>
                           </View>
-
-                          <Ionicons name="ellipsis-horizontal" size={16} color={Brand.textMuted} />
                         </View>
                       </Pressable>
                     ))
