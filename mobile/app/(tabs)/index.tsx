@@ -1363,7 +1363,7 @@ export default function Home() {
           >
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
               <View style={styles.composerCard}>
-                <View style={styles.composerInputShell}>
+                <View style={styles.composerMainRow}>
                   <TextInput
                     value={text}
                     onChangeText={setText}
@@ -1383,33 +1383,13 @@ export default function Home() {
                       );
                       setComposerInputHeight(nextHeight);
                     }}
-                    style={[styles.composerInput, { height: composerInputHeight }]}
+                    style={[
+                      styles.composerInput,
+                      { minHeight: Math.max(composerInputHeight, 44), height: Math.max(composerInputHeight, 44) },
+                    ]}
                   />
 
-                  <Pressable
-                    onPress={handleChatSend}
-                    disabled={!text.trim() || busy || listening}
-                    style={[
-                      styles.sendButton,
-                      (!text.trim() || busy || listening) && styles.iconButtonDisabled,
-                    ]}
-                  >
-                    {busy && !listening ? (
-                      <ActivityIndicator size="small" color={Brand.cocoa} />
-                    ) : (
-                      <Ionicons name="arrow-up" size={18} color={Brand.cocoa} />
-                    )}
-                  </Pressable>
-                </View>
-
-                <View style={styles.composerBottomRow}>
-                  <Text style={styles.composerHintText}>
-                    {listening
-                      ? "Recording in progress... tap stop or release the orb"
-                      : ""}
-                  </Text>
-
-                  <View style={styles.composerActionButtons}>
+                  <View style={styles.composerInlineActions}>
                     <Pressable
                       onPress={handleQuickMicPress}
                       disabled={busy && !listening}
@@ -1428,13 +1408,28 @@ export default function Home() {
                       />
                     </Pressable>
 
-                    {!!text.trim() ? (
-                      <Pressable onPress={clearComposer} style={styles.roundAction}>
-                        <Ionicons name="close-outline" size={18} color={Brand.cocoa} />
-                      </Pressable>
-                    ) : null}
+                    <Pressable
+                      onPress={handleChatSend}
+                      disabled={!text.trim() || busy || listening}
+                      style={[
+                        styles.sendButton,
+                        (!text.trim() || busy || listening) && styles.iconButtonDisabled,
+                      ]}
+                    >
+                      {busy && !listening ? (
+                        <ActivityIndicator size="small" color={Brand.cocoa} />
+                      ) : (
+                        <Ionicons name="arrow-up" size={18} color={Brand.cocoa} />
+                      )}
+                    </Pressable>
                   </View>
                 </View>
+
+                {listening ? (
+                  <Text style={styles.composerHintText}>
+                    Recording in progress... tap stop or release the orb
+                  </Text>
+                ) : null}
               </View>
             </View>
           </View>
@@ -2004,17 +1999,16 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
 
-  composerInputShell: {
+  composerMainRow: {
     flexDirection: "row",
-    alignItems: "flex-end",
+    alignItems: "center",
     gap: 10,
-    paddingHorizontal: 6,
-    paddingTop: 2,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
   },
 
   composerInput: {
     flex: 1,
-    minHeight: 24,
     maxHeight: MAX_INPUT_HEIGHT,
     color: Brand.ink,
     fontSize: 16,
@@ -2022,7 +2016,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     paddingTop: 10,
     paddingBottom: 10,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
   },
 
   sendButton: {
@@ -2036,24 +2030,17 @@ const styles = StyleSheet.create({
     borderColor: Brand.lineStrong,
   },
 
-  composerBottomRow: {
-    marginTop: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    paddingHorizontal: 6,
-  },
 
   composerHintText: {
-    flex: 1,
+    marginTop: 6,
+    paddingHorizontal: 6,
     color: Brand.textMuted,
     fontSize: 12,
     lineHeight: 17,
     fontWeight: "700",
   },
 
-  composerActionButtons: {
+  composerInlineActions: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
