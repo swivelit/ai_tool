@@ -36,7 +36,7 @@ const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean =
   String(
     extra.USE_LOCAL_CHAT_PIPELINE ||
       process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ||
-      "true"
+      "false"
   ).toLowerCase() === "true";
 
 let localChatInterceptionDepth = 0;
