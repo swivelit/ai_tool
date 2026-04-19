@@ -2297,18 +2297,37 @@ async def api_transcribe_and_analyze(
             pass
 
 
+def _require_positive_user_id(user_id: Optional[int]) -> int:
+    if user_id is None or int(user_id) <= 0:
+        raise HTTPException(400, "user_id is required")
+    return int(user_id)
+
+
 @app.get("/items", response_model=List[TextAnalysisResponse])
-def list_items(session: Session = Depends(get_session), user_id: Optional[int] = None):
-    query = select(Item).order_by(Item.created_at.desc())
-    if user_id is not None:
-        query = query.where(Item.user_id == user_id)
+def list_items(
+    session: Session = Depends(get_session),
+    user_id: Optional[int] = Query(default=None),
+):
+    resolved_user_id = _require_positive_user_id(user_id)
+    query = (
+        select(Item)
+        .where(Item.user_id == resolved_user_id)
+        .order_by(Item.created_at.desc())
+    )
     items = session.exec(query).all()
     return [item_to_response(i) for i in items]
 
 
 @app.get("/items/{item_id}", response_model=TextAnalysisResponse)
-def get_item(item_id: int, session: Session = Depends(get_session)):
-    item = session.get(Item, item_id)
+def get_item(
+    item_id: int,
+    session: Session = Depends(get_session),
+    user_id: Optional[int] = Query(default=None),
+):
+    resolved_user_id = _require_positive_user_id(user_id)
+    item = session.exec(
+        select(Item).where(Item.id == item_id, Item.user_id == resolved_user_id)
+    ).first()
     if not item:
         raise HTTPException(404, "Item not found")
     return item_to_response(item)
@@ -2320,11 +2339,11 @@ def delete_item(
     user_id: Optional[int] = Query(default=None),
     session: Session = Depends(get_session),
 ):
-    item = session.get(Item, item_id)
+    resolved_user_id = _require_positive_user_id(user_id)
+    item = session.exec(
+        select(Item).where(Item.id == item_id, Item.user_id == resolved_user_id)
+    ).first()
     if not item:
-        raise HTTPException(404, "Item not found")
-
-    if user_id is not None and item.user_id not in (None, user_id):
         raise HTTPException(404, "Item not found")
 
     session.delete(item)
