@@ -124,6 +124,57 @@ function safeJsonParse<T>(raw: string, fallback: T): T {
   }
 }
 
+const UTC_TIMESTAMP_KEYS = new Set([
+  "created_at",
+  "updated_at",
+  "timestamp",
+  "createdAt",
+  "updatedAt",
+  "started_at",
+  "finished_at",
+  "startedAt",
+  "finishedAt",
+  "saved_at",
+  "last_sync_at",
+  "lastSyncAt",
+  "run_at",
+  "runAt",
+]);
+
+function normalizeUtcTimestampString(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return raw;
+
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw)) {
+    return `${raw}Z`;
+  }
+
+  return raw;
+}
+
+function normalizeBackendDates<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeBackendDates(entry)) as T;
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const normalized: Record<string, any> = {};
+
+  Object.entries(value as Record<string, any>).forEach(([key, entryValue]) => {
+    if (typeof entryValue === "string" && UTC_TIMESTAMP_KEYS.has(key)) {
+      normalized[key] = normalizeUtcTimestampString(entryValue);
+      return;
+    }
+
+    normalized[key] = normalizeBackendDates(entryValue);
+  });
+
+  return normalized as T;
+}
+
 function extractTranscriptText(payload: any) {
   if (!payload) return "";
   if (typeof payload === "string") return payload.trim();
@@ -196,7 +247,7 @@ async function getFeatureFlags(forceRefresh = false) {
   try {
     const res = await fetch(buildUrl("/api/flags"));
     if (!res.ok) throw new Error(`flags ${res.status}`);
-    const payload = (await res.json()) as FeatureFlagPayload;
+    const payload = normalizeBackendDates((await res.json()) as FeatureFlagPayload);
     featureFlagsCache = payload?.flags || null;
     featureFlagsFetchedAt = now;
     return featureFlagsCache;
@@ -404,7 +455,7 @@ export async function apiGet<T>(path: string): Promise<T> {
       `GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
     );
   }
-  return res.json();
+  return normalizeBackendDates((await res.json()) as T);
 }
 
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
@@ -432,7 +483,7 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
       `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
     );
   }
-  return res.json();
+  return normalizeBackendDates((await res.json()) as T);
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
@@ -452,7 +503,7 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
     );
   }
 
-  return res.json();
+  return normalizeBackendDates((await res.json()) as T);
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
@@ -465,7 +516,7 @@ export async function apiDelete<T>(path: string): Promise<T> {
       `DELETE ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
     );
   }
-  return res.json();
+  return normalizeBackendDates((await res.json()) as T);
 }
 
 export { getFeatureFlags };
