@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -45,6 +45,14 @@ type NoticeState = {
   primaryLabel?: string;
   onPrimaryPress?: () => void;
 } | null;
+
+type TrainingPhase =
+  | "idle"
+  | "preparing"
+  | "listening"
+  | "heard-sound"
+  | "captured"
+  | "error";
 
 function formatClock(value?: string | null) {
   const source = (value || "").trim();
@@ -107,6 +115,47 @@ function uniqueSamples(values: string[]) {
   );
 }
 
+function normalizeRecognitionTranscript(value: string) {
+  return String(value || "")
+    .replace(/[.!?。،]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getTrainingPhaseLabel(phase: TrainingPhase) {
+  switch (phase) {
+    case "preparing":
+      return "Preparing";
+    case "listening":
+      return "Listening";
+    case "heard-sound":
+      return "Hearing you";
+    case "captured":
+      return "Captured";
+    case "error":
+      return "Try again";
+    default:
+      return "Ready";
+  }
+}
+
+function getTrainingPhaseIcon(phase: TrainingPhase): keyof typeof Ionicons.glyphMap {
+  switch (phase) {
+    case "preparing":
+      return "hourglass-outline";
+    case "listening":
+      return "mic-outline";
+    case "heard-sound":
+      return "pulse-outline";
+    case "captured":
+      return "checkmark-circle-outline";
+    case "error":
+      return "alert-circle-outline";
+    default:
+      return "radio-outline";
+  }
+}
+
 export default function SettingsModal() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -155,6 +204,15 @@ export default function SettingsModal() {
   );
   const [trainingWakePhrase, setTrainingWakePhrase] = useState(false);
   const [trainingTranscript, setTrainingTranscript] = useState("");
+  const [trainingScreenVisible, setTrainingScreenVisible] = useState(false);
+  const [trainingPhase, setTrainingPhase] = useState<TrainingPhase>("idle");
+  const [trainingStatus, setTrainingStatus] = useState("");
+  const [trainingError, setTrainingError] = useState("");
+  const [trainingLevel, setTrainingLevel] = useState(0);
+
+  const trainingWakePhraseRef = useRef(false);
+  const trainingScreenVisibleRef = useRef(false);
+  const trainingPhaseRef = useRef<TrainingPhase>("idle");
 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -174,6 +232,28 @@ export default function SettingsModal() {
   const bottomPadding = Math.max(insets.bottom + 28, 28);
   const heroTitleSize = isVerySmallPhone ? 24 : isSmallPhone ? 28 : 33;
   const heroTitleLineHeight = heroTitleSize + 6;
+
+  useEffect(() => {
+    trainingWakePhraseRef.current = trainingWakePhrase;
+  }, [trainingWakePhrase]);
+
+  useEffect(() => {
+    trainingScreenVisibleRef.current = trainingScreenVisible;
+  }, [trainingScreenVisible]);
+
+  useEffect(() => {
+    trainingPhaseRef.current = trainingPhase;
+  }, [trainingPhase]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        ExpoSpeechRecognitionModule.abort();
+      } catch {
+        // Ignore cleanup errors.
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setAssistantNameInput(name || "Elli");
@@ -219,6 +299,13 @@ export default function SettingsModal() {
 
   const speechLocale = languageMode === "ta" ? "ta-IN" : "en-IN";
 
+  useEffect(() => {
+    if (!trainingScreenVisible) return;
+    setTrainingStatus(
+      `When you’re ready, tap Start listening and say “${wakePrompt}”.`
+    );
+  }, [trainingScreenVisible, wakePrompt]);
+
   const preferencesDirty =
     assistantNameInput.trim() !== (name || "Elli").trim() ||
     tone !== settings.tone ||
@@ -242,38 +329,103 @@ export default function SettingsModal() {
     [routine.daily_habits, routine.wake_time, sleepHours]
   );
 
+  useSpeechRecognitionEvent("start", () => {
+    if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
+
+    setTrainingPhase("listening");
+    setTrainingStatus(`Listening now. Say “${wakePrompt}”.`);
+    setTrainingError("");
+    setTrainingLevel(0.08);
+  });
+
+  useSpeechRecognitionEvent("speechstart", () => {
+    if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
+
+    setTrainingPhase("heard-sound");
+    setTrainingStatus("Sound detected. Keep speaking until the phrase is complete.");
+  });
+
+  useSpeechRecognitionEvent("volumechange", (event: any) => {
+    if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
+
+    const nextValue = Number(event?.value ?? -2);
+    const normalized = Math.max(0, Math.min(1, (nextValue + 2) / 12));
+    setTrainingLevel(normalized);
+
+    if (nextValue > 0 && trainingPhaseRef.current === "listening") {
+      setTrainingPhase("heard-sound");
+      setTrainingStatus("We can hear you. Finish saying the wake phrase.");
+    }
+  });
+
   useSpeechRecognitionEvent("result", (event: any) => {
-    if (!trainingWakePhrase) return;
-    const transcript = String(event?.results?.[0]?.transcript || "").trim();
+    if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
+
+    const transcript = normalizeRecognitionTranscript(
+      String(event?.results?.[0]?.transcript || "")
+    );
     if (!transcript) return;
 
     setTrainingTranscript(transcript);
 
     if (event?.isFinal) {
       setWakePhrase(transcript);
-      setWakeTrainingSamples((prev) => uniqueSamples([transcript, ...prev]));
+      setWakeTrainingSamples((prev) => uniqueSamples([transcript, wakePrompt, ...prev]));
       setTrainingWakePhrase(false);
-      ExpoSpeechRecognitionModule.abort();
-    }
-  });
-
-  useSpeechRecognitionEvent("error", (event: any) => {
-    if (!trainingWakePhrase) return;
-
-    setTrainingWakePhrase(false);
-
-    if (event?.error && event.error !== "aborted") {
-      showNotice(
-        "Voice training failed",
-        event?.message || "Could not capture the wake phrase sample."
+      trainingWakePhraseRef.current = false;
+      setTrainingLevel(0);
+      setTrainingPhase("captured");
+      setTrainingError("");
+      setTrainingStatus(
+        `Captured “${transcript}”. It has been filled into the wake phrase field below. Tap Save in Settings to keep it.`
       );
     }
   });
 
-  useSpeechRecognitionEvent("end", () => {
-    if (trainingWakePhrase) {
+  useSpeechRecognitionEvent("error", (event: any) => {
+    if (!trainingScreenVisibleRef.current) return;
+
+    if (event?.error === "aborted") {
       setTrainingWakePhrase(false);
+      trainingWakePhraseRef.current = false;
+      setTrainingLevel(0);
+
+      if (trainingPhaseRef.current !== "captured" && trainingPhaseRef.current !== "error") {
+        setTrainingPhase("idle");
+        setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
+      }
+      return;
     }
+
+    const isRecoverableTimeout =
+      event?.error === "no-speech" || event?.error === "speech-timeout";
+
+    setTrainingWakePhrase(false);
+    trainingWakePhraseRef.current = false;
+    setTrainingLevel(0);
+    setTrainingPhase("error");
+    setTrainingError(
+      isRecoverableTimeout
+        ? "No speech was detected."
+        : String(event?.message || "Could not capture the wake phrase sample.")
+    );
+    setTrainingStatus(
+      isRecoverableTimeout
+        ? `We didn’t catch a full phrase. Hold the phone close and say “${wakePrompt}” right after tapping Start listening.`
+        : String(event?.message || "Could not capture the wake phrase sample.")
+    );
+  });
+
+  useSpeechRecognitionEvent("end", () => {
+    setTrainingWakePhrase(false);
+    trainingWakePhraseRef.current = false;
+    setTrainingLevel(0);
+
+    if (!trainingScreenVisibleRef.current) return;
+    if (trainingPhaseRef.current === "captured" || trainingPhaseRef.current === "error") return;
+
+    setTrainingPhase("idle");
+    setTrainingStatus(`Listening session ended. Tap Start listening to try “${wakePrompt}” again.`);
   });
 
   function showNotice(
@@ -466,31 +618,111 @@ export default function SettingsModal() {
     }
   }
 
+  function openWakePhraseTrainer() {
+    setTrainingScreenVisible(true);
+    trainingScreenVisibleRef.current = true;
+    setTrainingPhase("idle");
+    setTrainingError("");
+    setTrainingLevel(0);
+    setTrainingTranscript("");
+    setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
+  }
+
+  function closeWakePhraseTrainer() {
+    trainingScreenVisibleRef.current = false;
+    trainingWakePhraseRef.current = false;
+    trainingPhaseRef.current = "idle";
+
+    try {
+      ExpoSpeechRecognitionModule.abort();
+    } catch {
+      // Ignore cleanup errors.
+    }
+
+    setTrainingWakePhrase(false);
+    setTrainingScreenVisible(false);
+    setTrainingPhase("idle");
+    setTrainingError("");
+    setTrainingLevel(0);
+    setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
+  }
+
+  function stopWakePhraseTraining() {
+    if (!trainingWakePhraseRef.current) return;
+
+    setTrainingStatus("Finishing this listening session…");
+
+    try {
+      ExpoSpeechRecognitionModule.stop();
+    } catch {
+      try {
+        ExpoSpeechRecognitionModule.abort();
+      } catch {
+        // Ignore nested stop failures.
+      }
+    }
+  }
+
   async function startWakePhraseTraining() {
     try {
       setTrainingTranscript("");
+      setTrainingError("");
+      setTrainingLevel(0);
+      setTrainingPhase("preparing");
+      setTrainingStatus(`Getting the microphone ready for “${wakePrompt}”…`);
+
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permission.granted) {
-        showNotice(
-          "Permissions needed",
-          "Please allow microphone and speech recognition access to train the wake phrase."
+        setTrainingWakePhrase(false);
+        trainingWakePhraseRef.current = false;
+        setTrainingPhase("error");
+        setTrainingError("Microphone permission is required.");
+        setTrainingStatus(
+          "Please allow microphone and speech recognition access, then try again."
         );
         return;
       }
 
       setTrainingWakePhrase(true);
+      trainingWakePhraseRef.current = true;
+
       ExpoSpeechRecognitionModule.start({
         lang: speechLocale,
         interimResults: true,
         maxAlternatives: 1,
         continuous: false,
         requiresOnDeviceRecognition: Platform.OS === "ios",
+        contextualStrings: uniqueSamples([
+          wakePrompt,
+          assistantNameInput,
+          ...(wakeTrainingSamples || []),
+        ]),
+        iosTaskHint: "confirmation",
+        volumeChangeEventOptions: {
+          enabled: true,
+          intervalMillis: 120,
+        },
+        androidIntentOptions:
+          Platform.OS === "android"
+            ? {
+                EXTRA_LANGUAGE_MODEL: "web_search",
+                EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 2500,
+                EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 1500,
+                EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: 1200,
+              }
+            : undefined,
       });
     } catch (error: unknown) {
       setTrainingWakePhrase(false);
+      trainingWakePhraseRef.current = false;
+      setTrainingPhase("error");
+      setTrainingLevel(0);
+
       const message =
         error instanceof Error ? error.message : "Could not start wake phrase training.";
-      showNotice("Voice training failed", message);
+
+      setTrainingError(message);
+      setTrainingStatus(message);
     }
   }
 
@@ -759,22 +991,21 @@ export default function SettingsModal() {
               />
 
               <Pressable
-                onPress={startWakePhraseTraining}
-                style={({ pressed }) => [
-                  styles.secondaryButton,
-                  trainingWakePhrase && styles.choiceCardActive,
-                  pressed && styles.pressed,
-                ]}
+                onPress={openWakePhraseTrainer}
+                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
               >
-                {trainingWakePhrase ? (
-                  <ActivityIndicator color={Brand.ink} />
-                ) : (
-                  <>
-                    <Ionicons name="radio-outline" size={16} color={Brand.ink} />
-                    <Text style={styles.secondaryButtonText}>Train wake phrase with your voice</Text>
-                  </>
-                )}
+                <>
+                  <Ionicons name="radio-outline" size={16} color={Brand.ink} />
+                  <Text style={styles.secondaryButtonText}>
+                    Open full-screen wake phrase trainer
+                  </Text>
+                </>
               </Pressable>
+
+              <Text style={styles.trainingInlineHint}>
+                Opens a dedicated training screen with live listening status, sound detection,
+                and retry controls.
+              </Text>
 
               {trainingTranscript ? (
                 <View style={styles.trainingResultCard}>
@@ -1086,6 +1317,231 @@ export default function SettingsModal() {
           </GlassCard>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={trainingScreenVisible}
+        animationType="slide"
+        onRequestClose={closeWakePhraseTrainer}
+      >
+        <LinearGradient colors={Brand.gradients.page} style={styles.trainingScreen}>
+          <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+            <View style={styles.topGlow} />
+            <View style={styles.leftGlow} />
+            <View style={styles.bottomGlow} />
+          </View>
+
+          <View
+            style={[
+              styles.trainingHeaderBar,
+              { paddingTop: insets.top + 8, paddingHorizontal: horizontalPadding },
+            ]}
+          >
+            <Pressable onPress={closeWakePhraseTrainer} style={styles.trainingHeaderButton}>
+              <Ionicons name="chevron-back" size={20} color={Brand.ink} />
+            </Pressable>
+
+            <Text style={styles.trainingHeaderTitle}>Wake phrase trainer</Text>
+
+            <View style={styles.trainingHeaderButtonPlaceholder} />
+          </View>
+
+          <ScrollView
+            contentContainerStyle={{
+              paddingHorizontal: horizontalPadding,
+              paddingBottom: bottomPadding,
+              paddingTop: 12,
+            }}
+            showsVerticalScrollIndicator={false}
+          >
+            <GlassCard style={styles.trainingHeroShell}>
+              <Text style={styles.trainingHeroEyebrow}>Dedicated training screen</Text>
+              <Text style={styles.trainingHeroTitle}>Train “{wakePrompt}”</Text>
+              <Text style={styles.trainingHeroText}>
+                This screen stays open while the microphone listens, so you can clearly see
+                when the app is ready, hearing sound, or has captured your phrase.
+              </Text>
+
+              <View style={styles.trainingStatusCardLarge}>
+                <View
+                  style={[
+                    styles.trainingStatusPill,
+                    trainingPhase === "captured" && styles.trainingStatusPillSuccess,
+                    trainingPhase === "error" && styles.trainingStatusPillError,
+                    (trainingPhase === "listening" || trainingPhase === "heard-sound") &&
+                      styles.trainingStatusPillActive,
+                  ]}
+                >
+                  <Ionicons
+                    name={getTrainingPhaseIcon(trainingPhase)}
+                    size={14}
+                    color={Brand.ink}
+                  />
+                  <Text style={styles.trainingStatusPillText}>
+                    {getTrainingPhaseLabel(trainingPhase)}
+                  </Text>
+                </View>
+
+                <View style={styles.trainingMicHero}>
+                  <View
+                    style={[
+                      styles.trainingMicOuter,
+                      (trainingPhase === "listening" || trainingPhase === "heard-sound") &&
+                        styles.trainingMicOuterActive,
+                      trainingPhase === "captured" && styles.trainingMicOuterSuccess,
+                      trainingPhase === "error" && styles.trainingMicOuterError,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.trainingMicInner,
+                        (trainingPhase === "listening" || trainingPhase === "heard-sound") &&
+                          styles.trainingMicInnerActive,
+                        trainingPhase === "captured" && styles.trainingMicInnerSuccess,
+                        trainingPhase === "error" && styles.trainingMicInnerError,
+                      ]}
+                    >
+                      <Ionicons
+                        name={
+                          trainingPhase === "captured"
+                            ? "checkmark"
+                            : trainingPhase === "error"
+                              ? "refresh-outline"
+                              : "mic"
+                        }
+                        size={30}
+                        color={Brand.ink}
+                      />
+                    </View>
+                  </View>
+                </View>
+
+                <Text style={styles.trainingStatusTitleLarge}>
+                  {trainingPhase === "captured"
+                    ? "Wake phrase captured"
+                    : trainingPhase === "error"
+                      ? "We didn’t get a usable phrase"
+                      : trainingPhase === "heard-sound"
+                        ? "We can hear you"
+                        : trainingPhase === "listening"
+                          ? "Listening now"
+                          : trainingPhase === "preparing"
+                            ? "Preparing microphone"
+                            : "Ready when you are"}
+                </Text>
+
+                <Text style={styles.trainingStatusTextLarge}>{trainingStatus}</Text>
+
+                <View style={styles.trainingMeterTrack}>
+                  <View
+                    style={[
+                      styles.trainingMeterFill,
+                      {
+                        width: `${
+                          trainingWakePhrase
+                            ? Math.max(10, Math.round(trainingLevel * 100))
+                            : trainingPhase === "captured"
+                              ? 100
+                              : 10
+                        }%`,
+                      },
+                    ]}
+                  />
+                </View>
+
+                <Text style={styles.trainingMeterCaption}>
+                  {trainingWakePhrase
+                    ? trainingLevel > 0.04
+                      ? "Voice activity detected"
+                      : "Waiting for your voice"
+                    : trainingPhase === "captured"
+                      ? "Phrase saved locally"
+                      : "Not listening right now"}
+                </Text>
+              </View>
+
+              <View style={styles.trainingActionRow}>
+                <Pressable
+                  onPress={trainingWakePhrase ? stopWakePhraseTraining : startWakePhraseTraining}
+                  style={({ pressed }) => [
+                    styles.trainingPrimaryButtonShell,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <LinearGradient
+                    colors={Brand.gradients.button}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.trainingPrimaryButton}
+                  >
+                    {trainingWakePhrase ? (
+                      <>
+                        <Ionicons name="stop-circle-outline" size={18} color={Brand.ink} />
+                        <Text style={styles.primaryButtonText}>Stop listening</Text>
+                      </>
+                    ) : (
+                      <>
+                        <Ionicons name="mic-outline" size={18} color={Brand.ink} />
+                        <Text style={styles.primaryButtonText}>
+                          {trainingPhase === "error" ? "Try again" : "Start listening"}
+                        </Text>
+                      </>
+                    )}
+                  </LinearGradient>
+                </Pressable>
+
+                <Pressable
+                  onPress={closeWakePhraseTrainer}
+                  style={({ pressed }) => [
+                    styles.trainingSecondaryButton,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.secondaryButtonText}>
+                    {trainingPhase === "captured" ? "Done" : "Close"}
+                  </Text>
+                </Pressable>
+              </View>
+            </GlassCard>
+
+            <GlassCard style={styles.trainingInfoShell}>
+              <Text style={styles.trainingInfoTitle}>Live transcript</Text>
+              <Text
+                style={[
+                  styles.trainingTranscriptValueLarge,
+                  !trainingTranscript && styles.trainingTranscriptPlaceholder,
+                ]}
+              >
+                {trainingTranscript || "Your captured phrase will appear here while training."}
+              </Text>
+
+              {trainingError ? (
+                <View style={styles.trainingErrorBanner}>
+                  <Ionicons name="alert-circle-outline" size={16} color={Brand.danger} />
+                  <Text style={styles.trainingErrorBannerText}>{trainingError}</Text>
+                </View>
+              ) : null}
+            </GlassCard>
+
+            <GlassCard style={styles.trainingInfoShell}>
+              <Text style={styles.trainingInfoTitle}>Best way to record it</Text>
+              <View style={styles.trainingChecklist}>
+                <Text style={styles.trainingChecklistItem}>
+                  1. Tap <Text style={styles.trainingChecklistStrong}>Start listening</Text>.
+                </Text>
+                <Text style={styles.trainingChecklistItem}>
+                  2. Say the full phrase once, for example <Text style={styles.trainingChecklistStrong}>“{wakePrompt}”</Text>.
+                </Text>
+                <Text style={styles.trainingChecklistItem}>
+                  3. If the words look wrong, tap <Text style={styles.trainingChecklistStrong}>Try again</Text>.
+                </Text>
+                <Text style={styles.trainingChecklistItem}>
+                  4. After closing this screen, tap <Text style={styles.trainingChecklistStrong}>Save</Text> in Settings.
+                </Text>
+              </View>
+            </GlassCard>
+          </ScrollView>
+        </LinearGradient>
+      </Modal>
 
       <Modal transparent visible={!!notice} animationType="fade" onRequestClose={closeNotice}>
         <View style={styles.noticeOverlay}>
@@ -1673,6 +2129,297 @@ const styles = StyleSheet.create({
     color: Brand.muted,
     fontSize: 12,
     lineHeight: 18,
+  },
+
+  trainingInlineHint: {
+    marginTop: 10,
+    color: Brand.muted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+
+  trainingScreen: {
+    flex: 1,
+  },
+
+  trainingHeaderBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  trainingHeaderButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.8)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  trainingHeaderButtonPlaceholder: {
+    width: 42,
+    height: 42,
+  },
+
+  trainingHeaderTitle: {
+    color: Brand.ink,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  trainingHeroShell: {
+    borderRadius: 30,
+  },
+
+  trainingHeroEyebrow: {
+    color: Brand.bronze,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+
+  trainingHeroTitle: {
+    marginTop: 10,
+    color: Brand.ink,
+    fontSize: 28,
+    lineHeight: 34,
+    fontWeight: "900",
+  },
+
+  trainingHeroText: {
+    marginTop: 10,
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+
+  trainingStatusCardLarge: {
+    marginTop: 18,
+    borderRadius: 24,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: Brand.line,
+    backgroundColor: "rgba(255,255,255,0.74)",
+    alignItems: "center",
+  },
+
+  trainingStatusPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(255,245,232,0.96)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  trainingStatusPillActive: {
+    backgroundColor: "rgba(255,229,180,0.92)",
+    borderColor: "rgba(185,120,54,0.28)",
+  },
+
+  trainingStatusPillSuccess: {
+    backgroundColor: "rgba(223,240,214,0.95)",
+    borderColor: "rgba(111,140,94,0.28)",
+  },
+
+  trainingStatusPillError: {
+    backgroundColor: "rgba(255,233,228,0.96)",
+    borderColor: "rgba(185,98,72,0.26)",
+  },
+
+  trainingStatusPillText: {
+    color: Brand.ink,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+
+  trainingMicHero: {
+    marginTop: 18,
+    marginBottom: 8,
+  },
+
+  trainingMicOuter: {
+    width: 132,
+    height: 132,
+    borderRadius: 66,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,244,224,0.78)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  trainingMicOuterActive: {
+    backgroundColor: "rgba(255,229,180,0.86)",
+    borderColor: "rgba(185,120,54,0.24)",
+  },
+
+  trainingMicOuterSuccess: {
+    backgroundColor: "rgba(223,240,214,0.86)",
+    borderColor: "rgba(111,140,94,0.24)",
+  },
+
+  trainingMicOuterError: {
+    backgroundColor: "rgba(255,233,228,0.9)",
+    borderColor: "rgba(185,98,72,0.22)",
+  },
+
+  trainingMicInner: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.9)",
+  },
+
+  trainingMicInnerActive: {
+    backgroundColor: "rgba(255,247,239,0.98)",
+  },
+
+  trainingMicInnerSuccess: {
+    backgroundColor: "rgba(244,255,239,0.98)",
+  },
+
+  trainingMicInnerError: {
+    backgroundColor: "rgba(255,246,244,0.98)",
+  },
+
+  trainingStatusTitleLarge: {
+    marginTop: 8,
+    color: Brand.ink,
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+
+  trainingStatusTextLarge: {
+    marginTop: 8,
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: "center",
+  },
+
+  trainingMeterTrack: {
+    width: "100%",
+    height: 12,
+    borderRadius: 999,
+    backgroundColor: "rgba(124,99,80,0.10)",
+    overflow: "hidden",
+    marginTop: 18,
+  },
+
+  trainingMeterFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: Brand.caramel,
+  },
+
+  trainingMeterCaption: {
+    marginTop: 8,
+    color: Brand.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  trainingActionRow: {
+    marginTop: 18,
+    width: "100%",
+    gap: 12,
+  },
+
+  trainingPrimaryButtonShell: {
+    borderRadius: 18,
+    overflow: "hidden",
+  },
+
+  trainingPrimaryButton: {
+    minHeight: 56,
+    borderRadius: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+
+  trainingSecondaryButton: {
+    minHeight: 52,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.82)",
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
+
+  trainingInfoShell: {
+    borderRadius: 26,
+    marginTop: 14,
+  },
+
+  trainingInfoTitle: {
+    color: Brand.ink,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  trainingTranscriptValueLarge: {
+    marginTop: 10,
+    color: Brand.ink,
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: "800",
+  },
+
+  trainingTranscriptPlaceholder: {
+    color: Brand.muted,
+    fontWeight: "700",
+  },
+
+  trainingErrorBanner: {
+    marginTop: 14,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(255,233,228,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(185,98,72,0.22)",
+  },
+
+  trainingErrorBannerText: {
+    flex: 1,
+    color: Brand.danger,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "700",
+  },
+
+  trainingChecklist: {
+    marginTop: 10,
+    gap: 10,
+  },
+
+  trainingChecklistItem: {
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+
+  trainingChecklistStrong: {
+    color: Brand.ink,
+    fontWeight: "900",
   },
 
   trainingResultCard: {
