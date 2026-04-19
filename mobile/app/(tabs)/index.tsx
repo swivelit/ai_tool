@@ -2024,10 +2024,6 @@ export default function Home() {
               <Text numberOfLines={1} style={styles.actionSheetTitle}>
                 {selectedHistoryItem ? selectedHistoryItem.title : "Chat"}
               </Text>
-              <Text numberOfLines={2} style={styles.actionSheetSubtitle}>
-                Long press chat history to manage conversations.
-              </Text>
-
               <Pressable onPress={deleteSelectedHistoryItem} style={styles.actionSheetRow}>
                 <View style={[styles.actionSheetIconWrap, styles.actionSheetDeleteIconWrap]}>
                   <Ionicons name="trash-outline" size={18} color="#fff5ef" />
