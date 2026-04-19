@@ -3,7 +3,6 @@ import {
   Alert,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Switch,
@@ -15,6 +14,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
@@ -38,6 +38,7 @@ function uniqueSamples(values: string[]) {
 
 export default function SettingsModal() {
   const { name, settings, updateName, updateSettings } = useAssistant();
+  const insets = useSafeAreaInsets();
   const [n, setN] = useState(name);
   const [tone, setTone] = useState<AssistantSettings["tone"]>(settings.tone);
   const [languageMode, setLanguageMode] = useState<AssistantSettings["languageMode"]>(
@@ -147,15 +148,29 @@ export default function SettingsModal() {
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="dark" />
-      <SafeAreaView style={styles.page}>
+      <View style={styles.page}>
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           <View style={styles.topGlow} />
           <View style={styles.leftGlow} />
           <View style={styles.bottomGlow} />
         </View>
 
-        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-          <Pressable onPress={() => router.back()} style={styles.closeBtn}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.content,
+            {
+              paddingTop: insets.top + 8,
+              paddingBottom: Math.max(insets.bottom + 28, 28),
+            },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <Pressable
+            hitSlop={10}
+            onPress={() => router.back()}
+            style={({ pressed }) => [styles.closeBtn, pressed && styles.pressed]}
+          >
             <Ionicons name="close" size={18} color={Brand.cocoa} />
             <Text style={styles.closeText}>Close</Text>
           </Pressable>
@@ -274,7 +289,7 @@ export default function SettingsModal() {
             </LinearGradient>
           </Pressable>
         </ScrollView>
-      </SafeAreaView>
+      </View>
     </LinearGradient>
   );
 }
@@ -348,6 +363,9 @@ const styles = StyleSheet.create({
 
   closeBtn: {
     alignSelf: "flex-start",
+    minHeight: 44,
+    paddingVertical: 6,
+    paddingRight: 8,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
