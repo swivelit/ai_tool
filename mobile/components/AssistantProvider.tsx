@@ -9,6 +9,7 @@ import React, {
 
 import { useAuth } from "@/components/AuthProvider";
 import {
+  createProfileOnBackend,
   getProfile,
   getProfileForFirebaseUid,
   saveProfile,
@@ -31,7 +32,7 @@ type AssistantContextType = {
   loading: boolean;
   refresh: () => Promise<UserProfile | null>;
   updateName: (nextName: string) => Promise<void>;
-  updateSettings: (nextSettings: AssistantSettings) => Promise<void>;
+  updateSettings: (nextSettings: Partial<AssistantSettings>) => Promise<void>;
 };
 
 const AssistantContext = createContext<AssistantContextType | null>(null);
@@ -167,13 +168,23 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
 
       await saveProfile(updatedProfile);
       setProfileState(updatedProfile);
+
+      try {
+        const syncedProfile = await createProfileOnBackend(updatedProfile);
+        setProfileState(syncedProfile);
+      } catch (error) {
+        console.warn("[assistant] Failed to sync assistant name to backend:", error);
+      }
     },
     [profile]
   );
 
   const updateSettings = useCallback(
-    async (nextSettings: AssistantSettings) => {
-      const resolvedSettings = normalizeSettings(nextSettings);
+    async (nextSettings: Partial<AssistantSettings>) => {
+      const resolvedSettings = normalizeSettings({
+        ...settings,
+        ...nextSettings,
+      });
 
       await setSettings(resolvedSettings);
       setSettingsState(resolvedSettings);
@@ -189,8 +200,18 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
 
       await saveProfile(updatedProfile);
       setProfileState(updatedProfile);
+
+      try {
+        const syncedProfile = await createProfileOnBackend({
+          ...updatedProfile,
+          assistantName: name,
+        });
+        setProfileState(syncedProfile);
+      } catch (error) {
+        console.warn("[assistant] Failed to sync assistant settings to backend:", error);
+      }
     },
-    [profile]
+    [name, profile, settings]
   );
 
   const value = useMemo<AssistantContextType>(

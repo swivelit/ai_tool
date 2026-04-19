@@ -2314,6 +2314,25 @@ def get_item(item_id: int, session: Session = Depends(get_session)):
     return item_to_response(item)
 
 
+@app.delete("/items/{item_id}")
+def delete_item(
+    item_id: int,
+    user_id: Optional[int] = Query(default=None),
+    session: Session = Depends(get_session),
+):
+    item = session.get(Item, item_id)
+    if not item:
+        raise HTTPException(404, "Item not found")
+
+    if user_id is not None and item.user_id not in (None, user_id):
+        raise HTTPException(404, "Item not found")
+
+    session.delete(item)
+    session.commit()
+
+    return {"ok": True, "id": item_id}
+
+
 DOCS_BASE_DIR = Path(GENERATED_DOCS_DIR).resolve()
 PDF_BASE_DIR = DOCS_BASE_DIR / "pdf"
 EXCEL_BASE_DIR = DOCS_BASE_DIR / "excel"

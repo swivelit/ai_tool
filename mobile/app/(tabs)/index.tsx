@@ -37,7 +37,7 @@ import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
-import { apiGet, apiPost, apiPostForm } from "@/lib/api";
+import { apiDelete, apiGet, apiPost, apiPostForm } from "@/lib/api";
 import { parseDatetime } from "@/lib/datetime";
 import { saveScheduledTask } from "@/lib/localAgents";
 import { scheduleReminder } from "@/lib/reminders";
@@ -1231,7 +1231,7 @@ export default function Home() {
 
     Alert.alert(
       "Delete chat",
-      `Remove "${targetItem.title}" from chat history on this device?`,
+      `Remove "${targetItem.title}" permanently from chat history?`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -1255,6 +1255,26 @@ export default function Home() {
             ]);
 
             closeHistoryItemActions();
+
+            try {
+              await Promise.all(
+                deletedItemIds.map((itemId) =>
+                  apiDelete(
+                    `/items/${itemId}${
+                      profile?.userId ? `?user_id=${profile.userId}` : ""
+                    }`
+                  )
+                )
+              );
+
+              await refreshHistoryAndSessions();
+            } catch (error: any) {
+              Alert.alert(
+                "Delete sync failed",
+                error?.message ||
+                  "The chat was hidden on this device, but the server copy could not be deleted."
+              );
+            }
           },
         },
       ]
