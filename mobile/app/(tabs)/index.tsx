@@ -429,6 +429,7 @@ export default function Home() {
   const handsFreeStartingRef = useRef(false);
   const handsFreeRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handsFreePermissionAlertedRef = useRef(false);
+  const handsFreeBlockedRef = useRef(false);
 
   const isSmallPhone = width < 370 || height < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
@@ -646,12 +647,31 @@ export default function Home() {
       return;
     }
 
-    if (event?.error === "not-allowed" && !handsFreePermissionAlertedRef.current) {
-      handsFreePermissionAlertedRef.current = true;
-      Alert.alert(
-        "Hands-free permission needed",
-        "Please allow microphone and speech recognition access to use wake phrase mode."
+    const errorCode = String(event?.error || "").toLowerCase();
+
+    if (
+      errorCode === "not-allowed" ||
+      errorCode === "service-not-allowed" ||
+      errorCode === "language-not-supported"
+    ) {
+      handsFreeBlockedRef.current = true;
+      handsFreeDesiredModeRef.current = "off";
+      setHandsFreeMode("off");
+
+      if (errorCode === "not-allowed" && !handsFreePermissionAlertedRef.current) {
+        handsFreePermissionAlertedRef.current = true;
+        Alert.alert(
+          "Hands-free permission needed",
+          "Please allow microphone and speech recognition access to use wake phrase mode."
+        );
+      }
+
+      setHandsFreeStatus(
+        errorCode === "language-not-supported"
+          ? `Wake phrase language ${handsFreeLocale} is not supported on this device.`
+          : "Grant microphone and speech permissions in Settings to use wake phrase mode."
       );
+      return;
     }
 
     handsFreeDesiredModeRef.current = "wake";
@@ -665,6 +685,8 @@ export default function Home() {
 
   useEffect(() => {
     if (handsFreeForegroundEnabled) {
+      handsFreeBlockedRef.current = false;
+      handsFreePermissionAlertedRef.current = false;
       handsFreeDesiredModeRef.current = "wake";
       setHandsFreeMode("wake");
       setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
@@ -673,7 +695,13 @@ export default function Home() {
     }
 
     void shutdownHandsFree(true);
-  }, [handsFreeForegroundEnabled, handsFreeLocale, handsFreeWakePhrase, handsFreeWakeVariants.join("|")]);
+  }, [
+    handsFreeForegroundEnabled,
+    handsFreeLocale,
+    handsFreeWakePhrase,
+    handsFreeWakeVariants.join("|"),
+    profile?.userId,
+  ]);
 
   useEffect(() => {
     if (!handsFreeForegroundEnabled) return;
@@ -683,7 +711,12 @@ export default function Home() {
       return;
     }
 
-    if (!handsFreeActive && !handsFreeStartingRef.current && handsFreeDesiredModeRef.current !== "off") {
+    if (
+      !handsFreeBlockedRef.current &&
+      !handsFreeActive &&
+      !handsFreeStartingRef.current &&
+      handsFreeDesiredModeRef.current !== "off"
+    ) {
       queueHandsFreeRestart(handsFreeDesiredModeRef.current, 220);
     }
   }, [busy, listening, handsFreeForegroundEnabled, handsFreeActive]);
@@ -694,7 +727,7 @@ export default function Home() {
   }, [handsFreeWakePhrase, handsFreeForegroundEnabled]);
 
   useEffect(() => {
-    if (!busy && !listening && handsFreeForegroundEnabled) {
+    if (!busy && !listening && handsFreeForegroundEnabled && !handsFreeBlockedRef.current) {
       queueHandsFreeRestart("wake", 450);
     }
   }, [busy, listening, handsFreeForegroundEnabled]);
@@ -835,7 +868,7 @@ export default function Home() {
   }
 
   function queueHandsFreeRestart(nextMode: "wake" | "command" = "wake", delay = 350) {
-    if (!handsFreeForegroundEnabled) return;
+    if (!handsFreeForegroundEnabled || handsFreeBlockedRef.current) return;
 
     clearHandsFreeRestartTimer();
     handsFreeDesiredModeRef.current = nextMode;
@@ -862,6 +895,7 @@ export default function Home() {
 
   async function shutdownHandsFree(clearStatus = false) {
     clearHandsFreeRestartTimer();
+    handsFreeBlockedRef.current = false;
     handsFreeDesiredModeRef.current = "off";
     setHandsFreeMode("off");
     setHandsFreeActive(false);
@@ -879,12 +913,16 @@ export default function Home() {
   }
 
   async function startHandsFreeRecognizer(nextMode: "wake" | "command") {
-    if (!handsFreeForegroundEnabled || !profile?.userId) return;
+    if (!handsFreeForegroundEnabled || handsFreeBlockedRef.current) return;
     if (busy || listening || replySoundRef.current || handsFreeStartingRef.current) return;
 
     clearHandsFreeRestartTimer();
 
     if (!ExpoSpeechRecognitionModule.isRecognitionAvailable()) {
+      handsFreeBlockedRef.current = true;
+      handsFreeDesiredModeRef.current = "off";
+      setHandsFreeMode("off");
+      setHandsFreeStatus("Speech recognition is unavailable on this device.");
       if (!handsFreePermissionAlertedRef.current) {
         handsFreePermissionAlertedRef.current = true;
         Alert.alert(
@@ -900,6 +938,10 @@ export default function Home() {
 
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permission.granted) {
+        handsFreeBlockedRef.current = true;
+        handsFreeDesiredModeRef.current = "off";
+        setHandsFreeMode("off");
+        setHandsFreeStatus("Grant microphone and speech permissions in Settings to enable wake phrase mode.");
         if (!handsFreePermissionAlertedRef.current) {
           handsFreePermissionAlertedRef.current = true;
           Alert.alert(
@@ -932,6 +974,7 @@ export default function Home() {
       const message =
         error instanceof Error ? error.message : "Could not start hands-free listening.";
       console.warn("[hands-free]", message);
+      setHandsFreeStatus(message);
     } finally {
       handsFreeStartingRef.current = false;
     }
@@ -1304,7 +1347,14 @@ export default function Home() {
   }
 
   async function submitChatMessage(rawMessage: string, source: "text" | "handsfree" = "text") {
-    if (!rawMessage.trim() || busy || !profile?.userId) return;
+    if (!rawMessage.trim() || busy) return;
+
+    if (!profile?.userId) {
+      if (source === "handsfree") {
+        setHandsFreeStatus("Finish setup to use hands-free voice.");
+      }
+      return;
+    }
 
     try {
       setBusy(true);
