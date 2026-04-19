@@ -635,14 +635,6 @@ export default function SettingsModal() {
             <View style={styles.topCenter}>
               <Text style={styles.topTitle}>Settings</Text>
             </View>
-
-            <Pressable style={styles.topIconBtn} onPress={handleSignOut} disabled={signingOut}>
-              {signingOut ? (
-                <ActivityIndicator size="small" color={Brand.cocoa} />
-              ) : (
-                <Ionicons name="log-out-outline" size={18} color={Brand.cocoa} />
-              )}
-            </Pressable>
           </View>
 
           <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
