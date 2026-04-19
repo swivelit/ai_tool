@@ -526,13 +526,7 @@ export default function RoutineScreen() {
               <Text style={styles.topTitle}>Settings</Text>
             </View>
 
-            <Pressable style={styles.topIconBtn} onPress={handleSignOut} disabled={signingOut}>
-              {signingOut ? (
-                <ActivityIndicator size="small" color={Brand.cocoa} />
-              ) : (
-                <Ionicons name="log-out-outline" size={18} color={Brand.cocoa} />
-              )}
-            </Pressable>
+            <View style={styles.topIconBtn} />
           </View>
 
           <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
