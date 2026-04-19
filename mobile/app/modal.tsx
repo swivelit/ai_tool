@@ -633,7 +633,6 @@ export default function SettingsModal() {
             </Pressable>
 
             <View style={styles.topCenter}>
-              <Text style={styles.topCaption}>Home</Text>
               <Text style={styles.topTitle}>Settings</Text>
             </View>
 
@@ -942,9 +941,6 @@ export default function SettingsModal() {
             <View style={styles.sectionHeaderRow}>
               <View>
                 <Text style={styles.sectionTitle}>Daily routine</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Turn your natural daily rhythm into structured planning defaults.
-                </Text>
               </View>
               <SectionPill label="Routine" />
             </View>

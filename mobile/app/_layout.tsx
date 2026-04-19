@@ -1,19 +1,42 @@
-import React, { useEffect, useMemo, useRef } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Stack,
-  router,
-  usePathname,
-  useRootNavigationState,
-} from "expo-router";
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import { Stack, router, usePathname, useRootNavigationState } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
 import { resolveDesiredRoute } from "@/lib/appBoot";
+
+type AlertButtonConfig = {
+  text?: string;
+  onPress?: (() => void) | undefined;
+  style?: "default" | "cancel" | "destructive";
+};
+
+type AlertOptionsConfig = {
+  cancelable?: boolean;
+  onDismiss?: (() => void) | undefined;
+};
+
+type AlertState = {
+  title: string;
+  message: string;
+  buttons: AlertButtonConfig[];
+  cancelable: boolean;
+  onDismiss?: (() => void) | undefined;
+} | null;
 
 function BootScreen() {
   return (
@@ -32,6 +55,169 @@ function BootScreen() {
         </View>
       </GlassCard>
     </LinearGradient>
+  );
+}
+
+function UnifiedAlertHost({ children }: { children: React.ReactNode }) {
+  const [alertState, setAlertState] = useState<AlertState>(null);
+
+  useEffect(() => {
+    const originalAlert = Alert.alert;
+
+    (Alert as any).alert = (
+      title?: string,
+      message?: string,
+      buttons?: AlertButtonConfig[],
+      options?: AlertOptionsConfig
+    ) => {
+      setAlertState({
+        title: String(title || "Notice"),
+        message: String(message || ""),
+        buttons: Array.isArray(buttons) && buttons.length ? buttons : [{ text: "OK" }],
+        cancelable: Boolean(options?.cancelable),
+        onDismiss: options?.onDismiss,
+      });
+    };
+
+    return () => {
+      (Alert as any).alert = originalAlert;
+    };
+  }, []);
+
+  const buttons = alertState?.buttons?.length ? alertState.buttons : [{ text: "OK" }];
+
+  let primaryButtonIndex = 0;
+  for (let index = buttons.length - 1; index >= 0; index -= 1) {
+    if (buttons[index]?.style !== "cancel") {
+      primaryButtonIndex = index;
+      break;
+    }
+  }
+
+  const lowerCopy = `${alertState?.title || ""} ${alertState?.message || ""}`.toLowerCase();
+  const hasDestructiveAction = buttons.some((button) => button.style === "destructive");
+  const isErrorLike = /(error|failed|couldn.?t|invalid|missing|permission)/i.test(lowerCopy);
+  const isSuccessLike = /(saved|updated|success|scheduled|reminder set|done)/i.test(lowerCopy);
+
+  const accentColor =
+    hasDestructiveAction || isErrorLike
+      ? Brand.danger
+      : isSuccessLike
+        ? Brand.success
+        : Brand.bronze;
+
+  const iconName: keyof typeof Ionicons.glyphMap = hasDestructiveAction
+    ? "trash-outline"
+    : isErrorLike
+      ? "alert-circle-outline"
+      : isSuccessLike
+        ? "checkmark-circle-outline"
+        : "information-circle-outline";
+
+  function closeAlert(runDismiss = false) {
+    const dismiss = alertState?.onDismiss;
+    setAlertState(null);
+
+    if (runDismiss && dismiss) {
+      requestAnimationFrame(() => {
+        dismiss();
+      });
+    }
+  }
+
+  function handleButtonPress(button?: AlertButtonConfig) {
+    const callback = button?.onPress;
+    setAlertState(null);
+
+    if (callback) {
+      requestAnimationFrame(() => {
+        callback();
+      });
+    }
+  }
+
+  return (
+    <>
+      {children}
+
+      <Modal
+        transparent
+        visible={Boolean(alertState)}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => {
+          if (alertState?.cancelable) {
+            closeAlert(true);
+          }
+        }}
+      >
+        <View style={styles.alertOverlay}>
+          {alertState?.cancelable ? (
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => closeAlert(true)} />
+          ) : null}
+
+          <View style={styles.alertCardWrap}>
+            <GlassCard style={styles.alertCard}>
+              <View style={styles.alertIconWrap}>
+                <Ionicons name={iconName} size={24} color={accentColor} />
+              </View>
+
+              <Text style={styles.alertTitle}>{alertState?.title}</Text>
+
+              {alertState?.message ? (
+                <Text style={styles.alertMessage}>{alertState.message}</Text>
+              ) : null}
+
+              <View style={styles.alertActions}>
+                {buttons.map((button, index) => {
+                  const label = (button.text || (index === primaryButtonIndex ? "OK" : "Close")).trim();
+                  const isPrimary = index === primaryButtonIndex;
+                  const isDestructive = button.style === "destructive";
+
+                  if (isPrimary && !isDestructive) {
+                    return (
+                      <Pressable
+                        key={`${label}-${index}`}
+                        onPress={() => handleButtonPress(button)}
+                        style={({ pressed }) => [
+                          styles.alertButtonBase,
+                          styles.alertPrimaryButton,
+                          pressed && styles.alertPressed,
+                        ]}
+                      >
+                        <Text style={styles.alertPrimaryText}>{label}</Text>
+                      </Pressable>
+                    );
+                  }
+
+                  return (
+                    <Pressable
+                      key={`${label}-${index}`}
+                      onPress={() => handleButtonPress(button)}
+                      style={({ pressed }) => [
+                        styles.alertButtonBase,
+                        styles.alertSecondaryButton,
+                        isDestructive && styles.alertDestructiveButton,
+                        pressed && styles.alertPressed,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.alertSecondaryText,
+                          isDestructive && styles.alertDestructiveText,
+                        ]}
+                      >
+                        {label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </GlassCard>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -88,10 +274,6 @@ function AppShell() {
       return;
     }
 
-    // Important:
-    // Compare RAW routes here, not normalized routes.
-    // normalizePathname("/(tabs)") becomes "/", which incorrectly suppresses
-    // the redirect from "/(tabs)" -> "/" after sign-out/account deletion.
     const currentPath = toRawPath(pathname);
     const nextPath = toRawPath(targetRoute);
 
@@ -143,7 +325,9 @@ function AppShell() {
 function RootNavigator() {
   return (
     <AssistantProvider>
-      <AppShell />
+      <UnifiedAlertHost>
+        <AppShell />
+      </UnifiedAlertHost>
     </AssistantProvider>
   );
 }
@@ -195,6 +379,103 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     textAlign: "center",
+  },
+
+  alertOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+    backgroundColor: "rgba(72, 46, 18, 0.18)",
+  },
+
+  alertCardWrap: {
+    width: "100%",
+    maxWidth: 420,
+  },
+
+  alertCard: {
+    borderRadius: 28,
+  },
+
+  alertIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+  },
+
+  alertTitle: {
+    color: Brand.ink,
+    marginTop: 14,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+
+  alertMessage: {
+    marginTop: 10,
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+
+  alertActions: {
+    marginTop: 18,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+
+  alertButtonBase: {
+    minWidth: 104,
+    minHeight: 46,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  alertPrimaryButton: {
+    backgroundColor: "#efbf7c",
+  },
+
+  alertPrimaryText: {
+    color: Brand.ink,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  alertSecondaryButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+    backgroundColor: "rgba(255,255,255,0.62)",
+  },
+
+  alertSecondaryText: {
+    color: Brand.cocoa,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  alertDestructiveButton: {
+    backgroundColor: Brand.danger,
+    borderColor: Brand.danger,
+  },
+
+  alertDestructiveText: {
+    color: "#fff8f5",
+  },
+
+  alertPressed: {
+    opacity: 0.85,
   },
 
   topGlow: {
