@@ -51,8 +51,18 @@ type TrainingPhase =
   | "preparing"
   | "listening"
   | "heard-sound"
+  | "processing"
   | "captured"
   | "error";
+
+type AndroidTrainingDiagnostics = {
+  checking: boolean;
+  defaultService: string;
+  availableServices: string[];
+  supportsOnDevice: boolean;
+  installedLocales: string[];
+  canUseOnDeviceForLocale: boolean;
+};
 
 function formatClock(value?: string | null) {
   const source = (value || "").trim();
@@ -130,6 +140,8 @@ function getTrainingPhaseLabel(phase: TrainingPhase) {
       return "Listening";
     case "heard-sound":
       return "Hearing you";
+    case "processing":
+      return "Checking audio";
     case "captured":
       return "Captured";
     case "error":
@@ -147,6 +159,8 @@ function getTrainingPhaseIcon(phase: TrainingPhase): keyof typeof Ionicons.glyph
       return "mic-outline";
     case "heard-sound":
       return "pulse-outline";
+    case "processing":
+      return "sync-outline";
     case "captured":
       return "checkmark-circle-outline";
     case "error":
@@ -154,6 +168,24 @@ function getTrainingPhaseIcon(phase: TrainingPhase): keyof typeof Ionicons.glyph
     default:
       return "radio-outline";
   }
+}
+
+
+function normalizeLocaleCandidates(locale: string) {
+  const source = String(locale || "").trim().toLowerCase();
+  const parts = source.split(/[-_]/).filter(Boolean);
+  const language = parts[0] || source;
+
+  return Array.from(new Set([source, source.replace("-", "_"), language].filter(Boolean)));
+}
+
+function localeMatchesInstalled(locale: string, installedLocales: string[]) {
+  const wanted = normalizeLocaleCandidates(locale);
+  const installed = (installedLocales || []).map((item) => String(item || "").trim().toLowerCase());
+
+  return wanted.some((candidate) =>
+    installed.some((installedLocale) => installedLocale === candidate || installedLocale.startsWith(`${candidate}-`) || installedLocale.startsWith(`${candidate}_`))
+  );
 }
 
 export default function SettingsModal() {
@@ -209,10 +241,21 @@ export default function SettingsModal() {
   const [trainingStatus, setTrainingStatus] = useState("");
   const [trainingError, setTrainingError] = useState("");
   const [trainingLevel, setTrainingLevel] = useState(0);
+  const [trainingAudioUri, setTrainingAudioUri] = useState("");
+  const [trainingAudioCaptured, setTrainingAudioCaptured] = useState(false);
+  const [trainingDiagnostics, setTrainingDiagnostics] = useState<AndroidTrainingDiagnostics>({
+    checking: false,
+    defaultService: "",
+    availableServices: [],
+    supportsOnDevice: false,
+    installedLocales: [],
+    canUseOnDeviceForLocale: false,
+  });
 
   const trainingWakePhraseRef = useRef(false);
   const trainingScreenVisibleRef = useRef(false);
   const trainingPhaseRef = useRef<TrainingPhase>("idle");
+  const trainingBestTranscriptRef = useRef("");
 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -329,6 +372,109 @@ export default function SettingsModal() {
     [routine.daily_habits, routine.wake_time, sleepHours]
   );
 
+  function acceptWakePhraseSample(transcript: string, source: "final" | "partial" | "recorded-audio") {
+    const normalized = normalizeRecognitionTranscript(transcript);
+    if (!normalized) return;
+
+    trainingBestTranscriptRef.current = normalized;
+    setTrainingTranscript(normalized);
+    setWakePhrase(normalized);
+    setWakeTrainingSamples((prev) => uniqueSamples([normalized, wakePrompt, ...prev]));
+    setTrainingWakePhrase(false);
+    trainingWakePhraseRef.current = false;
+    setTrainingLevel(0);
+    setTrainingPhase("captured");
+    setTrainingError("");
+    setTrainingStatus(
+      source === "recorded-audio"
+        ? `Captured “${normalized}” after verifying the recorded microphone audio. Tap Save in Settings to keep it.`
+        : source === "partial"
+          ? `Captured “${normalized}” from the best live result. Tap Save in Settings to keep it.`
+          : `Captured “${normalized}”. It has been filled into the wake phrase field below. Tap Save in Settings to keep it.`
+    );
+  }
+
+  async function refreshTrainingDiagnostics() {
+    if (Platform.OS !== "android") return;
+
+    setTrainingDiagnostics((prev) => ({ ...prev, checking: true }));
+
+    let defaultService = "";
+    let availableServices: string[] = [];
+    let supportsOnDevice = false;
+    let installedLocales: string[] = [];
+
+    try {
+      defaultService =
+        String(ExpoSpeechRecognitionModule.getDefaultRecognitionService?.()?.packageName || "").trim();
+    } catch {
+      defaultService = "";
+    }
+
+    try {
+      const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices?.();
+      availableServices = Array.isArray(services) ? services.map((item) => String(item || "").trim()).filter(Boolean) : [];
+    } catch {
+      availableServices = [];
+    }
+
+    try {
+      supportsOnDevice = Boolean(ExpoSpeechRecognitionModule.supportsOnDeviceRecognition?.());
+    } catch {
+      supportsOnDevice = false;
+    }
+
+    if (supportsOnDevice) {
+      try {
+        const payload: any = await ExpoSpeechRecognitionModule.getSupportedLocales?.({
+          androidRecognitionServicePackage: "com.google.android.as",
+        });
+        installedLocales = Array.isArray(payload?.installedLocales)
+          ? payload.installedLocales.map((item: any) => String(item || "").trim()).filter(Boolean)
+          : [];
+      } catch {
+        installedLocales = [];
+      }
+    }
+
+    setTrainingDiagnostics({
+      checking: false,
+      defaultService,
+      availableServices,
+      supportsOnDevice,
+      installedLocales,
+      canUseOnDeviceForLocale: localeMatchesInstalled(speechLocale, installedLocales),
+    });
+  }
+
+  async function downloadOnDeviceSpeechModel() {
+    if (Platform.OS !== "android") return;
+
+    try {
+      setTrainingStatus(`Opening the Android speech model download for ${speechLocale}…`);
+      const result: any = await ExpoSpeechRecognitionModule.androidTriggerOfflineModelDownload?.({
+        locale: speechLocale,
+      });
+
+      const status = String(result?.status || "").trim();
+      if (status === "opened_dialog") {
+        setTrainingStatus(
+          `Android opened the offline speech model dialog for ${speechLocale}. Finish that download, then come back here and try again.`
+        );
+      } else if (status === "download_success") {
+        setTrainingStatus(`The on-device speech model for ${speechLocale} was downloaded. Try training again now.`);
+      } else if (status === "download_canceled") {
+        setTrainingStatus(`The offline speech model download was canceled. Training will keep using the default recognizer.`);
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Could not open the offline speech model download.";
+      setTrainingError(message);
+      setTrainingStatus(message);
+    } finally {
+      await refreshTrainingDiagnostics();
+    }
+  }
+
   useSpeechRecognitionEvent("start", () => {
     if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
 
@@ -358,6 +504,31 @@ export default function SettingsModal() {
     }
   });
 
+  useSpeechRecognitionEvent("audiostart", () => {
+    if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
+
+    setTrainingAudioCaptured(false);
+    setTrainingAudioUri("");
+    setTrainingStatus(`Microphone is live. Say “${wakePrompt}” now.`);
+  });
+
+  useSpeechRecognitionEvent("audioend", (event: any) => {
+    if (!trainingScreenVisibleRef.current) return;
+
+    const uri = String(event?.uri || "").trim();
+    if (!uri) return;
+
+    setTrainingAudioUri(uri);
+    setTrainingAudioCaptured(true);
+
+    if (trainingPhaseRef.current !== "captured") {
+      setTrainingPhase("processing");
+      setTrainingStatus(
+        "Microphone audio was captured. Waiting for Android speech recognition to return text…"
+      );
+    }
+  });
+
   useSpeechRecognitionEvent("result", (event: any) => {
     if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
 
@@ -366,19 +537,11 @@ export default function SettingsModal() {
     );
     if (!transcript) return;
 
+    trainingBestTranscriptRef.current = transcript;
     setTrainingTranscript(transcript);
 
     if (event?.isFinal) {
-      setWakePhrase(transcript);
-      setWakeTrainingSamples((prev) => uniqueSamples([transcript, wakePrompt, ...prev]));
-      setTrainingWakePhrase(false);
-      trainingWakePhraseRef.current = false;
-      setTrainingLevel(0);
-      setTrainingPhase("captured");
-      setTrainingError("");
-      setTrainingStatus(
-        `Captured “${transcript}”. It has been filled into the wake phrase field below. Tap Save in Settings to keep it.`
-      );
+      acceptWakePhraseSample(transcript, "final");
     }
   });
 
@@ -400,18 +563,27 @@ export default function SettingsModal() {
     const isRecoverableTimeout =
       event?.error === "no-speech" || event?.error === "speech-timeout";
 
+    if (isRecoverableTimeout && trainingBestTranscriptRef.current.trim()) {
+      acceptWakePhraseSample(trainingBestTranscriptRef.current, "partial");
+      return;
+    }
+
     setTrainingWakePhrase(false);
     trainingWakePhraseRef.current = false;
     setTrainingLevel(0);
     setTrainingPhase("error");
     setTrainingError(
       isRecoverableTimeout
-        ? "No speech was detected."
+        ? trainingAudioCaptured
+          ? "The microphone captured audio, but Android’s speech recognizer returned no transcript."
+          : "No speech was detected."
         : String(event?.message || "Could not capture the wake phrase sample.")
     );
     setTrainingStatus(
       isRecoverableTimeout
-        ? `We didn’t catch a full phrase. Hold the phone close and say “${wakePrompt}” right after tapping Start listening.`
+        ? trainingAudioCaptured
+          ? `The mic is working, but the Android recognizer still returned no text for “${wakePrompt}”. Download the on-device model below, then try again.`
+          : `We didn’t catch a full phrase. Hold the phone close and say “${wakePrompt}” right after tapping Start listening.`
         : String(event?.message || "Could not capture the wake phrase sample.")
     );
   });
@@ -423,6 +595,11 @@ export default function SettingsModal() {
 
     if (!trainingScreenVisibleRef.current) return;
     if (trainingPhaseRef.current === "captured" || trainingPhaseRef.current === "error") return;
+
+    if (trainingBestTranscriptRef.current.trim()) {
+      acceptWakePhraseSample(trainingBestTranscriptRef.current, "partial");
+      return;
+    }
 
     setTrainingPhase("idle");
     setTrainingStatus(`Listening session ended. Tap Start listening to try “${wakePrompt}” again.`);
@@ -621,11 +798,15 @@ export default function SettingsModal() {
   function openWakePhraseTrainer() {
     setTrainingScreenVisible(true);
     trainingScreenVisibleRef.current = true;
+    trainingBestTranscriptRef.current = "";
     setTrainingPhase("idle");
     setTrainingError("");
     setTrainingLevel(0);
     setTrainingTranscript("");
+    setTrainingAudioCaptured(false);
+    setTrainingAudioUri("");
     setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
+    void refreshTrainingDiagnostics();
   }
 
   function closeWakePhraseTrainer() {
@@ -639,11 +820,14 @@ export default function SettingsModal() {
       // Ignore cleanup errors.
     }
 
+    trainingBestTranscriptRef.current = "";
     setTrainingWakePhrase(false);
     setTrainingScreenVisible(false);
     setTrainingPhase("idle");
     setTrainingError("");
     setTrainingLevel(0);
+    setTrainingAudioCaptured(false);
+    setTrainingAudioUri("");
     setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
   }
 
@@ -665,9 +849,12 @@ export default function SettingsModal() {
 
   async function startWakePhraseTraining() {
     try {
+      trainingBestTranscriptRef.current = "";
       setTrainingTranscript("");
       setTrainingError("");
       setTrainingLevel(0);
+      setTrainingAudioCaptured(false);
+      setTrainingAudioUri("");
       setTrainingPhase("preparing");
       setTrainingStatus(`Getting the microphone ready for “${wakePrompt}”…`);
 
@@ -683,6 +870,16 @@ export default function SettingsModal() {
         return;
       }
 
+      const canPersistAudio =
+        Platform.OS === "android" &&
+        Number(Platform.Version) >= 33 &&
+        typeof ExpoSpeechRecognitionModule.supportsRecording === "function" &&
+        Boolean(ExpoSpeechRecognitionModule.supportsRecording());
+
+      const shouldUseOnDevice =
+        Platform.OS === "ios" ||
+        (Platform.OS === "android" && trainingDiagnostics.canUseOnDeviceForLocale);
+
       setTrainingWakePhrase(true);
       trainingWakePhraseRef.current = true;
 
@@ -690,8 +887,15 @@ export default function SettingsModal() {
         lang: speechLocale,
         interimResults: true,
         maxAlternatives: 1,
-        continuous: false,
-        requiresOnDeviceRecognition: Platform.OS === "ios",
+        continuous: Platform.OS === "android" && Number(Platform.Version) >= 33,
+        requiresOnDeviceRecognition: shouldUseOnDevice,
+        androidRecognitionServicePackage:
+          Platform.OS === "android"
+            ? shouldUseOnDevice
+              ? "com.google.android.as"
+              : trainingDiagnostics.defaultService || "com.google.android.tts"
+            : undefined,
+        addsPunctuation: false,
         contextualStrings: uniqueSamples([
           wakePrompt,
           assistantNameInput,
@@ -702,13 +906,18 @@ export default function SettingsModal() {
           enabled: true,
           intervalMillis: 120,
         },
+        recordingOptions: canPersistAudio
+          ? {
+              persist: true,
+            }
+          : undefined,
         androidIntentOptions:
           Platform.OS === "android"
             ? {
                 EXTRA_LANGUAGE_MODEL: "web_search",
-                EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 2500,
-                EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 1500,
-                EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: 1200,
+                EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 3200,
+                EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 1800,
+                EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: 1500,
               }
             : undefined,
       });
@@ -997,7 +1206,7 @@ export default function SettingsModal() {
                 <>
                   <Ionicons name="radio-outline" size={16} color={Brand.ink} />
                   <Text style={styles.secondaryButtonText}>
-                    Open full-screen wake phrase trainer
+                    Open dedicated wake phrase trainer
                   </Text>
                 </>
               </Pressable>
@@ -1422,11 +1631,13 @@ export default function SettingsModal() {
                       ? "We didn’t get a usable phrase"
                       : trainingPhase === "heard-sound"
                         ? "We can hear you"
-                        : trainingPhase === "listening"
-                          ? "Listening now"
-                          : trainingPhase === "preparing"
-                            ? "Preparing microphone"
-                            : "Ready when you are"}
+                        : trainingPhase === "processing"
+                          ? "Checking recorded audio"
+                          : trainingPhase === "listening"
+                            ? "Listening now"
+                            : trainingPhase === "preparing"
+                              ? "Preparing microphone"
+                              : "Ready when you are"}
                 </Text>
 
                 <Text style={styles.trainingStatusTextLarge}>{trainingStatus}</Text>
@@ -1455,7 +1666,9 @@ export default function SettingsModal() {
                       : "Waiting for your voice"
                     : trainingPhase === "captured"
                       ? "Phrase saved locally"
-                      : "Not listening right now"}
+                      : trainingAudioCaptured
+                        ? "Microphone audio captured"
+                        : "Not listening right now"}
                 </Text>
               </View>
 
@@ -1523,6 +1736,37 @@ export default function SettingsModal() {
             </GlassCard>
 
             <GlassCard style={styles.trainingInfoShell}>
+              <Text style={styles.trainingInfoTitle}>Android recognizer status</Text>
+              <Text style={styles.trainingChecklistItem}>
+                Default service: <Text style={styles.trainingChecklistStrong}>{trainingDiagnostics.defaultService || "Unknown"}</Text>
+              </Text>
+              <Text style={styles.trainingChecklistItem}>
+                On-device model for {speechLocale}: <Text style={styles.trainingChecklistStrong}>{trainingDiagnostics.canUseOnDeviceForLocale ? "Installed" : trainingDiagnostics.supportsOnDevice ? "Not installed" : "Not supported"}</Text>
+              </Text>
+              <Text style={styles.trainingChecklistItem}>
+                Mic audio captured: <Text style={styles.trainingChecklistStrong}>{trainingAudioCaptured ? "Yes" : "No"}</Text>
+              </Text>
+              {trainingAudioUri ? (
+                <Text style={styles.trainingChecklistItem}>
+                  Audio file: <Text style={styles.trainingChecklistStrong}>Ready</Text>
+                </Text>
+              ) : null}
+              {Platform.OS === "android" && trainingDiagnostics.supportsOnDevice && !trainingDiagnostics.canUseOnDeviceForLocale ? (
+                <View style={[styles.trainingActionRow, { marginTop: 14 }]}> 
+                  <Pressable
+                    onPress={downloadOnDeviceSpeechModel}
+                    style={({ pressed }) => [
+                      styles.trainingSecondaryButton,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.secondaryButtonText}>Download on-device speech model</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </GlassCard>
+
+            <GlassCard style={styles.trainingInfoShell}>
               <Text style={styles.trainingInfoTitle}>Best way to record it</Text>
               <View style={styles.trainingChecklist}>
                 <Text style={styles.trainingChecklistItem}>
@@ -1532,10 +1776,13 @@ export default function SettingsModal() {
                   2. Say the full phrase once, for example <Text style={styles.trainingChecklistStrong}>“{wakePrompt}”</Text>.
                 </Text>
                 <Text style={styles.trainingChecklistItem}>
-                  3. If the words look wrong, tap <Text style={styles.trainingChecklistStrong}>Try again</Text>.
+                  3. If Android still says no speech, download the on-device model above and try again.
                 </Text>
                 <Text style={styles.trainingChecklistItem}>
-                  4. After closing this screen, tap <Text style={styles.trainingChecklistStrong}>Save</Text> in Settings.
+                  4. For the first test, speak a little longer and clearer than usual, like <Text style={styles.trainingChecklistStrong}>“Hello Elli wake up”</Text>.
+                </Text>
+                <Text style={styles.trainingChecklistItem}>
+                  5. After closing this screen, tap <Text style={styles.trainingChecklistStrong}>Save</Text> in Settings.
                 </Text>
               </View>
             </GlassCard>

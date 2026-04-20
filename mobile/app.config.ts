@@ -99,7 +99,11 @@ export default {
           microphonePermission: "Allow $(PRODUCT_NAME) to use the microphone for hands-free voice mode.",
           speechRecognitionPermission:
             "Allow $(PRODUCT_NAME) to recognize speech for hands-free voice mode.",
-          androidSpeechServicePackages: ["com.google.android.googlequicksearchbox"],
+          androidSpeechServicePackages: [
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.tts",
+            "com.google.android.as",
+          ],
         },
       ],
       [
