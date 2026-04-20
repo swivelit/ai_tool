@@ -21,8 +21,12 @@ service = OpenWakeWordSupport()
 @router.post("/enrollment/reset")
 async def reset_openwakeword_enrollment(
     user_id: int = Query(...),
+    wake_phrase: str = Query(...),
 ):
-    return service.reset(user_id)
+    try:
+        return service.reset(user_id, wake_phrase)
+    except EnrollmentValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/enrollment/status")
@@ -30,7 +34,10 @@ def get_openwakeword_enrollment_status(
     user_id: int = Query(...),
     wake_phrase: Optional[str] = Query(default=None),
 ):
-    return service.status(user_id, wake_phrase)
+    try:
+        return service.status(user_id, wake_phrase)
+    except EnrollmentValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/enrollment/sample")
@@ -53,6 +60,8 @@ async def upload_openwakeword_sample(
         )
     except AudioDecodeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EnrollmentValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         try:
             temp_path.unlink(missing_ok=True)
@@ -72,4 +81,22 @@ def finalize_openwakeword_enrollment(
     except OpenWakeWordNotInstalledError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except TrainingNotSupportedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/enrollment/activate")
+def activate_custom_openwakeword_phrase(
+    user_id: int = Query(...),
+    wake_phrase: str = Query(...),
+    custom_model_path: Optional[str] = Query(default=None),
+    notes: Optional[str] = Query(default=None),
+):
+    try:
+        return service.activate_custom_phrase(
+            user_id=user_id,
+            wake_phrase=wake_phrase,
+            custom_model_path=custom_model_path,
+            notes=notes,
+        )
+    except EnrollmentValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

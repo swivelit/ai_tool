@@ -10,7 +10,6 @@ import {
   Text,
   TextInput,
   View,
-  useWindowDimensions,
 } from "react-native";
 import { router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
@@ -25,32 +24,28 @@ import { Brand } from "@/constants/theme";
 import { apiGet, apiPost, apiPostForm } from "@/lib/api";
 
 type SampleKind = "positive" | "negative";
+type WakeState = "ready_now" | "needs_training" | "training" | "active";
 
 type EnrollmentStatus = {
   ok?: boolean;
   user_id?: number;
   wake_phrase?: string;
+  phrase_key?: string;
   positive_count?: number;
   negative_count?: number;
   minimum_positive?: number;
   minimum_negative?: number;
   supported_base_model?: string | null;
-  custom_phrase_requires_colab?: boolean;
-  verifier_ready?: boolean;
+  wake_state?: WakeState;
+  wake_state_label?: string;
+  can_run_instantly?: boolean;
+  state_message?: string;
+  message?: string;
   manifest?: {
-    mode?: string;
+    activation_mode?: string;
+    wake_state?: WakeState;
     message?: string;
   } | null;
-};
-
-type FinalizeResponse = {
-  ok?: boolean;
-  wake_phrase?: string;
-  mode?: string;
-  supported_base_model?: string | null;
-  custom_phrase_requires_colab?: boolean;
-  verifier_path?: string | null;
-  message?: string;
 };
 
 const EXAMPLES = [
@@ -59,19 +54,79 @@ const EXAMPLES = [
   "Can you schedule a meeting for Friday?",
 ];
 
+const NEGATIVE_SCRIPT_LINES = [
+  "Tomorrow I need to buy groceries and pay the electricity bill.",
+  "Please remind me to call my brother after lunch tomorrow.",
+  "The weather looks hot today, so I will carry a water bottle.",
+];
+
+const STATE_ORDER: WakeState[] = ["ready_now", "needs_training", "training", "active"];
+const STATE_LABELS: Record<WakeState, string> = {
+  ready_now: "Ready now",
+  needs_training: "Needs training",
+  training: "Training",
+  active: "Active",
+};
+const STATE_ICONS: Record<WakeState, keyof typeof Ionicons.glyphMap> = {
+  ready_now: "flash-outline",
+  needs_training: "construct-outline",
+  training: "sync-outline",
+  active: "checkmark-circle-outline",
+};
+
 function normalizeWakePhrase(value: string, fallbackName: string) {
   const trimmed = String(value || "").trim();
   return trimmed || `Hey ${fallbackName}`;
+}
+
+function resolveWakeState(status: EnrollmentStatus | null): WakeState {
+  const state = status?.wake_state;
+  if (state === "ready_now" || state === "needs_training" || state === "training" || state === "active") {
+    return state;
+  }
+  return status?.supported_base_model ? "ready_now" : "needs_training";
 }
 
 function progressLabel(count: number, target: number) {
   return `${Math.min(count, target)}/${target}`;
 }
 
+function describeWakeState(state: WakeState, wakePhrase: string, supportedBaseModel?: string | null) {
+  if (state === "ready_now") {
+    return `${wakePhrase} maps to the supported base model ${supportedBaseModel}. It can work immediately, and setup recordings will personalize it for this user.`;
+  }
+  if (state === "needs_training") {
+    return `${wakePhrase} is accepted, but it still needs a custom training job before it can wake the app.`;
+  }
+  if (state === "training") {
+    return `${wakePhrase} is in Training. The setup recordings were saved, and the phrase stays pending until a custom model is activated.`;
+  }
+  return `${wakePhrase} is Active and is the live wake phrase for this account.`;
+}
+
+function actionHint(state: WakeState) {
+  if (state === "ready_now") {
+    return "Continue now, or record setup audio and make it Active for this user’s voice.";
+  }
+  if (state === "needs_training") {
+    return "Record setup audio, then move the phrase into Training. It will not wake the app until a custom model is activated later.";
+  }
+  if (state === "training") {
+    return "Training is pending. Keep the phrase saved, then activate it after the custom model is built.";
+  }
+  return "This phrase is fully active and ready to use.";
+}
+
+function finalizeButtonLabel(state: WakeState, supportedBaseModel?: string | null) {
+  if (state === "active") return "Already active";
+  if (state === "training") return "Training queued";
+  if (supportedBaseModel) return "Make active";
+  return "Move to training";
+}
+
 export default function Setup() {
   const { updateName, updateSettings, name, userId } = useAssistant();
   const insets = useSafeAreaInsets();
-  const { width, height } = useWindowDimensions();
 
   const [input, setInput] = useState(name || "");
   const [wakePhrase, setWakePhrase] = useState(`Hey ${name || "Elli"}`);
@@ -79,38 +134,37 @@ export default function Setup() {
   const [busy, setBusy] = useState(false);
   const [uploadingKind, setUploadingKind] = useState<SampleKind | null>(null);
   const [finalizing, setFinalizing] = useState(false);
+  const [recordingKind, setRecordingKind] = useState<SampleKind | null>(null);
   const [message, setMessage] = useState(
-    "Record three wake phrase samples, then two negative speech samples."
+    "Type any wake phrase. Supported phrases are Ready now. Arbitrary phrases are accepted but need training."
   );
   const [error, setError] = useState("");
-  const [recordingKind, setRecordingKind] = useState<SampleKind | null>(null);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
-
-  const isSmallPhone = width < 370 || height < 760;
-  const isVerySmallPhone = width < 345 || height < 700;
-  const horizontalPadding = isSmallPhone ? 16 : 18;
-  const topPadding = insets.top + (isSmallPhone ? 10 : 14);
-  const bottomPadding = Math.max(insets.bottom + 24, 24);
-  const heroTitleSize = isVerySmallPhone ? 28 : isSmallPhone ? 31 : 36;
-  const heroTitleLineHeight = isVerySmallPhone ? 34 : isSmallPhone ? 37 : 42;
   const selectedName = input.trim() || name || "Elli";
   const normalizedWakePhrase = useMemo(
     () => normalizeWakePhrase(wakePhrase, selectedName),
     [selectedName, wakePhrase]
   );
 
+  const wakeState = resolveWakeState(status);
+  const wakeStateLabel = status?.wake_state_label || STATE_LABELS[wakeState];
   const positiveCount = Number(status?.positive_count || 0);
   const negativeCount = Number(status?.negative_count || 0);
   const minimumPositive = Number(status?.minimum_positive || 3);
   const minimumNegative = Number(status?.minimum_negative || 2);
+  const statusMessage =
+    message || status?.state_message || describeWakeState(wakeState, normalizedWakePhrase, status?.supported_base_model);
+
   const canFinalize =
     userId != null &&
     positiveCount >= minimumPositive &&
     negativeCount >= minimumNegative &&
     !recordingKind &&
     !uploadingKind &&
-    !finalizing;
+    !finalizing &&
+    wakeState !== "active" &&
+    wakeState !== "training";
 
   useEffect(() => {
     setInput(name || "");
@@ -128,14 +182,6 @@ export default function Setup() {
     void refreshEnrollmentStatus();
   }, [userId, normalizedWakePhrase]);
 
-  const nameQuality = useMemo(() => {
-    const value = input.trim();
-    if (!value) return "Using default";
-    if (value.length < 3) return "Easy";
-    if (value.length < 8) return "Balanced";
-    return "Distinctive";
-  }, [input]);
-
   async function refreshEnrollmentStatus() {
     if (!userId) return;
     try {
@@ -145,14 +191,15 @@ export default function Setup() {
         )}`
       );
       setStatus(next);
+      setMessage(next.state_message || describeWakeState(resolveWakeState(next), normalizedWakePhrase, next.supported_base_model));
     } catch (nextError) {
-      console.warn("[setup] Failed to refresh openWakeWord enrollment status:", nextError);
+      console.warn("[setup] Failed to refresh wake phrase status:", nextError);
     }
   }
 
   async function resetEnrollment() {
     if (!userId) {
-      Alert.alert("Sign in first", "Create the user profile before recording wake-word samples.");
+      Alert.alert("Sign in first", "Create the user profile before recording wake phrase samples.");
       return;
     }
 
@@ -160,25 +207,15 @@ export default function Setup() {
     setError("");
     try {
       await stopActiveRecording(true);
-      const payload = await apiPost<{ ok?: boolean }>(
-        `/api/openwakeword/enrollment/reset?user_id=${userId}`
+      const payload = await apiPost<EnrollmentStatus>(
+        `/api/openwakeword/enrollment/reset?user_id=${userId}&wake_phrase=${encodeURIComponent(
+          normalizedWakePhrase
+        )}`
       );
-      if (!payload?.ok) {
-        throw new Error("The backend did not confirm the enrollment reset.");
-      }
-      setStatus({
-        ok: true,
-        user_id: userId,
-        wake_phrase: normalizedWakePhrase,
-        positive_count: 0,
-        negative_count: 0,
-        minimum_positive: 3,
-        minimum_negative: 2,
-      });
-      setMessage("Enrollment reset. Record the new wake phrase samples now.");
+      setStatus(payload);
+      setMessage(payload.message || payload.state_message || "Wake phrase setup reset.");
     } catch (nextError: unknown) {
-      const nextMessage =
-        nextError instanceof Error ? nextError.message : "Could not reset enrollment.";
+      const nextMessage = nextError instanceof Error ? nextError.message : "Could not reset wake phrase setup.";
       setError(nextMessage);
       Alert.alert("Reset failed", nextMessage);
     } finally {
@@ -189,7 +226,7 @@ export default function Setup() {
   async function ensureRecordingPermissions() {
     const permission = await Audio.requestPermissionsAsync();
     if (!permission.granted) {
-      throw new Error("Microphone permission is required to record wake-word samples.");
+      throw new Error("Microphone permission is required to record wake phrase samples.");
     }
 
     await Audio.setAudioModeAsync({
@@ -211,7 +248,7 @@ export default function Setup() {
       setMessage(
         kind === "positive"
           ? `Recording positive sample. Say “${normalizedWakePhrase}”, then tap stop.`
-          : "Recording negative sample. Say any normal sentence that does not contain the wake phrase, then tap stop."
+          : "Recording negative sample. Read any normal sentence that does not contain the wake phrase, then tap stop."
       );
       await ensureRecordingPermissions();
       const recording = new Audio.Recording();
@@ -220,8 +257,7 @@ export default function Setup() {
       recordingRef.current = recording;
       setRecordingKind(kind);
     } catch (nextError: unknown) {
-      const nextMessage =
-        nextError instanceof Error ? nextError.message : "Could not start recording.";
+      const nextMessage = nextError instanceof Error ? nextError.message : "Could not start recording.";
       setError(nextMessage);
       Alert.alert("Recording failed", nextMessage);
     }
@@ -282,18 +318,11 @@ export default function Setup() {
       setStatus(payload);
       setMessage(
         currentKind === "positive"
-          ? `Saved positive sample ${progressLabel(
-              Number(payload?.positive_count || 0),
-              Number(payload?.minimum_positive || 3)
-            )}.`
-          : `Saved negative sample ${progressLabel(
-              Number(payload?.negative_count || 0),
-              Number(payload?.minimum_negative || 2)
-            )}.`
+          ? `Saved positive sample ${progressLabel(Number(payload?.positive_count || 0), minimumPositive)}.`
+          : `Saved negative sample ${progressLabel(Number(payload?.negative_count || 0), minimumNegative)}.`
       );
     } catch (nextError: unknown) {
-      const nextMessage =
-        nextError instanceof Error ? nextError.message : "Could not upload the sample.";
+      const nextMessage = nextError instanceof Error ? nextError.message : "Could not upload the sample.";
       setError(nextMessage);
       Alert.alert("Sample upload failed", nextMessage);
     } finally {
@@ -307,31 +336,24 @@ export default function Setup() {
     setFinalizing(true);
     setError("");
     try {
-      const payload = await apiPost<FinalizeResponse>(
+      const payload = await apiPost<EnrollmentStatus>(
         `/api/openwakeword/enrollment/finalize?user_id=${userId}&wake_phrase=${encodeURIComponent(
           normalizedWakePhrase
         )}`
       );
 
+      setStatus(payload);
       await updateSettings({
         wakePhrase: normalizedWakePhrase,
         wakeTrainingSamples: [normalizedWakePhrase],
       });
-      await refreshEnrollmentStatus();
-
-      if (payload?.custom_phrase_requires_colab) {
-        setMessage(
-          "Samples saved. openWakeWord cannot build a brand-new custom phrase from only these few onboarding clips, so the backend stored a training bundle for the notebook/Colab path."
-        );
-      } else {
-        setMessage(
-          payload?.message ||
-            `Enrollment finished for ${normalizedWakePhrase}.`
-        );
-      }
+      setMessage(
+        payload.message ||
+          payload.state_message ||
+          describeWakeState(resolveWakeState(payload), normalizedWakePhrase, payload.supported_base_model)
+      );
     } catch (nextError: unknown) {
-      const nextMessage =
-        nextError instanceof Error ? nextError.message : "Could not finalize enrollment.";
+      const nextMessage = nextError instanceof Error ? nextError.message : "Could not finalize wake phrase setup.";
       setError(nextMessage);
       Alert.alert("Finalize failed", nextMessage);
     } finally {
@@ -355,278 +377,169 @@ export default function Setup() {
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="dark" />
-
-      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
-        <View style={styles.topGlow} />
-        <View style={styles.leftGlow} />
-        <View style={styles.bottomGlow} />
-      </View>
-
-      <KeyboardAvoidingView
-        style={styles.page}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
+      <KeyboardAvoidingView style={styles.page} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <ScrollView
           style={styles.page}
           contentContainerStyle={{
-            flexGrow: 1,
-            justifyContent: "center",
-            paddingTop: topPadding,
-            paddingBottom: bottomPadding,
-            paddingHorizontal: horizontalPadding,
+            paddingTop: insets.top + 16,
+            paddingBottom: Math.max(insets.bottom + 24, 24),
+            paddingHorizontal: 18,
+            gap: 16,
           }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={{ width: "100%", maxWidth: 560, alignSelf: "center" }}>
-            <View style={styles.topBar}>
-              <View style={styles.topBarPill}>
-                <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
-                <Text style={styles.topBarPillText}>Almost ready</Text>
-              </View>
+          <View style={styles.headerRow}>
+            <View style={styles.tag}>
+              <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
+              <Text style={styles.tagText}>Wake phrase setup</Text>
+            </View>
+            <Pressable onPress={onSkip} style={({ pressed }) => [styles.skipButton, pressed && styles.pressed]}>
+              <Text style={styles.skipButtonText}>Skip</Text>
+            </Pressable>
+          </View>
 
-              <Pressable
-                onPress={onSkip}
-                style={({ pressed }) => [styles.topSkipBtn, pressed && styles.pressed]}
-              >
-                <Text style={styles.topSkipBtnText}>Skip</Text>
-              </Pressable>
+          <GlassCard>
+            <View style={styles.heroRow}>
+              <Text style={styles.title}>Any text is accepted now.</Text>
+              <View style={styles.stateChip}>
+                <Ionicons name={STATE_ICONS[wakeState]} size={14} color={Brand.bronze} />
+                <Text style={styles.stateChipText}>{wakeStateLabel}</Text>
+              </View>
+            </View>
+            <Text style={styles.subtitle}>
+              Supported base phrases become Ready now. Arbitrary phrases move through Needs training → Training → Active.
+            </Text>
+            <View style={styles.summaryCard}>
+              <Text style={styles.summaryTitle}>{selectedName}</Text>
+              <Text style={styles.summaryPhrase}>“{normalizedWakePhrase}”</Text>
+              <Text style={styles.summaryBody}>{status?.state_message || describeWakeState(wakeState, normalizedWakePhrase, status?.supported_base_model)}</Text>
+            </View>
+          </GlassCard>
+
+          <GlassCard>
+            <Text style={styles.sectionTitle}>Assistant identity</Text>
+            <Text style={styles.label}>Assistant name</Text>
+            <TextInput
+              value={input}
+              onChangeText={setInput}
+              placeholder={`Default: ${name || "Elli"}`}
+              placeholderTextColor="rgba(124, 99, 80, 0.52)"
+              style={styles.input}
+              autoCapitalize="words"
+              autoCorrect={false}
+            />
+
+            <Text style={styles.label}>Wake phrase</Text>
+            <TextInput
+              value={wakePhrase}
+              onChangeText={setWakePhrase}
+              placeholder={`Example: Hey ${selectedName}`}
+              placeholderTextColor="rgba(124, 99, 80, 0.52)"
+              style={styles.input}
+              autoCapitalize="words"
+              autoCorrect={false}
+            />
+
+            <View style={styles.stateRail}>
+              {STATE_ORDER.map((item) => {
+                const active = item === wakeState;
+                return (
+                  <View key={item} style={[styles.railPill, active && styles.railPillActive]}>
+                    <Ionicons name={STATE_ICONS[item]} size={14} color={active ? Brand.ink : Brand.cocoa} />
+                    <Text style={[styles.railPillText, active && styles.railPillTextActive]}>{STATE_LABELS[item]}</Text>
+                  </View>
+                );
+              })}
             </View>
 
-            <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
-              <View style={styles.heroHeaderRow}>
-                <View style={styles.heroPill}>
-                  <Ionicons name="chatbubble-ellipses-outline" size={14} color={Brand.bronze} />
-                  <Text style={styles.heroPillText}>Assistant identity</Text>
-                </View>
+            <View style={styles.hintBox}>
+              <Ionicons name={STATE_ICONS[wakeState]} size={16} color={Brand.cocoa} />
+              <Text style={styles.hintText}>{actionHint(wakeState)}</Text>
+            </View>
+          </GlassCard>
 
-                <View style={styles.heroStatusChip}>
-                  <Ionicons name="flash-outline" size={14} color={Brand.bronze} />
-                  <Text style={styles.heroStatusText}>Optional step</Text>
-                </View>
-              </View>
+          <GlassCard>
+            <Text style={styles.sectionTitle}>Voice setup</Text>
+            <Text style={styles.sectionBody}>Record 3 positive clips and 2 negative clips for this typed wake phrase.</Text>
 
-              <Text
-                style={[
-                  styles.title,
-                  {
-                    fontSize: heroTitleSize,
-                    lineHeight: heroTitleLineHeight,
-                  },
-                ]}
-              >
-                Give your assistant a name and a wake phrase.
-              </Text>
+            <View style={styles.metricsRow}>
+              <MetricCard label="Positive" value={progressLabel(positiveCount, minimumPositive)} icon="checkmark-circle-outline" />
+              <MetricCard label="Negative" value={progressLabel(negativeCount, minimumNegative)} icon="remove-circle-outline" />
+            </View>
 
-              <Text style={styles.subtitle}>
-                This setup records a few onboarding clips for openWakeWord enrollment.
-              </Text>
-
-              <View style={styles.metricRow}>
-                <MetricCard label="Current name" value={selectedName} icon="sparkles-outline" />
-                <MetricCard label="Style" value={nameQuality} icon="color-wand-outline" />
-                <MetricCard label="Wake phrase" value={normalizedWakePhrase} icon="mic-outline" />
-              </View>
-
-              <LinearGradient
-                colors={["rgba(255,255,255,0.88)", "rgba(255,239,210,0.72)"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.previewCard}
-              >
-                <View style={styles.previewBadge}>
-                  <Ionicons name="radio-outline" size={14} color={Brand.bronze} />
-                  <Text style={styles.previewBadgeText}>Enrollment preview</Text>
-                </View>
-
-                <Text style={styles.previewTitle}>{selectedName}</Text>
-                <Text style={styles.previewText}>“{normalizedWakePhrase}”</Text>
-              </LinearGradient>
-            </GlassCard>
-
-            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
-              <Text style={styles.sectionTitle}>Choose assistant name</Text>
-              <Text style={styles.sectionSubtitle}>Keep it simple for voice and chat.</Text>
-
-              <Text style={styles.label}>Assistant name</Text>
-              <View style={styles.inputShell}>
-                <View style={styles.inputIconWrap}>
-                  <Ionicons name="sparkles-outline" size={16} color={Brand.bronze} />
-                </View>
-                <TextInput
-                  value={input}
-                  onChangeText={setInput}
-                  placeholder={`Default: ${name || "Elli"}`}
-                  placeholderTextColor="rgba(124, 99, 80, 0.52)"
-                  style={styles.input}
-                  autoCapitalize="words"
-                  autoCorrect={false}
-                  returnKeyType="done"
-                />
-              </View>
-
-              <Text style={styles.label}>Wake phrase</Text>
-              <View style={styles.inputShell}>
-                <View style={styles.inputIconWrap}>
-                  <Ionicons name="radio-outline" size={16} color={Brand.bronze} />
-                </View>
-                <TextInput
-                  value={wakePhrase}
-                  onChangeText={setWakePhrase}
-                  placeholder={`Example: Hey ${selectedName}`}
-                  placeholderTextColor="rgba(124, 99, 80, 0.52)"
-                  style={styles.input}
-                  autoCapitalize="words"
-                  autoCorrect={false}
-                  returnKeyType="done"
-                />
-              </View>
-
-              <View style={styles.examplePanel}>
-                <View style={styles.examplePanelHeader}>
-                  <Ionicons
-                    name="chatbubble-ellipses-outline"
-                    size={16}
-                    color={Brand.bronze}
-                  />
-                  <Text style={styles.examplePanelTitle}>Usage examples</Text>
-                </View>
-
-                <View style={styles.exampleList}>
-                  {EXAMPLES.map((example, index) => (
-                    <Text key={index} style={styles.exampleText}>
-                      {example.replace(/Elli/g, selectedName)}
-                    </Text>
-                  ))}
-                </View>
-              </View>
-            </GlassCard>
-
-            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
-              <View style={styles.voiceHeaderRow}>
-                <View>
-                  <Text style={styles.sectionTitle}>openWakeWord voice setup</Text>
-                  <Text style={styles.sectionSubtitle}>
-                    Record 3 positive clips and 2 negative clips during initialization.
-                  </Text>
-                </View>
-                {(busy || finalizing) && <ActivityIndicator color={Brand.cocoa} />}
-              </View>
-
-              <View style={styles.progressGrid}>
-                <ProgressCard
-                  label="Positive clips"
-                  value={progressLabel(positiveCount, minimumPositive)}
-                  icon="checkmark-circle-outline"
-                />
-                <ProgressCard
-                  label="Negative clips"
-                  value={progressLabel(negativeCount, minimumNegative)}
-                  icon="remove-circle-outline"
-                />
-              </View>
-
-              <View style={styles.statusPanel}>
-                <Text style={styles.statusTitle}>Current status</Text>
-                <Text style={styles.statusBody}>{message}</Text>
-                {!!status?.supported_base_model && (
-                  <Text style={styles.statusMeta}>
-                    Supported base model: {status.supported_base_model}
-                  </Text>
-                )}
-                {status?.custom_phrase_requires_colab ? (
-                  <Text style={styles.warningText}>
-                    This phrase is not one of openWakeWord’s built-in base models, so the backend will save an enrollment bundle but still needs the notebook/Colab training path for a real custom phrase model.
-                  </Text>
-                ) : null}
-                {!!error && <Text style={styles.errorText}>{error}</Text>}
-              </View>
-
-              <View style={styles.recordButtonRow}>
-                <RecordButton
-                  icon={recordingKind === "positive" ? "stop-circle-outline" : "mic-outline"}
-                  label={recordingKind === "positive" ? "Stop positive" : "Positive sample"}
-                  onPress={
-                    recordingKind === "positive"
-                      ? stopAndUploadRecording
-                      : () => startRecording("positive")
-                  }
-                  disabled={busy || !!uploadingKind || finalizing || recordingKind === "negative"}
-                />
-                <RecordButton
-                  icon={recordingKind === "negative" ? "stop-circle-outline" : "mic-off-outline"}
-                  label={recordingKind === "negative" ? "Stop negative" : "Negative sample"}
-                  onPress={
-                    recordingKind === "negative"
-                      ? stopAndUploadRecording
-                      : () => startRecording("negative")
-                  }
-                  disabled={busy || !!uploadingKind || finalizing || recordingKind === "positive"}
-                />
-              </View>
-
-              {!!uploadingKind && (
-                <View style={styles.uploadingRow}>
-                  <ActivityIndicator color={Brand.cocoa} />
-                  <Text style={styles.uploadingText}>Uploading {uploadingKind} sample…</Text>
-                </View>
+            <View style={styles.statusBox}>
+              <Text style={styles.statusTitle}>Current status</Text>
+              <Text style={styles.statusText}>{statusMessage}</Text>
+              <Text style={styles.statusMeta}>State: {wakeStateLabel}</Text>
+              {!!status?.supported_base_model && (
+                <Text style={styles.statusMeta}>Base model match: {status.supported_base_model}</Text>
               )}
+              {!!error && <Text style={styles.errorText}>{error}</Text>}
+            </View>
 
-              <View style={styles.secondaryActionsRow}>
-                <Pressable
-                  onPress={resetEnrollment}
-                  style={({ pressed }) => [styles.secondaryAction, pressed && styles.pressed]}
-                >
-                  <Ionicons name="refresh-outline" size={18} color={Brand.cocoa} />
-                  <Text style={styles.secondaryActionText}>Reset enrollment</Text>
-                </Pressable>
+            <View style={styles.buttonRow}>
+              <ActionButton
+                icon={recordingKind === "positive" ? "stop-circle-outline" : "mic-outline"}
+                label={recordingKind === "positive" ? "Stop positive" : "Positive sample"}
+                onPress={recordingKind === "positive" ? stopAndUploadRecording : () => startRecording("positive")}
+                disabled={busy || !!uploadingKind || finalizing || recordingKind === "negative"}
+              />
+              <ActionButton
+                icon={recordingKind === "negative" ? "stop-circle-outline" : "mic-off-outline"}
+                label={recordingKind === "negative" ? "Stop negative" : "Negative sample"}
+                onPress={recordingKind === "negative" ? stopAndUploadRecording : () => startRecording("negative")}
+                disabled={busy || !!uploadingKind || finalizing || recordingKind === "positive"}
+              />
+            </View>
 
-                <Pressable
-                  onPress={finalizeEnrollment}
-                  disabled={!canFinalize}
-                  style={({ pressed }) => [
-                    styles.finalizeButton,
-                    !canFinalize && styles.finalizeButtonDisabled,
-                    pressed && canFinalize && styles.pressed,
-                  ]}
-                >
-                  {finalizing ? (
-                    <ActivityIndicator color={Brand.ink} />
-                  ) : (
-                    <>
-                      <Ionicons name="sparkles-outline" size={18} color={Brand.ink} />
-                      <Text style={styles.finalizeButtonText}>Finalize voice setup</Text>
-                    </>
-                  )}
-                </Pressable>
+            {!!uploadingKind && (
+              <View style={styles.uploadRow}>
+                <ActivityIndicator color={Brand.cocoa} />
+                <Text style={styles.uploadText}>Uploading {uploadingKind} sample…</Text>
               </View>
-            </GlassCard>
+            )}
 
-            <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
-              <Pressable
-                onPress={onContinue}
-                style={({ pressed }) => [styles.buttonShell, pressed && styles.pressed]}
-              >
-                <LinearGradient
-                  colors={Brand.gradients.button}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.primaryButton}
-                >
-                  <Text style={styles.primaryButtonText}>Continue</Text>
-                  <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
-                </LinearGradient>
-              </Pressable>
+            <View style={styles.scriptBox}>
+              <Text style={styles.scriptTitle}>Suggested negative sentences</Text>
+              {NEGATIVE_SCRIPT_LINES.map((line) => (
+                <Text key={line} style={styles.scriptLine}>{line}</Text>
+              ))}
+            </View>
 
-              <Pressable
-                onPress={onSkip}
-                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
-              >
-                <Ionicons name="play-skip-forward-outline" size={18} color={Brand.cocoa} />
-                <Text style={styles.secondaryButtonText}>Skip and use Elli</Text>
-              </Pressable>
-            </GlassCard>
-          </View>
+            <View style={styles.buttonRow}>
+              <ActionButton
+                icon="refresh-outline"
+                label="Reset phrase"
+                onPress={resetEnrollment}
+                disabled={busy || finalizing}
+                variant="secondary"
+              />
+              <ActionButton
+                icon={STATE_ICONS[wakeState]}
+                label={finalizeButtonLabel(wakeState, status?.supported_base_model)}
+                onPress={finalizeEnrollment}
+                disabled={!canFinalize}
+                loading={finalizing}
+              />
+            </View>
+          </GlassCard>
+
+          <GlassCard>
+            <Text style={styles.sectionTitle}>Examples</Text>
+            {EXAMPLES.map((example) => (
+              <Text key={example} style={styles.exampleText}>{example.replace(/Elli/g, selectedName)}</Text>
+            ))}
+          </GlassCard>
+
+          <GlassCard>
+            <Pressable onPress={onContinue} style={({ pressed }) => [styles.primaryButtonWrap, pressed && styles.pressed]}>
+              <LinearGradient colors={Brand.gradients.button} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.primaryButton}>
+                <Text style={styles.primaryButtonText}>Continue</Text>
+                <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
+              </LinearGradient>
+            </Pressable>
+          </GlassCard>
         </ScrollView>
       </KeyboardAvoidingView>
     </LinearGradient>
@@ -644,60 +557,47 @@ function MetricCard({
 }) {
   return (
     <View style={styles.metricCard}>
-      <View style={styles.metricIconWrap}>
-        <Ionicons name={icon} size={15} color={Brand.bronze} />
-      </View>
-      <Text style={styles.metricValue} numberOfLines={1}>
-        {value}
-      </Text>
+      <Ionicons name={icon} size={18} color={Brand.cocoa} />
+      <Text style={styles.metricValue}>{value}</Text>
       <Text style={styles.metricLabel}>{label}</Text>
     </View>
   );
 }
 
-function ProgressCard({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: string;
-  icon: keyof typeof Ionicons.glyphMap;
-}) {
-  return (
-    <View style={styles.progressCard}>
-      <Ionicons name={icon} size={18} color={Brand.cocoa} />
-      <Text style={styles.progressValue}>{value}</Text>
-      <Text style={styles.progressLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function RecordButton({
+function ActionButton({
   icon,
   label,
   onPress,
   disabled,
+  loading,
+  variant = "primary",
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
   disabled?: boolean;
+  loading?: boolean;
+  variant?: "primary" | "secondary";
 }) {
   return (
     <Pressable
       onPress={onPress}
-      disabled={disabled}
+      disabled={disabled || loading}
       style={({ pressed }) => [
-        styles.recordButton,
-        disabled && styles.recordButtonDisabled,
-        pressed && !disabled && styles.pressed,
+        styles.actionButton,
+        variant === "secondary" && styles.actionButtonSecondary,
+        (disabled || loading) && styles.actionButtonDisabled,
+        pressed && !disabled && !loading && styles.pressed,
       ]}
     >
-      <Ionicons name={icon} size={18} color={disabled ? "rgba(124, 99, 80, 0.4)" : Brand.cocoa} />
-      <Text style={[styles.recordButtonText, disabled && styles.recordButtonTextDisabled]}>
-        {label}
-      </Text>
+      {loading ? (
+        <ActivityIndicator color={variant === "secondary" ? Brand.cocoa : Brand.ink} />
+      ) : (
+        <>
+          <Ionicons name={icon} size={18} color={variant === "secondary" ? Brand.cocoa : Brand.ink} />
+          <Text style={[styles.actionButtonText, variant === "secondary" && styles.actionButtonTextSecondary]}>{label}</Text>
+        </>
+      )}
     </Pressable>
   );
 }
@@ -706,88 +606,56 @@ const styles = StyleSheet.create({
   page: {
     flex: 1,
   },
-  topGlow: {
-    position: "absolute",
-    top: -80,
-    right: -30,
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: "rgba(205, 144, 77, 0.14)",
-  },
-  leftGlow: {
-    position: "absolute",
-    left: -70,
-    top: 160,
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    backgroundColor: "rgba(139, 92, 47, 0.1)",
-  },
-  bottomGlow: {
-    position: "absolute",
-    bottom: -80,
-    left: 40,
-    width: 240,
-    height: 240,
-    borderRadius: 120,
-    backgroundColor: "rgba(244, 214, 174, 0.26)",
-  },
-  topBar: {
+  headerRow: {
     flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
+    alignItems: "center",
   },
-  topBarPill: {
+  tag: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    alignSelf: "flex-start",
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.72)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(139,92,47,0.16)",
   },
-  topBarPillText: {
+  tagText: {
     fontSize: 12,
     fontWeight: "700",
     color: Brand.cocoa,
   },
-  topSkipBtn: {
+  skipButton: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.58)",
+    backgroundColor: "rgba(255,255,255,0.72)",
   },
-  topSkipBtnText: {
+  skipButtonText: {
     fontSize: 13,
-    fontWeight: "600",
+    fontWeight: "700",
     color: Brand.cocoa,
   },
-  heroHeaderRow: {
+  heroRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     gap: 12,
-    marginBottom: 18,
   },
-  heroPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.7)",
+  title: {
+    flex: 1,
+    fontSize: 30,
+    lineHeight: 36,
+    fontWeight: "800",
+    color: Brand.ink,
   },
-  heroPillText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: Brand.cocoa,
+  subtitle: {
+    marginTop: 12,
+    fontSize: 15,
+    lineHeight: 22,
+    color: Brand.muted,
   },
-  heroStatusChip: {
+  stateChip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
@@ -796,196 +664,137 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "rgba(244,214,174,0.46)",
   },
-  heroStatusText: {
+  stateChipText: {
     fontSize: 12,
     fontWeight: "700",
     color: Brand.cocoa,
   },
-  title: {
-    fontWeight: "800",
-    color: Brand.ink,
-    letterSpacing: -0.8,
+  summaryCard: {
+    marginTop: 18,
+    padding: 16,
+    borderRadius: 22,
+    backgroundColor: "rgba(255,255,255,0.75)",
   },
-  subtitle: {
-    marginTop: 12,
-    fontSize: 15,
-    lineHeight: 23,
-    color: Brand.muted,
-  },
-  metricRow: {
-    flexDirection: "row",
-    gap: 12,
-    marginTop: 22,
-  },
-  metricCard: {
-    flex: 1,
-    padding: 14,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.72)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(139,92,47,0.12)",
-  },
-  metricIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(244,214,174,0.44)",
-    marginBottom: 10,
-  },
-  metricValue: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: Brand.ink,
-  },
-  metricLabel: {
-    marginTop: 4,
-    fontSize: 12,
-    color: Brand.muted,
-  },
-  previewCard: {
-    marginTop: 20,
-    borderRadius: 24,
-    padding: 20,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(139,92,47,0.1)",
-  },
-  previewBadge: {
-    alignSelf: "flex-start",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.72)",
-  },
-  previewBadgeText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: Brand.cocoa,
-  },
-  previewTitle: {
-    marginTop: 16,
-    fontSize: 22,
+  summaryTitle: {
+    fontSize: 18,
     fontWeight: "800",
     color: Brand.ink,
   },
-  previewText: {
+  summaryPhrase: {
     marginTop: 8,
     fontSize: 15,
-    lineHeight: 22,
+    fontWeight: "700",
+    color: Brand.cocoa,
+  },
+  summaryBody: {
+    marginTop: 10,
+    fontSize: 14,
+    lineHeight: 21,
     color: Brand.muted,
   },
   sectionTitle: {
-    fontSize: 19,
+    fontSize: 18,
     fontWeight: "800",
     color: Brand.ink,
   },
-  sectionSubtitle: {
-    marginTop: 6,
+  sectionBody: {
+    marginTop: 8,
     fontSize: 14,
     lineHeight: 21,
     color: Brand.muted,
   },
   label: {
-    marginTop: 18,
-    marginBottom: 10,
+    marginTop: 16,
+    marginBottom: 8,
     fontSize: 13,
     fontWeight: "700",
     color: Brand.cocoa,
   },
-  inputShell: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.76)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(139,92,47,0.12)",
-    paddingHorizontal: 14,
-  },
-  inputIconWrap: {
-    width: 32,
-    alignItems: "center",
-  },
   input: {
-    flex: 1,
     minHeight: 52,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.78)",
     fontSize: 15,
     color: Brand.ink,
-    paddingVertical: 14,
   },
-  examplePanel: {
-    marginTop: 18,
-    borderRadius: 20,
-    padding: 16,
-    backgroundColor: "rgba(255,255,255,0.66)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(139,92,47,0.1)",
+  stateRail: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 16,
   },
-  examplePanelHeader: {
+  railPill: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.7)",
   },
-  examplePanelTitle: {
-    fontSize: 13,
+  railPillActive: {
+    backgroundColor: "rgba(244,214,174,0.7)",
+  },
+  railPillText: {
+    fontSize: 12,
     fontWeight: "700",
     color: Brand.cocoa,
   },
-  exampleList: {
-    marginTop: 12,
-    gap: 10,
+  railPillTextActive: {
+    color: Brand.ink,
   },
-  exampleText: {
-    fontSize: 14,
-    lineHeight: 21,
+  hintBox: {
+    marginTop: 14,
+    flexDirection: "row",
+    gap: 10,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.72)",
+  },
+  hintText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 20,
     color: Brand.muted,
   },
-  voiceHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  progressGrid: {
+  metricsRow: {
     flexDirection: "row",
     gap: 12,
-    marginTop: 18,
+    marginTop: 16,
   },
-  progressCard: {
+  metricCard: {
     flex: 1,
     alignItems: "center",
     paddingVertical: 16,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.72)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(139,92,47,0.12)",
+    paddingHorizontal: 10,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.74)",
   },
-  progressValue: {
+  metricValue: {
     marginTop: 10,
     fontSize: 22,
     fontWeight: "800",
     color: Brand.ink,
   },
-  progressLabel: {
+  metricLabel: {
     marginTop: 6,
     fontSize: 13,
     color: Brand.muted,
   },
-  statusPanel: {
+  statusBox: {
     marginTop: 16,
-    borderRadius: 20,
     padding: 16,
-    backgroundColor: "rgba(255,255,255,0.66)",
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.72)",
   },
   statusTitle: {
     fontSize: 13,
     fontWeight: "700",
     color: Brand.cocoa,
   },
-  statusBody: {
+  statusText: {
     marginTop: 8,
     fontSize: 14,
     lineHeight: 21,
@@ -996,128 +805,91 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Brand.muted,
   },
-  warningText: {
-    marginTop: 10,
-    fontSize: 13,
-    lineHeight: 20,
-    color: "#8a4b16",
-  },
   errorText: {
     marginTop: 10,
     fontSize: 13,
     lineHeight: 20,
     color: "#9f2f1f",
   },
-  recordButtonRow: {
+  buttonRow: {
     flexDirection: "row",
     gap: 12,
     marginTop: 16,
   },
-  recordButton: {
+  actionButton: {
     flex: 1,
+    minHeight: 52,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    borderRadius: 18,
-    paddingVertical: 14,
-    backgroundColor: "rgba(255,255,255,0.8)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(139,92,47,0.14)",
-  },
-  recordButtonDisabled: {
-    opacity: 0.55,
-  },
-  recordButtonText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: Brand.cocoa,
-  },
-  recordButtonTextDisabled: {
-    color: "rgba(124, 99, 80, 0.5)",
-  },
-  uploadingRow: {
-    marginTop: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  uploadingText: {
-    fontSize: 13,
-    color: Brand.muted,
-  },
-  secondaryActionsRow: {
-    flexDirection: "row",
-    gap: 12,
-    marginTop: 16,
-  },
-  secondaryAction: {
-    flex: 1,
-    minHeight: 50,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.76)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(139,92,47,0.12)",
-  },
-  secondaryActionText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: Brand.cocoa,
-  },
-  finalizeButton: {
-    flex: 1,
-    minHeight: 50,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
+    paddingHorizontal: 12,
     borderRadius: 18,
     backgroundColor: Brand.bronze,
   },
-  finalizeButtonDisabled: {
-    opacity: 0.5,
+  actionButtonSecondary: {
+    backgroundColor: "rgba(255,255,255,0.78)",
   },
-  finalizeButtonText: {
+  actionButtonDisabled: {
+    opacity: 0.55,
+  },
+  actionButtonText: {
     fontSize: 14,
     fontWeight: "800",
     color: Brand.ink,
   },
-  buttonShell: {
+  actionButtonTextSecondary: {
+    color: Brand.cocoa,
+  },
+  uploadRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  uploadText: {
+    fontSize: 13,
+    color: Brand.muted,
+  },
+  scriptBox: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.72)",
+  },
+  scriptTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: Brand.cocoa,
+  },
+  scriptLine: {
+    marginTop: 8,
+    fontSize: 13,
+    lineHeight: 20,
+    color: Brand.muted,
+  },
+  exampleText: {
+    marginTop: 10,
+    fontSize: 14,
+    lineHeight: 21,
+    color: Brand.muted,
+  },
+  primaryButtonWrap: {
     borderRadius: 20,
     overflow: "hidden",
   },
   primaryButton: {
-    minHeight: 58,
-    borderRadius: 20,
-    paddingHorizontal: 20,
+    minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
+    borderRadius: 20,
   },
   primaryButtonText: {
     fontSize: 16,
     fontWeight: "800",
     color: Brand.ink,
-  },
-  secondaryButton: {
-    marginTop: 12,
-    minHeight: 52,
-    borderRadius: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: "rgba(255,255,255,0.76)",
-  },
-  secondaryButtonText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: Brand.cocoa,
   },
   pressed: {
     opacity: 0.82,
