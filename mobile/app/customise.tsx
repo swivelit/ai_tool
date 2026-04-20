@@ -26,10 +26,27 @@ import {
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { Brand } from "@/constants/theme";
+import { apiPostForm } from "@/lib/api";
 
 type Tone = "pro" | "friendly";
 type LanguageMode = "en" | "ta";
-type TrainingPhase = "idle" | "preparing" | "listening" | "hearing" | "captured" | "error";
+type TrainingPhase =
+  | "idle"
+  | "preparing"
+  | "listening"
+  | "hearing"
+  | "processing"
+  | "captured"
+  | "error";
+
+type AndroidTrainingDiagnostics = {
+  checking: boolean;
+  defaultService: string;
+  availableServices: string[];
+  supportsOnDevice: boolean;
+  installedLocales: string[];
+  canUseOnDeviceForLocale: boolean;
+};
 
 function uniqueSamples(values: string[]) {
   return Array.from(
@@ -57,6 +74,8 @@ function trainerTitle(phase: TrainingPhase) {
       return "Listening now";
     case "hearing":
       return "We can hear you";
+    case "processing":
+      return "Checking captured audio";
     case "captured":
       return "Wake phrase captured";
     case "error":
@@ -74,6 +93,8 @@ function trainerIcon(phase: TrainingPhase): keyof typeof Ionicons.glyphMap {
       return "mic-outline";
     case "hearing":
       return "pulse-outline";
+    case "processing":
+      return "sync-outline";
     case "captured":
       return "checkmark-circle-outline";
     case "error":
@@ -81,6 +102,30 @@ function trainerIcon(phase: TrainingPhase): keyof typeof Ionicons.glyphMap {
     default:
       return "radio-outline";
   }
+}
+
+function normalizeLocaleCandidates(locale: string) {
+  const source = String(locale || "").trim().toLowerCase();
+  const parts = source.split(/[-_]/).filter(Boolean);
+  const language = parts[0] || source;
+
+  return Array.from(new Set([source, source.replace("-", "_"), language].filter(Boolean)));
+}
+
+function localeMatchesInstalled(locale: string, installedLocales: string[]) {
+  const wanted = normalizeLocaleCandidates(locale);
+  const installed = (installedLocales || []).map((item) =>
+    String(item || "").trim().toLowerCase()
+  );
+
+  return wanted.some((candidate) =>
+    installed.some(
+      (installedLocale) =>
+        installedLocale === candidate ||
+        installedLocale.startsWith(`${candidate}-`) ||
+        installedLocale.startsWith(`${candidate}_`)
+    )
+  );
 }
 
 export default function CustomiseScreen() {
@@ -104,12 +149,26 @@ export default function CustomiseScreen() {
   const [trainingTranscript, setTrainingTranscript] = useState("");
   const [trainingError, setTrainingError] = useState("");
   const [trainingLevel, setTrainingLevel] = useState(0);
+  const [trainingAudioCaptured, setTrainingAudioCaptured] = useState(false);
+  const [trainingAudioUri, setTrainingAudioUri] = useState("");
+  const [trainingDiagnostics, setTrainingDiagnostics] =
+    useState<AndroidTrainingDiagnostics>({
+      checking: false,
+      defaultService: "",
+      availableServices: [],
+      supportsOnDevice: false,
+      installedLocales: [],
+      canUseOnDeviceForLocale: false,
+    });
 
   const trainerVisibleRef = useRef(false);
   const trainingRef = useRef(false);
   const trainingPhaseRef = useRef<TrainingPhase>("idle");
   const trainingBestTranscriptRef = useRef("");
-
+  const trainingPendingRecordedAudioFallbackRef = useRef(false);
+  const trainingCheckingRecordedAudioRef = useRef(false);
+  const trainingAudioCapturedRef = useRef(false);
+  const trainingAudioUriRef = useRef("");
   useEffect(() => {
     setAssistantNameInput(name || "Elli");
   }, [name]);
@@ -158,8 +217,9 @@ export default function CustomiseScreen() {
   useEffect(() => {
     if (trainerVisible) {
       setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
+      void refreshTrainingDiagnostics();
     }
-  }, [trainerVisible, wakePrompt]);
+  }, [speechLocale, trainerVisible, wakePrompt]);
 
   const isDirty =
     assistantNameInput.trim() !== assistantLabel ||
@@ -170,10 +230,15 @@ export default function CustomiseScreen() {
     JSON.stringify(uniqueSamples(wakeTrainingSamples)) !==
       JSON.stringify(uniqueSamples(settings.wakeTrainingSamples || []));
 
-  function acceptWakePhraseSample(transcript: string, source: "final" | "partial") {
+  function acceptWakePhraseSample(
+    transcript: string,
+    source: "final" | "partial" | "recorded-audio"
+  ) {
     const normalized = normalizeRecognitionTranscript(transcript);
     if (!normalized) return;
 
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = false;
     trainingBestTranscriptRef.current = normalized;
     setTrainingTranscript(normalized);
     setWakePhrase(normalized);
@@ -184,10 +249,167 @@ export default function CustomiseScreen() {
     setTrainingError("");
     setTrainingLevel(0);
     setTrainingStatus(
-      source === "partial"
-        ? `Captured “${normalized}” from the best live result. Tap Save on the customise screen to keep it.`
-        : `Captured “${normalized}”. It has been filled into the wake phrase field below. Tap Save on the customise screen to keep it.`
+      source === "recorded-audio"
+        ? `Captured “${normalized}” after verifying the recorded microphone audio. Tap Save on the customise screen to keep it.`
+        : source === "partial"
+          ? `Captured “${normalized}” from the best live result. Tap Save on the customise screen to keep it.`
+          : `Captured “${normalized}”. It has been filled into the wake phrase field below. Tap Save on the customise screen to keep it.`
     );
+  }
+
+  async function refreshTrainingDiagnostics() {
+    if (Platform.OS !== "android") return;
+
+    setTrainingDiagnostics((prev) => ({ ...prev, checking: true }));
+
+    let defaultService = "";
+    let availableServices: string[] = [];
+    let supportsOnDevice = false;
+    let installedLocales: string[] = [];
+
+    try {
+      defaultService = String(
+        ExpoSpeechRecognitionModule.getDefaultRecognitionService?.()?.packageName || ""
+      ).trim();
+    } catch {
+      defaultService = "";
+    }
+
+    try {
+      const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices?.();
+      availableServices = Array.isArray(services)
+        ? services.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+    } catch {
+      availableServices = [];
+    }
+
+    try {
+      supportsOnDevice = Boolean(
+        ExpoSpeechRecognitionModule.supportsOnDeviceRecognition?.()
+      );
+    } catch {
+      supportsOnDevice = false;
+    }
+
+    if (supportsOnDevice) {
+      try {
+        const payload: any = await ExpoSpeechRecognitionModule.getSupportedLocales?.({
+          androidRecognitionServicePackage: "com.google.android.as",
+        });
+        installedLocales = Array.isArray(payload?.installedLocales)
+          ? payload.installedLocales
+              .map((item: any) => String(item || "").trim())
+              .filter(Boolean)
+          : [];
+      } catch {
+        installedLocales = [];
+      }
+    }
+
+    setTrainingDiagnostics({
+      checking: false,
+      defaultService,
+      availableServices,
+      supportsOnDevice,
+      installedLocales,
+      canUseOnDeviceForLocale: localeMatchesInstalled(speechLocale, installedLocales),
+    });
+  }
+
+  async function downloadOnDeviceSpeechModel() {
+    if (Platform.OS !== "android") return;
+
+    try {
+      setTrainingStatus(`Opening the Android speech model download for ${speechLocale}…`);
+      const result: any = await ExpoSpeechRecognitionModule.androidTriggerOfflineModelDownload?.({
+        locale: speechLocale,
+      });
+
+      const status = String(result?.status || "").trim();
+      if (status === "opened_dialog") {
+        setTrainingStatus(
+          `Android opened the offline speech model dialog for ${speechLocale}. Finish that download, then come back here and try again.`
+        );
+      } else if (status === "download_success") {
+        setTrainingStatus(
+          `The on-device speech model for ${speechLocale} was downloaded. Try training again now.`
+        );
+      } else if (status === "download_canceled") {
+        setTrainingStatus(
+          `The offline speech model download was canceled. Training will keep using the default recognizer.`
+        );
+      }
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not open the offline speech model download.";
+      setTrainingError(message);
+      setTrainingStatus(message);
+    } finally {
+      await refreshTrainingDiagnostics();
+    }
+  }
+
+  async function transcribeRecordedWakePhrase(uri: string) {
+    const sourceUri = String(uri || "").trim();
+    if (!sourceUri || trainingCheckingRecordedAudioRef.current) return;
+
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = true;
+    setTraining(false);
+    trainingRef.current = false;
+    setTrainingPhase("processing");
+    setTrainingLevel(0);
+    setTrainingError("");
+    setTrainingStatus(
+      "Android captured microphone audio but returned no text. Checking the recorded audio with server speech-to-text…"
+    );
+
+    try {
+      const extension = sourceUri.toLowerCase().endsWith(".wav") ? "wav" : "m4a";
+      const mimeType = extension === "wav" ? "audio/wav" : "audio/m4a";
+      const form = new FormData();
+      form.append("file", {
+        uri: sourceUri,
+        name: `wake-phrase.${extension}`,
+        type: mimeType,
+      } as any);
+
+      const response = await apiPostForm<{
+        ok?: boolean;
+        transcript?: string | null;
+        text?: string | null;
+        language?: string | null;
+      }>(
+        `/api/wake-phrase/transcribe?language=${encodeURIComponent(
+          languageMode === "ta" ? "ta" : "en"
+        )}`,
+        form
+      );
+
+      const transcript = normalizeRecognitionTranscript(
+        String(response?.transcript || response?.text || "")
+      );
+
+      if (!transcript) {
+        throw new Error("Recorded audio was captured, but transcription came back empty.");
+      }
+
+      acceptWakePhraseSample(transcript, "recorded-audio");
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Recorded audio was captured, but transcription still failed.";
+
+      setTrainingPhase("error");
+      setTrainingError(message);
+      setTrainingStatus(message);
+    } finally {
+      trainingCheckingRecordedAudioRef.current = false;
+    }
   }
 
   useSpeechRecognitionEvent("start", () => {
@@ -216,6 +438,42 @@ export default function CustomiseScreen() {
     }
   });
 
+  useSpeechRecognitionEvent("audiostart", () => {
+    if (!trainerVisibleRef.current || !trainingRef.current) return;
+
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = false;
+    trainingAudioCapturedRef.current = false;
+    trainingAudioUriRef.current = "";
+    setTrainingAudioCaptured(false);
+    setTrainingAudioUri("");
+    setTrainingStatus(`Microphone is live. Say “${wakePrompt}” now.`);
+  });
+
+  useSpeechRecognitionEvent("audioend", (event: { uri?: string } | undefined) => {
+    if (!trainerVisibleRef.current) return;
+
+    const uri = String(event?.uri || "").trim();
+    if (!uri) return;
+
+    trainingAudioUriRef.current = uri;
+    trainingAudioCapturedRef.current = true;
+    setTrainingAudioUri(uri);
+    setTrainingAudioCaptured(true);
+
+    if (trainingPendingRecordedAudioFallbackRef.current) {
+      void transcribeRecordedWakePhrase(uri);
+      return;
+    }
+
+    if (trainingPhaseRef.current !== "captured") {
+      setTrainingPhase("processing");
+      setTrainingStatus(
+        "Microphone audio was captured. Waiting for Android speech recognition to return text…"
+      );
+    }
+  });
+
   useSpeechRecognitionEvent(
     "result",
     (event: { results?: Array<{ transcript?: string }>; isFinal?: boolean } | undefined) => {
@@ -241,6 +499,8 @@ export default function CustomiseScreen() {
       if (!trainerVisibleRef.current) return;
 
       if (event?.error === "aborted") {
+        trainingPendingRecordedAudioFallbackRef.current = false;
+        trainingCheckingRecordedAudioRef.current = false;
         setTraining(false);
         trainingRef.current = false;
         setTrainingLevel(0);
@@ -260,14 +520,48 @@ export default function CustomiseScreen() {
         return;
       }
 
+      const canAttemptRecordedAudioFallback =
+        Platform.OS === "android" &&
+        Number(Platform.Version) >= 33 &&
+        typeof ExpoSpeechRecognitionModule.supportsRecording === "function" &&
+        Boolean(ExpoSpeechRecognitionModule.supportsRecording());
+
+      if (isRecoverableTimeout && canAttemptRecordedAudioFallback) {
+        setTraining(false);
+        trainingRef.current = false;
+        setTrainingLevel(0);
+        setTrainingPhase("processing");
+        setTrainingError("");
+        trainingPendingRecordedAudioFallbackRef.current = true;
+
+        if (trainingAudioUriRef.current.trim()) {
+          void transcribeRecordedWakePhrase(trainingAudioUriRef.current);
+        } else {
+          setTrainingStatus(
+            "Android ended the listening session without text. Waiting for the recorded microphone file so it can be transcribed…"
+          );
+        }
+        return;
+      }
+
+      trainingPendingRecordedAudioFallbackRef.current = false;
+      trainingCheckingRecordedAudioRef.current = false;
       setTraining(false);
       trainingRef.current = false;
       setTrainingPhase("error");
       setTrainingLevel(0);
-      setTrainingError(String(event?.message || "Could not capture the wake phrase sample."));
+      setTrainingError(
+        isRecoverableTimeout
+          ? trainingAudioCapturedRef.current
+            ? "The microphone captured audio, but Android’s speech recognizer returned no transcript."
+            : "No speech was detected."
+          : String(event?.message || "Could not capture the wake phrase sample.")
+      );
       setTrainingStatus(
         isRecoverableTimeout
-          ? `We didn’t catch a full phrase. Hold the phone closer and say “${wakePrompt}” right after tapping Start listening.`
+          ? trainingAudioCapturedRef.current
+            ? `The mic is working, but the Android recognizer still returned no text for “${wakePrompt}”.`
+            : `We didn’t catch a full phrase. Hold the phone closer and say “${wakePrompt}” right after tapping Start listening.`
           : String(event?.message || "Could not capture the wake phrase sample.")
       );
     }
@@ -280,6 +574,12 @@ export default function CustomiseScreen() {
 
     if (!trainerVisibleRef.current) return;
     if (trainingPhaseRef.current === "captured" || trainingPhaseRef.current === "error") return;
+    if (
+      trainingPendingRecordedAudioFallbackRef.current ||
+      trainingCheckingRecordedAudioRef.current
+    ) {
+      return;
+    }
 
     if (trainingBestTranscriptRef.current.trim()) {
       acceptWakePhraseSample(trainingBestTranscriptRef.current, "partial");
@@ -291,19 +591,31 @@ export default function CustomiseScreen() {
   });
 
   function openTrainer() {
+    trainerVisibleRef.current = true;
     trainingBestTranscriptRef.current = "";
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = false;
+    trainingAudioUriRef.current = "";
+    trainingAudioCapturedRef.current = false;
     setTrainingTranscript("");
     setTrainingError("");
     setTrainingLevel(0);
     setTraining(false);
+    setTrainingAudioCaptured(false);
+    setTrainingAudioUri("");
     setTrainingPhase("idle");
     setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
     setTrainerVisible(true);
+    void refreshTrainingDiagnostics();
   }
 
   function closeTrainer() {
     trainerVisibleRef.current = false;
     trainingRef.current = false;
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = false;
+    trainingAudioUriRef.current = "";
+    trainingAudioCapturedRef.current = false;
 
     try {
       ExpoSpeechRecognitionModule.abort();
@@ -317,15 +629,23 @@ export default function CustomiseScreen() {
     setTrainingPhase("idle");
     setTrainingError("");
     setTrainingLevel(0);
+    setTrainingAudioCaptured(false);
+    setTrainingAudioUri("");
     setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
   }
 
   async function startTraining() {
     try {
       trainingBestTranscriptRef.current = "";
+      trainingPendingRecordedAudioFallbackRef.current = false;
+      trainingCheckingRecordedAudioRef.current = false;
+      trainingAudioUriRef.current = "";
+      trainingAudioCapturedRef.current = false;
       setTrainingTranscript("");
       setTrainingError("");
       setTrainingLevel(0);
+      setTrainingAudioCaptured(false);
+      setTrainingAudioUri("");
       setTrainingPhase("preparing");
       setTrainingStatus(`Getting the microphone ready for “${wakePrompt}”…`);
 
@@ -341,6 +661,16 @@ export default function CustomiseScreen() {
         return;
       }
 
+      const canPersistAudio =
+        Platform.OS === "android" &&
+        Number(Platform.Version) >= 33 &&
+        typeof ExpoSpeechRecognitionModule.supportsRecording === "function" &&
+        Boolean(ExpoSpeechRecognitionModule.supportsRecording());
+
+      const shouldUseOnDevice =
+        Platform.OS === "ios" ||
+        (Platform.OS === "android" && trainingDiagnostics.canUseOnDeviceForLocale);
+
       setTraining(true);
       trainingRef.current = true;
 
@@ -348,18 +678,40 @@ export default function CustomiseScreen() {
         lang: speechLocale,
         interimResults: true,
         maxAlternatives: 1,
-        continuous: Platform.OS === "android",
+        continuous: Platform.OS === "android" && Number(Platform.Version) >= 33,
+        requiresOnDeviceRecognition: shouldUseOnDevice,
+        androidRecognitionServicePackage:
+          Platform.OS === "android"
+            ? shouldUseOnDevice
+              ? "com.google.android.as"
+              : trainingDiagnostics.defaultService || "com.google.android.tts"
+            : undefined,
         addsPunctuation: false,
         contextualStrings: uniqueSamples([wakePrompt, displayName, ...wakeTrainingSamples]),
         iosTaskHint: "confirmation",
         volumeChangeEventOptions: { enabled: true, intervalMillis: 120 },
+        recordingOptions: canPersistAudio
+          ? {
+              persist: true,
+            }
+          : undefined,
+        androidIntentOptions:
+          Platform.OS === "android"
+            ? {
+                EXTRA_LANGUAGE_MODEL: "web_search",
+                EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 3200,
+                EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 1800,
+                EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: 1500,
+              }
+            : undefined,
       });
     } catch (error: unknown) {
       setTraining(false);
       trainingRef.current = false;
       setTrainingPhase("error");
       setTrainingLevel(0);
-      const message = error instanceof Error ? error.message : "Could not start wake phrase training.";
+      const message =
+        error instanceof Error ? error.message : "Could not start wake phrase training.";
       setTrainingError(message);
       setTrainingStatus(message);
     }
@@ -566,7 +918,7 @@ export default function CustomiseScreen() {
             </Pressable>
 
             <Text style={styles.noteText}>
-              Opens a dedicated training screen with live listening status and retry controls.
+              Opens a dedicated training screen with live listening status, Android diagnostics, and an automatic recorded-audio fallback when Android hears you but returns no text.
             </Text>
 
             {trainingTranscript ? (
@@ -668,9 +1020,11 @@ export default function CustomiseScreen() {
                     ? trainingLevel > 0.04
                       ? "Voice activity detected"
                       : "Waiting for your voice"
-                    : trainingPhase === "captured"
-                      ? "Phrase saved locally"
-                      : "Not listening right now"}
+                    : trainingPhase === "processing"
+                      ? "Checking the captured audio"
+                      : trainingPhase === "captured"
+                        ? "Phrase saved locally"
+                        : "Not listening right now"}
                 </Text>
               </View>
 
@@ -710,12 +1064,62 @@ export default function CustomiseScreen() {
               ) : null}
             </GlassCard>
 
+            {Platform.OS === "android" ? (
+              <GlassCard style={styles.card}>
+                <Text style={styles.sectionTitle}>Android speech diagnostics</Text>
+                <Text style={styles.noteText}>
+                  Default recognizer:{" "}
+                  <Text style={styles.strong}>
+                    {trainingDiagnostics.defaultService || "Unknown"}
+                  </Text>
+                </Text>
+                <Text style={styles.noteText}>
+                  On-device model for {speechLocale}:{" "}
+                  <Text style={styles.strong}>
+                    {trainingDiagnostics.canUseOnDeviceForLocale
+                      ? "Installed"
+                      : trainingDiagnostics.supportsOnDevice
+                        ? "Not installed"
+                        : "Not supported"}
+                  </Text>
+                </Text>
+                {trainingAudioCaptured ? (
+                  <Text style={styles.noteText}>
+                    Mic recording captured successfully for this attempt.
+                  </Text>
+                ) : null}
+                {trainingDiagnostics.supportsOnDevice &&
+                !trainingDiagnostics.canUseOnDeviceForLocale &&
+                !training ? (
+                  <Pressable
+                    onPress={() => {
+                      void downloadOnDeviceSpeechModel();
+                    }}
+                    style={({ pressed }) => [
+                      styles.secondaryBtn,
+                      { marginTop: 16 },
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Ionicons name="download-outline" size={16} color={Brand.ink} />
+                    <Text style={styles.secondaryBtnText}>Install on-device speech model</Text>
+                  </Pressable>
+                ) : null}
+                {trainingAudioUri ? (
+                  <Text numberOfLines={1} style={styles.trainingAudioUriText}>
+                    Last captured audio file: {trainingAudioUri}
+                  </Text>
+                ) : null}
+              </GlassCard>
+            ) : null}
+
             <GlassCard style={styles.card}>
               <Text style={styles.sectionTitle}>Best way to record it</Text>
               <Text style={styles.listItem}>1. Tap <Text style={styles.strong}>Start listening</Text>.</Text>
               <Text style={styles.listItem}>2. Say the full phrase once, for example <Text style={styles.strong}>“{wakePrompt}”</Text>.</Text>
               <Text style={styles.listItem}>3. Speak slightly slower and clearer for the first training pass.</Text>
-              <Text style={styles.listItem}>4. After closing this screen, tap <Text style={styles.strong}>Save</Text> on the customise page.</Text>
+              <Text style={styles.listItem}>4. On Android, if the mic is heard but text does not appear, install the on-device speech model and try again.</Text>
+              <Text style={styles.listItem}>5. After closing this screen, tap <Text style={styles.strong}>Save</Text> on the customise page.</Text>
             </GlassCard>
           </ScrollView>
         </LinearGradient>
@@ -1056,6 +1460,12 @@ const styles = StyleSheet.create({
   },
   errorBannerText: { flex: 1, color: Brand.danger, fontSize: 13, lineHeight: 19, fontWeight: "700" },
   listItem: { marginTop: 12, color: Brand.muted, fontSize: 14, lineHeight: 22 },
+  trainingAudioUriText: {
+    marginTop: 14,
+    color: Brand.muted,
+    fontSize: 11,
+    lineHeight: 17,
+  },
   strong: { color: Brand.ink, fontWeight: "900" },
   disabled: { opacity: 0.6 },
   pressed: { opacity: 0.94, transform: [{ scale: 0.995 }] },
