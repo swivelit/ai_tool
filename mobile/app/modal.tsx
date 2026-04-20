@@ -28,7 +28,7 @@ import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
-import { API_BASE, apiGet } from "@/lib/api";
+import { API_BASE, apiGet, apiPostForm } from "@/lib/api";
 import { getProfileForFirebaseUid } from "@/lib/account";
 
 type Routine = {
@@ -256,6 +256,10 @@ export default function SettingsModal() {
   const trainingScreenVisibleRef = useRef(false);
   const trainingPhaseRef = useRef<TrainingPhase>("idle");
   const trainingBestTranscriptRef = useRef("");
+  const trainingAudioUriRef = useRef("");
+  const trainingAudioCapturedRef = useRef(false);
+  const trainingPendingRecordedAudioFallbackRef = useRef(false);
+  const trainingCheckingRecordedAudioRef = useRef(false);
 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -295,6 +299,21 @@ export default function SettingsModal() {
       } catch {
         // Ignore cleanup errors.
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    trainingAudioUriRef.current = trainingAudioUri;
+  }, [trainingAudioUri]);
+
+  useEffect(() => {
+    trainingAudioCapturedRef.current = trainingAudioCaptured;
+  }, [trainingAudioCaptured]);
+
+  useEffect(() => {
+    return () => {
+      trainingPendingRecordedAudioFallbackRef.current = false;
+      trainingCheckingRecordedAudioRef.current = false;
     };
   }, []);
 
@@ -376,6 +395,8 @@ export default function SettingsModal() {
     const normalized = normalizeRecognitionTranscript(transcript);
     if (!normalized) return;
 
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = false;
     trainingBestTranscriptRef.current = normalized;
     setTrainingTranscript(normalized);
     setWakePhrase(normalized);
@@ -475,6 +496,66 @@ export default function SettingsModal() {
     }
   }
 
+  async function transcribeRecordedWakePhrase(uri: string) {
+    const sourceUri = String(uri || "").trim();
+    if (!sourceUri || trainingCheckingRecordedAudioRef.current) return;
+
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = true;
+    setTrainingWakePhrase(false);
+    trainingWakePhraseRef.current = false;
+    setTrainingPhase("processing");
+    setTrainingLevel(0);
+    setTrainingError("");
+    setTrainingStatus(
+      "Android captured microphone audio but returned no text. Checking the recorded audio with server speech-to-text…"
+    );
+
+    try {
+      const extension = sourceUri.toLowerCase().endsWith(".wav") ? "wav" : "m4a";
+      const mimeType = extension === "wav" ? "audio/wav" : "audio/m4a";
+      const form = new FormData();
+      form.append("file", {
+        uri: sourceUri,
+        name: `wake-phrase.${extension}`,
+        type: mimeType,
+      } as any);
+
+      const response = await apiPostForm<{
+        ok?: boolean;
+        transcript?: string | null;
+        text?: string | null;
+        language?: string | null;
+      }>(
+        `/api/wake-phrase/transcribe?language=${encodeURIComponent(
+          languageMode === "ta" ? "ta" : "en"
+        )}`,
+        form
+      );
+
+      const transcript = normalizeRecognitionTranscript(
+        String(response?.transcript || response?.text || "")
+      );
+
+      if (!transcript) {
+        throw new Error("Recorded audio was captured, but transcription came back empty.");
+      }
+
+      acceptWakePhraseSample(transcript, "recorded-audio");
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Recorded audio was captured, but transcription still failed.";
+
+      setTrainingPhase("error");
+      setTrainingError(message);
+      setTrainingStatus(message);
+    } finally {
+      trainingCheckingRecordedAudioRef.current = false;
+    }
+  }
+
   useSpeechRecognitionEvent("start", () => {
     if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
 
@@ -507,6 +588,10 @@ export default function SettingsModal() {
   useSpeechRecognitionEvent("audiostart", () => {
     if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
 
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = false;
+    trainingAudioCapturedRef.current = false;
+    trainingAudioUriRef.current = "";
     setTrainingAudioCaptured(false);
     setTrainingAudioUri("");
     setTrainingStatus(`Microphone is live. Say “${wakePrompt}” now.`);
@@ -518,8 +603,15 @@ export default function SettingsModal() {
     const uri = String(event?.uri || "").trim();
     if (!uri) return;
 
+    trainingAudioUriRef.current = uri;
+    trainingAudioCapturedRef.current = true;
     setTrainingAudioUri(uri);
     setTrainingAudioCaptured(true);
+
+    if (trainingPendingRecordedAudioFallbackRef.current) {
+      void transcribeRecordedWakePhrase(uri);
+      return;
+    }
 
     if (trainingPhaseRef.current !== "captured") {
       setTrainingPhase("processing");
@@ -549,6 +641,8 @@ export default function SettingsModal() {
     if (!trainingScreenVisibleRef.current) return;
 
     if (event?.error === "aborted") {
+      trainingPendingRecordedAudioFallbackRef.current = false;
+      trainingCheckingRecordedAudioRef.current = false;
       setTrainingWakePhrase(false);
       trainingWakePhraseRef.current = false;
       setTrainingLevel(0);
@@ -568,21 +662,47 @@ export default function SettingsModal() {
       return;
     }
 
+    const canAttemptRecordedAudioFallback =
+      Platform.OS === "android" &&
+      Number(Platform.Version) >= 33 &&
+      typeof ExpoSpeechRecognitionModule.supportsRecording === "function" &&
+      Boolean(ExpoSpeechRecognitionModule.supportsRecording());
+
+    if (isRecoverableTimeout && canAttemptRecordedAudioFallback) {
+      setTrainingWakePhrase(false);
+      trainingWakePhraseRef.current = false;
+      setTrainingLevel(0);
+      setTrainingPhase("processing");
+      setTrainingError("");
+      trainingPendingRecordedAudioFallbackRef.current = true;
+
+      if (trainingAudioUriRef.current.trim()) {
+        void transcribeRecordedWakePhrase(trainingAudioUriRef.current);
+      } else {
+        setTrainingStatus(
+          "Android ended the listening session without text. Waiting for the recorded microphone file so it can be transcribed…"
+        );
+      }
+      return;
+    }
+
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = false;
     setTrainingWakePhrase(false);
     trainingWakePhraseRef.current = false;
     setTrainingLevel(0);
     setTrainingPhase("error");
     setTrainingError(
       isRecoverableTimeout
-        ? trainingAudioCaptured
+        ? trainingAudioCapturedRef.current
           ? "The microphone captured audio, but Android’s speech recognizer returned no transcript."
           : "No speech was detected."
         : String(event?.message || "Could not capture the wake phrase sample.")
     );
     setTrainingStatus(
       isRecoverableTimeout
-        ? trainingAudioCaptured
-          ? `The mic is working, but the Android recognizer still returned no text for “${wakePrompt}”. Download the on-device model below, then try again.`
+        ? trainingAudioCapturedRef.current
+          ? `The mic is working, but the Android recognizer still returned no text for “${wakePrompt}”.`
           : `We didn’t catch a full phrase. Hold the phone close and say “${wakePrompt}” right after tapping Start listening.`
         : String(event?.message || "Could not capture the wake phrase sample.")
     );
@@ -595,6 +715,7 @@ export default function SettingsModal() {
 
     if (!trainingScreenVisibleRef.current) return;
     if (trainingPhaseRef.current === "captured" || trainingPhaseRef.current === "error") return;
+    if (trainingPendingRecordedAudioFallbackRef.current || trainingCheckingRecordedAudioRef.current) return;
 
     if (trainingBestTranscriptRef.current.trim()) {
       acceptWakePhraseSample(trainingBestTranscriptRef.current, "partial");
@@ -799,6 +920,10 @@ export default function SettingsModal() {
     setTrainingScreenVisible(true);
     trainingScreenVisibleRef.current = true;
     trainingBestTranscriptRef.current = "";
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = false;
+    trainingAudioUriRef.current = "";
+    trainingAudioCapturedRef.current = false;
     setTrainingPhase("idle");
     setTrainingError("");
     setTrainingLevel(0);
@@ -813,6 +938,10 @@ export default function SettingsModal() {
     trainingScreenVisibleRef.current = false;
     trainingWakePhraseRef.current = false;
     trainingPhaseRef.current = "idle";
+    trainingPendingRecordedAudioFallbackRef.current = false;
+    trainingCheckingRecordedAudioRef.current = false;
+    trainingAudioUriRef.current = "";
+    trainingAudioCapturedRef.current = false;
 
     try {
       ExpoSpeechRecognitionModule.abort();
@@ -850,6 +979,10 @@ export default function SettingsModal() {
   async function startWakePhraseTraining() {
     try {
       trainingBestTranscriptRef.current = "";
+      trainingPendingRecordedAudioFallbackRef.current = false;
+      trainingCheckingRecordedAudioRef.current = false;
+      trainingAudioUriRef.current = "";
+      trainingAudioCapturedRef.current = false;
       setTrainingTranscript("");
       setTrainingError("");
       setTrainingLevel(0);

@@ -1604,17 +1604,36 @@ def _is_audio_too_short_error(exc: Exception) -> bool:
     return "audio file is too short" in str(exc).lower()
 
 
-def _transcribe_audio_file(file_path: str) -> str:
+def _normalize_audio_language(language: Optional[str]) -> Optional[str]:
+    value = str(language or "").strip().lower()
+    if not value:
+        return None
+
+    if value.startswith("ta"):
+        return "ta"
+    if value.startswith("en"):
+        return "en"
+    return None
+
+
+def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> str:
+    normalized_language = _normalize_audio_language(language)
+
     try:
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 0:
             raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
 
+        request_kwargs: Dict[str, Any] = {
+            "model": "whisper-1",
+            "response_format": "json",
+        }
+        if normalized_language:
+            request_kwargs["language"] = normalized_language
+
         with open(file_path, "rb") as audio_file:
             transcript_obj = _get_openai_client().audio.transcriptions.create(
-                model="whisper-1",
                 file=audio_file,
-                response_format="json",
-                language="ta",
+                **request_kwargs,
             )
     except BadRequestError as exc:
         if _is_audio_too_short_error(exc):
@@ -2237,7 +2256,7 @@ async def transcribe_and_analyze(
         tmp_path = tmp.name
 
     try:
-        transcript_text = _transcribe_audio_file(tmp_path)
+        transcript_text = _transcribe_audio_file(tmp_path, reply_language)
         pipeline_result = _run_agentic_or_pipeline(session, user_id, transcript_text, reply_language)
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
@@ -2278,7 +2297,7 @@ async def api_transcribe_and_analyze(
         tmp_path = tmp.name
 
     try:
-        transcript_text = _transcribe_audio_file(tmp_path)
+        transcript_text = _transcribe_audio_file(tmp_path, reply_language)
         pipeline_result = _run_stage_pipeline(session, user_id, transcript_text, reply_language)
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
@@ -2290,6 +2309,32 @@ async def api_transcribe_and_analyze(
             reply_language=reply_language,
         )
         return _build_chat_response(item, meta, normalized_pipeline)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+@app.post("/wake-phrase/transcribe")
+@app.post("/api/wake-phrase/transcribe")
+async def transcribe_wake_phrase(
+    language: Optional[str] = Query(default=None),
+    locale: Optional[str] = Query(default=None),
+    file: UploadFile = File(...),
+):
+    suffix = os.path.splitext(file.filename)[-1] or ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        transcript_text = _transcribe_audio_file(tmp_path, language or locale)
+        return {
+            "ok": True,
+            "transcript": transcript_text,
+            "language": _normalize_audio_language(language or locale),
+        }
     finally:
         try:
             os.remove(tmp_path)
