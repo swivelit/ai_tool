@@ -1254,54 +1254,38 @@ export default function SettingsModal() {
             <View style={styles.sectionHeaderRow}>
               <View>
                 <Text style={styles.sectionTitle}>Customise</Text>
+                <Text style={styles.sectionSubtitle}>
+                  Assistant identity settings now live on their own screen so this page stays easier to scan.
+                </Text>
               </View>
             </View>
 
-            <Field
-              label="Assistant name"
-              value={assistantNameInput}
-              onChangeText={setAssistantNameInput}
-              placeholder="Elli"
-              icon="sparkles-outline"
-            />
-
-            <View style={{ marginTop: 18 }}>
-              <Text style={styles.fieldLabel}>Tone</Text>
-              <View style={styles.choiceRow}>
-                <ChoiceCard
-                  label="Professional"
-                  helper="Sharper, structured replies"
-                  icon="briefcase-outline"
-                  active={tone === "pro"}
-                  onPress={() => setTone("pro")}
-                />
-                <ChoiceCard
-                  label="Friendly"
-                  helper="Warmer, casual replies"
-                  icon="happy-outline"
-                  active={tone === "friendly"}
-                  onPress={() => setTone("friendly")}
-                />
+            <Pressable
+              onPress={() => router.push("/customise")}
+              style={({ pressed }) => [styles.accountHeroCard, pressed && styles.pressed]}
+            >
+              <View style={styles.accountAvatar}>
+                <Ionicons name="color-palette-outline" size={22} color={Brand.ink} />
               </View>
-            </View>
 
-            <View style={{ marginTop: 18 }}>
-              <Text style={styles.fieldLabel}>Reply language</Text>
-              <View style={styles.choiceRow}>
-                <ChoiceCard
-                  label="Tamil"
-                  helper="Localized assistant replies"
-                  icon="language-outline"
-                  active={languageMode === "ta"}
-                  onPress={() => setLanguageMode("ta")}
-                />
-                <ChoiceCard
-                  label="English"
-                  helper="Global default response mode"
-                  icon="globe-outline"
-                  active={languageMode === "en"}
-                  onPress={() => setLanguageMode("en")}
-                />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.accountName}>{`Customise (${name || "Elli"})`}</Text>
+                <Text style={styles.accountMeta}>
+                  Assistant name, tone, and reply language
+                </Text>
+              </View>
+
+              <Ionicons name="chevron-forward" size={18} color={Brand.cocoa} />
+            </Pressable>
+          </GlassCard>
+
+          <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+            <View style={styles.sectionHeaderRow}>
+              <View>
+                <Text style={styles.sectionTitle}>Hands-free & wake phrase</Text>
+                <Text style={styles.sectionSubtitle}>
+                  Voice activation controls stay here, while assistant identity settings open on the dedicated customise screen.
+                </Text>
               </View>
             </View>
 
