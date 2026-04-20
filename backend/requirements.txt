@@ -46,3 +46,7 @@ psycopg[binary]
 alembic==1.17.2
 sentry-sdk[fastapi]==2.20.0
 pgvector==0.3.6
+openwakeword==0.6.0
+av==16.0.1
+scipy==1.16.3
+scikit-learn==1.7.2

@@ -59,6 +59,7 @@ from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
+from .openwakeword_api import router as openwakeword_router  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ JOB_QUEUE: Optional[DBJobQueue] = None
 VECTOR_STORE = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
 
 app = FastAPI(title="J AI Backend")
+app.include_router(openwakeword_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
