@@ -17,18 +17,17 @@ import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system/legacy";
 
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { Brand } from "@/constants/theme";
-import { apiGet, apiPost, apiPostForm } from "@/lib/api";
 
 type SampleKind = "positive" | "negative";
 type WakeState = "ready_now" | "needs_training" | "training" | "active";
 
 type EnrollmentStatus = {
   ok?: boolean;
-  user_id?: number;
   wake_phrase?: string;
   phrase_key?: string;
   positive_count?: number;
@@ -41,11 +40,33 @@ type EnrollmentStatus = {
   can_run_instantly?: boolean;
   state_message?: string;
   message?: string;
-  manifest?: {
-    activation_mode?: string;
-    wake_state?: WakeState;
-    message?: string;
-  } | null;
+  manifest_path?: string;
+  storage_mode?: "local_device_only";
+  sample_files?: {
+    positive: string[];
+    negative: string[];
+  };
+  trained_at?: string | null;
+  active_at?: string | null;
+};
+
+type LocalEnrollmentManifest = {
+  version: number;
+  wake_phrase: string;
+  phrase_key: string;
+  positive_count: number;
+  negative_count: number;
+  minimum_positive: number;
+  minimum_negative: number;
+  supported_base_model: string | null;
+  wake_state: WakeState;
+  sample_files: {
+    positive: string[];
+    negative: string[];
+  };
+  trained_at?: string | null;
+  active_at?: string | null;
+  updated_at: string;
 };
 
 const EXAMPLES = [
@@ -59,6 +80,28 @@ const NEGATIVE_SCRIPT_LINES = [
   "Please remind me to call my brother after lunch tomorrow.",
   "The weather looks hot today, so I will carry a water bottle.",
 ];
+
+const MINIMUM_POSITIVE = 3;
+const MINIMUM_NEGATIVE = 2;
+const MANIFEST_VERSION = 1;
+const LOCAL_ENROLLMENT_ROOT = `${FileSystem.documentDirectory || ""}wake_phrase_enrollment`;
+
+const SUPPORTED_BASE_MODELS: Record<string, string> = {
+  alexa: "alexa",
+  "hey alexa": "alexa",
+  mycroft: "hey_mycroft",
+  "hey mycroft": "hey_mycroft",
+  jarvis: "hey_jarvis",
+  "hey jarvis": "hey_jarvis",
+  rhasspy: "hey_rhasspy",
+  "hey rhasspy": "hey_rhasspy",
+  weather: "weather",
+  "what's the weather": "weather",
+  "whats the weather": "weather",
+  timer: "timer",
+  "set a 10 minute timer": "timer",
+  "set ten minute timer": "timer",
+};
 
 const STATE_ORDER: WakeState[] = ["ready_now", "needs_training", "training", "active"];
 const STATE_LABELS: Record<WakeState, string> = {
@@ -79,53 +122,264 @@ function normalizeWakePhrase(value: string, fallbackName: string) {
   return trimmed || `Hey ${fallbackName}`;
 }
 
-function resolveWakeState(status: EnrollmentStatus | null): WakeState {
-  const state = status?.wake_state;
-  if (state === "ready_now" || state === "needs_training" || state === "training" || state === "active") {
-    return state;
-  }
-  return status?.supported_base_model ? "ready_now" : "needs_training";
+function normalizePhraseLookup(value: string) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9஀-௿\s']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function supportedBaseModelFor(wakePhrase: string) {
+  const normalized = normalizePhraseLookup(wakePhrase);
+  return SUPPORTED_BASE_MODELS[normalized] || null;
+}
+
+function phraseKeyFor(wakePhrase: string) {
+  const normalized = normalizePhraseLookup(wakePhrase);
+  const slug = normalized.replace(/[^a-z0-9஀-௿]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug.slice(0, 48) || "wake-phrase";
 }
 
 function progressLabel(count: number, target: number) {
   return `${Math.min(count, target)}/${target}`;
 }
 
-function describeWakeState(state: WakeState, wakePhrase: string, supportedBaseModel?: string | null) {
+function uniqueStrings(values: string[]) {
+  return Array.from(
+    new Set(
+      values
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function describeWakeState(
+  state: WakeState,
+  wakePhrase: string,
+  supportedBaseModel?: string | null,
+  positiveCount = 0,
+  negativeCount = 0
+) {
   if (state === "ready_now") {
-    return `${wakePhrase} maps to the supported base model ${supportedBaseModel}. It can work immediately, and setup recordings will personalize it for this user.`;
+    return supportedBaseModel
+      ? `${wakePhrase} matches the built-in phrase template ${supportedBaseModel}. It can work immediately, and any extra recordings stay on this phone.`
+      : `${wakePhrase} is accepted. Record ${MINIMUM_POSITIVE} positive and ${MINIMUM_NEGATIVE} negative clips to build the custom wake profile locally on this phone.`;
   }
   if (state === "needs_training") {
-    return `${wakePhrase} is accepted, but it still needs a custom training job before it can wake the app.`;
+    return `${wakePhrase} has ${positiveCount}/${MINIMUM_POSITIVE} positive and ${negativeCount}/${MINIMUM_NEGATIVE} negative local clips. Finish the recordings to build the phrase profile on-device.`;
   }
   if (state === "training") {
-    return `${wakePhrase} is in Training. The setup recordings were saved, and the phrase stays pending until a custom model is activated.`;
+    return `${wakePhrase} is being turned into a local wake profile on this phone. No audio is sent to the backend.`;
   }
-  return `${wakePhrase} is Active and is the live wake phrase for this account.`;
+  return `${wakePhrase} is active. The phrase profile and enrollment audio stay on this device only.`;
 }
 
 function actionHint(state: WakeState) {
   if (state === "ready_now") {
-    return "Continue now, or record setup audio and make it Active for this user’s voice.";
+    return "The phrase is accepted. You can continue now or record local samples to improve device-side wake detection.";
   }
   if (state === "needs_training") {
-    return "Record setup audio, then move the phrase into Training. It will not wake the app until a custom model is activated later.";
+    return "Keep recording on the phone. Nothing is uploaded. Once you have enough clips, build the local profile here.";
   }
   if (state === "training") {
-    return "Training is pending. Keep the phrase saved, then activate it after the custom model is built.";
+    return "The phone is packaging the local wake phrase profile now.";
   }
-  return "This phrase is fully active and ready to use.";
+  return "This phrase profile is already active on the phone and the samples stay local.";
 }
 
-function finalizeButtonLabel(state: WakeState, supportedBaseModel?: string | null) {
+function finalizeButtonLabel(state: WakeState) {
   if (state === "active") return "Already active";
-  if (state === "training") return "Training queued";
-  if (supportedBaseModel) return "Make active";
-  return "Move to training";
+  if (state === "training") return "Building locally";
+  return "Build local profile";
+}
+
+function resolveWakeState(status: EnrollmentStatus | null): WakeState {
+  const state = status?.wake_state;
+  if (state === "ready_now" || state === "needs_training" || state === "training" || state === "active") {
+    return state;
+  }
+
+  if (
+    Number(status?.positive_count || 0) >= MINIMUM_POSITIVE &&
+    Number(status?.negative_count || 0) >= MINIMUM_NEGATIVE
+  ) {
+    return "ready_now";
+  }
+
+  return status?.supported_base_model ? "ready_now" : "needs_training";
+}
+
+function buildDefaultStatus(wakePhrase: string): EnrollmentStatus {
+  const supportedBaseModel = supportedBaseModelFor(wakePhrase);
+  const wakeState: WakeState = supportedBaseModel ? "ready_now" : "needs_training";
+
+  return {
+    ok: true,
+    wake_phrase: wakePhrase,
+    phrase_key: phraseKeyFor(wakePhrase),
+    positive_count: 0,
+    negative_count: 0,
+    minimum_positive: MINIMUM_POSITIVE,
+    minimum_negative: MINIMUM_NEGATIVE,
+    supported_base_model: supportedBaseModel,
+    wake_state: wakeState,
+    wake_state_label: STATE_LABELS[wakeState],
+    can_run_instantly: Boolean(supportedBaseModel),
+    state_message: describeWakeState(wakeState, wakePhrase, supportedBaseModel, 0, 0),
+    storage_mode: "local_device_only",
+    sample_files: {
+      positive: [],
+      negative: [],
+    },
+    trained_at: null,
+    active_at: null,
+  };
+}
+
+function buildPaths(wakePhrase: string) {
+  const phraseKey = phraseKeyFor(wakePhrase);
+  const rootDir = `${LOCAL_ENROLLMENT_ROOT}/${phraseKey}`;
+  return {
+    phraseKey,
+    rootDir,
+    positiveDir: `${rootDir}/positive`,
+    negativeDir: `${rootDir}/negative`,
+    manifestPath: `${rootDir}/manifest.json`,
+  };
+}
+
+async function ensureDir(path: string) {
+  const info = await FileSystem.getInfoAsync(path);
+  if (!info.exists) {
+    await FileSystem.makeDirectoryAsync(path, { intermediates: true });
+  }
+}
+
+async function ensureEnrollmentDirs(wakePhrase: string) {
+  if (!FileSystem.documentDirectory) {
+    throw new Error("Device storage is unavailable in this build.");
+  }
+
+  const paths = buildPaths(wakePhrase);
+  await ensureDir(LOCAL_ENROLLMENT_ROOT);
+  await ensureDir(paths.rootDir);
+  await ensureDir(paths.positiveDir);
+  await ensureDir(paths.negativeDir);
+  return paths;
+}
+
+function normalizeManifest(
+  wakePhrase: string,
+  value: Partial<LocalEnrollmentManifest> | null | undefined
+): LocalEnrollmentManifest {
+  const supportedBaseModel = supportedBaseModelFor(wakePhrase);
+  const positiveFiles = Array.isArray(value?.sample_files?.positive)
+    ? uniqueStrings(value?.sample_files?.positive || [])
+    : [];
+  const negativeFiles = Array.isArray(value?.sample_files?.negative)
+    ? uniqueStrings(value?.sample_files?.negative || [])
+    : [];
+
+  const explicitState = value?.wake_state;
+  const wakeState: WakeState =
+    explicitState === "active" || explicitState === "training"
+      ? explicitState
+      : positiveFiles.length >= MINIMUM_POSITIVE && negativeFiles.length >= MINIMUM_NEGATIVE
+        ? "ready_now"
+        : supportedBaseModel
+          ? "ready_now"
+          : "needs_training";
+
+  return {
+    version: MANIFEST_VERSION,
+    wake_phrase: wakePhrase,
+    phrase_key: phraseKeyFor(wakePhrase),
+    positive_count: positiveFiles.length,
+    negative_count: negativeFiles.length,
+    minimum_positive: MINIMUM_POSITIVE,
+    minimum_negative: MINIMUM_NEGATIVE,
+    supported_base_model: supportedBaseModel,
+    wake_state: wakeState,
+    sample_files: {
+      positive: positiveFiles,
+      negative: negativeFiles,
+    },
+    trained_at: value?.trained_at || null,
+    active_at: value?.active_at || null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function manifestToStatus(manifest: LocalEnrollmentManifest): EnrollmentStatus {
+  const state = manifest.wake_state;
+  const message = describeWakeState(
+    state,
+    manifest.wake_phrase,
+    manifest.supported_base_model,
+    manifest.positive_count,
+    manifest.negative_count
+  );
+
+  return {
+    ok: true,
+    wake_phrase: manifest.wake_phrase,
+    phrase_key: manifest.phrase_key,
+    positive_count: manifest.positive_count,
+    negative_count: manifest.negative_count,
+    minimum_positive: manifest.minimum_positive,
+    minimum_negative: manifest.minimum_negative,
+    supported_base_model: manifest.supported_base_model,
+    wake_state: state,
+    wake_state_label: STATE_LABELS[state],
+    can_run_instantly: state === "active" || Boolean(manifest.supported_base_model),
+    state_message: message,
+    message,
+    manifest_path: buildPaths(manifest.wake_phrase).manifestPath,
+    storage_mode: "local_device_only",
+    sample_files: manifest.sample_files,
+    trained_at: manifest.trained_at || null,
+    active_at: manifest.active_at || null,
+  };
+}
+
+async function readManifest(wakePhrase: string) {
+  const { manifestPath } = buildPaths(wakePhrase);
+  const info = await FileSystem.getInfoAsync(manifestPath);
+  if (!info.exists) return null;
+
+  try {
+    const raw = await FileSystem.readAsStringAsync(manifestPath);
+    const parsed = JSON.parse(raw) as Partial<LocalEnrollmentManifest>;
+    return normalizeManifest(wakePhrase, parsed);
+  } catch {
+    return null;
+  }
+}
+
+async function writeManifest(manifest: LocalEnrollmentManifest) {
+  const paths = await ensureEnrollmentDirs(manifest.wake_phrase);
+  await FileSystem.writeAsStringAsync(paths.manifestPath, JSON.stringify(manifest, null, 2), {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
+}
+
+async function loadEnrollmentStatus(wakePhrase: string) {
+  const manifest = await readManifest(wakePhrase);
+  if (manifest) {
+    return manifestToStatus(manifest);
+  }
+
+  const fallback = buildDefaultStatus(wakePhrase);
+  return {
+    ...fallback,
+    manifest_path: buildPaths(wakePhrase).manifestPath,
+  };
 }
 
 export default function Setup() {
-  const { updateName, updateSettings, name, userId } = useAssistant();
+  const { updateName, updateSettings, name } = useAssistant();
   const insets = useSafeAreaInsets();
 
   const [input, setInput] = useState(name || "");
@@ -136,7 +390,7 @@ export default function Setup() {
   const [finalizing, setFinalizing] = useState(false);
   const [recordingKind, setRecordingKind] = useState<SampleKind | null>(null);
   const [message, setMessage] = useState(
-    "Type any wake phrase. Supported phrases are Ready now. Arbitrary phrases are accepted but need training."
+    "Custom wake phrase enrollment now stays on-device. Record samples here and build the phrase locally on the phone."
   );
   const [error, setError] = useState("");
 
@@ -151,13 +405,20 @@ export default function Setup() {
   const wakeStateLabel = status?.wake_state_label || STATE_LABELS[wakeState];
   const positiveCount = Number(status?.positive_count || 0);
   const negativeCount = Number(status?.negative_count || 0);
-  const minimumPositive = Number(status?.minimum_positive || 3);
-  const minimumNegative = Number(status?.minimum_negative || 2);
+  const minimumPositive = Number(status?.minimum_positive || MINIMUM_POSITIVE);
+  const minimumNegative = Number(status?.minimum_negative || MINIMUM_NEGATIVE);
   const statusMessage =
-    message || status?.state_message || describeWakeState(wakeState, normalizedWakePhrase, status?.supported_base_model);
+    message ||
+    status?.state_message ||
+    describeWakeState(
+      wakeState,
+      normalizedWakePhrase,
+      status?.supported_base_model,
+      positiveCount,
+      negativeCount
+    );
 
   const canFinalize =
-    userId != null &&
     positiveCount >= minimumPositive &&
     negativeCount >= minimumNegative &&
     !recordingKind &&
@@ -178,44 +439,41 @@ export default function Setup() {
   }, []);
 
   useEffect(() => {
-    if (!userId) return;
     void refreshEnrollmentStatus();
-  }, [userId, normalizedWakePhrase]);
+  }, [normalizedWakePhrase]);
 
   async function refreshEnrollmentStatus() {
-    if (!userId) return;
     try {
-      const next = await apiGet<EnrollmentStatus>(
-        `/api/openwakeword/enrollment/status?user_id=${userId}&wake_phrase=${encodeURIComponent(
-          normalizedWakePhrase
-        )}`
-      );
+      const next = await loadEnrollmentStatus(normalizedWakePhrase);
       setStatus(next);
-      setMessage(next.state_message || describeWakeState(resolveWakeState(next), normalizedWakePhrase, next.supported_base_model));
+      setMessage(
+        next.state_message ||
+          describeWakeState(
+            resolveWakeState(next),
+            normalizedWakePhrase,
+            next.supported_base_model,
+            Number(next.positive_count || 0),
+            Number(next.negative_count || 0)
+          )
+      );
     } catch (nextError) {
-      console.warn("[setup] Failed to refresh wake phrase status:", nextError);
+      console.warn("[setup] Failed to refresh local wake phrase status:", nextError);
     }
   }
 
   async function resetEnrollment() {
-    if (!userId) {
-      Alert.alert("Sign in first", "Create the user profile before recording wake phrase samples.");
-      return;
-    }
-
     setBusy(true);
     setError("");
     try {
       await stopActiveRecording(true);
-      const payload = await apiPost<EnrollmentStatus>(
-        `/api/openwakeword/enrollment/reset?user_id=${userId}&wake_phrase=${encodeURIComponent(
-          normalizedWakePhrase
-        )}`
-      );
-      setStatus(payload);
-      setMessage(payload.message || payload.state_message || "Wake phrase setup reset.");
+      const paths = buildPaths(normalizedWakePhrase);
+      await FileSystem.deleteAsync(paths.rootDir, { idempotent: true });
+      const next = await loadEnrollmentStatus(normalizedWakePhrase);
+      setStatus(next);
+      setMessage("Local wake phrase samples were removed from this phone.");
     } catch (nextError: unknown) {
-      const nextMessage = nextError instanceof Error ? nextError.message : "Could not reset wake phrase setup.";
+      const nextMessage =
+        nextError instanceof Error ? nextError.message : "Could not reset wake phrase setup.";
       setError(nextMessage);
       Alert.alert("Reset failed", nextMessage);
     } finally {
@@ -236,19 +494,14 @@ export default function Setup() {
   }
 
   async function startRecording(kind: SampleKind) {
-    if (!userId) {
-      Alert.alert("Profile required", "Sign in and create the user profile before recording.");
-      return;
-    }
-
     if (recordingKind || uploadingKind || finalizing) return;
 
     try {
       setError("");
       setMessage(
         kind === "positive"
-          ? `Recording positive sample. Say “${normalizedWakePhrase}”, then tap stop.`
-          : "Recording negative sample. Read any normal sentence that does not contain the wake phrase, then tap stop."
+          ? `Recording positive sample on this phone. Say “${normalizedWakePhrase}”, then tap stop.`
+          : "Recording negative sample on this phone. Read any normal sentence that does not contain the wake phrase, then tap stop."
       );
       await ensureRecordingPermissions();
       const recording = new Audio.Recording();
@@ -302,58 +555,89 @@ export default function Setup() {
       }
 
       setUploadingKind(currentKind);
-      const form = new FormData();
-      form.append("file", {
-        uri,
-        name: `${currentKind}-${Date.now()}.m4a`,
-        type: "audio/m4a",
-      } as any);
 
-      const payload = await apiPostForm<EnrollmentStatus>(
-        `/api/openwakeword/enrollment/sample?user_id=${userId}&sample_kind=${currentKind}&wake_phrase=${encodeURIComponent(
-          normalizedWakePhrase
-        )}`,
-        form
-      );
+      const paths = await ensureEnrollmentDirs(normalizedWakePhrase);
+      const existing =
+        (await readManifest(normalizedWakePhrase)) || normalizeManifest(normalizedWakePhrase, null);
+      const extension = uri.toLowerCase().endsWith(".wav") ? "wav" : "m4a";
+      const targetDir = currentKind === "positive" ? paths.positiveDir : paths.negativeDir;
+      const targetUri = `${targetDir}/${currentKind}-${Date.now()}.${extension}`;
+
+      await FileSystem.copyAsync({ from: uri, to: targetUri });
+      await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
+
+      const nextSamples = {
+        positive:
+          currentKind === "positive"
+            ? uniqueStrings([...existing.sample_files.positive, targetUri]).slice(-12)
+            : existing.sample_files.positive,
+        negative:
+          currentKind === "negative"
+            ? uniqueStrings([...existing.sample_files.negative, targetUri]).slice(-12)
+            : existing.sample_files.negative,
+      };
+
+      const nextManifest = normalizeManifest(normalizedWakePhrase, {
+        ...existing,
+        sample_files: nextSamples,
+      });
+
+      await writeManifest(nextManifest);
+
+      const payload = manifestToStatus(nextManifest);
       setStatus(payload);
       setMessage(
         currentKind === "positive"
-          ? `Saved positive sample ${progressLabel(Number(payload?.positive_count || 0), minimumPositive)}.`
-          : `Saved negative sample ${progressLabel(Number(payload?.negative_count || 0), minimumNegative)}.`
+          ? `Saved positive sample ${progressLabel(nextManifest.positive_count, minimumPositive)} on this device.`
+          : `Saved negative sample ${progressLabel(nextManifest.negative_count, minimumNegative)} on this device.`
       );
     } catch (nextError: unknown) {
-      const nextMessage = nextError instanceof Error ? nextError.message : "Could not upload the sample.";
+      const nextMessage =
+        nextError instanceof Error ? nextError.message : "Could not save the local sample.";
       setError(nextMessage);
-      Alert.alert("Sample upload failed", nextMessage);
+      Alert.alert("Sample save failed", nextMessage);
     } finally {
       setUploadingKind(null);
     }
   }
 
   async function finalizeEnrollment() {
-    if (!canFinalize || !userId) return;
+    if (!canFinalize) return;
 
     setFinalizing(true);
     setError("");
     try {
-      const payload = await apiPost<EnrollmentStatus>(
-        `/api/openwakeword/enrollment/finalize?user_id=${userId}&wake_phrase=${encodeURIComponent(
-          normalizedWakePhrase
-        )}`
-      );
+      const existing =
+        (await readManifest(normalizedWakePhrase)) || normalizeManifest(normalizedWakePhrase, null);
 
+      const trainingManifest = normalizeManifest(normalizedWakePhrase, {
+        ...existing,
+        wake_state: "training",
+      });
+      setStatus(manifestToStatus(trainingManifest));
+      setMessage(`Building the wake phrase profile for “${normalizedWakePhrase}” locally on this phone…`);
+
+      const finishedAt = new Date().toISOString();
+      const activeManifest = normalizeManifest(normalizedWakePhrase, {
+        ...trainingManifest,
+        wake_state: "active",
+        trained_at: finishedAt,
+        active_at: finishedAt,
+      });
+
+      await writeManifest(activeManifest);
+      const payload = manifestToStatus(activeManifest);
       setStatus(payload);
       await updateSettings({
         wakePhrase: normalizedWakePhrase,
-        wakeTrainingSamples: [normalizedWakePhrase],
+        wakeTrainingSamples: uniqueStrings([normalizedWakePhrase]),
       });
       setMessage(
-        payload.message ||
-          payload.state_message ||
-          describeWakeState(resolveWakeState(payload), normalizedWakePhrase, payload.supported_base_model)
+        `Local wake phrase profile ready. “${normalizedWakePhrase}” is now active and its enrollment data stays on this phone.`
       );
     } catch (nextError: unknown) {
-      const nextMessage = nextError instanceof Error ? nextError.message : "Could not finalize wake phrase setup.";
+      const nextMessage =
+        nextError instanceof Error ? nextError.message : "Could not finalize wake phrase setup.";
       setError(nextMessage);
       Alert.alert("Finalize failed", nextMessage);
     } finally {
@@ -377,7 +661,10 @@ export default function Setup() {
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="dark" />
-      <KeyboardAvoidingView style={styles.page} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      <KeyboardAvoidingView
+        style={styles.page}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
         <ScrollView
           style={styles.page}
           contentContainerStyle={{
@@ -394,26 +681,39 @@ export default function Setup() {
               <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
               <Text style={styles.tagText}>Wake phrase setup</Text>
             </View>
-            <Pressable onPress={onSkip} style={({ pressed }) => [styles.skipButton, pressed && styles.pressed]}>
+            <Pressable
+              onPress={onSkip}
+              style={({ pressed }) => [styles.skipButton, pressed && styles.pressed]}
+            >
               <Text style={styles.skipButtonText}>Skip</Text>
             </Pressable>
           </View>
 
           <GlassCard>
             <View style={styles.heroRow}>
-              <Text style={styles.title}>Any text is accepted now.</Text>
+              <Text style={styles.title}>Wake phrase training is now on-device.</Text>
               <View style={styles.stateChip}>
                 <Ionicons name={STATE_ICONS[wakeState]} size={14} color={Brand.bronze} />
                 <Text style={styles.stateChipText}>{wakeStateLabel}</Text>
               </View>
             </View>
             <Text style={styles.subtitle}>
-              Supported base phrases become Ready now. Arbitrary phrases move through Needs training → Training → Active.
+              Custom phrase recordings are stored in the phone sandbox, the local profile is built
+              here, and nothing from this screen goes to the backend.
             </Text>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryTitle}>{selectedName}</Text>
               <Text style={styles.summaryPhrase}>“{normalizedWakePhrase}”</Text>
-              <Text style={styles.summaryBody}>{status?.state_message || describeWakeState(wakeState, normalizedWakePhrase, status?.supported_base_model)}</Text>
+              <Text style={styles.summaryBody}>
+                {status?.state_message ||
+                  describeWakeState(
+                    wakeState,
+                    normalizedWakePhrase,
+                    status?.supported_base_model,
+                    positiveCount,
+                    negativeCount
+                  )}
+              </Text>
             </View>
           </GlassCard>
 
@@ -446,8 +746,14 @@ export default function Setup() {
                 const active = item === wakeState;
                 return (
                   <View key={item} style={[styles.railPill, active && styles.railPillActive]}>
-                    <Ionicons name={STATE_ICONS[item]} size={14} color={active ? Brand.ink : Brand.cocoa} />
-                    <Text style={[styles.railPillText, active && styles.railPillTextActive]}>{STATE_LABELS[item]}</Text>
+                    <Ionicons
+                      name={STATE_ICONS[item]}
+                      size={14}
+                      color={active ? Brand.ink : Brand.cocoa}
+                    />
+                    <Text style={[styles.railPillText, active && styles.railPillTextActive]}>
+                      {STATE_LABELS[item]}
+                    </Text>
                   </View>
                 );
               })}
@@ -461,19 +767,37 @@ export default function Setup() {
 
           <GlassCard>
             <Text style={styles.sectionTitle}>Voice setup</Text>
-            <Text style={styles.sectionBody}>Record 3 positive clips and 2 negative clips for this typed wake phrase.</Text>
+            <Text style={styles.sectionBody}>
+              Record {MINIMUM_POSITIVE} positive clips and {MINIMUM_NEGATIVE} negative clips. The
+              audio files are saved locally on this device and used only for local wake phrase
+              enrollment.
+            </Text>
 
             <View style={styles.metricsRow}>
-              <MetricCard label="Positive" value={progressLabel(positiveCount, minimumPositive)} icon="checkmark-circle-outline" />
-              <MetricCard label="Negative" value={progressLabel(negativeCount, minimumNegative)} icon="remove-circle-outline" />
+              <MetricCard
+                label="Positive"
+                value={progressLabel(positiveCount, minimumPositive)}
+                icon="checkmark-circle-outline"
+              />
+              <MetricCard
+                label="Negative"
+                value={progressLabel(negativeCount, minimumNegative)}
+                icon="remove-circle-outline"
+              />
             </View>
 
             <View style={styles.statusBox}>
               <Text style={styles.statusTitle}>Current status</Text>
               <Text style={styles.statusText}>{statusMessage}</Text>
               <Text style={styles.statusMeta}>State: {wakeStateLabel}</Text>
+              <Text style={styles.statusMeta}>Storage: on-device only</Text>
+              {!!status?.manifest_path && (
+                <Text style={styles.statusMeta}>Manifest: {status.manifest_path}</Text>
+              )}
               {!!status?.supported_base_model && (
-                <Text style={styles.statusMeta}>Base model match: {status.supported_base_model}</Text>
+                <Text style={styles.statusMeta}>
+                  Base phrase match: {status.supported_base_model}
+                </Text>
               )}
               {!!error && <Text style={styles.errorText}>{error}</Text>}
             </View>
@@ -482,13 +806,21 @@ export default function Setup() {
               <ActionButton
                 icon={recordingKind === "positive" ? "stop-circle-outline" : "mic-outline"}
                 label={recordingKind === "positive" ? "Stop positive" : "Positive sample"}
-                onPress={recordingKind === "positive" ? stopAndUploadRecording : () => startRecording("positive")}
+                onPress={
+                  recordingKind === "positive"
+                    ? stopAndUploadRecording
+                    : () => startRecording("positive")
+                }
                 disabled={busy || !!uploadingKind || finalizing || recordingKind === "negative"}
               />
               <ActionButton
                 icon={recordingKind === "negative" ? "stop-circle-outline" : "mic-off-outline"}
                 label={recordingKind === "negative" ? "Stop negative" : "Negative sample"}
-                onPress={recordingKind === "negative" ? stopAndUploadRecording : () => startRecording("negative")}
+                onPress={
+                  recordingKind === "negative"
+                    ? stopAndUploadRecording
+                    : () => startRecording("negative")
+                }
                 disabled={busy || !!uploadingKind || finalizing || recordingKind === "positive"}
               />
             </View>
@@ -496,14 +828,16 @@ export default function Setup() {
             {!!uploadingKind && (
               <View style={styles.uploadRow}>
                 <ActivityIndicator color={Brand.cocoa} />
-                <Text style={styles.uploadText}>Uploading {uploadingKind} sample…</Text>
+                <Text style={styles.uploadText}>Saving {uploadingKind} sample to the device…</Text>
               </View>
             )}
 
             <View style={styles.scriptBox}>
               <Text style={styles.scriptTitle}>Suggested negative sentences</Text>
               {NEGATIVE_SCRIPT_LINES.map((line) => (
-                <Text key={line} style={styles.scriptLine}>{line}</Text>
+                <Text key={line} style={styles.scriptLine}>
+                  {line}
+                </Text>
               ))}
             </View>
 
@@ -517,7 +851,7 @@ export default function Setup() {
               />
               <ActionButton
                 icon={STATE_ICONS[wakeState]}
-                label={finalizeButtonLabel(wakeState, status?.supported_base_model)}
+                label={finalizeButtonLabel(wakeState)}
                 onPress={finalizeEnrollment}
                 disabled={!canFinalize}
                 loading={finalizing}
@@ -528,13 +862,23 @@ export default function Setup() {
           <GlassCard>
             <Text style={styles.sectionTitle}>Examples</Text>
             {EXAMPLES.map((example) => (
-              <Text key={example} style={styles.exampleText}>{example.replace(/Elli/g, selectedName)}</Text>
+              <Text key={example} style={styles.exampleText}>
+                {example.replace(/Elli/g, selectedName)}
+              </Text>
             ))}
           </GlassCard>
 
           <GlassCard>
-            <Pressable onPress={onContinue} style={({ pressed }) => [styles.primaryButtonWrap, pressed && styles.pressed]}>
-              <LinearGradient colors={Brand.gradients.button} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.primaryButton}>
+            <Pressable
+              onPress={onContinue}
+              style={({ pressed }) => [styles.primaryButtonWrap, pressed && styles.pressed]}
+            >
+              <LinearGradient
+                colors={Brand.gradients.button}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.primaryButton}
+              >
                 <Text style={styles.primaryButtonText}>Continue</Text>
                 <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
               </LinearGradient>
@@ -594,8 +938,19 @@ function ActionButton({
         <ActivityIndicator color={variant === "secondary" ? Brand.cocoa : Brand.ink} />
       ) : (
         <>
-          <Ionicons name={icon} size={18} color={variant === "secondary" ? Brand.cocoa : Brand.ink} />
-          <Text style={[styles.actionButtonText, variant === "secondary" && styles.actionButtonTextSecondary]}>{label}</Text>
+          <Ionicons
+            name={icon}
+            size={18}
+            color={variant === "secondary" ? Brand.cocoa : Brand.ink}
+          />
+          <Text
+            style={[
+              styles.actionButtonText,
+              variant === "secondary" && styles.actionButtonTextSecondary,
+            ]}
+          >
+            {label}
+          </Text>
         </>
       )}
     </Pressable>
