@@ -26,7 +26,6 @@ import {
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { Brand } from "@/constants/theme";
-import { apiPostForm } from "@/lib/api";
 
 type Tone = "pro" | "friendly";
 type LanguageMode = "en" | "ta";
@@ -236,7 +235,7 @@ export default function CustomiseScreen() {
   ) {
     const normalized = normalizeRecognitionTranscript(transcript);
     if (!normalized) return;
-
+  
     trainingPendingRecordedAudioFallbackRef.current = false;
     trainingCheckingRecordedAudioRef.current = false;
     trainingBestTranscriptRef.current = normalized;
@@ -250,7 +249,7 @@ export default function CustomiseScreen() {
     setTrainingLevel(0);
     setTrainingStatus(
       source === "recorded-audio"
-        ? `Captured “${normalized}” after verifying the recorded microphone audio. Tap Save on the customise screen to keep it.`
+        ? `Android recorded the mic audio, but no transcript came back. Keeping “${normalized}” from the wake phrase field so setup stays on-device. Tap Save on the customise screen to keep it.`
         : source === "partial"
           ? `Captured “${normalized}” from the best live result. Tap Save on the customise screen to keep it.`
           : `Captured “${normalized}”. It has been filled into the wake phrase field below. Tap Save on the customise screen to keep it.`
@@ -353,9 +352,11 @@ export default function CustomiseScreen() {
   }
 
   async function transcribeRecordedWakePhrase(uri: string) {
+    if (trainingCheckingRecordedAudioRef.current) return;
+  
     const sourceUri = String(uri || "").trim();
-    if (!sourceUri || trainingCheckingRecordedAudioRef.current) return;
-
+    const fallbackPhrase = normalizeRecognitionTranscript(wakePrompt);
+  
     trainingPendingRecordedAudioFallbackRef.current = false;
     trainingCheckingRecordedAudioRef.current = true;
     setTraining(false);
@@ -364,46 +365,27 @@ export default function CustomiseScreen() {
     setTrainingLevel(0);
     setTrainingError("");
     setTrainingStatus(
-      "Android captured microphone audio but returned no text. Checking the recorded audio with server speech-to-text…"
+      "Android captured microphone audio but returned no text. Using the typed wake phrase instead so setup stays on-device."
     );
-
+  
     try {
-      const extension = sourceUri.toLowerCase().endsWith(".wav") ? "wav" : "m4a";
-      const mimeType = extension === "wav" ? "audio/wav" : "audio/m4a";
-      const form = new FormData();
-      form.append("file", {
-        uri: sourceUri,
-        name: `wake-phrase.${extension}`,
-        type: mimeType,
-      } as any);
-
-      const response = await apiPostForm<{
-        ok?: boolean;
-        transcript?: string | null;
-        text?: string | null;
-        language?: string | null;
-      }>(
-        `/api/wake-phrase/transcribe?language=${encodeURIComponent(
-          languageMode === "ta" ? "ta" : "en"
-        )}`,
-        form
-      );
-
-      const transcript = normalizeRecognitionTranscript(
-        String(response?.transcript || response?.text || "")
-      );
-
-      if (!transcript) {
-        throw new Error("Recorded audio was captured, but transcription came back empty.");
+      if (!fallbackPhrase) {
+        throw new Error("Type the wake phrase first, then try training again.");
       }
-
-      acceptWakePhraseSample(transcript, "recorded-audio");
+  
+      acceptWakePhraseSample(fallbackPhrase, "recorded-audio");
+  
+      setTrainingStatus(
+        sourceUri
+          ? `Android saved the mic audio, but speech-to-text returned nothing. Keeping “${fallbackPhrase}” as the wake phrase and continuing fully on-device.`
+          : `Android captured audio, but speech-to-text returned nothing. Keeping “${fallbackPhrase}” as the wake phrase and continuing fully on-device.`
+      );
     } catch (error: unknown) {
       const message =
         error instanceof Error
           ? error.message
-          : "Recorded audio was captured, but transcription still failed.";
-
+          : "Could not recover the wake phrase from the recorded-audio fallback.";
+  
       setTrainingPhase("error");
       setTrainingError(message);
       setTrainingStatus(message);
@@ -648,7 +630,7 @@ export default function CustomiseScreen() {
       setTrainingAudioUri("");
       setTrainingPhase("preparing");
       setTrainingStatus(`Getting the microphone ready for “${wakePrompt}”…`);
-
+  
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permission.granted) {
         setTraining(false);
@@ -660,31 +642,29 @@ export default function CustomiseScreen() {
         );
         return;
       }
-
+  
       const canPersistAudio =
         Platform.OS === "android" &&
         Number(Platform.Version) >= 33 &&
         typeof ExpoSpeechRecognitionModule.supportsRecording === "function" &&
         Boolean(ExpoSpeechRecognitionModule.supportsRecording());
-
+  
       const shouldUseOnDevice =
         Platform.OS === "ios" ||
         (Platform.OS === "android" && trainingDiagnostics.canUseOnDeviceForLocale);
-
+  
       setTraining(true);
       trainingRef.current = true;
-
+  
       ExpoSpeechRecognitionModule.start({
         lang: speechLocale,
         interimResults: true,
         maxAlternatives: 1,
-        continuous: Platform.OS === "android" && Number(Platform.Version) >= 33,
+        continuous: false,
         requiresOnDeviceRecognition: shouldUseOnDevice,
         androidRecognitionServicePackage:
-          Platform.OS === "android"
-            ? shouldUseOnDevice
-              ? "com.google.android.as"
-              : trainingDiagnostics.defaultService || "com.google.android.tts"
+          Platform.OS === "android" && shouldUseOnDevice
+            ? "com.google.android.as"
             : undefined,
         addsPunctuation: false,
         contextualStrings: uniqueSamples([wakePrompt, displayName, ...wakeTrainingSamples]),
@@ -698,10 +678,10 @@ export default function CustomiseScreen() {
         androidIntentOptions:
           Platform.OS === "android"
             ? {
-                EXTRA_LANGUAGE_MODEL: "web_search",
-                EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 3200,
-                EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 1800,
-                EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: 1500,
+                EXTRA_LANGUAGE_MODEL: "free_form",
+                EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 4500,
+                EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 2500,
+                EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: 1000,
               }
             : undefined,
       });
