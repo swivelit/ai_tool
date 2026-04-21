@@ -1265,8 +1265,10 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
             f"Added {int(rag_context_meta.get('snippet_count', 0))} advanced RAG snippet(s) from user memory and cache."
         )
 
+    stage_remodeler = _get_stage_remodeler()
+
     t0 = time.perf_counter()
-    direct_match = STAGE_REMODELER.get_direct_answer_match(message)
+    direct_match = stage_remodeler.get_direct_answer_match(message)
     timings["direct_match_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
     core_meta: Dict[str, Any] = {
@@ -1295,7 +1297,6 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         stage_notes.append("Used a high-confidence direct answer from the local dataset.")
     else:
         stage_core = _get_stage_core()
-        stage_remodeler = _get_stage_remodeler()
 
         t0 = time.perf_counter()
         core_meta = stage_core.answer_user_query_structured(message, profile_context)
