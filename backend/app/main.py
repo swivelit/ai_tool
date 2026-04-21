@@ -1612,6 +1612,10 @@ def _normalize_audio_language(language: Optional[str]) -> Optional[str]:
     if not value:
         return None
 
+    # Let the transcription model auto-detect when requested.
+    if value in {"auto", "detect", "auto-detect", "autodetect"}:
+        return None
+
     if value.startswith("ta"):
         return "ta"
     if value.startswith("en"):
@@ -2250,6 +2254,7 @@ def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_se
 async def transcribe_and_analyze(
     user_id: Optional[int] = None,
     reply_language: Optional[str] = None,
+    speech_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
@@ -2259,8 +2264,19 @@ async def transcribe_and_analyze(
         tmp_path = tmp.name
 
     try:
-        transcript_text = _transcribe_audio_file(tmp_path, reply_language)
-        pipeline_result = _run_agentic_or_pipeline(session, user_id, transcript_text, reply_language)
+        # IMPORTANT:
+        # reply_language controls the assistant's reply language.
+        # speech_language controls STT only.
+        # If speech_language is not provided, Whisper auto-detects the spoken language.
+        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
+
+        pipeline_result = _run_agentic_or_pipeline(
+            session,
+            user_id,
+            transcript_text,
+            reply_language,
+        )
+
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=user_id,
@@ -2270,6 +2286,7 @@ async def transcribe_and_analyze(
             pipeline_result=pipeline_result,
             reply_language=reply_language,
         )
+
         response = item_to_response(item).model_dump()
         response["assistant"] = {
             "text": item.details or transcript_text,
@@ -2291,6 +2308,7 @@ async def transcribe_and_analyze(
 async def api_transcribe_and_analyze(
     user_id: Optional[int] = None,
     reply_language: Optional[str] = None,
+    speech_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
@@ -2300,8 +2318,19 @@ async def api_transcribe_and_analyze(
         tmp_path = tmp.name
 
     try:
-        transcript_text = _transcribe_audio_file(tmp_path, reply_language)
-        pipeline_result = _run_stage_pipeline(session, user_id, transcript_text, reply_language)
+        # IMPORTANT:
+        # reply_language controls the assistant's reply language.
+        # speech_language controls STT only.
+        # If speech_language is not provided, Whisper auto-detects the spoken language.
+        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
+
+        pipeline_result = _run_stage_pipeline(
+            session,
+            user_id,
+            transcript_text,
+            reply_language,
+        )
+
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=user_id,
