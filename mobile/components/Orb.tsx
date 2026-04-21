@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
   Easing,
@@ -22,8 +22,11 @@ type OrbProps = {
 
 /**
  * Premium-looking orb control.
- * - Voice is captured only while the orb is being held.
- * - Motion is designed to feel polished, physical, and responsive.
+ * Fix:
+ * - Uses Pressable instead of raw responder callbacks.
+ * - Adds a large pressRetentionOffset so the user can slightly move their
+ *   finger while speaking without accidentally ending the recording.
+ * - Recording should now stop only when the user actually lifts their finger.
  */
 export function Orb({
   listening,
@@ -101,6 +104,16 @@ export function Orb({
 
   const coreColors = useMemo(
     () => ["#fff8ec", "#ffe6b7", "#efbc74", "#b86e31"] as const,
+    []
+  );
+
+  const pressRetentionOffset = useMemo(
+    () => ({
+      top: 96,
+      right: 96,
+      bottom: 96,
+      left: 96,
+    }),
     []
   );
 
@@ -197,7 +210,7 @@ export function Orb({
   };
 
   return (
-    <View
+    <Pressable
       accessible
       accessibilityRole="button"
       accessibilityLabel={
@@ -205,14 +218,14 @@ export function Orb({
       }
       accessibilityHint="Press and hold the orb to record. Release to stop and send."
       style={styles.pressable}
-      onStartShouldSetResponder={() => true}
-      onResponderGrant={handlePressIn}
-      onResponderRelease={handlePressOut}
-      onResponderTerminate={handlePressOut}
-      onResponderTerminationRequest={() => true}
-      onTouchCancel={handlePressOut}
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+      hitSlop={24}
+      pressRetentionOffset={pressRetentionOffset}
+      android_disableSound
     >
       <View
+        pointerEvents="none"
         style={{
           width: size + 112,
           height: size + 112,
@@ -442,7 +455,7 @@ export function Orb({
           </LinearGradient>
         </Animated.View>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
