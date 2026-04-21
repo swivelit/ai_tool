@@ -274,6 +274,24 @@ function isTranscribeAndAnalyzePath(path: string) {
   );
 }
 
+function normalizeVoiceAnalyzePath(path: string) {
+  const normalized = String(path || "").trim();
+  if (!normalized) return "/api/transcribe-and-analyze";
+
+  if (normalized.startsWith("/api/transcribe-and-analyze")) {
+    return normalized;
+  }
+
+  if (normalized.startsWith("/transcribe-and-analyze")) {
+    return normalized.replace(
+      "/transcribe-and-analyze",
+      "/api/transcribe-and-analyze"
+    );
+  }
+
+  return normalized;
+}
+
 function formatIntentLabel(value?: string | null) {
   const source = (value || "assistant").replace(/[_-]+/g, " ").trim();
   if (!source) return "Assistant";
@@ -367,8 +385,7 @@ async function handleLocalTranscribeAndAnalyze(
     throw new Error("Valid user_id is required for local voice routing.");
   }
 
-  const replyLanguage: ReplyLanguage =
-    replyLanguageRaw === "en" ? "en" : "ta";
+  const replyLanguage: ReplyLanguage = replyLanguageRaw === "en" ? "en" : "ta";
 
   const transcript = await transcribeAudioLocally(fileUri, replyLanguage);
   if (!transcript.text.trim()) {
@@ -451,9 +468,7 @@ export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(buildUrl(path));
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
-    );
+    throw new Error(`GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`);
   }
   return normalizeBackendDates((await res.json()) as T);
 }
@@ -479,28 +494,31 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
-    );
+    throw new Error(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`);
   }
   return normalizeBackendDates((await res.json()) as T);
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
-  if ((await shouldUseLocalVoicePipeline()) && isTranscribeAndAnalyzePath(path)) {
-    return (await handleLocalTranscribeAndAnalyze(path, form)) as T;
+  const resolvedPath = isTranscribeAndAnalyzePath(path)
+    ? normalizeVoiceAnalyzePath(path)
+    : path;
+
+  if (
+    (await shouldUseLocalVoicePipeline()) &&
+    isTranscribeAndAnalyzePath(resolvedPath)
+  ) {
+    return (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;
   }
 
-  const res = await fetch(buildUrl(path), {
+  const res = await fetch(buildUrl(resolvedPath), {
     method: "POST",
     body: form,
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
-    );
+    throw new Error(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`);
   }
 
   return normalizeBackendDates((await res.json()) as T);
