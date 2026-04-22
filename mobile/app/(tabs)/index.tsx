@@ -83,6 +83,7 @@ type RecorderSurface = "quick" | "live";
 
 const MIN_INPUT_HEIGHT = 24;
 const MAX_INPUT_HEIGHT = 130;
+const RECORDING_STARTUP_SETTLE_MS = Platform.OS === "android" ? 320 : 160;
 const CHAT_SESSIONS_STORAGE_PREFIX = "chat_sessions_v2";
 const HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX = "hidden_chat_session_ids_v2";
 const HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX = "hidden_chat_item_ids_v1";
@@ -142,6 +143,10 @@ function matchWakePhrase(input: string, phrases: string[]) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeChatResponse(
@@ -389,6 +394,7 @@ export default function Home() {
     useState(MIN_INPUT_HEIGHT);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [recordingPreparing, setRecordingPreparing] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -551,11 +557,15 @@ export default function Home() {
     });
   }, [historySearch, latestHistory]);
 
-  const placeholder = listening
-    ? "Recording... stop to send"
-    : `Ask ${assistantLabel}`;
+  const placeholder = recordingPreparing
+    ? "Preparing microphone..."
+    : listening
+      ? "Recording... stop to send"
+      : `Ask ${assistantLabel}`;
 
-  const handsFreeSummaryText =
+  const handsFreeSummaryText = recordingPreparing && activeSurface === "live"
+    ? "Keep holding the orb. Start speaking when the orb begins pulsing."
+    :
     handsFreeMode === "command"
       ? "Listening for your request…"
       : settings.handsFreeEnabled
@@ -762,7 +772,7 @@ export default function Home() {
     }, 120);
 
     return () => clearTimeout(timeout);
-  }, [chatTimeline.length, listening, busy]);
+  }, [chatTimeline.length, listening, recordingPreparing, busy]);
 
   useEffect(() => {
     return () => {
@@ -1437,13 +1447,15 @@ export default function Home() {
       recordingPhaseRef.current = "starting";
       stopWhenReadyRef.current = false;
       setActiveSurface(surface);
+      setRecordingPreparing(true);
+      setListening(false);
 
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      setListening(true);
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
         recordingPhaseRef.current = "idle";
+        setRecordingPreparing(false);
         setListening(false);
         setActiveSurface(null);
         Alert.alert("Mic permission needed", "Please allow microphone access.");
@@ -1460,10 +1472,14 @@ export default function Home() {
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
       await nextRecording.startAsync();
+      await wait(RECORDING_STARTUP_SETTLE_MS);
 
       recordingRef.current = nextRecording;
       setRecording(nextRecording);
       recordingPhaseRef.current = "recording";
+      setRecordingPreparing(false);
+      setListening(true);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       if (stopWhenReadyRef.current) {
         stopWhenReadyRef.current = false;
@@ -1474,6 +1490,7 @@ export default function Home() {
       stopWhenReadyRef.current = false;
       recordingRef.current = null;
       setRecording(null);
+      setRecordingPreparing(false);
       setListening(false);
       setActiveSurface(null);
       await resetAudioMode();
@@ -1502,6 +1519,7 @@ export default function Home() {
 
       recordingRef.current = null;
       setRecording(null);
+      setRecordingPreparing(false);
       setListening(false);
 
       await activeRecording.stopAndUnloadAsync();
@@ -1552,6 +1570,7 @@ export default function Home() {
       stopWhenReadyRef.current = false;
       recordingRef.current = null;
       setRecording(null);
+      setRecordingPreparing(false);
       setListening(false);
       setBusy(false);
       setActiveSurface(null);
@@ -1779,15 +1798,15 @@ export default function Home() {
                 </View>
               ) : null}
 
-              {activeSurface === "quick" && listening ? (
+              {activeSurface === "quick" && (recordingPreparing || listening) ? (
                 <GlassCard style={styles.quickRecorderCard}>
                   <View style={styles.quickRecorderHeader}>
                     <View style={styles.recordingDot} />
-                    <Text style={styles.quickRecorderTitle}>Recording voice message</Text>
+                    <Text style={styles.quickRecorderTitle}>{recordingPreparing ? "Preparing microphone" : "Recording voice message"}</Text>
                   </View>
 
                   <View style={styles.quickRecorderBody}>
-                    <Waveform active />
+                    <Waveform active={listening} />
                     <Pressable onPress={handleQuickMicPress} style={styles.stopButton}>
                       <Ionicons name="stop" size={18} color={Brand.cream} />
                     </Pressable>
@@ -1841,13 +1860,13 @@ export default function Home() {
                       disabled={busy && !listening}
                       style={[
                         styles.roundAction,
-                        listening && activeSurface === "quick" && styles.roundActionActive,
+                        (recordingPreparing || listening) && activeSurface === "quick" && styles.roundActionActive,
                         busy && !listening && styles.iconButtonDisabled,
                       ]}
                     >
                       <Ionicons
                         name={
-                          listening && activeSurface === "quick" ? "stop" : "mic-outline"
+                          (recordingPreparing || listening) && activeSurface === "quick" ? "stop" : "mic-outline"
                         }
                         size={18}
                         color={Brand.cocoa}
@@ -1871,7 +1890,11 @@ export default function Home() {
                   </View>
                 </View>
 
-                {listening ? (
+                {recordingPreparing ? (
+                  <Text style={styles.composerHintText}>
+                    Preparing microphone... keep holding and start speaking when recording begins
+                  </Text>
+                ) : listening ? (
                   <Text style={styles.composerHintText}>
                     Recording in progress... tap stop or release the orb
                   </Text>
@@ -2074,11 +2097,13 @@ export default function Home() {
             />
 
             <Text style={styles.voiceTitle}>
-              {listening && activeSurface === "live"
-                ? "Listening..."
-                : handsFreeActive
-                  ? "Hands-free ready"
-                  : "Start Talking"}
+              {recordingPreparing && activeSurface === "live"
+                ? "Preparing microphone..."
+                : listening && activeSurface === "live"
+                  ? "Listening..."
+                  : handsFreeActive
+                    ? "Hands-free ready"
+                    : "Start Talking"}
             </Text>
             <Text style={styles.voiceSubtitle}>{handsFreeSummaryText}</Text>
 
@@ -2101,9 +2126,9 @@ export default function Home() {
               </Text>
             ) : null}
 
-            {listening && activeSurface === "live" ? (
+            {(recordingPreparing || listening) && activeSurface === "live" ? (
               <View style={styles.voiceWaveWrap}>
-                <Waveform active />
+                <Waveform active={listening} />
               </View>
             ) : null}
           </View>
@@ -2147,7 +2172,7 @@ export default function Home() {
                 style={styles.voiceDockButtonDanger}
               >
                 <Ionicons
-                  name={listening && activeSurface === "live" ? "stop" : "close"}
+                  name={(recordingPreparing || listening) && activeSurface === "live" ? "stop" : "close"}
                   size={16}
                   color={Brand.cream}
                 />
