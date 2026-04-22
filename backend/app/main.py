@@ -9,6 +9,7 @@ import sys
 import tempfile
 import requests
 import time
+import openai
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -41,10 +42,6 @@ if str(BACKEND_ROOT) not in sys.path:
 load_dotenv()
 bootstrap_observability()
 patch_openai_client()
-from openai import BadRequestError, OpenAI
-
-from .local_rag_service import LocalRAGService
-from .agentic_service import AgenticService
 
 from config import (
     GENERATED_DOCS_DIR,
@@ -68,7 +65,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_JSON_MODEL = os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini")
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
 
-client: Optional[OpenAI] = None
+client: Optional[openai.OpenAI] = None
 JOB_QUEUE: Optional[DBJobQueue] = None
 VECTOR_STORE = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
 
@@ -130,7 +127,7 @@ def _openai_required_error(operation: str = "This operation") -> HTTPException:
     )
 
 
-def _get_openai_client(*, required: bool = True) -> Optional[OpenAI]:
+def _get_openai_client(*, required: bool = True) -> Optional[openai.OpenAI]:
     global client
 
     if not _is_openai_configured():
@@ -139,7 +136,7 @@ def _get_openai_client(*, required: bool = True) -> Optional[OpenAI]:
         return None
 
     if client is None:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
     return client
 
 
@@ -951,8 +948,6 @@ def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, ans
 # -----------------------------
 # 🔹 ADD YOUR FUNCTION HERE
 # -----------------------------
-import json
-import os
 
 def load_onboarding_profile(user_id: str):
     db_file = os.path.join(os.path.dirname(__file__), "user_database.json")
@@ -1642,7 +1637,7 @@ def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> st
                 file=audio_file,
                 **request_kwargs,
             )
-    except BadRequestError as exc:
+    except openai.BadRequestError as exc:
         if _is_audio_too_short_error(exc):
             raise HTTPException(400, "Audio file is too short. Please record for at least a moment and try again.") from exc
         raise HTTPException(400, _extract_openai_error_message(exc)) from exc
