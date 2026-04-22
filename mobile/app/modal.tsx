@@ -1254,9 +1254,6 @@ export default function SettingsModal() {
             <View style={styles.sectionHeaderRow}>
               <View>
                 <Text style={styles.sectionTitle}>Customise</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Assistant identity settings now live on their own screen so this page stays easier to scan.
-                </Text>
               </View>
             </View>
 

@@ -786,12 +786,8 @@ export default function CustomiseScreen() {
           <GlassCard style={styles.heroCard}>
             <View style={styles.badge}>
               <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
-              <Text style={styles.badgeText}>Assistant preferences</Text>
             </View>
             <Text style={styles.heroTitle}>{displayName}</Text>
-            <Text style={styles.heroSubtitle}>
-              Assistant identity, hands-free mode, wake phrase, and trainer now live together on this customise screen.
-            </Text>
 
             <View style={styles.statsRow}>
               <MetricCard
@@ -829,14 +825,12 @@ export default function CustomiseScreen() {
               <OptionCard
                 icon="briefcase-outline"
                 title="Professional"
-                helper="Sharper, structured replies"
                 active={tone === "pro"}
                 onPress={() => setTone("pro")}
               />
               <OptionCard
                 icon="happy-outline"
                 title="Friendly"
-                helper="Warmer, casual replies"
                 active={tone === "friendly"}
                 onPress={() => setTone("friendly")}
               />
@@ -849,14 +843,12 @@ export default function CustomiseScreen() {
               <OptionCard
                 icon="language-outline"
                 title="Tamil"
-                helper="Localized assistant replies"
                 active={languageMode === "ta"}
                 onPress={() => setLanguageMode("ta")}
               />
               <OptionCard
                 icon="globe-outline"
                 title="English"
-                helper="Global default response mode"
                 active={languageMode === "en"}
                 onPress={() => setLanguageMode("en")}
               />
@@ -864,17 +856,11 @@ export default function CustomiseScreen() {
           </GlassCard>
 
           <GlassCard style={styles.card}>
-            <Text style={styles.sectionTitle}>Hands-free & wake phrase</Text>
-            <Text style={styles.sectionSubtitle}>
-              Voice activation has been moved into the Customise screen itself.
-            </Text>
+            <Text style={styles.sectionTitle}>Hands free</Text>
 
             <View style={styles.switchCard}>
               <View style={{ flex: 1, paddingRight: 12 }}>
                 <Text style={styles.inputLabel}>Hands free</Text>
-                <Text style={styles.helperText}>
-                  Listen for a wake phrase and let voice commands start without tapping.
-                </Text>
               </View>
               <Switch
                 value={handsFreeEnabled}
@@ -896,11 +882,6 @@ export default function CustomiseScreen() {
               <Ionicons name="radio-outline" size={16} color={Brand.ink} />
               <Text style={styles.secondaryBtnText}>Open dedicated wake phrase trainer</Text>
             </Pressable>
-
-            <Text style={styles.noteText}>
-              Opens a dedicated training screen with live listening status, Android diagnostics, and an automatic recorded-audio fallback when Android hears you but returns no text.
-            </Text>
-
             {trainingTranscript ? (
               <View style={styles.captureCard}>
                 <Text style={styles.captureLabel}>Latest captured phrase</Text>
