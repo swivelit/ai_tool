@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +28,8 @@ try:
         AGENT_STATE_DIR,
         AGENTIC_MODE_ENABLED,
         DATA_DIR,
+        ENABLE_TAMIL_VALIDATION,
+        MIN_TAMIL_CHAR_RATIO,
         OPENAI_MODEL,
     )
 except Exception:  # pragma: no cover
@@ -42,6 +45,8 @@ except Exception:  # pragma: no cover
     AGENT_ALIGNMENT_CONFIG_PATH = AGENT_CONFIG_DIR / "alignment_rules.json"
     AGENT_MEMORY_CONFIG_PATH = AGENT_CONFIG_DIR / "memory_rules.json"
     AGENTIC_MODE_ENABLED = True
+    ENABLE_TAMIL_VALIDATION = True
+    MIN_TAMIL_CHAR_RATIO = 0.18
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
 try:
@@ -122,12 +127,16 @@ DEFAULT_MEMORY_CONFIG = {
 }
 
 
+TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
+
+
 class AgenticService:
     def __init__(self, openai_client: Any, local_rag_service: Any) -> None:
         self.client = openai_client
         self.local_rag_service = local_rag_service
         self.model = os.getenv("OPENAI_AGENT_MODEL", os.getenv("OPENAI_JSON_MODEL", OPENAI_MODEL))
         self.enabled = bool(AGENTIC_MODE_ENABLED)
+        self._stage_translator = None
         self._ensure_dirs()
         self._ensure_defaults()
 
@@ -231,6 +240,143 @@ class AgenticService:
     @staticmethod
     def _normalize_lookup_text(text: str) -> str:
         return " ".join(re.findall(r"[a-z0-9_\u0B80-\u0BFF]+", str(text or "").lower()))
+
+    @staticmethod
+    def _contains_tamil(text: str) -> bool:
+        return bool(TAMIL_RE.search(str(text or "")))
+
+    @staticmethod
+    def _tamil_char_ratio(text: str) -> float:
+        text = str(text or "")
+        if not text:
+            return 0.0
+        tamil_count = len(TAMIL_RE.findall(text))
+        alpha_count = len(re.findall(r"[\w\u0B80-\u0BFF]", text))
+        return tamil_count / max(alpha_count, 1)
+
+    def _looks_like_valid_tamil_output(self, text: str) -> bool:
+        text = str(text or "").strip()
+        if not text:
+            return False
+        if not self._contains_tamil(text):
+            return False
+        if ENABLE_TAMIL_VALIDATION and self._tamil_char_ratio(text) < MIN_TAMIL_CHAR_RATIO:
+            return False
+        return True
+
+    def _translation_profile(self, profile: Optional[UserProfile]) -> Dict[str, Any]:
+        answers = self._profile_answers(profile)
+        return {
+            "profile_card": {
+                "tone": str(answers.get("communication_tone", "warm")).strip() or "warm",
+                "answer_length": str(answers.get("answer_length", "balanced")).strip() or "balanced",
+            }
+        }
+
+    def _get_stage_translator(self) -> Any:
+        if self._stage_translator is not None or self.client is None:
+            return self._stage_translator
+
+        backend_root = Path(__file__).resolve().parent.parent
+        if str(backend_root) not in sys.path:
+            sys.path.insert(0, str(backend_root))
+
+        try:
+            from stage_translate import StageTranslator
+        except Exception:
+            return None
+
+        service = self
+
+        class _StageCoreAdapter:
+            def __init__(self, outer: "AgenticService") -> None:
+                self.outer = outer
+
+            def generate_text(
+                self,
+                system_prompt: str,
+                user_prompt: str,
+                *,
+                temperature: float = 0.2,
+                max_output_tokens: int = 900,
+            ) -> str:
+                response = self.outer.client.chat.completions.create(
+                    model=self.outer.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt.strip()},
+                        {"role": "user", "content": user_prompt.strip()},
+                    ],
+                    temperature=temperature,
+                    max_tokens=max_output_tokens,
+                )
+                return self.outer._extract_response_text(response)
+
+        try:
+            self._stage_translator = StageTranslator(_StageCoreAdapter(service))
+        except Exception:
+            self._stage_translator = None
+        return self._stage_translator
+
+    def _resolve_tamil_outputs(
+        self,
+        *,
+        remodeled_english: str,
+        aligned_final_answer: str,
+        profile: Optional[UserProfile],
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        candidate = str(aligned_final_answer or "").strip()
+        translation_meta: Dict[str, Any] = {
+            "reply_language": "ta",
+            "aligned_output": True,
+            "alignment_output": candidate,
+            "alignment_output_valid_tamil": self._looks_like_valid_tamil_output(candidate),
+        }
+        stage_translator = None
+
+        if translation_meta["alignment_output_valid_tamil"]:
+            tamil_text = candidate
+            translation_meta["source"] = "alignment_output"
+        else:
+            tamil_text = ""
+            translation_meta["source"] = "stage_translation_fallback"
+            translation_meta["fallback_reason"] = "alignment_output_not_valid_tamil"
+            stage_translator = self._get_stage_translator()
+            if stage_translator is None:
+                translation_meta["stage_translation"] = {
+                    "skipped": True,
+                    "reason": "stage_translator_unavailable",
+                }
+            else:
+                stage_translation_meta = stage_translator.english_to_tamil_with_meta(
+                    remodeled_english,
+                    self._translation_profile(profile),
+                )
+                tamil_text = str(stage_translation_meta.get("tamil_text", "")).strip()
+                translation_meta["stage_translation"] = stage_translation_meta
+                if not self._looks_like_valid_tamil_output(tamil_text):
+                    tamil_text = ""
+                    translation_meta["translation_failed"] = True
+
+        theni_tamil_text = tamil_text
+        if tamil_text:
+            stage_translator = stage_translator or self._get_stage_translator()
+            if stage_translator is None:
+                translation_meta["theni_conversion"] = {
+                    "applied": False,
+                    "reason": "stage_translator_unavailable",
+                }
+            else:
+                try:
+                    theni_tamil_text = str(stage_translator.tamil_to_thenitamil(tamil_text) or "").strip() or tamil_text
+                    translation_meta["theni_conversion"] = {"applied": True}
+                except Exception as exc:
+                    theni_tamil_text = tamil_text
+                    translation_meta["theni_conversion"] = {
+                        "applied": False,
+                        "error": str(exc),
+                    }
+
+        return tamil_text, theni_tamil_text, translation_meta
 
     def _build_pipeline_result(
         self,
@@ -1264,24 +1410,40 @@ Return ONLY JSON:
         english_answer = str(aligned.get("english_answer", draft_english)).strip() or draft_english
         final_answer = str(aligned.get("final_answer", english_answer)).strip() or english_answer
 
+        tamil_text = ""
+        theni_tamil_text = ""
+        translation_meta: Dict[str, Any] = {"reply_language": resolved_lang, "aligned_output": True}
+        if resolved_lang == "ta":
+            tamil_text, theni_tamil_text, translation_meta = self._resolve_tamil_outputs(
+                remodeled_english=english_answer,
+                aligned_final_answer=final_answer,
+                profile=profile,
+            )
+        else:
+            translation_meta = {"reply_language": resolved_lang, "skipped": True, "reason": "reply_language_is_english"}
+
+        stage_notes = [
+            f"Orchestrator selected route: {route}.",
+            "Alignment agent personalized the final response.",
+        ]
+        if resolved_lang == "ta" and not bool(translation_meta.get("alignment_output_valid_tamil", False)):
+            stage_notes.append("Tamil output was re-generated through the translation stage because the alignment output was not valid Tamil.")
+
         result = self._build_pipeline_result(
             raw_english=draft_english,
             remodeled_english=english_answer,
-            tamil_text=final_answer if resolved_lang == "ta" else "",
-            theni_tamil_text=final_answer if resolved_lang == "ta" else "",
+            tamil_text=tamil_text,
+            theni_tamil_text=theni_tamil_text,
             route_taken=f"agentic_{route}",
             direct_answer_source=f"agentic_{route}",
             direct_answer_confidence=f"{float(classification.get('confidence', 0.0) or 0.0):.4f}",
             predicted_label=route,
             risk_level="low",
-            stage_notes=[
-                f"Orchestrator selected route: {route}.",
-                "Alignment agent personalized the final response.",
-            ],
+            stage_notes=stage_notes,
             core_meta={"classification": classification, "tool_meta": tool_meta},
             remodel_meta={"aligned": aligned},
             review_meta={},
-            translation_meta={"reply_language": resolved_lang, "aligned_output": True},
+            translation_meta=translation_meta,
             timings_ms={"total_ms": round((time.perf_counter() - total_start) * 1000, 2)},
         )
         self.maybe_sync_memory(session, user_id, force=False)
