@@ -57,11 +57,47 @@ class OpenAICore:
         """Safely extracts text from a standard OpenAI ChatCompletion response."""
         try:
             if hasattr(response, "choices") and response.choices:
-                content = response.choices[0].message.content
-                return str(content or "").strip()
+                message = response.choices[0].message
+                content = getattr(message, "content", "")
+                if isinstance(content, str):
+                    return content.strip()
+                if isinstance(content, list):
+                    parts: List[str] = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            parts.append(str(item.get("text", "")))
+                        elif hasattr(item, "type") and getattr(item, "type") == "text":
+                            parts.append(str(getattr(item, "text", "")))
+                    return "".join(parts).strip()
         except Exception:
             pass
         return ""
+
+    @staticmethod
+    def _normalize_response_format(response_format: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not response_format:
+            return {"type": "text"}
+
+        if response_format.get("type") == "json_schema":
+            json_schema = response_format.get("json_schema")
+            if isinstance(json_schema, dict):
+                return {"type": "json_schema", "json_schema": json_schema}
+
+            schema_name = response_format.get("name")
+            schema = response_format.get("schema")
+            if not schema_name or not isinstance(schema, dict):
+                raise ValueError("json_schema response_format requires 'name' and 'schema'.")
+
+            return {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": str(schema_name),
+                    "strict": bool(response_format.get("strict", True)),
+                    "schema": schema,
+                },
+            }
+
+        return response_format
 
     @staticmethod
     def _contains_health_risk(text: str) -> bool:
@@ -116,7 +152,6 @@ class OpenAICore:
         last_error: Optional[Exception] = None
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
-                # Use standard chat.completions.create
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
@@ -125,7 +160,7 @@ class OpenAICore:
                     ],
                     temperature=temperature,
                     max_tokens=max_output_tokens,
-                    response_format=response_format or {"type": "text"},
+                    response_format=self._normalize_response_format(response_format),
                 )
                 text = self._extract_response_text(response)
                 if not text:
@@ -160,7 +195,12 @@ class OpenAICore:
         cached = self._cache_get(key)
         if cached is not None:
             return cached
-        text = self._request_text(system_prompt, user_prompt, temperature=temperature, max_output_tokens=max_output_tokens)
+        text = self._request_text(
+            system_prompt,
+            user_prompt,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
         self._cache_set(key, text)
         return text
 
@@ -259,7 +299,14 @@ Task:
 5. If the query is medically sensitive, stay cautious and recommend professional care for urgent or medication-related issues.
 6. Output JSON following the schema.
 """.strip()
-        data = self.generate_json(system_prompt, user_prompt, "core_answer_result", schema, temperature=RAW_TEMPERATURE, max_output_tokens=1000)
+        data = self.generate_json(
+            system_prompt,
+            user_prompt,
+            "core_answer_result",
+            schema,
+            temperature=RAW_TEMPERATURE,
+            max_output_tokens=1000,
+        )
         answer = str(data.get("answer", "")).strip() or self.answer_user_query(user_query, profile_context)
         return {
             "answer": answer,
@@ -322,7 +369,14 @@ Task:
 - Do not invent facts.
 - Output JSON following the schema.
 """.strip()
-        data = self.generate_json(system_prompt, user_prompt, "answer_review", schema, temperature=REVIEW_TEMPERATURE, max_output_tokens=900)
+        data = self.generate_json(
+            system_prompt,
+            user_prompt,
+            "answer_review",
+            schema,
+            temperature=REVIEW_TEMPERATURE,
+            max_output_tokens=900,
+        )
         keep_original = str(data.get("keep_original", "true")).strip().lower()
         final_answer = answer if keep_original == "true" else (str(data.get("final_answer", "")).strip() or answer)
         return {

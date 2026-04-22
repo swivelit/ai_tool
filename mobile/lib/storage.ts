@@ -11,11 +11,20 @@ export type LanguageMode = "en" | "ta";
 export type AssistantSettings = {
   tone: AssistantTone;
   languageMode: LanguageMode;
+  handsFreeEnabled: boolean;
+  wakePhrase: string;
+  wakeTrainingSamples: string[];
 };
 
 export const DEFAULTS: { name: string; settings: AssistantSettings } = {
   name: "Elli",
-  settings: { tone: "pro", languageMode: "ta" },
+  settings: {
+    tone: "pro",
+    languageMode: "ta",
+    handsFreeEnabled: false,
+    wakePhrase: "Hey Elli",
+    wakeTrainingSamples: [],
+  },
 };
 
 function normalizeLanguageMode(value: unknown): LanguageMode {
@@ -28,6 +37,24 @@ function normalizeLanguageMode(value: unknown): LanguageMode {
   }
 
   return DEFAULTS.settings.languageMode;
+}
+
+function normalizeWakePhrase(value: unknown): string {
+  const trimmed = String(value || "").trim();
+  return trimmed || DEFAULTS.settings.wakePhrase;
+}
+
+function normalizeWakeTrainingSamples(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(
+    new Set(
+      value
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .slice(0, 5)
+    )
+  );
 }
 
 export async function getAssistantName(): Promise<string> {
@@ -47,6 +74,9 @@ export async function getSettings(): Promise<AssistantSettings> {
     return {
       tone: parsed.tone === "friendly" ? "friendly" : DEFAULTS.settings.tone,
       languageMode: normalizeLanguageMode(parsed.languageMode),
+      handsFreeEnabled: Boolean(parsed.handsFreeEnabled),
+      wakePhrase: normalizeWakePhrase(parsed.wakePhrase),
+      wakeTrainingSamples: normalizeWakeTrainingSamples(parsed.wakeTrainingSamples),
     };
   } catch {
     return DEFAULTS.settings;
@@ -57,6 +87,9 @@ export async function setSettings(s: AssistantSettings): Promise<void> {
   const normalized: AssistantSettings = {
     tone: s.tone === "friendly" ? "friendly" : "pro",
     languageMode: normalizeLanguageMode(s.languageMode),
+    handsFreeEnabled: Boolean(s.handsFreeEnabled),
+    wakePhrase: normalizeWakePhrase(s.wakePhrase),
+    wakeTrainingSamples: normalizeWakeTrainingSamples(s.wakeTrainingSamples),
   };
 
   await AsyncStorage.setItem(KEYS.settings, JSON.stringify(normalized));

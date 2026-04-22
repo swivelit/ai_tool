@@ -59,6 +59,7 @@ from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
+from .openwakeword_api import router as openwakeword_router  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ JOB_QUEUE: Optional[DBJobQueue] = None
 VECTOR_STORE = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
 
 app = FastAPI(title="J AI Backend")
+app.include_router(openwakeword_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1263,8 +1265,10 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
             f"Added {int(rag_context_meta.get('snippet_count', 0))} advanced RAG snippet(s) from user memory and cache."
         )
 
+    stage_remodeler = _get_stage_remodeler()
+
     t0 = time.perf_counter()
-    direct_match = STAGE_REMODELER.get_direct_answer_match(message)
+    direct_match = stage_remodeler.get_direct_answer_match(message)
     timings["direct_match_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
     core_meta: Dict[str, Any] = {
@@ -1293,7 +1297,6 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         stage_notes.append("Used a high-confidence direct answer from the local dataset.")
     else:
         stage_core = _get_stage_core()
-        stage_remodeler = _get_stage_remodeler()
 
         t0 = time.perf_counter()
         core_meta = stage_core.answer_user_query_structured(message, profile_context)
@@ -1604,17 +1607,40 @@ def _is_audio_too_short_error(exc: Exception) -> bool:
     return "audio file is too short" in str(exc).lower()
 
 
-def _transcribe_audio_file(file_path: str) -> str:
+def _normalize_audio_language(language: Optional[str]) -> Optional[str]:
+    value = str(language or "").strip().lower()
+    if not value:
+        return None
+
+    # Let the transcription model auto-detect when requested.
+    if value in {"auto", "detect", "auto-detect", "autodetect"}:
+        return None
+
+    if value.startswith("ta"):
+        return "ta"
+    if value.startswith("en"):
+        return "en"
+    return None
+
+
+def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> str:
+    normalized_language = _normalize_audio_language(language)
+
     try:
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 0:
             raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
 
+        request_kwargs: Dict[str, Any] = {
+            "model": "whisper-1",
+            "response_format": "json",
+        }
+        if normalized_language:
+            request_kwargs["language"] = normalized_language
+
         with open(file_path, "rb") as audio_file:
             transcript_obj = _get_openai_client().audio.transcriptions.create(
-                model="whisper-1",
                 file=audio_file,
-                response_format="json",
-                language="ta",
+                **request_kwargs,
             )
     except BadRequestError as exc:
         if _is_audio_too_short_error(exc):
@@ -2228,6 +2254,7 @@ def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_se
 async def transcribe_and_analyze(
     user_id: Optional[int] = None,
     reply_language: Optional[str] = None,
+    speech_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
@@ -2237,8 +2264,19 @@ async def transcribe_and_analyze(
         tmp_path = tmp.name
 
     try:
-        transcript_text = _transcribe_audio_file(tmp_path)
-        pipeline_result = _run_agentic_or_pipeline(session, user_id, transcript_text, reply_language)
+        # IMPORTANT:
+        # reply_language controls the assistant's reply language.
+        # speech_language controls STT only.
+        # If speech_language is not provided, Whisper auto-detects the spoken language.
+        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
+
+        pipeline_result = _run_agentic_or_pipeline(
+            session,
+            user_id,
+            transcript_text,
+            reply_language,
+        )
+
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=user_id,
@@ -2248,6 +2286,7 @@ async def transcribe_and_analyze(
             pipeline_result=pipeline_result,
             reply_language=reply_language,
         )
+
         response = item_to_response(item).model_dump()
         response["assistant"] = {
             "text": item.details or transcript_text,
@@ -2269,6 +2308,7 @@ async def transcribe_and_analyze(
 async def api_transcribe_and_analyze(
     user_id: Optional[int] = None,
     reply_language: Optional[str] = None,
+    speech_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
@@ -2278,8 +2318,19 @@ async def api_transcribe_and_analyze(
         tmp_path = tmp.name
 
     try:
-        transcript_text = _transcribe_audio_file(tmp_path)
-        pipeline_result = _run_stage_pipeline(session, user_id, transcript_text, reply_language)
+        # IMPORTANT:
+        # reply_language controls the assistant's reply language.
+        # speech_language controls STT only.
+        # If speech_language is not provided, Whisper auto-detects the spoken language.
+        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
+
+        pipeline_result = _run_stage_pipeline(
+            session,
+            user_id,
+            transcript_text,
+            reply_language,
+        )
+
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=user_id,
@@ -2297,21 +2348,85 @@ async def api_transcribe_and_analyze(
             pass
 
 
+@app.post("/wake-phrase/transcribe")
+@app.post("/api/wake-phrase/transcribe")
+async def transcribe_wake_phrase(
+    language: Optional[str] = Query(default=None),
+    locale: Optional[str] = Query(default=None),
+    file: UploadFile = File(...),
+):
+    suffix = os.path.splitext(file.filename)[-1] or ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        transcript_text = _transcribe_audio_file(tmp_path, language or locale)
+        return {
+            "ok": True,
+            "transcript": transcript_text,
+            "language": _normalize_audio_language(language or locale),
+        }
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+def _require_positive_user_id(user_id: Optional[int]) -> int:
+    if user_id is None or int(user_id) <= 0:
+        raise HTTPException(400, "user_id is required")
+    return int(user_id)
+
+
 @app.get("/items", response_model=List[TextAnalysisResponse])
-def list_items(session: Session = Depends(get_session), user_id: Optional[int] = None):
-    query = select(Item).order_by(Item.created_at.desc())
-    if user_id is not None:
-        query = query.where(Item.user_id == user_id)
+def list_items(
+    session: Session = Depends(get_session),
+    user_id: Optional[int] = Query(default=None),
+):
+    resolved_user_id = _require_positive_user_id(user_id)
+    query = (
+        select(Item)
+        .where(Item.user_id == resolved_user_id)
+        .order_by(Item.created_at.desc())
+    )
     items = session.exec(query).all()
     return [item_to_response(i) for i in items]
 
 
 @app.get("/items/{item_id}", response_model=TextAnalysisResponse)
-def get_item(item_id: int, session: Session = Depends(get_session)):
-    item = session.get(Item, item_id)
+def get_item(
+    item_id: int,
+    session: Session = Depends(get_session),
+    user_id: Optional[int] = Query(default=None),
+):
+    resolved_user_id = _require_positive_user_id(user_id)
+    item = session.exec(
+        select(Item).where(Item.id == item_id, Item.user_id == resolved_user_id)
+    ).first()
     if not item:
         raise HTTPException(404, "Item not found")
     return item_to_response(item)
+
+
+@app.delete("/items/{item_id}")
+def delete_item(
+    item_id: int,
+    user_id: Optional[int] = Query(default=None),
+    session: Session = Depends(get_session),
+):
+    resolved_user_id = _require_positive_user_id(user_id)
+    item = session.exec(
+        select(Item).where(Item.id == item_id, Item.user_id == resolved_user_id)
+    ).first()
+    if not item:
+        raise HTTPException(404, "Item not found")
+
+    session.delete(item)
+    session.commit()
+
+    return {"ok": True, "id": item_id}
 
 
 DOCS_BASE_DIR = Path(GENERATED_DOCS_DIR).resolve()

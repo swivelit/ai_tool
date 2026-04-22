@@ -35,6 +35,10 @@ info() {
   printf "\n▶ %s\n" "$1"
 }
 
+warn() {
+  printf "\n⚠️  %s\n" "$1"
+}
+
 fail() {
   printf "\n❌ %s\n" "$1"
   exit 1
@@ -83,7 +87,12 @@ cd "$MOBILE_DIR"
 
 info "Installing mobile dependencies"
 if [[ -f package-lock.json ]]; then
-  npm ci
+  if npm ci; then
+    info "Dependencies installed with npm ci"
+  else
+    warn "package-lock.json is out of sync with package.json. Falling back to npm install to refresh the lockfile."
+    npm install
+  fi
 else
   npm install
 fi

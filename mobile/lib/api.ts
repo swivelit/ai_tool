@@ -56,6 +56,7 @@ let featureFlagsCache: FeatureFlagPayload["flags"] | null = null;
 let featureFlagsFetchedAt = 0;
 
 type ReplyLanguage = "en" | "ta";
+type SpeechLanguage = "en" | "ta" | null;
 
 type LocalVoiceTranscription = {
   text: string;
@@ -124,9 +125,74 @@ function safeJsonParse<T>(raw: string, fallback: T): T {
   }
 }
 
+const UTC_TIMESTAMP_KEYS = new Set([
+  "created_at",
+  "updated_at",
+  "timestamp",
+  "createdAt",
+  "updatedAt",
+  "started_at",
+  "finished_at",
+  "startedAt",
+  "finishedAt",
+  "saved_at",
+  "last_sync_at",
+  "lastSyncAt",
+  "run_at",
+  "runAt",
+]);
+
+function normalizeUtcTimestampString(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return raw;
+
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw)) {
+    return `${raw}Z`;
+  }
+
+  return raw;
+}
+
+function normalizeBackendDates<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeBackendDates(entry)) as T;
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const normalized: Record<string, any> = {};
+
+  Object.entries(value as Record<string, any>).forEach(([key, entryValue]) => {
+    if (typeof entryValue === "string" && UTC_TIMESTAMP_KEYS.has(key)) {
+      normalized[key] = normalizeUtcTimestampString(entryValue);
+      return;
+    }
+
+    normalized[key] = normalizeBackendDates(entryValue);
+  });
+
+  return normalized as T;
+}
+
+function normalizeTranscriptText(value: unknown) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isPunctuationOnlyTranscript(value: string) {
+  const normalized = normalizeTranscriptText(value);
+  if (!normalized) return true;
+
+  const alphanumeric = normalized.replace(/[^\p{L}\p{N}]+/gu, "");
+  return alphanumeric.length === 0;
+}
+
 function extractTranscriptText(payload: any) {
   if (!payload) return "";
-  if (typeof payload === "string") return payload.trim();
+  if (typeof payload === "string") return normalizeTranscriptText(payload);
 
   const direct =
     payload.text ||
@@ -136,10 +202,10 @@ function extractTranscriptText(payload: any) {
     payload.result ||
     payload.message;
 
-  if (typeof direct === "string") return direct.trim();
+  if (typeof direct === "string") return normalizeTranscriptText(direct);
 
   if (Array.isArray(direct)) {
-    return direct
+    const joined = direct
       .map((item) =>
         typeof item === "string"
           ? item
@@ -147,16 +213,18 @@ function extractTranscriptText(payload: any) {
           ? item.text
           : ""
       )
-      .join(" ")
-      .trim();
+      .join(" ");
+
+    return normalizeTranscriptText(joined);
   }
 
   if (Array.isArray(payload.segments)) {
-    return payload.segments
+    const joined = payload.segments
       .map((segment: any) => String(segment?.text || "").trim())
       .filter(Boolean)
-      .join(" ")
-      .trim();
+      .join(" ");
+
+    return normalizeTranscriptText(joined);
   }
 
   return "";
@@ -196,7 +264,7 @@ async function getFeatureFlags(forceRefresh = false) {
   try {
     const res = await fetch(buildUrl("/api/flags"));
     if (!res.ok) throw new Error(`flags ${res.status}`);
-    const payload = (await res.json()) as FeatureFlagPayload;
+    const payload = normalizeBackendDates((await res.json()) as FeatureFlagPayload);
     featureFlagsCache = payload?.flags || null;
     featureFlagsFetchedAt = now;
     return featureFlagsCache;
@@ -206,13 +274,12 @@ async function getFeatureFlags(forceRefresh = false) {
 }
 
 async function shouldUseLocalVoicePipeline() {
-  const flags = await getFeatureFlags();
-  const voiceRoutingMode = String(flags?.voiceRoutingMode || "").toLowerCase();
-
-  if (voiceRoutingMode === "local") return true;
-  if (voiceRoutingMode === "backend") return false;
-
-  return USE_LOCAL_VOICE_PIPELINE_DEFAULT;
+  // Voice uploads must go to the backend STT endpoint.
+  // The current phone-local /audio/transcriptions path is returning
+  // non-speech hallucinations for short inputs like "hello", which is why
+  // the user bubble can show unrelated sentences instead of the spoken text.
+  // Keep local chat routing intact, but force voice routing to backend.
+  return false;
 }
 
 function isTranscribeAndAnalyzePath(path: string) {
@@ -221,6 +288,24 @@ function isTranscribeAndAnalyzePath(path: string) {
     normalized.startsWith("/transcribe-and-analyze") ||
     normalized.startsWith("/api/transcribe-and-analyze")
   );
+}
+
+function normalizeVoiceAnalyzePath(path: string) {
+  const normalized = String(path || "").trim();
+  if (!normalized) return "/api/transcribe-and-analyze";
+
+  if (normalized.startsWith("/api/transcribe-and-analyze")) {
+    return normalized;
+  }
+
+  if (normalized.startsWith("/transcribe-and-analyze")) {
+    return normalized.replace(
+      "/transcribe-and-analyze",
+      "/api/transcribe-and-analyze"
+    );
+  }
+
+  return normalized;
 }
 
 function formatIntentLabel(value?: string | null) {
@@ -234,13 +319,26 @@ function formatIntentLabel(value?: string | null) {
     .join(" ");
 }
 
+function normalizeSpeechLanguage(value: unknown): SpeechLanguage {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (!normalized) return null;
+  if (["auto", "detect", "auto-detect", "autodetect"].includes(normalized)) {
+    return null;
+  }
+  if (normalized.startsWith("ta")) return "ta";
+  if (normalized.startsWith("en")) return "en";
+
+  return null;
+}
+
 async function transcribeAudioLocally(
   fileUri: string,
-  replyLanguage: ReplyLanguage
+  speechLanguage?: unknown
 ): Promise<LocalVoiceTranscription> {
   const startedAt = Date.now();
   const baseCandidates = localApiCandidates(LOCAL_MODEL_BASE_URL);
-  const language = replyLanguage === "ta" ? "ta" : "en";
+  const normalizedSpeechLanguage = normalizeSpeechLanguage(speechLanguage);
 
   let lastError = "";
 
@@ -254,7 +352,9 @@ async function transcribeAudioLocally(
       type: "audio/m4a",
     } as any);
     form.append("model", LOCAL_STT_MODEL);
-    form.append("language", language);
+    if (normalizedSpeechLanguage) {
+      form.append("language", normalizedSpeechLanguage);
+    }
     form.append("temperature", "0");
     form.append("response_format", "json");
 
@@ -274,7 +374,7 @@ async function transcribeAudioLocally(
       }
 
       const payload = safeJsonParse<any>(rawText, rawText);
-      const transcript = extractTranscriptText(payload);
+      const transcript = normalizeTranscriptText(extractTranscriptText(payload));
 
       if (!transcript) {
         lastError = `Local STT model "${LOCAL_STT_MODEL}" returned an empty transcript.`;
@@ -306,6 +406,7 @@ async function handleLocalTranscribeAndAnalyze(
   const fileUri = String(file?.uri || "").trim();
   const userIdRaw = parseQueryParam(path, "user_id");
   const replyLanguageRaw = parseQueryParam(path, "reply_language");
+  const speechLanguageRaw = parseQueryParam(path, "speech_language");
 
   if (!fileUri) {
     throw new Error("Audio file was missing from the voice request.");
@@ -316,18 +417,38 @@ async function handleLocalTranscribeAndAnalyze(
     throw new Error("Valid user_id is required for local voice routing.");
   }
 
-  const replyLanguage: ReplyLanguage =
-    replyLanguageRaw === "en" ? "en" : "ta";
+  const replyLanguage: ReplyLanguage = replyLanguageRaw === "en" ? "en" : "ta";
+  const requestedSpeechLanguage = normalizeSpeechLanguage(speechLanguageRaw);
+  const resolvedSpeechLanguage: SpeechLanguage = requestedSpeechLanguage || replyLanguage;
 
-  const transcript = await transcribeAudioLocally(fileUri, replyLanguage);
-  if (!transcript.text.trim()) {
+  let transcript = await transcribeAudioLocally(fileUri, resolvedSpeechLanguage);
+
+  if (isPunctuationOnlyTranscript(transcript.text) && resolvedSpeechLanguage) {
+    try {
+      const autodetectTranscript = await transcribeAudioLocally(fileUri, null);
+      if (!isPunctuationOnlyTranscript(autodetectTranscript.text)) {
+        transcript = autodetectTranscript;
+      }
+    } catch {
+      // Keep the primary result so the user still gets the original STT failure if both attempts fail.
+    }
+  }
+
+  const normalizedTranscriptText = normalizeTranscriptText(transcript.text);
+  if (!normalizedTranscriptText) {
     throw new Error("Local STT returned an empty transcript.");
+  }
+
+  if (isPunctuationOnlyTranscript(normalizedTranscriptText)) {
+    throw new Error(
+      "Speech was recorded, but the transcript only contained punctuation. Please speak a little closer to the mic and try again."
+    );
   }
 
   const { runLocalAssistantTurn } = await import("./localAgents");
   const turn = await runLocalAssistantTurn({
     userId,
-    message: transcript.text,
+    message: normalizedTranscriptText,
     replyLanguage,
   });
 
@@ -335,8 +456,8 @@ async function handleLocalTranscribeAndAnalyze(
     id: Date.now(),
     intent: turn.intent === "reminder" ? "reminder" : "assistant",
     category: "Other",
-    raw_text: transcript.text,
-    transcript: transcript.text,
+    raw_text: normalizedTranscriptText,
+    transcript: normalizedTranscriptText,
     datetime: turn.datetimeText || null,
     title:
       turn.intent === "reminder"
@@ -400,11 +521,9 @@ export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(buildUrl(path));
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
-    );
+    throw new Error(`GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`);
   }
-  return res.json();
+  return normalizeBackendDates((await res.json()) as T);
 }
 
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
@@ -428,31 +547,34 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
-    );
+    throw new Error(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`);
   }
-  return res.json();
+  return normalizeBackendDates((await res.json()) as T);
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
-  if ((await shouldUseLocalVoicePipeline()) && isTranscribeAndAnalyzePath(path)) {
-    return (await handleLocalTranscribeAndAnalyze(path, form)) as T;
+  const resolvedPath = isTranscribeAndAnalyzePath(path)
+    ? normalizeVoiceAnalyzePath(path)
+    : path;
+
+  if (
+    (await shouldUseLocalVoicePipeline()) &&
+    isTranscribeAndAnalyzePath(resolvedPath)
+  ) {
+    return (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;
   }
 
-  const res = await fetch(buildUrl(path), {
+  const res = await fetch(buildUrl(resolvedPath), {
     method: "POST",
     body: form,
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
-    );
+    throw new Error(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`);
   }
 
-  return res.json();
+  return normalizeBackendDates((await res.json()) as T);
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
@@ -465,7 +587,7 @@ export async function apiDelete<T>(path: string): Promise<T> {
       `DELETE ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
     );
   }
-  return res.json();
+  return normalizeBackendDates((await res.json()) as T);
 }
 
 export { getFeatureFlags };

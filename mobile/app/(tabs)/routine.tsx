@@ -109,8 +109,6 @@ export default function RoutineScreen() {
     settings,
     profile,
     refresh,
-    updateName,
-    updateSettings,
   } = useAssistant();
 
   const [resolvedUserId, setResolvedUserId] = useState<number | null>(
@@ -126,12 +124,6 @@ export default function RoutineScreen() {
     daily_habits: "Gym, Water, Reading",
   });
 
-  const [assistantNameInput, setAssistantNameInput] = useState(name || "Elli");
-  const [tone, setTone] = useState<"pro" | "friendly">(settings.tone);
-  const [languageMode, setLanguageMode] = useState<"en" | "ta">(
-    settings.languageMode
-  );
-
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
@@ -139,27 +131,15 @@ export default function RoutineScreen() {
   const [deleting, setDeleting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [savingRoutine, setSavingRoutine] = useState(false);
-  const [savingPreferences, setSavingPreferences] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
 
   const isSmallPhone = width < 370 || height < 760;
   const isVerySmallPhone = width < 345 || height < 700;
+  const isCompactSettingsLayout = width < 390;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 6 : 10);
   const bottomPadding = Math.max(insets.bottom + 28, 28);
-  const heroTitleSize = isVerySmallPhone ? 24 : isSmallPhone ? 28 : 33;
-  const heroTitleLineHeight = heroTitleSize + 6;
-
-  useEffect(() => {
-    setAssistantNameInput(name || "Elli");
-  }, [name]);
-
-  useEffect(() => {
-    setTone(settings.tone);
-    setLanguageMode(settings.languageMode);
-  }, [settings.languageMode, settings.tone]);
-
   const accountName = useMemo(
     () => resolvedProfile?.name || profile?.name || "Not set",
     [resolvedProfile, profile?.name]
@@ -184,11 +164,6 @@ export default function RoutineScreen() {
 
   const targetUserId =
     resolvedUserId || userId || profile?.userId || resolvedProfile?.userId || null;
-
-  const preferencesDirty =
-    assistantNameInput.trim() !== (name || "Elli").trim() ||
-    tone !== settings.tone ||
-    languageMode !== settings.languageMode;
 
   const sleepHours = useMemo(
     () => computeSleepHours(routine.wake_time, routine.sleep_time),
@@ -394,44 +369,6 @@ export default function RoutineScreen() {
     }
   }
 
-  async function savePreferences() {
-    const trimmedName = assistantNameInput.trim();
-
-    if (savingPreferences) return;
-
-    if (trimmedName.length < 2) {
-      showNotice("Invalid name", "Assistant name should be at least 2 characters.");
-      return;
-    }
-
-    try {
-      setSavingPreferences(true);
-
-      if (trimmedName !== (name || "Elli").trim()) {
-        await updateName(trimmedName);
-      }
-
-      if (tone !== settings.tone || languageMode !== settings.languageMode) {
-        await updateSettings({
-          tone,
-          languageMode,
-        });
-      }
-
-      await refresh();
-      showNotice(
-        "Preferences saved",
-        "Your assistant preferences have been updated successfully."
-      );
-    } catch (error: any) {
-      showNotice(
-        "Save failed",
-        error?.message || "Could not save assistant preferences."
-      );
-    } finally {
-      setSavingPreferences(false);
-    }
-  }
 
   async function saveRoutine() {
     if (!resolvedUserId) {
@@ -523,17 +460,10 @@ export default function RoutineScreen() {
             </Pressable>
 
             <View style={styles.topCenter}>
-              <Text style={styles.topCaption}>Home</Text>
               <Text style={styles.topTitle}>Settings</Text>
             </View>
 
-            <Pressable style={styles.topIconBtn} onPress={handleSignOut} disabled={signingOut}>
-              {signingOut ? (
-                <ActivityIndicator size="small" color={Brand.cocoa} />
-              ) : (
-                <Ionicons name="log-out-outline" size={18} color={Brand.cocoa} />
-              )}
-            </Pressable>
+            <View style={styles.topIconBtn} />
           </View>
 
           <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
@@ -579,80 +509,52 @@ export default function RoutineScreen() {
             <View style={styles.sectionHeaderRow}>
               <View>
                 <Text style={styles.sectionTitle}>Customise</Text>
-              </View>
-            </View>
-
-            <Field
-              label="Assistant name"
-              value={assistantNameInput}
-              onChangeText={setAssistantNameInput}
-              placeholder="Elli"
-            />
-
-            <View style={{ marginTop: 18 }}>
-              <Text style={styles.fieldLabel}>Tone</Text>
-              <View style={styles.choiceRow}>
-                <ChoiceCard
-                  label="Professional"
-                  helper="Sharper, structured replies"
-                  icon="briefcase-outline"
-                  active={tone === "pro"}
-                  onPress={() => setTone("pro")}
-                />
-                <ChoiceCard
-                  label="Friendly"
-                  helper="Warmer, casual replies"
-                  icon="happy-outline"
-                  active={tone === "friendly"}
-                  onPress={() => setTone("friendly")}
-                />
-              </View>
-            </View>
-
-            <View style={{ marginTop: 18 }}>
-              <Text style={styles.fieldLabel}>Reply language</Text>
-              <View style={styles.choiceRow}>
-                <ChoiceCard
-                  label="Tamil"
-                  helper="Localized assistant replies"
-                  icon="language-outline"
-                  active={languageMode === "ta"}
-                  onPress={() => setLanguageMode("ta")}
-                />
-                <ChoiceCard
-                  label="English"
-                  helper="Global default response mode"
-                  icon="globe-outline"
-                  active={languageMode === "en"}
-                  onPress={() => setLanguageMode("en")}
-                />
+                <Text style={styles.sectionSubtitle}>
+                  Keep assistant identity controls on their own screen to reduce clutter here.
+                </Text>
               </View>
             </View>
 
             <Pressable
-              onPress={savePreferences}
-              disabled={savingPreferences || !preferencesDirty}
-              style={({ pressed }) => [
-                styles.primaryButtonShell,
-                (!preferencesDirty || savingPreferences) && styles.disabled,
-                pressed && styles.pressed,
-              ]}
+              onPress={() => router.push("/customise")}
+              style={({ pressed }) => [styles.accountHeroCard, pressed && styles.pressed]}
             >
-              <LinearGradient
-                colors={Brand.gradients.button}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.primaryButton}
-              >
-                {savingPreferences ? (
-                  <ActivityIndicator color={Brand.ink} />
-                ) : (
-                  <>
-                    <Text style={styles.primaryButtonText}>Save</Text>
-                  </>
-                )}
-              </LinearGradient>
+              <View style={styles.accountAvatar}>
+                <Ionicons name="color-palette-outline" size={22} color={Brand.ink} />
+              </View>
+
+              <View style={{ flex: 1 }}>
+                <Text style={styles.accountName}>{`Customise (${name || "Elli"})`}</Text>
+                <Text style={styles.accountMeta}>
+                  Assistant name, tone, and reply language
+                </Text>
+              </View>
+
+              <Ionicons name="chevron-forward" size={18} color={Brand.cocoa} />
             </Pressable>
+
+            <View style={styles.infoGrid}>
+              <InfoCard
+                label="Assistant name"
+                value={name || "Elli"}
+                icon="sparkles-outline"
+              />
+              <InfoCard
+                label="Tone"
+                value={settings.tone === "friendly" ? "Friendly" : "Professional"}
+                icon="briefcase-outline"
+              />
+              <InfoCard
+                label="Language"
+                value={settings.languageMode === "ta" ? "Tamil" : "English"}
+                icon="language-outline"
+              />
+              <InfoCard
+                label="Manage"
+                value="Open customise screen"
+                icon="open-outline"
+              />
+            </View>
           </GlassCard>
 
           <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
@@ -670,22 +572,42 @@ export default function RoutineScreen() {
                 </Text>
               </View>
 
-              <View style={{ flex: 1 }}>
+              <View style={styles.accountHeroContent}>
                 <Text style={styles.accountName}>{accountName}</Text>
-                <Text style={styles.accountEmail} numberOfLines={1}>
+                <Text style={styles.accountEmail} numberOfLines={isCompactSettingsLayout ? 2 : 1}>
                   {user?.email || "No email attached"}
                 </Text>
-                <Text style={styles.accountMeta} numberOfLines={1}>
+                <Text style={styles.accountMeta} numberOfLines={isCompactSettingsLayout ? 2 : 1}>
                   {accountPlace} · {accountTimezone}
                 </Text>
               </View>
             </View>
 
             <View style={styles.infoGrid}>
-              <InfoCard label="Name" value={accountName} icon="person-outline" />
-              <InfoCard label="Email" value={user?.email || "Not set"} icon="mail-outline" />
-              <InfoCard label="Place" value={accountPlace} icon="location-outline" />
-              <InfoCard label="Timezone" value={accountTimezone} icon="earth-outline" />
+              <InfoCard
+                label="Name"
+                value={accountName}
+                icon="person-outline"
+                fullWidth={isCompactSettingsLayout}
+              />
+              <InfoCard
+                label="Email"
+                value={user?.email || "Not set"}
+                icon="mail-outline"
+                fullWidth={isCompactSettingsLayout}
+              />
+              <InfoCard
+                label="Place"
+                value={accountPlace}
+                icon="location-outline"
+                fullWidth={isCompactSettingsLayout}
+              />
+              <InfoCard
+                label="Timezone"
+                value={accountTimezone}
+                icon="earth-outline"
+                fullWidth={isCompactSettingsLayout}
+              />
             </View>
 
             <View style={styles.inlineStatusRow}>
@@ -765,9 +687,6 @@ export default function RoutineScreen() {
             <View style={styles.sectionHeaderRow}>
               <View>
                 <Text style={styles.sectionTitle}>Daily routine</Text>
-                <Text style={styles.sectionSubtitle}>
-                  Turn your natural daily rhythm into structured planning defaults.
-                </Text>
               </View>
               <SectionPill label="Routine" />
             </View>
@@ -987,18 +906,20 @@ function InfoCard({
   label,
   value,
   icon,
+  fullWidth = false,
 }: {
   label: string;
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
+  fullWidth?: boolean;
 }) {
   return (
-    <View style={styles.infoCard}>
+    <View style={[styles.infoCard, fullWidth && styles.infoCardFullWidth]}>
       <View style={styles.infoCardIconWrap}>
         <Ionicons name={icon} size={15} color={Brand.bronze} />
       </View>
       <Text style={styles.infoCardLabel}>{label}</Text>
-      <Text style={styles.infoCardValue} numberOfLines={2}>
+      <Text style={styles.infoCardValue} numberOfLines={fullWidth ? 3 : 2}>
         {value}
       </Text>
     </View>
@@ -1371,10 +1292,11 @@ const styles = StyleSheet.create({
 
   sectionHeaderRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 12,
-  },
+  },  
 
   sectionTitle: {
     color: Brand.ink,
@@ -1562,6 +1484,11 @@ const styles = StyleSheet.create({
     borderColor: Brand.line,
   },
 
+  accountHeroContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+
   accountAvatar: {
     width: 54,
     height: 54,
@@ -1600,12 +1527,14 @@ const styles = StyleSheet.create({
   infoGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
+    justifyContent: "space-between",
     gap: 10,
     marginTop: 16,
   },
 
   infoCard: {
-    width: "48.5%",
+    width: "48%",
+    minWidth: 150,
     minHeight: 106,
     borderRadius: 20,
     padding: 14,
@@ -1645,8 +1574,14 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
 
+  infoCardFullWidth: {
+    width: "100%",
+    minWidth: "100%",
+  },
+  
   statusChip: {
     minHeight: 38,
+    maxWidth: "100%",
     paddingHorizontal: 12,
     borderRadius: 999,
     flexDirection: "row",
@@ -1666,6 +1601,7 @@ const styles = StyleSheet.create({
   },
 
   statusChipText: {
+    flexShrink: 1,
     fontSize: 12,
     fontWeight: "800",
   },
