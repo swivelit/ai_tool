@@ -1409,9 +1409,9 @@ async function localChatText(
 
 async function embedTexts(texts: string[]) {
   const cfg = await getModelConfig();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
     const res = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/embeddings`, {
       method: "POST",
       headers: {
@@ -1424,7 +1424,6 @@ async function embedTexts(texts: string[]) {
       }),
       signal: controller.signal,
     });
-    clearTimeout(timer);
     if (!res.ok) throw new Error(`Embedding HTTP ${res.status}`);
     const json = await res.json();
     const data = Array.isArray(json?.data) ? json.data : [];
@@ -1436,6 +1435,8 @@ async function embedTexts(texts: string[]) {
     );
   } catch {
     return texts.map((text) => hashEmbedding(text));
+  } finally {
+    clearTimeout(timer);
   }
 }
 
