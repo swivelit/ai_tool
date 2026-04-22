@@ -69,7 +69,6 @@ export default {
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.harishajahan.tamilai",
-      googleServicesFile: "./GoogleService-Info.plist",
     },
 
     android: {
