@@ -871,7 +871,8 @@ Rules:
 2. If it's a bite, tell them how to clean it.
 3. If it's a break, tell them how to stabilize it.
 4. If it's a snake, tell them to stay still.
-5. End with 'I have alerted your emergency contacts.'
+5. Do not claim you contacted emergency services, emergency contacts, or sent any alert.
+6. If urgent help is needed, tell the user to call local emergency services or ask a nearby person to call.
 
 Keep it very short and actionable.
 """,
@@ -880,7 +881,7 @@ Keep it very short and actionable.
             )
             return advice
         except Exception:
-            return "Emergency detected. Please stay calm. 1) Apply pressure if bleeding. 2) Do not move the injured area. 3) Find someone nearby. I have signaled for help."
+            return "Emergency detected. Please stay calm. 1) Apply pressure if bleeding. 2) Do not move the injured area. 3) Call local emergency services now or ask someone nearby to call for you."
 
     def _tool_web_search(self, message: str) -> str:
         query = str(message or "").strip()
@@ -1244,7 +1245,7 @@ Return ONLY JSON:
             try:
                 draft_english = self._tool_emergency(message, user)
             except Exception:
-                draft_english = "I have signaled for help. Please stay calm and try to find assistance immediately."
+                draft_english = "Please stay calm and call local emergency services now, or ask someone nearby to call for you immediately."
         else:
             pipeline_result = pipeline_runner(session, user_id, message, resolved_lang)
             self.maybe_sync_memory(session, user_id, force=False)
