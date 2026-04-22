@@ -1383,11 +1383,11 @@ export default function Home() {
       return;
     }
 
+    const cleaned = stripAssistantTrigger(rawMessage);
+    if (!cleaned.trim()) return;
+
     try {
       setBusy(true);
-
-      const cleaned = stripAssistantTrigger(rawMessage);
-      if (!cleaned.trim()) return;
 
       if (source === "text") {
         setText("");
