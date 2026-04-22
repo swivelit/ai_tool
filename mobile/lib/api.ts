@@ -176,9 +176,23 @@ function normalizeBackendDates<T>(value: T): T {
   return normalized as T;
 }
 
+function normalizeTranscriptText(value: unknown) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isPunctuationOnlyTranscript(value: string) {
+  const normalized = normalizeTranscriptText(value);
+  if (!normalized) return true;
+
+  const alphanumeric = normalized.replace(/[^\p{L}\p{N}]+/gu, "");
+  return alphanumeric.length === 0;
+}
+
 function extractTranscriptText(payload: any) {
   if (!payload) return "";
-  if (typeof payload === "string") return payload.trim();
+  if (typeof payload === "string") return normalizeTranscriptText(payload);
 
   const direct =
     payload.text ||
@@ -188,10 +202,10 @@ function extractTranscriptText(payload: any) {
     payload.result ||
     payload.message;
 
-  if (typeof direct === "string") return direct.trim();
+  if (typeof direct === "string") return normalizeTranscriptText(direct);
 
   if (Array.isArray(direct)) {
-    return direct
+    const joined = direct
       .map((item) =>
         typeof item === "string"
           ? item
@@ -199,16 +213,18 @@ function extractTranscriptText(payload: any) {
           ? item.text
           : ""
       )
-      .join(" ")
-      .trim();
+      .join(" ");
+
+    return normalizeTranscriptText(joined);
   }
 
   if (Array.isArray(payload.segments)) {
-    return payload.segments
+    const joined = payload.segments
       .map((segment: any) => String(segment?.text || "").trim())
       .filter(Boolean)
-      .join(" ")
-      .trim();
+      .join(" ");
+
+    return normalizeTranscriptText(joined);
   }
 
   return "";
@@ -359,7 +375,7 @@ async function transcribeAudioLocally(
       }
 
       const payload = safeJsonParse<any>(rawText, rawText);
-      const transcript = extractTranscriptText(payload);
+      const transcript = normalizeTranscriptText(extractTranscriptText(payload));
 
       if (!transcript) {
         lastError = `Local STT model "${LOCAL_STT_MODEL}" returned an empty transcript.`;
@@ -403,16 +419,37 @@ async function handleLocalTranscribeAndAnalyze(
   }
 
   const replyLanguage: ReplyLanguage = replyLanguageRaw === "en" ? "en" : "ta";
+  const requestedSpeechLanguage = normalizeSpeechLanguage(speechLanguageRaw);
+  const resolvedSpeechLanguage: SpeechLanguage = requestedSpeechLanguage || replyLanguage;
 
-  const transcript = await transcribeAudioLocally(fileUri, speechLanguageRaw);
-  if (!transcript.text.trim()) {
+  let transcript = await transcribeAudioLocally(fileUri, resolvedSpeechLanguage);
+
+  if (isPunctuationOnlyTranscript(transcript.text) && resolvedSpeechLanguage) {
+    try {
+      const autodetectTranscript = await transcribeAudioLocally(fileUri, null);
+      if (!isPunctuationOnlyTranscript(autodetectTranscript.text)) {
+        transcript = autodetectTranscript;
+      }
+    } catch {
+      // Keep the primary result so the user still gets the original STT failure if both attempts fail.
+    }
+  }
+
+  const normalizedTranscriptText = normalizeTranscriptText(transcript.text);
+  if (!normalizedTranscriptText) {
     throw new Error("Local STT returned an empty transcript.");
+  }
+
+  if (isPunctuationOnlyTranscript(normalizedTranscriptText)) {
+    throw new Error(
+      "Speech was recorded, but the transcript only contained punctuation. Please speak a little closer to the mic and try again."
+    );
   }
 
   const { runLocalAssistantTurn } = await import("./localAgents");
   const turn = await runLocalAssistantTurn({
     userId,
-    message: transcript.text,
+    message: normalizedTranscriptText,
     replyLanguage,
   });
 
@@ -420,8 +457,8 @@ async function handleLocalTranscribeAndAnalyze(
     id: Date.now(),
     intent: turn.intent === "reminder" ? "reminder" : "assistant",
     category: "Other",
-    raw_text: transcript.text,
-    transcript: transcript.text,
+    raw_text: normalizedTranscriptText,
+    transcript: normalizedTranscriptText,
     datetime: turn.datetimeText || null,
     title:
       turn.intent === "reminder"
