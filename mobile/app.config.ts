@@ -1,5 +1,3 @@
-import "dotenv/config";
-
 const APP_SCHEME = "com.harishajahan.tamilai";
 
 export default {
