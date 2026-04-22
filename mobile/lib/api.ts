@@ -274,13 +274,12 @@ async function getFeatureFlags(forceRefresh = false) {
 }
 
 async function shouldUseLocalVoicePipeline() {
-  const flags = await getFeatureFlags();
-  const voiceRoutingMode = String(flags?.voiceRoutingMode || "").toLowerCase();
-
-  if (voiceRoutingMode === "local") return true;
-  if (voiceRoutingMode === "backend") return false;
-
-  return USE_LOCAL_VOICE_PIPELINE_DEFAULT;
+  // Voice uploads must go to the backend STT endpoint.
+  // The current phone-local /audio/transcriptions path is returning
+  // non-speech hallucinations for short inputs like "hello", which is why
+  // the user bubble can show unrelated sentences instead of the spoken text.
+  // Keep local chat routing intact, but force voice routing to backend.
+  return false;
 }
 
 function isTranscribeAndAnalyzePath(path: string) {
