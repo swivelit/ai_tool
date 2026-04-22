@@ -56,6 +56,7 @@ let featureFlagsCache: FeatureFlagPayload["flags"] | null = null;
 let featureFlagsFetchedAt = 0;
 
 type ReplyLanguage = "en" | "ta";
+type SpeechLanguage = "en" | "ta" | null;
 
 type LocalVoiceTranscription = {
   text: string;
@@ -303,13 +304,26 @@ function formatIntentLabel(value?: string | null) {
     .join(" ");
 }
 
+function normalizeSpeechLanguage(value: unknown): SpeechLanguage {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (!normalized) return null;
+  if (["auto", "detect", "auto-detect", "autodetect"].includes(normalized)) {
+    return null;
+  }
+  if (normalized.startsWith("ta")) return "ta";
+  if (normalized.startsWith("en")) return "en";
+
+  return null;
+}
+
 async function transcribeAudioLocally(
   fileUri: string,
-  replyLanguage: ReplyLanguage
+  speechLanguage?: unknown
 ): Promise<LocalVoiceTranscription> {
   const startedAt = Date.now();
   const baseCandidates = localApiCandidates(LOCAL_MODEL_BASE_URL);
-  const language = replyLanguage === "ta" ? "ta" : "en";
+  const normalizedSpeechLanguage = normalizeSpeechLanguage(speechLanguage);
 
   let lastError = "";
 
@@ -323,7 +337,9 @@ async function transcribeAudioLocally(
       type: "audio/m4a",
     } as any);
     form.append("model", LOCAL_STT_MODEL);
-    form.append("language", language);
+    if (normalizedSpeechLanguage) {
+      form.append("language", normalizedSpeechLanguage);
+    }
     form.append("temperature", "0");
     form.append("response_format", "json");
 
@@ -375,6 +391,7 @@ async function handleLocalTranscribeAndAnalyze(
   const fileUri = String(file?.uri || "").trim();
   const userIdRaw = parseQueryParam(path, "user_id");
   const replyLanguageRaw = parseQueryParam(path, "reply_language");
+  const speechLanguageRaw = parseQueryParam(path, "speech_language");
 
   if (!fileUri) {
     throw new Error("Audio file was missing from the voice request.");
@@ -387,7 +404,7 @@ async function handleLocalTranscribeAndAnalyze(
 
   const replyLanguage: ReplyLanguage = replyLanguageRaw === "en" ? "en" : "ta";
 
-  const transcript = await transcribeAudioLocally(fileUri, replyLanguage);
+  const transcript = await transcribeAudioLocally(fileUri, speechLanguageRaw);
   if (!transcript.text.trim()) {
     throw new Error("Local STT returned an empty transcript.");
   }
