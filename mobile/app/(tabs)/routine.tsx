@@ -136,6 +136,7 @@ export default function RoutineScreen() {
 
   const isSmallPhone = width < 370 || height < 760;
   const isVerySmallPhone = width < 345 || height < 700;
+  const isCompactSettingsLayout = width < 390;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 6 : 10);
   const bottomPadding = Math.max(insets.bottom + 28, 28);
@@ -571,22 +572,42 @@ export default function RoutineScreen() {
                 </Text>
               </View>
 
-              <View style={{ flex: 1 }}>
+              <View style={styles.accountHeroContent}>
                 <Text style={styles.accountName}>{accountName}</Text>
-                <Text style={styles.accountEmail} numberOfLines={1}>
+                <Text style={styles.accountEmail} numberOfLines={isCompactSettingsLayout ? 2 : 1}>
                   {user?.email || "No email attached"}
                 </Text>
-                <Text style={styles.accountMeta} numberOfLines={1}>
+                <Text style={styles.accountMeta} numberOfLines={isCompactSettingsLayout ? 2 : 1}>
                   {accountPlace} · {accountTimezone}
                 </Text>
               </View>
             </View>
 
             <View style={styles.infoGrid}>
-              <InfoCard label="Name" value={accountName} icon="person-outline" />
-              <InfoCard label="Email" value={user?.email || "Not set"} icon="mail-outline" />
-              <InfoCard label="Place" value={accountPlace} icon="location-outline" />
-              <InfoCard label="Timezone" value={accountTimezone} icon="earth-outline" />
+              <InfoCard
+                label="Name"
+                value={accountName}
+                icon="person-outline"
+                fullWidth={isCompactSettingsLayout}
+              />
+              <InfoCard
+                label="Email"
+                value={user?.email || "Not set"}
+                icon="mail-outline"
+                fullWidth={isCompactSettingsLayout}
+              />
+              <InfoCard
+                label="Place"
+                value={accountPlace}
+                icon="location-outline"
+                fullWidth={isCompactSettingsLayout}
+              />
+              <InfoCard
+                label="Timezone"
+                value={accountTimezone}
+                icon="earth-outline"
+                fullWidth={isCompactSettingsLayout}
+              />
             </View>
 
             <View style={styles.inlineStatusRow}>
@@ -885,18 +906,20 @@ function InfoCard({
   label,
   value,
   icon,
+  fullWidth = false,
 }: {
   label: string;
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
+  fullWidth?: boolean;
 }) {
   return (
-    <View style={styles.infoCard}>
+    <View style={[styles.infoCard, fullWidth && styles.infoCardFullWidth]}>
       <View style={styles.infoCardIconWrap}>
         <Ionicons name={icon} size={15} color={Brand.bronze} />
       </View>
       <Text style={styles.infoCardLabel}>{label}</Text>
-      <Text style={styles.infoCardValue} numberOfLines={2}>
+      <Text style={styles.infoCardValue} numberOfLines={fullWidth ? 3 : 2}>
         {value}
       </Text>
     </View>
@@ -1269,10 +1292,11 @@ const styles = StyleSheet.create({
 
   sectionHeaderRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 12,
-  },
+  },  
 
   sectionTitle: {
     color: Brand.ink,
@@ -1460,6 +1484,11 @@ const styles = StyleSheet.create({
     borderColor: Brand.line,
   },
 
+  accountHeroContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+
   accountAvatar: {
     width: 54,
     height: 54,
@@ -1498,12 +1527,14 @@ const styles = StyleSheet.create({
   infoGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
+    justifyContent: "space-between",
     gap: 10,
     marginTop: 16,
   },
 
   infoCard: {
-    width: "48.5%",
+    width: "48%",
+    minWidth: 150,
     minHeight: 106,
     borderRadius: 20,
     padding: 14,
@@ -1543,8 +1574,14 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
 
+  infoCardFullWidth: {
+    width: "100%",
+    minWidth: "100%",
+  },
+  
   statusChip: {
     minHeight: 38,
+    maxWidth: "100%",
     paddingHorizontal: 12,
     borderRadius: 999,
     flexDirection: "row",
@@ -1564,6 +1601,7 @@ const styles = StyleSheet.create({
   },
 
   statusChipText: {
+    flexShrink: 1,
     fontSize: 12,
     fontWeight: "800",
   },
