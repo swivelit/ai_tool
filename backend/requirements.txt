@@ -48,3 +48,4 @@ psycopg[binary]
 alembic==1.17.2
 sentry-sdk[fastapi]==2.20.0
 pgvector==0.3.6
+pytest
