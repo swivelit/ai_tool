@@ -7,6 +7,9 @@ import os
 import re
 import sys
 import tempfile
+import threading
+from collections import OrderedDict
+
 import requests
 import time
 import openai
@@ -106,6 +109,43 @@ def _include_optional_legacy_onboarding_router() -> None:
 # Legacy compatibility route. Phone-local onboarding is the primary runtime path.
 _include_optional_legacy_onboarding_router()
 
+class ThreadSafeLRUCache:
+    def __init__(self, max_size: int = 128):
+        self.max_size = max(1, int(max_size))
+        self._data: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get_copy(self, key: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            value = self._data.get(key)
+            if value is None:
+                return None
+            self._data.move_to_end(key)
+            return dict(value)
+
+    def set(self, key: str, value: Dict[str, Any]) -> None:
+        with self._lock:
+            if key in self._data:
+                self._data.move_to_end(key)
+            self._data[key] = dict(value)
+            if len(self._data) > self.max_size:
+                self._data.popitem(last=False)
+
+    def pop(self, key: str, default: Optional[Any] = None) -> Optional[Any]:
+        with self._lock:
+            return self._data.pop(key, default)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+
+    def delete_prefix(self, prefix: str) -> None:
+        with self._lock:
+            keys_to_delete = [key for key in self._data if key.startswith(prefix)]
+            for key in keys_to_delete:
+                self._data.pop(key, None)
+
+
 STAGE_BEHAVIOUR = BehaviourQuestionnaire()
 LOCAL_RAG_SERVICE = LocalRAGService()
 STAGE_CORE: Optional[OpenAICore] = None
@@ -113,7 +153,7 @@ STAGE_REMODELER: Optional[EnglishRemodeler] = None
 STAGE_TRANSLATOR: Optional[StageTranslator] = None
 AGENTIC_SERVICE: Optional[AgenticService] = None
 SAFETY_FILTER: Optional[BehaviouralRAGFilter] = None
-STAGE_CACHE: Dict[str, Dict[str, Any]] = {}
+STAGE_CACHE = ThreadSafeLRUCache(max_size=128)
 
 
 def _is_openai_configured() -> bool:
@@ -1214,8 +1254,8 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
     resolved_reply_language = _normalize_reply_language(reply_language or (pipeline_user.reply_language if pipeline_user else None))
     uid = str(user_id or "guest")
     cache_key = f"{uid}:{resolved_reply_language}::{' '.join(message.strip().lower().split())}"
-    if cache_key in STAGE_CACHE:
-        cached = dict(STAGE_CACHE[cache_key])
+    cached = STAGE_CACHE.get_copy(cache_key)
+    if cached is not None:
         cached["cache_hit"] = "true"
         return cached
 
@@ -1228,10 +1268,7 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
 
         # Only accept strong answers from valid sources (90% threshold)
         if confidence >= 0.90 and source not in ["", "unknown"]:
-            STAGE_CACHE[cache_key] = dict(fast_path)
-            if len(STAGE_CACHE) > 128:
-                first_key = next(iter(STAGE_CACHE))
-                STAGE_CACHE.pop(first_key, None)
+            STAGE_CACHE.set(cache_key, fast_path)
             return fast_path
         else:
             print(f"[DEBUG] Fast-path skipped (Confidence: {confidence:.2f}, Source: {source}). Falling back to OpenAI.")
@@ -1395,10 +1432,7 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
     }
 
     _log_stage_history(user_id, profile, message, result)
-    STAGE_CACHE[cache_key] = dict(result)
-    if len(STAGE_CACHE) > 128:
-        first_key = next(iter(STAGE_CACHE))
-        STAGE_CACHE.pop(first_key, None)
+    STAGE_CACHE.set(cache_key, result)
     return result
 
 
@@ -1855,9 +1889,7 @@ def delete_user_account(user_id: int, session: Session = Depends(get_session)):
         except Exception as exc:
             print(f"[WARN] Failed to delete stage file for user {user_id}: {exc}")
 
-    keys_to_delete = [key for key in STAGE_CACHE if key.startswith(f"{user_id}:")]
-    for key in keys_to_delete:
-        STAGE_CACHE.pop(key, None)
+    STAGE_CACHE.delete_prefix(f"{user_id}:")
 
     return {"ok": True, "deleted_user_id": user_id}
 
