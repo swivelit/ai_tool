@@ -1004,6 +1004,21 @@ function trainingSamplesPath(agent = "general") {
   return `${TRAINING_DIR}/${safe}.jsonl`;
 }
 
+const fileMutationQueues = new Map<string, Promise<unknown>>();
+
+function queueFileMutation<T>(lockKey: string, task: () => Promise<T>): Promise<T> {
+  const previous = fileMutationQueues.get(lockKey) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(task);
+  const settled = run.catch(() => undefined);
+  fileMutationQueues.set(lockKey, settled);
+  settled.finally(() => {
+    if (fileMutationQueues.get(lockKey) === settled) {
+      fileMutationQueues.delete(lockKey);
+    }
+  });
+  return run;
+}
+
 function answerValueCount(answers: Record<string, any>) {
   return Object.values(answers).filter((value) =>
     Array.isArray(value) ? value.length > 0 : String(value || "").trim().length > 0
@@ -1297,6 +1312,19 @@ async function saveSemanticCacheStore(store: SemanticCacheStore, rules?: MemoryR
   } satisfies SemanticCacheStore);
 }
 
+async function updateSemanticCacheStore(
+  userId: number | undefined,
+  rules: MemoryRules | undefined,
+  mutator: (store: SemanticCacheStore) => void | Promise<void>
+) {
+  return queueFileMutation(semanticCacheStorePath(), async () => {
+    const store = await loadSemanticCacheStore(userId);
+    await mutator(store);
+    await saveSemanticCacheStore(store, rules);
+    return store;
+  });
+}
+
 async function loadRagChunks(userId: number) {
   const profilePayload = await readJson<{ chunks?: LocalRagChunk[] }>(profileRagPath(userId), { chunks: [] });
   const docChunks = await readJson<LocalRagChunk[]>(ragChunksPath(userId), []);
@@ -1313,8 +1341,26 @@ async function loadRagChunks(userId: number) {
   return Array.from(byId.values());
 }
 
-async function saveRagChunks(userId: number, rows: LocalRagChunk[]) {
+async function saveRagChunksUnlocked(userId: number, rows: LocalRagChunk[]) {
   await writeJson(ragChunksPath(userId), rows.slice(-1000));
+}
+
+async function saveRagChunks(userId: number, rows: LocalRagChunk[]) {
+  await queueFileMutation(ragChunksPath(userId), async () => {
+    await saveRagChunksUnlocked(userId, rows);
+  });
+}
+
+async function updateRagChunks(
+  userId: number,
+  mutator: (rows: LocalRagChunk[]) => LocalRagChunk[] | Promise<LocalRagChunk[]>
+) {
+  return queueFileMutation(ragChunksPath(userId), async () => {
+    const existing = await readJson<LocalRagChunk[]>(ragChunksPath(userId), []);
+    const nextRows = await mutator(Array.isArray(existing) ? existing : []);
+    await saveRagChunksUnlocked(userId, nextRows);
+    return nextRows;
+  });
 }
 
 async function loadDurableFacts(userId: number) {
@@ -1337,8 +1383,14 @@ async function appendProfileUpdate(userId: number, row: ProfileUpdateRecord) {
   await appendJsonl(profileUpdatesPath(userId), row);
 }
 
-async function saveMemoryChunks(userId: number, rows: LocalRagChunk[]) {
+async function saveMemoryChunksUnlocked(userId: number, rows: LocalRagChunk[]) {
   await writeJson(memoryChunksPath(userId), rows.slice(-600));
+}
+
+async function saveMemoryChunks(userId: number, rows: LocalRagChunk[]) {
+  await queueFileMutation(memoryChunksPath(userId), async () => {
+    await saveMemoryChunksUnlocked(userId, rows);
+  });
 }
 
 function extractCompletionText(json: any) {
@@ -1747,9 +1799,10 @@ async function persistProfileArtifacts(
     updatedAt,
   };
   await writeJson(profileRagPath(userId), profileRagRecord);
-  const existingRuntimeChunks = await readJson<LocalRagChunk[]>(ragChunksPath(userId), []);
-  const preserved = existingRuntimeChunks.filter((chunk) => !String(chunk.sourceId || "").startsWith("profile:"));
-  await saveRagChunks(userId, [...preserved, ...chunks]);
+  await updateRagChunks(userId, async (existingRuntimeChunks) => {
+    const preserved = existingRuntimeChunks.filter((chunk) => !String(chunk.sourceId || "").startsWith("profile:"));
+    return [...preserved, ...chunks];
+  });
 }
 
 export async function upsertLocalRagChunks(
@@ -1762,8 +1815,6 @@ export async function upsertLocalRagChunks(
   const cleanTexts = texts.map((text) => String(text || "").trim()).filter(Boolean);
   if (!cleanTexts.length) return [] as LocalRagChunk[];
   const embeddings = await embedTexts(cleanTexts);
-  const existing = await readJson<LocalRagChunk[]>(ragChunksPath(userId), []);
-  const filtered = existing.filter((row) => row.sourceId !== sourceId);
   const createdAt = nowIso();
   const nextRows: LocalRagChunk[] = cleanTexts.map((text, index) => ({
     id: `${sourceId}_${index}_${simpleHash(text)}`,
@@ -1774,7 +1825,10 @@ export async function upsertLocalRagChunks(
     metadata: opts?.metadata || {},
     updatedAt: createdAt,
   }));
-  await saveRagChunks(userId, [...filtered, ...nextRows]);
+  await updateRagChunks(userId, async (existing) => {
+    const filtered = existing.filter((row) => row.sourceId !== sourceId);
+    return [...filtered, ...nextRows];
+  });
   await safeRecordTrainingSample("rag", {
     input: cleanTexts.join("\n"),
     label: "upsert",
@@ -2946,9 +3000,9 @@ async function recordSemanticCacheHit(
   hit: SemanticCacheHitRecord
 ) {
   const rules = await getMemoryRules();
-  const store = await loadSemanticCacheStore(userId);
-  store.hits.push(hit);
-  await saveSemanticCacheStore(store, rules);
+  await updateSemanticCacheStore(userId, rules, async (store) => {
+    store.hits.push(hit);
+  });
 }
 
 async function writeSemanticCache(
@@ -2963,7 +3017,6 @@ async function writeSemanticCache(
   const rules = await getMemoryRules();
   const skipRoutes = rules.cache?.skipRoutes || [];
   if (skipRoutes.includes(route)) return;
-  const store = await loadSemanticCacheStore(userId);
   const [embedding] = await embedTexts([question]);
   const ttlHours = positiveInt(rules.cache?.ttlHours, 168);
   const createdAt = nowIso();
@@ -2984,15 +3037,11 @@ async function writeSemanticCache(
     expiresAt,
     alignmentProfile,
   };
-  const filtered = store.entries.filter((row) => row.id !== newEntry.id);
-  filtered.push(newEntry);
-  await saveSemanticCacheStore(
-    {
-      ...store,
-      entries: filtered,
-    },
-    rules
-  );
+  await updateSemanticCacheStore(userId, rules, async (store) => {
+    const filtered = store.entries.filter((row) => row.id !== newEntry.id);
+    filtered.push(newEntry);
+    store.entries = filtered;
+  });
 }
 
 async function buildMemoryConsolidation(
