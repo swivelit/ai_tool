@@ -9,7 +9,8 @@ import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timedelta 
+from datetime import datetime, timedelta, timezone
+
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -118,6 +119,18 @@ FAST_RAG_STRONG_MATCH_THRESHOLD = _env_float("FAST_RAG_STRONG_MATCH_THRESHOLD", 
 FAST_RAG_PREFIX_MATCH_THRESHOLD = _env_float("FAST_RAG_PREFIX_MATCH_THRESHOLD", 0.965)
 FAST_RAG_CACHE_MATCH_THRESHOLD = _env_float("FAST_RAG_CACHE_MATCH_THRESHOLD", 0.94)
 FAST_RAG_MAX_CACHE_ROWS = max(5, _env_int("FAST_RAG_MAX_CACHE_ROWS", 40))
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _coerce_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 DEFAULT_FAST_RAG_ROWS = [
@@ -612,7 +625,7 @@ class LocalRAGService:
                         content_text=content_text,
                         embedding_json=json.dumps(vec, ensure_ascii=False),
                         embedding_norm=norm,
-                        updated_at=updated_at or datetime.utcnow(),
+                        updated_at=_coerce_utc(updated_at) or _utc_now(),
                     )
                 )
                 session.commit()
@@ -630,7 +643,7 @@ class LocalRAGService:
                     content_hash=content_hash,
                     content_text=content_text,
                     embedding=vec,
-                    updated_at=updated_at or datetime.utcnow(),
+                    updated_at=_coerce_utc(updated_at) or _utc_now(),
                 )
             except Exception:
                 try:
@@ -790,8 +803,11 @@ class LocalRAGService:
     def _recency_score(self, updated_at: Optional[datetime]) -> float:
         if not isinstance(updated_at, datetime):
             return 0.5
-        now = datetime.utcnow()
-        age_days = max(0.0, (now - updated_at.replace(tzinfo=None) if updated_at.tzinfo else now - updated_at).total_seconds() / 86400.0)
+        now = _utc_now()
+        updated_at_utc = _coerce_utc(updated_at)
+        if updated_at_utc is None:
+            return 0.5
+        age_days = max(0.0, (now - updated_at_utc).total_seconds() / 86400.0)
         half_life = max(0.1, float(RAG_RECENCY_HALF_LIFE_DAYS or 14.0))
         return math.exp(-math.log(2.0) * (age_days / half_life))
 
@@ -1022,7 +1038,7 @@ class LocalRAGService:
         dt = str(item.datetime_str or "").strip()
         parts = [p for p in [title, raw_text, details, dt] if p]
         text = " | ".join(parts)
-        return str(item.id or ""), text, item.updated_at or item.created_at or datetime.utcnow()
+        return str(item.id or ""), text, item.updated_at or item.created_at or _utc_now()
 
     def _candidate_from_conversation(self, row: Conversation) -> Tuple[str, str, datetime]:
         user_text = str(row.user_input or "").strip()
@@ -1038,7 +1054,7 @@ class LocalRAGService:
                     answer_parts.append(value)
                     break
         text = " | ".join([p for p in [user_text, *answer_parts] if p])
-        return str(row.id or ""), text, row.created_at or datetime.utcnow()
+        return str(row.id or ""), text, row.created_at or _utc_now()
 
     def _candidate_from_cache(self, row: QACache) -> Tuple[str, str, datetime]:
         question = str(row.question or "").strip()
@@ -1051,7 +1067,7 @@ class LocalRAGService:
             answer = str(payload.get("remodeled_english") or payload.get("raw_english") or payload.get("tamil_text") or "").strip()
         if not answer:
             answer = str(row.answer or "").strip()
-        return str(row.id or ""), f"{question} | {answer}", row.updated_at or datetime.utcnow()
+        return str(row.id or ""), f"{question} | {answer}", row.updated_at or _utc_now()
 
     def _candidate_from_routine(self, routine: DailyRoutine) -> Tuple[str, str, datetime]:
         text = (
@@ -1059,20 +1075,20 @@ class LocalRAGService:
             f"Work: {routine.work_start or 'not set'} to {routine.work_end or 'not set'}. "
             f"Habits: {routine.daily_habits or 'not set'}."
         )
-        return str(routine.id or routine.user_id), text, routine.updated_at or datetime.utcnow()
+        return str(routine.id or routine.user_id), text, routine.updated_at or _utc_now()
 
     def _candidate_from_profile(self, profile: UserProfile) -> Tuple[str, str, datetime]:
         summary = str(profile.profile_summary or "").strip()
         answers = str(profile.answers_json or "").strip()
         text = " | ".join(p for p in [summary, answers] if p)
-        return str(profile.id or profile.user_id), text, profile.updated_at or datetime.utcnow()
+        return str(profile.id or profile.user_id), text, profile.updated_at or _utc_now()
 
     def _candidate_from_user(self, user: User) -> Tuple[str, str, datetime]:
         text = (
             f"User profile. Name: {user.name}. Place: {user.place or 'not set'}. "
             f"Timezone: {user.timezone or 'Asia/Kolkata'}. Assistant: {user.assistant_name or 'Ellie'}."
         )
-        return str(user.id or ""), text, user.created_at or datetime.utcnow()
+        return str(user.id or ""), text, user.created_at or _utc_now()
 
     def build_rag_context(self, session: Session, user_id: Optional[int], message: str) -> Dict[str, Any]:
         t0 = time.perf_counter()
@@ -1099,7 +1115,7 @@ class LocalRAGService:
                     query_embedding=query_embedding[0],
                     limit=max(4, int(RAG_TOP_K) * 2),
                 ):
-                    updated_at = row.get("updated_at") or datetime.utcnow()
+                    updated_at = row.get("updated_at") or _utc_now()
                     recency = self._recency_score(updated_at)
                     semantic = float(row.get("score_semantic", 0.0) or 0.0)
                     score = semantic * 0.88 + recency * 0.12

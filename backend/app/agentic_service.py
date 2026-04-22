@@ -4,7 +4,7 @@ import json
 import os
 import re
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
@@ -48,6 +48,14 @@ try:
     from stage_behaviour_questions import QUESTIONS as DEFAULT_QUESTIONS
 except Exception:  # pragma: no cover
     DEFAULT_QUESTIONS = []
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().isoformat().replace("+00:00", "Z")
+
 
 DEFAULT_PROFILER_SCHEMA = {
     "version": 1,
@@ -382,7 +390,7 @@ class AgenticService:
         answers = self._profile_answers(profile)
         snapshot = {
             "user_id": user_id,
-            "saved_at": datetime.utcnow().isoformat() + "Z",
+            "saved_at": _utc_now_iso(),
             "user": {
                 "name": user.name if user else "",
                 "place": user.place if user else "",
@@ -452,7 +460,7 @@ Return plain text only.
         if completed:
             profile.profile_summary = self._summarize_profile(merged, user, routine)
 
-        profile.updated_at = datetime.utcnow()
+        profile.updated_at = _utc_now()
         session.add(profile)
         session.commit()
         session.refresh(profile)
@@ -470,7 +478,7 @@ Return plain text only.
                     ),
                     transcript=None,
                     llm_output_json=json.dumps({"source": "profiler_agent"}, ensure_ascii=False),
-                    created_at=datetime.utcnow(),
+                    created_at=_utc_now(),
                 )
             )
             session.commit()
@@ -498,7 +506,7 @@ Return plain text only.
     def start_profiler(self, session: Session, user_id: int) -> Dict[str, Any]:
         state = self._read_state(user_id, "profiler", {"history": [], "status": "idle"})
         state["status"] = "active"
-        state["started_at"] = state.get("started_at") or (datetime.utcnow().isoformat() + "Z")
+        state["started_at"] = state.get("started_at") or (_utc_now_iso())
         self._write_state(user_id, "profiler", state)
 
         current = self.get_profiler_state(session, user_id)
@@ -597,8 +605,8 @@ Return ONLY JSON:
 
         history.extend(
             [
-                {"role": "user", "text": message, "at": datetime.utcnow().isoformat() + "Z"},
-                {"role": "assistant", "text": assistant_reply, "at": datetime.utcnow().isoformat() + "Z"},
+                {"role": "user", "text": message, "at": _utc_now_iso()},
+                {"role": "assistant", "text": assistant_reply, "at": _utc_now_iso()},
             ]
         )
         state.update(
@@ -606,7 +614,7 @@ Return ONLY JSON:
                 "status": "completed" if completed else "active",
                 "history": history[-20:],
                 "last_confidence": float(llm_out.get("confidence", 0.0) or 0.0),
-                "updated_at": datetime.utcnow().isoformat() + "Z",
+                "updated_at": _utc_now_iso(),
             }
         )
         self._write_state(user_id, "profiler", state)
@@ -614,7 +622,7 @@ Return ONLY JSON:
         self._append_jsonl(
             Path(AGENT_LOGS_DIR) / f"profiler_{user_id}.jsonl",
             {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": _utc_now_iso(),
                 "user_id": user_id,
                 "message": message,
                 "assistant_reply": assistant_reply,
@@ -1040,8 +1048,12 @@ Return ONLY JSON:
 
         if not force and last_sync_at:
             try:
-                last = datetime.fromisoformat(last_sync_at.replace("Z", "+00:00")).replace(tzinfo=None)
-                elapsed = datetime.utcnow() - last
+                last = datetime.fromisoformat(last_sync_at.replace("Z", "+00:00"))
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                else:
+                    last = last.astimezone(timezone.utc)
+                elapsed = _utc_now() - last
                 if elapsed < timedelta(minutes=min_gap_minutes):
                     return {"ok": False, "reason": "cooldown"}
             except Exception:
@@ -1134,7 +1146,7 @@ Return ONLY JSON:
                     user_input=f"Memory summary: {memory_text}" if memory_text else "Memory sync completed.",
                     transcript=None,
                     llm_output_json=json.dumps({"source": "memory_agent", "facts": facts}, ensure_ascii=False),
-                    created_at=datetime.utcnow(),
+                    created_at=_utc_now(),
                 )
             )
             session.commit()
@@ -1142,7 +1154,7 @@ Return ONLY JSON:
         self._append_jsonl(
             Path(AGENT_MEMORY_DIR) / f"{user_id}_{date.today().isoformat()}.jsonl",
             {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": _utc_now_iso(),
                 "user_id": user_id,
                 "summary": summary,
                 "facts": facts,
@@ -1154,7 +1166,7 @@ Return ONLY JSON:
 
         state.update(
             {
-                "last_sync_at": datetime.utcnow().isoformat() + "Z",
+                "last_sync_at": _utc_now_iso(),
                 "last_sync_conversation_id": max(int(row.id or 0) for row in rows),
                 "last_summary": summary,
                 "last_facts": facts,

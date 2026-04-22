@@ -13,7 +13,7 @@ from collections import OrderedDict
 import requests
 import time
 import openai
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -62,6 +62,14 @@ from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
 from .openwakeword_api import router as openwakeword_router  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().isoformat().replace("+00:00", "Z")
+
 
 PERSONALITY_QUESTIONS_VERSION = 1
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
@@ -956,7 +964,7 @@ def log_conversation(
         user_input=user_input,
         transcript=transcript,
         llm_output_json=json.dumps(llm_json_out, ensure_ascii=False) if llm_json_out else None,
-        created_at=datetime.utcnow(),
+        created_at=_utc_now(),
     )
     session.add(row)
     session.commit()
@@ -970,7 +978,7 @@ def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, ans
     if row:
         row.answer = json.dumps(answer_json, ensure_ascii=False)
         row.hits = (row.hits or 0) + 1
-        row.updated_at = datetime.utcnow()
+        row.updated_at = _utc_now()
         session.add(row)
         session.commit()
         return
@@ -980,7 +988,7 @@ def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, ans
             question=question,
             answer=json.dumps(answer_json, ensure_ascii=False),
             hits=1,
-            updated_at=datetime.utcnow(),
+            updated_at=_utc_now(),
         )
     )
     session.commit()
@@ -1124,7 +1132,7 @@ def _sync_stage_profile(session: Session, user_id: Optional[int]) -> Dict[str, A
     profile = {
         "profile_version": "ai_tool_db_bridge",
         "user_id": uid,
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": _utc_now_iso(),
         "answers": answers,
         "behaviour_rules": STAGE_BEHAVIOUR._derive_behaviour_rules(answers),
         "rag_personality_hints": STAGE_BEHAVIOUR._infer_personality_rag_from_answers(answers),
@@ -1175,7 +1183,7 @@ def _log_stage_history(user_id: Optional[int], profile: Dict[str, Any], query: s
     uid = str(user_id or "guest")
     log_path = LOGS_DIR / f"{uid}_history.jsonl"
     record = {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": _utc_now_iso(),
         "user_id": uid,
         "query": query,
         "profile_summary": profile.get("profile_summary", ""),
@@ -1532,8 +1540,8 @@ def _save_item_from_pipeline(
         details=spoken_answer,
         source=source,
         user_id=user_id,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=_utc_now(),
+        updated_at=_utc_now(),
     )
     session.add(item)
     session.commit()
@@ -1684,7 +1692,7 @@ def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> st
 
 @app.post("/parse-datetime")
 def parse_datetime(payload: ParseDatetimeRequest):
-    now_iso = payload.now_iso or datetime.utcnow().isoformat()
+    now_iso = payload.now_iso or _utc_now_iso()
     user_content = json.dumps({"timezone": payload.timezone, "now": now_iso, "text": payload.text}, ensure_ascii=False)
     out = llm_json(PARSE_DT_PROMPT, user_content, temperature=0.0)
     return {
@@ -1718,7 +1726,7 @@ def _ensure_user_profile(session: Session, user_id: int) -> UserProfile:
         user_id=user_id,
         answers_json=json.dumps({}, ensure_ascii=False),
         questions_version=PERSONALITY_QUESTIONS_VERSION,
-        updated_at=datetime.utcnow(),
+        updated_at=_utc_now(),
     )
     session.add(profile)
     session.commit()
@@ -2214,7 +2222,7 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
         routine.work_start = work_start
         routine.work_end = work_end
         routine.daily_habits = daily_habits
-        routine.updated_at = datetime.utcnow()
+        routine.updated_at = _utc_now()
     else:
         routine = DailyRoutine(
             user_id=user_id,
@@ -2223,7 +2231,7 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
             work_start=work_start,
             work_end=work_end,
             daily_habits=daily_habits,
-            updated_at=datetime.utcnow(),
+            updated_at=_utc_now(),
         )
         session.add(routine)
     session.commit()
