@@ -260,6 +260,7 @@ export default function SettingsModal() {
   const trainingAudioCapturedRef = useRef(false);
   const trainingPendingRecordedAudioFallbackRef = useRef(false);
   const trainingCheckingRecordedAudioRef = useRef(false);
+  const trainingDiagnosticsCheckingRef = useRef(false);
 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -418,55 +419,65 @@ export default function SettingsModal() {
 
   async function refreshTrainingDiagnostics() {
     if (Platform.OS !== "android") return;
+    if (trainingDiagnosticsCheckingRef.current) return;
 
+    trainingDiagnosticsCheckingRef.current = true;
     setTrainingDiagnostics((prev) => ({ ...prev, checking: true }));
 
+    let nextDiagnostics: AndroidTrainingDiagnostics | null = null;
     let defaultService = "";
     let availableServices: string[] = [];
     let supportsOnDevice = false;
     let installedLocales: string[] = [];
 
     try {
-      defaultService =
-        String(ExpoSpeechRecognitionModule.getDefaultRecognitionService?.()?.packageName || "").trim();
-    } catch {
-      defaultService = "";
-    }
-
-    try {
-      const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices?.();
-      availableServices = Array.isArray(services) ? services.map((item) => String(item || "").trim()).filter(Boolean) : [];
-    } catch {
-      availableServices = [];
-    }
-
-    try {
-      supportsOnDevice = Boolean(ExpoSpeechRecognitionModule.supportsOnDeviceRecognition?.());
-    } catch {
-      supportsOnDevice = false;
-    }
-
-    if (supportsOnDevice) {
       try {
-        const payload: any = await ExpoSpeechRecognitionModule.getSupportedLocales?.({
-          androidRecognitionServicePackage: "com.google.android.as",
-        });
-        installedLocales = Array.isArray(payload?.installedLocales)
-          ? payload.installedLocales.map((item: any) => String(item || "").trim()).filter(Boolean)
+        defaultService =
+          String(ExpoSpeechRecognitionModule.getDefaultRecognitionService?.()?.packageName || "").trim();
+      } catch {
+        defaultService = "";
+      }
+
+      try {
+        const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices?.();
+        availableServices = Array.isArray(services)
+          ? services.map((item) => String(item || "").trim()).filter(Boolean)
           : [];
       } catch {
-        installedLocales = [];
+        availableServices = [];
       }
-    }
 
-    setTrainingDiagnostics({
-      checking: false,
-      defaultService,
-      availableServices,
-      supportsOnDevice,
-      installedLocales,
-      canUseOnDeviceForLocale: localeMatchesInstalled(speechLocale, installedLocales),
-    });
+      try {
+        supportsOnDevice = Boolean(ExpoSpeechRecognitionModule.supportsOnDeviceRecognition?.());
+      } catch {
+        supportsOnDevice = false;
+      }
+
+      if (supportsOnDevice) {
+        try {
+          const payload: any = await ExpoSpeechRecognitionModule.getSupportedLocales?.({
+            androidRecognitionServicePackage: "com.google.android.as",
+          });
+          installedLocales = Array.isArray(payload?.installedLocales)
+            ? payload.installedLocales.map((item: any) => String(item || "").trim()).filter(Boolean)
+            : [];
+        } catch {
+          installedLocales = [];
+        }
+      }
+
+      nextDiagnostics = {
+        checking: false,
+        defaultService,
+        availableServices,
+        supportsOnDevice,
+        installedLocales,
+        canUseOnDeviceForLocale: localeMatchesInstalled(speechLocale, installedLocales),
+      };
+    } finally {
+      trainingDiagnosticsCheckingRef.current = false;
+      setTrainingDiagnostics((prev) => nextDiagnostics ?? { ...prev, checking: false });
+    }
   }
 
   async function downloadOnDeviceSpeechModel() {
