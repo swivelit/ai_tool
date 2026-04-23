@@ -23,8 +23,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import inspect as sa_inspect, text as sa_text
-from sqlmodel import SQLModel, Session, delete, select
+from sqlmodel import Session, delete, select
 
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
@@ -480,81 +479,6 @@ def _try_local_fast_path(session: Session, user_id: Optional[int], message: str)
 
     return None
 
-def _ensure_user_table_auth_columns() -> None:
-    inspector = sa_inspect(engine)
-    if not inspector.has_table("user"):
-        return
-
-    columns = {column["name"] for column in inspector.get_columns("user")}
-
-    with engine.begin() as conn:
-        if "firebase_uid" not in columns:
-            conn.execute(sa_text('ALTER TABLE "user" ADD COLUMN firebase_uid VARCHAR'))
-
-        if "email" not in columns:
-            conn.execute(sa_text('ALTER TABLE "user" ADD COLUMN email VARCHAR'))
-
-        if "reply_language" not in columns:
-            conn.execute(sa_text('ALTER TABLE "user" ADD COLUMN reply_language VARCHAR DEFAULT \'ta\''))
-
-        try:
-            conn.execute(
-                sa_text(
-                    'CREATE UNIQUE INDEX IF NOT EXISTS ix_user_firebase_uid_unique ON "user" (firebase_uid)'
-                )
-            )
-        except Exception as exc:
-            print(f"[WARN] Could not create firebase_uid index: {exc}")
-
-        try:
-            conn.execute(
-                sa_text('CREATE UNIQUE INDEX IF NOT EXISTS ix_user_email_unique ON "user" (email)')
-            )
-        except Exception as exc:
-            print(f"[WARN] Could not create email index: {exc}")
-
-
-def _ensure_rag_embedding_table() -> None:
-    try:
-        SQLModel.metadata.create_all(engine, tables=[RagEmbedding.__table__])
-    except Exception as exc:
-        print(f"[WARN] Could not create rag_embedding table via SQLModel metadata: {exc}")
-
-    with engine.begin() as conn:
-        try:
-            conn.execute(
-                sa_text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_rag_embedding_content_hash_unique ON rag_embedding (content_hash)"
-                )
-            )
-        except Exception as exc:
-            print(f"[WARN] Could not create rag_embedding content_hash index: {exc}")
-
-        try:
-            conn.execute(
-                sa_text(
-                    "CREATE INDEX IF NOT EXISTS ix_rag_embedding_user_source_updated ON rag_embedding (user_id, source_type, updated_at)"
-                )
-            )
-        except Exception as exc:
-            print(f"[WARN] Could not create rag_embedding user/source/updated index: {exc}")
-
-        try:
-            conn.execute(
-                sa_text(
-                    "CREATE INDEX IF NOT EXISTS ix_rag_embedding_user_updated ON rag_embedding (user_id, updated_at)"
-                )
-            )
-        except Exception as exc:
-            print(f"[WARN] Could not create rag_embedding user/updated index: {exc}")
-
-def _ensure_job_table() -> None:
-    try:
-        SQLModel.metadata.create_all(engine, tables=[Job.__table__])
-    except Exception as exc:
-        logger.warning("Could not create job table: %s", exc)
-
-
 def _serialize_job(job: Optional[Job]) -> Dict[str, Any]:
     if job is None:
         raise HTTPException(404, "Job not found")
@@ -629,19 +553,16 @@ def _register_job_handlers() -> None:
     queue.register("chat", _job_handle_chat)
 
 @app.on_event("startup")
-def ensure_runtime_schema() -> None:
+def startup_runtime_services() -> None:
     if not _is_openai_configured():
         logger.warning("OPENAI_API_KEY is not set. OpenAI-dependent endpoints will return HTTP 503 until configured.")
     try:
-        _ensure_user_table_auth_columns()
-        _ensure_rag_embedding_table()
-        _ensure_job_table()
         VECTOR_STORE.initialize()
         _register_job_handlers()
         if os.getenv("JOB_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
             _get_job_queue().start()
     except Exception as exc:
-        logger.warning("Runtime schema sync skipped: %s", exc)
+        logger.warning("Runtime service initialization skipped: %s", exc)
 
 
 @app.middleware("http")
