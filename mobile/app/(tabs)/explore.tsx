@@ -277,19 +277,35 @@ export default function Explore() {
   const heroRadius = isSmallPhone ? 26 : 30;
   const searchHeight = isSmallPhone ? 52 : 56;
 
-  async function load() {
+  async function load(
+    userId = profile?.userId,
+    isActive: () => boolean = () => true
+  ) {
     try {
+      if (!isActive()) return;
+
       setLoading(true);
-      const suffix = profile?.userId ? `?user_id=${profile.userId}` : "";
+      const suffix = userId ? `?user_id=${userId}` : "";
       const data = await apiGet<Item[]>(`/items${suffix}`);
+
+      if (!isActive()) return;
       setItems(Array.isArray(data) ? data : []);
     } finally {
-      setLoading(false);
+      if (isActive()) {
+        setLoading(false);
+      }
     }
   }
 
   useEffect(() => {
-    void load();
+    let mounted = true;
+    const currentUserId = profile?.userId;
+
+    void load(currentUserId, () => mounted);
+
+    return () => {
+      mounted = false;
+    };
   }, [profile?.userId]);
 
   const [nowTs, setNowTs] = useState(() => Date.now());
