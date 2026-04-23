@@ -2128,15 +2128,29 @@ def api_tts(payload: TTSRequest):
 
 @app.post("/users/{user_id}/questionnaire")
 def save_mobile_questionnaire(user_id: int, payload: Dict[str, Any], session: Session = Depends(get_session)):
-    raw = payload.get("payload", payload)
-    mapped = DailyRoutineIn(
-        wake_time=str(raw.get("wake") or raw.get("wake_time") or "07:30"),
-        sleep_time=str(raw.get("sleep") or raw.get("sleep_time") or "23:30"),
-        work_start=raw.get("workStart") or raw.get("work_start"),
-        work_end=raw.get("workEnd") or raw.get("work_end"),
-        daily_habits=raw.get("dailyHabits") or raw.get("daily_habits"),
-    )
-    return upsert_daily_routine(user_id, mapped, session)
+    """Deprecated compatibility endpoint for older mobile builds.
+
+    Questionnaire completion is derived from saved personality/profiler answers in
+    ``UserProfile.answers_json``. This route intentionally does not write daily
+    routine data; daily routine writes belong to ``PUT /users/{user_id}/daily-routine``.
+    """
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
+    completed = _questionnaire_completed(profile)
+
+    return {
+        "ok": True,
+        "deprecated": True,
+        "message": (
+            "Questionnaire completion is derived from /users/{user_id}/personality "
+            "answers_json. This endpoint no longer writes daily routine data."
+        ),
+        "questionnaire_completed": completed,
+        "user": _serialize_user_payload(user, profile),
+    }
 
 
 @app.post("/users/{user_id}/generate-daily-checkins")

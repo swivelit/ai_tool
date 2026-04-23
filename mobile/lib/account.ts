@@ -266,58 +266,6 @@ function resolveQuestionnaireCompleted(
   return remoteValue === true;
 }
 
-function readBackendQuestionnaireCompleted(payload: any): boolean | undefined {
-  const parsedPayload = tryParseJsonString(payload);
-  const queue: any[] = [parsedPayload];
-  const visited = new Set<any>();
-  let steps = 0;
-
-  while (queue.length && steps < 100) {
-    steps += 1;
-    const current = tryParseJsonString(queue.shift());
-
-    if (!current || typeof current !== "object") {
-      continue;
-    }
-
-    if (visited.has(current)) continue;
-    visited.add(current);
-
-    if (Array.isArray(current)) {
-      for (const item of current) {
-        queue.push(item);
-      }
-      continue;
-    }
-
-    for (const [key, value] of Object.entries(current)) {
-      const normalized = normalizeKey(key);
-
-      if (
-        normalized === "questionnairecompleted" ||
-        normalized === "questionnairecomplete"
-      ) {
-        if (typeof value === "boolean") return value;
-        if (typeof value === "string") {
-          const parsed = parseBooleanString(value);
-          if (typeof parsed === "boolean") return parsed;
-        }
-      }
-
-      if (value && typeof value === "object") {
-        queue.push(value);
-      } else if (typeof value === "string") {
-        const maybeParsed = tryParseJsonString(value);
-        if (maybeParsed !== value) {
-          queue.push(maybeParsed);
-        }
-      }
-    }
-  }
-
-  return undefined;
-}
-
 function parseBooleanString(value: string): boolean | undefined {
   const normalized = value.trim().toLowerCase();
 
@@ -330,28 +278,6 @@ function parseBooleanString(value: string): boolean | undefined {
   }
 
   return undefined;
-}
-
-function mapQuestionnaireCompletionResponseToProfile(payload: any): UserProfile | null {
-  const parsedPayload = tryParseJsonString(payload);
-  const candidates = [
-    parsedPayload?.user,
-    parsedPayload?.profile,
-    parsedPayload?.data?.user,
-    parsedPayload?.data?.profile,
-    parsedPayload?.result?.user,
-    parsedPayload?.result?.profile,
-    parsedPayload,
-  ];
-
-  for (const candidate of candidates) {
-    const profile = mapBackendUserToProfile(candidate);
-    if (profile) {
-      return profile;
-    }
-  }
-
-  return null;
 }
 
 function mergeProfileWithAuth(
@@ -554,71 +480,6 @@ export async function createProfileOnBackend(profile: UserProfile) {
   return merged;
 }
 
-export async function markQuestionnaireCompleted(done: boolean = true) {
-  const profile = await getProfile();
-
-  if (!profile?.userId) {
-    throw new Error("Cannot complete questionnaire without a backend user id.");
-  }
-
-  const response = await submitQuestionnaire(profile.userId, {
-    completed: done,
-    source: "mobile_profiler",
-  });
-
-  const backendProfile = mapQuestionnaireCompletionResponseToProfile(response);
-  const backendCompleted =
-    backendProfile?.questionnaireCompleted ??
-    readBackendQuestionnaireCompleted(response);
-
-  if (typeof backendCompleted === "boolean") {
-    if (backendCompleted !== done) {
-      throw new Error(
-        "The backend did not confirm the requested questionnaire completion state."
-      );
-    }
-
-    const confirmed: UserProfile = {
-      ...profile,
-      ...backendProfile,
-      userId: backendProfile?.userId || profile.userId,
-      firebaseUid: profile.firebaseUid || backendProfile?.firebaseUid,
-      email: normalizeEmail(profile.email) || backendProfile?.email,
-      questionnaireCompleted: backendCompleted,
-      replyLanguage: backendProfile?.replyLanguage || profile.replyLanguage || "ta",
-    };
-
-    await saveProfile(confirmed);
-    return confirmed;
-  }
-
-  const restored = await resolveProfileFromBackendByAuth(
-    profile.firebaseUid,
-    profile.email
-  );
-
-  if (restored) {
-    const confirmed = mergeProfileWithAuth(
-      restored,
-      profile.firebaseUid,
-      profile.email
-    );
-
-    if (confirmed.questionnaireCompleted !== done) {
-      throw new Error(
-        "Questionnaire was submitted, but the backend profile does not show it as completed yet."
-      );
-    }
-
-    await saveProfile(confirmed);
-    return confirmed;
-  }
-
-  throw new Error(
-    "Questionnaire was submitted, but the backend did not return or resolve a confirmed completion state."
-  );
-}
-
 export async function getPersonalityQuestions(): Promise<PersonalityQuestion[]> {
   const out = await apiGet<{ questions?: PersonalityQuestion[] }>("/api/questions");
   return Array.isArray(out?.questions) ? out.questions : [];
@@ -636,10 +497,6 @@ export async function savePersonalityAnswers(
   ) as Record<string, string>;
 
   return apiPost(`/users/${userId}/personality`, { answers: normalized });
-}
-
-export async function submitQuestionnaire(userId: number, payload: any) {
-  return apiPost(`/users/${userId}/questionnaire`, { payload });
 }
 
 export async function generateDailyCheckins(userId: number) {

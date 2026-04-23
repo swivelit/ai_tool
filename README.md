@@ -5,7 +5,7 @@
 The primary runtime is now **phone-local agents** in the Expo app.
 
 - `mobile/lib/localAgents.ts` is the main agent runtime.
-- `mobile/lib/api.ts` keeps the existing `/api/chat` contract stable and intercepts it locally by default.
+- `mobile/lib/api.ts` keeps the existing `/api/chat` contract stable. Local chat is used only when a reachable local model base URL is configured; otherwise backend chat is used.
 - The Orchestrator Agent is now the local-first traffic cop.
   It routes greeting/small-talk, clarification, profile, reminders/tasks, weather/live-tool requests, offline reasoning, and only then considers backend fallback.
 - The Alignment Agent now rewrites local or fallback drafts to the user's preferred tone/language while preserving facts.
@@ -89,7 +89,7 @@ Profiler completion happens on-device first. The backend mirror remains secondar
 
 ## Orchestrator And Alignment Runtime
 
-The chat path still enters through `/api/chat`, but the main decision tree now runs locally inside `mobile/lib/localAgents.ts`.
+The chat path still enters through `/api/chat`. When `EXPO_PUBLIC_LOCAL_MODEL_BASE_URL` or `extra.LOCAL_MODEL_BASE_URL` is configured to a reachable local model server, the main decision tree runs locally inside `mobile/lib/localAgents.ts`. Without that local model URL, `/api/chat` goes to the backend.
 
 Routing order:
 
@@ -215,7 +215,7 @@ uvicorn theni_tamil_api:app --host 127.0.0.1 --port 9009
 
 - Do not add live phone data to git. The app stores that under Expo document storage, outside the repo.
 - Do not treat backend OpenAI-first paths as the main architecture anymore.
-- Keep `/api/chat` stable. Mobile continues to intercept it locally first.
+- Keep `/api/chat` stable. Mobile uses local chat only when a reachable local model base URL is configured; otherwise it uses backend chat.
 - If memory or cache config files are missing, tiny in-code fallbacks exist only to keep the local path safe to boot.
 - Native Firebase auth now uses AsyncStorage-backed persistence so login survives app restarts on Android/iOS, while web keeps the default web auth behavior.
 - App boot uses watchdog-style fail-open handling. Optional local seed bootstrap and profile recovery now warn and continue instead of blocking the boot screen forever.

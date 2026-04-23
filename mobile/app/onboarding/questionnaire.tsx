@@ -26,7 +26,6 @@ import {
   createProfileOnBackend,
   getProfile,
   getProfileForFirebaseUid,
-  markQuestionnaireCompleted,
 } from "@/lib/account";
 import {
   getProfilerStateOnPhone,
@@ -254,12 +253,11 @@ export default function QuestionnaireScreen() {
       syncCurrentStep(next.missingSlots[0] || null);
 
       if (next.done) {
-        await markQuestionnaireCompleted(true);
         const refreshedProfile = await refresh();
-      
+
         if (!refreshedProfile?.questionnaireCompleted) {
           throw new Error(
-            "The backend did not confirm questionnaire completion. Please try again."
+            "The backend did not confirm questionnaire completion from saved profiler answers. Please try again."
           );
         }
       }
