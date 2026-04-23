@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as FileSystem from "expo-file-system/legacy";
 
 import memoryRules from "../data/config/memory_rules.json";
 import orchestratorRoutes from "../data/config/orchestrator_routes.json";
@@ -343,6 +344,35 @@ describe("local memory and semantic cache", () => {
     expect(readJsonl(`${dataRoot}/memory/profile_updates/43.jsonl`)).toHaveLength(1);
     expect(readJson(`${dataRoot}/rag/runtime/43_memory_chunks.json`)).toBeTruthy();
     expect(readJsonl(`${dataRoot}/training/captures/memory.jsonl`)).toHaveLength(1);
+  });
+
+  it("skips idle memory consolidation entirely when the last attempt was recent", async () => {
+    writeJson(`${dataRoot}/config/memory_rules.json`, {
+      ...memoryRules,
+      summarization: {
+        ...memoryRules.summarization,
+        minTurnsBeforeSync: 1,
+      },
+    });
+
+    queueEmbeddingResponse([[1, 0, 0]]);
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    await runLocalAssistantTurn({
+      userId: 45,
+      message: "this",
+      replyLanguage: "en",
+    });
+    await runLocalAssistantTurn({
+      userId: 45,
+      message: "that",
+      replyLanguage: "en",
+    });
+
+    expect(readJsonl(`${dataRoot}/memory/daily_summaries/45.jsonl`)).toHaveLength(1);
+    const dailySummaryReads = (FileSystem.readAsStringAsync as any).mock.calls.filter(
+      ([path]: [string]) => path === `${dataRoot}/memory/daily_summaries/45.jsonl`
+    );
+    expect(dailySummaryReads).toHaveLength(0);
   });
 
   it("does not use OpenAI when local cache or memory can answer", async () => {

@@ -1005,6 +1005,30 @@ function trainingSamplesPath(agent = "general") {
 }
 
 const fileMutationQueues = new Map<string, Promise<unknown>>();
+const lastLocalMemoryConsolidationAttemptAt = new Map<number, number>();
+const LOCAL_MEMORY_CONSOLIDATION_ATTEMPT_COOLDOWN_MINUTES = positiveInt(
+  DEFAULT_MEMORY_RULES.summarization?.minMinutesBetweenSync,
+  15
+);
+
+function shouldAttemptLocalMemoryConsolidation(
+  userId: number,
+  opts?: { force?: boolean; nowMs?: number; cooldownMinutes?: number }
+) {
+  if (opts?.force) return true;
+  const nowMs = Number.isFinite(opts?.nowMs) ? Number(opts.nowMs) : Date.now();
+  const cooldownMinutes = positiveInt(
+    opts?.cooldownMinutes,
+    LOCAL_MEMORY_CONSOLIDATION_ATTEMPT_COOLDOWN_MINUTES
+  );
+  const cooldownMs = cooldownMinutes * 60_000;
+  const lastAttemptAt = lastLocalMemoryConsolidationAttemptAt.get(userId);
+  if (typeof lastAttemptAt === "number" && nowMs - lastAttemptAt < cooldownMs) {
+    return false;
+  }
+  lastLocalMemoryConsolidationAttemptAt.set(userId, nowMs);
+  return true;
+}
 
 function queueFileMutation<T>(lockKey: string, task: () => Promise<T>): Promise<T> {
   const previous = fileMutationQueues.get(lockKey) ?? Promise.resolve();
@@ -3795,9 +3819,11 @@ export async function runLocalAssistantTurn(opts: {
     metadata: { userId, source, decision },
   });
 
-  await consolidateLocalMemoryOnIdle(userId, {
-    userProfile: { ...opts.userProfile, replyLanguage },
-  }).catch(() => ({ ok: false }));
+  if (shouldAttemptLocalMemoryConsolidation(userId)) {
+    await consolidateLocalMemoryOnIdle(userId, {
+      userProfile: { ...opts.userProfile, replyLanguage },
+    }).catch(() => ({ ok: false }));
+  }
 
   return {
     route,
