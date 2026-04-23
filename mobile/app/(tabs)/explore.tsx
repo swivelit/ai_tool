@@ -292,14 +292,21 @@ export default function Explore() {
     void load();
   }, [profile?.userId]);
 
-  const now = new Date();
-  const todayStart = startOfDay(now);
-  const todayEnd = endOfDay(now);
-  const tomorrowStart = startOfDay(addDays(now, 1));
-  const tomorrowEnd = endOfDay(addDays(now, 1));
-  const weekEnd = endOfDay(addDays(now, 7));
+  const [nowTs, setNowTs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setNowTs(Date.now());
+    }, 60_000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const now = useMemo(() => new Date(nowTs), [nowTs]);
 
   const stats = useMemo(() => {
+    const now = new Date(nowTs);
+
     const upcoming = items.filter((item) => {
       const date = parseItemDate(item);
       return date ? date.getTime() >= now.getTime() : false;
@@ -324,9 +331,11 @@ export default function Explore() {
       today,
       drafts,
     };
-  }, [items, now]);
+  }, [items, nowTs]);
 
   const nextUpcoming = useMemo(() => {
+    const now = new Date(nowTs);
+
     return (
       [...items]
         .filter((item) => {
@@ -339,9 +348,10 @@ export default function Explore() {
           return ad - bd;
         })[0] || null
     );
-  }, [items, now]);
+  }, [items, nowTs]);
 
   const filteredItems = useMemo(() => {
+    const now = new Date(nowTs);
     const search = q.trim().toLowerCase();
 
     let next = [...items];
@@ -372,9 +382,16 @@ export default function Explore() {
     }
 
     return next;
-  }, [filter, items, now, q]);
+  }, [filter, items, nowTs, q]);
 
   const groupedRows = useMemo<PlannerRow[]>(() => {
+    const now = new Date(nowTs);
+    const todayStart = startOfDay(now);
+    const todayEnd = endOfDay(now);
+    const tomorrowStart = startOfDay(addDays(now, 1));
+    const tomorrowEnd = endOfDay(addDays(now, 1));
+    const weekEnd = endOfDay(addDays(now, 7));
+
     const sections: Record<string, Item[]> = {
       today: [],
       tomorrow: [],
@@ -466,16 +483,7 @@ export default function Explore() {
     });
 
     return rows;
-  }, [
-    filter,
-    filteredItems,
-    now,
-    todayEnd,
-    todayStart,
-    tomorrowEnd,
-    tomorrowStart,
-    weekEnd,
-  ]);
+  }, [filter, filteredItems, nowTs]);
 
   const searchResultsLabel = useMemo(() => {
     const count = filteredItems.length;
