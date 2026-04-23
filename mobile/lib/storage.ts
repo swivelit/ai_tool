@@ -94,3 +94,8 @@ export async function setSettings(s: AssistantSettings): Promise<void> {
 
   await AsyncStorage.setItem(KEYS.settings, JSON.stringify(normalized));
 }
+
+
+export async function clearAssistantStorage(): Promise<void> {
+  await AsyncStorage.multiRemove([KEYS.assistantName, KEYS.settings]);
+}

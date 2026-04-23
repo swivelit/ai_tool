@@ -283,21 +283,13 @@ function mergeProfileWithAuth(
 function getAuthMatchKind(
   profile: UserProfile,
   firebaseUid?: string | null,
-  email?: string | null
-): "uid" | "email" | null {
+  _email?: string | null
+): "uid" | null {
   const normalizedUid = (firebaseUid || "").trim();
-  const normalizedEmail = normalizeEmail(email);
   const profileUid = (profile.firebaseUid || "").trim();
-  const profileEmail = normalizeEmail(profile.email);
 
   if (normalizedUid && profileUid && normalizedUid === profileUid) {
     return "uid";
-  }
-
-  if (normalizedEmail && profileEmail && normalizedEmail === profileEmail) {
-    if (!profileUid || !normalizedUid || profileUid === normalizedUid) {
-      return "email";
-    }
   }
 
   return null;
@@ -365,21 +357,9 @@ export async function getProfileForFirebaseUid(
   const cachedMatch = cachedProfile
     ? getAuthMatchKind(cachedProfile, normalizedUid, normalizedEmail)
     : null;
-
   const matchedCachedProfile = cachedProfile && cachedMatch ? cachedProfile : null;
 
-  if (matchedCachedProfile) {
-    const patched = mergeProfileWithAuth(
-      matchedCachedProfile,
-      normalizedUid,
-      normalizedEmail
-    );
-
-    await writeProfileCache(patched);
-    return patched;
-  }
-
-  if (cachedProfile) {
+  if (cachedProfile && !matchedCachedProfile) {
     console.warn(
       "[account] Cached profile belongs to a different auth identity. Clearing stale local profile.",
       safeStringify({
@@ -397,24 +377,34 @@ export async function getProfileForFirebaseUid(
   try {
     const restored = await resolveProfileFromBackendByAuth(normalizedUid, normalizedEmail);
 
-    if (!restored) {
-      return null;
+    if (restored) {
+      const merged: UserProfile = {
+        ...mergeProfileWithAuth(restored, normalizedUid, normalizedEmail),
+        questionnaireCompleted: resolveQuestionnaireCompleted(
+          matchedCachedProfile?.questionnaireCompleted,
+          restored.questionnaireCompleted
+        ),
+      };
+
+      await writeProfileCache(merged);
+      return merged;
     }
-
-    const merged: UserProfile = {
-      ...mergeProfileWithAuth(restored, normalizedUid, normalizedEmail),
-      questionnaireCompleted: resolveQuestionnaireCompleted(
-        undefined,
-        restored.questionnaireCompleted
-      ),
-    };
-
-    await writeProfileCache(merged);
-    return merged;
   } catch (error) {
     console.warn("[account] Failed to resolve profile from backend:", error);
-    return null;
   }
+
+  if (matchedCachedProfile) {
+    const patched = mergeProfileWithAuth(
+      matchedCachedProfile,
+      normalizedUid,
+      normalizedEmail
+    );
+
+    await writeProfileCache(patched);
+    return patched;
+  }
+
+  return null;
 }
 
 export async function saveProfile(profile: UserProfile) {

@@ -36,6 +36,7 @@ import {
   deleteAccountOnBackend,
   getProfileForFirebaseUid,
 } from "@/lib/account";
+import { clearAssistantStorage } from "@/lib/storage";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
 
@@ -291,9 +292,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const freshUser = await reloadUser(authUser);
     blockAuthRestoreRef.current = false;
     setLocallySignedOut(false);
+    setLoading(true);
     setFirebaseUser(freshUser);
-    setLoading(false);
     await syncProfileForAuthenticatedUser(freshUser);
+    setLoading(false);
     return freshUser;
   }
 
@@ -520,7 +522,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     blockAuthRestoreRef.current = true;
     setLocallySignedOut(true);
     setLoading(false);
-    await clearProfile();
+    await Promise.all([clearProfile(), clearAssistantStorage()]);
   }
 
   async function cleanupGoogleSdk(options?: { revokeGoogleAccess?: boolean }) {

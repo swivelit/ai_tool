@@ -1,15 +1,22 @@
 import os
+from pathlib import Path
 from typing import Generator
 
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, create_engine
 
 
+DEFAULT_SQLITE_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "db" / "ai_tool.sqlite3"
+)
+DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
 def _normalize_database_url(raw_url: str) -> str:
     url = (raw_url or "").strip()
 
     if not url:
-        return "sqlite:///./app.db"
+        return f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}"
 
     if url.startswith("postgres://"):
         return url.replace("postgres://", "postgresql+psycopg://", 1)

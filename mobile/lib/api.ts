@@ -166,6 +166,8 @@ type LocalChatProxyResponse = {
     datetime?: string | null;
     title?: string | null;
     details?: string | null;
+    created_at?: string | null;
+    source?: string | null;
   };
   assistant: {
     text: string;
@@ -173,6 +175,8 @@ type LocalChatProxyResponse = {
     tamil?: string;
     theni_tamil?: string;
   };
+  pipeline?: Record<string, any>;
+  meta?: Record<string, any>;
 };
 
 function buildUrl(path: string) {
@@ -581,7 +585,7 @@ function isChatPath(path: string) {
 
 async function shouldUseLocalChatPipeline() {
   logClientRoutingBanner();
-  return USE_LOCAL_CHAT_PIPELINE_DEFAULT;
+  return USE_LOCAL_CHAT_PIPELINE_DEFAULT && Boolean(LOCAL_MODEL_BASE_URL);
 }
 
 async function handleLocalChat(path: string, body?: any): Promise<LocalChatProxyResponse> {
@@ -601,26 +605,49 @@ async function handleLocalChat(path: string, body?: any): Promise<LocalChatProxy
     replyLanguage,
   });
 
+  const createdAt = new Date().toISOString();
+  const normalizedIntent = turn.intent === "reminder" ? "reminder" : "assistant";
+  const resolvedTitle =
+    turn.intent === "reminder"
+      ? turn.title || "Reminder"
+      : formatIntentLabel(turn.route);
+
   return {
     ok: true,
     item: {
       id: Date.now(),
-      intent: turn.intent === "reminder" ? "reminder" : "assistant",
+      intent: normalizedIntent,
       category: "Other",
       raw_text: message,
       transcript: null,
       datetime: turn.datetimeText || null,
-      title:
-        turn.intent === "reminder"
-          ? turn.title || "Reminder"
-          : formatIntentLabel(turn.route),
+      title: resolvedTitle,
       details: turn.assistantText,
+      created_at: createdAt,
+      source: "text",
     },
     assistant: {
       text: turn.assistantText,
       english: turn.englishText || turn.assistantText,
       tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
       theni_tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
+    },
+    pipeline: {
+      route_taken: turn.route,
+      predicted_label: normalizedIntent,
+      raw_english: turn.englishText || message,
+      remodeled_english: turn.englishText || turn.assistantText,
+      tamil_text: replyLanguage === "ta" ? turn.assistantText : "",
+      theni_tamil_text: replyLanguage === "ta" ? turn.assistantText : "",
+      direct_answer_source: turn.source,
+      profile_summary: turn.profileSummary || null,
+      meta: turn.meta || {},
+    },
+    meta: {
+      source: "local_chat_proxy",
+      cacheHit: Boolean(turn.cacheHit),
+      route: turn.route,
+      created_at: createdAt,
     },
   };
 }
