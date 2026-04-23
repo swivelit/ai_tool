@@ -3,7 +3,7 @@ import Constants from "expo-constants";
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
 type ClientRoutingMode = "local" | "backend";
-type ClientRoutingSource = "default" | "extra" | "env" | "forced";
+type ClientRoutingSource = "default" | "extra" | "env" | "flags" | "forced";
 
 type BooleanFlagResolution = {
   value: boolean;
@@ -58,9 +58,13 @@ export const API_BASE: string =
   "https://ai-tool-rrau.onrender.com";
 
 const LOCAL_MODEL_BASE_URL: string =
-  extra.LOCAL_MODEL_BASE_URL ||
-  process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL ||
-  "http://127.0.0.1:10000/v1";
+  String(
+    extra.LOCAL_MODEL_BASE_URL ||
+      process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL ||
+      ""
+  )
+    .trim()
+    .replace(/\/$/, "");
 
 const LOCAL_MODEL_API_KEY: string =
   extra.LOCAL_MODEL_API_KEY ||
@@ -78,7 +82,15 @@ const LOCAL_CHAT_PIPELINE_FLAG = resolveBooleanFlag(
   true
 );
 
+const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
+  extra.USE_LOCAL_VOICE_PIPELINE,
+  process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE,
+  false
+);
+
 const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = LOCAL_CHAT_PIPELINE_FLAG.value;
+const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean = LOCAL_VOICE_PIPELINE_FLAG.value;
+const CANONICAL_VOICE_ANALYZE_PATH = "/transcribe-and-analyze";
 
 let localChatInterceptionDepth = 0;
 let routingBannerLogged = false;
@@ -86,9 +98,9 @@ let routingBannerLogged = false;
 export function getClientRoutingDefaults() {
   return {
     chat: (USE_LOCAL_CHAT_PIPELINE_DEFAULT ? "local" : "backend") as ClientRoutingMode,
-    voice: "backend" as ClientRoutingMode,
+    voice: (USE_LOCAL_VOICE_PIPELINE_DEFAULT ? "local" : "backend") as ClientRoutingMode,
     chatSource: LOCAL_CHAT_PIPELINE_FLAG.source,
-    voiceSource: "forced" as ClientRoutingSource,
+    voiceSource: LOCAL_VOICE_PIPELINE_FLAG.source,
     apiBase: API_BASE,
     localModelBaseUrl: LOCAL_MODEL_BASE_URL,
   };
@@ -170,6 +182,10 @@ function buildUrl(path: string) {
 
 function localApiCandidates(baseUrl: string) {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
+  if (!normalized) {
+    return [];
+  }
+
   const variants = [normalized];
 
   if (normalized.endsWith("/v1")) {
@@ -343,12 +359,24 @@ async function getFeatureFlags(forceRefresh = false) {
 async function shouldUseLocalVoicePipeline() {
   logClientRoutingBanner();
 
-  // Voice uploads must go to the backend STT endpoint.
-  // The current phone-local /audio/transcriptions path is returning
-  // non-speech hallucinations for short inputs like "hello", which is why
-  // the user bubble can show unrelated sentences instead of the spoken text.
-  // Keep local chat routing intact, but force voice routing to backend.
-  return false;
+  if (LOCAL_VOICE_PIPELINE_FLAG.source !== "default") {
+    return LOCAL_VOICE_PIPELINE_FLAG.value;
+  }
+
+  const flags = await getFeatureFlags();
+  const voiceRoutingMode = String(flags?.voiceRoutingMode || "")
+    .trim()
+    .toLowerCase();
+
+  if (voiceRoutingMode === "local") {
+    return true;
+  }
+
+  if (voiceRoutingMode === "backend") {
+    return false;
+  }
+
+  return USE_LOCAL_VOICE_PIPELINE_DEFAULT;
 }
 
 function isTranscribeAndAnalyzePath(path: string) {
@@ -361,17 +389,17 @@ function isTranscribeAndAnalyzePath(path: string) {
 
 function normalizeVoiceAnalyzePath(path: string) {
   const normalized = String(path || "").trim();
-  if (!normalized) return "/api/transcribe-and-analyze";
+  if (!normalized) return CANONICAL_VOICE_ANALYZE_PATH;
 
   if (normalized.startsWith("/api/transcribe-and-analyze")) {
-    return normalized;
+    return normalized.replace(
+      "/api/transcribe-and-analyze",
+      CANONICAL_VOICE_ANALYZE_PATH
+    );
   }
 
   if (normalized.startsWith("/transcribe-and-analyze")) {
-    return normalized.replace(
-      "/transcribe-and-analyze",
-      "/api/transcribe-and-analyze"
-    );
+    return normalized;
   }
 
   return normalized;
@@ -401,12 +429,22 @@ function normalizeSpeechLanguage(value: unknown): SpeechLanguage {
   return null;
 }
 
+function getRequiredLocalModelBaseUrl() {
+  if (LOCAL_MODEL_BASE_URL) {
+    return LOCAL_MODEL_BASE_URL;
+  }
+
+  throw new Error(
+    "EXPO_PUBLIC_LOCAL_MODEL_BASE_URL is required for local voice routing. Use your laptop's LAN IP for a real phone or 10.0.2.2 for the Android emulator."
+  );
+}
+
 async function transcribeAudioLocally(
   fileUri: string,
   speechLanguage?: unknown
 ): Promise<LocalVoiceTranscription> {
   const startedAt = Date.now();
-  const baseCandidates = localApiCandidates(LOCAL_MODEL_BASE_URL);
+  const baseCandidates = localApiCandidates(getRequiredLocalModelBaseUrl());
   const normalizedSpeechLanguage = normalizeSpeechLanguage(speechLanguage);
 
   let lastError = "";
