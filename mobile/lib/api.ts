@@ -106,6 +106,8 @@ export function logClientRoutingBanner(logger: Pick<Console, "info"> = console) 
   );
 }
 
+logClientRoutingBanner();
+
 type FeatureFlagPayload = {
   ok?: boolean;
   flags?: {
