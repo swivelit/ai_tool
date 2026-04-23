@@ -381,8 +381,42 @@ type AgentRegistryConfig = {
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
+function normalizeLocalModelBaseUrl(value: unknown) {
+  return String(value || "").trim().replace(/\/$/, "");
+}
+
+function isLoopbackLocalModelBaseUrl(value: unknown) {
+  const normalized = normalizeLocalModelBaseUrl(value).toLowerCase();
+
+  if (!normalized) {
+    return false;
+  }
+
+  return /^https?:\/\/(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::|\/|$)/.test(
+    normalized
+  );
+}
+
+function requireLocalModelBaseUrl(baseUrl: unknown, featureName: string) {
+  const normalized = normalizeLocalModelBaseUrl(baseUrl);
+
+  if (!normalized) {
+    throw new Error(
+      `${featureName} needs EXPO_PUBLIC_LOCAL_MODEL_BASE_URL. Set it to a LAN/emulator URL reachable from this device, for example http://192.168.1.23:10000/v1.`
+    );
+  }
+
+  if (isLoopbackLocalModelBaseUrl(normalized)) {
+    throw new Error(
+      `${featureName} cannot use ${normalized}. 127.0.0.1/localhost points at the phone itself on a physical device. Use your laptop's LAN IP, or 10.0.2.2 for the Android emulator.`
+    );
+  }
+
+  return normalized;
+}
+
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
-  baseUrl: "http://127.0.0.1:10000/v1",
+  baseUrl: "",
   apiKey: "local-phone",
   timeoutMs: 45000,
   models: {
@@ -1172,7 +1206,9 @@ async function getModelConfig() {
   const fileConfig = await readJson<LocalModelConfig>(MODELS_PATH, DEFAULT_MODEL_CONFIG);
   return {
     ...fileConfig,
-    baseUrl: String(extra.LOCAL_MODEL_BASE_URL || fileConfig.baseUrl || DEFAULT_MODEL_CONFIG.baseUrl),
+    baseUrl: normalizeLocalModelBaseUrl(
+      extra.LOCAL_MODEL_BASE_URL || fileConfig.baseUrl || DEFAULT_MODEL_CONFIG.baseUrl
+    ),
     apiKey: String(extra.LOCAL_MODEL_API_KEY || fileConfig.apiKey || DEFAULT_MODEL_CONFIG.apiKey),
     timeoutMs: Number(extra.LOCAL_MODEL_TIMEOUT_MS || fileConfig.timeoutMs || DEFAULT_MODEL_CONFIG.timeoutMs),
     models: {
@@ -1436,10 +1472,11 @@ async function localChatRaw(
   temperature = 0.2
 ) {
   const cfg = await getModelConfig();
+  const baseUrl = requireLocalModelBaseUrl(cfg.baseUrl, "Local chat/profiler");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
   try {
-    const endpoint = `${cfg.baseUrl.replace(/\/$/, "")}/chat/completions`;
+    const endpoint = `${baseUrl}/chat/completions`;
     const res = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -1485,10 +1522,11 @@ async function localChatText(
 
 async function embedTexts(texts: string[]) {
   const cfg = await getModelConfig();
+  const baseUrl = requireLocalModelBaseUrl(cfg.baseUrl, "Local embeddings");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
   try {
-    const res = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/embeddings`, {
+    const res = await fetch(`${baseUrl}/embeddings`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

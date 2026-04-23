@@ -49,6 +49,44 @@ function resolveBooleanFlag(
   return { value: defaultValue, source: "default" };
 }
 
+function normalizeLocalModelBaseUrl(value: unknown) {
+  return String(value || "").trim().replace(/\/$/, "");
+}
+
+function isLoopbackLocalModelBaseUrl(value: unknown) {
+  const normalized = normalizeLocalModelBaseUrl(value).toLowerCase();
+
+  if (!normalized) {
+    return false;
+  }
+
+  return /^https?:\/\/(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::|\/|$)/.test(
+    normalized
+  );
+}
+
+function getLocalModelConfigError(featureName: string) {
+  if (!LOCAL_MODEL_BASE_URL) {
+    return `${featureName} is enabled, but EXPO_PUBLIC_LOCAL_MODEL_BASE_URL is missing. Set it to a LAN/emulator URL reachable from the device, for example http://192.168.1.23:10000/v1.`;
+  }
+
+  if (isLoopbackLocalModelBaseUrl(LOCAL_MODEL_BASE_URL)) {
+    return `${featureName} is enabled, but EXPO_PUBLIC_LOCAL_MODEL_BASE_URL is ${LOCAL_MODEL_BASE_URL}. 127.0.0.1/localhost points at the phone itself on a physical device. Use your laptop's LAN IP, or 10.0.2.2 for the Android emulator.`;
+  }
+
+  return "";
+}
+
+function assertUsableLocalModelBaseUrl(featureName: string) {
+  const message = getLocalModelConfigError(featureName);
+
+  if (message) {
+    throw new Error(message);
+  }
+
+  return LOCAL_MODEL_BASE_URL;
+}
+
 export const API_BASE: string =
   extra.API_BASE ||
   extra.apiBase ||
@@ -57,14 +95,9 @@ export const API_BASE: string =
   process.env.EXPO_PUBLIC_API_URL ||
   "https://ai-tool-rrau.onrender.com";
 
-const LOCAL_MODEL_BASE_URL: string =
-  String(
-    extra.LOCAL_MODEL_BASE_URL ||
-      process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL ||
-      ""
-  )
-    .trim()
-    .replace(/\/$/, "");
+const LOCAL_MODEL_BASE_URL: string = normalizeLocalModelBaseUrl(
+  extra.LOCAL_MODEL_BASE_URL || process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL || ""
+);
 
 const LOCAL_MODEL_API_KEY: string =
   extra.LOCAL_MODEL_API_KEY ||
@@ -79,7 +112,7 @@ const LOCAL_STT_MODEL: string =
 const LOCAL_CHAT_PIPELINE_FLAG = resolveBooleanFlag(
   extra.USE_LOCAL_CHAT_PIPELINE,
   process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE,
-  true
+  Boolean(LOCAL_MODEL_BASE_URL)
 );
 
 const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
@@ -114,9 +147,13 @@ export function logClientRoutingBanner(logger: Pick<Console, "info"> = console) 
   routingBannerLogged = true;
   const routing = getClientRoutingDefaults();
   logger.info(
-    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl}`
+    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl || "not-configured"}`
   );
-}
+  
+  const localModelError = getLocalModelConfigError("Local model routing");
+  if (localModelError && (routing.chat === "local" || routing.voice === "local")) {
+    logger.info(`[routing] ${localModelError}`);
+  }
 
 logClientRoutingBanner();
 
@@ -434,13 +471,7 @@ function normalizeSpeechLanguage(value: unknown): SpeechLanguage {
 }
 
 function getRequiredLocalModelBaseUrl() {
-  if (LOCAL_MODEL_BASE_URL) {
-    return LOCAL_MODEL_BASE_URL;
-  }
-
-  throw new Error(
-    "EXPO_PUBLIC_LOCAL_MODEL_BASE_URL is required for local voice routing. Use your laptop's LAN IP for a real phone or 10.0.2.2 for the Android emulator."
-  );
+  return assertUsableLocalModelBaseUrl("Local voice routing");
 }
 
 async function transcribeAudioLocally(
@@ -585,7 +616,13 @@ function isChatPath(path: string) {
 
 async function shouldUseLocalChatPipeline() {
   logClientRoutingBanner();
-  return USE_LOCAL_CHAT_PIPELINE_DEFAULT && Boolean(LOCAL_MODEL_BASE_URL);
+
+  if (!USE_LOCAL_CHAT_PIPELINE_DEFAULT) {
+    return false;
+  }
+
+  assertUsableLocalModelBaseUrl("Local chat routing");
+  return true;
 }
 
 async function handleLocalChat(path: string, body?: any): Promise<LocalChatProxyResponse> {

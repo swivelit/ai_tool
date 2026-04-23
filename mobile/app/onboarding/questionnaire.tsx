@@ -255,7 +255,13 @@ export default function QuestionnaireScreen() {
 
       if (next.done) {
         await markQuestionnaireCompleted(true);
-        await refresh();
+        const refreshedProfile = await refresh();
+      
+        if (!refreshedProfile?.questionnaireCompleted) {
+          throw new Error(
+            "The backend did not confirm questionnaire completion. Please try again."
+          );
+        }
       }
     } catch (error: any) {
       Alert.alert("Couldn’t continue", error?.message || "Please try again.");

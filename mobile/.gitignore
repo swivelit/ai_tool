@@ -32,6 +32,12 @@ yarn-error.*
 
 # local env files
 .env*.local
+.env
+.env.*
+
+# Secrets / generated native config
+google-services.json
+GoogleService-Info.plist
 
 # typescript
 *.tsbuildinfo

@@ -48,6 +48,15 @@ function mapBackendUserToProfile(user: any): UserProfile | null {
   const resolvedUserId = normalizeUserId(user);
   if (!resolvedUserId) return null;
 
+  const rawQuestionnaireCompleted =
+    user.questionnaire_completed ?? user.questionnaireCompleted;
+  const parsedQuestionnaireCompleted =
+    typeof rawQuestionnaireCompleted === "boolean"
+      ? rawQuestionnaireCompleted
+      : typeof rawQuestionnaireCompleted === "string"
+        ? parseBooleanString(rawQuestionnaireCompleted) === true
+        : false;
+
   return {
     userId: resolvedUserId,
     firebaseUid: typeof user.firebase_uid === "string" ? user.firebase_uid : undefined,
@@ -62,7 +71,7 @@ function mapBackendUserToProfile(user: any): UserProfile | null {
         ? user.assistant_name
         : "Elli",
     email: normalizeEmail(user.email) || undefined,
-    questionnaireCompleted: Boolean(user.questionnaire_completed),
+    questionnaireCompleted: parsedQuestionnaireCompleted,
     replyLanguage: user.reply_language === "en" ? "en" : "ta",
   };
 }
@@ -251,18 +260,98 @@ function safeStringify(value: any) {
 }
 
 function resolveQuestionnaireCompleted(
-  localValue?: boolean,
+  _localValue?: boolean,
   remoteValue?: boolean
 ): boolean {
-  if (typeof localValue === "boolean") {
-    return localValue;
+  return remoteValue === true;
+}
+
+function readBackendQuestionnaireCompleted(payload: any): boolean | undefined {
+  const parsedPayload = tryParseJsonString(payload);
+  const queue: any[] = [parsedPayload];
+  const visited = new Set<any>();
+  let steps = 0;
+
+  while (queue.length && steps < 100) {
+    steps += 1;
+    const current = tryParseJsonString(queue.shift());
+
+    if (!current || typeof current !== "object") {
+      continue;
+    }
+
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    if (Array.isArray(current)) {
+      for (const item of current) {
+        queue.push(item);
+      }
+      continue;
+    }
+
+    for (const [key, value] of Object.entries(current)) {
+      const normalized = normalizeKey(key);
+
+      if (
+        normalized === "questionnairecompleted" ||
+        normalized === "questionnairecomplete"
+      ) {
+        if (typeof value === "boolean") return value;
+        if (typeof value === "string") {
+          const parsed = parseBooleanString(value);
+          if (typeof parsed === "boolean") return parsed;
+        }
+      }
+
+      if (value && typeof value === "object") {
+        queue.push(value);
+      } else if (typeof value === "string") {
+        const maybeParsed = tryParseJsonString(value);
+        if (maybeParsed !== value) {
+          queue.push(maybeParsed);
+        }
+      }
+    }
   }
 
-  if (typeof remoteValue === "boolean") {
-    return remoteValue;
+  return undefined;
+}
+
+function parseBooleanString(value: string): boolean | undefined {
+  const normalized = value.trim().toLowerCase();
+
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) {
+    return true;
   }
 
-  return false;
+  if (["false", "0", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return undefined;
+}
+
+function mapQuestionnaireCompletionResponseToProfile(payload: any): UserProfile | null {
+  const parsedPayload = tryParseJsonString(payload);
+  const candidates = [
+    parsedPayload?.user,
+    parsedPayload?.profile,
+    parsedPayload?.data?.user,
+    parsedPayload?.data?.profile,
+    parsedPayload?.result?.user,
+    parsedPayload?.result?.profile,
+    parsedPayload,
+  ];
+
+  for (const candidate of candidates) {
+    const profile = mapBackendUserToProfile(candidate);
+    if (profile) {
+      return profile;
+    }
+  }
+
+  return null;
 }
 
 function mergeProfileWithAuth(
@@ -381,7 +470,7 @@ export async function getProfileForFirebaseUid(
       const merged: UserProfile = {
         ...mergeProfileWithAuth(restored, normalizedUid, normalizedEmail),
         questionnaireCompleted: resolveQuestionnaireCompleted(
-          matchedCachedProfile?.questionnaireCompleted,
+          undefined,
           restored.questionnaireCompleted
         ),
       };
@@ -452,7 +541,7 @@ export async function createProfileOnBackend(profile: UserProfile) {
     firebaseUid: profile.firebaseUid || backendProfile?.firebaseUid,
     email: normalizeEmail(profile.email) || backendProfile?.email,
     questionnaireCompleted: resolveQuestionnaireCompleted(
-      profile.questionnaireCompleted,
+      undefined,
       backendProfile?.questionnaireCompleted
     ),
     replyLanguage: backendProfile?.replyLanguage || profile.replyLanguage || "ta",
@@ -467,15 +556,67 @@ export async function createProfileOnBackend(profile: UserProfile) {
 
 export async function markQuestionnaireCompleted(done: boolean = true) {
   const profile = await getProfile();
-  if (!profile) return null;
 
-  const updated: UserProfile = {
-    ...profile,
-    questionnaireCompleted: done,
-  };
+  if (!profile?.userId) {
+    throw new Error("Cannot complete questionnaire without a backend user id.");
+  }
 
-  await saveProfile(updated);
-  return updated;
+  const response = await submitQuestionnaire(profile.userId, {
+    completed: done,
+    source: "mobile_profiler",
+  });
+
+  const backendProfile = mapQuestionnaireCompletionResponseToProfile(response);
+  const backendCompleted =
+    backendProfile?.questionnaireCompleted ??
+    readBackendQuestionnaireCompleted(response);
+
+  if (typeof backendCompleted === "boolean") {
+    if (backendCompleted !== done) {
+      throw new Error(
+        "The backend did not confirm the requested questionnaire completion state."
+      );
+    }
+
+    const confirmed: UserProfile = {
+      ...profile,
+      ...backendProfile,
+      userId: backendProfile?.userId || profile.userId,
+      firebaseUid: profile.firebaseUid || backendProfile?.firebaseUid,
+      email: normalizeEmail(profile.email) || backendProfile?.email,
+      questionnaireCompleted: backendCompleted,
+      replyLanguage: backendProfile?.replyLanguage || profile.replyLanguage || "ta",
+    };
+
+    await saveProfile(confirmed);
+    return confirmed;
+  }
+
+  const restored = await resolveProfileFromBackendByAuth(
+    profile.firebaseUid,
+    profile.email
+  );
+
+  if (restored) {
+    const confirmed = mergeProfileWithAuth(
+      restored,
+      profile.firebaseUid,
+      profile.email
+    );
+
+    if (confirmed.questionnaireCompleted !== done) {
+      throw new Error(
+        "Questionnaire was submitted, but the backend profile does not show it as completed yet."
+      );
+    }
+
+    await saveProfile(confirmed);
+    return confirmed;
+  }
+
+  throw new Error(
+    "Questionnaire was submitted, but the backend did not return or resolve a confirmed completion state."
+  );
 }
 
 export async function getPersonalityQuestions(): Promise<PersonalityQuestion[]> {
