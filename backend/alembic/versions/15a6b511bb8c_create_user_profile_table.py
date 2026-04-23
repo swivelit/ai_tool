@@ -1,7 +1,7 @@
 """create user_profile table
 
 Revision ID: 15a6b511bb8c
-Revises: xxxx_add_daily_routine
+Revises: 825a0a39ad0e
 Create Date: 2025-12-24 05:58:52.756509
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '15a6b511bb8c'
-down_revision: Union[str, Sequence[str], None] = 'xxxx_add_daily_routine'
+revision: str = "15a6b511bb8c"
+down_revision: Union[str, Sequence[str], None] = "825a0a39ad0e"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -27,7 +27,6 @@ def upgrade():
         sa.Column("questions_version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("profile_summary", sa.Text(), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
-
         sa.ForeignKeyConstraint(
             ["user_id"],
             ["user.id"],
