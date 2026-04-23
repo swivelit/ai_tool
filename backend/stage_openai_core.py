@@ -8,7 +8,20 @@ import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    APIStatusError,
+    AuthenticationError,
+    BadRequestError,
+    ConflictError,
+    InternalServerError,
+    NotFoundError,
+    OpenAI,
+    PermissionDeniedError,
+    RateLimitError,
+    UnprocessableEntityError,
+)
 
 from config import (
     ENABLE_ANSWER_REVIEW,
@@ -25,6 +38,46 @@ from config import (
     RAW_TEMPERATURE,
     REVIEW_TEMPERATURE,
 )
+
+
+_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+_RETRYABLE_EXCEPTIONS = (
+    RateLimitError,
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+)
+_NON_RETRYABLE_EXCEPTIONS = (
+    BadRequestError,
+    AuthenticationError,
+    PermissionDeniedError,
+    NotFoundError,
+    ConflictError,
+    UnprocessableEntityError,
+)
+
+
+def _status_code_from_exception(exc: BaseException) -> Optional[int]:
+    status_code = getattr(exc, "status_code", None)
+    try:
+        return int(status_code) if status_code is not None else None
+    except Exception:
+        return None
+
+
+def _is_retryable_exception(exc: BaseException) -> bool:
+    if isinstance(exc, _NON_RETRYABLE_EXCEPTIONS):
+        return False
+    if isinstance(exc, _RETRYABLE_EXCEPTIONS):
+        return True
+    if isinstance(exc, APIStatusError):
+        return (_status_code_from_exception(exc) or 0) in _RETRYABLE_STATUS_CODES
+
+    status_code = _status_code_from_exception(exc)
+    if status_code is not None:
+        return status_code in _RETRYABLE_STATUS_CODES
+
+    return False
 
 
 class OpenAICore:
@@ -168,14 +221,18 @@ class OpenAICore:
                 return text
             except Exception as exc:
                 last_error = exc
-                if attempt == OPENAI_MAX_RETRIES:
+                retryable = _is_retryable_exception(exc)
+                if not retryable or attempt == OPENAI_MAX_RETRIES:
                     break
                 sleep_seconds = min(
                     OPENAI_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0.0, 0.25),
                     8.0,
                 )
                 time.sleep(sleep_seconds)
-        raise RuntimeError(f"OpenAI request failed after {OPENAI_MAX_RETRIES} attempt(s): {last_error}")
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("OpenAI request failed without returning a response.")
 
     def generate_text(
         self,
