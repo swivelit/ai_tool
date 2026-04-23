@@ -2,6 +2,53 @@ import Constants from "expo-constants";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
+type ClientRoutingMode = "local" | "backend";
+type ClientRoutingSource = "default" | "extra" | "env" | "forced";
+
+type BooleanFlagResolution = {
+  value: boolean;
+  source: ClientRoutingSource;
+};
+
+function parseBooleanFlag(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["false", "0", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return null;
+}
+
+function resolveBooleanFlag(
+  extraValue: unknown,
+  envValue: unknown,
+  defaultValue: boolean
+): BooleanFlagResolution {
+  const parsedExtra = parseBooleanFlag(extraValue);
+  if (parsedExtra !== null) {
+    return { value: parsedExtra, source: "extra" };
+  }
+
+  const parsedEnv = parseBooleanFlag(envValue);
+  if (parsedEnv !== null) {
+    return { value: parsedEnv, source: "env" };
+  }
+
+  return { value: defaultValue, source: "default" };
+}
+
 export const API_BASE: string =
   extra.API_BASE ||
   extra.apiBase ||
@@ -25,21 +72,39 @@ const LOCAL_STT_MODEL: string =
   process.env.EXPO_PUBLIC_LOCAL_STT_MODEL ||
   "whisper";
 
-const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean =
-  String(
-    extra.USE_LOCAL_VOICE_PIPELINE ||
-      process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ||
-      "false"
-  ).toLowerCase() === "true";
+const LOCAL_CHAT_PIPELINE_FLAG = resolveBooleanFlag(
+  extra.USE_LOCAL_CHAT_PIPELINE,
+  process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE,
+  true
+);
 
-const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean =
-  String(
-    extra.USE_LOCAL_CHAT_PIPELINE ||
-      process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ||
-      "false"
-  ).toLowerCase() === "true";
+const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = LOCAL_CHAT_PIPELINE_FLAG.value;
 
 let localChatInterceptionDepth = 0;
+let routingBannerLogged = false;
+
+export function getClientRoutingDefaults() {
+  return {
+    chat: (USE_LOCAL_CHAT_PIPELINE_DEFAULT ? "local" : "backend") as ClientRoutingMode,
+    voice: "backend" as ClientRoutingMode,
+    chatSource: LOCAL_CHAT_PIPELINE_FLAG.source,
+    voiceSource: "forced" as ClientRoutingSource,
+    apiBase: API_BASE,
+    localModelBaseUrl: LOCAL_MODEL_BASE_URL,
+  };
+}
+
+export function logClientRoutingBanner(logger: Pick<Console, "info"> = console) {
+  if (routingBannerLogged) {
+    return;
+  }
+
+  routingBannerLogged = true;
+  const routing = getClientRoutingDefaults();
+  logger.info(
+    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl}`
+  );
+}
 
 type FeatureFlagPayload = {
   ok?: boolean;
@@ -274,6 +339,8 @@ async function getFeatureFlags(forceRefresh = false) {
 }
 
 async function shouldUseLocalVoicePipeline() {
+  logClientRoutingBanner();
+
   // Voice uploads must go to the backend STT endpoint.
   // The current phone-local /audio/transcriptions path is returning
   // non-speech hallucinations for short inputs like "hello", which is why
@@ -473,6 +540,7 @@ function isChatPath(path: string) {
 }
 
 async function shouldUseLocalChatPipeline() {
+  logClientRoutingBanner();
   return USE_LOCAL_CHAT_PIPELINE_DEFAULT;
 }
 
