@@ -2316,14 +2316,17 @@ async def api_chat_stream(
 ):
     user = get_owned_user(session, auth_user)
     payload = payload.model_copy(update={"user_id": int(user.id)})
-    started_at = time.perf_counter()
-    response = await asyncio.to_thread(_run_chat_payload, payload)
-    assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
     chunk_size = max(12, int(os.getenv("STREAM_CHUNK_SIZE", "32") or 32))
 
     async def event_generator():
+        started_at = time.perf_counter()
         yield _sse_event("status", {"phase": "accepted"})
+        await asyncio.sleep(0)
         yield _sse_event("status", {"phase": "running"})
+        await asyncio.sleep(0)
+
+        response = await asyncio.to_thread(_run_chat_payload, payload)
+        assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
         for index in range(0, len(assistant_text), chunk_size):
             yield _sse_event(
                 "token",

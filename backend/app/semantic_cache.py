@@ -6,6 +6,7 @@ left in place for historical reference and potential backend-only experiments.
 """
 
 import sqlite3
+import threading
 import uuid
 import numpy as np
 import os
@@ -26,6 +27,7 @@ load_dotenv()
 _model = None
 _client = None
 _conn = None
+_conn_lock = threading.Lock()
 
 def get_openai_client():
     global _client
@@ -43,8 +45,10 @@ def get_embedding_model():
 def get_db_connection():
     global _conn
     if _conn is None:
-        _conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        _ensure_schema(_conn)
+        with _conn_lock:
+            if _conn is None:
+                _conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+                _ensure_schema(_conn)
     return _conn
 
 def _ensure_schema(conn):

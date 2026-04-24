@@ -18,33 +18,64 @@ from .database import SessionLocal, engine
 from .model_runtime import patch_openai_client
 from .observability import bootstrap_observability
 
-bootstrap_observability()
-patch_openai_client()
-load_dotenv()
-
 logger = logging.getLogger(__name__)
 
-MEMORY_TABLE_NAME = (
-    os.getenv("CONTINUOUS_LEARNING_TABLE", "continuous_learning_memory").strip()
-    or "continuous_learning_memory"
-)
-OPENAI_CHAT_MODEL = os.getenv(
-    "CONTINUOUS_LEARNING_CHAT_MODEL",
-    os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini"),
-)
-EMBED_MODEL_NAME = os.getenv("CONTINUOUS_LEARNING_EMBED_MODEL", "intfloat/e5-small")
-MEMORY_MATCH_THRESHOLD = float(
-    os.getenv("CONTINUOUS_LEARNING_MATCH_THRESHOLD", "0.80") or 0.80
-)
-IDLE_THRESHOLD_SECONDS = int(
-    os.getenv("CONTINUOUS_LEARNING_IDLE_SECONDS", "30") or 30
-)
-BACKGROUND_POLL_SECONDS = float(
-    os.getenv("CONTINUOUS_LEARNING_POLL_SECONDS", "5") or 5
-)
-MAX_MEMORY_ROWS_TO_SCAN = int(
-    os.getenv("CONTINUOUS_LEARNING_MAX_ROWS", "500") or 500
-)
+_runtime_initialized = False
+_runtime_init_lock = threading.Lock()
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_config_from_env() -> None:
+    global MEMORY_TABLE_NAME, OPENAI_CHAT_MODEL, EMBED_MODEL_NAME
+    global MEMORY_MATCH_THRESHOLD, IDLE_THRESHOLD_SECONDS
+    global BACKGROUND_POLL_SECONDS, MAX_MEMORY_ROWS_TO_SCAN
+
+    MEMORY_TABLE_NAME = (
+        os.getenv("CONTINUOUS_LEARNING_TABLE", "continuous_learning_memory").strip()
+        or "continuous_learning_memory"
+    )
+    OPENAI_CHAT_MODEL = os.getenv(
+        "CONTINUOUS_LEARNING_CHAT_MODEL",
+        os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini"),
+    )
+    EMBED_MODEL_NAME = os.getenv("CONTINUOUS_LEARNING_EMBED_MODEL", "intfloat/e5-small")
+    MEMORY_MATCH_THRESHOLD = _env_float("CONTINUOUS_LEARNING_MATCH_THRESHOLD", 0.80)
+    IDLE_THRESHOLD_SECONDS = _env_int("CONTINUOUS_LEARNING_IDLE_SECONDS", 30)
+    BACKGROUND_POLL_SECONDS = _env_float("CONTINUOUS_LEARNING_POLL_SECONDS", 5.0)
+    MAX_MEMORY_ROWS_TO_SCAN = _env_int("CONTINUOUS_LEARNING_MAX_ROWS", 500)
+
+
+def initialize_continuous_learning() -> None:
+    """Initialize optional runtime hooks explicitly instead of at import time."""
+    global _runtime_initialized
+    if _runtime_initialized:
+        return
+
+    with _runtime_init_lock:
+        if _runtime_initialized:
+            return
+
+        load_dotenv()
+        bootstrap_observability()
+        patch_openai_client()
+        _load_config_from_env()
+        _runtime_initialized = True
+
+
+_load_config_from_env()
 
 _client: Optional[openai.OpenAI] = None
 _embed_model: Optional[SentenceTransformer] = None
@@ -107,6 +138,7 @@ def _ensure_schema() -> None:
 
 
 def get_openai_client() -> openai.OpenAI:
+    initialize_continuous_learning()
     global _client
     if _client is None:
         with _client_lock:
@@ -121,6 +153,7 @@ def get_openai_client() -> openai.OpenAI:
 
 
 def get_embed_model() -> SentenceTransformer:
+    initialize_continuous_learning()
     global _embed_model
     if _embed_model is None:
         with _embed_model_lock:
@@ -355,6 +388,7 @@ def background_worker() -> None:
 
 def start_background_learning() -> threading.Thread:
     global _worker_thread
+    initialize_continuous_learning()
     _ensure_schema()
 
     with _worker_lock:

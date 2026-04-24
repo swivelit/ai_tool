@@ -212,7 +212,14 @@ class AgenticService:
             temperature=temperature,
             response_format={"type": "json_object"},
         )
-        return json.loads(self._extract_response_text(response))
+        text = self._extract_response_text(response)
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     def _llm_text(self, system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
         response = self.client.chat.completions.create(
@@ -608,10 +615,6 @@ Return plain text only.
 
         profile.updated_at = _utc_now()
         session.add(profile)
-        session.commit()
-        session.refresh(profile)
-
-        snapshot = self.persist_profile_snapshot(session, user_id)
 
         if completed and profile.profile_summary:
             session.add(
@@ -627,7 +630,11 @@ Return plain text only.
                     created_at=_utc_now(),
                 )
             )
-            session.commit()
+
+        session.commit()
+        session.refresh(profile)
+
+        snapshot = self.persist_profile_snapshot(session, user_id)
 
         return {"answers": merged, "summary": profile.profile_summary, "snapshot": snapshot}
 
@@ -823,6 +830,7 @@ Return ONLY JSON:
 You are the Orchestrator Agent for a personal assistant app.
 
 Choose exactly one route:
+- fast_greeting
 - weather
 - web_search
 - calendar
