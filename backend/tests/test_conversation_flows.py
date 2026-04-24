@@ -9,7 +9,7 @@ from sqlmodel import delete
 
 from app.database import SessionLocal
 from app.main import app, _get_job_queue
-from app.models import Conversation, Item, Job, QACache, User, UserProfile
+from app.models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
 
 
 @pytest.fixture(autouse=True)
@@ -18,9 +18,11 @@ def clean_db():
     queue.stop()
     with SessionLocal() as session:
         session.exec(delete(Job))
+        session.exec(delete(RagEmbedding))
         session.exec(delete(Conversation))
         session.exec(delete(QACache))
         session.exec(delete(Item))
+        session.exec(delete(DailyRoutine))
         session.exec(delete(UserProfile))
         session.exec(delete(User))
         session.commit()
@@ -28,9 +30,11 @@ def clean_db():
     queue.stop()
     with SessionLocal() as session:
         session.exec(delete(Job))
+        session.exec(delete(RagEmbedding))
         session.exec(delete(Conversation))
         session.exec(delete(QACache))
         session.exec(delete(Item))
+        session.exec(delete(DailyRoutine))
         session.exec(delete(UserProfile))
         session.exec(delete(User))
         session.commit()

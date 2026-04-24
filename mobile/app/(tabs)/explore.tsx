@@ -542,7 +542,7 @@ export default function Explore() {
                 <Text style={styles.topTitle}>Schedule</Text>
               </View>
 
-              <Pressable onPress={load} style={styles.topIconBtn}>
+              <Pressable onPress={() => { void load(); }} style={styles.topIconBtn}>
                 {loading ? (
                   <ActivityIndicator size="small" color={Brand.cocoa} />
                 ) : (

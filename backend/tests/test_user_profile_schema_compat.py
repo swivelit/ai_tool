@@ -12,7 +12,7 @@ import app.main as main_module
 from app.agentic_service import AgenticService
 from app.database import SessionLocal, engine
 from app.main import app, _get_job_queue
-from app.models import DailyRoutine, Job, User, UserProfile
+from app.models import DailyRoutine, Job, RagEmbedding, User, UserProfile
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +22,7 @@ def clean_db():
     queue.stop()
     with SessionLocal() as session:
         session.exec(delete(Job))
+        session.exec(delete(RagEmbedding))
         session.exec(delete(DailyRoutine))
         session.exec(delete(UserProfile))
         session.exec(delete(User))
@@ -30,6 +31,7 @@ def clean_db():
     queue.stop()
     with SessionLocal() as session:
         session.exec(delete(Job))
+        session.exec(delete(RagEmbedding))
         session.exec(delete(DailyRoutine))
         session.exec(delete(UserProfile))
         session.exec(delete(User))

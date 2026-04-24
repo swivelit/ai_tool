@@ -525,9 +525,9 @@ export default function Home() {
             new Date().toISOString(),
         } satisfies ChatSessionListItem;
       })
-      .filter(Boolean)
+      .filter((session): session is ChatSessionListItem => session !== null)
       .sort((a, b) => sessionTimeValue(b.sortTime) - sessionTimeValue(a.sortTime))
-      .slice(0, 40) as ChatSessionListItem[];
+      .slice(0, 40);
   }, [chatSessions, hiddenChatSessionIdSet, historyItemsById]);
 
   const activeChatSession = useMemo(() => {
