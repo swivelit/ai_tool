@@ -102,6 +102,7 @@ export default {
 
     plugins: [
       "expo-router",
+      "expo-secure-store",
       "@react-native-google-signin/google-signin",
       [
         "expo-speech-recognition",
