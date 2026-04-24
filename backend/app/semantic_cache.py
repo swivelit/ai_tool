@@ -47,8 +47,13 @@ def get_db_connection():
     if _conn is None:
         with _conn_lock:
             if _conn is None:
-                _conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-                _ensure_schema(_conn)
+                conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+                try:
+                    _ensure_schema(conn)
+                except Exception:
+                    conn.close()
+                    raise
+                _conn = conn
     return _conn
 
 def _ensure_schema(conn):

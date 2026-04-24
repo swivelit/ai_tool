@@ -1015,12 +1015,18 @@ function hashEmbedding(text: string, dims = 256) {
 }
 
 function cosine(a: number[], b: number[]) {
-  const size = Math.min(a.length, b.length);
-  if (!size) return 0;
+  if (!a.length || !b.length) return 0;
+  if (a.length !== b.length) {
+    console.warn(
+      `[localAgents] embedding dimension mismatch: ${a.length} !== ${b.length}; skipping similarity score.`
+    );
+    return 0;
+  }
+
   let dot = 0;
   let na = 0;
   let nb = 0;
-  for (let i = 0; i < size; i += 1) {
+  for (let i = 0; i < a.length; i += 1) {
     const av = Number(a[i] || 0);
     const bv = Number(b[i] || 0);
     dot += av * bv;
@@ -1103,14 +1109,15 @@ function shouldAttemptLocalMemoryConsolidation(
 
 function queueFileMutation<T>(lockKey: string, task: () => Promise<T>): Promise<T> {
   const previous = fileMutationQueues.get(lockKey) ?? Promise.resolve();
-  const run = previous.catch(() => undefined).then(task);
-  const settled = run.catch(() => undefined);
-  fileMutationQueues.set(lockKey, settled);
-  settled.finally(() => {
-    if (fileMutationQueues.get(lockKey) === settled) {
-      fileMutationQueues.delete(lockKey);
-    }
-  });
+  const run = previous.then(task);
+  fileMutationQueues.set(lockKey, run);
+  run
+    .finally(() => {
+      if (fileMutationQueues.get(lockKey) === run) {
+        fileMutationQueues.delete(lockKey);
+      }
+    })
+    .catch(() => undefined);
   return run;
 }
 

@@ -20,6 +20,10 @@ from .observability import bootstrap_observability
 
 logger = logging.getLogger(__name__)
 
+# Load .env before module-level configuration is read so imported defaults
+# reflect local deployment settings on first import.
+load_dotenv()
+
 _runtime_initialized = False
 _runtime_init_lock = threading.Lock()
 

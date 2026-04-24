@@ -26,26 +26,90 @@ function isAbortError(error: unknown) {
   );
 }
 
+function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
+  const validSignals = signals.filter(Boolean);
+
+  const nativeAny = (AbortSignal as typeof AbortSignal & {
+    any?: (signals: AbortSignal[]) => AbortSignal;
+  }).any;
+  if (typeof nativeAny === "function") {
+    return nativeAny(validSignals);
+  }
+
+  const controller = new AbortController();
+  const listeners = new Map<AbortSignal, () => void>();
+
+  const cleanup = () => {
+    for (const [signal, listener] of listeners) {
+      signal.removeEventListener("abort", listener);
+    }
+    listeners.clear();
+  };
+
+  const abortFrom = (signal: AbortSignal) => {
+    if (!controller.signal.aborted) {
+      (controller.abort as (reason?: unknown) => void)((signal as any).reason);
+    }
+    cleanup();
+  };
+
+  for (const signal of validSignals) {
+    if (signal.aborted) {
+      abortFrom(signal);
+      break;
+    }
+
+    const listener = () => abortFrom(signal);
+    listeners.set(signal, listener);
+    signal.addEventListener("abort", listener, { once: true });
+  }
+
+  return controller.signal;
+}
+
 async function fetchWithTimeout(
   url: string,
   options: RequestInit = {},
   timeoutMs = DEFAULT_API_TIMEOUT_MS
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutController = new AbortController();
+  const externalSignal = options.signal ?? null;
+  let abortSource: "timeout" | "external" | null = null;
+
+  const markExternalAbort = () => {
+    abortSource ??= "external";
+  };
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      markExternalAbort();
+    } else {
+      externalSignal.addEventListener("abort", markExternalAbort, { once: true });
+    }
+  }
+
+  const timeout = setTimeout(() => {
+    abortSource ??= "timeout";
+    timeoutController.abort();
+  }, timeoutMs);
+
+  const signal = externalSignal
+    ? combineAbortSignals([externalSignal, timeoutController.signal])
+    : timeoutController.signal;
 
   try {
     return await fetch(url, {
       ...options,
-      signal: options.signal || controller.signal,
+      signal,
     });
   } catch (error) {
-    if (isAbortError(error)) {
+    if (isAbortError(error) && abortSource === "timeout") {
       throw new ApiError("Request timed out", 408);
     }
     throw error;
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", markExternalAbort);
   }
 }
 
