@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlmodel import Session
 
+from .time_utils import utc_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -103,7 +105,7 @@ class VectorStore:
         if self._resolved_backend != "pgvector" or not embedding:
             return
 
-        updated_at = updated_at or datetime.utcnow()
+        updated_at = updated_at or utc_now()
         vector_literal = "[" + ",".join(f"{float(v):.8f}" for v in embedding) + "]"
         session.exec(
             text(

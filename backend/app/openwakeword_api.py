@@ -3,7 +3,11 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+
+from .auth import AuthUser, get_current_user, get_owned_user
+from .database import get_session
+from sqlmodel import Session
 
 from .openwakeword_support import (
     AudioDecodeError,
@@ -17,12 +21,41 @@ from .openwakeword_support import (
 router = APIRouter(prefix="/api/openwakeword", tags=["openwakeword"])
 service = OpenWakeWordSupport()
 
+MAX_WAKEWORD_UPLOAD_BYTES = int(os.getenv("MAX_WAKEWORD_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+ALLOWED_WAKEWORD_CONTENT_TYPES = {
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/m4a",
+    "audio/aac",
+    "audio/webm",
+    "application/octet-stream",
+}
+
+
+async def read_limited_upload(file: UploadFile) -> bytes:
+    content_type = str(file.content_type or "").split(";")[0].strip().lower()
+    if content_type and content_type not in ALLOWED_WAKEWORD_CONTENT_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported file type")
+    data = await file.read(MAX_WAKEWORD_UPLOAD_BYTES + 1)
+    if len(data) > MAX_WAKEWORD_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+    return data
+
+
+def owned_user_id(session: Session, auth_user: AuthUser) -> int:
+    return int(get_owned_user(session, auth_user).id)
+
+
 
 @router.post("/enrollment/reset")
 async def reset_openwakeword_enrollment(
-    user_id: int = Query(...),
     wake_phrase: str = Query(...),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
+    user_id = owned_user_id(session, auth_user)
     try:
         return service.reset(user_id, wake_phrase)
     except EnrollmentValidationError as exc:
@@ -31,9 +64,11 @@ async def reset_openwakeword_enrollment(
 
 @router.get("/enrollment/status")
 def get_openwakeword_enrollment_status(
-    user_id: int = Query(...),
     wake_phrase: Optional[str] = Query(default=None),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
+    user_id = owned_user_id(session, auth_user)
     try:
         return service.status(user_id, wake_phrase)
     except EnrollmentValidationError as exc:
@@ -42,13 +77,15 @@ def get_openwakeword_enrollment_status(
 
 @router.post("/enrollment/sample")
 async def upload_openwakeword_sample(
-    user_id: int = Query(...),
     wake_phrase: str = Query(...),
     sample_kind: str = Query(..., pattern="^(positive|negative)$"),
     file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
+    user_id = owned_user_id(session, auth_user)
     suffix = os.path.splitext(file.filename or "")[-1] or ".bin"
-    temp_path = write_upload_to_tempfile(await file.read(), suffix)
+    temp_path = write_upload_to_tempfile(await read_limited_upload(file), suffix)
 
     try:
         return service.save_sample(
@@ -71,9 +108,11 @@ async def upload_openwakeword_sample(
 
 @router.post("/enrollment/finalize")
 def finalize_openwakeword_enrollment(
-    user_id: int = Query(...),
     wake_phrase: str = Query(...),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
+    user_id = owned_user_id(session, auth_user)
     try:
         return service.finalize(user_id=user_id, wake_phrase=wake_phrase)
     except EnrollmentValidationError as exc:
@@ -86,11 +125,13 @@ def finalize_openwakeword_enrollment(
 
 @router.post("/enrollment/activate")
 def activate_custom_openwakeword_phrase(
-    user_id: int = Query(...),
     wake_phrase: str = Query(...),
     custom_model_path: Optional[str] = Query(default=None),
     notes: Optional[str] = Query(default=None),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
+    user_id = owned_user_id(session, auth_user)
     try:
         return service.activate_custom_phrase(
             user_id=user_id,

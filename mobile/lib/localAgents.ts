@@ -47,6 +47,9 @@ export type LocalProfilerState = {
   confidenceBySlot?: Record<string, number>;
   optionalProfileNotes?: string[];
   lastRunSource?: "model_json" | "model_salvage" | "fallback";
+  completionSyncState?: "incomplete" | "complete_local_pending_sync" | "complete_synced" | "sync_failed";
+  completedLocallyAt?: string;
+  pendingBackendSync?: boolean;
   history: LocalChatMessage[];
 };
 
@@ -417,7 +420,7 @@ function requireLocalModelBaseUrl(baseUrl: unknown, featureName: string) {
 
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
   baseUrl: "",
-  apiKey: "local-phone",
+  apiKey: "",
   timeoutMs: 45000,
   models: {
     profiler: "google/gemma-3-4b-it",
@@ -1482,7 +1485,7 @@ async function localChatRaw(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.apiKey}`,
+        ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
       },
       body: JSON.stringify({
         model,
@@ -1537,7 +1540,7 @@ async function embedTexts(texts: string[]) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.apiKey}`,
+        ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
       },
       body: JSON.stringify({
         model: cfg.models.embedding,
@@ -2381,15 +2384,49 @@ export const __memoryTestUtils = {
   shouldApplyProfileUpdate,
 };
 
+async function saveLocalOnboardingCompletion(
+  userId: number,
+  payload: {
+    completedLocally: boolean;
+    completedAt: string;
+    pendingBackendSync: boolean;
+    syncFailed?: boolean;
+  }
+) {
+  await writeJson(`${PROFILES_DIR}/${userId}/onboarding_completion.json`, payload);
+}
+
 async function syncAnswersToBackend(userId: number, answers: Record<string, string | string[]>) {
   const normalized = Object.fromEntries(
-    Object.entries(answers).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") : String(value || "")])
-  ) as Record<string, string>;
-  try {
-    await apiPost(`/users/${userId}/personality`, { answers: normalized });
-  } catch {
-    // keep local-first even if backend sync fails
-  }
+    Object.entries(answers).map(([key, value]) => [
+      key,
+      Array.isArray(value)
+        ? value.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+        : String(value ?? ""),
+    ])
+  ) as Record<string, string | string[]>;
+
+  await apiPost(`/users/${userId}/personality`, { answers: normalized });
+}
+
+export async function retryPendingOnboardingSync(userId: number) {
+  await ensureLocalAgentData();
+  const answers = await loadAnswers(userId);
+  const state = await loadProfilerState(userId);
+  await syncAnswersToBackend(userId, answers);
+  const completedAt = state.completedLocallyAt || nowIso();
+  await saveLocalOnboardingCompletion(userId, {
+    completedLocally: true,
+    completedAt,
+    pendingBackendSync: false,
+  });
+  await saveProfilerState(userId, {
+    ...state,
+    completionSyncState: "complete_synced",
+    pendingBackendSync: false,
+    completedLocallyAt: completedAt,
+  });
+  return { ok: true };
 }
 
 async function buildProfileSummaryLocally(userId: number, userProfile?: LocalUserProfile) {
@@ -2611,7 +2648,45 @@ export async function sendProfilerMessageOnPhone(
   await saveAnswers(userId, merged);
   await saveProfilerState(userId, nextState);
   await appendConversation(userId, "assistant", assistantReply);
-  await syncAnswersToBackend(userId, merged);
+
+  let completionSyncState = done ? "complete_local_pending_sync" : "incomplete";
+  let pendingBackendSync = done;
+  if (done) {
+    const completedAt = nowIso();
+    await saveLocalOnboardingCompletion(userId, {
+      completedLocally: true,
+      completedAt,
+      pendingBackendSync: true,
+    });
+    try {
+      await syncAnswersToBackend(userId, merged);
+      completionSyncState = "complete_synced";
+      pendingBackendSync = false;
+      await saveLocalOnboardingCompletion(userId, {
+        completedLocally: true,
+        completedAt,
+        pendingBackendSync: false,
+      });
+    } catch (error) {
+      completionSyncState = "sync_failed";
+      pendingBackendSync = true;
+      await saveLocalOnboardingCompletion(userId, {
+        completedLocally: true,
+        completedAt,
+        pendingBackendSync: true,
+        syncFailed: true,
+      });
+    }
+  } else {
+    await syncAnswersToBackend(userId, merged).catch(() => undefined);
+  }
+
+  await saveProfilerState(userId, {
+    ...nextState,
+    completionSyncState: completionSyncState as LocalProfilerState["completionSyncState"],
+    pendingBackendSync,
+    completedLocallyAt: done ? nextState.lastUpdatedAt : currentState.completedLocallyAt,
+  });
   await safeRecordTrainingSample("profiler", {
     input: trimmed,
     expectedOutput: assistantReply,
@@ -3038,6 +3113,26 @@ async function alignAnswer(
   }
 }
 
+const PROFILE_MEMORY_PATTERNS = [
+  /what do i like/i,
+  /what are my hobbies/i,
+  /which hobbies do i have/i,
+  /what are my interests/i,
+  /what do i enjoy/i,
+];
+
+const PROFILE_MEMORY_ALIASES = [
+  "what do i like",
+  "what are my hobbies",
+  "which hobbies do i have",
+  "what are my interests",
+  "what do i enjoy",
+];
+
+function isProfileMemoryQuestion(message: string) {
+  return PROFILE_MEMORY_PATTERNS.some((pattern) => pattern.test(message));
+}
+
 async function lookupSemanticCache(userId: number, message: string) {
   const rules = await getMemoryRules();
   const store = await loadSemanticCacheStore(userId);
@@ -3048,17 +3143,31 @@ async function lookupSemanticCache(userId: number, message: string) {
     return new Date(row.expiresAt).getTime() >= now;
   });
   if (!rows.length) return null;
-  const [queryVec] = await embedTexts([message]);
+
+  const profileMemory = isProfileMemoryQuestion(message);
+  const queryTexts = profileMemory ? [message, ...PROFILE_MEMORY_ALIASES] : [message];
+  const queryVectors = await embedTexts(queryTexts);
+
   let best: SemanticCacheEntry | null = null;
   let bestScore = 0;
-  for (const row of rows) {
-    const score = cosine(queryVec, Array.isArray(row.embedding) ? row.embedding : []);
-    if (score > bestScore) {
-      bestScore = score;
-      best = row;
+  for (const queryVec of queryVectors) {
+    for (const row of rows) {
+      if (profileMemory && row.route !== "profile" && !isProfileMemoryQuestion(row.sourceQuestion)) {
+        continue;
+      }
+      const score = cosine(queryVec, Array.isArray(row.embedding) ? row.embedding : []);
+      if (score > bestScore) {
+        bestScore = score;
+        best = row;
+      }
     }
   }
-  if (best && bestScore >= positiveFloat(rules.cache?.similarityThreshold, 0.92)) {
+
+  const threshold = profileMemory
+    ? 0.78
+    : positiveFloat(rules.cache?.similarityThreshold, 0.92);
+
+  if (best && bestScore >= threshold) {
     return { ...best, score: bestScore };
   }
   return null;
@@ -3320,7 +3429,7 @@ async function applyConservativeProfileUpdates(
   const applied = JSON.stringify(nextAnswers) !== JSON.stringify(currentAnswers);
   if (applied) {
     await saveAnswers(userId, nextAnswers);
-    await syncAnswersToBackend(userId, nextAnswers);
+    await syncAnswersToBackend(userId, nextAnswers).catch(() => undefined);
     await buildProfileSummaryLocally(userId, userProfile);
   }
 
@@ -3506,11 +3615,17 @@ async function buildProfileGroundedDraft(opts: {
 function canUseOpenAiFallback(opts: {
   decision: OrchestratorDecision;
   localReasonerRequestedFallback: boolean;
+  needsLiveData: boolean;
   noSafeLocalPath: boolean;
+  userAllowedCloudFallback: boolean;
 }) {
-  return Boolean(
-    opts.decision.fallbackAllowed &&
-      (opts.localReasonerRequestedFallback || opts.decision.needsLiveData || opts.noSafeLocalPath)
+  if (!opts.userAllowedCloudFallback) return false;
+
+  return (
+    opts.decision.fallbackAllowed === true ||
+    opts.localReasonerRequestedFallback ||
+    opts.needsLiveData ||
+    opts.noSafeLocalPath
   );
 }
 
@@ -3788,7 +3903,9 @@ export async function runLocalAssistantTurn(opts: {
       fallbackAllowed: canUseOpenAiFallback({
         decision,
         localReasonerRequestedFallback,
+        needsLiveData: decision.needsLiveData,
         noSafeLocalPath,
+        userAllowedCloudFallback: true,
       }),
     };
     if (decision.fallbackAllowed) {
@@ -3815,12 +3932,15 @@ export async function runLocalAssistantTurn(opts: {
         ...decision,
         route: "clarify",
         reason: "openai_fallback_blocked_by_policy",
-        needsClarification: true,
-        clarificationQuestion: generateClarifyingQuestion(message, replyLanguage),
+        needsClarification: false,
+        clarificationQuestion: "",
       };
       source = "local_rules";
       intent = "clarify";
-      draft = decision.clarificationQuestion;
+      draft =
+        replyLanguage === "ta"
+          ? "இதற்கு cloud/backend உதவி தேவை, ஆனால் cloud fallback முடக்கப்பட்டுள்ளது."
+          : "I need cloud/backend help for this, but cloud fallback is disabled.";
       english = draft;
       final = draft;
     }

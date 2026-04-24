@@ -92,6 +92,7 @@ def test_create_user_does_not_crash_with_array_shaped_profiler_schema(
 
     response = client.post(
         "/users",
+        headers={"Authorization": "Bearer dev:legacy-signup-user:legacy@example.com"},
         json={
             "firebase_uid": "legacy-signup-user",
             "email": "legacy@example.com",

@@ -1,5 +1,6 @@
 from typing import Optional
 from datetime import datetime
+from .time_utils import utc_now
 from sqlmodel import SQLModel, Field
 
 
@@ -17,10 +18,10 @@ class User(SQLModel, table=True):
     name: str
     place: Optional[str] = None
     timezone: str = "Asia/Kolkata"
-    assistant_name: str = "Ellie"
+    assistant_name: str = "Elli"
     reply_language: str = "ta"
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 # --------------------
@@ -48,8 +49,8 @@ class Item(SQLModel, table=True):
         foreign_key="user.id",
     )
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 # --------------------
@@ -72,7 +73,7 @@ class Conversation(SQLModel, table=True):
     transcript: Optional[str] = None
     llm_output_json: Optional[str] = None
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 # --------------------
@@ -93,7 +94,7 @@ class QACache(SQLModel, table=True):
     answer: str
 
     hits: int = Field(default=1)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 # --------------------
@@ -117,7 +118,7 @@ class DailyRoutine(SQLModel, table=True):
     work_end: Optional[str] = None
     daily_habits: Optional[str] = None
 
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 # --------------------
@@ -138,7 +139,7 @@ class UserProfile(SQLModel, table=True):
     questions_version: int = 1
 
     profile_summary: Optional[str] = None
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 # --------------------
@@ -155,7 +156,7 @@ class RagEmbedding(SQLModel, table=True):
     content_text: str
     embedding_json: str
     embedding_norm: float = 0.0
-    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
 
 
 # --------------------
@@ -177,9 +178,9 @@ class Job(SQLModel, table=True):
     attempts: int = 0
     max_attempts: int = 3
 
-    run_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    run_at: datetime = Field(default_factory=utc_now, index=True)
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)

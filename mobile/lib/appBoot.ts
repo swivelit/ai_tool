@@ -139,6 +139,7 @@ export function resolveDesiredRoute(input: {
   hasUser: boolean;
   hasProfile: boolean;
   questionnaireCompleted: boolean;
+  profileRestoreFailed?: boolean;
 }) {
   const rawPathname = normalizeRawPathname(input.pathname);
   const pathname = normalizePathname(rawPathname);
@@ -157,6 +158,10 @@ export function resolveDesiredRoute(input: {
     }
 
     return SIGNED_OUT_ENTRY_ROUTE;
+  }
+
+  if (input.profileRestoreFailed) {
+    return null;
   }
 
   if (!input.hasProfile) {

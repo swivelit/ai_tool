@@ -257,8 +257,9 @@ function AppShell() {
         hasUser: Boolean(user),
         hasProfile: Boolean(activeProfile?.userId),
         questionnaireCompleted: Boolean(activeProfile?.questionnaireCompleted),
+        profileRestoreFailed: Boolean(activeProfile?.restoreFailed),
       }),
-    [pathname, user, activeProfile?.userId, activeProfile?.questionnaireCompleted]
+    [pathname, user, activeProfile?.userId, activeProfile?.questionnaireCompleted, activeProfile?.restoreFailed]
   );
 
   const isNavigatorReady = Boolean(rootNavigationState?.key);
@@ -313,6 +314,17 @@ function AppShell() {
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
 
+      {!shouldShowBoot && activeProfile?.restoreFailed ? (
+        <View style={styles.restoreOverlay}>
+          <GlassCard style={styles.restoreCard}>
+            <Text style={styles.restoreTitle}>Couldn’t restore profile</Text>
+            <Text style={styles.restoreText}>
+              We could not restore your profile. Check your connection and try again.
+            </Text>
+          </GlassCard>
+        </View>
+      ) : null}
+
       {shouldShowBoot ? (
         <View style={styles.bootOverlay}>
           <BootScreen />
@@ -347,6 +359,31 @@ const styles = StyleSheet.create({
 
   bootOverlay: {
     ...StyleSheet.absoluteFillObject,
+  },
+
+  restoreOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+    backgroundColor: "rgba(255,248,240,0.86)",
+  },
+
+  restoreCard: {
+    padding: 18,
+    gap: 8,
+  },
+
+  restoreTitle: {
+    color: Brand.ink,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  restoreText: {
+    color: Brand.muted,
+    fontSize: 14,
+    lineHeight: 20,
   },
 
   bootPage: {

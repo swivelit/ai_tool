@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hmac
+import hashlib
 import json
 import logging
 import os
 import re
+import secrets
 import sys
 import tempfile
 import threading
@@ -15,7 +19,7 @@ import time
 import openai
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -33,6 +37,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 load_dotenv()
 
+from .auth import AuthUser, assert_owner, get_current_user, get_owned_user
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
@@ -70,12 +75,115 @@ else:
 
 logger = logging.getLogger(__name__)
 
+REQUIRED_PROFILE_SLOTS = {
+    "preferred_language",
+    "secondary_language",
+    "occupation",
+    "industry_or_field",
+    "hobbies",
+    "interests",
+    "communication_tone",
+    "answer_length",
+    "personality_style",
+    "assistant_persona",
+    "planning_style",
+    "learning_style",
+    "main_goal",
+    "dislikes",
+    "work_rhythm",
+}
+
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+ALLOWED_AUDIO_CONTENT_TYPES = {
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/m4a",
+    "audio/aac",
+    "audio/webm",
+    "application/octet-stream",
+}
+
+DOWNLOAD_TOKEN_SECRET = (
+    os.getenv("DOWNLOAD_TOKEN_SECRET", "").strip()
+    or os.getenv("SECRET_KEY", "").strip()
+    or secrets.token_urlsafe(32)
+)
+DOWNLOAD_TOKEN_TTL_SECONDS = int(os.getenv("DOWNLOAD_TOKEN_TTL_SECONDS", "900") or 900)
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _utc_now_iso() -> str:
     return _utc_now().isoformat().replace("+00:00", "Z")
+
+
+def safe_commit(session: Session, context: str) -> None:
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("DB commit failed", extra={"context": context})
+        raise
+
+
+def _load_json_object(raw: Optional[str]) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _has_completed_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_has_completed_value(item) for item in value)
+    if isinstance(value, dict):
+        return bool(value)
+    return True
+
+
+def _redact_user_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    redacted = dict(payload)
+    for key in {
+        "email",
+        "firebase_uid",
+        "transcript",
+        "user_input",
+        "profile_summary",
+        "answers",
+        "message",
+        "text",
+    }:
+        if key in redacted:
+            redacted[key] = "[REDACTED]"
+    return redacted
+
+
+async def read_limited_upload(file: UploadFile) -> bytes:
+    content_type = str(file.content_type or "").split(";")[0].strip().lower()
+    if content_type and content_type not in ALLOWED_AUDIO_CONTENT_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported file type")
+
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+    return data
+
+
+def _require_parent_user(session: Session, user_id: int) -> User:
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
 
 PERSONALITY_QUESTIONS_VERSION = 1
@@ -279,7 +387,7 @@ def _get_safety_filter() -> Optional[BehaviouralRAGFilter]:
         try:
             SAFETY_FILTER = BehaviouralRAGFilter()
         except Exception as exc:
-            print(f"[WARN] Failed to initialize SAFETY_FILTER: {exc}")
+            logger.warning("Failed to initialize SAFETY_FILTER: %s", exc)
             return None
 
     return SAFETY_FILTER
@@ -584,7 +692,7 @@ def _job_handle_export(session: Session, payload: Dict[str, Any]) -> Dict[str, A
     generator = generators.get(export_format)
     if generator is None:
         raise RuntimeError(f"Unsupported export format: {export_format}")
-    return _build_download_payload(generator(item))
+    return _build_download_payload(generator(item), item=item)
 
 
 def _job_handle_chat(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -875,8 +983,11 @@ class TextAnalysisRequest(BaseModel):
     reply_language: Optional[str] = None
 
 
+PersonalityAnswerValue = Union[str, List[str]]
+
+
 class PersonalityAnswersIn(BaseModel):
-    answers: Dict[str, str]
+    answers: Dict[str, PersonalityAnswerValue]
 
 
 class TextAnalysisResponse(BaseModel):
@@ -943,7 +1054,26 @@ def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) ->
         response_format={"type": "json_object"},
     )
     raw = _extract_response_text(response)
-    return json.loads(raw)
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "LLM returned invalid JSON",
+            extra={"raw_length": len(raw or "")},
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Model returned invalid JSON",
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status_code=502,
+            detail="Model returned JSON but not an object",
+        )
+
+    return parsed
 
 
 def llm_text(system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
@@ -1012,8 +1142,12 @@ def log_conversation(
         llm_output_json=json.dumps(llm_json_out, ensure_ascii=False) if llm_json_out else None,
         created_at=_utc_now(),
     )
-    session.add(row)
-    session.commit()
+    try:
+        session.add(row)
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("Failed to log conversation", extra={"user_id": user_id, "channel": channel})
 
 
 def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, answer_json: dict):
@@ -1026,18 +1160,34 @@ def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, ans
         row.hits = (row.hits or 0) + 1
         row.updated_at = _utc_now()
         session.add(row)
-        session.commit()
+        safe_commit(session, "upsert_qa_cache_update")
         return
-    session.add(
-        QACache(
-            user_id=user_id,
-            question=question,
-            answer=json.dumps(answer_json, ensure_ascii=False),
-            hits=1,
-            updated_at=_utc_now(),
+
+    try:
+        session.add(
+            QACache(
+                user_id=user_id,
+                question=question,
+                answer=json.dumps(answer_json, ensure_ascii=False),
+                hits=1,
+                updated_at=_utc_now(),
+            )
         )
-    )
-    session.commit()
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        row = session.exec(q).first()
+        if not row:
+            raise
+        row.answer = json.dumps(answer_json, ensure_ascii=False)
+        row.hits = (row.hits or 0) + 1
+        row.updated_at = _utc_now()
+        session.add(row)
+        safe_commit(session, "upsert_qa_cache_integrity_update")
+    except Exception:
+        session.rollback()
+        logger.exception("Failed to upsert QA cache", extra={"user_id": user_id})
+        raise
 
 # -----------------------------
 # 🔹 ADD YOUR FUNCTION HERE
@@ -1231,10 +1381,10 @@ def _log_stage_history(user_id: Optional[int], profile: Dict[str, Any], query: s
     record = {
         "timestamp": _utc_now_iso(),
         "user_id": uid,
-        "query": query,
-        "profile_summary": profile.get("profile_summary", ""),
-        "profile_card": profile.get("profile_card", {}),
-        "result": result,
+        "query": "[REDACTED]",
+        "profile_summary": "[REDACTED]",
+        "profile_card": {},
+        "result": {k: v for k, v in result.items() if k not in {"raw_english", "remodeled_english", "tamil_text", "theni_tamil_text"}},
     }
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -1325,7 +1475,7 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
             STAGE_CACHE.set(cache_key, fast_path)
             return fast_path
         else:
-            print(f"[DEBUG] Fast-path skipped (Confidence: {confidence:.2f}, Source: {source}). Falling back to OpenAI.")
+            logger.debug("Fast path skipped; falling back to OpenAI", extra={"confidence": confidence, "source": source})
 
     profile = _sync_stage_profile(session, user_id)
     onboarding_profile = load_onboarding_profile(str(user_id))
@@ -1430,7 +1580,7 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
     if checker is not None:
         _safety_result = checker.apply(_safety_result, session, user_id)
     else:
-        print("[WARN] Safety filter skip: Filter not initialized.")
+        logger.warning("Safety filter skipped because it is not initialized")
 
     raw_english       = _safety_result.get("raw_english", raw_english)
     remodeled_english = _safety_result.get("remodeled_english", remodeled_english)
@@ -1451,16 +1601,19 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         theni_tamil_text = _safety_theni
         translation_meta = {"source": "safety_filter_retranslation"}
     elif resolved_reply_language == "ta":
-        stage_translator = _get_stage_translator()
-        t0 = time.perf_counter()
-        translation_meta = stage_translator.english_to_tamil_with_meta(remodeled_english, profile)
-        tamil_text = str(translation_meta.get("tamil_text", "")).strip()
-        timings["english_to_tamil_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        stage_translator = _get_stage_translator(required=False)
+        if stage_translator is None:
+            logger.warning("Tamil translator unavailable; falling back to English")
+            translation_meta = {"skipped": True, "reason": "translator_unavailable", "fallback_language": "en"}
+        else:
+            t0 = time.perf_counter()
+            translation_meta = stage_translator.english_to_tamil_with_meta(remodeled_english, profile)
+            tamil_text = str(translation_meta.get("tamil_text", "")).strip()
+            timings["english_to_tamil_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
-        stage_translator = _get_stage_translator()
-        t0 = time.perf_counter()
-        theni_tamil_text = stage_translator.tamil_to_thenitamil(tamil_text)
-        timings["tamil_to_theni_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+            t0 = time.perf_counter()
+            theni_tamil_text = stage_translator.tamil_to_thenitamil(tamil_text)
+            timings["tamil_to_theni_ms"] = round((time.perf_counter() - t0) * 1000, 2)
     else:
         translation_meta = {"skipped": True, "reason": "reply_language_is_english"}
 
@@ -1755,12 +1908,15 @@ def _questionnaire_completed(profile: Optional[UserProfile]) -> bool:
     if not profile:
         return False
 
-    try:
-        answers = json.loads(profile.answers_json or "{}")
-    except Exception:
-        answers = {}
+    answers = _load_json_object(profile.answers_json)
+    if not answers:
+        return False
 
-    return bool(answers)
+    for slot in REQUIRED_PROFILE_SLOTS:
+        if not _has_completed_value(answers.get(slot)):
+            return False
+
+    return True
 
 
 def _ensure_user_profile(session: Session, user_id: int) -> UserProfile:
@@ -1775,7 +1931,7 @@ def _ensure_user_profile(session: Session, user_id: int) -> UserProfile:
         updated_at=_utc_now(),
     )
     session.add(profile)
-    session.commit()
+    safe_commit(session, "_ensure_user_profile")
     session.refresh(profile)
     return profile
 
@@ -1826,25 +1982,41 @@ def _find_existing_user(
 
 
 @app.post("/users")
-def create_user(payload: UserCreate, session: Session = Depends(get_session)):
+def create_user(
+    payload: UserCreate,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
     assistant_name = (payload.assistant_name or "Elli").strip() or "Elli"
     reply_language = _normalize_reply_language(payload.reply_language)
-    normalized_email = _normalize_email(payload.email)
-    firebase_uid = (payload.firebase_uid or "").strip() or None
+    normalized_email = _normalize_email(auth_user.email or payload.email)
+    firebase_uid = auth_user.firebase_uid
 
-    print(
-        "[DEBUG] /users incoming payload:",
-        json.dumps(payload.model_dump(), ensure_ascii=False, default=str),
-    )
+    existing_by_uid = session.exec(
+        select(User).where(User.firebase_uid == firebase_uid)
+    ).first()
 
-    try:
-        user = _find_existing_user(
-            session,
-            user_id=payload.user_id,
-            firebase_uid=firebase_uid,
-            email=normalized_email,
+    existing_by_email = None
+    if normalized_email:
+        existing_by_email = session.exec(
+            select(User).where(User.email == normalized_email)
+        ).first()
+
+    if existing_by_uid and existing_by_email and existing_by_uid.id != existing_by_email.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Firebase UID and email belong to different users",
         )
 
+    user = existing_by_uid or existing_by_email
+
+    if user and user.firebase_uid and user.firebase_uid != firebase_uid:
+        raise HTTPException(
+            status_code=409,
+            detail="Email already belongs to a different Firebase user",
+        )
+
+    try:
         if user is None:
             user = User(
                 firebase_uid=firebase_uid,
@@ -1855,52 +2027,29 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
                 assistant_name=assistant_name,
                 reply_language=reply_language,
             )
-            session.add(user)
         else:
-            user.firebase_uid = firebase_uid or user.firebase_uid
+            user.firebase_uid = firebase_uid
             user.email = normalized_email or user.email
             user.name = payload.name
             user.place = payload.place
             user.timezone = payload.timezone or user.timezone or "Asia/Kolkata"
             user.assistant_name = assistant_name
             user.reply_language = reply_language or getattr(user, "reply_language", "ta") or "ta"
-            session.add(user)
 
-        session.commit()
-        session.refresh(user)
-    except IntegrityError:
-        session.rollback()
-        user = _find_existing_user(
-            session,
-            user_id=payload.user_id,
-            firebase_uid=firebase_uid,
-            email=normalized_email,
-        )
-        if user is None:
-            raise HTTPException(409, "User could not be created because of a conflicting identity record.")
-        user.firebase_uid = firebase_uid or user.firebase_uid
-        user.email = normalized_email or user.email
-        user.name = payload.name
-        user.place = payload.place
-        user.timezone = payload.timezone or user.timezone or "Asia/Kolkata"
-        user.assistant_name = assistant_name
-        user.reply_language = reply_language or getattr(user, "reply_language", "ta") or "ta"
         session.add(user)
-        session.commit()
+        safe_commit(session, "create_user")
         session.refresh(user)
-    except Exception as exc:
+    except IntegrityError as exc:
         session.rollback()
-        print(f"[DEBUG] /users failed while saving: {exc}")
-        raise
+        raise HTTPException(
+            status_code=409,
+            detail="User could not be created because of a conflicting identity record.",
+        ) from exc
 
     profile = _ensure_user_profile(session, int(user.id))
     response_payload = _serialize_user_payload(user, profile)
 
-    print(
-        "[DEBUG] /users response payload:",
-        json.dumps(response_payload, ensure_ascii=False, default=str),
-    )
-
+    logger.info("User profile saved", extra={"user_id": user.id})
     _get_agentic_service().persist_profile_snapshot(session, int(user.id))
     return response_payload
 
@@ -1910,19 +2059,10 @@ def resolve_user(
     firebase_uid: Optional[str] = Query(default=None),
     email: Optional[str] = Query(default=None),
     session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    normalized_email = _normalize_email(email)
-    normalized_uid = (firebase_uid or "").strip() or None
-
-    if not normalized_uid and not normalized_email:
-        raise HTTPException(400, "firebase_uid or email is required")
-
-    user = _find_existing_user(
-        session,
-        firebase_uid=normalized_uid,
-        email=normalized_email,
-    )
-
+    # Compatibility endpoint: identity is resolved only from the verified bearer token.
+    user = session.exec(select(User).where(User.firebase_uid == auth_user.firebase_uid)).first()
     if not user:
         return {"found": False}
 
@@ -1933,19 +2073,36 @@ def resolve_user(
     }
 
 
+@app.get("/users/me")
+def get_me(
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    profile = _ensure_user_profile(session, int(user.id))
+    return _serialize_user_payload(user, profile)
+
+
 @app.get("/users/{user_id}")
-def get_user(user_id: int, session: Session = Depends(get_session)):
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
+def get_user(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     profile = _ensure_user_profile(session, user_id)
     return _serialize_user_payload(user, profile)
 
+
 @app.delete("/users/{user_id}")
-def delete_user_account(user_id: int, session: Session = Depends(get_session)):
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
+def delete_user_account(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
 
     try:
         session.exec(delete(Item).where(Item.user_id == user_id))
@@ -1956,17 +2113,17 @@ def delete_user_account(user_id: int, session: Session = Depends(get_session)):
         session.exec(delete(RagEmbedding).where(RagEmbedding.user_id == user_id))
         session.exec(delete(Job).where(Job.user_id == user_id))
         session.delete(user)
-        session.commit()
-    except Exception as exc:
+        safe_commit(session, "delete_user_account")
+    except Exception:
         session.rollback()
-        print(f"[DEBUG] /users/{{user_id}} delete failed: {exc}")
+        logger.exception("Failed to delete user account", extra={"user_id": user_id})
         raise
 
     for path_getter in (STAGE_BEHAVIOUR._profile_path, STAGE_BEHAVIOUR._history_log_path):
         try:
             path_getter(str(user_id)).unlink(missing_ok=True)
-        except Exception as exc:
-            print(f"[WARN] Failed to delete stage file for user {user_id}: {exc}")
+        except Exception:
+            logger.warning("Failed to delete stage file", extra={"user_id": user_id})
 
     STAGE_CACHE.delete_prefix(f"{user_id}:")
 
@@ -1983,13 +2140,26 @@ def get_pipeline_questions():
 
 
 @app.get("/api/profile/{user_id}")
-def get_pipeline_profile(user_id: int, session: Session = Depends(get_session)):
+def get_pipeline_profile(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     profile = _sync_stage_profile(session, user_id)
     return {"exists": True, "profile": profile}
 
 
 @app.post("/api/profile/{user_id}")
-def save_pipeline_profile(user_id: int, payload: PersonalityAnswersIn, session: Session = Depends(get_session)):
+def save_pipeline_profile(
+    user_id: int,
+    payload: PersonalityAnswersIn,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     _get_agentic_service().sync_answers_to_profile(session, user_id, payload.answers)
     stage_profile = _sync_stage_profile(session, user_id)
     STAGE_CACHE.clear()
@@ -1997,17 +2167,36 @@ def save_pipeline_profile(user_id: int, payload: PersonalityAnswersIn, session: 
 
 
 @app.get("/api/agents/profiler/{user_id}")
-def get_profiler_state(user_id: int, session: Session = Depends(get_session)):
+def get_profiler_state(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     return _get_agentic_service().get_profiler_state(session, user_id)
 
 
 @app.post("/api/agents/profiler/{user_id}/start")
-def start_profiler_agent(user_id: int, session: Session = Depends(get_session)):
+def start_profiler_agent(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     return _get_agentic_service().start_profiler(session, user_id)
 
 
 @app.post("/api/agents/profiler/{user_id}/message")
-def profiler_agent_message(user_id: int, payload: AgentMessageRequest, session: Session = Depends(get_session)):
+def profiler_agent_message(
+    user_id: int,
+    payload: AgentMessageRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     try:
         return _get_agentic_service().profiler_turn(session, user_id, payload.message, payload.reply_language)
     except ValueError as exc:
@@ -2015,7 +2204,14 @@ def profiler_agent_message(user_id: int, payload: AgentMessageRequest, session: 
 
 
 @app.post("/api/agents/memory/{user_id}/sync")
-def sync_memory_agent(user_id: int, payload: AgentMemorySyncRequest, session: Session = Depends(get_session)):
+def sync_memory_agent(
+    user_id: int,
+    payload: AgentMemorySyncRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     return _get_agentic_service().maybe_sync_memory(session, user_id, force=bool(payload.force))
 
 
@@ -2093,7 +2289,13 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
 
 
 @app.post("/api/chat")
-def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
+def api_chat(
+    payload: ChatAPIRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    payload = payload.model_copy(update={"user_id": int(user.id)})
     return _run_chat_request(session, payload)
 
 
@@ -2107,7 +2309,13 @@ def _sse_event(event: str, data: Any) -> str:
 
 
 @app.post("/api/chat/stream")
-async def api_chat_stream(payload: ChatAPIRequest):
+async def api_chat_stream(
+    payload: ChatAPIRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    payload = payload.model_copy(update={"user_id": int(user.id)})
     started_at = time.perf_counter()
     response = await asyncio.to_thread(_run_chat_payload, payload)
     assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
@@ -2134,15 +2342,20 @@ async def api_chat_stream(payload: ChatAPIRequest):
 
 
 @app.post("/api/chat/jobs")
-def enqueue_chat_job(payload: ChatAPIRequest, session: Session = Depends(get_session)):
+def enqueue_chat_job(
+    payload: ChatAPIRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
     _require_async_jobs_available()
+    user = get_owned_user(session, auth_user)
     text = _resolve_chat_text(payload)
     job = _get_job_queue().enqueue(
         session,
         job_type="chat",
-        user_id=payload.user_id,
+        user_id=int(user.id),
         payload={
-            "user_id": payload.user_id,
+            "user_id": int(user.id),
             "message": text,
             "reply_language": payload.reply_language,
         },
@@ -2152,8 +2365,16 @@ def enqueue_chat_job(payload: ChatAPIRequest, session: Session = Depends(get_ses
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job_status(job_id: int, session: Session = Depends(get_session)):
-    return {"ok": True, "job": _serialize_job(_get_job_queue().get_job(session, job_id))}
+def get_job_status(
+    job_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    job = _get_job_queue().get_job(session, job_id)
+    if not job or job.user_id != user.id:
+        raise HTTPException(404, "Job not found")
+    return {"ok": True, "job": _serialize_job(job)}
 
 
 @app.get("/api/flags")
@@ -2209,16 +2430,20 @@ def api_tts(payload: TTSRequest):
 
 
 @app.post("/users/{user_id}/questionnaire")
-def save_mobile_questionnaire(user_id: int, payload: Dict[str, Any], session: Session = Depends(get_session)):
+def save_mobile_questionnaire(
+    user_id: int,
+    payload: Dict[str, Any],
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
     """Deprecated compatibility endpoint for older mobile builds.
 
     Questionnaire completion is derived from saved personality/profiler answers in
     ``UserProfile.answers_json``. This route intentionally does not write daily
     routine data; daily routine writes belong to ``PUT /users/{user_id}/daily-routine``.
     """
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
 
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
     completed = _questionnaire_completed(profile)
@@ -2236,10 +2461,13 @@ def save_mobile_questionnaire(user_id: int, payload: Dict[str, Any], session: Se
 
 
 @app.post("/users/{user_id}/generate-daily-checkins")
-def generate_daily_checkins(user_id: int, session: Session = Depends(get_session)):
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
+def generate_daily_checkins(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     routine = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
     if not routine:
         raise HTTPException(400, "Daily routine not set. Please configure routine first.")
@@ -2267,7 +2495,13 @@ def generate_daily_checkins(user_id: int, session: Session = Depends(get_session
 
 
 @app.get("/users/{user_id}/daily-routine", response_model=DailyRoutineOut)
-def get_daily_routine(user_id: int, session: Session = Depends(get_session)):
+def get_daily_routine(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     routine = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
     if not routine:
         raise HTTPException(404, "Daily routine not set")
@@ -2275,7 +2509,14 @@ def get_daily_routine(user_id: int, session: Session = Depends(get_session)):
 
 
 @app.put("/users/{user_id}/daily-routine", response_model=DailyRoutineOut)
-def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session = Depends(get_session)):
+def upsert_daily_routine(
+    user_id: int,
+    payload: DailyRoutineIn,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     work_start = normalize_optional(payload.work_start)
     work_end = normalize_optional(payload.work_end)
     daily_habits = normalize_optional(payload.daily_habits)
@@ -2295,6 +2536,7 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
         routine.daily_habits = daily_habits
         routine.updated_at = _utc_now()
     else:
+        _require_parent_user(session, user_id)
         routine = DailyRoutine(
             user_id=user_id,
             wake_time=payload.wake_time,
@@ -2305,7 +2547,7 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
             updated_at=_utc_now(),
         )
         session.add(routine)
-    session.commit()
+    safe_commit(session, "upsert_daily_routine")
     session.refresh(routine)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
@@ -2314,26 +2556,46 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
 
 
 @app.get("/users/{user_id}/personality")
-def get_personality(user_id: int, session: Session = Depends(get_session)):
+def get_personality(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
     if not profile:
         raise HTTPException(404, "Personality profile not found")
-    return {"answers": json.loads(profile.answers_json or "{}"), "summary": profile.profile_summary}
+    return {"answers": _load_json_object(profile.answers_json), "summary": profile.profile_summary}
 
 
 @app.post("/users/{user_id}/personality")
-def save_personality_answers(user_id: int, payload: PersonalityAnswersIn, session: Session = Depends(get_session)):
+def save_personality_answers(
+    user_id: int,
+    payload: PersonalityAnswersIn,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     _get_agentic_service().sync_answers_to_profile(session, user_id, payload.answers)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
     return {"ok": True}
 
+
 @app.post("/users/{user_id}/personality/generate-summary")
-def generate_personality_summary(user_id: int, session: Session = Depends(get_session)):
+def generate_personality_summary(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
     if not profile:
         raise HTTPException(404, "Personality answers not found")
-    answers = json.loads(profile.answers_json or "{}")
+    answers = _load_json_object(profile.answers_json)
     if not answers:
         raise HTTPException(400, "No personality answers provided yet")
     result = _get_agentic_service().sync_answers_to_profile(session, user_id, answers)
@@ -2342,12 +2604,17 @@ def generate_personality_summary(user_id: int, session: Session = Depends(get_se
     return {"summary": result.get("summary", "")}
 
 @app.post("/analyze-text", response_model=TextAnalysisResponse)
-def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_session)):
+def analyze_text(
+    payload: TextAnalysisRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     reply_language = payload.reply_language or (payload.meta or {}).get("reply_language")
-    pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, payload.text, reply_language)
+    pipeline_result = _run_agentic_or_pipeline(session, int(user.id), payload.text, reply_language)
     item, _, _ = _save_item_from_pipeline(
         session,
-        user_id=payload.user_id,
+        user_id=int(user.id),
         source="text",
         raw_text=payload.text,
         transcript=None,
@@ -2356,6 +2623,7 @@ def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_se
     )
     return item_to_response(item)
 
+
 @app.post("/transcribe-and-analyze")
 async def transcribe_and_analyze(
     user_id: Optional[int] = None,
@@ -2363,29 +2631,30 @@ async def transcribe_and_analyze(
     speech_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    suffix = os.path.splitext(file.filename)[-1] or ".m4a"
+    user = get_owned_user(session, auth_user)
+    if user_id is not None:
+        assert_owner(int(user_id), user)
+
+    suffix = os.path.splitext(file.filename or "")[-1] or ".m4a"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
+        tmp.write(await read_limited_upload(file))
         tmp_path = tmp.name
 
     try:
-        # IMPORTANT:
-        # reply_language controls the assistant's reply language.
-        # speech_language controls STT only.
-        # If speech_language is not provided, Whisper auto-detects the spoken language.
         transcript_text = _transcribe_audio_file(tmp_path, speech_language)
 
         pipeline_result = _run_agentic_or_pipeline(
             session,
-            user_id,
+            int(user.id),
             transcript_text,
             reply_language,
         )
 
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
-            user_id=user_id,
+            user_id=int(user.id),
             source="voice",
             raw_text=transcript_text,
             transcript=transcript_text,
@@ -2417,29 +2686,30 @@ async def api_transcribe_and_analyze(
     speech_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    suffix = os.path.splitext(file.filename)[-1] or ".m4a"
+    user = get_owned_user(session, auth_user)
+    if user_id is not None:
+        assert_owner(int(user_id), user)
+
+    suffix = os.path.splitext(file.filename or "")[-1] or ".m4a"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
+        tmp.write(await read_limited_upload(file))
         tmp_path = tmp.name
 
     try:
-        # IMPORTANT:
-        # reply_language controls the assistant's reply language.
-        # speech_language controls STT only.
-        # If speech_language is not provided, Whisper auto-detects the spoken language.
         transcript_text = _transcribe_audio_file(tmp_path, speech_language)
 
         pipeline_result = _run_agentic_or_pipeline(
             session,
-            user_id,
+            int(user.id),
             transcript_text,
             reply_language,
         )
 
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
-            user_id=user_id,
+            user_id=int(user.id),
             source="voice",
             raw_text=transcript_text,
             transcript=transcript_text,
@@ -2460,10 +2730,11 @@ async def transcribe_wake_phrase(
     language: Optional[str] = Query(default=None),
     locale: Optional[str] = Query(default=None),
     file: UploadFile = File(...),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    suffix = os.path.splitext(file.filename)[-1] or ".wav"
+    suffix = os.path.splitext(file.filename or "")[-1] or ".wav"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
+        tmp.write(await read_limited_upload(file))
         tmp_path = tmp.name
 
     try:
@@ -2486,15 +2757,26 @@ def _require_positive_user_id(user_id: Optional[int]) -> int:
     return int(user_id)
 
 
+def _get_owned_item(session: Session, item_id: int, user_id: int) -> Item:
+    item = session.get(Item, item_id)
+    if not item or item.user_id != user_id:
+        raise HTTPException(404, "Item not found")
+    return item
+
+
 @app.get("/items", response_model=List[TextAnalysisResponse])
 def list_items(
     session: Session = Depends(get_session),
-    user_id: int = Query(...),
+    user_id: Optional[int] = Query(default=None),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    resolved_user_id = _require_positive_user_id(user_id)
+    user = get_owned_user(session, auth_user)
+    if user_id is not None:
+        assert_owner(int(user_id), user)
+
     query = (
         select(Item)
-        .where(Item.user_id == resolved_user_id)
+        .where(Item.user_id == int(user.id))
         .order_by(Item.created_at.desc())
     )
     items = session.exec(query).all()
@@ -2505,32 +2787,30 @@ def list_items(
 def get_item(
     item_id: int,
     session: Session = Depends(get_session),
-    user_id: int = Query(...),
+    user_id: Optional[int] = Query(default=None),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    resolved_user_id = _require_positive_user_id(user_id)
-    item = session.exec(
-        select(Item).where(Item.id == item_id, Item.user_id == resolved_user_id)
-    ).first()
-    if not item:
-        raise HTTPException(404, "Item not found")
+    user = get_owned_user(session, auth_user)
+    if user_id is not None:
+        assert_owner(int(user_id), user)
+    item = _get_owned_item(session, item_id, int(user.id))
     return item_to_response(item)
 
 
 @app.delete("/items/{item_id}")
 def delete_item(
     item_id: int,
-    user_id: int = Query(...),
+    user_id: Optional[int] = Query(default=None),
     session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    resolved_user_id = _require_positive_user_id(user_id)
-    item = session.exec(
-        select(Item).where(Item.id == item_id, Item.user_id == resolved_user_id)
-    ).first()
-    if not item:
-        raise HTTPException(404, "Item not found")
+    user = get_owned_user(session, auth_user)
+    if user_id is not None:
+        assert_owner(int(user_id), user)
+    item = _get_owned_item(session, item_id, int(user.id))
 
     session.delete(item)
-    session.commit()
+    safe_commit(session, "delete_item")
 
     return {"ok": True, "id": item_id}
 
@@ -2558,22 +2838,55 @@ def _category_export_dir(base_dir: Path, category: Optional[str]) -> Path:
     return category_dir
 
 
-def _build_download_payload(path: Path) -> Dict[str, Any]:
+def _sign_download_payload(payload: Dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    sig = hmac.new(DOWNLOAD_TOKEN_SECRET.encode("utf-8"), body.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
+
+
+def _verify_download_token(token: str) -> Dict[str, Any]:
+    token = str(token or "").strip()
+    if "." not in token:
+        raise HTTPException(404, "File not found")
+    body, sig = token.rsplit(".", 1)
+    expected = hmac.new(DOWNLOAD_TOKEN_SECRET.encode("utf-8"), body.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        raise HTTPException(404, "File not found")
+    try:
+        padded = body + "=" * (-len(body) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(404, "File not found") from exc
+    if int(payload.get("exp") or 0) < int(time.time()):
+        raise HTTPException(404, "File not found")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _build_download_payload(path: Path, *, item: Item) -> Dict[str, Any]:
     resolved = path.resolve()
     relative_path = resolved.relative_to(DOCS_BASE_DIR).as_posix()
-    return {"ok": True, "path": relative_path, "download_url": f"/download?path={relative_path}"}
+    token = _sign_download_payload(
+        {
+            "path": relative_path,
+            "user_id": int(item.user_id),
+            "item_id": int(item.id),
+            "exp": int(time.time()) + DOWNLOAD_TOKEN_TTL_SECONDS,
+        }
+    )
+    return {"ok": True, "download_id": token, "download_url": f"/download/{token}"}
 
 
 def _resolve_generated_doc_path(raw_path: str) -> Path:
     relative_path = str(raw_path or "").strip().lstrip("/")
     if not relative_path:
-        raise HTTPException(400, "Path is required")
+        raise HTTPException(404, "File not found")
 
     candidate = (DOCS_BASE_DIR / relative_path).resolve()
     try:
         candidate.relative_to(DOCS_BASE_DIR)
     except ValueError as exc:
-        raise HTTPException(400, "Invalid download path") from exc
+        raise HTTPException(404, "File not found") from exc
 
     if not candidate.is_file():
         raise HTTPException(404, "File not found")
@@ -2673,16 +2986,20 @@ def generate_ppt(item: Item) -> Path:
     return path
 
 
-def _enqueue_export_job(session: Session, *, item_id: int, export_format: str) -> Dict[str, Any]:
+def _enqueue_export_job(
+    session: Session,
+    *,
+    item_id: int,
+    export_format: str,
+    user: User,
+) -> Dict[str, Any]:
     _require_async_jobs_available()
     normalized_format = _validate_export_format(export_format)
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+    item = _get_owned_item(session, item_id, int(user.id))
     job = _get_job_queue().enqueue(
         session,
         job_type="export",
-        user_id=item.user_id,
+        user_id=int(user.id),
         payload={"item_id": item_id, "export_format": normalized_format},
         max_attempts=int(os.getenv("JOB_EXPORT_MAX_ATTEMPTS", "3") or 3),
     )
@@ -2690,55 +3007,101 @@ def _enqueue_export_job(session: Session, *, item_id: int, export_format: str) -
 
 
 @app.post("/items/{item_id}/exports/{export_format}/jobs")
-def item_generate_export_job(item_id: int, export_format: str, session: Session = Depends(get_session)):
-    return _enqueue_export_job(session, item_id=item_id, export_format=export_format)
+def item_generate_export_job(
+    item_id: int,
+    export_format: str,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    return _enqueue_export_job(session, item_id=item_id, export_format=export_format, user=user)
 
 
 @app.post("/items/{item_id}/generate-pdf")
-def item_generate_pdf(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+def item_generate_pdf(
+    item_id: int,
+    session: Session = Depends(get_session),
+    background: bool = Query(default=False),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     if background:
-        return _enqueue_export_job(session, item_id=item_id, export_format="pdf")
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+        return _enqueue_export_job(session, item_id=item_id, export_format="pdf", user=user)
+    item = _get_owned_item(session, item_id, int(user.id))
     path = generate_pdf(item)
-    return _build_download_payload(path)
+    return _build_download_payload(path, item=item)
 
 
 @app.post("/items/{item_id}/generate-excel")
-def item_generate_excel(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+def item_generate_excel(
+    item_id: int,
+    session: Session = Depends(get_session),
+    background: bool = Query(default=False),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     if background:
-        return _enqueue_export_job(session, item_id=item_id, export_format="excel")
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+        return _enqueue_export_job(session, item_id=item_id, export_format="excel", user=user)
+    item = _get_owned_item(session, item_id, int(user.id))
     path = generate_excel(item)
-    return _build_download_payload(path)
+    return _build_download_payload(path, item=item)
 
 
 @app.post("/items/{item_id}/generate-ppt")
-def item_generate_ppt(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+def item_generate_ppt(
+    item_id: int,
+    session: Session = Depends(get_session),
+    background: bool = Query(default=False),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     if background:
-        return _enqueue_export_job(session, item_id=item_id, export_format="ppt")
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+        return _enqueue_export_job(session, item_id=item_id, export_format="ppt", user=user)
+    item = _get_owned_item(session, item_id, int(user.id))
     path = generate_ppt(item)
-    return _build_download_payload(path)
+    return _build_download_payload(path, item=item)
 
 
 @app.post("/items/{item_id}/generate-docx")
-def item_generate_docx(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+def item_generate_docx(
+    item_id: int,
+    session: Session = Depends(get_session),
+    background: bool = Query(default=False),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     if background:
-        return _enqueue_export_job(session, item_id=item_id, export_format="docx")
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+        return _enqueue_export_job(session, item_id=item_id, export_format="docx", user=user)
+    item = _get_owned_item(session, item_id, int(user.id))
     path = generate_docx(item)
-    return _build_download_payload(path)
+    return _build_download_payload(path, item=item)
+
+
+@app.get("/download/{download_id}")
+def download_generated_by_token(
+    download_id: str,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    payload = _verify_download_token(download_id)
+    if int(payload.get("user_id") or 0) != int(user.id):
+        raise HTTPException(404, "File not found")
+    item_id = int(payload.get("item_id") or 0)
+    _get_owned_item(session, item_id, int(user.id))
+    resolved_path = _resolve_generated_doc_path(str(payload.get("path") or ""))
+    return FileResponse(str(resolved_path), filename=resolved_path.name)
 
 
 @app.get("/download")
-def download_generated(path: str = Query(..., min_length=1)):
-    resolved_path = _resolve_generated_doc_path(path)
-    return FileResponse(str(resolved_path), filename=resolved_path.name)
+def download_generated(
+    download_id: Optional[str] = Query(default=None),
+    path: Optional[str] = Query(default=None),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    if path:
+        raise HTTPException(400, "Raw path downloads are disabled. Use a signed download_id.")
+    if not download_id:
+        raise HTTPException(400, "download_id is required")
+    return download_generated_by_token(download_id, session, auth_user)

@@ -283,7 +283,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       return upsertedProfile;
     } catch (error) {
-      console.warn("[auth] Failed to sync backend profile after authentication:", error);
+      console.warn("[auth] Failed to sync backend profile after authentication.");
       return null;
     }
   }
@@ -320,7 +320,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         code !== "auth/credential-already-in-use" &&
         code !== "auth/email-already-in-use"
       ) {
-        console.warn("[auth] Failed to auto-link pending Google credential:", error);
+        console.warn("[auth] Failed to auto-link pending Google credential.");
       }
     } finally {
       pendingGoogleLink = null;
@@ -575,14 +575,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const resolvedBackendUserId = backendUserId || restoredProfile?.userId;
       const shouldCleanupGoogleSdk = hasProvider(currentUser, "google.com");
 
-      console.log(
-        "[auth] delete-account start:",
-        JSON.stringify({
-          firebaseUid: currentUser.uid,
-          backendUserId: resolvedBackendUserId ?? null,
-          providerIds: currentUser.providerData.map((item) => item.providerId),
-        })
-      );
+      try {
+        if (resolvedBackendUserId) {
+          await deleteAccountOnBackend(resolvedBackendUserId);
+        }
+      } catch (error: any) {
+        throw new Error(
+          error?.message ||
+            "Backend cleanup failed. Please try again before deleting the login account."
+        );
+      }
 
       try {
         await currentUser.reload();
@@ -594,34 +596,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       try {
         await deleteUser(liveUser);
-        console.log("[auth] delete-account firebase delete complete");
       } catch (error) {
-        console.log("[auth] delete-account firebase delete failed:", error);
         throw new Error(mapFirebaseError(error));
       }
 
-      let backendDeleteError: any = null;
-
-      try {
-        if (resolvedBackendUserId) {
-          await deleteAccountOnBackend(resolvedBackendUserId);
-          console.log(
-            "[auth] delete-account backend delete complete:",
-            resolvedBackendUserId
-          );
-        } else {
-          console.log(
-            "[auth] delete-account backend delete skipped: no backend user id"
-          );
-        }
-      } catch (error: any) {
-        backendDeleteError = error;
-        console.log("[auth] delete-account backend delete failed:", error);
-      }
-
-      // Only now move the app into signed-out state.
-      // This prevents the UI from getting stuck on a loading page when
-      // Firebase deletion fails or takes longer than expected.
       await primeLocalSignedOutState();
 
       try {
@@ -631,13 +609,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       await cleanupGoogleSdk({ revokeGoogleAccess: shouldCleanupGoogleSdk });
-
-      if (backendDeleteError) {
-        throw new Error(
-          backendDeleteError?.message ||
-            "Your login account was deleted, but backend cleanup failed. Please remove the remaining profile data from the server."
-        );
-      }
     }
 
   const value = useMemo(

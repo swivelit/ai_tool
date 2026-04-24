@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from typing import Generator
 
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, create_engine
 from dotenv import load_dotenv
@@ -64,6 +65,13 @@ engine = create_engine(
     connect_args=connect_args,
     **engine_kwargs,
 )
+
+if IS_SQLITE:
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 SessionLocal = sessionmaker(
     bind=engine,

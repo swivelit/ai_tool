@@ -31,11 +31,14 @@ import {
   getProfilerStateOnPhone,
   LocalChatMessage,
   ProfilerSlot,
+  retryPendingOnboardingSync,
   sendProfilerMessageOnPhone,
   startProfilerOnPhone,
 } from "@/lib/localAgents";
 
 const PROFILER_SLOTS = profilerSlotsSeed as ProfilerSlot[];
+
+type OnboardingCompletionState = "incomplete" | "complete_local_pending_sync" | "complete_synced" | "sync_failed";
 
 function humanizeOption(option: string) {
   const clean = String(option || "").trim();
@@ -62,6 +65,7 @@ export default function QuestionnaireScreen() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState(false);
+  const [completionState, setCompletionState] = useState<OnboardingCompletionState>("incomplete");
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
   const [sessionReplyLanguage, setSessionReplyLanguage] = useState<"en" | "ta">(
     settings.languageMode === "en" ? "en" : "ta"
@@ -176,7 +180,17 @@ export default function QuestionnaireScreen() {
 
         setCompletedSlots(current.completedSlots);
         setTotalSlots(current.totalSlots);
-        setDone(current.missingSlots.length === 0);
+        const currentDone = current.missingSlots.length === 0;
+        setDone(currentDone);
+        setCompletionState(
+          currentDone
+            ? current.state.completionSyncState === "complete_synced"
+              ? "complete_synced"
+              : current.state.completionSyncState === "sync_failed"
+                ? "sync_failed"
+                : "complete_local_pending_sync"
+            : "incomplete"
+        );
         syncCurrentStep(current.state.currentTargetSlot || current.missingSlots[0] || null);
 
         if (current.state.history?.length) {
@@ -195,6 +209,7 @@ export default function QuestionnaireScreen() {
           setCompletedSlots(started.completedSlots);
           setTotalSlots(started.totalSlots);
           setDone(started.done);
+          setCompletionState(started.done ? "complete_local_pending_sync" : "incomplete");
           syncCurrentStep(started.missingSlots[0] || null);
         }
       } catch (error: any) {
@@ -253,15 +268,24 @@ export default function QuestionnaireScreen() {
       syncCurrentStep(next.missingSlots[0] || null);
 
       if (next.done) {
+        setCompletionState("complete_local_pending_sync");
         const refreshedProfile = await refresh();
 
         if (!refreshedProfile?.questionnaireCompleted) {
+          setCompletionState("sync_failed");
           throw new Error(
             "The backend did not confirm questionnaire completion from saved profiler answers. Please try again."
           );
         }
+
+        setCompletionState("complete_synced");
+      } else {
+        setCompletionState("incomplete");
       }
     } catch (error: any) {
+      if (done) {
+        setCompletionState("sync_failed");
+      }
       Alert.alert("Couldn’t continue", error?.message || "Please try again.");
       if (!overrideMessage) {
         setInput(userMessage);
@@ -271,7 +295,34 @@ export default function QuestionnaireScreen() {
     }
   }
 
+  async function retrySync() {
+    if (!resolvedUserId || sending) return;
+
+    try {
+      setSending(true);
+      setCompletionState("complete_local_pending_sync");
+      await retryPendingOnboardingSync(resolvedUserId);
+      const refreshedProfile = await refresh();
+
+      if (!refreshedProfile?.questionnaireCompleted) {
+        throw new Error("Backend still did not confirm questionnaire completion.");
+      }
+
+      setCompletionState("complete_synced");
+      Alert.alert("Synced", "Your onboarding profile is now synced.");
+    } catch (error: any) {
+      setCompletionState("sync_failed");
+      Alert.alert("Sync failed", error?.message || "Please check your connection and try again.");
+    } finally {
+      setSending(false);
+    }
+  }
+
   function continueToApp() {
+    if (completionState !== "complete_synced") {
+      Alert.alert("Sync pending", "Please wait for profile sync to finish before continuing.");
+      return;
+    }
     router.replace("/(tabs)");
   }
 
@@ -417,14 +468,39 @@ export default function QuestionnaireScreen() {
 
                 {done ? (
                   <GlassCard style={styles.doneCard}>
-                    <Text style={styles.doneTitle}>Profile ready</Text>
+                    <Text style={styles.doneTitle}>
+                      {completionState === "complete_synced"
+                        ? "Profile ready"
+                        : completionState === "sync_failed"
+                          ? "Sync needed"
+                          : "Syncing profile"}
+                    </Text>
                     <Text style={styles.doneText}>
-                      We have enough context to personalize responses.
+                      {completionState === "complete_synced"
+                        ? "We have enough context to personalize responses."
+                        : completionState === "sync_failed"
+                          ? "Your answers are saved locally, but backend sync failed. Retry sync before continuing."
+                          : "Your answers are saved locally. Waiting for backend confirmation…"}
                     </Text>
 
-                    <Pressable style={styles.doneButton} onPress={continueToApp}>
-                      <Text style={styles.doneButtonText}>Continue to app</Text>
-                    </Pressable>
+                    {completionState === "sync_failed" ? (
+                      <Pressable style={styles.doneButton} onPress={() => void retrySync()}>
+                        <Text style={styles.doneButtonText}>{sending ? "Retrying…" : "Retry sync"}</Text>
+                      </Pressable>
+                    ) : (
+                      <Pressable
+                        style={[
+                          styles.doneButton,
+                          completionState !== "complete_synced" && styles.doneButtonDisabled,
+                        ]}
+                        disabled={completionState !== "complete_synced"}
+                        onPress={continueToApp}
+                      >
+                        <Text style={styles.doneButtonText}>
+                          {completionState === "complete_synced" ? "Continue to app" : "Syncing…"}
+                        </Text>
+                      </Pressable>
+                    )}
                   </GlassCard>
                 ) : null}
               </ScrollView>
@@ -615,6 +691,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 13,
     alignItems: "center",
+  },
+  doneButtonDisabled: {
+    opacity: 0.5,
   },
   doneButtonText: {
     color: "#fff",

@@ -39,7 +39,7 @@ import { Brand } from "@/constants/theme";
 import { apiDelete, apiGet, apiPost, apiPostForm } from "@/lib/api";
 import { parseDatetime } from "@/lib/datetime";
 import { saveScheduledTask } from "@/lib/localAgents";
-import { scheduleReminder } from "@/lib/reminders";
+import { ensureNotificationsReady, scheduleReminder } from "@/lib/reminders";
 import { Item } from "@/lib/types";
 
 type ChatHistoryItem = Item & {
@@ -1636,7 +1636,22 @@ export default function Home() {
         return;
       }
 
-      await scheduleReminder(pendingReminder.title, pendingReminder.details, when);
+      const notificationsReady = await ensureNotificationsReady();
+      if (!notificationsReady) {
+        Alert.alert(
+          "Notifications disabled",
+          "Notifications are not enabled. Please enable them to receive reminders."
+        );
+        closeReminderConfirm();
+        return;
+      }
+
+      const scheduledId = await scheduleReminder(pendingReminder.title, pendingReminder.details, when);
+      if (!scheduledId) {
+        Alert.alert("Error", "Could not schedule reminder. Please try again.");
+        closeReminderConfirm();
+        return;
+      }
 
       await saveScheduledTask(profile.userId, {
         title: pendingReminder.title,

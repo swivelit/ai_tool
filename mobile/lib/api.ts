@@ -1,6 +1,71 @@
 import Constants from "expo-constants";
 
+import { auth } from "./firebase";
+
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
+
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+const DEFAULT_API_TIMEOUT_MS = 30_000;
+
+function isAbortError(error: unknown) {
+  return (
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError") ||
+    (error as any)?.name === "AbortError"
+  );
+}
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = DEFAULT_API_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: options.signal || controller.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new ApiError("Request timed out", 408);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function buildHeaders(
+  baseHeaders: Record<string, string> = {},
+  options?: { auth?: boolean }
+) {
+  const headers: Record<string, string> = { ...baseHeaders };
+  const shouldAttachAuth = options?.auth !== false;
+  const currentUser = auth.currentUser;
+
+  if (shouldAttachAuth && currentUser) {
+    const token = await currentUser.getIdToken();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+  }
+
+  return headers;
+}
 
 type ClientRoutingMode = "local" | "backend";
 type ClientRoutingSource = "default" | "extra" | "env" | "flags" | "forced";
@@ -102,7 +167,7 @@ const LOCAL_MODEL_BASE_URL: string = normalizeLocalModelBaseUrl(
 const LOCAL_MODEL_API_KEY: string =
   extra.LOCAL_MODEL_API_KEY ||
   process.env.EXPO_PUBLIC_LOCAL_MODEL_API_KEY ||
-  "local-phone";
+  "";
 
 const LOCAL_STT_MODEL: string =
   extra.LOCAL_STT_MODEL ||
@@ -387,7 +452,7 @@ async function getFeatureFlags(forceRefresh = false) {
   }
 
   try {
-    const res = await fetch(buildUrl("/api/flags"));
+    const res = await fetchWithTimeout(buildUrl("/api/flags"), { headers: await buildHeaders({}, { auth: false }) });
     if (!res.ok) throw new Error(`flags ${res.status}`);
     const payload = normalizeBackendDates((await res.json()) as FeatureFlagPayload);
     featureFlagsCache = payload?.flags || null;
@@ -504,9 +569,9 @@ async function transcribeAudioLocally(
     try {
       const res = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOCAL_MODEL_API_KEY}`,
-        },
+        headers: LOCAL_MODEL_API_KEY
+          ? { Authorization: `Bearer ${LOCAL_MODEL_API_KEY}` }
+          : undefined,
         body: form,
       });
 
@@ -691,10 +756,12 @@ async function handleLocalChat(path: string, body?: any): Promise<LocalChatProxy
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(buildUrl(path));
+  const res = await fetchWithTimeout(buildUrl(path), {
+    headers: await buildHeaders(),
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`);
+    throw new ApiError(`GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
   }
   return normalizeBackendDates((await res.json()) as T);
 }
@@ -713,14 +780,14 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
     }
   }
 
-  const res = await fetch(buildUrl(path), {
+  const res = await fetchWithTimeout(buildUrl(path), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await buildHeaders({ "Content-Type": "application/json" }),
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`);
+    throw new ApiError(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
   }
   return normalizeBackendDates((await res.json()) as T);
 }
@@ -737,27 +804,30 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
     return (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;
   }
 
-  const res = await fetch(buildUrl(resolvedPath), {
+  const res = await fetchWithTimeout(buildUrl(resolvedPath), {
     method: "POST",
+    headers: await buildHeaders(),
     body: form,
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`);
+    throw new ApiError(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
   }
 
   return normalizeBackendDates((await res.json()) as T);
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
-  const res = await fetch(buildUrl(path), {
+  const res = await fetchWithTimeout(buildUrl(path), {
     method: "DELETE",
+    headers: await buildHeaders(),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `DELETE ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`
+    throw new ApiError(
+      `DELETE ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
+      res.status
     );
   }
   return normalizeBackendDates((await res.json()) as T);

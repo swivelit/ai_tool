@@ -6,6 +6,11 @@ import re
 import unicodedata
 from collections import Counter
 from datetime import datetime
+
+try:
+    from app.time_utils import utc_now
+except Exception:  # pragma: no cover - CLI fallback when run outside package
+    from backend.app.time_utils import utc_now
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import csv
@@ -404,7 +409,7 @@ class BehaviourQuestionnaire:
             personality_rag = self._infer_personality_rag_from_answers(answers)
 
         profile.setdefault("user_id", "default_user")
-        profile.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+        profile.setdefault("created_at", utc_now().isoformat().replace("+00:00", "Z"))
         profile["profile_version"] = PROFILE_VERSION
         profile["answers"] = answers
         profile["behaviour_rules"] = behaviour_rules
@@ -434,7 +439,7 @@ class BehaviourQuestionnaire:
         profile = {
             "profile_version": PROFILE_VERSION,
             "user_id": self._sanitize_user_id(user_id),
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": utc_now().isoformat().replace("+00:00", "Z"),
             "answers": answers,
             "behaviour_rules": behaviour_rules,
             "rag_personality_hints": personality_rag,

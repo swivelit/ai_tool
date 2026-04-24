@@ -39,7 +39,7 @@ export default {
       USE_LOCAL_VOICE_PIPELINE:
         process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE || "false",
       LOCAL_MODEL_API_KEY:
-        process.env.EXPO_PUBLIC_LOCAL_MODEL_API_KEY || "local-phone",
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_API_KEY || "",
       LOCAL_MODEL_TIMEOUT_MS: Number(
         process.env.EXPO_PUBLIC_LOCAL_MODEL_TIMEOUT_MS || 45000
       ),

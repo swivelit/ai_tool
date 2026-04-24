@@ -1,5 +1,36 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+let SecureStore: any = null;
+try {
+  SecureStore = require("expo-secure-store");
+} catch {
+  SecureStore = null;
+}
+
+async function secureSet(key: string, value: string) {
+  if (SecureStore?.setItemAsync) {
+    await SecureStore.setItemAsync(key, value);
+    await AsyncStorage.removeItem(key).catch(() => undefined);
+    return;
+  }
+  await AsyncStorage.setItem(key, value);
+}
+
+async function secureGet(key: string) {
+  if (SecureStore?.getItemAsync) {
+    const value = await SecureStore.getItemAsync(key);
+    if (value !== null && typeof value !== "undefined") return value;
+  }
+  return AsyncStorage.getItem(key);
+}
+
+async function secureDelete(key: string) {
+  await Promise.all([
+    SecureStore?.deleteItemAsync ? SecureStore.deleteItemAsync(key).catch(() => undefined) : Promise.resolve(),
+    AsyncStorage.removeItem(key),
+  ]);
+}
+
 export const KEYS = {
   assistantName: "assistant_name_v1",
   settings: "assistant_settings_v1",
@@ -58,15 +89,15 @@ function normalizeWakeTrainingSamples(value: unknown): string[] {
 }
 
 export async function getAssistantName(): Promise<string> {
-  return (await AsyncStorage.getItem(KEYS.assistantName)) || DEFAULTS.name;
+  return (await secureGet(KEYS.assistantName)) || DEFAULTS.name;
 }
 
 export async function setAssistantName(name: string): Promise<void> {
-  await AsyncStorage.setItem(KEYS.assistantName, name);
+  await secureSet(KEYS.assistantName, name);
 }
 
 export async function getSettings(): Promise<AssistantSettings> {
-  const raw = await AsyncStorage.getItem(KEYS.settings);
+  const raw = await secureGet(KEYS.settings);
   if (!raw) return DEFAULTS.settings;
 
   try {
@@ -92,10 +123,10 @@ export async function setSettings(s: AssistantSettings): Promise<void> {
     wakeTrainingSamples: normalizeWakeTrainingSamples(s.wakeTrainingSamples),
   };
 
-  await AsyncStorage.setItem(KEYS.settings, JSON.stringify(normalized));
+  await secureSet(KEYS.settings, JSON.stringify(normalized));
 }
 
 
 export async function clearAssistantStorage(): Promise<void> {
-  await AsyncStorage.multiRemove([KEYS.assistantName, KEYS.settings]);
+  await Promise.all([secureDelete(KEYS.assistantName), secureDelete(KEYS.settings)]);
 }
