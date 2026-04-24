@@ -85,7 +85,7 @@ The Profiler Agent is local-first and writes its runtime state under `documentDi
 - `training/captures/profiler.jsonl`
   Non-blocking training captures from profiler turns and completions.
 
-Profiler completion happens on-device first. The backend mirror remains secondary and must not be treated as source of truth.
+Profiler completion still writes local artifacts on-device first, but the onboarding completion gate now requires the backend profile refresh to confirm `questionnaireCompleted`. The backend remains secondary for profiler runtime state, but it is the source of truth for allowing the app to continue past onboarding completion.
 
 ## Orchestrator And Alignment Runtime
 
@@ -234,3 +234,4 @@ uvicorn theni_tamil_api:app --host 127.0.0.1 --port 9009
   simulate or force a local seed bootstrap failure and confirm the app logs a warning and still reaches the app shell.
 - Password visibility:
   verify the login password eye toggle works, and both signup password fields independently toggle visibility with accessible labels.
+```
