@@ -2,7 +2,7 @@ export const APP_BOOT_TIMEOUT_MS = 10000;
 export const LOCAL_AGENT_SEED_TIMEOUT_MS = 4000;
 export const PROFILE_BOOT_TIMEOUT_MS = 5000;
 
-const SIGNED_OUT_ENTRY_ROUTE = "/";
+const SIGNED_OUT_ENTRY_ROUTE = "/auth/login";
 const SIGNED_IN_HOME_ROUTE = "/(tabs)";
 const TAB_ROUTES = new Set(["/", "/explore", "/routine"]);
 const TAB_GROUP_ROOT_ROUTE = "/(tabs)";

@@ -181,7 +181,7 @@ export default function LoginScreen() {
             }}
           >
             <Pressable
-              onPress={() => router.replace("/")}
+              onPress={() => router.replace("/auth/login")}
               style={({ pressed }) => [
                 styles.backButton,
                 pressed && styles.pressed,
@@ -342,14 +342,14 @@ export default function LoginScreen() {
 
               {!googleConfigured ? (
                 <Text style={styles.helperText}>
-                  Add your EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID in your env file
+                  Add your EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID in your env file
                   to enable Google sign-in.
                 </Text>
               ) : null}
 
               <View style={styles.footerRow}>
                 <Text style={styles.footerCopy}>Don’t have an account yet?</Text>
-                <Pressable onPress={() => router.replace("./signup")}>
+                <Pressable onPress={() => router.replace("/auth/signup")}>
                   <Text style={styles.footerLink}>Create account</Text>
                 </Pressable>
               </View>

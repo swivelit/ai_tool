@@ -21,10 +21,17 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, Session, delete, select
+
+CURRENT_DIR = Path(__file__).resolve().parent
+BACKEND_ROOT = CURRENT_DIR.parent
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+load_dotenv()
 
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
@@ -37,12 +44,6 @@ from .agentic_service import AgenticService
 from .orchestrator_task import run_orchestrator
 
 
-CURRENT_DIR = Path(__file__).resolve().parent
-BACKEND_ROOT = CURRENT_DIR.parent
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
-
-load_dotenv()
 bootstrap_observability()
 patch_openai_client()
 
@@ -59,7 +60,13 @@ from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
-from .openwakeword_api import router as openwakeword_router  # noqa: E402
+try:
+    from .openwakeword_api import router as openwakeword_router  # noqa: E402
+except Exception as exc:  # pragma: no cover - protects core API startup from optional wakeword deps
+    openwakeword_router = None
+    OPENWAKEWORD_IMPORT_ERROR = exc
+else:
+    OPENWAKEWORD_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +103,21 @@ CORS_ALLOW_ORIGINS = [
 ] or DEFAULT_CORS_ORIGINS
 
 app = FastAPI(title="J AI Backend")
-app.include_router(openwakeword_router)
+RUNTIME_STATUS: Dict[str, Any] = {
+    "status": "starting",
+    "services": {},
+    "errors": [],
+}
+
+if openwakeword_router is not None:
+    app.include_router(openwakeword_router)
+else:
+    logger = logging.getLogger(__name__)
+    logger.warning(
+        "OpenWakeWord routes disabled because optional dependencies failed to import: %s",
+        OPENWAKEWORD_IMPORT_ERROR,
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOW_ORIGINS,
@@ -590,18 +611,66 @@ def _register_job_handlers() -> None:
     queue.register("export", _job_handle_export)
     queue.register("chat", _job_handle_chat)
 
+def _record_runtime_service(name: str, *, ok: bool, required: bool, detail: str = "") -> None:
+    RUNTIME_STATUS["services"][name] = {
+        "ok": ok,
+        "required": required,
+        "detail": detail,
+    }
+    if not ok:
+        RUNTIME_STATUS["errors"].append({"service": name, "detail": detail, "required": required})
+
+
 @app.on_event("startup")
 def startup_runtime_services() -> None:
+    RUNTIME_STATUS["status"] = "starting"
+    RUNTIME_STATUS["services"] = {}
+    RUNTIME_STATUS["errors"] = []
+
     if not _is_openai_configured():
         logger.warning("OPENAI_API_KEY is not set. OpenAI-dependent endpoints will return HTTP 503 until configured.")
+        _record_runtime_service("openai", ok=False, required=False, detail="OPENAI_API_KEY is not configured.")
+    else:
+        _record_runtime_service("openai", ok=True, required=False)
+
+    auto_create_tables = os.getenv("AUTO_CREATE_TABLES", "").strip().lower() in {"1", "true", "yes", "on"}
+    if str(engine.url).startswith("sqlite"):
+        auto_create_tables = os.getenv("AUTO_CREATE_TABLES", "true").strip().lower() not in {"0", "false", "no", "off"}
+
     try:
-        SQLModel.metadata.create_all(engine)
+        if auto_create_tables:
+            SQLModel.metadata.create_all(engine)
+            _record_runtime_service("database_schema", ok=True, required=True, detail="create_all enabled")
+        else:
+            _record_runtime_service("database_schema", ok=True, required=True, detail="create_all disabled; run Alembic migrations before startup")
+    except Exception as exc:
+        logger.exception("Database schema initialization failed")
+        _record_runtime_service("database_schema", ok=False, required=True, detail=str(exc))
+
+    try:
         VECTOR_STORE.initialize()
+        _record_runtime_service("vector_store", ok=True, required=True, detail=getattr(VECTOR_STORE, "mode", "initialized"))
+    except Exception as exc:
+        logger.exception("Vector store initialization failed")
+        _record_runtime_service("vector_store", ok=False, required=True, detail=str(exc))
+
+    try:
         _register_job_handlers()
         if _job_worker_enabled():
             _get_job_queue().start()
+            detail = "worker started"
+        else:
+            detail = "worker disabled"
+        _record_runtime_service("job_queue", ok=True, required=True, detail=detail)
     except Exception as exc:
-        logger.warning("Runtime service initialization skipped: %s", exc)
+        logger.exception("Job queue initialization failed")
+        _record_runtime_service("job_queue", ok=False, required=True, detail=str(exc))
+
+    required_errors = [error for error in RUNTIME_STATUS["errors"] if error.get("required")]
+    RUNTIME_STATUS["status"] = "degraded" if required_errors else "ok"
+
+    if required_errors and os.getenv("FAIL_STARTUP_ON_REQUIRED_SERVICE_ERROR", "false").lower() in {"1", "true", "yes", "on"}:
+        raise RuntimeError(f"Required runtime services failed: {required_errors}")
 
 
 @app.middleware("http")
@@ -647,16 +716,27 @@ def root():
     }
 
 
+def _health_payload() -> Dict[str, Any]:
+    return {
+        "status": RUNTIME_STATUS.get("status") or "starting",
+        "app": "J AI",
+        "pipeline_version": PIPELINE_VERSION,
+        "services": RUNTIME_STATUS.get("services", {}),
+        "errors": RUNTIME_STATUS.get("errors", []),
+    }
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "J AI", "pipeline_version": PIPELINE_VERSION}
+    payload = _health_payload()
+    status_code = 200 if payload["status"] == "ok" else 503
+    return JSONResponse(payload, status_code=status_code)
 
 
 @app.get("/api/health")
 def api_health():
-    return {
-        "status": "ok",
-        "app": "J AI",
+    payload = _health_payload()
+    payload.update({
         "mode": PIPELINE_VERSION,
         "features": [
             "persona_context",
@@ -669,7 +749,9 @@ def api_health():
             "semantic_memory_rag",
             "qa_cache_rag",
         ],
-    }
+    })
+    status_code = 200 if payload["status"] == "ok" else 503
+    return JSONResponse(payload, status_code=status_code)
 
 
 PARSE_DT_PROMPT = """

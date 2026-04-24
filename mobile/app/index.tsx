@@ -68,7 +68,7 @@ export default function LandingScreen() {
                   return;
                 }
 
-                router.push("./auth/login");
+                router.push("/auth/login");
               }}
               style={({ pressed }) => [
                 styles.buttonShell,
@@ -90,7 +90,7 @@ export default function LandingScreen() {
 
             {!user ? (
               <Pressable
-                onPress={() => router.push("./auth/signup")}
+                onPress={() => router.push("/auth/signup")}
                 style={({ pressed }) => [
                   styles.secondaryButton,
                   pressed && styles.pressed,

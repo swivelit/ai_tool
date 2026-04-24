@@ -154,6 +154,7 @@ export function logClientRoutingBanner(logger: Pick<Console, "info"> = console) 
   if (localModelError && (routing.chat === "local" || routing.voice === "local")) {
     logger.info(`[routing] ${localModelError}`);
   }
+}
 
 logClientRoutingBanner();
 

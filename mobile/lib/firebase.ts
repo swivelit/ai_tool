@@ -37,16 +37,20 @@ export function createNativePersistence(getPersistenceFactory?: GetPersistenceFa
     return getPersistenceFactory(AsyncStorage);
   }
 
-  try {
-    const firebaseAuthModule = require("firebase/auth") as {
-      getReactNativePersistence?: GetPersistenceFactory;
-    };
+  const moduleIds = ["firebase/auth/react-native", "firebase/auth"];
 
-    if (typeof firebaseAuthModule.getReactNativePersistence === "function") {
-      return firebaseAuthModule.getReactNativePersistence(AsyncStorage);
+  for (const moduleId of moduleIds) {
+    try {
+      const firebaseAuthModule = require(moduleId) as {
+        getReactNativePersistence?: GetPersistenceFactory;
+      };
+
+      if (typeof firebaseAuthModule.getReactNativePersistence === "function") {
+        return firebaseAuthModule.getReactNativePersistence(AsyncStorage);
+      }
+    } catch {
+      // Try the next Firebase Auth entrypoint.
     }
-  } catch {
-    // Fall through to the no-persistence fallback below.
   }
 
   return undefined;

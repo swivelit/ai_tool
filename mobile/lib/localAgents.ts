@@ -1050,7 +1050,8 @@ function shouldAttemptLocalMemoryConsolidation(
   opts?: { force?: boolean; nowMs?: number; cooldownMinutes?: number }
 ) {
   if (opts?.force) return true;
-  const nowMs = Number.isFinite(opts?.nowMs) ? Number(opts.nowMs) : Date.now();
+  const requestedNowMs = opts?.nowMs;
+  const nowMs = Number.isFinite(requestedNowMs) ? Number(requestedNowMs) : Date.now();
   const cooldownMinutes = positiveInt(
     opts?.cooldownMinutes,
     LOCAL_MEMORY_CONSOLIDATION_ATTEMPT_COOLDOWN_MINUTES
@@ -1521,8 +1522,14 @@ async function localChatText(
 }
 
 async function embedTexts(texts: string[]) {
+  const fallback = () => texts.map((text) => hashEmbedding(text));
   const cfg = await getModelConfig();
-  const baseUrl = requireLocalModelBaseUrl(cfg.baseUrl, "Local embeddings");
+  const baseUrl = normalizeLocalModelBaseUrl(cfg.baseUrl);
+
+  if (!baseUrl || isLoopbackLocalModelBaseUrl(baseUrl)) {
+    return fallback();
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
   try {
@@ -1548,7 +1555,7 @@ async function embedTexts(texts: string[]) {
         : hashEmbedding(texts[index] || "")
     );
   } catch {
-    return texts.map((text) => hashEmbedding(text));
+    return fallback();
   } finally {
     clearTimeout(timer);
   }
@@ -3502,7 +3509,8 @@ function canUseOpenAiFallback(opts: {
   noSafeLocalPath: boolean;
 }) {
   return Boolean(
-    opts.localReasonerRequestedFallback || opts.decision.needsLiveData || opts.noSafeLocalPath
+    opts.decision.fallbackAllowed &&
+      (opts.localReasonerRequestedFallback || opts.decision.needsLiveData || opts.noSafeLocalPath)
   );
 }
 

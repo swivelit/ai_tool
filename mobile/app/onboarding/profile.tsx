@@ -193,7 +193,7 @@ export default function ProfileScreen() {
               </View>
 
               <Pressable
-                onPress={() => router.replace("/")}
+                onPress={() => router.replace("/auth/login")}
                 style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
               >
                 <Ionicons name="close-outline" size={18} color={Brand.cocoa} />

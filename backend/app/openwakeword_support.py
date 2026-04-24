@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -370,9 +369,10 @@ class OpenWakeWordSupport:
     def _decode_to_wav(self, source_path: Path, destination_path: Path) -> Dict[str, Any]:
         try:
             import av  # type: ignore
+            import numpy as np  # type: ignore
         except ImportError as exc:
             raise AudioDecodeError(
-                "PyAV is required to decode Expo audio files. Install backend dependencies again after adding 'av'."
+                "PyAV and numpy are required to decode Expo audio files. Install optional wakeword dependencies before using this route."
             ) from exc
 
         try:
@@ -390,7 +390,7 @@ class OpenWakeWordSupport:
             rate=TARGET_SAMPLE_RATE,
         )
 
-        frames: List[np.ndarray] = []
+        frames: List[Any] = []
 
         def consume_resampled(value: Any) -> None:
             if value is None:
