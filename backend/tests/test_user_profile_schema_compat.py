@@ -39,7 +39,8 @@ def clean_db():
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    monkeypatch.setattr("app.main._async_jobs_available", lambda: True)
     with TestClient(app) as test_client:
         _get_job_queue().stop()
         yield test_client
