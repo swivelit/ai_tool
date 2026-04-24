@@ -952,6 +952,39 @@ async function appendJsonl(path: string, payload: any) {
   await FileSystem.writeAsStringAsync(path, `${current}${line}`, { encoding: FileSystem.EncodingType.UTF8 });
 }
 
+async function deleteIfExists(path: string) {
+  try {
+    if (await exists(path)) {
+      await FileSystem.deleteAsync(path, { idempotent: true });
+    }
+  } catch {
+    // Best-effort local privacy cleanup should not break sign-out/delete flows.
+  }
+}
+
+export async function clearLocalAgentDataForUser(userId: number) {
+  await ensureLocalAgentData();
+
+  await Promise.all([
+    deleteIfExists(`${PROFILES_DIR}/${userId}`),
+    deleteIfExists(tasksPath(userId)),
+    deleteIfExists(convoPath(userId)),
+    deleteIfExists(routeLogPath(userId)),
+    deleteIfExists(dailySummariesPath(userId)),
+    deleteIfExists(durableFactsPath(userId)),
+    deleteIfExists(profileUpdatesPath(userId)),
+    deleteIfExists(profileRagPath(userId)),
+    deleteIfExists(ragChunksPath(userId)),
+    deleteIfExists(memoryChunksPath(userId)),
+  ]);
+
+  const semanticStore = await readJson<SemanticCacheStore>(semanticCacheStorePath(), { entries: [] });
+  const retained = semanticStore.entries.filter((entry) => entry.userId !== userId);
+  if (retained.length !== semanticStore.entries.length) {
+    await writeJson(semanticCacheStorePath(), { entries: retained });
+  }
+}
+
 async function readJsonl<T>(path: string): Promise<T[]> {
   try {
     if (!(await exists(path))) return [];
@@ -1213,7 +1246,10 @@ async function getModelConfig() {
     baseUrl: normalizeLocalModelBaseUrl(
       extra.LOCAL_MODEL_BASE_URL || fileConfig.baseUrl || DEFAULT_MODEL_CONFIG.baseUrl
     ),
-    apiKey: String(extra.LOCAL_MODEL_API_KEY || fileConfig.apiKey || DEFAULT_MODEL_CONFIG.apiKey),
+    // The app config intentionally does not supply a bundled API key. A local
+    // pairing flow may write a short-lived token into models.json; otherwise no
+    // Authorization header is sent to the local model service.
+    apiKey: String(fileConfig.apiKey || DEFAULT_MODEL_CONFIG.apiKey),
     timeoutMs: Number(extra.LOCAL_MODEL_TIMEOUT_MS || fileConfig.timeoutMs || DEFAULT_MODEL_CONFIG.timeoutMs),
     models: {
       ...DEFAULT_MODEL_CONFIG.models,

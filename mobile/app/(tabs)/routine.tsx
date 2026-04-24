@@ -23,7 +23,7 @@ import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
-import { API_BASE, apiGet } from "@/lib/api";
+import { apiGet, apiPut } from "@/lib/api";
 import { getProfileForFirebaseUid } from "@/lib/account";
 
 type Routine = {
@@ -410,16 +410,7 @@ export default function RoutineScreen() {
         daily_habits: routine.daily_habits?.trim() || null,
       };
 
-      const res = await fetch(`${API_BASE}/users/${resolvedUserId}/daily-routine`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || "Could not save routine");
-      }
+      await apiPut(`/users/${resolvedUserId}/daily-routine`, payload);
 
       await refresh();
       showNotice("Routine saved", "Your daily routine was updated successfully.");

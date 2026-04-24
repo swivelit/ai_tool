@@ -164,10 +164,10 @@ const LOCAL_MODEL_BASE_URL: string = normalizeLocalModelBaseUrl(
   extra.LOCAL_MODEL_BASE_URL || process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL || ""
 );
 
-const LOCAL_MODEL_API_KEY: string =
-  extra.LOCAL_MODEL_API_KEY ||
-  process.env.EXPO_PUBLIC_LOCAL_MODEL_API_KEY ||
-  "";
+// Do not read EXPO_PUBLIC_LOCAL_MODEL_API_KEY here. EXPO_PUBLIC values are bundled
+// into the app and are not secrets; local model auth should use a pairing flow,
+// backend proxy, or another short-lived runtime token mechanism.
+const LOCAL_MODEL_API_KEY = "";
 
 const LOCAL_STT_MODEL: string =
   extra.LOCAL_STT_MODEL ||
@@ -815,6 +815,19 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
     throw new ApiError(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
   }
 
+  return normalizeBackendDates((await res.json()) as T);
+}
+
+export async function apiPut<T>(path: string, body?: any): Promise<T> {
+  const res = await fetchWithTimeout(buildUrl(path), {
+    method: "PUT",
+    headers: await buildHeaders({ "Content-Type": "application/json" }),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(`PUT ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
+  }
   return normalizeBackendDates((await res.json()) as T);
 }
 

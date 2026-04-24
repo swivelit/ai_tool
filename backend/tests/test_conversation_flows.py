@@ -4,59 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlmodel import delete
 
 from app.database import SessionLocal
-from app.main import app, _get_job_queue
-from app.models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
-
-
-@pytest.fixture(autouse=True)
-def clean_db():
-    queue = _get_job_queue()
-    queue.stop()
-    with SessionLocal() as session:
-        session.exec(delete(Job))
-        session.exec(delete(RagEmbedding))
-        session.exec(delete(Conversation))
-        session.exec(delete(QACache))
-        session.exec(delete(Item))
-        session.exec(delete(DailyRoutine))
-        session.exec(delete(UserProfile))
-        session.exec(delete(User))
-        session.commit()
-    yield
-    queue.stop()
-    with SessionLocal() as session:
-        session.exec(delete(Job))
-        session.exec(delete(RagEmbedding))
-        session.exec(delete(Conversation))
-        session.exec(delete(QACache))
-        session.exec(delete(Item))
-        session.exec(delete(DailyRoutine))
-        session.exec(delete(UserProfile))
-        session.exec(delete(User))
-        session.commit()
-
-
-@pytest.fixture()
-def client(monkeypatch):
-    # Keep the worker thread stopped in tests, but allow enqueue endpoints so
-    # tests can process jobs deterministically with _process_one().
-    monkeypatch.setattr("app.main._async_jobs_available", lambda: True)
-    with TestClient(app) as test_client:
-        _get_job_queue().stop()
-        yield test_client
-
-
-def _create_user() -> int:
-    with SessionLocal() as session:
-        user = User(name="Test User", timezone="Asia/Kolkata", assistant_name="Elli", reply_language="en")
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-        return int(user.id)
+from app.main import _get_job_queue
+from app.models import Item
+from conftest import auth_headers, create_test_user
 
 
 @pytest.fixture()
@@ -86,7 +38,9 @@ def pipeline_stub(monkeypatch):
 
 
 def test_text_chat_flow(client, monkeypatch, pipeline_stub):
-    user_id = _create_user()
+    user = create_test_user()
+    user_id = int(user.id)
+    headers = auth_headers("test-uid", "test@example.com")
 
     monkeypatch.setattr(
         "app.main._run_agentic_or_pipeline",
@@ -106,7 +60,7 @@ def test_text_chat_flow(client, monkeypatch, pipeline_stub):
 
     response = client.post(
         "/api/chat",
-        headers={"x-request-id": "req-text-001"},
+        headers={**headers, "x-request-id": "req-text-001"},
         json={"user_id": user_id, "message": "hello there", "reply_language": "en"},
     )
     assert response.status_code == 200
@@ -131,7 +85,10 @@ def test_streaming_chat_flow(client, monkeypatch):
         },
     )
 
-    with client.stream("POST", "/api/chat/stream", json={"message": "hi", "reply_language": "en"}) as response:
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    with client.stream("POST", "/api/chat/stream", headers=headers, json={"message": "hi", "reply_language": "en"}) as response:
         assert response.status_code == 200
         raw = "".join(response.iter_text())
 
@@ -143,7 +100,9 @@ def test_streaming_chat_flow(client, monkeypatch):
 
 
 def test_voice_flow(client, monkeypatch, pipeline_stub):
-    user_id = _create_user()
+    user = create_test_user()
+    user_id = int(user.id)
+    headers = auth_headers("test-uid", "test@example.com")
 
     monkeypatch.setattr("app.main._transcribe_audio_file", lambda path, speech_language=None: "voice hello")
     monkeypatch.setattr(
@@ -163,7 +122,7 @@ def test_voice_flow(client, monkeypatch, pipeline_stub):
     )
 
     files = {"file": ("audio.m4a", b"fake-audio", "audio/m4a")}
-    response = client.post(f"/transcribe-and-analyze?user_id={user_id}&reply_language=en", files=files)
+    response = client.post(f"/transcribe-and-analyze?user_id={user_id}&reply_language=en", headers=headers, files=files)
     assert response.status_code == 200
     payload = response.json()
     assert payload["assistant"]["text"] == "Voice reply"
@@ -171,7 +130,9 @@ def test_voice_flow(client, monkeypatch, pipeline_stub):
 
 
 def test_reminder_creation_flow(client, monkeypatch, pipeline_stub):
-    user_id = _create_user()
+    user = create_test_user()
+    user_id = int(user.id)
+    headers = auth_headers("test-uid", "test@example.com")
 
     monkeypatch.setattr(
         "app.main._run_agentic_or_pipeline",
@@ -201,6 +162,7 @@ def test_reminder_creation_flow(client, monkeypatch, pipeline_stub):
 
     response = client.post(
         "/api/chat",
+        headers=headers,
         json={"user_id": user_id, "message": "remind me for standup", "reply_language": "en"},
     )
     assert response.status_code == 200
@@ -211,7 +173,9 @@ def test_reminder_creation_flow(client, monkeypatch, pipeline_stub):
 
 
 def test_async_export_job_flow(client, monkeypatch, tmp_path: Path):
-    user_id = _create_user()
+    user = create_test_user()
+    user_id = int(user.id)
+    headers = auth_headers("test-uid", "test@example.com")
     with SessionLocal() as session:
         item = Item(
             user_id=user_id,
@@ -237,22 +201,24 @@ def test_async_export_job_flow(client, monkeypatch, tmp_path: Path):
     export_file.write_text("fake pdf")
     monkeypatch.setattr("app.main.generate_pdf", lambda item: export_file)
 
-    response = client.post(f"/items/{item_id}/generate-pdf?background=true")
+    response = client.post(f"/items/{item_id}/generate-pdf?background=true", headers=headers)
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
 
     processed = _get_job_queue()._process_one()
     assert processed is True
 
-    status_response = client.get(f"/api/jobs/{job_id}")
+    status_response = client.get(f"/api/jobs/{job_id}", headers=headers)
     assert status_response.status_code == 200
     job = status_response.json()["job"]
     assert job["status"] == "completed"
-    assert job["result"]["download_url"].startswith("/download?path=")
+    assert job["result"]["download_url"].startswith("/download/")
 
 
 def test_async_chat_job_flow(client, monkeypatch, pipeline_stub):
-    user_id = _create_user()
+    user = create_test_user()
+    user_id = int(user.id)
+    headers = auth_headers("test-uid", "test@example.com")
 
     monkeypatch.setattr(
         "app.main._run_agentic_or_pipeline",
@@ -272,6 +238,7 @@ def test_async_chat_job_flow(client, monkeypatch, pipeline_stub):
 
     enqueue = client.post(
         "/api/chat/jobs",
+        headers=headers,
         json={"user_id": user_id, "message": "do a long task", "reply_language": "en"},
     )
     assert enqueue.status_code == 200
@@ -280,7 +247,7 @@ def test_async_chat_job_flow(client, monkeypatch, pipeline_stub):
     processed = _get_job_queue()._process_one()
     assert processed is True
 
-    status_response = client.get(f"/api/jobs/{job_id}")
+    status_response = client.get(f"/api/jobs/{job_id}", headers=headers)
     assert status_response.status_code == 200
     payload = status_response.json()["job"]
     assert payload["status"] == "completed"

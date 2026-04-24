@@ -38,8 +38,9 @@ export default {
       USE_LOCAL_CHAT_PIPELINE,
       USE_LOCAL_VOICE_PIPELINE:
         process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE || "false",
-      LOCAL_MODEL_API_KEY:
-        process.env.EXPO_PUBLIC_LOCAL_MODEL_API_KEY || "",
+      // Do not bundle a bearer token into the mobile app. EXPO_PUBLIC_* values are public.
+      // Use Firebase-authenticated backend proxying or a short-lived pairing token instead.
+      LOCAL_MODEL_API_KEY: "",
       LOCAL_MODEL_TIMEOUT_MS: Number(
         process.env.EXPO_PUBLIC_LOCAL_MODEL_TIMEOUT_MS || 45000
       ),

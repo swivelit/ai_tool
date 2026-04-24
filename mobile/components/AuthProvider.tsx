@@ -33,10 +33,12 @@ import { auth } from "@/lib/firebase";
 import {
   clearProfile,
   createProfileOnBackend,
+  getProfile,
   deleteAccountOnBackend,
   getProfileForFirebaseUid,
 } from "@/lib/account";
 import { clearAssistantStorage } from "@/lib/storage";
+import { clearLocalAgentDataForUser } from "@/lib/localAgents";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
 
@@ -517,7 +519,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function primeLocalSignedOutState() {
+  async function clearCachedSensitiveData(backendUserId?: number) {
+    const cachedProfile = await getProfile().catch(() => null);
+    const localUserId = backendUserId || cachedProfile?.userId;
+
+    if (localUserId) {
+      await clearLocalAgentDataForUser(localUserId).catch(() => undefined);
+    }
+  }
+
+  async function primeLocalSignedOutState(backendUserId?: number) {
+    await clearCachedSensitiveData(backendUserId);
     pendingGoogleLink = null;
     blockAuthRestoreRef.current = true;
     setLocallySignedOut(true);
@@ -600,7 +612,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error(mapFirebaseError(error));
       }
 
-      await primeLocalSignedOutState();
+      await primeLocalSignedOutState(resolvedBackendUserId);
 
       try {
         await signOut(auth);
