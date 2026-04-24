@@ -79,7 +79,7 @@ describe("resolveDesiredRoute", () => {
         hasProfile: false,
         questionnaireCompleted: false,
       })
-    ).toBe("/");
+    ).toBe("/auth/login");
   });
 
   it("routes signed-in users without a profile to profile onboarding", () => {

@@ -48,6 +48,15 @@ function mapBackendUserToProfile(user: any): UserProfile | null {
   const resolvedUserId = normalizeUserId(user);
   if (!resolvedUserId) return null;
 
+  const rawQuestionnaireCompleted =
+    user.questionnaire_completed ?? user.questionnaireCompleted;
+  const parsedQuestionnaireCompleted =
+    typeof rawQuestionnaireCompleted === "boolean"
+      ? rawQuestionnaireCompleted
+      : typeof rawQuestionnaireCompleted === "string"
+        ? parseBooleanString(rawQuestionnaireCompleted) === true
+        : false;
+
   return {
     userId: resolvedUserId,
     firebaseUid: typeof user.firebase_uid === "string" ? user.firebase_uid : undefined,
@@ -62,7 +71,7 @@ function mapBackendUserToProfile(user: any): UserProfile | null {
         ? user.assistant_name
         : "Elli",
     email: normalizeEmail(user.email) || undefined,
-    questionnaireCompleted: Boolean(user.questionnaire_completed),
+    questionnaireCompleted: parsedQuestionnaireCompleted,
     replyLanguage: user.reply_language === "en" ? "en" : "ta",
   };
 }
@@ -251,18 +260,24 @@ function safeStringify(value: any) {
 }
 
 function resolveQuestionnaireCompleted(
-  localValue?: boolean,
+  _localValue?: boolean,
   remoteValue?: boolean
 ): boolean {
-  if (typeof localValue === "boolean") {
-    return localValue;
+  return remoteValue === true;
+}
+
+function parseBooleanString(value: string): boolean | undefined {
+  const normalized = value.trim().toLowerCase();
+
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) {
+    return true;
   }
 
-  if (typeof remoteValue === "boolean") {
-    return remoteValue;
+  if (["false", "0", "no", "n", "off"].includes(normalized)) {
+    return false;
   }
 
-  return false;
+  return undefined;
 }
 
 function mergeProfileWithAuth(
@@ -283,21 +298,13 @@ function mergeProfileWithAuth(
 function getAuthMatchKind(
   profile: UserProfile,
   firebaseUid?: string | null,
-  email?: string | null
-): "uid" | "email" | null {
+  _email?: string | null
+): "uid" | null {
   const normalizedUid = (firebaseUid || "").trim();
-  const normalizedEmail = normalizeEmail(email);
   const profileUid = (profile.firebaseUid || "").trim();
-  const profileEmail = normalizeEmail(profile.email);
 
   if (normalizedUid && profileUid && normalizedUid === profileUid) {
     return "uid";
-  }
-
-  if (normalizedEmail && profileEmail && normalizedEmail === profileEmail) {
-    if (!profileUid || !normalizedUid || profileUid === normalizedUid) {
-      return "email";
-    }
   }
 
   return null;
@@ -365,21 +372,9 @@ export async function getProfileForFirebaseUid(
   const cachedMatch = cachedProfile
     ? getAuthMatchKind(cachedProfile, normalizedUid, normalizedEmail)
     : null;
-
   const matchedCachedProfile = cachedProfile && cachedMatch ? cachedProfile : null;
 
-  if (matchedCachedProfile) {
-    const patched = mergeProfileWithAuth(
-      matchedCachedProfile,
-      normalizedUid,
-      normalizedEmail
-    );
-
-    await writeProfileCache(patched);
-    return patched;
-  }
-
-  if (cachedProfile) {
+  if (cachedProfile && !matchedCachedProfile) {
     console.warn(
       "[account] Cached profile belongs to a different auth identity. Clearing stale local profile.",
       safeStringify({
@@ -397,24 +392,34 @@ export async function getProfileForFirebaseUid(
   try {
     const restored = await resolveProfileFromBackendByAuth(normalizedUid, normalizedEmail);
 
-    if (!restored) {
-      return null;
+    if (restored) {
+      const merged: UserProfile = {
+        ...mergeProfileWithAuth(restored, normalizedUid, normalizedEmail),
+        questionnaireCompleted: resolveQuestionnaireCompleted(
+          undefined,
+          restored.questionnaireCompleted
+        ),
+      };
+
+      await writeProfileCache(merged);
+      return merged;
     }
-
-    const merged: UserProfile = {
-      ...mergeProfileWithAuth(restored, normalizedUid, normalizedEmail),
-      questionnaireCompleted: resolveQuestionnaireCompleted(
-        undefined,
-        restored.questionnaireCompleted
-      ),
-    };
-
-    await writeProfileCache(merged);
-    return merged;
   } catch (error) {
     console.warn("[account] Failed to resolve profile from backend:", error);
-    return null;
   }
+
+  if (matchedCachedProfile) {
+    const patched = mergeProfileWithAuth(
+      matchedCachedProfile,
+      normalizedUid,
+      normalizedEmail
+    );
+
+    await writeProfileCache(patched);
+    return patched;
+  }
+
+  return null;
 }
 
 export async function saveProfile(profile: UserProfile) {
@@ -462,7 +467,7 @@ export async function createProfileOnBackend(profile: UserProfile) {
     firebaseUid: profile.firebaseUid || backendProfile?.firebaseUid,
     email: normalizeEmail(profile.email) || backendProfile?.email,
     questionnaireCompleted: resolveQuestionnaireCompleted(
-      profile.questionnaireCompleted,
+      undefined,
       backendProfile?.questionnaireCompleted
     ),
     replyLanguage: backendProfile?.replyLanguage || profile.replyLanguage || "ta",
@@ -473,19 +478,6 @@ export async function createProfileOnBackend(profile: UserProfile) {
   console.log("[account] Saved profile:", safeStringify(merged));
 
   return merged;
-}
-
-export async function markQuestionnaireCompleted(done: boolean = true) {
-  const profile = await getProfile();
-  if (!profile) return null;
-
-  const updated: UserProfile = {
-    ...profile,
-    questionnaireCompleted: done,
-  };
-
-  await saveProfile(updated);
-  return updated;
 }
 
 export async function getPersonalityQuestions(): Promise<PersonalityQuestion[]> {
@@ -505,10 +497,6 @@ export async function savePersonalityAnswers(
   ) as Record<string, string>;
 
   return apiPost(`/users/${userId}/personality`, { answers: normalized });
-}
-
-export async function submitQuestionnaire(userId: number, payload: any) {
-  return apiPost(`/users/${userId}/questionnaire`, { payload });
 }
 
 export async function generateDailyCheckins(userId: number) {

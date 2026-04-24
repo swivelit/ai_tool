@@ -1,5 +1,13 @@
 const APP_SCHEME = "com.harishajahan.tamilai";
 
+const LOCAL_MODEL_BASE_URL = (
+  process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL || ""
+).trim();
+
+const USE_LOCAL_CHAT_PIPELINE =
+  process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ??
+  (LOCAL_MODEL_BASE_URL ? "true" : "false");
+
 export default {
   expo: {
     name: "J AI",
@@ -23,8 +31,13 @@ export default {
         "https://ai-tool-rrau.onrender.com",
 
       // phone-local runtime
-      LOCAL_MODEL_BASE_URL:
-        process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL || "http://127.0.0.1:10000/v1",
+      // Real devices cannot use 127.0.0.1/localhost for a laptop-hosted model.
+      // Leave local chat off unless EXPO_PUBLIC_LOCAL_MODEL_BASE_URL is explicitly set
+      // to a reachable LAN/emulator URL, for example http://192.168.1.23:10000/v1.
+      LOCAL_MODEL_BASE_URL,
+      USE_LOCAL_CHAT_PIPELINE,
+      USE_LOCAL_VOICE_PIPELINE:
+        process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE || "false",
       LOCAL_MODEL_API_KEY:
         process.env.EXPO_PUBLIC_LOCAL_MODEL_API_KEY || "local-phone",
       LOCAL_MODEL_TIMEOUT_MS: Number(

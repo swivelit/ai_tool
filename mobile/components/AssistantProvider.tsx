@@ -202,10 +202,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       setProfileState(updatedProfile);
 
       try {
-        const syncedProfile = await createProfileOnBackend({
-          ...updatedProfile,
-          assistantName: name,
-        });
+        const syncedProfile = await createProfileOnBackend(updatedProfile);
         setProfileState(syncedProfile);
       } catch (error) {
         console.warn("[assistant] Failed to sync assistant settings to backend:", error);

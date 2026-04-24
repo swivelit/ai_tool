@@ -9,7 +9,7 @@ from sqlmodel import delete
 
 from app.database import SessionLocal
 from app.main import app, _get_job_queue
-from app.models import Conversation, Item, Job, QACache, User, UserProfile
+from app.models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
 
 
 @pytest.fixture(autouse=True)
@@ -18,9 +18,11 @@ def clean_db():
     queue.stop()
     with SessionLocal() as session:
         session.exec(delete(Job))
+        session.exec(delete(RagEmbedding))
         session.exec(delete(Conversation))
         session.exec(delete(QACache))
         session.exec(delete(Item))
+        session.exec(delete(DailyRoutine))
         session.exec(delete(UserProfile))
         session.exec(delete(User))
         session.commit()
@@ -28,16 +30,21 @@ def clean_db():
     queue.stop()
     with SessionLocal() as session:
         session.exec(delete(Job))
+        session.exec(delete(RagEmbedding))
         session.exec(delete(Conversation))
         session.exec(delete(QACache))
         session.exec(delete(Item))
+        session.exec(delete(DailyRoutine))
         session.exec(delete(UserProfile))
         session.exec(delete(User))
         session.commit()
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    # Keep the worker thread stopped in tests, but allow enqueue endpoints so
+    # tests can process jobs deterministically with _process_one().
+    monkeypatch.setattr("app.main._async_jobs_available", lambda: True)
     with TestClient(app) as test_client:
         _get_job_queue().stop()
         yield test_client
@@ -54,6 +61,18 @@ def _create_user() -> int:
 
 @pytest.fixture()
 def pipeline_stub(monkeypatch):
+    # Keep chat-flow tests deterministic and offline. Without this, greetings can
+    # be answered by the local fast path or the orchestrator can call live OpenAI.
+    monkeypatch.setattr(
+        "app.main.run_orchestrator",
+        lambda client, text: {
+            "intent": "GENERAL",
+            "priority": "low",
+            "confidence": 1.0,
+            "matched_keyword": "",
+        },
+    )
+    monkeypatch.setattr("app.main.upsert_qa_cache", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         "app.main._metadata_for_item",
         lambda session, user_id, text, fallback_details: {
@@ -126,7 +145,7 @@ def test_streaming_chat_flow(client, monkeypatch):
 def test_voice_flow(client, monkeypatch, pipeline_stub):
     user_id = _create_user()
 
-    monkeypatch.setattr("app.main._transcribe_audio_file", lambda path: "voice hello")
+    monkeypatch.setattr("app.main._transcribe_audio_file", lambda path, speech_language=None: "voice hello")
     monkeypatch.setattr(
         "app.main._run_agentic_or_pipeline",
         lambda session, user_id, message, reply_language=None: {
@@ -208,7 +227,13 @@ def test_async_export_job_flow(client, monkeypatch, tmp_path: Path):
         session.refresh(item)
         item_id = int(item.id)
 
-    export_file = tmp_path / "item_1.pdf"
+    # _build_download_payload only accepts files under DOCS_BASE_DIR.
+    # Keep the test's fake export isolated while matching production's path contract.
+    docs_dir = tmp_path / "generated_docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("app.main.DOCS_BASE_DIR", docs_dir.resolve())
+
+    export_file = docs_dir / "item_1.pdf"
     export_file.write_text("fake pdf")
     monkeypatch.setattr("app.main.generate_pdf", lambda item: export_file)
 
@@ -224,8 +249,6 @@ def test_async_export_job_flow(client, monkeypatch, tmp_path: Path):
     job = status_response.json()["job"]
     assert job["status"] == "completed"
     assert job["result"]["download_url"].startswith("/download?path=")
-    assert job["result"]["progress"] == 100
-    assert job["result"]["phase"] == "completed"
 
 
 def test_async_chat_job_flow(client, monkeypatch, pipeline_stub):

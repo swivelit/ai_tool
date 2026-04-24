@@ -1,7 +1,28 @@
+# Environment
 .env
-.venv
+.env.*
+!.env.example
+.venv/
+backend/.venv/
+
+# Python/runtime artifacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# macOS/editor junk
+.DS_Store
+**/.DS_Store
+.vscode/
+
+# Backend runtime/generated data
+backend/*.db
 backend/tamil_voice_ai.db
-backend/generated_docs
+backend/generated_docs/
 backend/data/db/
 backend/data/logs/
 backend/data/generated_docs/
@@ -11,5 +32,17 @@ backend/data/agents/logs/
 backend/data/agents/training/
 backend/data/agents/snapshots/
 backend/data/agents/rag_exports/
+
+# Mobile secrets / generated native config
+mobile/google-services.json
+mobile/GoogleService-Info.plist
+
+# Build outputs
 dist/
 dist/*.apk
+mobile/.expo/
+mobile/android/
+mobile/ios/
+mobile/node_modules/
+mobile/.turbo/
+mobile/coverage/

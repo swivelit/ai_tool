@@ -136,8 +136,6 @@ export default function ProfileScreen() {
         replyLanguage: settings.languageMode,
       } as const;
 
-      await setAssistantName(normalizedProfile.assistantName);
-
       const existingProfile =
         profile?.firebaseUid === user.uid && profile?.userId
           ? profile
@@ -150,6 +148,7 @@ export default function ProfileScreen() {
         questionnaireCompleted: existingProfile?.questionnaireCompleted ?? false,
       });
 
+      await setAssistantName(normalizedProfile.assistantName);
       await saveProfile(upsertedProfile);
       await refresh();
       router.replace("/onboarding/questionnaire");
@@ -194,7 +193,7 @@ export default function ProfileScreen() {
               </View>
 
               <Pressable
-                onPress={() => router.replace("/")}
+                onPress={() => router.replace("/auth/login")}
                 style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
               >
                 <Ionicons name="close-outline" size={18} color={Brand.cocoa} />

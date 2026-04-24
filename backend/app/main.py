@@ -21,9 +21,17 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlmodel import Session, delete, select
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import SQLModel, Session, delete, select
+
+CURRENT_DIR = Path(__file__).resolve().parent
+BACKEND_ROOT = CURRENT_DIR.parent
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+load_dotenv()
 
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
@@ -36,12 +44,6 @@ from .agentic_service import AgenticService
 from .orchestrator_task import run_orchestrator
 
 
-CURRENT_DIR = Path(__file__).resolve().parent
-BACKEND_ROOT = CURRENT_DIR.parent
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
-
-load_dotenv()
 bootstrap_observability()
 patch_openai_client()
 
@@ -58,7 +60,13 @@ from stage_english_remodel import EnglishRemodeler  # noqa: E402
 from stage_openai_core import OpenAICore  # noqa: E402
 from stage_translate import StageTranslator  # noqa: E402
 from .behavioural_rag_filter import BehaviouralRAGFilter  # noqa: E402
-from .openwakeword_api import router as openwakeword_router  # noqa: E402
+try:
+    from .openwakeword_api import router as openwakeword_router  # noqa: E402
+except Exception as exc:  # pragma: no cover - protects core API startup from optional wakeword deps
+    openwakeword_router = None
+    OPENWAKEWORD_IMPORT_ERROR = exc
+else:
+    OPENWAKEWORD_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +87,40 @@ client: Optional[openai.OpenAI] = None
 JOB_QUEUE: Optional[DBJobQueue] = None
 VECTOR_STORE = VectorStore(engine, backend=os.getenv("VECTOR_STORE_BACKEND", "auto"))
 
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost",
+    "http://127.0.0.1",
+    "http://localhost:19006",
+    "http://127.0.0.1:19006",
+    "http://localhost:8081",
+    "http://127.0.0.1:8081",
+]
+
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+    if origin.strip()
+] or DEFAULT_CORS_ORIGINS
+
 app = FastAPI(title="J AI Backend")
-app.include_router(openwakeword_router)
+RUNTIME_STATUS: Dict[str, Any] = {
+    "status": "starting",
+    "services": {},
+    "errors": [],
+}
+
+if openwakeword_router is not None:
+    app.include_router(openwakeword_router)
+else:
+    logger = logging.getLogger(__name__)
+    logger.warning(
+        "OpenWakeWord routes disabled because optional dependencies failed to import: %s",
+        OPENWAKEWORD_IMPORT_ERROR,
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -510,9 +547,31 @@ def _get_job_queue() -> DBJobQueue:
     return JOB_QUEUE
 
 
+def _job_worker_enabled() -> bool:
+    return os.getenv("JOB_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _async_jobs_available() -> bool:
+    if not _job_worker_enabled():
+        return False
+    return _get_job_queue().is_running()
+
+
+def _require_async_jobs_available() -> None:
+    if not _async_jobs_available():
+        raise HTTPException(503, "Async jobs are disabled because no background job worker is running.")
+
+
+def _validate_export_format(export_format: str) -> str:
+    normalized = str(export_format or "").strip().lower()
+    if normalized not in {"pdf", "excel", "ppt", "docx"}:
+        raise HTTPException(400, "Unsupported export format")
+    return normalized
+
+
 def _job_handle_export(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
     item_id = int(payload["item_id"])
-    export_format = str(payload["export_format"]).lower().strip()
+    export_format = _validate_export_format(payload["export_format"])
     item = session.get(Item, item_id)
     if not item:
         raise RuntimeError("Item not found")
@@ -552,17 +611,66 @@ def _register_job_handlers() -> None:
     queue.register("export", _job_handle_export)
     queue.register("chat", _job_handle_chat)
 
+def _record_runtime_service(name: str, *, ok: bool, required: bool, detail: str = "") -> None:
+    RUNTIME_STATUS["services"][name] = {
+        "ok": ok,
+        "required": required,
+        "detail": detail,
+    }
+    if not ok:
+        RUNTIME_STATUS["errors"].append({"service": name, "detail": detail, "required": required})
+
+
 @app.on_event("startup")
 def startup_runtime_services() -> None:
+    RUNTIME_STATUS["status"] = "starting"
+    RUNTIME_STATUS["services"] = {}
+    RUNTIME_STATUS["errors"] = []
+
     if not _is_openai_configured():
         logger.warning("OPENAI_API_KEY is not set. OpenAI-dependent endpoints will return HTTP 503 until configured.")
+        _record_runtime_service("openai", ok=False, required=False, detail="OPENAI_API_KEY is not configured.")
+    else:
+        _record_runtime_service("openai", ok=True, required=False)
+
+    auto_create_tables = os.getenv("AUTO_CREATE_TABLES", "").strip().lower() in {"1", "true", "yes", "on"}
+    if str(engine.url).startswith("sqlite"):
+        auto_create_tables = os.getenv("AUTO_CREATE_TABLES", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+    try:
+        if auto_create_tables:
+            SQLModel.metadata.create_all(engine)
+            _record_runtime_service("database_schema", ok=True, required=True, detail="create_all enabled")
+        else:
+            _record_runtime_service("database_schema", ok=True, required=True, detail="create_all disabled; run Alembic migrations before startup")
+    except Exception as exc:
+        logger.exception("Database schema initialization failed")
+        _record_runtime_service("database_schema", ok=False, required=True, detail=str(exc))
+
     try:
         VECTOR_STORE.initialize()
-        _register_job_handlers()
-        if os.getenv("JOB_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
-            _get_job_queue().start()
+        _record_runtime_service("vector_store", ok=True, required=True, detail=getattr(VECTOR_STORE, "mode", "initialized"))
     except Exception as exc:
-        logger.warning("Runtime service initialization skipped: %s", exc)
+        logger.exception("Vector store initialization failed")
+        _record_runtime_service("vector_store", ok=False, required=True, detail=str(exc))
+
+    try:
+        _register_job_handlers()
+        if _job_worker_enabled():
+            _get_job_queue().start()
+            detail = "worker started"
+        else:
+            detail = "worker disabled"
+        _record_runtime_service("job_queue", ok=True, required=True, detail=detail)
+    except Exception as exc:
+        logger.exception("Job queue initialization failed")
+        _record_runtime_service("job_queue", ok=False, required=True, detail=str(exc))
+
+    required_errors = [error for error in RUNTIME_STATUS["errors"] if error.get("required")]
+    RUNTIME_STATUS["status"] = "degraded" if required_errors else "ok"
+
+    if required_errors and os.getenv("FAIL_STARTUP_ON_REQUIRED_SERVICE_ERROR", "false").lower() in {"1", "true", "yes", "on"}:
+        raise RuntimeError(f"Required runtime services failed: {required_errors}")
 
 
 @app.middleware("http")
@@ -608,16 +716,27 @@ def root():
     }
 
 
+def _health_payload() -> Dict[str, Any]:
+    return {
+        "status": RUNTIME_STATUS.get("status") or "starting",
+        "app": "J AI",
+        "pipeline_version": PIPELINE_VERSION,
+        "services": RUNTIME_STATUS.get("services", {}),
+        "errors": RUNTIME_STATUS.get("errors", []),
+    }
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "J AI", "pipeline_version": PIPELINE_VERSION}
+    payload = _health_payload()
+    status_code = 200 if payload["status"] == "ok" else 503
+    return JSONResponse(payload, status_code=status_code)
 
 
 @app.get("/api/health")
 def api_health():
-    return {
-        "status": "ok",
-        "app": "J AI",
+    payload = _health_payload()
+    payload.update({
         "mode": PIPELINE_VERSION,
         "features": [
             "persona_context",
@@ -630,7 +749,9 @@ def api_health():
             "semantic_memory_rag",
             "qa_cache_rag",
         ],
-    }
+    })
+    status_code = 200 if payload["status"] == "ok" else 503
+    return JSONResponse(payload, status_code=status_code)
 
 
 PARSE_DT_PROMPT = """
@@ -767,6 +888,8 @@ class TextAnalysisResponse(BaseModel):
     datetime: Optional[str] = None
     title: Optional[str] = None
     details: Optional[str] = None
+    created_at: Optional[str] = None
+    source: Optional[str] = None
 
 
 class UserCreate(BaseModel):
@@ -868,6 +991,8 @@ def item_to_response(item: Item) -> TextAnalysisResponse:
         datetime=item.datetime_str,
         title=item.title,
         details=item.details,
+        created_at=item.created_at.isoformat() if item.created_at else None,
+        source=item.source,
     )
 
 
@@ -1673,6 +1798,33 @@ def _serialize_user_payload(user: User, profile: Optional[UserProfile]) -> Dict[
         "questionnaire_completed": _questionnaire_completed(profile),
     }
 
+def _find_existing_user(
+    session: Session,
+    *,
+    user_id: Optional[int] = None,
+    firebase_uid: Optional[str] = None,
+    email: Optional[str] = None,
+) -> Optional[User]:
+    user: Optional[User] = None
+
+    if user_id:
+        user = session.get(User, user_id)
+        if user:
+            return user
+
+    if firebase_uid:
+        user = session.exec(select(User).where(User.firebase_uid == firebase_uid)).first()
+        if user:
+            return user
+
+    if email:
+        user = session.exec(select(User).where(User.email == email)).first()
+        if user:
+            return user
+
+    return None
+
+
 @app.post("/users")
 def create_user(payload: UserCreate, session: Session = Depends(get_session)):
     assistant_name = (payload.assistant_name or "Elli").strip() or "Elli"
@@ -1685,30 +1837,15 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
         json.dumps(payload.model_dump(), ensure_ascii=False, default=str),
     )
 
-    user: Optional[User] = None
-
     try:
-        if payload.user_id:
-            user = session.get(User, payload.user_id)
+        user = _find_existing_user(
+            session,
+            user_id=payload.user_id,
+            firebase_uid=firebase_uid,
+            email=normalized_email,
+        )
 
-        if not user and firebase_uid:
-            user = session.exec(select(User).where(User.firebase_uid == firebase_uid)).first()
-
-        if not user and normalized_email:
-            user = session.exec(select(User).where(User.email == normalized_email)).first()
-
-        if user:
-            user.firebase_uid = firebase_uid or user.firebase_uid
-            user.email = normalized_email or user.email
-            user.name = payload.name
-            user.place = payload.place
-            user.timezone = payload.timezone or user.timezone or "Asia/Kolkata"
-            user.assistant_name = assistant_name
-            user.reply_language = reply_language or getattr(user, "reply_language", "ta") or "ta"
-            session.add(user)
-            session.commit()
-            session.refresh(user)
-        else:
+        if user is None:
             user = User(
                 firebase_uid=firebase_uid,
                 email=normalized_email,
@@ -1719,16 +1856,44 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
                 reply_language=reply_language,
             )
             session.add(user)
-            session.commit()
-            session.refresh(user)
+        else:
+            user.firebase_uid = firebase_uid or user.firebase_uid
+            user.email = normalized_email or user.email
+            user.name = payload.name
+            user.place = payload.place
+            user.timezone = payload.timezone or user.timezone or "Asia/Kolkata"
+            user.assistant_name = assistant_name
+            user.reply_language = reply_language or getattr(user, "reply_language", "ta") or "ta"
+            session.add(user)
 
-        profile = _ensure_user_profile(session, int(user.id))
-
+        session.commit()
+        session.refresh(user)
+    except IntegrityError:
+        session.rollback()
+        user = _find_existing_user(
+            session,
+            user_id=payload.user_id,
+            firebase_uid=firebase_uid,
+            email=normalized_email,
+        )
+        if user is None:
+            raise HTTPException(409, "User could not be created because of a conflicting identity record.")
+        user.firebase_uid = firebase_uid or user.firebase_uid
+        user.email = normalized_email or user.email
+        user.name = payload.name
+        user.place = payload.place
+        user.timezone = payload.timezone or user.timezone or "Asia/Kolkata"
+        user.assistant_name = assistant_name
+        user.reply_language = reply_language or getattr(user, "reply_language", "ta") or "ta"
+        session.add(user)
+        session.commit()
+        session.refresh(user)
     except Exception as exc:
         session.rollback()
         print(f"[DEBUG] /users failed while saving: {exc}")
         raise
 
+    profile = _ensure_user_profile(session, int(user.id))
     response_payload = _serialize_user_payload(user, profile)
 
     print(
@@ -1752,31 +1917,16 @@ def resolve_user(
     if not normalized_uid and not normalized_email:
         raise HTTPException(400, "firebase_uid or email is required")
 
-    user: Optional[User] = None
-
-    if normalized_uid:
-        user = session.exec(select(User).where(User.firebase_uid == normalized_uid)).first()
-
-    if not user and normalized_email:
-        user = session.exec(select(User).where(User.email == normalized_email)).first()
+    user = _find_existing_user(
+        session,
+        firebase_uid=normalized_uid,
+        email=normalized_email,
+    )
 
     if not user:
         return {"found": False}
 
     profile = _ensure_user_profile(session, int(user.id))
-
-    if normalized_uid and user.firebase_uid != normalized_uid:
-        user.firebase_uid = normalized_uid
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-
-    if normalized_email and user.email != normalized_email:
-        user.email = normalized_email
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-
     return {
         "found": True,
         "user": _serialize_user_payload(user, profile),
@@ -1894,46 +2044,42 @@ def _build_direct_answer_pipeline_result(
     )
 
 
-@app.post("/api/chat")
-def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
-    text = _resolve_chat_text(payload)
+def _run_chat_logic(session: Session, payload: ChatAPIRequest, text: str) -> Dict[str, Any]:
+    routing = run_orchestrator(_get_openai_client(required=False), text)
 
-    # 👮‍♂️ 1. Call Your Orchestrator (The Traffic Cop)
-    routing = run_orchestrator(_get_openai_client(), text)
-
-    # 🚑 2. Handle Emergencies (High Priority)
     if routing["intent"] == "EMERGENCY":
         res = "🚨 EMERGENCY DETECTED: Please stay safe and contact emergency services (112) immediately."
-        pipeline_result = _build_direct_answer_pipeline_result(
-            res, "EMERGENCY", "orchestrator_emergency", 
-            routing["priority"], routing["confidence"], routing.get("matched_keyword", "")
-        )
-    
-    # 🔍 3. Handle Ambiguity
-    elif routing["intent"] == "AMBIGUOUS":
-        res = routing.get("clarification_question") or "Could you share a bit more so I can assist you better?"
-        pipeline_result = _build_direct_answer_pipeline_result(
-            res, "AMBIGUOUS", "orchestrator_clarification",
-            routing["priority"], routing["confidence"], routing.get("matched_keyword", "")
+        return _build_direct_answer_pipeline_result(
+            res,
+            "EMERGENCY",
+            "orchestrator_emergency",
+            routing["priority"],
+            routing["confidence"],
+            routing.get("matched_keyword", ""),
         )
 
-    # 👋 4. Intent Passthrough to TL's Fast-Path (Greeting, Profile, Identity)
-    # The Orchestrator tags these, and we let _try_local_fast_path handle the actual response.
-    elif routing["intent"] in {"GREETING", "SMALLTALK", "PROFILE", "IDENTITY"}:
+    if routing["intent"] == "AMBIGUOUS":
+        res = routing.get("clarification_question") or "Could you share a bit more so I can assist you better?"
+        return _build_direct_answer_pipeline_result(
+            res,
+            "AMBIGUOUS",
+            "orchestrator_clarification",
+            routing["priority"],
+            routing["confidence"],
+            routing.get("matched_keyword", ""),
+        )
+
+    if routing["intent"] in {"GREETING", "SMALLTALK", "PROFILE", "IDENTITY"}:
         tl_fast_res = _try_local_fast_path(session, payload.user_id, text)
         if tl_fast_res:
-            pipeline_result = tl_fast_res
-        else:
-            # Fallback if TL's RAG file doesn't have the specific answer
-            pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+            return tl_fast_res
 
-    # 🌐 5. Tool Use or Full Pipeline reasoning
-    else:
-        pipeline_result = _run_agentic_or_pipeline(
-            session, payload.user_id, text, payload.reply_language
-        )
+    return _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
 
-    # Save to history and return response
+
+def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
+    text = _resolve_chat_text(payload)
+    pipeline_result = _run_chat_logic(session, payload, text)
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
@@ -1946,25 +2092,15 @@ def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
     return _build_chat_response(item, meta, normalized_pipeline)
 
 
+@app.post("/api/chat")
+def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
+    return _run_chat_request(session, payload)
+
+
 def _run_chat_payload(payload: ChatAPIRequest) -> Dict[str, Any]:
     with SessionLocal() as session:
-        text = _resolve_chat_text(payload)
-        pipeline_result = _run_agentic_or_pipeline(
-            session,
-            payload.user_id,
-            text,
-            payload.reply_language,
-        )
-        item, meta, normalized_pipeline = _save_item_from_pipeline(
-            session,
-            user_id=payload.user_id,
-            source="text",
-            raw_text=text,
-            transcript=None,
-            pipeline_result=pipeline_result,
-            reply_language=payload.reply_language,
-        )
-        return _build_chat_response(item, meta, normalized_pipeline)
+        return _run_chat_request(session, payload)
+
 
 def _sse_event(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -1972,35 +2108,34 @@ def _sse_event(event: str, data: Any) -> str:
 
 @app.post("/api/chat/stream")
 async def api_chat_stream(payload: ChatAPIRequest):
+    started_at = time.perf_counter()
+    response = await asyncio.to_thread(_run_chat_payload, payload)
+    assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
+    chunk_size = max(12, int(os.getenv("STREAM_CHUNK_SIZE", "32") or 32))
+
     async def event_generator():
-        started_at = time.perf_counter()
         yield _sse_event("status", {"phase": "accepted"})
         yield _sse_event("status", {"phase": "running"})
-        try:
-            response = await asyncio.to_thread(_run_chat_payload, payload)
-            assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
-            chunk_size = max(12, int(os.getenv("STREAM_CHUNK_SIZE", "32") or 32))
-            for index in range(0, len(assistant_text), chunk_size):
-                yield _sse_event(
-                    "token",
-                    {"delta": assistant_text[index : index + chunk_size]},
-                )
-                await asyncio.sleep(0)
+        for index in range(0, len(assistant_text), chunk_size):
             yield _sse_event(
-                "done",
-                {
-                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
-                    "response": response,
-                },
+                "token",
+                {"delta": assistant_text[index : index + chunk_size]},
             )
-        except Exception as exc:
-            yield _sse_event("error", {"message": str(exc)})
+            await asyncio.sleep(0)
+        yield _sse_event(
+            "done",
+            {
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                "response": response,
+            },
+        )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.post("/api/chat/jobs")
 def enqueue_chat_job(payload: ChatAPIRequest, session: Session = Depends(get_session)):
+    _require_async_jobs_available()
     text = _resolve_chat_text(payload)
     job = _get_job_queue().enqueue(
         session,
@@ -2024,13 +2159,14 @@ def get_job_status(job_id: int, session: Session = Depends(get_session)):
 @app.get("/api/flags")
 def get_feature_flags():
     voice_strategy = os.getenv("VOICE_ROUTING_MODE", "backend").strip().lower() or "backend"
+    async_jobs_enabled = _async_jobs_available()
     return {
         "ok": True,
         "flags": {
             "voiceRoutingMode": voice_strategy,
             "streamingChatEnabled": True,
-            "asyncExportJobsEnabled": True,
-            "asyncChatJobsEnabled": True,
+            "asyncExportJobsEnabled": async_jobs_enabled,
+            "asyncChatJobsEnabled": async_jobs_enabled,
             "vectorStoreBackend": VECTOR_STORE.mode,
         },
     }
@@ -2074,15 +2210,29 @@ def api_tts(payload: TTSRequest):
 
 @app.post("/users/{user_id}/questionnaire")
 def save_mobile_questionnaire(user_id: int, payload: Dict[str, Any], session: Session = Depends(get_session)):
-    raw = payload.get("payload", payload)
-    mapped = DailyRoutineIn(
-        wake_time=str(raw.get("wake") or raw.get("wake_time") or "07:30"),
-        sleep_time=str(raw.get("sleep") or raw.get("sleep_time") or "23:30"),
-        work_start=raw.get("workStart") or raw.get("work_start"),
-        work_end=raw.get("workEnd") or raw.get("work_end"),
-        daily_habits=raw.get("dailyHabits") or raw.get("daily_habits"),
-    )
-    return upsert_daily_routine(user_id, mapped, session)
+    """Deprecated compatibility endpoint for older mobile builds.
+
+    Questionnaire completion is derived from saved personality/profiler answers in
+    ``UserProfile.answers_json``. This route intentionally does not write daily
+    routine data; daily routine writes belong to ``PUT /users/{user_id}/daily-routine``.
+    """
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
+    completed = _questionnaire_completed(profile)
+
+    return {
+        "ok": True,
+        "deprecated": True,
+        "message": (
+            "Questionnaire completion is derived from /users/{user_id}/personality "
+            "answers_json. This endpoint no longer writes daily routine data."
+        ),
+        "questionnaire_completed": completed,
+        "user": _serialize_user_payload(user, profile),
+    }
 
 
 @app.post("/users/{user_id}/generate-daily-checkins")
@@ -2280,7 +2430,7 @@ async def api_transcribe_and_analyze(
         # If speech_language is not provided, Whisper auto-detects the spoken language.
         transcript_text = _transcribe_audio_file(tmp_path, speech_language)
 
-        pipeline_result = _run_stage_pipeline(
+        pipeline_result = _run_agentic_or_pipeline(
             session,
             user_id,
             transcript_text,
@@ -2339,7 +2489,7 @@ def _require_positive_user_id(user_id: Optional[int]) -> int:
 @app.get("/items", response_model=List[TextAnalysisResponse])
 def list_items(
     session: Session = Depends(get_session),
-    user_id: Optional[int] = Query(default=None),
+    user_id: int = Query(...),
 ):
     resolved_user_id = _require_positive_user_id(user_id)
     query = (
@@ -2355,7 +2505,7 @@ def list_items(
 def get_item(
     item_id: int,
     session: Session = Depends(get_session),
-    user_id: Optional[int] = Query(default=None),
+    user_id: int = Query(...),
 ):
     resolved_user_id = _require_positive_user_id(user_id)
     item = session.exec(
@@ -2369,7 +2519,7 @@ def get_item(
 @app.delete("/items/{item_id}")
 def delete_item(
     item_id: int,
-    user_id: Optional[int] = Query(default=None),
+    user_id: int = Query(...),
     session: Session = Depends(get_session),
 ):
     resolved_user_id = _require_positive_user_id(user_id)
@@ -2524,6 +2674,8 @@ def generate_ppt(item: Item) -> Path:
 
 
 def _enqueue_export_job(session: Session, *, item_id: int, export_format: str) -> Dict[str, Any]:
+    _require_async_jobs_available()
+    normalized_format = _validate_export_format(export_format)
     item = session.get(Item, item_id)
     if not item:
         raise HTTPException(404, "Item not found")
@@ -2531,7 +2683,7 @@ def _enqueue_export_job(session: Session, *, item_id: int, export_format: str) -
         session,
         job_type="export",
         user_id=item.user_id,
-        payload={"item_id": item_id, "export_format": export_format},
+        payload={"item_id": item_id, "export_format": normalized_format},
         max_attempts=int(os.getenv("JOB_EXPORT_MAX_ATTEMPTS", "3") or 3),
     )
     return {"ok": True, "job": _serialize_job(job)}

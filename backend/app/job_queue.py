@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional
 
+from sqlalchemy import update as sql_update
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, select
 
@@ -63,6 +63,7 @@ class DBJobQueue:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._stop.clear()
         self._thread = threading.Thread(target=self._run_loop, name="db-job-worker", daemon=True)
         self._thread.start()
 
@@ -70,6 +71,9 @@ class DBJobQueue:
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2)
+
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive() and not self._stop.is_set())
 
     def get_job(self, session: Session, job_id: int) -> Optional[Job]:
         return session.get(Job, job_id)
@@ -84,23 +88,40 @@ class DBJobQueue:
                 logger.exception("job worker loop failed")
                 self._stop.wait(self.poll_seconds)
 
+    def _claim_next_job(self, session: Session) -> Optional[Job]:
+        now = datetime.utcnow()
+        candidate_id = session.exec(
+            select(Job.id)
+            .where(Job.status.in_(["queued", "retrying"]))
+            .where(Job.run_at <= now)
+            .order_by(Job.created_at.asc())
+        ).first()
+        if candidate_id is None:
+            return None
+
+        claim_result = session.exec(
+            sql_update(Job)
+            .where(Job.id == candidate_id)
+            .where(Job.status.in_(["queued", "retrying"]))
+            .where(Job.run_at <= now)
+            .values(
+                status="running",
+                started_at=now,
+                updated_at=now,
+            )
+        )
+        if int(getattr(claim_result, "rowcount", 0) or 0) != 1:
+            session.rollback()
+            return None
+
+        session.commit()
+        return session.get(Job, candidate_id)
+
     def _process_one(self) -> bool:
         with self._session_factory() as session:
-            job = session.exec(
-                select(Job)
-                .where(Job.status.in_(["queued", "retrying"]))
-                .where(Job.run_at <= datetime.utcnow())
-                .order_by(Job.created_at.asc())
-            ).first()
+            job = self._claim_next_job(session)
             if job is None:
                 return False
-
-            job.status = "running"
-            job.started_at = datetime.utcnow()
-            job.updated_at = datetime.utcnow()
-            session.add(job)
-            session.commit()
-            session.refresh(job)
 
             handler = self._handlers.get(job.job_type)
             if handler is None:
@@ -133,14 +154,10 @@ class DBJobQueue:
                 job.error_message = str(exc)
                 job.updated_at = datetime.utcnow()
                 if should_retry:
-                    backoff_seconds = min(60, 2 ** max(1, job.attempts))
-                    job.run_at = datetime.utcnow() + timedelta(seconds=backoff_seconds)
+                    job.run_at = datetime.utcnow() + timedelta(seconds=min(60, max(2, job.attempts * 2)))
                 else:
                     job.finished_at = datetime.utcnow()
                 session.add(job)
                 session.commit()
-                logger.exception(
-                    "job execution failed",
-                    extra={"job_id": job.id, "job_type": job.job_type, "user_id": job.user_id, "attempt": job.attempts},
-                )
+                logger.exception("job failed", extra={"job_id": job.id, "job_type": job.job_type, "user_id": job.user_id})
             return True

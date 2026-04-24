@@ -1,5 +1,32 @@
+# Environment
 .env
-.env
-.venv
-backend/tamil_voice_ai.db
-backend/generated_docs
+.env.*
+!.env.example
+.venv/
+
+# Python/runtime artifacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# macOS/editor junk
+.DS_Store
+**/.DS_Store
+
+# Runtime/generated data
+*.db
+tamil_voice_ai.db
+generated_docs/
+data/db/
+data/logs/
+data/generated_docs/
+data/agents/state/
+data/agents/memory/
+data/agents/logs/
+data/agents/training/
+data/agents/snapshots/
+data/agents/rag_exports/

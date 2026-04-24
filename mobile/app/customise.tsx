@@ -432,7 +432,7 @@ export default function CustomiseScreen() {
     setTrainingStatus(`Microphone is live. Say “${wakePrompt}” now.`);
   });
 
-  useSpeechRecognitionEvent("audioend", (event: { uri?: string } | undefined) => {
+  useSpeechRecognitionEvent("audioend", (event: { uri: string | null }) => {
     if (!trainerVisibleRef.current) return;
 
     const uri = String(event?.uri || "").trim();
@@ -1118,7 +1118,7 @@ function OptionCard({
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
-  helper: string;
+  helper?: string;
   active: boolean;
   onPress: () => void;
 }) {
@@ -1128,7 +1128,7 @@ function OptionCard({
         <Ionicons name={icon} size={16} color={active ? Brand.ink : Brand.bronze} />
       </View>
       <Text style={[styles.optionTitle, active && styles.optionTitleActive]}>{title}</Text>
-      <Text style={styles.optionHelper}>{helper}</Text>
+      {helper ? <Text style={styles.optionHelper}>{helper}</Text> : null}
     </Pressable>
   );
 }
