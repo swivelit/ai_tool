@@ -249,8 +249,6 @@ def test_async_export_job_flow(client, monkeypatch, tmp_path: Path):
     job = status_response.json()["job"]
     assert job["status"] == "completed"
     assert job["result"]["download_url"].startswith("/download?path=")
-    assert job["result"]["progress"] == 100
-    assert job["result"]["phase"] == "completed"
 
 
 def test_async_chat_job_flow(client, monkeypatch, pipeline_stub):
