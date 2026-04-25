@@ -113,22 +113,89 @@ async function fetchWithTimeout(
   }
 }
 
+function headersToRecord(headers?: HeadersInit | null): Record<string, string> {
+  const out: Record<string, string> = {};
+
+  if (!headers) {
+    return out;
+  }
+
+  if (typeof Headers !== "undefined" && headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      out[key] = value;
+    });
+    return out;
+  }
+
+  if (Array.isArray(headers)) {
+    headers.forEach(([key, value]) => {
+      out[String(key)] = String(value);
+    });
+    return out;
+  }
+
+  Object.entries(headers as Record<string, string>).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      out[key] = String(value);
+    }
+  });
+
+  return out;
+}
+
 async function buildHeaders(
-  baseHeaders: Record<string, string> = {},
-  options?: { auth?: boolean }
+  baseHeaders: HeadersInit = {},
+  options?: { auth?: boolean; forceRefreshToken?: boolean }
 ) {
-  const headers: Record<string, string> = { ...baseHeaders };
+  const headers: Record<string, string> = headersToRecord(baseHeaders);
   const shouldAttachAuth = options?.auth !== false;
   const currentUser = auth.currentUser;
 
   if (shouldAttachAuth && currentUser) {
-    const token = await currentUser.getIdToken();
+    const token = await currentUser.getIdToken(Boolean(options?.forceRefreshToken));
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
   }
 
   return headers;
+}
+
+async function fetchBackend(
+  path: string,
+  options: RequestInit = {},
+  config?: { auth?: boolean; timeoutMs?: number }
+): Promise<Response> {
+  const shouldAttachAuth = config?.auth !== false;
+  const baseHeaders = headersToRecord(options.headers);
+
+  const res = await fetchWithTimeout(
+    buildUrl(path),
+    {
+      ...options,
+      headers: await buildHeaders(baseHeaders, { auth: shouldAttachAuth }),
+    },
+    config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS
+  );
+
+  if (res.status !== 401 || !shouldAttachAuth || !auth.currentUser) {
+    return res;
+  }
+
+  // Firebase ID tokens normally refresh automatically, but an expired cached
+  // token can still produce a backend 401. Force refresh once, then retry the
+  // same request before surfacing the error to the caller.
+  return fetchWithTimeout(
+    buildUrl(path),
+    {
+      ...options,
+      headers: await buildHeaders(baseHeaders, {
+        auth: true,
+        forceRefreshToken: true,
+      }),
+    },
+    config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS
+  );
 }
 
 type ClientRoutingMode = "local" | "backend";
@@ -516,7 +583,7 @@ async function getFeatureFlags(forceRefresh = false) {
   }
 
   try {
-    const res = await fetchWithTimeout(buildUrl("/api/flags"), { headers: await buildHeaders({}, { auth: false }) });
+    const res = await fetchBackend("/api/flags", {}, { auth: false });
     if (!res.ok) throw new Error(`flags ${res.status}`);
     const payload = normalizeBackendDates((await res.json()) as FeatureFlagPayload);
     featureFlagsCache = payload?.flags || null;
@@ -820,9 +887,7 @@ async function handleLocalChat(path: string, body?: any): Promise<LocalChatProxy
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetchWithTimeout(buildUrl(path), {
-    headers: await buildHeaders(),
-  });
+  const res = await fetchBackend(path);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new ApiError(`GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
@@ -844,9 +909,9 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
     }
   }
 
-  const res = await fetchWithTimeout(buildUrl(path), {
+  const res = await fetchBackend(path, {
     method: "POST",
-    headers: await buildHeaders({ "Content-Type": "application/json" }),
+    headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -868,9 +933,8 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
     return (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;
   }
 
-  const res = await fetchWithTimeout(buildUrl(resolvedPath), {
+  const res = await fetchBackend(resolvedPath, {
     method: "POST",
-    headers: await buildHeaders(),
     body: form,
   });
 
@@ -883,9 +947,9 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
 }
 
 export async function apiPut<T>(path: string, body?: any): Promise<T> {
-  const res = await fetchWithTimeout(buildUrl(path), {
+  const res = await fetchBackend(path, {
     method: "PUT",
-    headers: await buildHeaders({ "Content-Type": "application/json" }),
+    headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -896,9 +960,8 @@ export async function apiPut<T>(path: string, body?: any): Promise<T> {
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
-  const res = await fetchWithTimeout(buildUrl(path), {
+  const res = await fetchBackend(path, {
     method: "DELETE",
-    headers: await buildHeaders(),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

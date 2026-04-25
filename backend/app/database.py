@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 from typing import Generator
@@ -9,6 +10,8 @@ from dotenv import load_dotenv
 
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SQLITE_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "db" / "ai_tool.sqlite3"
@@ -86,5 +89,10 @@ def get_session() -> Generator[Session, None, None]:
     session = SessionLocal()
     try:
         yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("DB session rolled back")
+        raise
     finally:
         session.close()

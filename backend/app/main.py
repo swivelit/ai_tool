@@ -17,7 +17,7 @@ from collections import OrderedDict
 import requests
 import time
 import openai
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from zoneinfo import ZoneInfo
@@ -42,6 +42,7 @@ from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
 from .models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
+from .time_utils import utc_now as _utc_now
 from .observability import bootstrap_observability, clear_request_context, new_request_id, set_request_context
 from .vector_store import VectorStore
 from .local_rag_service import LocalRAGService
@@ -111,10 +112,6 @@ DOWNLOAD_TOKEN_SECRET = (
     or secrets.token_urlsafe(32)
 )
 DOWNLOAD_TOKEN_TTL_SECONDS = int(os.getenv("DOWNLOAD_TOKEN_TTL_SECONDS", "900") or 900)
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
 
 def _utc_now_iso() -> str:
     return _utc_now().isoformat().replace("+00:00", "Z")
@@ -620,8 +617,6 @@ def _try_local_fast_path(session: Session, user_id: Optional[int], message: str)
         if confidence >= 0.90 and source not in ["", "unknown"]:
             return fast_path
     
-    return None
-
     return None
 
 def _serialize_job(job: Optional[Job]) -> Dict[str, Any]:
@@ -1193,25 +1188,33 @@ def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, ans
 # 🔹 ADD YOUR FUNCTION HERE
 # -----------------------------
 
-def load_onboarding_profile(user_id: str):
-    db_file = os.path.join(os.path.dirname(__file__), "user_database.json")
+def load_onboarding_profile(session: Session, user_id: Union[int, str]) -> Dict[str, Any]:
+    """Load onboarding/personality context from the database.
 
-    if not os.path.exists(db_file):
+    Older code attempted to read ``user_database.json`` from the app directory,
+    but that file is not part of the repo and the rest of the app stores
+    onboarding answers in ``UserProfile.answers_json``. Keeping this helper
+    backed by the DB prevents ``build_user_context()`` from silently handing the
+    LLM an empty onboarding profile.
+    """
+    try:
+        numeric_user_id = int(user_id)
+    except (TypeError, ValueError):
         return {}
 
-    try:
-        with open(db_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    profile = session.exec(select(UserProfile).where(UserProfile.user_id == numeric_user_id)).first()
+    if not profile:
+        return {}
 
-        # get latest profile (simple approach)
-        for item in reversed(data):
-            if str(item.get("user_id")) == str(user_id):
-                return item
-
-    except Exception:
-        pass
-
-    return {}
+    answers = _load_json_object(profile.answers_json)
+    return {
+        "user_id": numeric_user_id,
+        "answers": answers,
+        "profile_summary": profile.profile_summary or "",
+        "questions_version": profile.questions_version,
+        "questionnaire_completed": _questionnaire_completed(profile),
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+    }
 
 
 def build_user_context(session: Session, user_id: int) -> dict:
@@ -1221,7 +1224,7 @@ def build_user_context(session: Session, user_id: int) -> dict:
 
     routine = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
-    onboarding_profile = load_onboarding_profile(str(user_id))
+    onboarding_profile = load_onboarding_profile(session, user_id)
     if profile and profile.questions_version != PERSONALITY_QUESTIONS_VERSION:
         personality = "Personality profile outdated. Be neutral and helpful."
     elif profile and profile.profile_summary:
@@ -1478,7 +1481,7 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
             logger.debug("Fast path skipped; falling back to OpenAI", extra={"confidence": confidence, "source": source})
 
     profile = _sync_stage_profile(session, user_id)
-    onboarding_profile = load_onboarding_profile(str(user_id))
+    onboarding_profile = load_onboarding_profile(session, user_id)
     total_start = time.perf_counter()
     timings: Dict[str, float] = {}
     stage_notes: List[str] = []
@@ -1807,7 +1810,7 @@ def _run_agentic_or_pipeline(
     reply_language: Optional[str] = None,
 ) -> Dict[str, Any]:
     
-    onboarding_profile = load_onboarding_profile(str(user_id))
+    onboarding_profile = load_onboarding_profile(session, user_id)
 
     return _get_agentic_service().orchestrate_chat(
         session,
