@@ -1893,9 +1893,15 @@ def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> st
 
 
 @app.post("/parse-datetime")
-def parse_datetime(payload: ParseDatetimeRequest):
+def parse_datetime(
+    payload: ParseDatetimeRequest,
+    auth_user: AuthUser = Depends(get_current_user),
+):
     now_iso = payload.now_iso or _utc_now_iso()
-    user_content = json.dumps({"timezone": payload.timezone, "now": now_iso, "text": payload.text}, ensure_ascii=False)
+    user_content = json.dumps(
+        {"timezone": payload.timezone, "now": now_iso, "text": payload.text},
+        ensure_ascii=False,
+    )
     out = llm_json(PARSE_DT_PROMPT, user_content, temperature=0.0)
     return {
         "iso": out.get("iso"),
@@ -2399,7 +2405,10 @@ def get_feature_flags():
     }
 
 @app.post("/api/tts")
-def api_tts(payload: TTSRequest):
+def api_tts(
+    payload: TTSRequest,
+    auth_user: AuthUser = Depends(get_current_user),
+):
     if not SARVAM_API_KEY:
         raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
     

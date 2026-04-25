@@ -1,0 +1,116 @@
+{
+  "profile_version": "v4",
+  "user_id": "1",
+  "created_at": "2026-04-25T20:02:33.904615Z",
+  "answers": {
+    "age_group": "26-35",
+    "gender_context": "prefer_not_to_say",
+    "life_stage": "none_of_these",
+    "food_preference": "mixed_flexible",
+    "health_conditions": [
+      "none"
+    ],
+    "food_caution": "no_special_caution",
+    "daily_activity": "moderate_walks",
+    "sleep_pattern": "average",
+    "personality_style": "practical",
+    "stress_support": "step_by_step_plan",
+    "communication_tone": "warm",
+    "answer_length": "medium",
+    "hobbies": [],
+    "main_goal": "career_or_business",
+    "family_role": "working_professional"
+  },
+  "behaviour_rules": {
+    "preferred_tone": "warm, caring, and clear",
+    "preferred_answer_length": "1-2 balanced paragraphs",
+    "primary_goal": "career_or_business",
+    "avoid_items": [],
+    "avoid_topics": [],
+    "mandatory_notes": [
+      "For pregnancy, diabetes, blood pressure, allergies, kidney issues, or other health conditions, avoid definitive medical instructions. Give cautious lifestyle guidance and suggest a clinician for diagnosis, medication, or emergency concerns."
+    ],
+    "response_style_bias": [
+      "Prefer concrete, actionable steps over abstract advice.",
+      "Prefer numbered or stepwise explanations.",
+      "Prefer efficient and outcome-focused framing.",
+      "Keep answers time-efficient and practical."
+    ],
+    "health_flags": {
+      "pregnant": false,
+      "postpartum_or_breastfeeding": false,
+      "trying_to_conceive": false,
+      "diabetes_or_sugar_control": false,
+      "blood_pressure_or_heart_care": false,
+      "thyroid_or_hormonal_care": false,
+      "allergy_digestion_kidney_or_other": false
+    }
+  },
+  "rag_personality_hints": {
+    "top_traits": [
+      "disciplined",
+      "social",
+      "health_focused"
+    ],
+    "retrieved_examples": [
+      {
+        "doc_id": "question::main_goal",
+        "text": "Question id main_goal. Prompt: What matters most to you right now?. Type: single. Options: health, family, career_or_business, peace_of_mind, learning_and_growth.",
+        "score": 0.2272
+      },
+      {
+        "doc_id": "question::stress_support",
+        "text": "Question id stress_support. Prompt: When stressed, what kind of support helps you most?. Type: single. Options: gentle_reassurance, direct_solution, step_by_step_plan, motivation, space_and_time.",
+        "score": 0.1771
+      },
+      {
+        "doc_id": "question::daily_activity",
+        "text": "Question id daily_activity. Prompt: How active are you on most days?. Type: single. Options: mostly_sitting, light_movement, moderate_walks, active_work, fitness_focused.",
+        "score": 0.1741
+      },
+      {
+        "doc_id": "rule::tone_and_length",
+        "text": "Assistant tone should match user preference: warm, respectful, short direct, detailed, or friendly casual. Answer length can be very short, short, medium, detailed, or adaptive depending on complexity.",
+        "score": 0.0627
+      }
+    ],
+    "personality_summary": "Based on the questionnaire and retrieved personality examples, the user appears relatively disciplined, social, health_focused."
+  },
+  "app_profile": {
+    "name": "A",
+    "place": null,
+    "timezone": "Asia/Kolkata",
+    "assistant_name": "Elli",
+    "reply_language": "en"
+  },
+  "daily_routine": {
+    "wake_time": "07:30",
+    "sleep_time": "23:30",
+    "work_start": "09:30",
+    "work_end": "18:30",
+    "daily_habits": ""
+  },
+  "profile_summary": "User age group: 26-35. Gender context: prefer_not_to_say. Life stage: none_of_these. Food style: mixed_flexible. Health context: none. Food caution: no_special_caution. Daily activity: moderate_walks. Sleep pattern: average. Personality style: practical. Stress support preference: step_by_step_plan. Preferred assistant tone: warm, caring, and clear. Preferred answer length: 1-2 balanced paragraphs. Hobbies: no hobby preference recorded. Main goal: career_or_business. Family role: working_professional. Avoid recommending: none. Top personality traits: disciplined, social, health_focused. Based on the questionnaire and retrieved personality examples, the user appears relatively disciplined, social, health_focused.",
+  "profile_card": {
+    "tone": "warm, caring, and clear",
+    "answer_length": "1-2 balanced paragraphs",
+    "life_stage": "none_of_these",
+    "food_preference": "mixed_flexible",
+    "health_conditions": [
+      "none"
+    ],
+    "main_goal": "career_or_business",
+    "style_bias": [
+      "Prefer concrete, actionable steps over abstract advice.",
+      "Prefer numbered or stepwise explanations.",
+      "Prefer efficient and outcome-focused framing.",
+      "Keep answers time-efficient and practical."
+    ],
+    "avoid_items": [],
+    "personality_traits": [
+      "disciplined",
+      "social",
+      "health_focused"
+    ]
+  }
+}
