@@ -7,7 +7,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, create_engine
 from dotenv import load_dotenv
-
+from fastapi import HTTPException
 
 load_dotenv()
 
@@ -84,12 +84,14 @@ SessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 
-
-def get_session() -> Generator[Session, None, None]:
+def get_session():
     session = SessionLocal()
     try:
         yield session
         session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
     except Exception:
         session.rollback()
         logger.exception("DB session rolled back")

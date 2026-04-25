@@ -153,7 +153,11 @@ export function resolveDesiredRoute(input: {
   const inTabs = atTabsGroupRoot || TAB_ROUTES.has(pathname);
 
   if (!input.hasUser) {
-    if ((pathname === SIGNED_OUT_ENTRY_ROUTE && !atTabsGroupRoot) || inAuth) {
+    if (
+      pathname === "/" ||
+      (pathname === SIGNED_OUT_ENTRY_ROUTE && !atTabsGroupRoot) ||
+      inAuth
+    ) {
       return null;
     }
 
