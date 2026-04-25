@@ -3180,25 +3180,36 @@ async function lookupSemanticCache(userId: number, message: string) {
   const rules = await getMemoryRules();
   const store = await loadSemanticCacheStore(userId);
   const now = Date.now();
+
   const rows = store.entries.filter((row) => {
     if (row.userId !== userId) return false;
     if (!row.expiresAt) return true;
     return new Date(row.expiresAt).getTime() >= now;
   });
+
   if (!rows.length) return null;
 
   const profileMemory = isProfileMemoryQuestion(message);
-  const queryTexts = profileMemory ? [message, ...PROFILE_MEMORY_ALIASES] : [message];
-  const queryVectors = await embedTexts(queryTexts);
+
+  // Important: compare the actual user message against cached questions.
+  // Do not inject aliases here, because aliases can bypass the similarity threshold.
+  const queryVectors = await embedTexts([message]);
 
   let best: SemanticCacheEntry | null = null;
   let bestScore = 0;
+
   for (const queryVec of queryVectors) {
     for (const row of rows) {
-      if (profileMemory && row.route !== "profile" && !isProfileMemoryQuestion(row.sourceQuestion)) {
+      if (
+        profileMemory &&
+        row.route !== "profile" &&
+        !isProfileMemoryQuestion(row.sourceQuestion)
+      ) {
         continue;
       }
+
       const score = cosine(queryVec, Array.isArray(row.embedding) ? row.embedding : []);
+
       if (score > bestScore) {
         bestScore = score;
         best = row;
@@ -3206,13 +3217,12 @@ async function lookupSemanticCache(userId: number, message: string) {
     }
   }
 
-  const threshold = profileMemory
-    ? 0.78
-    : positiveFloat(rules.cache?.similarityThreshold, 0.92);
+  const threshold = positiveFloat(rules.cache?.similarityThreshold, 0.92);
 
   if (best && bestScore >= threshold) {
     return { ...best, score: bestScore };
   }
+
   return null;
 }
 
