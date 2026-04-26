@@ -378,7 +378,7 @@ type LocalVoiceTranscription = {
   durationMs: number;
 };
 
-type LocalAnalyzeResponse = {
+type LocalAnalyzeItem = {
   id: number;
   intent: string;
   category: string;
@@ -740,7 +740,7 @@ async function transcribeAudioLocally(
 async function handleLocalTranscribeAndAnalyze(
   path: string,
   form: FormData
-): Promise<LocalAnalyzeResponse> {
+): Promise<LocalChatProxyResponse> {
   const file = getFormFilePart(form);
   const fileUri = String(file?.uri || "").trim();
   const userIdRaw = parseQueryParam(path, "user_id");
@@ -790,8 +790,8 @@ async function handleLocalTranscribeAndAnalyze(
     message: normalizedTranscriptText,
     replyLanguage,
   });
-
-  return {
+  const createdAt = new Date().toISOString();
+  const item: LocalAnalyzeItem = {
     id: Date.now(),
     intent: turn.intent === "reminder" ? "reminder" : "assistant",
     category: "Other",
@@ -803,6 +803,42 @@ async function handleLocalTranscribeAndAnalyze(
         ? turn.title || "Reminder"
         : formatIntentLabel(turn.route),
     details: turn.assistantText,
+  };
+
+  return {
+    ok: true,
+    item: {
+      ...item,
+      created_at: createdAt,
+      source: "voice",
+    },
+    assistant: {
+      text: turn.assistantText,
+      english: turn.englishText || turn.assistantText,
+      tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
+      theni_tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
+    },
+    pipeline: {
+      route_taken: turn.route,
+      predicted_label: item.intent,
+      raw_english: turn.englishText || normalizedTranscriptText,
+      remodeled_english: turn.englishText || turn.assistantText,
+      tamil_text: replyLanguage === "ta" ? turn.assistantText : "",
+      theni_tamil_text: replyLanguage === "ta" ? turn.assistantText : "",
+      direct_answer_source: turn.source,
+      meta: turn.meta || {},
+    },
+    meta: {
+      source: "local_voice_proxy",
+      cacheHit: Boolean(turn.cacheHit),
+      route: turn.route,
+      stt: {
+        model: transcript.model,
+        endpoint: transcript.endpoint,
+        durationMs: transcript.durationMs,
+      },
+      created_at: createdAt,
+    },
   };
 }
 

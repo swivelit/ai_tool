@@ -96,6 +96,14 @@ function queueEmbeddingResponse(vectors: number[][]) {
   }));
 }
 
+function testEmbedding(values: Record<number, number>) {
+  const vector = Array.from({ length: 1024 }, () => 0);
+  Object.entries(values).forEach(([index, value]) => {
+    vector[Number(index)] = value;
+  });
+  return vector;
+}
+
 function queueAlignmentResponse(finalAnswer: string) {
   mockedState.fetchQueue.push(async () => ({
     ok: true,
@@ -165,7 +173,7 @@ describe("local memory and semantic cache", () => {
     writeJson(`${dataRoot}/profiles/31/summary.json`, { summary: "Enjoys music and travel." });
 
     queueAlignmentResponse("You told me your hobbies include music, travel.");
-    queueEmbeddingResponse([[1, 0, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 0: 1 })]);
 
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
     const first = await runLocalAssistantTurn({
@@ -177,7 +185,7 @@ describe("local memory and semantic cache", () => {
     expect(first.cacheHit).toBe(false);
     expect(first.route).toBe("profile");
 
-    queueEmbeddingResponse([[0.99, 0.01, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 0: 0.99, 1: 0.01 })]);
 
     const second = await runLocalAssistantTurn({
       userId: 31,
@@ -193,6 +201,91 @@ describe("local memory and semantic cache", () => {
     expect(readJson(`${dataRoot}/cache/semantic_cache.json`).hits).toHaveLength(1);
   });
 
+  it("normalizes unexpected provider embedding dimensions before storing cache entries", async () => {
+    writeJson(`${dataRoot}/profiles/310/answers.json`, {
+      hobbies: ["music"],
+      preferred_language: "english",
+    });
+    writeJson(`${dataRoot}/profiles/310/summary.json`, { summary: "Enjoys music." });
+
+    queueAlignmentResponse("You told me your hobbies include music.");
+    queueEmbeddingResponse([[1, 0, 0]]);
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    await runLocalAssistantTurn({
+      userId: 310,
+      message: "What do I like?",
+      replyLanguage: "en",
+    });
+
+    const store = readJson(`${dataRoot}/cache/semantic_cache.json`);
+    expect(store.entries[0].embedding).toHaveLength(1024);
+  });
+
+  it("clears one user's semantic cache data without corrupting the shared store", async () => {
+    writeJson(`${dataRoot}/cache/semantic_cache.json`, {
+      version: 2,
+      entries: [
+        {
+          id: "31_a",
+          userId: 31,
+          sourceQuestion: "What do I like?",
+          normalizedQuestion: "what do i like",
+          canonicalAnswer: "Music",
+          englishAnswer: "Music",
+          route: "profile",
+          intent: "assistant",
+          embedding: testEmbedding({ 0: 1 }),
+          createdAt: "2026-04-26T00:00:00Z",
+          updatedAt: "2026-04-26T00:00:00Z",
+          expiresAt: null,
+        },
+        {
+          id: "99_a",
+          userId: 99,
+          sourceQuestion: "What is my name?",
+          normalizedQuestion: "what is my name",
+          canonicalAnswer: "Hari",
+          englishAnswer: "Hari",
+          route: "profile",
+          intent: "assistant",
+          embedding: testEmbedding({ 1: 1 }),
+          createdAt: "2026-04-26T00:00:00Z",
+          updatedAt: "2026-04-26T00:00:00Z",
+          expiresAt: null,
+        },
+      ],
+      hits: [
+        {
+          userId: 31,
+          sourceQuestion: "What do I like?",
+          matchedQuestion: "Which hobbies do I have?",
+          similarity: 0.99,
+          timestamp: "2026-04-26T00:00:00Z",
+          alignmentReapplied: false,
+          route: "profile",
+        },
+        {
+          userId: 99,
+          sourceQuestion: "What is my name?",
+          matchedQuestion: "Tell me my name",
+          similarity: 0.98,
+          timestamp: "2026-04-26T00:00:00Z",
+          alignmentReapplied: false,
+          route: "profile",
+        },
+      ],
+    });
+
+    const { clearLocalAgentDataForUser } = await import("../lib/localAgents");
+    await clearLocalAgentDataForUser(31);
+
+    const store = readJson(`${dataRoot}/cache/semantic_cache.json`);
+    expect(store.version).toBe(2);
+    expect(store.entries.map((row: any) => row.userId)).toEqual([99]);
+    expect(store.hits.map((row: any) => row.userId)).toEqual([99]);
+  });
+
   it("misses the semantic cache for unrelated questions", async () => {
     writeJson(`${dataRoot}/profiles/32/answers.json`, {
       hobbies: ["music", "travel"],
@@ -202,7 +295,7 @@ describe("local memory and semantic cache", () => {
     writeJson(`${dataRoot}/profiles/32/summary.json`, { summary: "Enjoys music and travel." });
 
     queueAlignmentResponse("You told me your hobbies include music, travel.");
-    queueEmbeddingResponse([[1, 0, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 0: 1 })]);
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
     await runLocalAssistantTurn({
       userId: 32,
@@ -210,9 +303,9 @@ describe("local memory and semantic cache", () => {
       replyLanguage: "en",
     });
 
-    queueEmbeddingResponse([[0, 1, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 1: 1 })]);
     queueAlignmentResponse("Your name is Hari.");
-    queueEmbeddingResponse([[0, 1, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 1: 1 })]);
     const second = await runLocalAssistantTurn({
       userId: 32,
       message: "What is my name?",
@@ -240,7 +333,7 @@ describe("local memory and semantic cache", () => {
     writeJson(`${dataRoot}/profiles/33/summary.json`, { summary: "Enjoys music and travel." });
 
     queueAlignmentResponse("You told me your hobbies include music, travel.");
-    queueEmbeddingResponse([[1, 0, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 0: 1 })]);
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
     await runLocalAssistantTurn({
       userId: 33,
@@ -248,9 +341,9 @@ describe("local memory and semantic cache", () => {
       replyLanguage: "en",
     });
 
-    queueEmbeddingResponse([[0.93, 0.3675595, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 0: 0.93, 1: 0.3675595 })]);
     queueAlignmentResponse("You told me your hobbies include music, travel.");
-    queueEmbeddingResponse([[0.93, 0.3675595, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 0: 0.93, 1: 0.3675595 })]);
     const borderline = await runLocalAssistantTurn({
       userId: 33,
       message: "What do I like again?",
@@ -363,7 +456,7 @@ describe("local memory and semantic cache", () => {
       },
     });
 
-    queueEmbeddingResponse([[1, 0, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 0: 1 })]);
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
     await runLocalAssistantTurn({
       userId: 45,
@@ -393,7 +486,7 @@ describe("local memory and semantic cache", () => {
     });
 
     queueAlignmentResponse("You told me your hobbies include music, travel.");
-    queueEmbeddingResponse([[1, 0, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 0: 1 })]);
     const { runLocalAssistantTurn, consolidateLocalMemoryOnIdle } = await import("../lib/localAgents");
     await runLocalAssistantTurn({
       userId: 44,
@@ -401,7 +494,7 @@ describe("local memory and semantic cache", () => {
       replyLanguage: "en",
     });
 
-    queueEmbeddingResponse([[0.99, 0.01, 0]]);
+    queueEmbeddingResponse([testEmbedding({ 0: 0.99, 1: 0.01 })]);
     const cached = await runLocalAssistantTurn({
       userId: 44,
       message: "Which hobbies do I have?",

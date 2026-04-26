@@ -980,10 +980,22 @@ export async function clearLocalAgentDataForUser(userId: number) {
     deleteIfExists(memoryChunksPath(userId)),
   ]);
 
-  const semanticStore = await readJson<SemanticCacheStore>(semanticCacheStorePath(), { entries: [] });
+  const semanticStore = await readJson<SemanticCacheStore>(semanticCacheStorePath(), {
+    version: 2,
+    entries: [],
+    hits: [],
+  });
   const retained = semanticStore.entries.filter((entry) => entry.userId !== userId);
-  if (retained.length !== semanticStore.entries.length) {
-    await writeJson(semanticCacheStorePath(), { entries: retained });
+  const retainedHits = (semanticStore.hits || []).filter((hit) => hit.userId !== userId);
+  if (
+    retained.length !== semanticStore.entries.length ||
+    retainedHits.length !== (semanticStore.hits || []).length
+  ) {
+    await writeJson(semanticCacheStorePath(), {
+      version: semanticStore.version || 2,
+      entries: retained,
+      hits: retainedHits,
+    } satisfies SemanticCacheStore);
   }
 }
 
@@ -1016,9 +1028,13 @@ function hashEmbedding(text: string, dims = EMBEDDING_DIMS) {
   return out.map((value) => value / norm);
 }
 
-function normalizeStoredEmbedding(embedding: unknown, fallbackText: string) {
+function normalizeEmbeddingVector(embedding: unknown, fallbackText: string) {
   const values = Array.isArray(embedding) ? embedding.map(Number).filter(Number.isFinite) : [];
   return values.length === EMBEDDING_DIMS ? values : hashEmbedding(fallbackText);
+}
+
+function normalizeStoredEmbedding(embedding: unknown, fallbackText: string) {
+  return normalizeEmbeddingVector(embedding, fallbackText);
 }
 
 function cosine(a: number[], b: number[]) {
@@ -1603,9 +1619,7 @@ async function embedTexts(texts: string[]) {
     const data = Array.isArray(json?.data) ? json.data : [];
     if (!data.length) throw new Error("Missing embedding data");
     return data.map((item: any, index: number) =>
-      Array.isArray(item?.embedding)
-        ? item.embedding.map(Number)
-        : hashEmbedding(texts[index] || "")
+      normalizeEmbeddingVector(item?.embedding, texts[index] || "")
     );
   } catch {
     return fallback();
