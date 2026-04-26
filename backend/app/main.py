@@ -1770,6 +1770,11 @@ def _save_item_from_pipeline(
         )
     except Exception:
         session.rollback()
+        logger.warning(
+            "RAG embedding failed",
+            extra={"user_id": user_id, "item_id": getattr(item, "id", None)},
+            exc_info=True,
+        )
 
     normalized_pipeline = _normalized_pipeline_result(pipeline_result)
     payload = {"pipeline": normalized_pipeline, "meta": meta}
@@ -2447,11 +2452,23 @@ def api_tts(
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"TTS provider error: {exc}")
     
-    # Fallback to "text" instead of "inputs" if the API format diverges
+    # Fallback to "text" instead of "inputs" if the API format diverges.
+    # Keep the same timeout and exception handling as the first provider call so
+    # the fallback path cannot hang the worker thread or surface as an unhandled 500.
     if response.status_code in [422, 400] and "inputs" in req_payload:
         req_payload["text"] = payload.text
         del req_payload["inputs"]
-        response = requests.post(url, headers=headers, json=req_payload)
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=req_payload,
+                timeout=(5, 30),
+            )
+        except requests.Timeout:
+            raise HTTPException(status_code=504, detail="TTS retry timed out.")
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=502, detail=f"TTS retry failed: {exc}")
         
     if response.status_code == 200:
         data = response.json()
@@ -2658,70 +2675,15 @@ def analyze_text(
     return item_to_response(item)
 
 
-@app.post("/transcribe-and-analyze")
-async def transcribe_and_analyze(
-    user_id: Optional[int] = None,
-    reply_language: Optional[str] = None,
-    speech_language: Optional[str] = None,
-    file: UploadFile = File(...),
-    session: Session = Depends(get_session),
-    auth_user: AuthUser = Depends(get_current_user),
-):
-    user = get_owned_user(session, auth_user)
-    if user_id is not None:
-        assert_owner(int(user_id), user)
-
-    suffix = os.path.splitext(file.filename or "")[-1] or ".m4a"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await read_limited_upload(file))
-        tmp_path = tmp.name
-
-    try:
-        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
-
-        pipeline_result = _run_agentic_or_pipeline(
-            session,
-            int(user.id),
-            transcript_text,
-            reply_language,
-        )
-
-        item, meta, normalized_pipeline = _save_item_from_pipeline(
-            session,
-            user_id=int(user.id),
-            source="voice",
-            raw_text=transcript_text,
-            transcript=transcript_text,
-            pipeline_result=pipeline_result,
-            reply_language=reply_language,
-        )
-
-        response = item_to_response(item).model_dump()
-        response["assistant"] = {
-            "text": item.details or transcript_text,
-            "english": normalized_pipeline.get("remodeled_english", ""),
-            "tamil": normalized_pipeline.get("tamil_text", ""),
-            "theni_tamil": normalized_pipeline.get("theni_tamil_text", ""),
-        }
-        response["pipeline"] = normalized_pipeline
-        response["meta"] = meta
-        return response
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-
-
-@app.post("/api/transcribe-and-analyze")
-async def api_transcribe_and_analyze(
-    user_id: Optional[int] = None,
-    reply_language: Optional[str] = None,
-    speech_language: Optional[str] = None,
-    file: UploadFile = File(...),
-    session: Session = Depends(get_session),
-    auth_user: AuthUser = Depends(get_current_user),
-):
+async def _transcribe_and_analyze_upload(
+    *,
+    user_id: Optional[int],
+    reply_language: Optional[str],
+    speech_language: Optional[str],
+    file: UploadFile,
+    session: Session,
+    auth_user: AuthUser,
+) -> Dict[str, Any]:
     user = get_owned_user(session, auth_user)
     if user_id is not None:
         assert_owner(int(user_id), user)
@@ -2757,6 +2719,43 @@ async def api_transcribe_and_analyze(
         except OSError:
             pass
 
+
+@app.post("/transcribe-and-analyze")
+async def transcribe_and_analyze(
+    user_id: Optional[int] = None,
+    reply_language: Optional[str] = None,
+    speech_language: Optional[str] = None,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    return await _transcribe_and_analyze_upload(
+        user_id=user_id,
+        reply_language=reply_language,
+        speech_language=speech_language,
+        file=file,
+        session=session,
+        auth_user=auth_user,
+    )
+
+
+@app.post("/api/transcribe-and-analyze")
+async def api_transcribe_and_analyze(
+    user_id: Optional[int] = None,
+    reply_language: Optional[str] = None,
+    speech_language: Optional[str] = None,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    return await _transcribe_and_analyze_upload(
+        user_id=user_id,
+        reply_language=reply_language,
+        speech_language=speech_language,
+        file=file,
+        session=session,
+        auth_user=auth_user,
+    )
 
 @app.post("/wake-phrase/transcribe")
 @app.post("/api/wake-phrase/transcribe")

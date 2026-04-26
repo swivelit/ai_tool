@@ -418,6 +418,8 @@ function requireLocalModelBaseUrl(baseUrl: unknown, featureName: string) {
   return normalized;
 }
 
+const EMBEDDING_DIMS = 1024;
+
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
   baseUrl: "",
   apiKey: "",
@@ -1000,7 +1002,7 @@ async function readJsonl<T>(path: string): Promise<T[]> {
   }
 }
 
-function hashEmbedding(text: string, dims = 256) {
+function hashEmbedding(text: string, dims = EMBEDDING_DIMS) {
   const out = new Array(dims).fill(0);
   const normalized = normalizeText(text);
   for (let i = 0; i < normalized.length; i += 1) {
@@ -1012,6 +1014,11 @@ function hashEmbedding(text: string, dims = 256) {
   for (const value of out) norm += value * value;
   norm = Math.sqrt(norm) || 1;
   return out.map((value) => value / norm);
+}
+
+function normalizeStoredEmbedding(embedding: unknown, fallbackText: string) {
+  const values = Array.isArray(embedding) ? embedding.map(Number).filter(Number.isFinite) : [];
+  return values.length === EMBEDDING_DIMS ? values : hashEmbedding(fallbackText);
 }
 
 function cosine(a: number[], b: number[]) {
@@ -1384,7 +1391,7 @@ async function migrateLegacySemanticCacheIfNeeded(userId?: number) {
         lastPresentedAnswer: canonicalAnswer,
         route: String(row?.route || "local_answer"),
         intent: "assistant",
-        embedding: Array.isArray(row?.embedding) ? row.embedding.map(Number) : hashEmbedding(sourceQuestion),
+        embedding: normalizeStoredEmbedding(row?.embedding, sourceQuestion),
         createdAt: String(row?.savedAt || nowIso()),
         updatedAt: String(row?.savedAt || nowIso()),
         expiresAt: null,
@@ -1960,7 +1967,7 @@ export async function searchLocalRag(userId: number, query: string, limit = 6) {
   if (!rows.length) return [] as (LocalRagChunk & { score: number })[];
   const [queryVec] = await embedTexts([clean]);
   return rows
-    .map((row) => ({ ...row, score: cosine(queryVec, Array.isArray(row.embedding) ? row.embedding : []) }))
+    .map((row) => ({ ...row, score: cosine(queryVec, normalizeStoredEmbedding(row.embedding, row.text)) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(1, limit))
     .filter((row) => row.score >= 0.2);
@@ -3208,7 +3215,7 @@ async function lookupSemanticCache(userId: number, message: string) {
         continue;
       }
 
-      const score = cosine(queryVec, Array.isArray(row.embedding) ? row.embedding : []);
+      const score = cosine(queryVec, normalizeStoredEmbedding(row.embedding, row.sourceQuestion));
 
       if (score > bestScore) {
         bestScore = score;

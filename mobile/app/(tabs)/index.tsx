@@ -62,7 +62,7 @@ type ChatSessionListItem = ChatSessionRecord & {
   sortTime: string;
 };
 
-type BackendChatResponse = {
+type BackendChatResponse = Partial<ChatHistoryItem> & {
   ok?: boolean;
   item?: (Item & { created_at?: string | null; source?: string | null }) | null;
   assistant?: {
@@ -153,7 +153,15 @@ function normalizeChatResponse(
   payload: BackendChatResponse,
   fallbackRawText: string
 ): ChatHistoryItem {
-  const item = payload?.item;
+  const nestedItem = payload?.item;
+  const legacyFlatItem =
+    !nestedItem &&
+    payload &&
+    typeof payload === "object" &&
+    ("id" in payload || "intent" in payload || "raw_text" in payload || "datetime" in payload)
+      ? payload
+      : null;
+  const item = nestedItem || legacyFlatItem;
 
   if (item && typeof item === "object") {
     return {
@@ -1539,7 +1547,7 @@ export default function Home() {
       );
 
       const res = await apiPostForm<BackendChatResponse | ChatHistoryItem>(
-        `/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
+        `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
           settings.languageMode
         }`,
         form
