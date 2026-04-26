@@ -38,6 +38,7 @@ export default {
       USE_LOCAL_CHAT_PIPELINE,
       USE_LOCAL_VOICE_PIPELINE:
         process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE || "false",
+
       // Do not bundle a bearer token into the mobile app. EXPO_PUBLIC_* values are public.
       // Use Firebase-authenticated backend proxying or a short-lived pairing token instead.
       LOCAL_MODEL_API_KEY: "",
@@ -68,11 +69,14 @@ export default {
       firebaseMessagingSenderId:
         process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
       firebaseAppId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
+
       googleAndroidClientId:
         process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
       googleIosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
       googleWebClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+
       router: {},
+
       eas: {
         projectId: "43fd64c5-dbf3-4e80-8057-ecbb15689e27",
       },
@@ -109,7 +113,8 @@ export default {
       [
         "expo-speech-recognition",
         {
-          microphonePermission: "Allow $(PRODUCT_NAME) to use the microphone for hands-free voice mode.",
+          microphonePermission:
+            "Allow $(PRODUCT_NAME) to use the microphone for hands-free voice mode.",
           speechRecognitionPermission:
             "Allow $(PRODUCT_NAME) to recognize speech for hands-free voice mode.",
           androidSpeechServicePackages: [
