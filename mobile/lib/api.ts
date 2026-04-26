@@ -4,7 +4,6 @@ import { auth } from "./firebase";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
-
 export class ApiError extends Error {
   status: number;
 
@@ -29,9 +28,11 @@ function isAbortError(error: unknown) {
 function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
   const validSignals = signals.filter(Boolean);
 
-  const nativeAny = (AbortSignal as typeof AbortSignal & {
-    any?: (signals: AbortSignal[]) => AbortSignal;
-  }).any;
+  const nativeAny = (
+    AbortSignal as typeof AbortSignal & {
+      any?: (signals: AbortSignal[]) => AbortSignal;
+    }
+  ).any;
   if (typeof nativeAny === "function") {
     return nativeAny(validSignals);
   }
@@ -70,7 +71,7 @@ function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
 async function fetchWithTimeout(
   url: string,
   options: RequestInit = {},
-  timeoutMs = DEFAULT_API_TIMEOUT_MS
+  timeoutMs = DEFAULT_API_TIMEOUT_MS,
 ): Promise<Response> {
   const timeoutController = new AbortController();
   const externalSignal = options.signal ?? null;
@@ -84,7 +85,9 @@ async function fetchWithTimeout(
     if (externalSignal.aborted) {
       markExternalAbort();
     } else {
-      externalSignal.addEventListener("abort", markExternalAbort, { once: true });
+      externalSignal.addEventListener("abort", markExternalAbort, {
+        once: true,
+      });
     }
   }
 
@@ -145,14 +148,16 @@ function headersToRecord(headers?: HeadersInit | null): Record<string, string> {
 
 async function buildHeaders(
   baseHeaders: HeadersInit = {},
-  options?: { auth?: boolean; forceRefreshToken?: boolean }
+  options?: { auth?: boolean; forceRefreshToken?: boolean },
 ) {
   const headers: Record<string, string> = headersToRecord(baseHeaders);
   const shouldAttachAuth = options?.auth !== false;
   const currentUser = auth.currentUser;
 
   if (shouldAttachAuth && currentUser) {
-    const token = await currentUser.getIdToken(Boolean(options?.forceRefreshToken));
+    const token = await currentUser.getIdToken(
+      Boolean(options?.forceRefreshToken),
+    );
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
@@ -164,7 +169,7 @@ async function buildHeaders(
 async function fetchBackend(
   path: string,
   options: RequestInit = {},
-  config?: { auth?: boolean; timeoutMs?: number }
+  config?: { auth?: boolean; timeoutMs?: number },
 ): Promise<Response> {
   const shouldAttachAuth = config?.auth !== false;
   const baseHeaders = headersToRecord(options.headers);
@@ -175,7 +180,7 @@ async function fetchBackend(
       ...options,
       headers: await buildHeaders(baseHeaders, { auth: shouldAttachAuth }),
     },
-    config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS
+    config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
   );
 
   if (res.status !== 401 || !shouldAttachAuth || !auth.currentUser) {
@@ -194,7 +199,7 @@ async function fetchBackend(
         forceRefreshToken: true,
       }),
     },
-    config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS
+    config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
   );
 }
 
@@ -211,7 +216,9 @@ function parseBooleanFlag(value: unknown): boolean | null {
     return value;
   }
 
-  const normalized = String(value ?? "").trim().toLowerCase();
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
   if (!normalized) {
     return null;
   }
@@ -230,7 +237,7 @@ function parseBooleanFlag(value: unknown): boolean | null {
 function resolveBooleanFlag(
   extraValue: unknown,
   envValue: unknown,
-  defaultValue: boolean
+  defaultValue: boolean,
 ): BooleanFlagResolution {
   const parsedExtra = parseBooleanFlag(extraValue);
   if (parsedExtra !== null) {
@@ -246,7 +253,9 @@ function resolveBooleanFlag(
 }
 
 function normalizeLocalModelBaseUrl(value: unknown) {
-  return String(value || "").trim().replace(/\/$/, "");
+  return String(value || "")
+    .trim()
+    .replace(/\/$/, "");
 }
 
 function isLoopbackLocalModelBaseUrl(value: unknown) {
@@ -257,13 +266,13 @@ function isLoopbackLocalModelBaseUrl(value: unknown) {
   }
 
   return /^https?:\/\/(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::|\/|$)/.test(
-    normalized
+    normalized,
   );
 }
 
 function getLocalModelConfigError(featureName: string) {
   if (!LOCAL_MODEL_BASE_URL) {
-    return `${featureName} is enabled, but EXPO_PUBLIC_LOCAL_MODEL_BASE_URL is missing. Set it to a LAN/emulator URL reachable from the device, for example http://192.168.1.23:10000/v1.`;
+    return `${featureName} is enabled, but no local model adapter URL is configured. The phone-local agent pipeline will still run first; generation that requires a model will fall back only after the local route fails or explicitly requests fallback. TODO(native-runtime): plug in a true on-device runtime.`;
   }
 
   if (isLoopbackLocalModelBaseUrl(LOCAL_MODEL_BASE_URL)) {
@@ -292,7 +301,9 @@ export const API_BASE: string =
   "https://ai-tool-rrau.onrender.com";
 
 const LOCAL_MODEL_BASE_URL: string = normalizeLocalModelBaseUrl(
-  extra.LOCAL_MODEL_BASE_URL || process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL || ""
+  extra.LOCAL_MODEL_BASE_URL ||
+    process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL ||
+    "",
 );
 
 // Do not read EXPO_PUBLIC_LOCAL_MODEL_API_KEY here. EXPO_PUBLIC values are bundled
@@ -301,24 +312,23 @@ const LOCAL_MODEL_BASE_URL: string = normalizeLocalModelBaseUrl(
 const LOCAL_MODEL_API_KEY = "";
 
 const LOCAL_STT_MODEL: string =
-  extra.LOCAL_STT_MODEL ||
-  process.env.EXPO_PUBLIC_LOCAL_STT_MODEL ||
-  "whisper";
+  extra.LOCAL_STT_MODEL || process.env.EXPO_PUBLIC_LOCAL_STT_MODEL || "whisper";
 
 const LOCAL_CHAT_PIPELINE_FLAG = resolveBooleanFlag(
   extra.USE_LOCAL_CHAT_PIPELINE,
   process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE,
-  Boolean(LOCAL_MODEL_BASE_URL)
+  true,
 );
 
 const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
   extra.USE_LOCAL_VOICE_PIPELINE,
   process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE,
-  false
+  false,
 );
 
 const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = LOCAL_CHAT_PIPELINE_FLAG.value;
-const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean = LOCAL_VOICE_PIPELINE_FLAG.value;
+const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean =
+  LOCAL_VOICE_PIPELINE_FLAG.value;
 const CANONICAL_VOICE_ANALYZE_PATH = "/transcribe-and-analyze";
 
 let localChatInterceptionDepth = 0;
@@ -326,8 +336,12 @@ let routingBannerLogged = false;
 
 export function getClientRoutingDefaults() {
   return {
-    chat: (USE_LOCAL_CHAT_PIPELINE_DEFAULT ? "local" : "backend") as ClientRoutingMode,
-    voice: (USE_LOCAL_VOICE_PIPELINE_DEFAULT ? "local" : "backend") as ClientRoutingMode,
+    chat: (USE_LOCAL_CHAT_PIPELINE_DEFAULT
+      ? "local"
+      : "backend") as ClientRoutingMode,
+    voice: (USE_LOCAL_VOICE_PIPELINE_DEFAULT
+      ? "local"
+      : "backend") as ClientRoutingMode,
     chatSource: LOCAL_CHAT_PIPELINE_FLAG.source,
     voiceSource: LOCAL_VOICE_PIPELINE_FLAG.source,
     apiBase: API_BASE,
@@ -335,7 +349,9 @@ export function getClientRoutingDefaults() {
   };
 }
 
-export function logClientRoutingBanner(logger: Pick<Console, "info"> = console) {
+export function logClientRoutingBanner(
+  logger: Pick<Console, "info"> = console,
+) {
   if (routingBannerLogged) {
     return;
   }
@@ -343,11 +359,14 @@ export function logClientRoutingBanner(logger: Pick<Console, "info"> = console) 
   routingBannerLogged = true;
   const routing = getClientRoutingDefaults();
   logger.info(
-    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl || "not-configured"}`
+    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl || "not-configured"}`,
   );
-  
+
   const localModelError = getLocalModelConfigError("Local model routing");
-  if (localModelError && (routing.chat === "local" || routing.voice === "local")) {
+  if (
+    localModelError &&
+    (routing.chat === "local" || routing.voice === "local")
+  ) {
     logger.info(`[routing] ${localModelError}`);
   }
 }
@@ -531,8 +550,8 @@ function extractTranscriptText(payload: any) {
         typeof item === "string"
           ? item
           : typeof item?.text === "string"
-          ? item.text
-          : ""
+            ? item.text
+            : "",
       )
       .join(" ");
 
@@ -578,14 +597,20 @@ function getFormFilePart(form: FormData) {
 
 async function getFeatureFlags(forceRefresh = false) {
   const now = Date.now();
-  if (!forceRefresh && featureFlagsCache && now - featureFlagsFetchedAt < 60_000) {
+  if (
+    !forceRefresh &&
+    featureFlagsCache &&
+    now - featureFlagsFetchedAt < 60_000
+  ) {
     return featureFlagsCache;
   }
 
   try {
     const res = await fetchBackend("/api/flags", {}, { auth: false });
     if (!res.ok) throw new Error(`flags ${res.status}`);
-    const payload = normalizeBackendDates((await res.json()) as FeatureFlagPayload);
+    const payload = normalizeBackendDates(
+      (await res.json()) as FeatureFlagPayload,
+    );
     featureFlagsCache = payload?.flags || null;
     featureFlagsFetchedAt = now;
     return featureFlagsCache;
@@ -632,7 +657,7 @@ function normalizeVoiceAnalyzePath(path: string) {
   if (normalized.startsWith("/api/transcribe-and-analyze")) {
     return normalized.replace(
       "/api/transcribe-and-analyze",
-      CANONICAL_VOICE_ANALYZE_PATH
+      CANONICAL_VOICE_ANALYZE_PATH,
     );
   }
 
@@ -655,7 +680,9 @@ function formatIntentLabel(value?: string | null) {
 }
 
 function normalizeSpeechLanguage(value: unknown): SpeechLanguage {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
 
   if (!normalized) return null;
   if (["auto", "detect", "auto-detect", "autodetect"].includes(normalized)) {
@@ -673,7 +700,7 @@ function getRequiredLocalModelBaseUrl() {
 
 async function transcribeAudioLocally(
   fileUri: string,
-  speechLanguage?: unknown
+  speechLanguage?: unknown,
 ): Promise<LocalVoiceTranscription> {
   const startedAt = Date.now();
   const baseCandidates = localApiCandidates(getRequiredLocalModelBaseUrl());
@@ -713,7 +740,9 @@ async function transcribeAudioLocally(
       }
 
       const payload = safeJsonParse<any>(rawText, rawText);
-      const transcript = normalizeTranscriptText(extractTranscriptText(payload));
+      const transcript = normalizeTranscriptText(
+        extractTranscriptText(payload),
+      );
 
       if (!transcript) {
         lastError = `Local STT model "${LOCAL_STT_MODEL}" returned an empty transcript.`;
@@ -733,13 +762,13 @@ async function transcribeAudioLocally(
 
   throw new Error(
     lastError ||
-      `Local speech transcription failed for model "${LOCAL_STT_MODEL}". Check that your phone-local runtime has this exact model loaded and exposed.`
+      `Local speech transcription failed for model "${LOCAL_STT_MODEL}". Check that your phone-local runtime has this exact model loaded and exposed.`,
   );
 }
 
 async function handleLocalTranscribeAndAnalyze(
   path: string,
-  form: FormData
+  form: FormData,
 ): Promise<LocalChatProxyResponse> {
   const file = getFormFilePart(form);
   const fileUri = String(file?.uri || "").trim();
@@ -758,9 +787,13 @@ async function handleLocalTranscribeAndAnalyze(
 
   const replyLanguage: ReplyLanguage = replyLanguageRaw === "en" ? "en" : "ta";
   const requestedSpeechLanguage = normalizeSpeechLanguage(speechLanguageRaw);
-  const resolvedSpeechLanguage: SpeechLanguage = requestedSpeechLanguage || replyLanguage;
+  const resolvedSpeechLanguage: SpeechLanguage =
+    requestedSpeechLanguage || replyLanguage;
 
-  let transcript = await transcribeAudioLocally(fileUri, resolvedSpeechLanguage);
+  let transcript = await transcribeAudioLocally(
+    fileUri,
+    resolvedSpeechLanguage,
+  );
 
   if (isPunctuationOnlyTranscript(transcript.text) && resolvedSpeechLanguage) {
     try {
@@ -780,7 +813,7 @@ async function handleLocalTranscribeAndAnalyze(
 
   if (isPunctuationOnlyTranscript(normalizedTranscriptText)) {
     throw new Error(
-      "Speech was recorded, but the transcript only contained punctuation. Please speak a little closer to the mic and try again."
+      "Speech was recorded, but the transcript only contained punctuation. Please speak a little closer to the mic and try again.",
     );
   }
 
@@ -850,22 +883,25 @@ function isChatPath(path: string) {
 async function shouldUseLocalChatPipeline() {
   logClientRoutingBanner();
 
-  if (!USE_LOCAL_CHAT_PIPELINE_DEFAULT) {
-    return false;
-  }
-
-  assertUsableLocalModelBaseUrl("Local chat routing");
-  return true;
+  // Normal chat must enter the phone-local agent pipeline first. A missing
+  // model adapter is handled inside LocalModelRuntime, not by silently making
+  // backend/OpenAI the primary runtime.
+  return USE_LOCAL_CHAT_PIPELINE_DEFAULT;
 }
 
-async function handleLocalChat(path: string, body?: any): Promise<LocalChatProxyResponse> {
+async function handleLocalChat(
+  path: string,
+  body?: any,
+): Promise<LocalChatProxyResponse> {
   const userId = Number(body?.user_id ?? body?.userId ?? 0);
   const message = String(body?.message ?? body?.text ?? "").trim();
   const replyLanguage: ReplyLanguage =
     body?.reply_language === "en" || body?.replyLanguage === "en" ? "en" : "ta";
 
   if (!Number.isFinite(userId) || userId <= 0 || !message) {
-    throw new Error("Valid user_id and message are required for local chat routing.");
+    throw new Error(
+      "Valid user_id and message are required for local chat routing.",
+    );
   }
 
   const { runLocalAssistantTurn } = await import("./localAgents");
@@ -876,7 +912,8 @@ async function handleLocalChat(path: string, body?: any): Promise<LocalChatProxy
   });
 
   const createdAt = new Date().toISOString();
-  const normalizedIntent = turn.intent === "reminder" ? "reminder" : "assistant";
+  const normalizedIntent =
+    turn.intent === "reminder" ? "reminder" : "assistant";
   const resolvedTitle =
     turn.intent === "reminder"
       ? turn.title || "Reminder"
@@ -926,7 +963,10 @@ export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetchBackend(path);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new ApiError(`GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
+    throw new ApiError(
+      `GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
+      res.status,
+    );
   }
   return normalizeBackendDates((await res.json()) as T);
 }
@@ -937,7 +977,7 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
     isChatPath(path) &&
     (await shouldUseLocalChatPipeline())
   ) {
-      localChatInterceptionDepth += 1;
+    localChatInterceptionDepth += 1;
     try {
       return (await handleLocalChat(path, body)) as T;
     } finally {
@@ -952,7 +992,10 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new ApiError(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
+    throw new ApiError(
+      `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
+      res.status,
+    );
   }
   return normalizeBackendDates((await res.json()) as T);
 }
@@ -976,7 +1019,10 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new ApiError(`POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
+    throw new ApiError(
+      `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
+      res.status,
+    );
   }
 
   return normalizeBackendDates((await res.json()) as T);
@@ -990,7 +1036,10 @@ export async function apiPut<T>(path: string, body?: any): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new ApiError(`PUT ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`, res.status);
+    throw new ApiError(
+      `PUT ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
+      res.status,
+    );
   }
   return normalizeBackendDates((await res.json()) as T);
 }
@@ -1003,7 +1052,7 @@ export async function apiDelete<T>(path: string): Promise<T> {
     const text = await res.text().catch(() => "");
     throw new ApiError(
       `DELETE ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
-      res.status
+      res.status,
     );
   }
   return normalizeBackendDates((await res.json()) as T);

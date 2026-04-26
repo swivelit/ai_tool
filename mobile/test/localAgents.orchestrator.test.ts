@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import agentRegistry from "../data/config/agent_registry.json";
 import alignmentRules from "../data/config/alignment_rules.json";
 import models from "../data/config/models.json";
 import orchestratorRoutes from "../data/config/orchestrator_routes.json";
@@ -27,7 +28,7 @@ function parentDirs(path: string) {
 const apiPostMock = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(async () => ({
     ok: true,
-  }))
+  })),
 );
 
 vi.mock("expo-constants", () => ({
@@ -48,7 +49,7 @@ vi.mock("expo-file-system/legacy", () => ({
       mockedState.files.has(path) ||
       mockedState.directories.has(normalizeDir(path)) ||
       Array.from(mockedState.files.keys()).some((filePath) =>
-        filePath.startsWith(`${normalizeDir(path)}/`)
+        filePath.startsWith(`${normalizeDir(path)}/`),
       ),
   })),
   makeDirectoryAsync: vi.fn(async (path: string) => {
@@ -107,6 +108,26 @@ function queueJsonResponse(payload: any) {
 
 const dataRoot = "file:///mock/data";
 
+describe("phone-local agent configuration", () => {
+  it("configures all primary agents as phone-local with fallback-only backend policy", () => {
+    expect(models.runtime.primary).toBe("phone_local");
+    expect(models.runtime.backendRole).toBe("fallback_only");
+    expect(agentRegistry.runtime.primary).toBe("phone_local");
+    expect(agentRegistry.runtime.backendRole).toBe("fallback_only");
+    expect(models.models.profiler).toBe("google/gemma-3-4b-it");
+    expect(models.models.orchestratorMedium).toBe("Qwen/Qwen3-8B");
+    expect(models.models.orchestratorLarge).toBe("Qwen/Qwen3-14B");
+    expect(models.models.aligner).toBe("google/gemma-3-4b-it");
+    expect(models.models.embedding).toBe("Qwen/Qwen3-Embedding-0.6B");
+    expect(models.models.summarizer).toBe("Qwen/Qwen3-8B");
+    expect(agentRegistry.agents.profiler.enabled).toBe(true);
+    expect(agentRegistry.agents.orchestrator.enabled).toBe(true);
+    expect(agentRegistry.agents.alignment.enabled).toBe(true);
+    expect(agentRegistry.agents.memory.enabled).toBe(true);
+    expect(agentRegistry.agents.memory.summarizerModelKey).toBe("summarizer");
+  });
+});
+
 describe("local orchestrator and alignment", () => {
   beforeEach(() => {
     mockedState.files.clear();
@@ -115,13 +136,16 @@ describe("local orchestrator and alignment", () => {
     vi.clearAllMocks();
     mockedState.files.set(
       `${dataRoot}/config/orchestrator_routes.json`,
-      JSON.stringify(orchestratorRoutes, null, 2)
+      JSON.stringify(orchestratorRoutes, null, 2),
     );
     mockedState.files.set(
       `${dataRoot}/config/alignment_rules.json`,
-      JSON.stringify(alignmentRules, null, 2)
+      JSON.stringify(alignmentRules, null, 2),
     );
-    mockedState.files.set(`${dataRoot}/config/prompts.json`, JSON.stringify(prompts, null, 2));
+    mockedState.files.set(
+      `${dataRoot}/config/prompts.json`,
+      JSON.stringify(prompts, null, 2),
+    );
     mockedState.files.set(
       `${dataRoot}/config/models.json`,
       JSON.stringify(
@@ -133,8 +157,8 @@ describe("local orchestrator and alignment", () => {
           timeoutMs: 1000,
         },
         null,
-        2
-      )
+        2,
+      ),
     );
   });
 
@@ -177,12 +201,12 @@ describe("local orchestrator and alignment", () => {
           preferred_language: "english",
         },
         null,
-        2
-      )
+        2,
+      ),
     );
     mockedState.files.set(
       `${dataRoot}/profiles/23/summary.json`,
-      JSON.stringify({ summary: "Enjoys music and travel." }, null, 2)
+      JSON.stringify({ summary: "Enjoys music and travel." }, null, 2),
     );
 
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
@@ -200,7 +224,14 @@ describe("local orchestrator and alignment", () => {
 
   it("routes weather through the live-data tool path", async () => {
     queueJsonResponse({
-      results: [{ name: "Chennai", country: "India", latitude: 13.08, longitude: 80.27 }],
+      results: [
+        {
+          name: "Chennai",
+          country: "India",
+          latitude: 13.08,
+          longitude: 80.27,
+        },
+      ],
     });
     queueJsonResponse({
       current: {
@@ -241,7 +272,7 @@ describe("local orchestrator and alignment", () => {
         needs_live_data: false,
         selected_model: "Qwen/Qwen3-14B",
         fallback_allowed: false,
-      })
+      }),
     );
     queueCompletion("__OPENAI_FALLBACK__");
 
@@ -269,7 +300,7 @@ describe("local orchestrator and alignment", () => {
         needs_live_data: false,
         selected_model: "Qwen/Qwen3-8B",
         fallback_allowed: false,
-      })
+      }),
     );
 
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
@@ -283,7 +314,7 @@ describe("local orchestrator and alignment", () => {
     expect(result.intent).toBe("clarify");
     expect(apiPostMock).not.toHaveBeenCalled();
     expect(result.meta?.orchestratorDecision?.reason).toBe(
-      "openai_fallback_blocked_by_policy"
+      "openai_fallback_blocked_by_policy",
     );
   });
 
@@ -296,8 +327,8 @@ describe("local orchestrator and alignment", () => {
           preferred_language: "tamil",
         },
         null,
-        2
-      )
+        2,
+      ),
     );
     queueCompletion(
       JSON.stringify({
@@ -309,14 +340,14 @@ describe("local orchestrator and alignment", () => {
         needs_live_data: false,
         selected_model: "Qwen/Qwen3-8B",
         fallback_allowed: false,
-      })
+      }),
     );
     queueCompletion("Hari has a meeting at 3 PM on Tuesday.");
     queueCompletion(
       JSON.stringify({
         english_answer: "Hari has a meeting at 3 PM on Tuesday.",
         final_answer: "Hariக்கு Tuesday 3 PMக்கு meeting இருக்கு.",
-      })
+      }),
     );
 
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
@@ -329,8 +360,8 @@ describe("local orchestrator and alignment", () => {
     expect(result.route).toBe("local_answer");
     expect(result.englishText).toBe("Hari has a meeting at 3 PM on Tuesday.");
     expect(result.assistantText).toContain("3 PM");
-    expect(mockedState.files.get(`${dataRoot}/conversations/27_routes.jsonl`)).toContain(
-      "\"route\":\"local_answer\""
-    );
+    expect(
+      mockedState.files.get(`${dataRoot}/conversations/27_routes.jsonl`),
+    ).toContain('"route":"local_answer"');
   });
 });

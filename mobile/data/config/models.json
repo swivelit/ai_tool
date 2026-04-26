@@ -1,8 +1,11 @@
 {
-  "version": 1,
+  "version": 2,
   "runtime": {
-    "primary": "backend",
-    "backendRole": "mirror_support_openai_fallback"
+    "primary": "phone_local",
+    "backendRole": "fallback_only",
+    "backendPolicy": "OpenAI/backend is never primary; call it only after the local orchestrator or local runtime explicitly requests fallback.",
+    "localRuntimeInterface": "LocalModelRuntime",
+    "adapterContract": "/chat/completions is treated as a local runtime-compatible adapter, not as OpenAI."
   },
   "baseUrl": "",
   "apiKey": "",
@@ -12,7 +15,8 @@
     "orchestratorMedium": "Qwen/Qwen3-8B",
     "orchestratorLarge": "Qwen/Qwen3-14B",
     "aligner": "google/gemma-3-4b-it",
-    "embedding": "Qwen/Qwen3-Embedding-0.6B"
+    "embedding": "Qwen/Qwen3-Embedding-0.6B",
+    "summarizer": "Qwen/Qwen3-8B"
   },
   "thresholds": {
     "semanticCache": 0.95,

@@ -2,7 +2,16 @@ import Constants from "expo-constants";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { apiPost } from "./api";
-import { ensureLocalAgentSeedData, LOCAL_AGENT_DATA_DIR } from "./localAgentBootstrap";
+import {
+  ensureLocalAgentSeedData,
+  LOCAL_AGENT_DATA_DIR,
+} from "./localAgentBootstrap";
+import {
+  OPENAI_FALLBACK_SIGNAL,
+  createLocalModelRuntime,
+  isLoopbackLocalRuntimeBaseUrl,
+  normalizeLocalRuntimeBaseUrl,
+} from "./localModelRuntime";
 
 type ReplyLanguage = "en" | "ta";
 type ChatRole = "system" | "user" | "assistant";
@@ -47,7 +56,11 @@ export type LocalProfilerState = {
   confidenceBySlot?: Record<string, number>;
   optionalProfileNotes?: string[];
   lastRunSource?: "model_json" | "model_salvage" | "fallback";
-  completionSyncState?: "incomplete" | "complete_local_pending_sync" | "complete_synced" | "sync_failed";
+  completionSyncState?:
+    | "incomplete"
+    | "complete_local_pending_sync"
+    | "complete_synced"
+    | "sync_failed";
   completedLocallyAt?: string;
   pendingBackendSync?: boolean;
   history: LocalChatMessage[];
@@ -146,6 +159,13 @@ export type LocalAssistantTurnResult = {
 };
 
 type LocalModelConfig = {
+  version?: number;
+  runtime?: {
+    primary: "phone_local" | string;
+    backendRole?: string;
+    backendPolicy?: string;
+    localRuntimeInterface?: string;
+  };
   baseUrl: string;
   apiKey: string;
   timeoutMs: number;
@@ -155,6 +175,7 @@ type LocalModelConfig = {
     orchestratorLarge: string;
     aligner: string;
     embedding: string;
+    summarizer: string;
   };
   thresholds: {
     semanticCache: number;
@@ -385,42 +406,24 @@ type AgentRegistryConfig = {
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
 function normalizeLocalModelBaseUrl(value: unknown) {
-  return String(value || "").trim().replace(/\/$/, "");
+  return normalizeLocalRuntimeBaseUrl(value);
 }
 
 function isLoopbackLocalModelBaseUrl(value: unknown) {
-  const normalized = normalizeLocalModelBaseUrl(value).toLowerCase();
-
-  if (!normalized) {
-    return false;
-  }
-
-  return /^https?:\/\/(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::|\/|$)/.test(
-    normalized
-  );
-}
-
-function requireLocalModelBaseUrl(baseUrl: unknown, featureName: string) {
-  const normalized = normalizeLocalModelBaseUrl(baseUrl);
-
-  if (!normalized) {
-    throw new Error(
-      `${featureName} needs EXPO_PUBLIC_LOCAL_MODEL_BASE_URL. Set it to a LAN/emulator URL reachable from this device, for example http://192.168.1.23:10000/v1.`
-    );
-  }
-
-  if (isLoopbackLocalModelBaseUrl(normalized)) {
-    throw new Error(
-      `${featureName} cannot use ${normalized}. 127.0.0.1/localhost points at the phone itself on a physical device. Use your laptop's LAN IP, or 10.0.2.2 for the Android emulator.`
-    );
-  }
-
-  return normalized;
+  return isLoopbackLocalRuntimeBaseUrl(value);
 }
 
 const EMBEDDING_DIMS = 1024;
 
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
+  version: 2,
+  runtime: {
+    primary: "phone_local",
+    backendRole: "fallback_only",
+    backendPolicy:
+      "OpenAI/backend is never primary; call it only after the local orchestrator or local runtime explicitly requests fallback.",
+    localRuntimeInterface: "LocalModelRuntime",
+  },
   baseUrl: "",
   apiKey: "",
   timeoutMs: 45000,
@@ -430,6 +433,7 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
     orchestratorLarge: "Qwen/Qwen3-14B",
     aligner: "google/gemma-3-4b-it",
     embedding: "Qwen/Qwen3-Embedding-0.6B",
+    summarizer: "Qwen/Qwen3-8B",
   },
   thresholds: {
     semanticCache: 0.95,
@@ -468,7 +472,16 @@ const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
     weatherKeywords: ["weather", "temperature", "rain", "forecast"],
     profileKeywords: ["my name", "my goal", "my language", "my hobbies"],
     liveDataKeywords: ["latest", "news", "current", "today", "live", "browse"],
-    ambiguityKeywords: ["this", "that", "it", "they", "there", "here", "he", "she"],
+    ambiguityKeywords: [
+      "this",
+      "that",
+      "it",
+      "they",
+      "there",
+      "here",
+      "he",
+      "she",
+    ],
     multiStepKeywords: ["compare", "tradeoff", "strategy", "analyze", "reason"],
   },
   clarificationRules: {
@@ -498,8 +511,10 @@ const DEFAULT_ALIGNMENT_RULES: AlignmentRules = {
   toneByPreference: {
     short_direct: "Keep the answer compact, direct, and low-fluff.",
     warm: "Keep the answer warm and supportive without adding facts.",
-    friendly_casual: "Keep the answer conversational and casual without becoming vague.",
-    detailed: "Keep the answer clear and more explanatory, but still grounded to the draft.",
+    friendly_casual:
+      "Keep the answer conversational and casual without becoming vague.",
+    detailed:
+      "Keep the answer clear and more explanatory, but still grounded to the draft.",
   },
 };
 
@@ -558,8 +573,7 @@ const DEFAULT_PROMPTS: PromptCatalog = {
     "Rewrite the factual draft to match the user's tone and language without changing facts or adding claims. Return JSON with english_answer and final_answer.",
   memorySyncSystem:
     "You are the local Memory & Cache Agent. Use only the provided recent conversation, route logs, profiler state, and alignment captures. Extract durable user facts conservatively. Ignore transient facts unless the user explicitly marks them important. Return JSON only with: summary, durable_facts[{fact, confidence, category, important, evidence, profile_updates}], profile_updates.",
-  localReasonerSystem:
-    "Use only local context. Reply __OPENAI_FALLBACK__ if live public data is required.",
+  localReasonerSystem: `Use only local context. Reply ${OPENAI_FALLBACK_SIGNAL} if live public data is required.`,
 };
 
 const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
@@ -575,7 +589,8 @@ const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
       enabled: true,
       mediumModelKey: "orchestratorMedium",
       largeModelKey: "orchestratorLarge",
-      description: "Route user intent, tool choice, and local-vs-backend fallback decisions",
+      description:
+        "Route user intent, tool choice, and local-vs-backend fallback decisions",
       trainingFile: "training/seed/orchestrator.jsonl",
     },
     alignment: {
@@ -587,7 +602,7 @@ const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
     memory: {
       enabled: true,
       embeddingModelKey: "embedding",
-      summarizerModelKey: "orchestratorMedium",
+      summarizerModelKey: "summarizer",
       description: "Semantic cache and long-term profile updates",
       trainingFile: "training/seed/memory.jsonl",
     },
@@ -600,10 +615,15 @@ const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
 };
 
 const DEFAULT_WORKSPACE_MANIFEST = {
-  version: 3,
+  version: 4,
+  runtime: {
+    primary: "phone_local",
+    backendPolicy: "fallback_only",
+    localRuntimeInterface: "LocalModelRuntime",
+  },
   architecture: {
     primaryRuntime: "phone_local_agents",
-    backendRole: "mirror_support_openai_fallback",
+    backendRole: "fallback_only",
   },
   checkedInSeedFolders: ["config", "training/seed", "rag/seed"],
   runtimeFolders: [
@@ -713,10 +733,13 @@ function parseJsonLoose<T>(raw: any, fallback: T): T {
 }
 
 function template(text: string, values: Record<string, any>) {
-  return String(text || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => {
-    const value = values[key];
-    return value == null ? "" : String(value);
-  });
+  return String(text || "").replace(
+    /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g,
+    (_match, key) => {
+      const value = values[key];
+      return value == null ? "" : String(value);
+    },
+  );
 }
 
 function trimList(value: any) {
@@ -741,7 +764,9 @@ function clampConfidence(value: any, fallback = 0) {
 }
 
 function nonEmptyAnswer(value: any) {
-  return Array.isArray(value) ? value.length > 0 : String(value || "").trim().length > 0;
+  return Array.isArray(value)
+    ? value.length > 0
+    : String(value || "").trim().length > 0;
 }
 
 function languageLabel(language: string) {
@@ -777,7 +802,7 @@ function repairJsonFragment(fragment: string) {
       escape = true;
       continue;
     }
-    if (char === "\"") {
+    if (char === '"') {
       inString = !inString;
       continue;
     }
@@ -787,7 +812,9 @@ function repairJsonFragment(fragment: string) {
     if (char === "[") brackets += 1;
     if (char === "]") brackets = Math.max(0, brackets - 1);
   }
-  return cleanupTrailingJson(`${text}${"]".repeat(brackets)}${"}".repeat(braces)}`);
+  return cleanupTrailingJson(
+    `${text}${"]".repeat(brackets)}${"}".repeat(braces)}`,
+  );
 }
 
 function parseJsonFragment<T>(fragment: string, fallback: T): T {
@@ -802,7 +829,7 @@ function findFieldValueFragment(text: string, key: string) {
   const start = index;
   const first = text[start];
   if (!first) return null;
-  if (first === "\"") {
+  if (first === '"') {
     index += 1;
     let escape = false;
     while (index < text.length) {
@@ -811,7 +838,7 @@ function findFieldValueFragment(text: string, key: string) {
         escape = false;
       } else if (char === "\\") {
         escape = true;
-      } else if (char === "\"") {
+      } else if (char === '"') {
         index += 1;
         break;
       }
@@ -830,7 +857,7 @@ function findFieldValueFragment(text: string, key: string) {
         escape = false;
       } else if (char === "\\") {
         escape = true;
-      } else if (char === "\"") {
+      } else if (char === '"') {
         inString = !inString;
       } else if (!inString) {
         if (char === "{" || char === "[") stack.push(char);
@@ -850,14 +877,21 @@ function findFieldValueFragment(text: string, key: string) {
   return text.slice(start, index).trim();
 }
 
-function normalizeSlotValue(slot: ProfilerSlot, value: any): string | string[] | undefined {
+function normalizeSlotValue(
+  slot: ProfilerSlot,
+  value: any,
+): string | string[] | undefined {
   if (!nonEmptyAnswer(value)) return undefined;
   if (slot.type === "multi") {
-    const normalizedOptions = slot.options.map((option) => normalizeText(option));
+    const normalizedOptions = slot.options.map((option) =>
+      normalizeText(option),
+    );
     const normalizedValues = trimList(value)
       .map((item) => normalizeText(item).replace(/\s+/g, "_"))
       .map((item) => {
-        const matchedIndex = normalizedOptions.findIndex((option) => option === item || option === item.replace(/_/g, " "));
+        const matchedIndex = normalizedOptions.findIndex(
+          (option) => option === item || option === item.replace(/_/g, " "),
+        );
         if (matchedIndex >= 0) return slot.options[matchedIndex];
         return item;
       })
@@ -867,8 +901,12 @@ function normalizeSlotValue(slot: ProfilerSlot, value: any): string | string[] |
   const raw = String(value || "").trim();
   if (!raw) return undefined;
   const normalizedRaw = normalizeText(raw).replace(/\s+/g, "_");
-  const normalizedOptions = slot.options.map((option) => normalizeText(option).replace(/\s+/g, "_"));
-  const matchedIndex = normalizedOptions.findIndex((option) => option === normalizedRaw);
+  const normalizedOptions = slot.options.map((option) =>
+    normalizeText(option).replace(/\s+/g, "_"),
+  );
+  const matchedIndex = normalizedOptions.findIndex(
+    (option) => option === normalizedRaw,
+  );
   return matchedIndex >= 0 ? slot.options[matchedIndex] : raw;
 }
 
@@ -892,19 +930,27 @@ function chooseNextProfilerSlot(
   slots: ProfilerSlot[],
   answers: Record<string, any>,
   confidenceBySlot: Record<string, number>,
-  lastUpdatedSlotIds: string[]
+  lastUpdatedSlotIds: string[],
 ) {
   const remaining = missingSlots(slots, answers);
   if (!remaining.length) return null;
   const prioritized = slotPriorityAfterUpdate(lastUpdatedSlotIds);
   for (const slotId of prioritized) {
-    const candidate = slots.find((slot) => slot.id === slotId && remaining.includes(slot.id));
+    const candidate = slots.find(
+      (slot) => slot.id === slotId && remaining.includes(slot.id),
+    );
     if (candidate) return candidate;
   }
   const lowConfidenceMissing = slots.find(
-    (slot) => remaining.includes(slot.id) && clampConfidence(confidenceBySlot[slot.id], 0) < 0.55
+    (slot) =>
+      remaining.includes(slot.id) &&
+      clampConfidence(confidenceBySlot[slot.id], 0) < 0.55,
   );
-  return lowConfidenceMissing || slots.find((slot) => remaining.includes(slot.id)) || null;
+  return (
+    lowConfidenceMissing ||
+    slots.find((slot) => remaining.includes(slot.id)) ||
+    null
+  );
 }
 
 function formatSlotFacts(slots: ProfilerSlot[], answers: Record<string, any>) {
@@ -947,11 +993,15 @@ async function appendJsonl(path: string, payload: any) {
   if (directory) await ensureDir(directory);
   const line = `${JSON.stringify(payload)}\n`;
   if (!(await exists(path))) {
-    await FileSystem.writeAsStringAsync(path, line, { encoding: FileSystem.EncodingType.UTF8 });
+    await FileSystem.writeAsStringAsync(path, line, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
     return;
   }
   const current = await FileSystem.readAsStringAsync(path).catch(() => "");
-  await FileSystem.writeAsStringAsync(path, `${current}${line}`, { encoding: FileSystem.EncodingType.UTF8 });
+  await FileSystem.writeAsStringAsync(path, `${current}${line}`, {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
 }
 
 async function deleteIfExists(path: string) {
@@ -980,13 +1030,20 @@ export async function clearLocalAgentDataForUser(userId: number) {
     deleteIfExists(memoryChunksPath(userId)),
   ]);
 
-  const semanticStore = await readJson<SemanticCacheStore>(semanticCacheStorePath(), {
-    version: 2,
-    entries: [],
-    hits: [],
-  });
-  const retained = semanticStore.entries.filter((entry) => entry.userId !== userId);
-  const retainedHits = (semanticStore.hits || []).filter((hit) => hit.userId !== userId);
+  const semanticStore = await readJson<SemanticCacheStore>(
+    semanticCacheStorePath(),
+    {
+      version: 2,
+      entries: [],
+      hits: [],
+    },
+  );
+  const retained = semanticStore.entries.filter(
+    (entry) => entry.userId !== userId,
+  );
+  const retainedHits = (semanticStore.hits || []).filter(
+    (hit) => hit.userId !== userId,
+  );
   if (
     retained.length !== semanticStore.entries.length ||
     retainedHits.length !== (semanticStore.hits || []).length
@@ -1029,8 +1086,12 @@ function hashEmbedding(text: string, dims = EMBEDDING_DIMS) {
 }
 
 function normalizeEmbeddingVector(embedding: unknown, fallbackText: string) {
-  const values = Array.isArray(embedding) ? embedding.map(Number).filter(Number.isFinite) : [];
-  return values.length === EMBEDDING_DIMS ? values : hashEmbedding(fallbackText);
+  const values = Array.isArray(embedding)
+    ? embedding.map(Number).filter(Number.isFinite)
+    : [];
+  return values.length === EMBEDDING_DIMS
+    ? values
+    : hashEmbedding(fallbackText);
 }
 
 function normalizeStoredEmbedding(embedding: unknown, fallbackText: string) {
@@ -1041,7 +1102,7 @@ function cosine(a: number[], b: number[]) {
   if (!a.length || !b.length) return 0;
   if (a.length !== b.length) {
     console.warn(
-      `[localAgents] embedding dimension mismatch: ${a.length} !== ${b.length}; skipping similarity score.`
+      `[localAgents] embedding dimension mismatch: ${a.length} !== ${b.length}; skipping similarity score.`,
     );
     return 0;
   }
@@ -1107,19 +1168,21 @@ const fileMutationQueues = new Map<string, Promise<unknown>>();
 const lastLocalMemoryConsolidationAttemptAt = new Map<number, number>();
 const LOCAL_MEMORY_CONSOLIDATION_ATTEMPT_COOLDOWN_MINUTES = positiveInt(
   DEFAULT_MEMORY_RULES.summarization?.minMinutesBetweenSync,
-  15
+  15,
 );
 
 function shouldAttemptLocalMemoryConsolidation(
   userId: number,
-  opts?: { force?: boolean; nowMs?: number; cooldownMinutes?: number }
+  opts?: { force?: boolean; nowMs?: number; cooldownMinutes?: number },
 ) {
   if (opts?.force) return true;
   const requestedNowMs = opts?.nowMs;
-  const nowMs = Number.isFinite(requestedNowMs) ? Number(requestedNowMs) : Date.now();
+  const nowMs = Number.isFinite(requestedNowMs)
+    ? Number(requestedNowMs)
+    : Date.now();
   const cooldownMinutes = positiveInt(
     opts?.cooldownMinutes,
-    LOCAL_MEMORY_CONSOLIDATION_ATTEMPT_COOLDOWN_MINUTES
+    LOCAL_MEMORY_CONSOLIDATION_ATTEMPT_COOLDOWN_MINUTES,
   );
   const cooldownMs = cooldownMinutes * 60_000;
   const lastAttemptAt = lastLocalMemoryConsolidationAttemptAt.get(userId);
@@ -1130,7 +1193,10 @@ function shouldAttemptLocalMemoryConsolidation(
   return true;
 }
 
-function queueFileMutation<T>(lockKey: string, task: () => Promise<T>): Promise<T> {
+function queueFileMutation<T>(
+  lockKey: string,
+  task: () => Promise<T>,
+): Promise<T> {
   const previous = fileMutationQueues.get(lockKey) ?? Promise.resolve();
   const run = previous.then(task);
   fileMutationQueues.set(lockKey, run);
@@ -1146,7 +1212,9 @@ function queueFileMutation<T>(lockKey: string, task: () => Promise<T>): Promise<
 
 function answerValueCount(answers: Record<string, any>) {
   return Object.values(answers).filter((value) =>
-    Array.isArray(value) ? value.length > 0 : String(value || "").trim().length > 0
+    Array.isArray(value)
+      ? value.length > 0
+      : String(value || "").trim().length > 0,
   ).length;
 }
 
@@ -1154,7 +1222,9 @@ function missingSlots(slots: ProfilerSlot[], answers: Record<string, any>) {
   return slots
     .filter((slot) => {
       const value = answers[slot.id];
-      return Array.isArray(value) ? value.length === 0 : !String(value || "").trim();
+      return Array.isArray(value)
+        ? value.length === 0
+        : !String(value || "").trim();
     })
     .map((slot) => slot.id);
 }
@@ -1166,7 +1236,9 @@ function nextSlot(slots: ProfilerSlot[], answers: Record<string, any>) {
 
 function profileFactsText(answers: Record<string, any>) {
   return Object.entries(answers)
-    .filter(([, value]) => (Array.isArray(value) ? value.length > 0 : String(value || "").trim()))
+    .filter(([, value]) =>
+      Array.isArray(value) ? value.length > 0 : String(value || "").trim(),
+    )
     .map(([key, value]) => `${key}: ${displayValue(value as any)}`)
     .join("\n");
 }
@@ -1183,46 +1255,71 @@ function languagesSummary(answers: Record<string, any>) {
 function heuristicProfileAnswer(
   message: string,
   answers: Record<string, any>,
-  userProfile?: LocalUserProfile
+  userProfile?: LocalUserProfile,
 ) {
   const normalized = normalizeText(message);
 
-  if (/\b(my name|what is my name|who am i)\b/.test(normalized) && userProfile?.name) {
+  if (
+    /\b(my name|what is my name|who am i)\b/.test(normalized) &&
+    userProfile?.name
+  ) {
     return `Your name is ${userProfile.name}.`;
   }
 
-  if (/\b(my place|where am i from|my hometown|my town)\b/.test(normalized) && userProfile?.place) {
+  if (
+    /\b(my place|where am i from|my hometown|my town)\b/.test(normalized) &&
+    userProfile?.place
+  ) {
     return `Your place is ${userProfile.place}.`;
   }
 
-  if (/\b(hobbies|what do i like|what do i enjoy)\b/.test(normalized) && answers.hobbies) {
+  if (
+    /\b(hobbies|what do i like|what do i enjoy)\b/.test(normalized) &&
+    answers.hobbies
+  ) {
     return `You told me your hobbies include ${displayValue(answers.hobbies)}.`;
   }
 
-  if (/\b(language|languages|what do i speak|which language)\b/.test(normalized)) {
+  if (
+    /\b(language|languages|what do i speak|which language)\b/.test(normalized)
+  ) {
     const langs = languagesSummary(answers);
     if (langs) return `You told me you speak ${langs}.`;
   }
 
-  if (/\b(job|work|occupation|what do i do)\b/.test(normalized) && answers.occupation) {
+  if (
+    /\b(job|work|occupation|what do i do)\b/.test(normalized) &&
+    answers.occupation
+  ) {
     const field = displayValue(answers.industry_or_field);
     return field
       ? `You described yourself as ${displayValue(answers.occupation)} in ${field}.`
       : `You described yourself as ${displayValue(answers.occupation)}.`;
   }
 
-  if (/\b(goal|focus|priority|what matters)\b/.test(normalized) && answers.main_goal) {
+  if (
+    /\b(goal|focus|priority|what matters)\b/.test(normalized) &&
+    answers.main_goal
+  ) {
     return `Right now, your main focus is ${displayValue(answers.main_goal)}.`;
   }
 
-  if (/\b(communication style|tone|how should you talk|how do i like replies)\b/.test(normalized) && answers.communication_tone) {
+  if (
+    /\b(communication style|tone|how should you talk|how do i like replies)\b/.test(
+      normalized,
+    ) &&
+    answers.communication_tone
+  ) {
     const length = displayValue(answers.answer_length);
     return length
       ? `You prefer a ${displayValue(answers.communication_tone)} tone with ${length} answers.`
       : `You prefer a ${displayValue(answers.communication_tone)} tone.`;
   }
 
-  if (/\b(dislike|dont like|don't like|avoid doing)\b/.test(normalized) && answers.dislikes) {
+  if (
+    /\b(dislike|dont like|don't like|avoid doing)\b/.test(normalized) &&
+    answers.dislikes
+  ) {
     return `You said you dislike responses that feel ${displayValue(answers.dislikes)}.`;
   }
 
@@ -1235,7 +1332,7 @@ function heuristicProfileAnswer(
 
 async function safeRecordTrainingSample(
   agent: LocalTrainingSample["agent"],
-  sample: Omit<LocalTrainingSample, "id" | "agent" | "createdAt">
+  sample: Omit<LocalTrainingSample, "id" | "agent" | "createdAt">,
 ) {
   try {
     await appendLocalTrainingSample(agent, sample);
@@ -1258,48 +1355,84 @@ export async function ensureLocalAgentData() {
   await ensureDir(TRAINING_DIR);
   await ensureDir(TRAINING_SEED_DIR);
 
-  if (!(await exists(MODELS_PATH))) await writeJson(MODELS_PATH, DEFAULT_MODEL_CONFIG);
-  if (!(await exists(SLOTS_PATH))) await writeJson(SLOTS_PATH, DEFAULT_PROFILER_SLOTS);
-  if (!(await exists(ROUTES_PATH))) await writeJson(ROUTES_PATH, DEFAULT_ORCHESTRATOR_CONFIG);
-  if (!(await exists(ALIGNMENT_PATH))) await writeJson(ALIGNMENT_PATH, DEFAULT_ALIGNMENT_RULES);
-  if (!(await exists(MEMORY_RULES_PATH))) await writeJson(MEMORY_RULES_PATH, DEFAULT_MEMORY_RULES);
-  if (!(await exists(PROMPTS_PATH))) await writeJson(PROMPTS_PATH, DEFAULT_PROMPTS);
-  if (!(await exists(AGENT_REGISTRY_PATH))) await writeJson(AGENT_REGISTRY_PATH, DEFAULT_AGENT_REGISTRY);
-  if (!(await exists(WORKSPACE_MANIFEST_PATH))) await writeJson(WORKSPACE_MANIFEST_PATH, DEFAULT_WORKSPACE_MANIFEST);
+  if (!(await exists(MODELS_PATH)))
+    await writeJson(MODELS_PATH, DEFAULT_MODEL_CONFIG);
+  if (!(await exists(SLOTS_PATH)))
+    await writeJson(SLOTS_PATH, DEFAULT_PROFILER_SLOTS);
+  if (!(await exists(ROUTES_PATH)))
+    await writeJson(ROUTES_PATH, DEFAULT_ORCHESTRATOR_CONFIG);
+  if (!(await exists(ALIGNMENT_PATH)))
+    await writeJson(ALIGNMENT_PATH, DEFAULT_ALIGNMENT_RULES);
+  if (!(await exists(MEMORY_RULES_PATH)))
+    await writeJson(MEMORY_RULES_PATH, DEFAULT_MEMORY_RULES);
+  if (!(await exists(PROMPTS_PATH)))
+    await writeJson(PROMPTS_PATH, DEFAULT_PROMPTS);
+  if (!(await exists(AGENT_REGISTRY_PATH)))
+    await writeJson(AGENT_REGISTRY_PATH, DEFAULT_AGENT_REGISTRY);
+  if (!(await exists(WORKSPACE_MANIFEST_PATH)))
+    await writeJson(WORKSPACE_MANIFEST_PATH, DEFAULT_WORKSPACE_MANIFEST);
 }
 
 async function getModelConfig() {
   await ensureLocalAgentData();
-  const fileConfig = await readJson<LocalModelConfig>(MODELS_PATH, DEFAULT_MODEL_CONFIG);
+  const fileConfig = await readJson<LocalModelConfig>(
+    MODELS_PATH,
+    DEFAULT_MODEL_CONFIG,
+  );
   return {
     ...fileConfig,
     baseUrl: normalizeLocalModelBaseUrl(
-      extra.LOCAL_MODEL_BASE_URL || fileConfig.baseUrl || DEFAULT_MODEL_CONFIG.baseUrl
+      extra.LOCAL_MODEL_BASE_URL ||
+        fileConfig.baseUrl ||
+        DEFAULT_MODEL_CONFIG.baseUrl,
     ),
     // The app config intentionally does not supply a bundled API key. A local
     // pairing flow may write a short-lived token into models.json; otherwise no
     // Authorization header is sent to the local model service.
     apiKey: String(fileConfig.apiKey || DEFAULT_MODEL_CONFIG.apiKey),
-    timeoutMs: Number(extra.LOCAL_MODEL_TIMEOUT_MS || fileConfig.timeoutMs || DEFAULT_MODEL_CONFIG.timeoutMs),
+    timeoutMs: Number(
+      extra.LOCAL_MODEL_TIMEOUT_MS ||
+        fileConfig.timeoutMs ||
+        DEFAULT_MODEL_CONFIG.timeoutMs,
+    ),
+    runtime: {
+      ...DEFAULT_MODEL_CONFIG.runtime,
+      ...(fileConfig.runtime || {}),
+      primary: "phone_local",
+      backendRole: "fallback_only",
+    },
     models: {
       ...DEFAULT_MODEL_CONFIG.models,
       ...(fileConfig.models || {}),
-      profiler: String(extra.LOCAL_MODEL_GEMMA_4B || fileConfig.models?.profiler || DEFAULT_MODEL_CONFIG.models.profiler),
+      profiler: String(
+        extra.LOCAL_MODEL_GEMMA_4B ||
+          fileConfig.models?.profiler ||
+          DEFAULT_MODEL_CONFIG.models.profiler,
+      ),
       orchestratorMedium: String(
         extra.LOCAL_MODEL_QWEN_8B ||
           fileConfig.models?.orchestratorMedium ||
-          DEFAULT_MODEL_CONFIG.models.orchestratorMedium
+          DEFAULT_MODEL_CONFIG.models.orchestratorMedium,
       ),
       orchestratorLarge: String(
         extra.LOCAL_MODEL_QWEN_14B ||
           fileConfig.models?.orchestratorLarge ||
-          DEFAULT_MODEL_CONFIG.models.orchestratorLarge
+          DEFAULT_MODEL_CONFIG.models.orchestratorLarge,
       ),
-      aligner: String(extra.LOCAL_MODEL_GEMMA_4B || fileConfig.models?.aligner || DEFAULT_MODEL_CONFIG.models.aligner),
+      aligner: String(
+        extra.LOCAL_MODEL_GEMMA_4B ||
+          fileConfig.models?.aligner ||
+          DEFAULT_MODEL_CONFIG.models.aligner,
+      ),
       embedding: String(
         extra.LOCAL_MODEL_QWEN_EMBED ||
           fileConfig.models?.embedding ||
-          DEFAULT_MODEL_CONFIG.models.embedding
+          DEFAULT_MODEL_CONFIG.models.embedding,
+      ),
+      summarizer: String(
+        extra.LOCAL_MODEL_QWEN_8B ||
+          fileConfig.models?.summarizer ||
+          DEFAULT_MODEL_CONFIG.models.summarizer,
       ),
     },
     thresholds: {
@@ -1336,7 +1469,10 @@ async function getPromptCatalog() {
 
 async function getAgentRegistry() {
   await ensureLocalAgentData();
-  return readJson<AgentRegistryConfig>(AGENT_REGISTRY_PATH, DEFAULT_AGENT_REGISTRY);
+  return readJson<AgentRegistryConfig>(
+    AGENT_REGISTRY_PATH,
+    DEFAULT_AGENT_REGISTRY,
+  );
 }
 
 async function loadAnswers(userId: number) {
@@ -1344,16 +1480,25 @@ async function loadAnswers(userId: number) {
 }
 
 async function loadSummary(userId: number) {
-  const payload = await readJson<ProfileSummaryRecord | { summary?: string }>(summaryPath(userId), { summary: "" });
+  const payload = await readJson<ProfileSummaryRecord | { summary?: string }>(
+    summaryPath(userId),
+    { summary: "" },
+  );
   return String(payload.summary || "").trim();
 }
 
-async function saveSummaryRecord(userId: number, payload: ProfileSummaryRecord) {
+async function saveSummaryRecord(
+  userId: number,
+  payload: ProfileSummaryRecord,
+) {
   await writeJson(summaryPath(userId), payload);
 }
 
 async function loadProfilerState(userId: number): Promise<LocalProfilerState> {
-  return readJson<LocalProfilerState>(profilerStatePath(userId), { status: "idle", history: [] });
+  return readJson<LocalProfilerState>(profilerStatePath(userId), {
+    status: "idle",
+    history: [],
+  });
 }
 
 async function saveProfilerState(userId: number, state: LocalProfilerState) {
@@ -1368,8 +1513,16 @@ async function saveTasks(userId: number, tasks: LocalTaskRecord[]) {
   await writeJson(tasksPath(userId), tasks);
 }
 
-async function appendConversation(userId: number, role: ChatRole, content: string) {
-  const row: LocalChatMessage = { role, content: content.trim(), createdAt: nowIso() };
+async function appendConversation(
+  userId: number,
+  role: ChatRole,
+  content: string,
+) {
+  const row: LocalChatMessage = {
+    role,
+    content: content.trim(),
+    createdAt: nowIso(),
+  };
   await appendJsonl(convoPath(userId), row);
   return row;
 }
@@ -1387,7 +1540,8 @@ async function loadRouteLogs(userId: number, limit = 32) {
 async function migrateLegacySemanticCacheIfNeeded(userId?: number) {
   const target = semanticCacheStorePath();
   if (await exists(target)) return;
-  const legacyFiles = userId != null ? [`${CACHE_DIR}/${userId}_semantic_cache.json`] : [];
+  const legacyFiles =
+    userId != null ? [`${CACHE_DIR}/${userId}_semantic_cache.json`] : [];
   const importedEntries: SemanticCacheEntry[] = [];
   for (const path of legacyFiles) {
     const match = path.match(/\/(\d+)_semantic_cache\.json$/);
@@ -1401,7 +1555,9 @@ async function migrateLegacySemanticCacheIfNeeded(userId?: number) {
         id: `${userId}_${simpleHash(`${sourceQuestion}:${canonicalAnswer}`)}`,
         userId,
         sourceQuestion,
-        normalizedQuestion: normalizeText(row?.normalizedQuestion || sourceQuestion),
+        normalizedQuestion: normalizeText(
+          row?.normalizedQuestion || sourceQuestion,
+        ),
         canonicalAnswer,
         englishAnswer: canonicalAnswer,
         lastPresentedAnswer: canonicalAnswer,
@@ -1431,7 +1587,10 @@ async function loadSemanticCacheStore(userId?: number) {
   });
 }
 
-async function saveSemanticCacheStore(store: SemanticCacheStore, rules?: MemoryRules) {
+async function saveSemanticCacheStore(
+  store: SemanticCacheStore,
+  rules?: MemoryRules,
+) {
   const nextRules = rules || (await getMemoryRules());
   const maxEntries = positiveInt(nextRules.cache?.maxEntries, 250);
   const maxHitRecords = positiveInt(nextRules.cache?.maxHitRecords, 500);
@@ -1445,7 +1604,7 @@ async function saveSemanticCacheStore(store: SemanticCacheStore, rules?: MemoryR
 async function updateSemanticCacheStore(
   userId: number | undefined,
   rules: MemoryRules | undefined,
-  mutator: (store: SemanticCacheStore) => void | Promise<void>
+  mutator: (store: SemanticCacheStore) => void | Promise<void>,
 ) {
   return queueFileMutation(semanticCacheStorePath(), async () => {
     const store = await loadSemanticCacheStore(userId);
@@ -1456,9 +1615,15 @@ async function updateSemanticCacheStore(
 }
 
 async function loadRagChunks(userId: number) {
-  const profilePayload = await readJson<{ chunks?: LocalRagChunk[] }>(profileRagPath(userId), { chunks: [] });
+  const profilePayload = await readJson<{ chunks?: LocalRagChunk[] }>(
+    profileRagPath(userId),
+    { chunks: [] },
+  );
   const docChunks = await readJson<LocalRagChunk[]>(ragChunksPath(userId), []);
-  const memoryChunks = await readJson<LocalRagChunk[]>(memoryChunksPath(userId), []);
+  const memoryChunks = await readJson<LocalRagChunk[]>(
+    memoryChunksPath(userId),
+    [],
+  );
   const merged = [
     ...(Array.isArray(profilePayload.chunks) ? profilePayload.chunks : []),
     ...(Array.isArray(docChunks) ? docChunks : []),
@@ -1483,7 +1648,9 @@ async function saveRagChunks(userId: number, rows: LocalRagChunk[]) {
 
 async function updateRagChunks(
   userId: number,
-  mutator: (rows: LocalRagChunk[]) => LocalRagChunk[] | Promise<LocalRagChunk[]>
+  mutator: (
+    rows: LocalRagChunk[],
+  ) => LocalRagChunk[] | Promise<LocalRagChunk[]>,
 ) {
   return queueFileMutation(ragChunksPath(userId), async () => {
     const existing = await readJson<LocalRagChunk[]>(ragChunksPath(userId), []);
@@ -1524,11 +1691,18 @@ async function saveMemoryChunks(userId: number, rows: LocalRagChunk[]) {
 }
 
 function extractCompletionText(json: any) {
-  const direct = json?.choices?.[0]?.message?.content ?? json?.output_text ?? "";
+  const direct =
+    json?.choices?.[0]?.message?.content ?? json?.output_text ?? "";
   if (typeof direct === "string") return direct.trim();
   if (Array.isArray(direct)) {
     return direct
-      .map((part) => (typeof part?.text === "string" ? part.text : typeof part === "string" ? part : ""))
+      .map((part) =>
+        typeof part?.text === "string"
+          ? part.text
+          : typeof part === "string"
+            ? part
+            : "",
+      )
       .join("\n")
       .trim();
   }
@@ -1539,42 +1713,29 @@ async function localChatRaw(
   systemPrompt: string,
   userPrompt: string,
   model: string,
-  temperature = 0.2
+  temperature = 0.2,
 ) {
   const cfg = await getModelConfig();
-  const baseUrl = requireLocalModelBaseUrl(cfg.baseUrl, "Local chat/profiler");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
-  try {
-    const endpoint = `${baseUrl}/chat/completions`;
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
-      },
-      body: JSON.stringify({
-        model,
-        temperature,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Local model HTTP ${res.status}`);
-    return res.json();
-  } finally {
-    clearTimeout(timer);
-  }
+  const runtime = createLocalModelRuntime({
+    baseUrl: cfg.baseUrl,
+    apiKey: cfg.apiKey,
+    timeoutMs: cfg.timeoutMs,
+  });
+  return runtime.completeChat({
+    model,
+    temperature,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+  });
 }
 
 async function localChatJson(
   systemPrompt: string,
   userPrompt: string,
   model: string,
-  temperature = 0.2
+  temperature = 0.2,
 ) {
   const json = await localChatRaw(systemPrompt, userPrompt, model, temperature);
   return parseJsonLoose<any>(extractCompletionText(json), {});
@@ -1584,7 +1745,7 @@ async function localChatText(
   systemPrompt: string,
   userPrompt: string,
   model: string,
-  temperature = 0.2
+  temperature = 0.2,
 ) {
   const json = await localChatRaw(systemPrompt, userPrompt, model, temperature);
   return extractCompletionText(json);
@@ -1599,32 +1760,21 @@ async function embedTexts(texts: string[]) {
     return fallback();
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
   try {
-    const res = await fetch(`${baseUrl}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
-      },
-      body: JSON.stringify({
-        model: cfg.models.embedding,
-        input: texts,
-      }),
-      signal: controller.signal,
+    const runtime = createLocalModelRuntime({
+      baseUrl,
+      apiKey: cfg.apiKey,
+      timeoutMs: cfg.timeoutMs,
     });
-    if (!res.ok) throw new Error(`Embedding HTTP ${res.status}`);
-    const json = await res.json();
-    const data = Array.isArray(json?.data) ? json.data : [];
-    if (!data.length) throw new Error("Missing embedding data");
-    return data.map((item: any, index: number) =>
-      normalizeEmbeddingVector(item?.embedding, texts[index] || "")
+    const vectors = await runtime.embedTexts({
+      model: cfg.models.embedding,
+      texts,
+    });
+    return vectors.map((embedding, index) =>
+      normalizeEmbeddingVector(embedding, texts[index] || ""),
     );
   } catch {
     return fallback();
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -1644,15 +1794,18 @@ function isTransientFact(text: string, rules: MemoryRules) {
 }
 
 function normalizedValueFingerprint(value: any) {
-  if (Array.isArray(value)) return value.map((item) => normalizeText(item)).join("|");
+  if (Array.isArray(value))
+    return value.map((item) => normalizeText(item)).join("|");
   return normalizeText(value);
 }
 
 function mergeDurableFacts(
   existing: DurableFactRecord[],
-  additions: DurableFactRecord[]
+  additions: DurableFactRecord[],
 ) {
-  const byFact = new Map(existing.map((row) => [normalizeText(row.fact), row] as const));
+  const byFact = new Map(
+    existing.map((row) => [normalizeText(row.fact), row] as const),
+  );
   for (const row of additions) {
     const key = normalizeText(row.fact);
     if (!key) continue;
@@ -1666,17 +1819,25 @@ function mergeDurableFacts(
       confidence: Math.max(current.confidence, row.confidence),
       lastSeenAt: row.lastSeenAt,
       important: current.important || row.important,
-      evidence: uniq([...(current.evidence || []), ...(row.evidence || [])]).slice(-6),
+      evidence: uniq([
+        ...(current.evidence || []),
+        ...(row.evidence || []),
+      ]).slice(-6),
       profileUpdates: {
         ...(current.profileUpdates || {}),
         ...(row.profileUpdates || {}),
       },
     });
   }
-  return Array.from(byFact.values()).sort((a, b) => a.fact.localeCompare(b.fact));
+  return Array.from(byFact.values()).sort((a, b) =>
+    a.fact.localeCompare(b.fact),
+  );
 }
 
-function buildFallbackMemorySummary(facts: DurableFactRecord[], turns: LocalChatMessage[]) {
+function buildFallbackMemorySummary(
+  facts: DurableFactRecord[],
+  turns: LocalChatMessage[],
+) {
   if (facts.length) {
     return `Durable user facts: ${facts.map((row) => row.fact).join("; ")}.`;
   }
@@ -1691,7 +1852,10 @@ function buildFallbackMemorySummary(facts: DurableFactRecord[], turns: LocalChat
   return "No durable memory updates from this conversation window.";
 }
 
-function heuristicMemoryCandidates(turns: LocalChatMessage[], rules: MemoryRules) {
+function heuristicMemoryCandidates(
+  turns: LocalChatMessage[],
+  rules: MemoryRules,
+) {
   const userTurns = turns.filter((row) => row.role === "user");
   const candidates: Array<{
     fact: string;
@@ -1701,7 +1865,13 @@ function heuristicMemoryCandidates(turns: LocalChatMessage[], rules: MemoryRules
     evidence: string[];
   }> = [];
 
-  const extract = (fact: string, confidence: number, category: string, evidence: string, important = false) => {
+  const extract = (
+    fact: string,
+    confidence: number,
+    category: string,
+    evidence: string,
+    important = false,
+  ) => {
     const clean = String(fact || "").trim();
     if (!clean || isTransientFact(clean, rules)) return;
     candidates.push({
@@ -1715,18 +1885,41 @@ function heuristicMemoryCandidates(turns: LocalChatMessage[], rules: MemoryRules
 
   for (const row of userTurns) {
     const content = row.content.trim();
-    const important = (rules.durableFacts?.importantMarkers || []).some((marker) =>
-      normalizeText(content).includes(normalizeText(marker))
+    const important = (rules.durableFacts?.importantMarkers || []).some(
+      (marker) => normalizeText(content).includes(normalizeText(marker)),
     );
 
-    const namedPatterns: Array<[RegExp, (match: RegExpExecArray) => [string, string, number]]> = [
-      [/\bmy name is ([^.!,\n]+)/i, (match) => [`Name: ${match[1].trim()}`, "identity", 0.96]],
-      [/\bi am(?: a| an)? ([^.!,\n]+)/i, (match) => [`Identity: ${match[1].trim()}`, "identity", 0.82]],
-      [/\bi work as(?: a| an)? ([^.!,\n]+)/i, (match) => [`Occupation: ${match[1].trim()}`, "occupation", 0.92]],
-      [/\bi (?:prefer|want) ([^.!,\n]+)/i, (match) => [`Preference: ${match[1].trim()}`, "preference", 0.85]],
-      [/\bi (?:like|love|enjoy) ([^.!,\n]+)/i, (match) => [`Likes: ${match[1].trim()}`, "preference", 0.83]],
-      [/\bi (?:speak|use) ([^.!,\n]+)/i, (match) => [`Languages: ${match[1].trim()}`, "language", 0.84]],
-      [/\bmy goal is ([^.!,\n]+)/i, (match) => [`Goal: ${match[1].trim()}`, "goal", 0.88]],
+    const namedPatterns: Array<
+      [RegExp, (match: RegExpExecArray) => [string, string, number]]
+    > = [
+      [
+        /\bmy name is ([^.!,\n]+)/i,
+        (match) => [`Name: ${match[1].trim()}`, "identity", 0.96],
+      ],
+      [
+        /\bi am(?: a| an)? ([^.!,\n]+)/i,
+        (match) => [`Identity: ${match[1].trim()}`, "identity", 0.82],
+      ],
+      [
+        /\bi work as(?: a| an)? ([^.!,\n]+)/i,
+        (match) => [`Occupation: ${match[1].trim()}`, "occupation", 0.92],
+      ],
+      [
+        /\bi (?:prefer|want) ([^.!,\n]+)/i,
+        (match) => [`Preference: ${match[1].trim()}`, "preference", 0.85],
+      ],
+      [
+        /\bi (?:like|love|enjoy) ([^.!,\n]+)/i,
+        (match) => [`Likes: ${match[1].trim()}`, "preference", 0.83],
+      ],
+      [
+        /\bi (?:speak|use) ([^.!,\n]+)/i,
+        (match) => [`Languages: ${match[1].trim()}`, "language", 0.84],
+      ],
+      [
+        /\bmy goal is ([^.!,\n]+)/i,
+        (match) => [`Goal: ${match[1].trim()}`, "goal", 0.88],
+      ],
     ];
 
     for (const [regex, build] of namedPatterns) {
@@ -1743,10 +1936,14 @@ function heuristicMemoryCandidates(turns: LocalChatMessage[], rules: MemoryRules
 function buildDurableFactsFromHeuristics(
   turns: LocalChatMessage[],
   profileUpdates: Record<string, any>,
-  rules: MemoryRules
+  rules: MemoryRules,
 ) {
   const extracted = heuristicMemoryCandidates(turns, rules)
-    .filter((row) => row.confidence >= positiveFloat(rules.durableFacts?.confidenceThreshold, 0.78))
+    .filter(
+      (row) =>
+        row.confidence >=
+        positiveFloat(rules.durableFacts?.confidenceThreshold, 0.78),
+    )
     .slice(0, positiveInt(rules.durableFacts?.maxFactsPerSync, 6))
     .map(
       (row): DurableFactRecord => ({
@@ -1759,7 +1956,7 @@ function buildDurableFactsFromHeuristics(
         evidence: row.evidence,
         important: row.important,
         profileUpdates,
-      })
+      }),
     );
   return extracted;
 }
@@ -1770,26 +1967,44 @@ function shouldApplyProfileUpdate(
   currentAnswers: Record<string, any>,
   currentConfidenceBySlot: Record<string, number>,
   candidateConfidenceBySlot: Record<string, number>,
-  rules: MemoryRules
+  rules: MemoryRules,
 ) {
   const currentValue = currentAnswers[slotId];
   if (!nonEmptyAnswer(nextValue)) return false;
-  if (normalizedValueFingerprint(currentValue) === normalizedValueFingerprint(nextValue)) return false;
-  const candidateConfidence = clampConfidence(candidateConfidenceBySlot[slotId], 0);
+  if (
+    normalizedValueFingerprint(currentValue) ===
+    normalizedValueFingerprint(nextValue)
+  )
+    return false;
+  const candidateConfidence = clampConfidence(
+    candidateConfidenceBySlot[slotId],
+    0,
+  );
   if (!nonEmptyAnswer(currentValue)) {
-    return candidateConfidence >= positiveFloat(rules.profileUpdates?.minConfidenceForNewSlot, 0.82);
+    return (
+      candidateConfidence >=
+      positiveFloat(rules.profileUpdates?.minConfidenceForNewSlot, 0.82)
+    );
   }
   if (rules.profileUpdates?.fillEmptySlotsOnly !== false) {
     return false;
   }
   const currentConfidence = clampConfidence(currentConfidenceBySlot[slotId], 0);
   return (
-    candidateConfidence >= positiveFloat(rules.profileUpdates?.minConfidenceForOverwrite, 0.93) &&
-    currentConfidence <= positiveFloat(rules.profileUpdates?.maxExistingConfidenceToOverwrite, 0.75)
+    candidateConfidence >=
+      positiveFloat(rules.profileUpdates?.minConfidenceForOverwrite, 0.93) &&
+    currentConfidence <=
+      positiveFloat(
+        rules.profileUpdates?.maxExistingConfidenceToOverwrite,
+        0.75,
+      )
   );
 }
 
-async function saveAnswers(userId: number, answers: Record<string, string | string[]>) {
+async function saveAnswers(
+  userId: number,
+  answers: Record<string, string | string[]>,
+) {
   await writeJson(answersPath(userId), answers);
 }
 
@@ -1797,43 +2012,76 @@ function slotConfidenceMap(
   slots: ProfilerSlot[],
   previous: Record<string, number>,
   updates: Record<string, number>,
-  answers: Record<string, any>
+  answers: Record<string, any>,
 ) {
   return Object.fromEntries(
     slots.map((slot) => {
       const explicit = updates[slot.id];
       const previousValue = clampConfidence(previous[slot.id], 0);
-      const fallback = nonEmptyAnswer(answers[slot.id]) ? Math.max(previousValue, 0.7) : 0;
-      return [slot.id, explicit != null ? clampConfidence(explicit, fallback || 0.7) : fallback];
-    })
+      const fallback = nonEmptyAnswer(answers[slot.id])
+        ? Math.max(previousValue, 0.7)
+        : 0;
+      return [
+        slot.id,
+        explicit != null
+          ? clampConfidence(explicit, fallback || 0.7)
+          : fallback,
+      ];
+    }),
   );
 }
 
-function buildSummaryFacts(slots: ProfilerSlot[], answers: Record<string, any>) {
+function buildSummaryFacts(
+  slots: ProfilerSlot[],
+  answers: Record<string, any>,
+) {
   return slots
     .filter((slot) => nonEmptyAnswer(answers[slot.id]))
     .map((slot) => `${slot.id}: ${displayValue(answers[slot.id])}`);
 }
 
-function buildFallbackProfileSummary(answers: Record<string, any>, userProfile?: LocalUserProfile) {
+function buildFallbackProfileSummary(
+  answers: Record<string, any>,
+  userProfile?: LocalUserProfile,
+) {
   const facts = [
     userProfile?.name ? `${userProfile.name} uses this assistant.` : "",
-    languagesSummary(answers) ? `Preferred languages: ${languagesSummary(answers)}.` : "",
-    answers.occupation ? `Occupation: ${displayValue(answers.occupation)}.` : "",
-    answers.industry_or_field ? `Field: ${displayValue(answers.industry_or_field)}.` : "",
-    answers.communication_tone ? `Preferred tone: ${displayValue(answers.communication_tone)}.` : "",
-    answers.answer_length ? `Typical answer length: ${displayValue(answers.answer_length)}.` : "",
-    answers.assistant_persona ? `Assistant persona: ${displayValue(answers.assistant_persona)}.` : "",
+    languagesSummary(answers)
+      ? `Preferred languages: ${languagesSummary(answers)}.`
+      : "",
+    answers.occupation
+      ? `Occupation: ${displayValue(answers.occupation)}.`
+      : "",
+    answers.industry_or_field
+      ? `Field: ${displayValue(answers.industry_or_field)}.`
+      : "",
+    answers.communication_tone
+      ? `Preferred tone: ${displayValue(answers.communication_tone)}.`
+      : "",
+    answers.answer_length
+      ? `Typical answer length: ${displayValue(answers.answer_length)}.`
+      : "",
+    answers.assistant_persona
+      ? `Assistant persona: ${displayValue(answers.assistant_persona)}.`
+      : "",
     answers.hobbies ? `Hobbies: ${displayValue(answers.hobbies)}.` : "",
     answers.interests ? `Interests: ${displayValue(answers.interests)}.` : "",
-    answers.main_goal ? `Current goal: ${displayValue(answers.main_goal)}.` : "",
+    answers.main_goal
+      ? `Current goal: ${displayValue(answers.main_goal)}.`
+      : "",
     answers.dislikes ? `Avoid: ${displayValue(answers.dislikes)}.` : "",
-    answers.work_rhythm ? `Most active: ${displayValue(answers.work_rhythm)}.` : "",
+    answers.work_rhythm
+      ? `Most active: ${displayValue(answers.work_rhythm)}.`
+      : "",
   ].filter(Boolean);
   return facts.join(" ");
 }
 
-function profileChunkBlueprints(answers: Record<string, any>, summary: string, optionalProfileNotes: string[]) {
+function profileChunkBlueprints(
+  answers: Record<string, any>,
+  summary: string,
+  optionalProfileNotes: string[],
+) {
   return [
     {
       id: "profile_summary",
@@ -1843,43 +2091,91 @@ function profileChunkBlueprints(answers: Record<string, any>, summary: string, o
     {
       id: "profile_identity",
       text: [
-        answers.occupation ? `Occupation: ${displayValue(answers.occupation)}` : "",
-        answers.industry_or_field ? `Field: ${displayValue(answers.industry_or_field)}` : "",
-        answers.personality_style ? `Style: ${displayValue(answers.personality_style)}` : "",
-        answers.work_rhythm ? `Work rhythm: ${displayValue(answers.work_rhythm)}` : "",
+        answers.occupation
+          ? `Occupation: ${displayValue(answers.occupation)}`
+          : "",
+        answers.industry_or_field
+          ? `Field: ${displayValue(answers.industry_or_field)}`
+          : "",
+        answers.personality_style
+          ? `Style: ${displayValue(answers.personality_style)}`
+          : "",
+        answers.work_rhythm
+          ? `Work rhythm: ${displayValue(answers.work_rhythm)}`
+          : "",
       ]
         .filter(Boolean)
         .join(". "),
-      metadata: { kind: "identity", slotIds: ["occupation", "industry_or_field", "personality_style", "work_rhythm"] },
+      metadata: {
+        kind: "identity",
+        slotIds: [
+          "occupation",
+          "industry_or_field",
+          "personality_style",
+          "work_rhythm",
+        ],
+      },
     },
     {
       id: "profile_preferences",
       text: [
-        languagesSummary(answers) ? `Languages: ${languagesSummary(answers)}` : "",
-        answers.communication_tone ? `Tone: ${displayValue(answers.communication_tone)}` : "",
-        answers.answer_length ? `Answer length: ${displayValue(answers.answer_length)}` : "",
-        answers.assistant_persona ? `Assistant persona: ${displayValue(answers.assistant_persona)}` : "",
+        languagesSummary(answers)
+          ? `Languages: ${languagesSummary(answers)}`
+          : "",
+        answers.communication_tone
+          ? `Tone: ${displayValue(answers.communication_tone)}`
+          : "",
+        answers.answer_length
+          ? `Answer length: ${displayValue(answers.answer_length)}`
+          : "",
+        answers.assistant_persona
+          ? `Assistant persona: ${displayValue(answers.assistant_persona)}`
+          : "",
         answers.dislikes ? `Avoid: ${displayValue(answers.dislikes)}` : "",
       ]
         .filter(Boolean)
         .join(". "),
       metadata: {
         kind: "preferences",
-        slotIds: ["preferred_language", "secondary_language", "communication_tone", "answer_length", "assistant_persona", "dislikes"],
+        slotIds: [
+          "preferred_language",
+          "secondary_language",
+          "communication_tone",
+          "answer_length",
+          "assistant_persona",
+          "dislikes",
+        ],
       },
     },
     {
       id: "profile_interests",
       text: [
         answers.hobbies ? `Hobbies: ${displayValue(answers.hobbies)}` : "",
-        answers.interests ? `Interests: ${displayValue(answers.interests)}` : "",
-        answers.learning_style ? `Learning style: ${displayValue(answers.learning_style)}` : "",
-        answers.planning_style ? `Planning style: ${displayValue(answers.planning_style)}` : "",
-        answers.main_goal ? `Main goal: ${displayValue(answers.main_goal)}` : "",
+        answers.interests
+          ? `Interests: ${displayValue(answers.interests)}`
+          : "",
+        answers.learning_style
+          ? `Learning style: ${displayValue(answers.learning_style)}`
+          : "",
+        answers.planning_style
+          ? `Planning style: ${displayValue(answers.planning_style)}`
+          : "",
+        answers.main_goal
+          ? `Main goal: ${displayValue(answers.main_goal)}`
+          : "",
       ]
         .filter(Boolean)
         .join(". "),
-      metadata: { kind: "interests", slotIds: ["hobbies", "interests", "learning_style", "planning_style", "main_goal"] },
+      metadata: {
+        kind: "interests",
+        slotIds: [
+          "hobbies",
+          "interests",
+          "learning_style",
+          "planning_style",
+          "main_goal",
+        ],
+      },
     },
     {
       id: "profile_notes",
@@ -1896,10 +2192,14 @@ async function persistProfileArtifacts(
   summary: string,
   confidenceBySlot: Record<string, number>,
   optionalProfileNotes: string[],
-  replyLanguageName: string
+  replyLanguageName: string,
 ) {
   const facts = buildSummaryFacts(slots, answers);
-  const chunkBlueprints = profileChunkBlueprints(answers, summary, optionalProfileNotes);
+  const chunkBlueprints = profileChunkBlueprints(
+    answers,
+    summary,
+    optionalProfileNotes,
+  );
   const embeddings = chunkBlueprints.length
     ? await embedTexts(chunkBlueprints.map((chunk) => chunk.text))
     : [];
@@ -1909,7 +2209,9 @@ async function persistProfileArtifacts(
     sourceId: `profile:${chunk.id}`,
     sourceType: "profile",
     text: chunk.text,
-    embedding: Array.isArray(embeddings[index]) ? embeddings[index] : hashEmbedding(chunk.text),
+    embedding: Array.isArray(embeddings[index])
+      ? embeddings[index]
+      : hashEmbedding(chunk.text),
     metadata: {
       ...chunk.metadata,
       userId,
@@ -1936,7 +2238,9 @@ async function persistProfileArtifacts(
   };
   await writeJson(profileRagPath(userId), profileRagRecord);
   await updateRagChunks(userId, async (existingRuntimeChunks) => {
-    const preserved = existingRuntimeChunks.filter((chunk) => !String(chunk.sourceId || "").startsWith("profile:"));
+    const preserved = existingRuntimeChunks.filter(
+      (chunk) => !String(chunk.sourceId || "").startsWith("profile:"),
+    );
     return [...preserved, ...chunks];
   });
 }
@@ -1945,10 +2249,15 @@ export async function upsertLocalRagChunks(
   userId: number,
   sourceId: string,
   texts: string[],
-  opts?: { sourceType?: LocalRagChunk["sourceType"]; metadata?: Record<string, any> }
+  opts?: {
+    sourceType?: LocalRagChunk["sourceType"];
+    metadata?: Record<string, any>;
+  },
 ) {
   await ensureLocalAgentData();
-  const cleanTexts = texts.map((text) => String(text || "").trim()).filter(Boolean);
+  const cleanTexts = texts
+    .map((text) => String(text || "").trim())
+    .filter(Boolean);
   if (!cleanTexts.length) return [] as LocalRagChunk[];
   const embeddings = await embedTexts(cleanTexts);
   const createdAt = nowIso();
@@ -1957,7 +2266,9 @@ export async function upsertLocalRagChunks(
     sourceId,
     sourceType: opts?.sourceType || "doc",
     text,
-    embedding: Array.isArray(embeddings[index]) ? embeddings[index] : hashEmbedding(text),
+    embedding: Array.isArray(embeddings[index])
+      ? embeddings[index]
+      : hashEmbedding(text),
     metadata: opts?.metadata || {},
     updatedAt: createdAt,
   }));
@@ -1968,7 +2279,12 @@ export async function upsertLocalRagChunks(
   await safeRecordTrainingSample("rag", {
     input: cleanTexts.join("\n"),
     label: "upsert",
-    metadata: { userId, sourceId, sourceType: opts?.sourceType || "doc", count: nextRows.length },
+    metadata: {
+      userId,
+      sourceId,
+      sourceType: opts?.sourceType || "doc",
+      count: nextRows.length,
+    },
   });
   return nextRows;
 }
@@ -1981,7 +2297,13 @@ export async function searchLocalRag(userId: number, query: string, limit = 6) {
   if (!rows.length) return [] as (LocalRagChunk & { score: number })[];
   const [queryVec] = await embedTexts([clean]);
   return rows
-    .map((row) => ({ ...row, score: cosine(queryVec, normalizeStoredEmbedding(row.embedding, row.text)) }))
+    .map((row) => ({
+      ...row,
+      score: cosine(
+        queryVec,
+        normalizeStoredEmbedding(row.embedding, row.text),
+      ),
+    }))
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(1, limit))
     .filter((row) => row.score >= 0.2);
@@ -1989,14 +2311,16 @@ export async function searchLocalRag(userId: number, query: string, limit = 6) {
 
 export async function appendLocalTrainingSample(
   agent: LocalTrainingSample["agent"],
-  sample: Omit<LocalTrainingSample, "id" | "agent" | "createdAt">
+  sample: Omit<LocalTrainingSample, "id" | "agent" | "createdAt">,
 ) {
   await ensureLocalAgentData();
   const row: LocalTrainingSample = {
     id: `${Date.now()}_${simpleHash(JSON.stringify(sample))}`,
     agent,
     input: String(sample.input || "").trim(),
-    expectedOutput: sample.expectedOutput ? String(sample.expectedOutput).trim() : undefined,
+    expectedOutput: sample.expectedOutput
+      ? String(sample.expectedOutput).trim()
+      : undefined,
     label: sample.label ? String(sample.label).trim() : undefined,
     metadata: sample.metadata || {},
     createdAt: nowIso(),
@@ -2024,7 +2348,10 @@ export async function getLocalAgentWorkspaceInfo() {
     ragSeedDir: RAG_SEED_DIR,
     trainingDir: TRAINING_DIR,
     trainingSeedDir: TRAINING_SEED_DIR,
-    manifest: await readJson(WORKSPACE_MANIFEST_PATH, DEFAULT_WORKSPACE_MANIFEST),
+    manifest: await readJson(
+      WORKSPACE_MANIFEST_PATH,
+      DEFAULT_WORKSPACE_MANIFEST,
+    ),
     models: await getModelConfig(),
     prompts: await getPromptCatalog(),
     registry: await getAgentRegistry(),
@@ -2035,7 +2362,7 @@ export async function getLocalAgentWorkspaceInfo() {
 function mergeProfilerUpdates(
   slots: ProfilerSlot[],
   current: Record<string, string | string[]>,
-  updates: Record<string, any>
+  updates: Record<string, any>,
 ) {
   const byId = new Map(slots.map((slot) => [slot.id, slot]));
   const merged = { ...current };
@@ -2056,7 +2383,7 @@ function mergeProfilerUpdates(
 function buildProfilerAssistantReply(
   replyLanguageName: string,
   nextSlotPrompt: string | undefined,
-  done: boolean
+  done: boolean,
 ) {
   const fallbackCode = fallbackReplyLanguageCode(replyLanguageName);
   if (done) {
@@ -2087,11 +2414,33 @@ const SLOT_KEYWORD_MAP: Record<string, Record<string, string[]>> = {
   },
   occupation: {
     student: ["student", "studying", "college", "school"],
-    working_professional: ["working professional", "employee", "software engineer", "engineer", "developer", "job"],
-    business_owner: ["business owner", "founder", "run a business", "entrepreneur"],
-    freelancer_creator: ["freelancer", "creator", "content creator", "consultant"],
+    working_professional: [
+      "working professional",
+      "employee",
+      "software engineer",
+      "engineer",
+      "developer",
+      "job",
+    ],
+    business_owner: [
+      "business owner",
+      "founder",
+      "run a business",
+      "entrepreneur",
+    ],
+    freelancer_creator: [
+      "freelancer",
+      "creator",
+      "content creator",
+      "consultant",
+    ],
     homemaker_caregiver: ["homemaker", "caregiver", "taking care of home"],
-    between_roles: ["between roles", "job hunting", "not working right now", "career break"],
+    between_roles: [
+      "between roles",
+      "job hunting",
+      "not working right now",
+      "career break",
+    ],
   },
   industry_or_field: {
     technology: ["technology", "tech", "software", "it", "engineering"],
@@ -2205,7 +2554,7 @@ function matchedOptionsForSlot(slot: ProfilerSlot, normalizedMessage: string) {
   return slot.options.filter((option) =>
     (keywordMap[option] || [option])
       .map((phrase) => normalizeText(phrase))
-      .some((phrase) => phrase && normalizedMessage.includes(phrase))
+      .some((phrase) => phrase && normalizedMessage.includes(phrase)),
   );
 }
 
@@ -2214,25 +2563,40 @@ function deterministicProfilerExtraction(
   slots: ProfilerSlot[],
   answers: Record<string, string | string[]>,
   state: LocalProfilerState,
-  replyLanguageName: string
+  replyLanguageName: string,
 ): ProfilerModelOutput {
   const normalizedMessage = normalizeText(message);
   const updates: Record<string, string | string[]> = {};
   const confidenceBySlot: Record<string, number> = {};
   const notes: string[] = [];
 
-  const explicitLanguages = ["english", "tamil", "hindi", "telugu", "malayalam"].filter((language) =>
-    normalizedMessage.includes(language)
-  );
-  if (explicitLanguages.length >= 1 && !nonEmptyAnswer(answers.preferred_language)) {
+  const explicitLanguages = [
+    "english",
+    "tamil",
+    "hindi",
+    "telugu",
+    "malayalam",
+  ].filter((language) => normalizedMessage.includes(language));
+  if (
+    explicitLanguages.length >= 1 &&
+    !nonEmptyAnswer(answers.preferred_language)
+  ) {
     updates.preferred_language = explicitLanguages[0];
-    confidenceBySlot.preferred_language = normalizedMessage.includes("mostly") ? 0.94 : 0.82;
+    confidenceBySlot.preferred_language = normalizedMessage.includes("mostly")
+      ? 0.94
+      : 0.82;
   }
-  if (explicitLanguages.length >= 2 && !nonEmptyAnswer(answers.secondary_language)) {
+  if (
+    explicitLanguages.length >= 2 &&
+    !nonEmptyAnswer(answers.secondary_language)
+  ) {
     updates.secondary_language = explicitLanguages[1];
     confidenceBySlot.secondary_language = 0.86;
   }
-  if (/\bonly (english|tamil|hindi|telugu|malayalam)\b/.test(normalizedMessage) && !nonEmptyAnswer(answers.secondary_language)) {
+  if (
+    /\bonly (english|tamil|hindi|telugu|malayalam)\b/.test(normalizedMessage) &&
+    !nonEmptyAnswer(answers.secondary_language)
+  ) {
     updates.secondary_language = "none";
     confidenceBySlot.secondary_language = 0.72;
   }
@@ -2241,16 +2605,29 @@ function deterministicProfilerExtraction(
     if (nonEmptyAnswer(updates[slot.id])) continue;
     const matches = matchedOptionsForSlot(slot, normalizedMessage);
     if (!matches.length) continue;
-    updates[slot.id] = slot.type === "multi" ? matches.slice(0, slot.max_choices || 4) : matches[0];
+    updates[slot.id] =
+      slot.type === "multi"
+        ? matches.slice(0, slot.max_choices || 4)
+        : matches[0];
     confidenceBySlot[slot.id] = slot.type === "multi" ? 0.78 : 0.8;
   }
 
-  if (normalizedMessage.includes("software") || normalizedMessage.includes("developer") || normalizedMessage.includes("engineer")) {
-    if (!nonEmptyAnswer(updates.occupation) && !nonEmptyAnswer(answers.occupation)) {
+  if (
+    normalizedMessage.includes("software") ||
+    normalizedMessage.includes("developer") ||
+    normalizedMessage.includes("engineer")
+  ) {
+    if (
+      !nonEmptyAnswer(updates.occupation) &&
+      !nonEmptyAnswer(answers.occupation)
+    ) {
       updates.occupation = "working_professional";
       confidenceBySlot.occupation = 0.85;
     }
-    if (!nonEmptyAnswer(updates.industry_or_field) && !nonEmptyAnswer(answers.industry_or_field)) {
+    if (
+      !nonEmptyAnswer(updates.industry_or_field) &&
+      !nonEmptyAnswer(answers.industry_or_field)
+    ) {
       updates.industry_or_field = "technology";
       confidenceBySlot.industry_or_field = 0.88;
     }
@@ -2261,24 +2638,39 @@ function deterministicProfilerExtraction(
       slots.find((slot) => slot.id === state.currentTargetSlot) ||
       chooseNextProfilerSlot(slots, answers, state.confidenceBySlot || {}, []);
     if (fallbackSlot) {
-      const normalizedValue = normalizeSlotValue(fallbackSlot, fallbackSlot.type === "multi" ? trimList(message) : message);
+      const normalizedValue = normalizeSlotValue(
+        fallbackSlot,
+        fallbackSlot.type === "multi" ? trimList(message) : message,
+      );
       if (normalizedValue) {
         updates[fallbackSlot.id] = normalizedValue;
-        confidenceBySlot[fallbackSlot.id] = fallbackSlot.type === "multi" ? 0.52 : 0.48;
+        confidenceBySlot[fallbackSlot.id] =
+          fallbackSlot.type === "multi" ? 0.52 : 0.48;
       }
     }
   }
 
   const merged = mergeProfilerUpdates(slots, answers, updates);
   const remaining = missingSlots(slots, merged);
-  const nextSlotCandidate = chooseNextProfilerSlot(slots, merged, { ...(state.confidenceBySlot || {}), ...confidenceBySlot }, Object.keys(updates));
+  const nextSlotCandidate = chooseNextProfilerSlot(
+    slots,
+    merged,
+    { ...(state.confidenceBySlot || {}), ...confidenceBySlot },
+    Object.keys(updates),
+  );
 
-  if (/i\b.*\b(work|study|prefer|like|dislike|usually)\b/.test(normalizedMessage)) {
+  if (
+    /i\b.*\b(work|study|prefer|like|dislike|usually)\b/.test(normalizedMessage)
+  ) {
     notes.push(message.trim());
   }
 
   return {
-    assistant_reply: buildProfilerAssistantReply(replyLanguageName, nextSlotCandidate?.prompt, remaining.length === 0),
+    assistant_reply: buildProfilerAssistantReply(
+      replyLanguageName,
+      nextSlotCandidate?.prompt,
+      remaining.length === 0,
+    ),
     updates,
     missing_slots: remaining,
     completed: remaining.length === 0,
@@ -2289,7 +2681,7 @@ function deterministicProfilerExtraction(
 
 function normalizeMemoryProfileUpdates(
   slots: ProfilerSlot[],
-  profileUpdates: Record<string, any>
+  profileUpdates: Record<string, any>,
 ) {
   const byId = new Map(slots.map((slot) => [slot.id, slot] as const));
   return Object.fromEntries(
@@ -2299,74 +2691,114 @@ function normalizeMemoryProfileUpdates(
         if (!slot) return [slotId, undefined] as const;
         return [slotId, normalizeSlotValue(slot, value)] as const;
       })
-      .filter(([, value]) => nonEmptyAnswer(value))
+      .filter(([, value]) => nonEmptyAnswer(value)),
   ) as Record<string, string | string[]>;
 }
 
-function salvageProfilerModelOutput(rawText: string, slots: ProfilerSlot[]): ProfilerModelOutput | null {
+function salvageProfilerModelOutput(
+  rawText: string,
+  slots: ProfilerSlot[],
+): ProfilerModelOutput | null {
   const clean = String(rawText || "").trim();
   if (!clean) return null;
   const parsed = parseJsonLoose<ProfilerModelOutput | null>(clean, null);
   if (parsed && typeof parsed === "object") {
     return {
       assistant_reply: String(parsed.assistant_reply || "").trim(),
-      updates: typeof parsed.updates === "object" && parsed.updates ? parsed.updates : {},
-      missing_slots: Array.isArray(parsed.missing_slots) ? parsed.missing_slots.map(String) : [],
+      updates:
+        typeof parsed.updates === "object" && parsed.updates
+          ? parsed.updates
+          : {},
+      missing_slots: Array.isArray(parsed.missing_slots)
+        ? parsed.missing_slots.map(String)
+        : [],
       completed: Boolean(parsed.completed),
       confidence_by_slot:
-        parsed.confidence_by_slot && typeof parsed.confidence_by_slot === "object"
+        parsed.confidence_by_slot &&
+        typeof parsed.confidence_by_slot === "object"
           ? Object.fromEntries(
-              Object.entries(parsed.confidence_by_slot).map(([slotId, value]) => [slotId, clampConfidence(value, 0.5)])
+              Object.entries(parsed.confidence_by_slot).map(
+                ([slotId, value]) => [slotId, clampConfidence(value, 0.5)],
+              ),
             )
           : {},
       optional_profile_notes: Array.isArray(parsed.optional_profile_notes)
-        ? parsed.optional_profile_notes.map((note) => String(note || "").trim()).filter(Boolean)
+        ? parsed.optional_profile_notes
+            .map((note) => String(note || "").trim())
+            .filter(Boolean)
         : [],
     };
   }
 
   const updatesFragment = findFieldValueFragment(clean, "updates");
   const missingFragment = findFieldValueFragment(clean, "missing_slots");
-  const confidenceFragment = findFieldValueFragment(clean, "confidence_by_slot");
+  const confidenceFragment = findFieldValueFragment(
+    clean,
+    "confidence_by_slot",
+  );
   const assistantFragment = findFieldValueFragment(clean, "assistant_reply");
   const completedFragment = findFieldValueFragment(clean, "completed");
   const notesFragment = findFieldValueFragment(clean, "optional_profile_notes");
 
-  const assistantMatch = clean.match(/["']?assistant_reply["']?\s*:\s*"([^"]*)"/i);
+  const assistantMatch = clean.match(
+    /["']?assistant_reply["']?\s*:\s*"([^"]*)"/i,
+  );
   const assistantReply = String(
-    assistantMatch?.[1] || parseJsonFragment<string>(assistantFragment || "\"\"", "")
+    assistantMatch?.[1] ||
+      parseJsonFragment<string>(assistantFragment || '""', ""),
   ).trim();
-  const updatesRaw = parseJsonFragment<Record<string, any>>(updatesFragment || "{}", {});
-  const confidenceRaw = parseJsonFragment<Record<string, any>>(confidenceFragment || "{}", {});
+  const updatesRaw = parseJsonFragment<Record<string, any>>(
+    updatesFragment || "{}",
+    {},
+  );
+  const confidenceRaw = parseJsonFragment<Record<string, any>>(
+    confidenceFragment || "{}",
+    {},
+  );
   const missingRaw = parseJsonFragment<string[]>(missingFragment || "[]", []);
   const notesRaw = parseJsonFragment<string[]>(notesFragment || "[]", []);
-  const completedValue = /^true$/i.test(String(completedFragment || "").trim()) || String(completedFragment || "").trim() === "1";
+  const completedValue =
+    /^true$/i.test(String(completedFragment || "").trim()) ||
+    String(completedFragment || "").trim() === "1";
   let normalizedUpdates = Object.fromEntries(
     slots
-      .map((slot) => [slot.id, normalizeSlotValue(slot, updatesRaw?.[slot.id])] as const)
-      .filter(([, value]) => nonEmptyAnswer(value))
+      .map(
+        (slot) =>
+          [slot.id, normalizeSlotValue(slot, updatesRaw?.[slot.id])] as const,
+      )
+      .filter(([, value]) => nonEmptyAnswer(value)),
   ) as Record<string, string | string[]>;
   if (!Object.keys(normalizedUpdates).length) {
     normalizedUpdates = Object.fromEntries(
       slots
         .map((slot) => {
           const slotMatch = clean.match(
-            new RegExp(`["']${slot.id}["']\\s*:\\s*(\\[[^\\]]*\\]|"[^"]*"|[^,}\\n]+)`, "i")
+            new RegExp(
+              `["']${slot.id}["']\\s*:\\s*(\\[[^\\]]*\\]|"[^"]*"|[^,}\\n]+)`,
+              "i",
+            ),
           );
           const rawValue = slotMatch?.[1] || "";
           const parsedValue =
-            rawValue.startsWith("[") || rawValue.startsWith("\"")
+            rawValue.startsWith("[") || rawValue.startsWith('"')
               ? parseJsonFragment<any>(rawValue, rawValue)
               : rawValue.trim();
           return [slot.id, normalizeSlotValue(slot, parsedValue)] as const;
         })
-        .filter(([, value]) => nonEmptyAnswer(value))
+        .filter(([, value]) => nonEmptyAnswer(value)),
     ) as Record<string, string | string[]>;
   }
   const confidenceBySlot = Object.fromEntries(
-    Object.entries(confidenceRaw || {}).map(([slotId, value]) => [slotId, clampConfidence(value, 0.5)])
+    Object.entries(confidenceRaw || {}).map(([slotId, value]) => [
+      slotId,
+      clampConfidence(value, 0.5),
+    ]),
   );
-  if (!assistantReply && !Object.keys(normalizedUpdates).length && !missingRaw.length) {
+  if (
+    !assistantReply &&
+    !Object.keys(normalizedUpdates).length &&
+    !missingRaw.length
+  ) {
     return null;
   }
   return {
@@ -2375,7 +2807,9 @@ function salvageProfilerModelOutput(rawText: string, slots: ProfilerSlot[]): Pro
     missing_slots: missingRaw.map(String),
     completed: completedValue,
     confidence_by_slot: confidenceBySlot,
-    optional_profile_notes: notesRaw.map((note) => String(note || "").trim()).filter(Boolean),
+    optional_profile_notes: notesRaw
+      .map((note) => String(note || "").trim())
+      .filter(Boolean),
   };
 }
 
@@ -2385,7 +2819,7 @@ async function runProfilerTurnModel(
   currentAnswers: Record<string, string | string[]>,
   currentState: LocalProfilerState,
   slots: ProfilerSlot[],
-  userProfile: LocalUserProfile | undefined
+  userProfile: LocalUserProfile | undefined,
 ) {
   const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
@@ -2406,14 +2840,16 @@ async function runProfilerTurnModel(
         user_profile: userProfile || {},
       }),
       cfg.models.profiler,
-      0.2
+      0.2,
     );
     const rawText = extractCompletionText(raw);
     const salvaged = salvageProfilerModelOutput(rawText, slots);
     if (salvaged) {
       return {
         output: salvaged,
-        source: parseJsonLoose<any>(rawText, null) ? "model_json" : "model_salvage",
+        source: parseJsonLoose<any>(rawText, null)
+          ? "model_json"
+          : "model_salvage",
         rawText,
       } satisfies ProfilerTurnProcessingResult;
     }
@@ -2421,7 +2857,13 @@ async function runProfilerTurnModel(
     // deterministic fallback below
   }
   return {
-    output: deterministicProfilerExtraction(trimmed, slots, currentAnswers, currentState, replyLanguageName),
+    output: deterministicProfilerExtraction(
+      trimmed,
+      slots,
+      currentAnswers,
+      currentState,
+      replyLanguageName,
+    ),
     source: "fallback",
   } satisfies ProfilerTurnProcessingResult;
 }
@@ -2455,19 +2897,25 @@ async function saveLocalOnboardingCompletion(
     completedAt: string;
     pendingBackendSync: boolean;
     syncFailed?: boolean;
-  }
+  },
 ) {
-  await writeJson(`${PROFILES_DIR}/${userId}/onboarding_completion.json`, payload);
+  await writeJson(
+    `${PROFILES_DIR}/${userId}/onboarding_completion.json`,
+    payload,
+  );
 }
 
-async function syncAnswersToBackend(userId: number, answers: Record<string, string | string[]>) {
+async function syncAnswersToBackend(
+  userId: number,
+  answers: Record<string, string | string[]>,
+) {
   const normalized = Object.fromEntries(
     Object.entries(answers).map(([key, value]) => [
       key,
       Array.isArray(value)
         ? value.map((entry) => String(entry ?? "").trim()).filter(Boolean)
         : String(value ?? ""),
-    ])
+    ]),
   ) as Record<string, string | string[]>;
 
   await apiPost(`/users/${userId}/personality`, { answers: normalized });
@@ -2493,7 +2941,10 @@ export async function retryPendingOnboardingSync(userId: number) {
   return { ok: true };
 }
 
-async function buildProfileSummaryLocally(userId: number, userProfile?: LocalUserProfile) {
+async function buildProfileSummaryLocally(
+  userId: number,
+  userProfile?: LocalUserProfile,
+) {
   const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
   const answers = await loadAnswers(userId);
@@ -2502,7 +2953,9 @@ async function buildProfileSummaryLocally(userId: number, userProfile?: LocalUse
   if (missingSlots(slots, answers).length > 0) return "";
   const facts = buildSummaryFacts(slots, answers);
   const optionalProfileNotes = Array.isArray(state.optionalProfileNotes)
-    ? state.optionalProfileNotes.map((note) => String(note || "").trim()).filter(Boolean)
+    ? state.optionalProfileNotes
+        .map((note) => String(note || "").trim())
+        .filter(Boolean)
     : [];
   let summary = "";
   try {
@@ -2515,7 +2968,7 @@ async function buildProfileSummaryLocally(userId: number, userProfile?: LocalUse
         optional_profile_notes: optionalProfileNotes,
       }),
       cfg.models.aligner,
-      0.1
+      0.1,
     );
     summary = summary.trim();
   } catch {
@@ -2541,12 +2994,19 @@ async function buildProfileSummaryLocally(userId: number, userProfile?: LocalUse
     summary,
     state.confidenceBySlot || {},
     optionalProfileNotes,
-    languageLabel(String(answers.preferred_language || userProfile?.replyLanguage || "english"))
+    languageLabel(
+      String(
+        answers.preferred_language || userProfile?.replyLanguage || "english",
+      ),
+    ),
   );
   return summary;
 }
 
-async function buildProfilerOpening(replyLanguageName: string, userProfile?: LocalUserProfile) {
+async function buildProfilerOpening(
+  replyLanguageName: string,
+  userProfile?: LocalUserProfile,
+) {
   const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
   const slots = await getProfilerSlots();
@@ -2556,9 +3016,12 @@ async function buildProfilerOpening(replyLanguageName: string, userProfile?: Loc
         reply_language_name: replyLanguageName,
         slot_ids: slots.map((slot) => slot.id).join(", "),
       }),
-      JSON.stringify({ user: userProfile || {}, mission: "collect the user's profile naturally" }),
+      JSON.stringify({
+        user: userProfile || {},
+        mission: "collect the user's profile naturally",
+      }),
       cfg.models.profiler,
-      0.2
+      0.2,
     );
     if (out.trim()) return out.trim();
   } catch {
@@ -2571,7 +3034,7 @@ async function buildProfilerOpening(replyLanguageName: string, userProfile?: Loc
 
 export async function startProfilerOnPhone(
   userId: number,
-  opts?: { replyLanguage?: ReplyLanguage; userProfile?: LocalUserProfile }
+  opts?: { replyLanguage?: ReplyLanguage; userProfile?: LocalUserProfile },
 ): Promise<LocalProfilerTurnResult> {
   await ensureLocalAgentData();
   const slots = await getProfilerSlots();
@@ -2582,11 +3045,17 @@ export async function startProfilerOnPhone(
       ? await buildProfileSummaryLocally(userId, {
           ...opts?.userProfile,
           replyLanguage: fallbackReplyLanguageCode(
-            languageLabel(String(answers.preferred_language || opts?.replyLanguage || "english"))
+            languageLabel(
+              String(
+                answers.preferred_language || opts?.replyLanguage || "english",
+              ),
+            ),
           ) as ReplyLanguage,
         })
       : await loadSummary(userId);
-  const replyLanguageName = languageLabel(String(answers.preferred_language || opts?.replyLanguage || "english"));
+  const replyLanguageName = languageLabel(
+    String(answers.preferred_language || opts?.replyLanguage || "english"),
+  );
   const assistantReply = missing.length
     ? await buildProfilerOpening(replyLanguageName, opts?.userProfile)
     : fallbackReplyLanguageCode(replyLanguageName) === "ta"
@@ -2599,11 +3068,20 @@ export async function startProfilerOnPhone(
     currentTargetSlot: missing[0],
     missingSlots: missing,
     confidenceBySlot: Object.fromEntries(
-      slots.map((slot) => [slot.id, nonEmptyAnswer(answers[slot.id]) ? 0.7 : 0])
+      slots.map((slot) => [
+        slot.id,
+        nonEmptyAnswer(answers[slot.id]) ? 0.7 : 0,
+      ]),
     ),
     optionalProfileNotes: [],
     lastRunSource: "model_json",
-    history: [{ role: "assistant" as const, content: assistantReply, createdAt: nowIso() }],
+    history: [
+      {
+        role: "assistant" as const,
+        content: assistantReply,
+        createdAt: nowIso(),
+      },
+    ],
   };
   await saveProfilerState(userId, state);
   await appendConversation(userId, "assistant", assistantReply);
@@ -2649,7 +3127,7 @@ export async function getProfilerStateOnPhone(userId: number) {
 export async function sendProfilerMessageOnPhone(
   userId: number,
   message: string,
-  opts?: { replyLanguage?: ReplyLanguage; userProfile?: LocalUserProfile }
+  opts?: { replyLanguage?: ReplyLanguage; userProfile?: LocalUserProfile },
 ): Promise<LocalProfilerTurnResult> {
   await ensureLocalAgentData();
   const trimmed = String(message || "").trim();
@@ -2658,7 +3136,9 @@ export async function sendProfilerMessageOnPhone(
   const currentAnswers = await loadAnswers(userId);
   const currentState = await loadProfilerState(userId);
   const replyLanguageName = languageLabel(
-    String(currentAnswers.preferred_language || opts?.replyLanguage || "english")
+    String(
+      currentAnswers.preferred_language || opts?.replyLanguage || "english",
+    ),
   );
   await appendConversation(userId, "user", trimmed);
   const processed = await runProfilerTurnModel(
@@ -2667,34 +3147,63 @@ export async function sendProfilerMessageOnPhone(
     currentAnswers,
     currentState,
     slots,
-    { ...opts?.userProfile, replyLanguage: fallbackReplyLanguageCode(replyLanguageName) as ReplyLanguage }
+    {
+      ...opts?.userProfile,
+      replyLanguage: fallbackReplyLanguageCode(
+        replyLanguageName,
+      ) as ReplyLanguage,
+    },
   );
   const llmOut = processed.output;
-  const merged = mergeProfilerUpdates(slots, currentAnswers, llmOut.updates || {});
+  const merged = mergeProfilerUpdates(
+    slots,
+    currentAnswers,
+    llmOut.updates || {},
+  );
   const mergedConfidenceBySlot = slotConfidenceMap(
     slots,
     currentState.confidenceBySlot || {},
     llmOut.confidence_by_slot || {},
-    merged
+    merged,
   );
   const remaining = missingSlots(slots, merged);
   const done = remaining.length === 0;
   const chosenNextSlot =
-    slots.find((slot) => Array.isArray(llmOut.missing_slots) && llmOut.missing_slots.includes(slot.id)) ||
-    chooseNextProfilerSlot(slots, merged, mergedConfidenceBySlot, Object.keys(llmOut.updates || {}));
+    slots.find(
+      (slot) =>
+        Array.isArray(llmOut.missing_slots) &&
+        llmOut.missing_slots.includes(slot.id),
+    ) ||
+    chooseNextProfilerSlot(
+      slots,
+      merged,
+      mergedConfidenceBySlot,
+      Object.keys(llmOut.updates || {}),
+    );
   const assistantReply =
     String(llmOut.assistant_reply || "").trim() ||
-    buildProfilerAssistantReply(replyLanguageName, chosenNextSlot?.prompt, done);
+    buildProfilerAssistantReply(
+      replyLanguageName,
+      chosenNextSlot?.prompt,
+      done,
+    );
   const optionalProfileNotes = uniq(
-    [...(currentState.optionalProfileNotes || []), ...((llmOut.optional_profile_notes || []).map(String))]
+    [
+      ...(currentState.optionalProfileNotes || []),
+      ...(llmOut.optional_profile_notes || []).map(String),
+    ]
       .map((note) => note.trim())
-      .filter(Boolean)
+      .filter(Boolean),
   ).slice(-20);
 
   const history: LocalChatMessage[] = [
     ...currentState.history,
     { role: "user" as const, content: trimmed, createdAt: nowIso() },
-    { role: "assistant" as const, content: assistantReply, createdAt: nowIso() },
+    {
+      role: "assistant" as const,
+      content: assistantReply,
+      createdAt: nowIso(),
+    },
   ].slice(-40);
 
   const nextState: LocalProfilerState = {
@@ -2747,9 +3256,12 @@ export async function sendProfilerMessageOnPhone(
 
   await saveProfilerState(userId, {
     ...nextState,
-    completionSyncState: completionSyncState as LocalProfilerState["completionSyncState"],
+    completionSyncState:
+      completionSyncState as LocalProfilerState["completionSyncState"],
     pendingBackendSync,
-    completedLocallyAt: done ? nextState.lastUpdatedAt : currentState.completedLocallyAt,
+    completedLocallyAt: done
+      ? nextState.lastUpdatedAt
+      : currentState.completedLocallyAt,
   });
   await safeRecordTrainingSample("profiler", {
     input: trimmed,
@@ -2771,7 +3283,9 @@ export async function sendProfilerMessageOnPhone(
   const summary = done
     ? await buildProfileSummaryLocally(userId, {
         ...opts?.userProfile,
-        replyLanguage: fallbackReplyLanguageCode(replyLanguageName) as ReplyLanguage,
+        replyLanguage: fallbackReplyLanguageCode(
+          replyLanguageName,
+        ) as ReplyLanguage,
       })
     : await loadSummary(userId);
 
@@ -2788,7 +3302,10 @@ export async function sendProfilerMessageOnPhone(
   };
 }
 
-function weatherLocationFromMessage(message: string, userProfile?: { place?: string }) {
+function weatherLocationFromMessage(
+  message: string,
+  userProfile?: { place?: string },
+) {
   const raw = String(message || "")
     .trim()
     .replace(/[?!.,]+$/g, "");
@@ -2816,17 +3333,20 @@ function weatherLabelFromCode(code: number) {
   return map[code] || "unsettled weather";
 }
 
-async function fetchWeatherSummary(message: string, userProfile?: { place?: string }) {
+async function fetchWeatherSummary(
+  message: string,
+  userProfile?: { place?: string },
+) {
   const location = weatherLocationFromMessage(message, userProfile);
   if (!location) return "I need a location to check the weather.";
   const geo = await fetch(
-    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`,
   );
   const geoJson = await geo.json();
   const first = Array.isArray(geoJson?.results) ? geoJson.results[0] : null;
   if (!first) return `I couldn’t find a weather match for ${location}.`;
   const wx = await fetch(
-    `https://api.open-meteo.com/v1/forecast?latitude=${first.latitude}&longitude=${first.longitude}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&timezone=auto`
+    `https://api.open-meteo.com/v1/forecast?latitude=${first.latitude}&longitude=${first.longitude}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&timezone=auto`,
   );
   const wxJson = await wx.json();
   const current = wxJson?.current || {};
@@ -2842,11 +3362,22 @@ async function buildScheduleAnswer(userId: number, message: string) {
   const tomorrow = new Date(now.getTime() + 86400000).toDateString();
   let filtered = all.filter((task) => task.status !== "done");
   if (normalized.includes("today")) {
-    filtered = filtered.filter((task) => task.isoDatetime && new Date(task.isoDatetime).toDateString() === today);
+    filtered = filtered.filter(
+      (task) =>
+        task.isoDatetime && new Date(task.isoDatetime).toDateString() === today,
+    );
   } else if (normalized.includes("tomorrow")) {
-    filtered = filtered.filter((task) => task.isoDatetime && new Date(task.isoDatetime).toDateString() === tomorrow);
+    filtered = filtered.filter(
+      (task) =>
+        task.isoDatetime &&
+        new Date(task.isoDatetime).toDateString() === tomorrow,
+    );
   } else {
-    filtered = filtered.filter((task) => !task.isoDatetime || new Date(task.isoDatetime).getTime() >= now.getTime());
+    filtered = filtered.filter(
+      (task) =>
+        !task.isoDatetime ||
+        new Date(task.isoDatetime).getTime() >= now.getTime(),
+    );
   }
   filtered = filtered.slice(0, 5);
   if (!filtered.length) {
@@ -2858,11 +3389,17 @@ async function buildScheduleAnswer(userId: number, message: string) {
   }
   return [
     "Here are your reminders:",
-    ...filtered.map((task) => `- ${task.datetimeText || "Any time"}: ${task.title}${task.details ? ` — ${task.details}` : ""}`),
+    ...filtered.map(
+      (task) =>
+        `- ${task.datetimeText || "Any time"}: ${task.title}${task.details ? ` — ${task.details}` : ""}`,
+    ),
   ].join("\n");
 }
 
-async function parseReminderLocally(message: string, replyLanguage: ReplyLanguage) {
+async function parseReminderLocally(
+  message: string,
+  replyLanguage: ReplyLanguage,
+) {
   const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
   try {
@@ -2870,11 +3407,13 @@ async function parseReminderLocally(message: string, replyLanguage: ReplyLanguag
       prompts.reminderExtractorSystem,
       JSON.stringify({ message, reply_language: replyLanguage }),
       cfg.models.orchestratorMedium,
-      0.1
+      0.1,
     );
     const title = String(out.title || "Reminder").trim() || "Reminder";
     const details = String(out.details || message).trim() || message;
-    const datetimeText = out.datetime_text ? String(out.datetime_text).trim() : null;
+    const datetimeText = out.datetime_text
+      ? String(out.datetime_text).trim()
+      : null;
     const assistantReply =
       String(out.assistant_reply || "").trim() ||
       `Okay, I can set a reminder for ${title}${datetimeText ? ` at ${datetimeText}` : ""}.`;
@@ -2897,24 +3436,28 @@ function selectedReasonerModel(
   routesConfig: OrchestratorConfig,
   message: string,
   recentTurns: number,
-  forcedModel?: string
+  forcedModel?: string,
 ) {
   if (forcedModel) return forcedModel;
   const normalized = normalizeText(message);
   const largeChars = positiveInt(
     routesConfig.complexityThresholds?.largeModelQuestionChars,
-    cfg.thresholds?.largeModelQuestionChars || 180
+    cfg.thresholds?.largeModelQuestionChars || 180,
   );
   const longConversationThreshold = positiveInt(
     routesConfig.complexityThresholds?.largeModelConversationTurns,
-    8
+    8,
   );
   const multiStepKeywords = routesConfig.routes.multiStepKeywords || [];
   const hasMultiStepCue = multiStepKeywords.some((keyword) => {
     const clean = normalizeText(keyword);
     return clean && normalized.includes(clean);
   });
-  if (message.length >= largeChars || hasMultiStepCue || recentTurns >= longConversationThreshold) {
+  if (
+    message.length >= largeChars ||
+    hasMultiStepCue ||
+    recentTurns >= longConversationThreshold
+  ) {
     return cfg.models.orchestratorLarge;
   }
   return cfg.models.orchestratorMedium;
@@ -2930,7 +3473,10 @@ function hasKeywordMatch(message: string, keywords: string[]) {
   });
 }
 
-function generateClarifyingQuestion(message: string, replyLanguage: ReplyLanguage) {
+function generateClarifyingQuestion(
+  message: string,
+  replyLanguage: ReplyLanguage,
+) {
   const normalized = normalizeText(message);
   if (/\b(this|that|it|these|those)\b/.test(normalized)) {
     return replyLanguage === "ta"
@@ -2951,12 +3497,20 @@ function ruleBasedOrchestratorDecision(
   message: string,
   replyLanguage: ReplyLanguage,
   routesConfig: OrchestratorConfig,
-  selectedModel: string
+  selectedModel: string,
 ): OrchestratorDecision | null {
   const normalized = normalizeText(message);
-  const tokenCount = normalized ? normalized.split(/\s+/).filter(Boolean).length : 0;
-  const shortThreshold = positiveInt(routesConfig.clarificationRules?.shortMessageTokenThreshold, 4);
-  const pronounThreshold = positiveInt(routesConfig.clarificationRules?.pronounOnlyTokenThreshold, 6);
+  const tokenCount = normalized
+    ? normalized.split(/\s+/).filter(Boolean).length
+    : 0;
+  const shortThreshold = positiveInt(
+    routesConfig.clarificationRules?.shortMessageTokenThreshold,
+    4,
+  );
+  const pronounThreshold = positiveInt(
+    routesConfig.clarificationRules?.pronounOnlyTokenThreshold,
+    6,
+  );
   const ambiguousPronounOnly =
     tokenCount > 0 &&
     tokenCount <= pronounThreshold &&
@@ -3055,7 +3609,7 @@ function ruleBasedOrchestratorDecision(
 function sanitizeDecision(
   raw: Partial<OrchestratorDecision> & Record<string, any>,
   selectedModel: string,
-  replyLanguage: ReplyLanguage
+  replyLanguage: ReplyLanguage,
 ): OrchestratorDecision {
   const route = String(raw.route || "local_answer") as OrchestratorRoute;
   const safeRoute: OrchestratorRoute = [
@@ -3070,16 +3624,26 @@ function sanitizeDecision(
   ].includes(route)
     ? route
     : "local_answer";
-  const needsClarification = Boolean(raw.needsClarification ?? raw.needs_clarification);
+  const needsClarification = Boolean(
+    raw.needsClarification ?? raw.needs_clarification,
+  );
   return {
     route: safeRoute,
     reason: String(raw.reason || "model_route").trim() || "model_route",
     confidence: clampConfidence(raw.confidence, 0.65),
     needsClarification,
-    clarificationQuestion: String(raw.clarificationQuestion || raw.clarifyingQuestion || raw.clarification_question || "")
-      .trim() || (needsClarification ? generateClarifyingQuestion("", replyLanguage) : ""),
+    clarificationQuestion:
+      String(
+        raw.clarificationQuestion ||
+          raw.clarifyingQuestion ||
+          raw.clarification_question ||
+          "",
+      ).trim() ||
+      (needsClarification ? generateClarifyingQuestion("", replyLanguage) : ""),
     needsLiveData: Boolean(raw.needsLiveData ?? raw.needs_live_data),
-    selectedModel: String(raw.selectedModel || raw.selected_model || selectedModel).trim() || selectedModel,
+    selectedModel:
+      String(raw.selectedModel || raw.selected_model || selectedModel).trim() ||
+      selectedModel,
     fallbackAllowed: Boolean(raw.fallbackAllowed ?? raw.fallback_allowed),
   };
 }
@@ -3089,7 +3653,7 @@ async function classifyRouteWithModel(
   replyLanguage: ReplyLanguage,
   answers: Record<string, any>,
   profileSummary: string,
-  selectedModel: string
+  selectedModel: string,
 ) {
   const prompts = await getPromptCatalog();
   const registry = await getAgentRegistry();
@@ -3104,11 +3668,15 @@ async function classifyRouteWithModel(
         tool_agents_available: registry.agents.toolAgents,
       }),
       selectedModel,
-      0.05
+      0.05,
     );
     return sanitizeDecision(out, selectedModel, replyLanguage);
   } catch {
-    return sanitizeDecision({ route: "local_answer", reason: "model_classifier_failed" }, selectedModel, replyLanguage);
+    return sanitizeDecision(
+      { route: "local_answer", reason: "model_classifier_failed" },
+      selectedModel,
+      replyLanguage,
+    );
   }
 }
 
@@ -3123,8 +3691,12 @@ function extractProtectedFactTokens(text: string) {
     });
   };
   addMatches(/\b\d+(?::\d+)?(?:\s?(?:am|pm|AM|PM))?\b/g);
-  addMatches(/\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi);
-  addMatches(/\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/gi);
+  addMatches(
+    /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi,
+  );
+  addMatches(
+    /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/gi,
+  );
   addMatches(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/g);
   return Array.from(tokens);
 }
@@ -3140,7 +3712,7 @@ async function alignAnswer(
   route: string,
   answers: Record<string, any>,
   profileSummary: string,
-  userProfile?: LocalUserProfile
+  userProfile?: LocalUserProfile,
 ) {
   const cfg = await getModelConfig();
   const rules = await getAlignmentRules();
@@ -3148,7 +3720,8 @@ async function alignAnswer(
   const tonePreference = displayValue(answers.communication_tone);
   const toneInstruction =
     (tonePreference && rules.toneByPreference?.[tonePreference]) ||
-    (tonePreference && rules.toneByPreference?.[normalizeText(tonePreference)]) ||
+    (tonePreference &&
+      rules.toneByPreference?.[normalizeText(tonePreference)]) ||
     "";
   try {
     const out = await localChatJson(
@@ -3164,11 +3737,15 @@ async function alignAnswer(
         tone_instruction: toneInstruction,
       }),
       cfg.models.aligner,
-      0.2
+      0.2,
     );
     const english = String(out.english_answer || draft).trim() || draft;
-    const final = String(out.final_answer || out.english_answer || draft).trim() || draft;
-    if (rules.fallbackToDraftOnFactDrift !== false && !preservesFacts(draft, english)) {
+    const final =
+      String(out.final_answer || out.english_answer || draft).trim() || draft;
+    if (
+      rules.fallbackToDraftOnFactDrift !== false &&
+      !preservesFacts(draft, english)
+    ) {
       return { english: draft, final: replyLanguage === "ta" ? draft : draft };
     }
     return { english, final };
@@ -3229,7 +3806,10 @@ async function lookupSemanticCache(userId: number, message: string) {
         continue;
       }
 
-      const score = cosine(queryVec, normalizeStoredEmbedding(row.embedding, row.sourceQuestion));
+      const score = cosine(
+        queryVec,
+        normalizeStoredEmbedding(row.embedding, row.sourceQuestion),
+      );
 
       if (score > bestScore) {
         bestScore = score;
@@ -3249,7 +3829,7 @@ async function lookupSemanticCache(userId: number, message: string) {
 
 async function recordSemanticCacheHit(
   userId: number,
-  hit: SemanticCacheHitRecord
+  hit: SemanticCacheHitRecord,
 ) {
   const rules = await getMemoryRules();
   await updateSemanticCacheStore(userId, rules, async (store) => {
@@ -3264,7 +3844,7 @@ async function writeSemanticCache(
   englishAnswer: string,
   route: string,
   intent: LocalAssistantTurnResult["intent"],
-  alignmentProfile?: SemanticCacheEntry["alignmentProfile"]
+  alignmentProfile?: SemanticCacheEntry["alignmentProfile"],
 ) {
   const rules = await getMemoryRules();
   const skipRoutes = rules.cache?.skipRoutes || [];
@@ -3272,7 +3852,10 @@ async function writeSemanticCache(
   const [embedding] = await embedTexts([question]);
   const ttlHours = positiveInt(rules.cache?.ttlHours, 168);
   const createdAt = nowIso();
-  const expiresAt = ttlHours > 0 ? new Date(Date.now() + ttlHours * 3600000).toISOString() : null;
+  const expiresAt =
+    ttlHours > 0
+      ? new Date(Date.now() + ttlHours * 3600000).toISOString()
+      : null;
   const newEntry: SemanticCacheEntry = {
     id: `${userId}_${simpleHash(`${question}:${englishAnswer}:${route}`)}`,
     userId,
@@ -3302,14 +3885,18 @@ async function buildMemoryConsolidation(
   routeLogs: any[],
   answers: Record<string, any>,
   state: LocalProfilerState,
-  userProfile?: LocalUserProfile
+  userProfile?: LocalUserProfile,
 ) {
   const rules = await getMemoryRules();
   const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
   const registry = await getAgentRegistry();
   const slots = await getProfilerSlots();
-  const replyLanguageName = languageLabel(String(answers.preferred_language || userProfile?.replyLanguage || "english"));
+  const replyLanguageName = languageLabel(
+    String(
+      answers.preferred_language || userProfile?.replyLanguage || "english",
+    ),
+  );
   const recentUserText = turns
     .filter((row) => row.role === "user")
     .map((row) => row.content.trim())
@@ -3320,7 +3907,7 @@ async function buildMemoryConsolidation(
     slots,
     answers,
     state,
-    replyLanguageName
+    replyLanguageName,
   );
   const perTurnExtractions = turns
     .filter((row) => row.role === "user")
@@ -3330,20 +3917,25 @@ async function buildMemoryConsolidation(
         slots,
         answers,
         state,
-        replyLanguageName
-      )
+        replyLanguageName,
+      ),
     );
   const perTurnUpdates = normalizeMemoryProfileUpdates(
     slots,
-    Object.assign({}, ...perTurnExtractions.map((row) => row.updates || {}))
+    Object.assign({}, ...perTurnExtractions.map((row) => row.updates || {})),
   );
   const perTurnConfidenceBySlot = Object.assign(
     {},
-    ...perTurnExtractions.map((row) => row.confidence_by_slot || {})
+    ...perTurnExtractions.map((row) => row.confidence_by_slot || {}),
   ) as Record<string, number>;
-  const fallbackProfileUpdates = normalizeMemoryProfileUpdates(slots, deterministic.updates || {});
+  const fallbackProfileUpdates = normalizeMemoryProfileUpdates(
+    slots,
+    deterministic.updates || {},
+  );
   const fallbackProfileConfidenceBySlot = Object.fromEntries(
-    Object.entries(deterministic.confidence_by_slot || {}).map(([slotId, value]) => [slotId, clampConfidence(value, 0)])
+    Object.entries(deterministic.confidence_by_slot || {}).map(
+      ([slotId, value]) => [slotId, clampConfidence(value, 0)],
+    ),
   );
   const deriveUpdatesFromFacts = (facts: DurableFactRecord[]) => {
     const joinedFacts = facts.map((row) => row.fact).join(". ");
@@ -3352,7 +3944,7 @@ async function buildMemoryConsolidation(
       slots,
       answers,
       state,
-      replyLanguageName
+      replyLanguageName,
     );
     const heuristicUpdates: Record<string, any> = {};
     const heuristicConfidenceBySlot: Record<string, number> = {};
@@ -3378,7 +3970,9 @@ async function buildMemoryConsolidation(
       },
       confidenceBySlot: {
         ...Object.fromEntries(
-          Object.entries(factExtraction.confidence_by_slot || {}).map(([slotId, value]) => [slotId, clampConfidence(value, 0)])
+          Object.entries(factExtraction.confidence_by_slot || {}).map(
+            ([slotId, value]) => [slotId, clampConfidence(value, 0)],
+          ),
         ),
         ...heuristicConfidenceBySlot,
       },
@@ -3396,23 +3990,35 @@ async function buildMemoryConsolidation(
         profiler_state: state,
         recent_turns: turns,
         route_logs: routeLogs,
-        alignment_captures: (await listLocalTrainingSamples("alignment")).slice(-12),
+        alignment_captures: (await listLocalTrainingSamples("alignment")).slice(
+          -12,
+        ),
         conversation_logs_path: convoPath(userId),
         semantic_memory_model: cfg.models.embedding,
       }),
       cfg.models[registry.agents.memory.summarizerModelKey],
-      0.1
+      0.1,
     );
     const parsed = parseJsonLoose<MemoryConsolidationModelOutput>(out, {});
-    const normalizedModelUpdates = normalizeMemoryProfileUpdates(slots, parsed.profile_updates || {});
-    const modelConfidenceBySlot = Object.fromEntries(
-      Object.keys(normalizedModelUpdates).map((slotId) => [slotId, 0.95])
+    const normalizedModelUpdates = normalizeMemoryProfileUpdates(
+      slots,
+      parsed.profile_updates || {},
     );
-    const durableFacts = (Array.isArray(parsed.durable_facts) ? parsed.durable_facts : [])
+    const modelConfidenceBySlot = Object.fromEntries(
+      Object.keys(normalizedModelUpdates).map((slotId) => [slotId, 0.95]),
+    );
+    const durableFacts = (
+      Array.isArray(parsed.durable_facts) ? parsed.durable_facts : []
+    )
       .map((row): DurableFactRecord | null => {
         const fact = String(row?.fact || "").trim();
         const confidence = clampConfidence(row?.confidence, 0);
-        if (!fact || confidence < positiveFloat(rules.durableFacts?.confidenceThreshold, 0.78)) return null;
+        if (
+          !fact ||
+          confidence <
+            positiveFloat(rules.durableFacts?.confidenceThreshold, 0.78)
+        )
+          return null;
         if (isTransientFact(fact, rules) && !row?.important) return null;
         return {
           fact,
@@ -3423,7 +4029,10 @@ async function buildMemoryConsolidation(
           lastSeenAt: nowIso(),
           evidence: trimList(row?.evidence).slice(0, 4),
           important: Boolean(row?.important),
-          profileUpdates: normalizeMemoryProfileUpdates(slots, row?.profile_updates || {}),
+          profileUpdates: normalizeMemoryProfileUpdates(
+            slots,
+            row?.profile_updates || {},
+          ),
         };
       })
       .filter(Boolean) as DurableFactRecord[];
@@ -3433,7 +4042,10 @@ async function buildMemoryConsolidation(
       summary:
         String(parsed.summary || "").trim() ||
         buildFallbackMemorySummary(durableFacts, turns),
-      durableFacts: durableFacts.slice(0, positiveInt(rules.durableFacts?.maxFactsPerSync, 6)),
+      durableFacts: durableFacts.slice(
+        0,
+        positiveInt(rules.durableFacts?.maxFactsPerSync, 6),
+      ),
       profileUpdates: {
         ...fallbackProfileUpdates,
         ...perTurnUpdates,
@@ -3448,7 +4060,11 @@ async function buildMemoryConsolidation(
       },
     };
   } catch {
-    const durableFacts = buildDurableFactsFromHeuristics(turns, fallbackProfileUpdates, rules);
+    const durableFacts = buildDurableFactsFromHeuristics(
+      turns,
+      fallbackProfileUpdates,
+      rules,
+    );
     const factDerived = deriveUpdatesFromFacts(durableFacts);
     return {
       source: "fallback" as const,
@@ -3475,7 +4091,7 @@ async function applyConservativeProfileUpdates(
   currentAnswers: Record<string, any>,
   state: LocalProfilerState,
   rules: MemoryRules,
-  userProfile?: LocalUserProfile
+  userProfile?: LocalUserProfile,
 ) {
   const nextAnswers = { ...currentAnswers };
   const reasons: string[] = [];
@@ -3487,7 +4103,7 @@ async function applyConservativeProfileUpdates(
         currentAnswers,
         state.confidenceBySlot || {},
         updateConfidenceBySlot,
-        rules
+        rules,
       )
     ) {
       continue;
@@ -3496,11 +4112,12 @@ async function applyConservativeProfileUpdates(
     reasons.push(
       !nonEmptyAnswer(currentAnswers[slotId])
         ? `Filled empty slot ${slotId} from durable memory.`
-        : `Conservatively updated ${slotId} from durable memory.`
+        : `Conservatively updated ${slotId} from durable memory.`,
     );
   }
 
-  const applied = JSON.stringify(nextAnswers) !== JSON.stringify(currentAnswers);
+  const applied =
+    JSON.stringify(nextAnswers) !== JSON.stringify(currentAnswers);
   if (applied) {
     await saveAnswers(userId, nextAnswers);
     await syncAnswersToBackend(userId, nextAnswers).catch(() => undefined);
@@ -3523,12 +4140,10 @@ async function applyConservativeProfileUpdates(
 async function refreshMemoryRagArtifacts(
   userId: number,
   summaryRow: DailySummaryRecord,
-  durableFacts: DurableFactRecord[]
+  durableFacts: DurableFactRecord[],
 ) {
   const texts = [
-    summaryRow.summary
-      ? `Summary: ${summaryRow.summary}`
-      : "",
+    summaryRow.summary ? `Summary: ${summaryRow.summary}` : "",
     ...durableFacts.map((row) => `Fact: ${row.fact}`),
   ].filter(Boolean);
   if (!texts.length) {
@@ -3541,7 +4156,9 @@ async function refreshMemoryRagArtifacts(
     sourceId: `memory:${userId}:${index}`,
     sourceType: "memory",
     text,
-    embedding: Array.isArray(embeddings[index]) ? embeddings[index] : hashEmbedding(text),
+    embedding: Array.isArray(embeddings[index])
+      ? embeddings[index]
+      : hashEmbedding(text),
     metadata: {
       userId,
       createdAt: summaryRow.createdAt,
@@ -3556,7 +4173,7 @@ async function refreshMemoryRagArtifacts(
 
 export async function consolidateLocalMemoryOnIdle(
   userId: number,
-  opts?: { force?: boolean; userProfile?: LocalUserProfile }
+  opts?: { force?: boolean; userProfile?: LocalUserProfile },
 ): Promise<MemoryConsolidationResult> {
   const rules = await getMemoryRules();
   const registry = await getAgentRegistry();
@@ -3564,15 +4181,24 @@ export async function consolidateLocalMemoryOnIdle(
     return { ok: false, skipped: true, reason: "memory_agent_disabled" };
   }
 
-  const turns = await recentConversation(userId, positiveInt(rules.summarization?.maxTurnsForSync, 18));
-  if (!opts?.force && turns.length < positiveInt(rules.summarization?.minTurnsBeforeSync, 6)) {
+  const turns = await recentConversation(
+    userId,
+    positiveInt(rules.summarization?.maxTurnsForSync, 18),
+  );
+  if (
+    !opts?.force &&
+    turns.length < positiveInt(rules.summarization?.minTurnsBeforeSync, 6)
+  ) {
     return { ok: false, skipped: true, reason: "not_enough_turns" };
   }
   const previous = await loadDailySummaries(userId);
   const latestSync = previous[previous.length - 1]?.createdAt;
   if (latestSync) {
     const minutes = (Date.now() - new Date(latestSync).getTime()) / 60000;
-    if (!opts?.force && minutes < positiveInt(rules.summarization?.minMinutesBetweenSync, 15)) {
+    if (
+      !opts?.force &&
+      minutes < positiveInt(rules.summarization?.minMinutesBetweenSync, 15)
+    ) {
       return { ok: false, skipped: true, reason: "within_cooldown_window" };
     }
   }
@@ -3580,7 +4206,14 @@ export async function consolidateLocalMemoryOnIdle(
   const answers = await loadAnswers(userId);
   const state = await loadProfilerState(userId);
   const routeLogs = await loadRouteLogs(userId, 18);
-  const built = await buildMemoryConsolidation(userId, turns, routeLogs, answers, state, opts?.userProfile);
+  const built = await buildMemoryConsolidation(
+    userId,
+    turns,
+    routeLogs,
+    answers,
+    state,
+    opts?.userProfile,
+  );
   const existingFacts = await loadDurableFacts(userId);
   const mergedFacts = mergeDurableFacts(existingFacts, built.durableFacts);
   const summaryRow: DailySummaryRecord = {
@@ -3589,7 +4222,9 @@ export async function consolidateLocalMemoryOnIdle(
     windowStartAt: turns[0]?.createdAt,
     windowEndAt: turns[turns.length - 1]?.createdAt,
     summary: built.summary,
-    durableFacts: mergedFacts.slice(-positiveInt(rules.durableFacts?.maxFactsPerSync, 6)),
+    durableFacts: mergedFacts.slice(
+      -positiveInt(rules.durableFacts?.maxFactsPerSync, 6),
+    ),
     profileUpdates: built.profileUpdates,
     source: built.source,
     conversationTurnCount: turns.length,
@@ -3605,9 +4240,13 @@ export async function consolidateLocalMemoryOnIdle(
     answers,
     state,
     rules,
-    opts?.userProfile
+    opts?.userProfile,
   );
-  const memoryChunks = await refreshMemoryRagArtifacts(userId, summaryRow, mergedFacts);
+  const memoryChunks = await refreshMemoryRagArtifacts(
+    userId,
+    summaryRow,
+    mergedFacts,
+  );
   await safeRecordTrainingSample("memory", {
     input: JSON.stringify({
       recent_turns: turns,
@@ -3667,7 +4306,7 @@ async function buildLocalReasoningDraft(opts: {
       })),
     }),
     opts.selectedModel,
-    0.25
+    0.25,
   );
   return draft.trim();
 }
@@ -3681,7 +4320,11 @@ async function buildProfileGroundedDraft(opts: {
   userProfile?: LocalUserProfile;
   selectedModel: string;
 }) {
-  const direct = heuristicProfileAnswer(opts.message, opts.answers, opts.userProfile);
+  const direct = heuristicProfileAnswer(
+    opts.message,
+    opts.answers,
+    opts.userProfile,
+  );
   if (direct) return direct;
   return buildLocalReasoningDraft(opts);
 }
@@ -3707,7 +4350,7 @@ async function appendRouteDecisionLog(
   userId: number,
   message: string,
   decision: OrchestratorDecision,
-  extra?: Record<string, any>
+  extra?: Record<string, any>,
 ) {
   await appendJsonl(routeLogPath(userId), {
     createdAt: nowIso(),
@@ -3719,7 +4362,7 @@ async function appendRouteDecisionLog(
 
 export async function saveScheduledTask(
   userId: number,
-  task: Omit<LocalTaskRecord, "id" | "createdAt">
+  task: Omit<LocalTaskRecord, "id" | "createdAt">,
 ) {
   await ensureLocalAgentData();
   const current = await loadTasks(userId);
@@ -3742,7 +4385,8 @@ export async function runLocalAssistantTurn(opts: {
   await ensureLocalAgentData();
   const userId = opts.userId;
   const message = String(opts.message || "").trim();
-  const replyLanguage: ReplyLanguage = opts.replyLanguage === "en" ? "en" : "ta";
+  const replyLanguage: ReplyLanguage =
+    opts.replyLanguage === "en" ? "en" : "ta";
   if (!message) throw new Error("Message is required.");
 
   await appendConversation(userId, "user", message);
@@ -3750,13 +4394,17 @@ export async function runLocalAssistantTurn(opts: {
   const answers = await loadAnswers(userId);
   const profileSummary =
     (await loadSummary(userId)) ||
-    (await buildProfileSummaryLocally(userId, { ...opts.userProfile, replyLanguage }));
+    (await buildProfileSummaryLocally(userId, {
+      ...opts.userProfile,
+      replyLanguage,
+    }));
 
   const semantic = await lookupSemanticCache(userId, message);
   if (semantic) {
     const needsAlignmentReapply =
       semantic.alignmentProfile?.replyLanguage !== replyLanguage ||
-      normalizeText(semantic.alignmentProfile?.tone || "") !== normalizeText(displayValue(answers.communication_tone));
+      normalizeText(semantic.alignmentProfile?.tone || "") !==
+        normalizeText(displayValue(answers.communication_tone));
     const aligned = needsAlignmentReapply
       ? await alignAnswer(
           semantic.englishAnswer || semantic.canonicalAnswer,
@@ -3764,7 +4412,7 @@ export async function runLocalAssistantTurn(opts: {
           "semantic_cache",
           answers,
           profileSummary,
-          opts.userProfile
+          opts.userProfile,
         )
       : {
           english: semantic.englishAnswer || semantic.canonicalAnswer,
@@ -3773,7 +4421,8 @@ export async function runLocalAssistantTurn(opts: {
             semantic.englishAnswer ||
             semantic.canonicalAnswer,
         };
-    const assistantText = aligned.final || aligned.english || semantic.canonicalAnswer;
+    const assistantText =
+      aligned.final || aligned.english || semantic.canonicalAnswer;
     await appendConversation(userId, "assistant", assistantText);
     await recordSemanticCacheHit(userId, {
       userId,
@@ -3801,7 +4450,8 @@ export async function runLocalAssistantTurn(opts: {
       source: "semantic_cache",
       cacheHit: true,
       assistantText,
-      englishText: aligned.english || semantic.englishAnswer || semantic.canonicalAnswer,
+      englishText:
+        aligned.english || semantic.englishAnswer || semantic.canonicalAnswer,
       intent: semantic.intent || "assistant",
       profileSummary,
       meta: {
@@ -3821,12 +4471,17 @@ export async function runLocalAssistantTurn(opts: {
   const cfg = await getModelConfig();
   const registry = await getAgentRegistry();
   const turns = await recentConversation(userId, 10);
-  const preferredSelectedModel = selectedReasonerModel(cfg, routesConfig, message, turns.length);
+  const preferredSelectedModel = selectedReasonerModel(
+    cfg,
+    routesConfig,
+    message,
+    turns.length,
+  );
   const fastDecision = ruleBasedOrchestratorDecision(
     message,
     replyLanguage,
     routesConfig,
-    preferredSelectedModel
+    preferredSelectedModel,
   );
   let decision = fastDecision
     ? fastDecision
@@ -3835,7 +4490,7 @@ export async function runLocalAssistantTurn(opts: {
         replyLanguage,
         answers,
         profileSummary,
-        preferredSelectedModel
+        preferredSelectedModel,
       );
 
   await safeRecordTrainingSample("orchestrator", {
@@ -3852,7 +4507,9 @@ export async function runLocalAssistantTurn(opts: {
   });
 
   let route = decision.route;
-  let source: LocalAssistantTurnResult["source"] = fastDecision ? "local_rules" : "local_model";
+  let source: LocalAssistantTurnResult["source"] = fastDecision
+    ? "local_rules"
+    : "local_model";
   let intent: LocalAssistantTurnResult["intent"] = "assistant";
   let title: string | null | undefined;
   let details: string | null | undefined;
@@ -3894,13 +4551,19 @@ export async function runLocalAssistantTurn(opts: {
       profileSummary,
       userProfile: opts.userProfile,
       selectedModel: decision.selectedModel,
-    }).catch(
-      () =>
-        replyLanguage === "ta"
-          ? "உங்களைப் பற்றிய சில தகவல்கள் என்கிட்ட இருக்கு. இதை கொஞ்சம் நேராக கேளுங்கள்."
-          : "I do have some profile information about you. Ask that a little more directly."
+    }).catch(() =>
+      replyLanguage === "ta"
+        ? "உங்களைப் பற்றிய சில தகவல்கள் என்கிட்ட இருக்கு. இதை கொஞ்சம் நேராக கேளுங்கள்."
+        : "I do have some profile information about you. Ask that a little more directly.",
     );
-    const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
+    const aligned = await alignAnswer(
+      draft,
+      replyLanguage,
+      route,
+      answers,
+      profileSummary,
+      opts.userProfile,
+    );
     english = aligned.english;
     final = aligned.final;
   } else if (route === "calendar_query") {
@@ -3910,7 +4573,14 @@ export async function runLocalAssistantTurn(opts: {
     } else {
       source = "local_rules";
       draft = await buildScheduleAnswer(userId, message);
-      const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
+      const aligned = await alignAnswer(
+        draft,
+        replyLanguage,
+        route,
+        answers,
+        profileSummary,
+        opts.userProfile,
+      );
       english = aligned.english;
       final = aligned.final;
     }
@@ -3921,7 +4591,14 @@ export async function runLocalAssistantTurn(opts: {
     details = parsed.details;
     datetimeText = parsed.datetimeText;
     draft = parsed.assistantReply;
-    const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
+    const aligned = await alignAnswer(
+      draft,
+      replyLanguage,
+      route,
+      answers,
+      profileSummary,
+      opts.userProfile,
+    );
     english = aligned.english;
     final = aligned.final;
   } else if (route === "weather") {
@@ -3931,7 +4608,14 @@ export async function runLocalAssistantTurn(opts: {
     } else {
       try {
         draft = await fetchWeatherSummary(message, opts.userProfile);
-        const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
+        const aligned = await alignAnswer(
+          draft,
+          replyLanguage,
+          route,
+          answers,
+          profileSummary,
+          opts.userProfile,
+        );
         english = aligned.english;
         final = aligned.final;
       } catch {
@@ -3956,11 +4640,18 @@ export async function runLocalAssistantTurn(opts: {
         userProfile: opts.userProfile,
         selectedModel: decision.selectedModel,
       });
-      if (draft === "__OPENAI_FALLBACK__") {
+      if (draft === OPENAI_FALLBACK_SIGNAL) {
         localReasonerRequestedFallback = true;
         route = "fallback_openai";
       } else {
-        const aligned = await alignAnswer(draft, replyLanguage, route, answers, profileSummary, opts.userProfile);
+        const aligned = await alignAnswer(
+          draft,
+          replyLanguage,
+          route,
+          answers,
+          profileSummary,
+          opts.userProfile,
+        );
         english = aligned.english;
         final = aligned.final;
       }
@@ -3995,9 +4686,16 @@ export async function runLocalAssistantTurn(opts: {
             backend?.assistant?.english ||
             backend?.details ||
             backend?.raw_text ||
-            ""
+            "",
         ).trim() || "I couldn’t generate a response.";
-      const aligned = await alignAnswer(backendText, replyLanguage, route, answers, profileSummary, opts.userProfile);
+      const aligned = await alignAnswer(
+        backendText,
+        replyLanguage,
+        route,
+        answers,
+        profileSummary,
+        opts.userProfile,
+      );
       english = aligned.english;
       final = aligned.final;
     } else {
@@ -4020,7 +4718,8 @@ export async function runLocalAssistantTurn(opts: {
     }
   }
 
-  const assistantText = final || english || draft || "I couldn’t generate a response.";
+  const assistantText =
+    final || english || draft || "I couldn’t generate a response.";
   await appendConversation(userId, "assistant", assistantText);
   await appendRouteDecisionLog(userId, message, decision, {
     routeUsed: route,
@@ -4029,7 +4728,11 @@ export async function runLocalAssistantTurn(opts: {
     noSafeLocalPath,
   });
 
-  if (assistantText.trim() && route !== "reminder_create" && route !== "clarify") {
+  if (
+    assistantText.trim() &&
+    route !== "reminder_create" &&
+    route !== "clarify"
+  ) {
     await writeSemanticCache(
       userId,
       message,
@@ -4040,7 +4743,7 @@ export async function runLocalAssistantTurn(opts: {
       {
         replyLanguage,
         tone: displayValue(answers.communication_tone),
-      }
+      },
     );
   }
 

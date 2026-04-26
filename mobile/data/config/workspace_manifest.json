@@ -1,11 +1,11 @@
 {
-  "version": 3,
-  "seedVersion": "2026-04-09-phone-local-primary",
+  "version": 4,
+  "seedVersion": "2026-04-27-phone-local-primary-runtime-abstraction",
   "description": "Phone-local agent workspace seed manifest",
   "architecture": {
     "primaryRuntime": "phone_local_agents",
-    "backendRole": "mirror_support_openai_fallback",
-    "stableContract": "/api/chat remains unchanged"
+    "backendRole": "fallback_only",
+    "stableContract": "/api/chat remains unchanged; /chat/completions is a local runtime adapter when needed."
   },
   "checkedInSeedFolders": [
     "config",
@@ -39,5 +39,10 @@
     "rag/seed/fast_rag_replies.csv",
     "rag/seed/local_rag_keywords.csv",
     "rag/seed/local_rag_synonyms.csv"
-  ]
+  ],
+  "runtime": {
+    "primary": "phone_local",
+    "backendPolicy": "fallback_only",
+    "localRuntimeInterface": "LocalModelRuntime"
+  }
 }

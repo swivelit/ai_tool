@@ -5,8 +5,7 @@ const LOCAL_MODEL_BASE_URL = (
 ).trim();
 
 const USE_LOCAL_CHAT_PIPELINE =
-  process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ??
-  (LOCAL_MODEL_BASE_URL ? "true" : "false");
+  process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ?? "true";
 
 export default {
   expo: {
@@ -31,9 +30,9 @@ export default {
         "https://ai-tool-rrau.onrender.com",
 
       // phone-local runtime
-      // Real devices cannot use 127.0.0.1/localhost for a laptop-hosted model.
-      // Leave local chat off unless EXPO_PUBLIC_LOCAL_MODEL_BASE_URL is explicitly set
-      // to a reachable LAN/emulator URL, for example http://192.168.1.23:10000/v1.
+      // Chat enters the local agent pipeline first. LOCAL_MODEL_BASE_URL is an
+      // OpenAI-compatible local runtime adapter until a native on-device backend
+      // is plugged in; it is not an OpenAI/backend primary runtime.
       LOCAL_MODEL_BASE_URL,
       USE_LOCAL_CHAT_PIPELINE,
       USE_LOCAL_VOICE_PIPELINE:
@@ -43,13 +42,12 @@ export default {
       // Use Firebase-authenticated backend proxying or a short-lived pairing token instead.
       LOCAL_MODEL_API_KEY: "",
       LOCAL_MODEL_TIMEOUT_MS: Number(
-        process.env.EXPO_PUBLIC_LOCAL_MODEL_TIMEOUT_MS || 45000
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_TIMEOUT_MS || 45000,
       ),
 
       // local speech-to-text model
       // set this to the exact model name exposed by your local runtime
-      LOCAL_STT_MODEL:
-        process.env.EXPO_PUBLIC_LOCAL_STT_MODEL || "whisper",
+      LOCAL_STT_MODEL: process.env.EXPO_PUBLIC_LOCAL_STT_MODEL || "whisper",
 
       // requested local LLM / embedding models
       LOCAL_MODEL_GEMMA_4B:
@@ -70,8 +68,7 @@ export default {
         process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
       firebaseAppId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 
-      googleAndroidClientId:
-        process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+      googleAndroidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
       googleIosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
       googleWebClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
 
