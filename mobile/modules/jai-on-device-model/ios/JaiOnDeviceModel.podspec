@@ -13,5 +13,7 @@ Pod::Spec.new do |s|
 
   s.dependency 'ExpoModulesCore'
   s.source_files = '**/*.{h,m,mm,swift}'
+  s.public_header_files = '**/*.h'
+  s.libraries = 'c++'
   s.resources = []
 end

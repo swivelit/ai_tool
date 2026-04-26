@@ -18,6 +18,11 @@ import { AssistantProvider, useAssistant } from "@/components/AssistantProvider"
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
 import { resolveDesiredRoute } from "@/lib/appBoot";
+import {
+  getModelDeliveryMode,
+  getModelInstallStatus,
+  type ModelInstallStatus,
+} from "@/lib/modelDownloadManager";
 
 type AlertButtonConfig = {
   text?: string;
@@ -243,6 +248,9 @@ function AppShell() {
   const { profile, loading: profileLoading } = useAssistant();
 
   const lastRedirectRef = useRef<string | null>(null);
+  const [modelStatus, setModelStatus] = useState<ModelInstallStatus | null>(null);
+  const [modelStatusLoading, setModelStatusLoading] = useState(false);
+  const [modelStatusError, setModelStatusError] = useState<unknown>(null);
 
   const activeProfile = useMemo(() => {
     if (!user) return null;
@@ -250,6 +258,50 @@ function AppShell() {
     if (profile.firebaseUid && profile.firebaseUid !== user.uid) return null;
     return profile;
   }, [profile, user]);
+
+  const shouldCheckModelSetup = Boolean(
+    user &&
+      activeProfile?.userId &&
+      activeProfile?.questionnaireCompleted &&
+      !activeProfile?.restoreFailed &&
+      getModelDeliveryMode() === "download_on_first_launch"
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!shouldCheckModelSetup) {
+      setModelStatus(null);
+      setModelStatusError(null);
+      setModelStatusLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setModelStatusLoading(true);
+    getModelInstallStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setModelStatus(status);
+        setModelStatusError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setModelStatus(null);
+        setModelStatusError(error);
+      })
+      .finally(() => {
+        if (!cancelled) setModelStatusLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [shouldCheckModelSetup, pathname]);
+
+  const modelSetupRequired =
+    shouldCheckModelSetup && !modelStatusLoading && (Boolean(modelStatusError) || modelStatus?.requiredReady === false);
 
   const targetRoute = useMemo(
     () =>
@@ -260,6 +312,7 @@ function AppShell() {
         questionnaireCompleted: Boolean(activeProfile?.questionnaireCompleted),
         profileRestoreFailed: Boolean(activeProfile?.restoreFailed),
         inTabsGroup: segments[0] === "(tabs)",
+        modelSetupRequired,
       }),
     [
       pathname,
@@ -268,11 +321,12 @@ function AppShell() {
       activeProfile?.userId,
       activeProfile?.questionnaireCompleted,
       activeProfile?.restoreFailed,
+      modelSetupRequired,
     ]
   );
 
   const isNavigatorReady = Boolean(rootNavigationState?.key);
-  const shouldShowBoot = authLoading || profileLoading || !isNavigatorReady;
+  const shouldShowBoot = authLoading || profileLoading || modelStatusLoading || !isNavigatorReady;
 
   useEffect(() => {
     if (shouldShowBoot) {
@@ -318,6 +372,7 @@ function AppShell() {
         <Stack.Screen name="onboarding/profile" />
         <Stack.Screen name="onboarding/questionnaire" />
         <Stack.Screen name="setup" />
+        <Stack.Screen name="model-setup" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="item/[id]" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />

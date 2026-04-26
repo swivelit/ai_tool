@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "runtime": {
     "primary": "phone_local",
     "mode": "native_on_device",
@@ -10,12 +10,12 @@
     "openAiPolicy": "fallback_only",
     "localRuntimeInterface": "LocalModelRuntime",
     "nativeRuntime": "NativeOnDeviceModelRuntime",
-    "nativeImplementationStatus": "native_module_scaffolded_model_files_and_llama_cpp_backend_required",
+    "nativeImplementationStatus": "native_module_scaffolded_downloaded_model_delivery_llama_cpp_backend_required",
     "nativeBackend": "llama_cpp",
     "nativeModuleName": "JaiOnDeviceModel",
     "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",
     "adapterDevelopmentOnly": true,
-    "adapterContract": "Development-only /chat/completions and /embeddings adapter contract. Production runtime.mode is native_on_device with bundled GGUF model files.",
+    "adapterContract": "Development-only /chat/completions and /embeddings adapter contract. Production runtime.mode is native_on_device with downloaded GGUF model files in app-private storage.",
     "adapterLocation": "external_lan",
     "allowDeviceLoopback": false
   },
@@ -25,9 +25,9 @@
   "native": {
     "backend": "llama_cpp",
     "bridgeModuleName": "JaiOnDeviceModel",
-    "modelRoot": "asset://models",
+    "modelRoot": "document://models",
     "requiresDevClient": true,
-    "assetPolicy": "Bundle quantized GGUF files in the native app via Expo dev client/prebuild or bare React Native. Do not claim on-device Gemma/Qwen is active until the native module loads these files.",
+    "assetPolicy": "Production downloads quantized GGUF files into app-private storage on first launch/chat. bundled_assets remains an optional development/build-time mode via plugins/withJaiOnDeviceModelAssets.js.",
     "models": {
       "google/gemma-3-4b-it": {
         "id": "google/gemma-3-4b-it",
@@ -47,7 +47,7 @@
         "useMmap": true,
         "useMetal": true,
         "useGpu": true,
-        "description": "Profiler and alignment model; replace modelPath with the actual bundled GGUF asset path."
+        "description": "Profiler and alignment model. In production this path is replaced at runtime with the downloaded file:// GGUF path."
       },
       "Qwen/Qwen3-8B": {
         "id": "Qwen/Qwen3-8B",
@@ -67,7 +67,7 @@
         "useMmap": true,
         "useMetal": true,
         "useGpu": true,
-        "description": "Medium orchestrator and memory summarizer; replace with the actual quantized Qwen3 8B GGUF file."
+        "description": "Medium orchestrator and memory summarizer. In production this path is replaced at runtime with the downloaded file:// GGUF path."
       },
       "Qwen/Qwen3-14B": {
         "id": "Qwen/Qwen3-14B",
@@ -86,7 +86,7 @@
         "useMmap": true,
         "useMetal": true,
         "useGpu": true,
-        "description": "Large orchestrator model for capable devices; replace with the actual quantized Qwen3 14B GGUF file."
+        "description": "Large orchestrator for capable devices. In production this path is replaced at runtime with the downloaded file:// GGUF path."
       },
       "Qwen/Qwen3-Embedding-0.6B": {
         "id": "Qwen/Qwen3-Embedding-0.6B",
@@ -106,7 +106,7 @@
         "useMetal": true,
         "useGpu": true,
         "embedding": true,
-        "description": "Semantic cache and memory embedding model; native bridge must call llama.cpp embedding mode."
+        "description": "Semantic cache and memory embedding model. Production native_on_device mode must use this downloaded GGUF file; hash embeddings are disabled."
       }
     }
   },
@@ -121,5 +121,54 @@
   "thresholds": {
     "semanticCache": 0.95,
     "largeModelQuestionChars": 180
+  },
+  "modelDelivery": {
+    "mode": "download_on_first_launch",
+    "storageRoot": "document://models",
+    "wifiRecommended": true,
+    "maxRetries": 2,
+    "notes": "Replace placeholder downloadUrl values, expectedBytes, and sha256 with your signed CDN metadata before production release. If sha256 is set, the app verifies it and deletes/retries mismatches.",
+    "models": [
+      {
+        "id": "google/gemma-3-4b-it",
+        "fileName": "gemma-3-4b-it-q4_k_m.gguf",
+        "downloadUrl": "https://YOUR_MODEL_CDN/models/gemma-3-4b-it-q4_k_m.gguf",
+        "expectedBytes": null,
+        "sha256": null,
+        "localPath": "models/gemma-3-4b-it-q4_k_m.gguf",
+        "required": true
+      },
+      {
+        "id": "Qwen/Qwen3-8B",
+        "fileName": "qwen3-8b-q4_k_m.gguf",
+        "downloadUrl": "https://YOUR_MODEL_CDN/models/qwen3-8b-q4_k_m.gguf",
+        "expectedBytes": null,
+        "sha256": null,
+        "localPath": "models/qwen3-8b-q4_k_m.gguf",
+        "required": true
+      },
+      {
+        "id": "Qwen/Qwen3-14B",
+        "fileName": "qwen3-14b-q4_k_m.gguf",
+        "downloadUrl": "https://YOUR_MODEL_CDN/models/qwen3-14b-q4_k_m.gguf",
+        "expectedBytes": null,
+        "sha256": null,
+        "localPath": "models/qwen3-14b-q4_k_m.gguf",
+        "required": true
+      },
+      {
+        "id": "Qwen/Qwen3-Embedding-0.6B",
+        "fileName": "qwen3-embedding-0.6b-q8_0.gguf",
+        "downloadUrl": "https://YOUR_MODEL_CDN/models/qwen3-embedding-0.6b-q8_0.gguf",
+        "expectedBytes": null,
+        "sha256": null,
+        "localPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
+        "required": true
+      }
+    ],
+    "developmentModes": {
+      "bundled_assets": "Optional build-time mode. Put GGUF files in mobile/models/ and keep plugins/withJaiOnDeviceModelAssets.js enabled before prebuild.",
+      "local_adapter_dev": "Development-only adapter mode for /chat/completions and /embeddings contracts. Do not use in production."
+    }
   }
 }

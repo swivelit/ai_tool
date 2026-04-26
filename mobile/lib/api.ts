@@ -346,7 +346,13 @@ const LOCAL_ON_DEVICE_NATIVE_MODULE: string = String(
 const LOCAL_ON_DEVICE_MODEL_ROOT: string = String(
   extra.LOCAL_ON_DEVICE_MODEL_ROOT ||
     process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_MODEL_ROOT ||
-    "asset://models",
+    "document://models",
+);
+
+const LOCAL_MODEL_DELIVERY_MODE: string = String(
+  extra.LOCAL_MODEL_DELIVERY_MODE ||
+    process.env.EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE ||
+    "download_on_first_launch",
 );
 
 // Do not read EXPO_PUBLIC_LOCAL_MODEL_API_KEY here. EXPO_PUBLIC values are bundled
@@ -399,6 +405,7 @@ export function getClientRoutingDefaults() {
     nativeBackend: LOCAL_ON_DEVICE_BACKEND,
     nativeModuleName: LOCAL_ON_DEVICE_NATIVE_MODULE,
     modelRoot: LOCAL_ON_DEVICE_MODEL_ROOT,
+    modelDeliveryMode: LOCAL_MODEL_DELIVERY_MODE,
     localAdapterLocation: LOCAL_MODEL_ADAPTER_LOCATION,
     allowDeviceLoopback: LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK_FLAG.value,
   };
@@ -414,7 +421,7 @@ export function logClientRoutingBanner(
   routingBannerLogged = true;
   const routing = getClientRoutingDefaults();
   logger.info(
-    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl || "not-configured"} | runtimeMode=${routing.localRuntimeMode} | nativeBackend=${routing.nativeBackend} | nativeModule=${routing.nativeModuleName} | backendRole=${routing.backendRole} | openAiPolicy=${routing.openAiPolicy}`,
+    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl || "not-configured"} | runtimeMode=${routing.localRuntimeMode} | nativeBackend=${routing.nativeBackend} | nativeModule=${routing.nativeModuleName} | modelDelivery=${routing.modelDeliveryMode} | backendRole=${routing.backendRole} | openAiPolicy=${routing.openAiPolicy}`,
   );
 
   const localModelError = getLocalModelConfigError("Local model routing");

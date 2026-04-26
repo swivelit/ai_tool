@@ -6,6 +6,13 @@ import {
   hasUsableNativeOnDeviceModelBridge,
   nativeOnDeviceBridgeMissingMessage,
 } from "./nativeOnDeviceModelBridge";
+import {
+  ModelDeliveryConfig,
+  ModelDeliveryMode,
+  ModelDownloadConfigRoot,
+  getModelDeliveryMode,
+  resolveInstalledNativeModelAssets,
+} from "./modelDownloadManager";
 
 export const OPENAI_FALLBACK_SIGNAL = "__OPENAI_FALLBACK__";
 
@@ -61,6 +68,8 @@ export type LocalRuntimeConfig = {
   nativeModuleName?: string;
   modelRoot?: string;
   modelAssets?: Record<string, NativeOnDeviceModelAsset>;
+  modelDeliveryMode?: ModelDeliveryMode | string;
+  modelDelivery?: ModelDeliveryConfig;
   nativeBridge?: NativeOnDeviceModelBridge | null;
   /**
    * Test/dev escape hatch only. local_adapter is intentionally blocked in
@@ -82,6 +91,7 @@ export type LocalRuntimeInfo = {
   nativeBackend?: string;
   nativeModuleName?: string;
   modelRoot?: string;
+  modelDeliveryMode?: ModelDeliveryMode;
   modelCount?: number;
   developmentOnly?: boolean;
   note: string;
@@ -226,11 +236,11 @@ function getNativeRuntimeConfigError(
 
   const assets = normalizeNativeModelAssets(config.modelAssets);
   if (!Object.keys(assets).length) {
-    return `${featureName} selected runtime.mode=native_on_device, but no native model assets are configured. Add native.models entries in mobile/data/config/models.json with bundled GGUF modelPath values for Gemma/Qwen before shipping production.`;
+    return `${featureName} selected runtime.mode=native_on_device, but no native model assets are configured. Add native.models entries in mobile/data/config/models.json with GGUF modelPath values for Gemma/Qwen before shipping production.`;
   }
 
   if (requestedModel && !getNativeModelAsset(config, requestedModel)) {
-    return `${featureName} selected runtime.mode=native_on_device, but model "${requestedModel}" has no bundled native asset entry. Add it to native.models in mobile/data/config/models.json and include the quantized GGUF file in the native app bundle.`;
+    return `${featureName} selected runtime.mode=native_on_device, but model "${requestedModel}" has no native asset entry. Add it to native.models in mobile/data/config/models.json and deliver the quantized GGUF through modelDelivery or bundled_assets mode.`;
   }
 
   return "";
@@ -382,10 +392,32 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
         this.config.nativeModuleName || DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
       ),
       modelRoot: this.config.modelRoot,
+      modelDeliveryMode: getModelDeliveryMode(this.modelDeliveryConfig()),
       modelCount: Object.keys(assets).length,
       developmentOnly: false,
-      note: "Production path: calls the native on-device model bridge for bundled Gemma/Qwen inference. It never calls backend/OpenAI directly; missing bindings or missing model files fail clearly.",
+      note: "Production path: calls the native on-device model bridge for downloaded Gemma/Qwen GGUF files. It never calls backend/OpenAI directly; missing bindings, failed downloads, or missing llama.cpp bindings fail clearly.",
     };
+  }
+
+  private modelDeliveryConfig(): ModelDownloadConfigRoot {
+    return {
+      modelDelivery: this.config.modelDelivery || { mode: this.config.modelDeliveryMode },
+      native: { models: normalizeNativeModelAssets(this.config.modelAssets) },
+    };
+  }
+
+  private async prepareDownloadedAssets() {
+    const mode = getModelDeliveryMode(this.modelDeliveryConfig());
+    if (mode !== "download_on_first_launch") {
+      return;
+    }
+
+    const resolvedAssets = await resolveInstalledNativeModelAssets(
+      normalizeNativeModelAssets(this.config.modelAssets),
+      { config: this.modelDeliveryConfig() },
+    );
+    this.config.modelAssets = resolvedAssets;
+    this.config.modelRoot = this.config.modelRoot || "document://models";
   }
 
   private requireReady(featureName: string, model: string) {
@@ -414,6 +446,8 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
   }
 
   private async ensureInitialized(bridge: NativeOnDeviceModelBridge) {
+    await this.prepareDownloadedAssets();
+
     if (this.initialized) {
       return;
     }
@@ -443,6 +477,11 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
     messages: LocalRuntimeChatMessage[];
     temperature?: number;
   }): Promise<any> {
+    this.requireReady(
+      "Native on-device chat",
+      input.model,
+    );
+    await this.prepareDownloadedAssets();
     const { bridge, asset } = this.requireReady(
       "Native on-device chat",
       input.model,
@@ -461,6 +500,11 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
     model: string;
     texts: string[];
   }): Promise<number[][]> {
+    this.requireReady(
+      "Native on-device embeddings",
+      input.model,
+    );
+    await this.prepareDownloadedAssets();
     const { bridge, asset } = this.requireReady(
       "Native on-device embeddings",
       input.model,

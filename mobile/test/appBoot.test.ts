@@ -115,6 +115,28 @@ describe("resolveDesiredRoute", () => {
     ).toBe("/(tabs)");
   });
 
+  it("routes fully onboarded users to model setup when required models are missing", () => {
+    expect(
+      resolveDesiredRoute({
+        pathname: "/(tabs)",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+        modelSetupRequired: true,
+      })
+    ).toBe("/model-setup");
+
+    expect(
+      resolveDesiredRoute({
+        pathname: "/model-setup",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+        modelSetupRequired: true,
+      })
+    ).toBeNull();
+  });
+
   it("keeps fully onboarded users on tabs and setup routes", () => {
     expect(
       resolveDesiredRoute({
@@ -133,5 +155,14 @@ describe("resolveDesiredRoute", () => {
         questionnaireCompleted: true,
       })
     ).toBeNull();
+
+    expect(
+      resolveDesiredRoute({
+        pathname: "/model-setup",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+      })
+    ).toBe("/(tabs)");
   });
 });

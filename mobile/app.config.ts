@@ -23,7 +23,10 @@ const LOCAL_ON_DEVICE_NATIVE_MODULE =
   process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_NATIVE_MODULE || "JaiOnDeviceModel";
 
 const LOCAL_ON_DEVICE_MODEL_ROOT =
-  process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_MODEL_ROOT || "asset://models";
+  process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_MODEL_ROOT || "document://models";
+
+const LOCAL_MODEL_DELIVERY_MODE =
+  process.env.EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE || "download_on_first_launch";
 
 export default {
   expo: {
@@ -62,6 +65,7 @@ export default {
       LOCAL_ON_DEVICE_BACKEND,
       LOCAL_ON_DEVICE_NATIVE_MODULE,
       LOCAL_ON_DEVICE_MODEL_ROOT,
+      LOCAL_MODEL_DELIVERY_MODE,
       // Kept for diagnostics/legacy config only; api.ts forces normal chat local-first.
       USE_LOCAL_CHAT_PIPELINE,
       USE_LOCAL_VOICE_PIPELINE:

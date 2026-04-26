@@ -3,6 +3,12 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import { apiPost, apiPostBackendOnly } from "./api";
 import {
+  ModelDeliveryConfig,
+  ensureRequiredModelsInstalled,
+  getModelDeliveryMode,
+  isModelInstallError,
+} from "./modelDownloadManager";
+import {
   ensureLocalAgentSeedData,
   LOCAL_AGENT_DATA_DIR,
 } from "./localAgentBootstrap";
@@ -161,6 +167,7 @@ export type LocalAssistantTurnResult = {
 
 type LocalModelConfig = {
   version?: number;
+  modelDelivery?: ModelDeliveryConfig;
   runtime?: {
     primary: "phone_local" | string;
     mode?: "native_on_device" | "local_adapter" | string;
@@ -474,7 +481,7 @@ function isLoopbackLocalModelBaseUrl(value: unknown) {
 const EMBEDDING_DIMS = 1024;
 
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
-  version: 4,
+  version: 5,
   runtime: {
     primary: "phone_local",
     mode: "native_on_device",
@@ -486,24 +493,68 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
     nativeRuntime: "NativeOnDeviceModelRuntime",
     nativeBackend: "llama_cpp",
     nativeModuleName: "JaiOnDeviceModel",
-    nativeImplementationStatus: "native_module_scaffolded_model_files_and_llama_cpp_backend_required",
+    nativeImplementationStatus: "native_module_scaffolded_downloaded_model_delivery_llama_cpp_backend_required",
     adapterRuntime: "OpenAiCompatibleLocalAdapterRuntime",
     adapterDevelopmentOnly: true,
     adapterContract:
-      "Development-only /chat/completions and /embeddings adapter contract. Production runtime.mode is native_on_device with bundled GGUF model files.",
+      "Development-only /chat/completions and /embeddings adapter contract. Production runtime.mode is native_on_device with downloaded GGUF model files in app-private storage.",
     adapterLocation: "external_lan",
     allowDeviceLoopback: false,
   },
   baseUrl: "",
   apiKey: "",
   timeoutMs: 45000,
+  modelDelivery: {
+    mode: "download_on_first_launch",
+    storageRoot: "document://models",
+    wifiRecommended: true,
+    maxRetries: 2,
+    models: [
+      {
+        id: "google/gemma-3-4b-it",
+        fileName: "gemma-3-4b-it-q4_k_m.gguf",
+        downloadUrl: "https://YOUR_MODEL_CDN/models/gemma-3-4b-it-q4_k_m.gguf",
+        expectedBytes: null,
+        sha256: null,
+        localPath: "models/gemma-3-4b-it-q4_k_m.gguf",
+        required: true,
+      },
+      {
+        id: "Qwen/Qwen3-8B",
+        fileName: "qwen3-8b-q4_k_m.gguf",
+        downloadUrl: "https://YOUR_MODEL_CDN/models/qwen3-8b-q4_k_m.gguf",
+        expectedBytes: null,
+        sha256: null,
+        localPath: "models/qwen3-8b-q4_k_m.gguf",
+        required: true,
+      },
+      {
+        id: "Qwen/Qwen3-14B",
+        fileName: "qwen3-14b-q4_k_m.gguf",
+        downloadUrl: "https://YOUR_MODEL_CDN/models/qwen3-14b-q4_k_m.gguf",
+        expectedBytes: null,
+        sha256: null,
+        localPath: "models/qwen3-14b-q4_k_m.gguf",
+        required: true,
+      },
+      {
+        id: "Qwen/Qwen3-Embedding-0.6B",
+        fileName: "qwen3-embedding-0.6b-q8_0.gguf",
+        downloadUrl: "https://YOUR_MODEL_CDN/models/qwen3-embedding-0.6b-q8_0.gguf",
+        expectedBytes: null,
+        sha256: null,
+        localPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
+        required: true,
+      },
+    ],
+  },
   native: {
     backend: "llama_cpp",
     bridgeModuleName: "JaiOnDeviceModel",
-    modelRoot: "asset://models",
+    modelRoot: "document://models",
     requiresDevClient: true,
     assetPolicy:
-      "Bundle quantized GGUF files in the native app via Expo dev client/prebuild or bare React Native. Do not claim on-device Gemma/Qwen is active until the native module loads these files.",
+      "Production downloads quantized GGUF files into app-private storage on first launch/chat. bundled_assets remains an optional development/build-time mode via plugins/withJaiOnDeviceModelAssets.js.",
     models: {
       "google/gemma-3-4b-it": {
         id: "google/gemma-3-4b-it",
@@ -1580,6 +1631,16 @@ async function getModelConfig() {
     // pairing flow may write a short-lived token into models.json; otherwise no
     // Authorization header is sent to the local model service.
     apiKey: String(fileConfig.apiKey || DEFAULT_MODEL_CONFIG.apiKey),
+    modelDelivery: {
+      ...(DEFAULT_MODEL_CONFIG.modelDelivery || {}),
+      ...(fileConfig.modelDelivery || {}),
+      mode: String(
+        extra.LOCAL_MODEL_DELIVERY_MODE ||
+          fileConfig.modelDelivery?.mode ||
+          DEFAULT_MODEL_CONFIG.modelDelivery?.mode ||
+          "download_on_first_launch",
+      ),
+    },
     timeoutMs: Number(
       extra.LOCAL_MODEL_TIMEOUT_MS ||
         fileConfig.timeoutMs ||
@@ -1983,6 +2044,8 @@ async function localChatRaw(
     nativeModuleName: cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName,
     modelRoot: cfg.native?.modelRoot,
     modelAssets: cfg.native?.models,
+    modelDeliveryMode: getModelDeliveryMode(cfg),
+    modelDelivery: cfg.modelDelivery,
   });
   return runtime.completeChat({
     model,
@@ -2038,11 +2101,13 @@ async function embedTexts(texts: string[]) {
       nativeModuleName: cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName,
       modelRoot: cfg.native?.modelRoot,
       modelAssets: cfg.native?.models,
+      modelDeliveryMode: getModelDeliveryMode(cfg),
+      modelDelivery: cfg.modelDelivery,
     });
     if (!runtime.isConfigured()) {
       if (nativeMode) {
         throw new Error(
-          "Native Qwen embedding runtime is not configured. runtime.mode=native_on_device requires the JaiOnDeviceModel bridge and bundled Qwen/Qwen3-Embedding-0.6B GGUF file; hash embeddings are disabled in production native mode.",
+          "Native Qwen embedding runtime is not configured. runtime.mode=native_on_device requires the JaiOnDeviceModel bridge and downloaded Qwen/Qwen3-Embedding-0.6B GGUF file; hash embeddings are disabled in production native mode.",
         );
       }
       return texts.map((text) => hashEmbedding(text));
@@ -4817,6 +4882,14 @@ export async function runLocalAssistantTurn(opts: {
     opts.replyLanguage === "en" ? "en" : "ta";
   if (!message) throw new Error("Message is required.");
 
+  const installCfg = await getModelConfig();
+  if (
+    String(installCfg.runtime?.mode || "native_on_device") === "native_on_device" &&
+    getModelDeliveryMode(installCfg) === "download_on_first_launch"
+  ) {
+    await ensureRequiredModelsInstalled({ config: installCfg });
+  }
+
   await appendConversation(userId, "user", message);
 
   let answers = await loadAnswers(userId);
@@ -5098,7 +5171,7 @@ export async function runLocalAssistantTurn(opts: {
         final = aligned.final;
       }
     } catch (error) {
-      if (isNativeOnDeviceRuntimeUnavailableError(error)) {
+      if (isNativeOnDeviceRuntimeUnavailableError(error) || isModelInstallError(error)) {
         route = "clarify";
         decision = {
           ...decision,
@@ -5112,10 +5185,10 @@ export async function runLocalAssistantTurn(opts: {
         intent = "clarify";
         draft =
           replyLanguage === "ta"
-            ? "Native on-device model runtime இன்னும் இந்த app build-ல இணைக்கப்படவில்லை. நான் backend/OpenAI-க்கு அமைதியாக fallback செய்ய மாட்டேன்; dev client/prebuild native bridge மற்றும் bundled model files தேவை."
-            : "Native on-device model runtime is not linked in this app build yet. I will not silently fall back to backend/OpenAI; add the dev-client/prebuild native bridge and bundled model files first.";
+            ? "Native on-device model setup இன்னும் தயாராகவில்லை. நான் backend/OpenAI-க்கு அமைதியாக fallback செய்ய மாட்டேன்; model download, dev client/prebuild native bridge, மற்றும் llama.cpp backend தேவை."
+            : "Native on-device model setup is not ready. I will not silently fall back to backend/OpenAI; complete model download, dev-client/prebuild native bridge, and llama.cpp backend setup first.";
         english =
-          "Native on-device model runtime is not linked in this app build yet. I will not silently fall back to backend/OpenAI; add the dev-client/prebuild native bridge and bundled model files first.";
+          "Native on-device model setup is not ready. I will not silently fall back to backend/OpenAI; complete model download, dev-client/prebuild native bridge, and llama.cpp backend setup first.";
         final = draft;
       } else {
         noSafeLocalPath = true;
@@ -5265,7 +5338,8 @@ export async function runLocalAssistantTurn(opts: {
         nativeBackend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
         nativeModuleName:
           cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName || "JaiOnDeviceModel",
-        modelRoot: cfg.native?.modelRoot || "asset://models",
+        modelRoot: cfg.native?.modelRoot || "document://models",
+        modelDeliveryMode: getModelDeliveryMode(cfg),
         adapterLocation: cfg.runtime?.adapterLocation || "external_lan",
         allowDeviceLoopback: Boolean(cfg.runtime?.allowDeviceLoopback),
       },

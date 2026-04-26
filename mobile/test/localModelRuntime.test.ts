@@ -90,6 +90,7 @@ describe("local model runtime architecture", () => {
       nativeBackend: "llama_cpp",
       nativeModuleName: "JaiOnDeviceModel",
       modelRoot: "asset://models",
+      modelDelivery: { mode: "bundled_assets" },
       modelAssets: nativeAssets,
     });
 
@@ -122,6 +123,7 @@ describe("local model runtime architecture", () => {
       nativeBackend: "llama_cpp",
       nativeModuleName: "JaiOnDeviceModel",
       modelRoot: "asset://models",
+      modelDelivery: { mode: "bundled_assets" },
       modelAssets: nativeAssets,
     });
 
@@ -151,12 +153,108 @@ describe("local model runtime architecture", () => {
     expect(embeddings).toEqual([[0.1, 0.2]]);
   });
 
+
+
+  it("passes downloaded file:// model paths to the native runtime", async () => {
+    vi.resetModules();
+
+    const downloadedFiles = new Set([
+      "file:///mock/models/gemma-3-4b-it-q4_k_m.gguf",
+      "file:///mock/models/qwen3-8b-q4_k_m.gguf",
+      "file:///mock/models/qwen3-14b-q4_k_m.gguf",
+      "file:///mock/models/qwen3-embedding-0.6b-q8_0.gguf",
+    ]);
+
+    vi.doMock("expo-constants", () => ({
+      default: { expoConfig: { extra: {} } },
+    }));
+    vi.doMock("expo-file-system/legacy", () => ({
+      documentDirectory: "file:///mock/",
+      EncodingType: { Base64: "base64" },
+      getInfoAsync: vi.fn(async (uri: string) => ({
+        exists: downloadedFiles.has(uri),
+        size: downloadedFiles.has(uri) ? 123 : 0,
+      })),
+      makeDirectoryAsync: vi.fn(async () => undefined),
+      deleteAsync: vi.fn(async () => undefined),
+      moveAsync: vi.fn(async () => undefined),
+      readAsStringAsync: vi.fn(async () => ""),
+      createDownloadResumable: vi.fn(),
+    }));
+
+    const bridge = {
+      initialize: vi.fn(async () => ({ ok: true })),
+      completeChat: vi.fn(async () => ({ text: "Native answer." })),
+      embedTexts: vi.fn(async () => ({ data: [{ embedding: [0.4, 0.6] }] })),
+    };
+
+    const { setNativeOnDeviceModelBridgeForTests } = await import("../lib/nativeOnDeviceModelBridge");
+    setNativeOnDeviceModelBridgeForTests(bridge);
+    const { createLocalModelRuntime } = await import("../lib/localModelRuntime");
+
+    const runtime = createLocalModelRuntime({
+      mode: "native_on_device",
+      nativeBackend: "llama_cpp",
+      nativeModuleName: "JaiOnDeviceModel",
+      modelRoot: "document://models",
+      modelAssets: {
+        ...nativeAssets,
+        "Qwen/Qwen3-8B": {
+          id: "Qwen/Qwen3-8B",
+          backend: "llama_cpp",
+          format: "gguf",
+          modelPath: "models/qwen3-8b-q4_k_m.gguf",
+        },
+        "Qwen/Qwen3-14B": {
+          id: "Qwen/Qwen3-14B",
+          backend: "llama_cpp",
+          format: "gguf",
+          modelPath: "models/qwen3-14b-q4_k_m.gguf",
+        },
+      },
+      modelDelivery: {
+        mode: "download_on_first_launch",
+        storageRoot: "document://models",
+        models: [
+          { id: "google/gemma-3-4b-it", fileName: "gemma-3-4b-it-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/gemma.gguf", localPath: "models/gemma-3-4b-it-q4_k_m.gguf", required: true },
+          { id: "Qwen/Qwen3-8B", fileName: "qwen3-8b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen8.gguf", localPath: "models/qwen3-8b-q4_k_m.gguf", required: true },
+          { id: "Qwen/Qwen3-14B", fileName: "qwen3-14b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen14.gguf", localPath: "models/qwen3-14b-q4_k_m.gguf", required: true },
+          { id: "Qwen/Qwen3-Embedding-0.6B", fileName: "qwen3-embedding-0.6b-q8_0.gguf", downloadUrl: "https://cdn.example.test/embed.gguf", localPath: "models/qwen3-embedding-0.6b-q8_0.gguf", required: true },
+        ],
+      },
+    });
+
+    await runtime.completeChat({
+      model: "google/gemma-3-4b-it",
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(bridge.initialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelRoot: "document://models",
+        models: expect.objectContaining({
+          "google/gemma-3-4b-it": expect.objectContaining({
+            modelPath: "file:///mock/models/gemma-3-4b-it-q4_k_m.gguf",
+          }),
+        }),
+      }),
+    );
+    expect(bridge.completeChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        asset: expect.objectContaining({
+          modelPath: "file:///mock/models/gemma-3-4b-it-q4_k_m.gguf",
+        }),
+      }),
+    );
+  });
+
   it("fails clearly when native_on_device has no native binding and never configures backend", async () => {
     const runtime = createLocalModelRuntime({
       mode: "native_on_device",
       openAiPolicy: "fallback_only",
       nativeBackend: "llama_cpp",
       nativeModuleName: "JaiOnDeviceModel",
+      modelDelivery: { mode: "bundled_assets" },
       modelAssets: nativeAssets,
     });
 
@@ -205,6 +303,7 @@ describe("local model runtime architecture", () => {
       mode: "native_on_device",
       nativeBackend: "llama_cpp",
       nativeModuleName: "JaiOnDeviceModel",
+      modelDelivery: { mode: "bundled_assets" },
       modelAssets: nativeAssets,
     });
 

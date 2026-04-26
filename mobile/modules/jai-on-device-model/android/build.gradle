@@ -29,4 +29,18 @@ try {
 
 android {
   namespace 'com.harishajahan.jai.ondevice'
+
+  defaultConfig {
+    externalNativeBuild {
+      cmake {
+        cppFlags '-std=c++17'
+      }
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path 'src/main/cpp/CMakeLists.txt'
+    }
+  }
 }

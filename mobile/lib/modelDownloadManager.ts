@@ -1,0 +1,679 @@
+import Constants from "expo-constants";
+import * as FileSystem from "expo-file-system/legacy";
+
+import bundledModelConfig from "@/data/config/models.json";
+import { NativeOnDeviceModelAsset } from "./nativeOnDeviceModelBridge";
+
+export type ModelDeliveryMode =
+  | "download_on_first_launch"
+  | "bundled_assets"
+  | "local_adapter_dev";
+
+export type ModelDownloadConfigEntry = {
+  id: string;
+  fileName: string;
+  downloadUrl: string;
+  expectedBytes?: number | null;
+  sha256?: string | null;
+  localPath?: string;
+  required?: boolean;
+};
+
+export type ModelDeliveryConfig = {
+  mode?: ModelDeliveryMode | string;
+  storageRoot?: string;
+  wifiRecommended?: boolean;
+  maxRetries?: number;
+  models?: ModelDownloadConfigEntry[] | Record<string, ModelDownloadConfigEntry>;
+};
+
+export type ModelDownloadConfigRoot = {
+  modelDelivery?: ModelDeliveryConfig;
+  native?: {
+    models?: Record<string, NativeOnDeviceModelAsset>;
+  };
+};
+
+export type ModelInstallRecord = ModelDownloadConfigEntry & {
+  fileUri: string;
+  exists: boolean;
+  valid: boolean;
+  bytesOnDisk: number;
+  reason?: string;
+};
+
+export type ModelInstallStatus = {
+  mode: ModelDeliveryMode;
+  ready: boolean;
+  requiredReady: boolean;
+  storageRoot: string;
+  wifiRecommended: boolean;
+  totalRequiredBytes: number | null;
+  installedRequiredBytes: number;
+  required: ModelInstallRecord[];
+  optional: ModelInstallRecord[];
+  missing: ModelInstallRecord[];
+  invalid: ModelInstallRecord[];
+};
+
+export type ModelDownloadProgress = {
+  phase:
+    | "checking"
+    | "skipped"
+    | "downloading"
+    | "verifying"
+    | "installed"
+    | "failed";
+  modelId?: string;
+  fileName?: string;
+  modelIndex?: number;
+  totalModels?: number;
+  bytesWritten?: number;
+  totalBytes?: number | null;
+  modelProgress?: number;
+  totalProgress?: number;
+  message: string;
+};
+
+export type EnsureModelsOptions = {
+  config?: ModelDownloadConfigRoot;
+  onProgress?: (progress: ModelDownloadProgress) => void;
+  retries?: number;
+  fileSystem?: ModelFileSystem;
+  hashFileAsync?: (fileUri: string) => Promise<string>;
+};
+
+type ModelFileSystem = Pick<
+  typeof FileSystem,
+  | "documentDirectory"
+  | "getInfoAsync"
+  | "makeDirectoryAsync"
+  | "deleteAsync"
+  | "moveAsync"
+> & {
+  createDownloadResumable?: typeof FileSystem.createDownloadResumable;
+  readAsStringAsync?: typeof FileSystem.readAsStringAsync;
+};
+
+const DEFAULT_STORAGE_FOLDER = "models";
+const REQUIRED_MODEL_IDS = [
+  "google/gemma-3-4b-it",
+  "Qwen/Qwen3-8B",
+  "Qwen/Qwen3-14B",
+  "Qwen/Qwen3-Embedding-0.6B",
+];
+const PLACEHOLDER_URL_PATTERN = /^https:\/\/YOUR_MODEL_CDN\//i;
+
+const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
+
+export class ModelInstallError extends Error {
+  readonly code = "NATIVE_ON_DEVICE_RUNTIME_UNAVAILABLE";
+  readonly setupCode = "LOCAL_MODEL_SETUP_ERROR";
+
+  constructor(message: string, readonly cause?: unknown) {
+    super(message);
+    this.name = "ModelInstallError";
+  }
+}
+
+export function isModelInstallError(error: unknown) {
+  return (
+    error instanceof ModelInstallError ||
+    (error as any)?.setupCode === "LOCAL_MODEL_SETUP_ERROR"
+  );
+}
+
+function configuredRoot(config?: ModelDownloadConfigRoot) {
+  return (config || bundledModelConfig) as ModelDownloadConfigRoot;
+}
+
+function normalizeMode(value: unknown): ModelDeliveryMode {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "bundled_assets" || normalized === "local_adapter_dev") {
+    return normalized;
+  }
+  return "download_on_first_launch";
+}
+
+export function getModelDeliveryMode(config?: ModelDownloadConfigRoot) {
+  const root = configuredRoot(config);
+  return normalizeMode(
+    extra.LOCAL_MODEL_DELIVERY_MODE || root.modelDelivery?.mode || "download_on_first_launch",
+  );
+}
+
+function getStorageRoot(
+  config?: ModelDownloadConfigRoot,
+  fs: ModelFileSystem = FileSystem,
+) {
+  const configured = String(configuredRoot(config).modelDelivery?.storageRoot || "").trim();
+  if (configured && configured !== "document://models") {
+    if (configured.startsWith("file://")) return configured.replace(/\/?$/, "/");
+    if (configured.startsWith("document://")) {
+      const suffix = configured.replace("document://", "").replace(/^\/+|\/+$/g, "");
+      return `${fs.documentDirectory || ""}${suffix}/`;
+    }
+  }
+  return `${fs.documentDirectory || ""}${DEFAULT_STORAGE_FOLDER}/`;
+}
+
+function normalizeEntries(config?: ModelDownloadConfigRoot): ModelDownloadConfigEntry[] {
+  const root = configuredRoot(config);
+  const deliveryModels = root.modelDelivery?.models;
+  const entries = Array.isArray(deliveryModels)
+    ? deliveryModels
+    : deliveryModels && typeof deliveryModels === "object"
+      ? Object.values(deliveryModels)
+      : [];
+
+  const fromDelivery = entries
+    .map((entry) => ({
+      ...entry,
+      id: String(entry?.id || "").trim(),
+      fileName: String(entry?.fileName || "").trim(),
+      downloadUrl: String(entry?.downloadUrl || "").trim(),
+      localPath: String(entry?.localPath || entry?.fileName || "").trim(),
+      required: entry?.required !== false,
+    }))
+    .filter((entry) => entry.id && entry.fileName);
+
+  if (fromDelivery.length) return fromDelivery;
+
+  const nativeModels = root.native?.models || {};
+  return REQUIRED_MODEL_IDS.map((id) => {
+    const asset = nativeModels[id] || ({} as NativeOnDeviceModelAsset);
+    const fileName = String(asset.fileName || asset.modelPath || "").split("/").pop() || `${id}.gguf`;
+    return {
+      id,
+      fileName,
+      downloadUrl: "",
+      localPath: `models/${fileName}`,
+      expectedBytes: null,
+      sha256: null,
+      required: true,
+    };
+  });
+}
+
+function modelFileUri(
+  entry: ModelDownloadConfigEntry,
+  config?: ModelDownloadConfigRoot,
+  fs: ModelFileSystem = FileSystem,
+) {
+  const storageRoot = getStorageRoot(config, fs);
+  const leaf = String(entry.localPath || entry.fileName)
+    .replace(/^file:\/\//, "")
+    .replace(/^models\//, "")
+    .replace(/^\/+/, "");
+  return `${storageRoot}${leaf}`;
+}
+
+function normalizeSha(value?: string | null) {
+  return String(value || "").trim().toLowerCase();
+}
+
+async function ensureDirectory(uri: string, fs: ModelFileSystem) {
+  await fs.makeDirectoryAsync(uri, { intermediates: true }).catch(() => undefined);
+}
+
+async function getBytesOnDisk(fileUri: string, fs: ModelFileSystem) {
+  const info = await fs.getInfoAsync(fileUri, { size: true } as any);
+  return {
+    exists: Boolean(info.exists),
+    size: Number((info as any).size || 0),
+  };
+}
+
+async function validateInstalledFile(
+  entry: ModelDownloadConfigEntry,
+  fileUri: string,
+  options: EnsureModelsOptions,
+): Promise<ModelInstallRecord> {
+  const fs = options.fileSystem || FileSystem;
+  const info = await getBytesOnDisk(fileUri, fs);
+  const recordBase = {
+    ...entry,
+    fileUri,
+    exists: info.exists,
+    bytesOnDisk: info.size,
+  };
+
+  if (!info.exists) {
+    return { ...recordBase, valid: false, reason: "missing" };
+  }
+  if (info.size <= 0) {
+    return { ...recordBase, valid: false, reason: "empty_file" };
+  }
+  const expectedBytes = Number(entry.expectedBytes || 0);
+  if (expectedBytes > 0 && info.size !== expectedBytes) {
+    return {
+      ...recordBase,
+      valid: false,
+      reason: `size_mismatch expected=${expectedBytes} actual=${info.size}`,
+    };
+  }
+
+  const expectedSha = normalizeSha(entry.sha256);
+  if (expectedSha) {
+    const hashFileAsync = options.hashFileAsync || defaultHashFileSha256Async;
+    const actualSha = normalizeSha(await hashFileAsync(fileUri));
+    if (actualSha !== expectedSha) {
+      return {
+        ...recordBase,
+        valid: false,
+        reason: `sha256_mismatch expected=${expectedSha} actual=${actualSha}`,
+      };
+    }
+  }
+
+  return { ...recordBase, valid: true };
+}
+
+function totalKnownBytes(entries: ModelDownloadConfigEntry[]) {
+  let total = 0;
+  for (const entry of entries) {
+    const bytes = Number(entry.expectedBytes || 0);
+    if (bytes <= 0) return null;
+    total += bytes;
+  }
+  return total;
+}
+
+export async function getModelInstallStatus(
+  options: EnsureModelsOptions = {},
+): Promise<ModelInstallStatus> {
+  const fs = options.fileSystem || FileSystem;
+  const config = options.config;
+  const mode = getModelDeliveryMode(config);
+  const storageRoot = getStorageRoot(config, fs);
+  const entries = normalizeEntries(config);
+  const requiredEntries = entries.filter((entry) => entry.required !== false);
+  const optionalEntries = entries.filter((entry) => entry.required === false);
+
+  options.onProgress?.({
+    phase: "checking",
+    totalModels: requiredEntries.length,
+    totalBytes: totalKnownBytes(requiredEntries),
+    message: "Checking local GGUF model files…",
+  });
+
+  if (mode !== "download_on_first_launch") {
+    const records = entries.map((entry) => ({
+      ...entry,
+      fileUri: modelFileUri(entry, config, fs),
+      exists: mode === "local_adapter_dev" ? true : false,
+      valid: mode === "local_adapter_dev" ? true : false,
+      bytesOnDisk: 0,
+      reason: mode === "bundled_assets" ? "bundled_asset_verified_by_native_runtime" : undefined,
+    }));
+    const required = records.filter((entry) => entry.required !== false);
+    const optional = records.filter((entry) => entry.required === false);
+    return {
+      mode,
+      ready: true,
+      requiredReady: true,
+      storageRoot,
+      wifiRecommended: Boolean(configuredRoot(config).modelDelivery?.wifiRecommended),
+      totalRequiredBytes: totalKnownBytes(requiredEntries),
+      installedRequiredBytes: 0,
+      required,
+      optional,
+      missing: [],
+      invalid: [],
+    };
+  }
+
+  await ensureDirectory(storageRoot, fs);
+
+  const required = await Promise.all(
+    requiredEntries.map((entry) => validateInstalledFile(entry, modelFileUri(entry, config, fs), options)),
+  );
+  const optional = await Promise.all(
+    optionalEntries.map((entry) => validateInstalledFile(entry, modelFileUri(entry, config, fs), options)),
+  );
+  const missing = required.filter((entry) => !entry.exists);
+  const invalid = required.filter((entry) => entry.exists && !entry.valid);
+  const requiredReady = required.every((entry) => entry.valid);
+
+  return {
+    mode,
+    ready: requiredReady,
+    requiredReady,
+    storageRoot,
+    wifiRecommended: Boolean(configuredRoot(config).modelDelivery?.wifiRecommended),
+    totalRequiredBytes: totalKnownBytes(requiredEntries),
+    installedRequiredBytes: required
+      .filter((entry) => entry.valid)
+      .reduce((sum, entry) => sum + entry.bytesOnDisk, 0),
+    required,
+    optional,
+    missing,
+    invalid,
+  };
+}
+
+async function downloadOneModel(
+  entry: ModelDownloadConfigEntry,
+  index: number,
+  total: number,
+  options: EnsureModelsOptions,
+) {
+  const fs = options.fileSystem || FileSystem;
+  const config = options.config;
+  const targetUri = modelFileUri(entry, config, fs);
+  const tempUri = `${targetUri}.download`;
+  const expectedBytes = Number(entry.expectedBytes || 0) || null;
+
+  if (!entry.downloadUrl || PLACEHOLDER_URL_PATTERN.test(entry.downloadUrl)) {
+    throw new ModelInstallError(
+      `Model ${entry.id} is missing a real download URL. Replace ${entry.downloadUrl || "the empty URL"} in mobile/data/config/models.json with your signed CDN URL before shipping.`,
+    );
+  }
+
+  await fs.deleteAsync(tempUri, { idempotent: true }).catch(() => undefined);
+  options.onProgress?.({
+    phase: "downloading",
+    modelId: entry.id,
+    fileName: entry.fileName,
+    modelIndex: index,
+    totalModels: total,
+    bytesWritten: 0,
+    totalBytes: expectedBytes,
+    modelProgress: 0,
+    totalProgress: (index - 1) / total,
+    message: `Downloading ${entry.fileName}…`,
+  });
+
+  if (typeof fs.createDownloadResumable !== "function") {
+    throw new ModelInstallError(
+      "expo-file-system createDownloadResumable() is unavailable; cannot download GGUF models safely on this build.",
+    );
+  }
+
+  const download = fs.createDownloadResumable(
+    entry.downloadUrl,
+    tempUri,
+    {},
+    (progress) => {
+      const written = Number(progress.totalBytesWritten || 0);
+      const totalBytes = Number(progress.totalBytesExpectedToWrite || expectedBytes || 0) || null;
+      const modelProgress = totalBytes ? Math.min(1, written / totalBytes) : 0;
+      options.onProgress?.({
+        phase: "downloading",
+        modelId: entry.id,
+        fileName: entry.fileName,
+        modelIndex: index,
+        totalModels: total,
+        bytesWritten: written,
+        totalBytes,
+        modelProgress,
+        totalProgress: Math.min(1, (index - 1 + modelProgress) / total),
+        message: `Downloading ${entry.fileName}…`,
+      });
+    },
+  );
+
+  const result = await download.downloadAsync();
+  if (!result?.uri) {
+    throw new ModelInstallError(`Download did not produce a file for ${entry.id}.`);
+  }
+
+  options.onProgress?.({
+    phase: "verifying",
+    modelId: entry.id,
+    fileName: entry.fileName,
+    modelIndex: index,
+    totalModels: total,
+    totalBytes: expectedBytes,
+    modelProgress: 1,
+    totalProgress: index / total,
+    message: `Verifying ${entry.fileName}…`,
+  });
+
+  const tempRecord = await validateInstalledFile(entry, tempUri, options);
+  if (!tempRecord.valid) {
+    await fs.deleteAsync(tempUri, { idempotent: true }).catch(() => undefined);
+    throw new ModelInstallError(
+      `Downloaded ${entry.fileName} failed verification: ${tempRecord.reason || "unknown verification error"}.`,
+    );
+  }
+
+  await fs.deleteAsync(targetUri, { idempotent: true }).catch(() => undefined);
+  await fs.moveAsync({ from: tempUri, to: targetUri });
+
+  const finalRecord = await validateInstalledFile(entry, targetUri, options);
+  if (!finalRecord.valid) {
+    await fs.deleteAsync(targetUri, { idempotent: true }).catch(() => undefined);
+    throw new ModelInstallError(
+      `Installed ${entry.fileName} failed final verification: ${finalRecord.reason || "unknown verification error"}.`,
+    );
+  }
+
+  options.onProgress?.({
+    phase: "installed",
+    modelId: entry.id,
+    fileName: entry.fileName,
+    modelIndex: index,
+    totalModels: total,
+    bytesWritten: finalRecord.bytesOnDisk,
+    totalBytes: expectedBytes || finalRecord.bytesOnDisk,
+    modelProgress: 1,
+    totalProgress: index / total,
+    message: `Installed ${entry.fileName}.`,
+  });
+}
+
+export async function downloadRequiredModels(
+  options: EnsureModelsOptions = {},
+): Promise<ModelInstallStatus> {
+  const config = options.config;
+  const mode = getModelDeliveryMode(config);
+  if (mode !== "download_on_first_launch") {
+    options.onProgress?.({
+      phase: "skipped",
+      message: `Model download skipped because modelDelivery.mode=${mode}.`,
+    });
+    return getModelInstallStatus(options);
+  }
+
+  const fs = options.fileSystem || FileSystem;
+  const firstStatus = await getModelInstallStatus(options);
+  const targets = [...firstStatus.invalid, ...firstStatus.missing];
+  const retries = Math.max(
+    0,
+    Number(options.retries ?? configuredRoot(config).modelDelivery?.maxRetries ?? 2),
+  );
+
+  if (!targets.length) return firstStatus;
+
+  for (const target of firstStatus.invalid) {
+    await fs.deleteAsync(target.fileUri, { idempotent: true }).catch(() => undefined);
+  }
+
+  for (let index = 0; index < targets.length; index += 1) {
+    const entry = targets[index];
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        await downloadOneModel(entry, index + 1, targets.length, options);
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        await fs.deleteAsync(`${entry.fileUri}.download`, { idempotent: true }).catch(() => undefined);
+        await fs.deleteAsync(entry.fileUri, { idempotent: true }).catch(() => undefined);
+        if (attempt < retries) {
+          options.onProgress?.({
+            phase: "failed",
+            modelId: entry.id,
+            fileName: entry.fileName,
+            modelIndex: index + 1,
+            totalModels: targets.length,
+            message: `Retrying ${entry.fileName} after download/setup failure…`,
+          });
+        }
+      }
+    }
+
+    if (lastError) {
+      const message = lastError instanceof Error ? lastError.message : String(lastError);
+      options.onProgress?.({
+        phase: "failed",
+        modelId: entry.id,
+        fileName: entry.fileName,
+        modelIndex: index + 1,
+        totalModels: targets.length,
+        message,
+      });
+      throw lastError instanceof ModelInstallError
+        ? lastError
+        : new ModelInstallError(`Could not install ${entry.fileName}: ${message}`, lastError);
+    }
+  }
+
+  const finalStatus = await getModelInstallStatus(options);
+  if (!finalStatus.ready) {
+    throw new ModelInstallError(
+      `Required local GGUF models are still not ready: ${finalStatus.missing
+        .concat(finalStatus.invalid)
+        .map((entry) => `${entry.id} (${entry.reason || "missing"})`)
+        .join(", ")}`,
+    );
+  }
+  return finalStatus;
+}
+
+export async function ensureRequiredModelsInstalled(
+  options: EnsureModelsOptions = {},
+): Promise<ModelInstallStatus> {
+  const status = await getModelInstallStatus(options);
+  if (status.ready) return status;
+  return downloadRequiredModels(options);
+}
+
+export async function resolveInstalledNativeModelAssets(
+  modelAssets: Record<string, NativeOnDeviceModelAsset> | undefined,
+  options: EnsureModelsOptions = {},
+): Promise<Record<string, NativeOnDeviceModelAsset>> {
+  const mode = getModelDeliveryMode(options.config);
+  const assets = { ...(modelAssets || {}) };
+  if (mode !== "download_on_first_launch") {
+    return assets;
+  }
+
+  const status = await ensureRequiredModelsInstalled(options);
+  const installed = new Map(status.required.concat(status.optional).map((entry) => [entry.id, entry]));
+  for (const [modelId, asset] of Object.entries(assets)) {
+    const record = installed.get(modelId);
+    if (record?.valid) {
+      assets[modelId] = {
+        ...asset,
+        fileName: asset.fileName || record.fileName,
+        modelPath: record.fileUri,
+      };
+    }
+  }
+  return assets;
+}
+
+function rotr(value: number, amount: number) {
+  return (value >>> amount) | (value << (32 - amount));
+}
+
+function sha256Bytes(bytes: Uint8Array) {
+  const k = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+  const h = [
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ];
+  const bitLength = bytes.length * 8;
+  const paddedLength = (((bytes.length + 9 + 63) >> 6) << 6);
+  const padded = new Uint8Array(paddedLength);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(paddedLength - 4, bitLength >>> 0, false);
+  view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x100000000), false);
+
+  const w = new Array<number>(64);
+  for (let offset = 0; offset < paddedLength; offset += 64) {
+    for (let i = 0; i < 16; i += 1) w[i] = view.getUint32(offset + i * 4, false);
+    for (let i = 16; i < 64; i += 1) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, hh] = h;
+    for (let i = 0; i < 64; i += 1) {
+      const s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (hh + s1 + ch + k[i] + w[i]) >>> 0;
+      const s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (s0 + maj) >>> 0;
+      hh = g;
+      g = f;
+      f = e;
+      e = (d + temp1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) >>> 0;
+    }
+    h[0] = (h[0] + a) >>> 0;
+    h[1] = (h[1] + b) >>> 0;
+    h[2] = (h[2] + c) >>> 0;
+    h[3] = (h[3] + d) >>> 0;
+    h[4] = (h[4] + e) >>> 0;
+    h[5] = (h[5] + f) >>> 0;
+    h[6] = (h[6] + g) >>> 0;
+    h[7] = (h[7] + hh) >>> 0;
+  }
+  return h.map((value) => value.toString(16).padStart(8, "0")).join("");
+}
+
+function base64ToBytes(base64: string) {
+  const clean = base64.replace(/\s+/g, "");
+  if (typeof atob === "function") {
+    const binary = atob(clean);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+    return out;
+  }
+  const bufferCtor = (globalThis as any).Buffer;
+  if (bufferCtor) return new Uint8Array(bufferCtor.from(clean, "base64"));
+  throw new ModelInstallError("No base64 decoder is available to verify model SHA-256.");
+}
+
+async function defaultHashFileSha256Async(fileUri: string) {
+  const cryptoApi = (globalThis as any).crypto;
+  if (cryptoApi?.subtle && typeof fetch === "function") {
+    try {
+      const response = await fetch(fileUri);
+      const buffer = await response.arrayBuffer();
+      const digest = await cryptoApi.subtle.digest("SHA-256", buffer);
+      return Array.from(new Uint8Array(digest))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+    } catch {
+      // Fall back to expo-file-system base64 below.
+    }
+  }
+
+  if (typeof FileSystem.readAsStringAsync !== "function") {
+    throw new ModelInstallError("Cannot verify SHA-256 because file reads are unavailable.");
+  }
+  const base64 = await FileSystem.readAsStringAsync(fileUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  } as any);
+  return sha256Bytes(base64ToBytes(base64));
+}

@@ -141,6 +141,7 @@ export function resolveDesiredRoute(input: {
   questionnaireCompleted: boolean;
   profileRestoreFailed?: boolean;
   inTabsGroup?: boolean;
+  modelSetupRequired?: boolean;
 }) {
   const rawPathname = normalizeRawPathname(input.pathname);
   const pathname = normalizePathname(rawPathname);
@@ -157,6 +158,7 @@ export function resolveDesiredRoute(input: {
   const atProfile = pathname === "/onboarding/profile";
   const atQuestionnaire = pathname === "/onboarding/questionnaire";
   const atSetup = pathname === "/setup";
+  const atModelSetup = pathname === "/model-setup";
   const inTabs = atTabsGroupRoot || inTabsGroup || TAB_ROUTES.has(pathname);
 
   if (!input.hasUser) {
@@ -183,7 +185,11 @@ export function resolveDesiredRoute(input: {
     return atQuestionnaire ? null : "/onboarding/questionnaire";
   }
 
-  if (inAuth || inOnboarding || atPublicRoot) {
+  if (input.modelSetupRequired) {
+    return atModelSetup ? null : "/model-setup";
+  }
+
+  if (inAuth || inOnboarding || atPublicRoot || atModelSetup) {
     return SIGNED_IN_HOME_ROUTE;
   }
 

@@ -11,10 +11,9 @@ private class CodedException(code: String, detail: String, cause: Throwable? = n
 /**
  * Local-only GGUF model loader for JaiOnDeviceModel.
  *
- * Expected assets are copied by plugins/withJaiOnDeviceModelAssets.js from:
- *   mobile/models/*.gguf
- * into the generated Android project at:
- *   android/app/src/main/assets/models/*.gguf
+ * Production model files are normally downloaded by modelDownloadManager.ts into
+ * app-private storage and passed as file:// paths. Optional bundled_assets dev
+ * builds can still copy mobile/models/*.gguf into android/app/src/main/assets.
  *
  * Production native_on_device mode must fail clearly when a file is missing;
  * it must not call the backend and must not synthesize fake embeddings.
@@ -193,7 +192,7 @@ class JaiOnDeviceModelEngine(private val context: Context) {
   private fun missingModelException(modelId: String, path: String): CodedException {
     return CodedException(
       "JAI_MODEL_FILE_MISSING",
-      "Missing local GGUF model file for $modelId at $path. Download the real model into mobile/models/ with the exact filename from mobile/data/config/models.json, then run `npx expo prebuild --clean` and build a custom dev client. Production native_on_device mode does not fall back to backend/OpenAI or hash embeddings for this error.",
+      "Missing local GGUF model file for $modelId at $path. In production, let the app download required GGUF files into app-private storage and pass file:// paths through modelDelivery=download_on_first_launch. For optional bundled_assets development builds, place files in mobile/models/ before prebuild. Production native_on_device mode does not fall back to backend/OpenAI or hash embeddings for this error.",
       null,
     )
   }

@@ -172,5 +172,5 @@ export function nativeOnDeviceBridgeMissingMessage(
   featureName: string,
   moduleName = DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
 ) {
-  return `${featureName} selected runtime.mode=native_on_device, but the native on-device inference module "${moduleName}" is not installed in this app binary. This mode never calls backend/OpenAI by itself. Build a custom Expo development build or prebuild/bare React Native app, add the llama.cpp-backed native module, expose initialize(), completeChat(), and embedTexts(), and bundle the configured GGUF model files.`;
+  return `${featureName} selected runtime.mode=native_on_device, but the native on-device inference module "${moduleName}" is not installed in this app binary. This mode never calls backend/OpenAI by itself. Build a custom Expo development build or prebuild/bare React Native app, add the llama.cpp-backed native module, expose initialize(), completeChat(), and embedTexts(), and download the configured GGUF model files into app-private storage or enable bundled_assets mode.`;
 }

@@ -248,6 +248,49 @@ describe("API client contracts", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("does not silently call backend when model download/setup fails", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+            LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: { currentUser: null },
+    }));
+    const runLocalAssistantTurn = vi.fn(async () => {
+      const error = new Error("Required local GGUF model download failed");
+      (error as any).code = "NATIVE_ON_DEVICE_RUNTIME_UNAVAILABLE";
+      (error as any).setupCode = "LOCAL_MODEL_SETUP_ERROR";
+      throw error;
+    });
+    vi.doMock("../lib/localAgents", () => ({
+      runLocalAssistantTurn,
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "Backend should not be called." } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await expect(
+      apiPost<any>("/api/chat", {
+        user_id: 7,
+        message: "Hello",
+        reply_language: "en",
+      }),
+    ).rejects.toThrow("Required local GGUF model download failed");
+    expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("lets explicit backend fallback bypass the local chat interceptor", async () => {
     vi.doMock("expo-constants", () => ({
       default: {
