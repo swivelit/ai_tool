@@ -103,6 +103,7 @@ export default {
 
     plugins: [
       "expo-router",
+      "expo-asset",
       "expo-secure-store",
       "@react-native-google-signin/google-signin",
       [

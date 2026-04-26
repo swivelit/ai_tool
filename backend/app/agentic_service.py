@@ -1354,7 +1354,7 @@ Return ONLY JSON:
         if not self.enabled:
             return pipeline_runner(session, user_id, message, reply_language)
         if onboarding_profile:
-            message = f"{message}\n\n[User Onboarding Data]\n{json.dumps(onboarding_profile, ensure_ascii=False)}"
+            base_profile_context += f"\n\n[ONBOARDING PROFILE]\n{json.dumps(onboarding_profile, ensure_ascii=False)}"
         total_start = time.perf_counter()
         user, profile, routine = self._get_user_bundle(session, int(user_id)) if user_id else (None, None, None)
         resolved_lang = self._normalize_reply_language(

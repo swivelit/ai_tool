@@ -106,11 +106,20 @@ ALLOWED_AUDIO_CONTENT_TYPES = {
     "application/octet-stream",
 }
 
-DOWNLOAD_TOKEN_SECRET = (
+_download_token_secret = (
     os.getenv("DOWNLOAD_TOKEN_SECRET", "").strip()
     or os.getenv("SECRET_KEY", "").strip()
-    or secrets.token_urlsafe(32)
 )
+
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+
+if not _download_token_secret:
+    if APP_ENV in {"prod", "production"}:
+        raise RuntimeError("DOWNLOAD_TOKEN_SECRET or SECRET_KEY must be set in production.")
+    logger.warning("DOWNLOAD_TOKEN_SECRET is not set; using a dev-only random secret.")
+    _download_token_secret = secrets.token_urlsafe(32)
+
+DOWNLOAD_TOKEN_SECRET = _download_token_secret
 DOWNLOAD_TOKEN_TTL_SECONDS = int(os.getenv("DOWNLOAD_TOKEN_TTL_SECONDS", "900") or 900)
 
 def _utc_now_iso() -> str:
@@ -2426,7 +2435,17 @@ def api_tts(
         "pace": 0.85
     }
     
-    response = requests.post(url, headers=headers, json=req_payload)
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json=req_payload,
+            timeout=(5, 30),
+        )
+    except requests.Timeout:
+        raise HTTPException(status_code=504, detail="TTS provider timed out.")
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"TTS provider error: {exc}")
     
     # Fallback to "text" instead of "inputs" if the API format diverges
     if response.status_code in [422, 400] and "inputs" in req_payload:
