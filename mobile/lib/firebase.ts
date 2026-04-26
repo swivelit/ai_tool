@@ -1,7 +1,7 @@
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 import { initializeApp, getApp, getApps } from "firebase/app";
-import { getAuth, initializeAuth } from "firebase/auth";
+import * as FirebaseAuth from "firebase/auth";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
@@ -28,29 +28,25 @@ if (missingKeys.length) {
 
 export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-type NativeInitializeAuthOptions = NonNullable<Parameters<typeof initializeAuth>[1]>;
+type NativeInitializeAuthOptions = NonNullable<Parameters<typeof FirebaseAuth.initializeAuth>[1]>;
 type NativePersistenceValue = NonNullable<NativeInitializeAuthOptions["persistence"]>;
 type GetPersistenceFactory = (storage: typeof AsyncStorage) => NativePersistenceValue;
+
+type FirebaseAuthModuleWithReactNativePersistence = typeof FirebaseAuth & {
+  getReactNativePersistence?: GetPersistenceFactory;
+};
+
+const firebaseAuthModule = FirebaseAuth as FirebaseAuthModuleWithReactNativePersistence;
 
 export function createNativePersistence(getPersistenceFactory?: GetPersistenceFactory) {
   if (getPersistenceFactory) {
     return getPersistenceFactory(AsyncStorage);
   }
 
-  const moduleIds = ["firebase/auth/react-native", "firebase/auth"];
+  const getReactNativePersistence = firebaseAuthModule.getReactNativePersistence;
 
-  for (const moduleId of moduleIds) {
-    try {
-      const firebaseAuthModule = require(moduleId) as {
-        getReactNativePersistence?: GetPersistenceFactory;
-      };
-
-      if (typeof firebaseAuthModule.getReactNativePersistence === "function") {
-        return firebaseAuthModule.getReactNativePersistence(AsyncStorage);
-      }
-    } catch {
-      // Try the next Firebase Auth entrypoint.
-    }
+  if (typeof getReactNativePersistence === "function") {
+    return getReactNativePersistence(AsyncStorage);
   }
 
   return undefined;
@@ -79,13 +75,13 @@ function buildAuth() {
   const options = getInitializeAuthOptions(Platform.OS);
 
   if (!options) {
-    return getAuth(firebaseApp);
+    return FirebaseAuth.getAuth(firebaseApp);
   }
 
   try {
-    return initializeAuth(firebaseApp, options);
+    return FirebaseAuth.initializeAuth(firebaseApp, options);
   } catch {
-    return getAuth(firebaseApp);
+    return FirebaseAuth.getAuth(firebaseApp);
   }
 }
 
