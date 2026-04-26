@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { Stack, router, usePathname, useRootNavigationState } from "expo-router";
+import { Stack, router, usePathname, useRootNavigationState, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -236,6 +236,7 @@ function toRawPath(path?: string | null) {
 
 function AppShell() {
   const pathname = usePathname();
+  const segments = useSegments();
   const rootNavigationState = useRootNavigationState();
 
   const { user, loading: authLoading } = useAuth();
@@ -258,8 +259,16 @@ function AppShell() {
         hasProfile: Boolean(activeProfile?.userId),
         questionnaireCompleted: Boolean(activeProfile?.questionnaireCompleted),
         profileRestoreFailed: Boolean(activeProfile?.restoreFailed),
+        inTabsGroup: segments[0] === "(tabs)",
       }),
-    [pathname, user, activeProfile?.userId, activeProfile?.questionnaireCompleted, activeProfile?.restoreFailed]
+    [
+      pathname,
+      segments,
+      user,
+      activeProfile?.userId,
+      activeProfile?.questionnaireCompleted,
+      activeProfile?.restoreFailed,
+    ]
   );
 
   const isNavigatorReady = Boolean(rootNavigationState?.key);

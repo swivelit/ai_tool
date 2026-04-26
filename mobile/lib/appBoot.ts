@@ -4,7 +4,7 @@ export const PROFILE_BOOT_TIMEOUT_MS = 5000;
 
 const SIGNED_OUT_ENTRY_ROUTE = "/auth/login";
 const SIGNED_IN_HOME_ROUTE = "/(tabs)";
-const TAB_ROUTES = new Set(["/", "/explore", "/routine"]);
+const TAB_ROUTES = new Set(["/explore", "/routine"]);
 const TAB_GROUP_ROOT_ROUTE = "/(tabs)";
 
 type BootLogger = (message: string, error?: unknown) => void;
@@ -140,17 +140,24 @@ export function resolveDesiredRoute(input: {
   hasProfile: boolean;
   questionnaireCompleted: boolean;
   profileRestoreFailed?: boolean;
+  inTabsGroup?: boolean;
 }) {
   const rawPathname = normalizeRawPathname(input.pathname);
   const pathname = normalizePathname(rawPathname);
 
-  const atTabsGroupRoot = rawPathname === TAB_GROUP_ROOT_ROUTE;
+  // Expo Router route groups are pathless. At runtime, the `(tabs)` index can
+  // report the same pathname (`/`) as the public landing page. The caller can
+  // pass `inTabsGroup` from `useSegments()` so the boot guard can distinguish
+  // "already on the real tab home" from "stuck on the public root".
+  const inTabsGroup = Boolean(input.inTabsGroup);
+  const atTabsGroupRoot = rawPathname === TAB_GROUP_ROOT_ROUTE || (inTabsGroup && pathname === "/");
+  const atPublicRoot = pathname === "/" && !atTabsGroupRoot;
   const inAuth = pathname === "/auth" || pathname.startsWith("/auth/");
   const inOnboarding = pathname === "/onboarding" || pathname.startsWith("/onboarding/");
   const atProfile = pathname === "/onboarding/profile";
   const atQuestionnaire = pathname === "/onboarding/questionnaire";
   const atSetup = pathname === "/setup";
-  const inTabs = atTabsGroupRoot || TAB_ROUTES.has(pathname);
+  const inTabs = atTabsGroupRoot || inTabsGroup || TAB_ROUTES.has(pathname);
 
   if (!input.hasUser) {
     if (
@@ -176,7 +183,7 @@ export function resolveDesiredRoute(input: {
     return atQuestionnaire ? null : "/onboarding/questionnaire";
   }
 
-  if (inAuth || inOnboarding) {
+  if (inAuth || inOnboarding || atPublicRoot) {
     return SIGNED_IN_HOME_ROUTE;
   }
 
