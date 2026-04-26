@@ -898,10 +898,10 @@ export async function apiGet<T>(path: string): Promise<T> {
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
   if (
     localChatInterceptionDepth === 0 &&
-    (await shouldUseLocalChatPipeline()) &&
-    isChatPath(path)
+    isChatPath(path) &&
+    (await shouldUseLocalChatPipeline())
   ) {
-    localChatInterceptionDepth += 1;
+      localChatInterceptionDepth += 1;
     try {
       return (await handleLocalChat(path, body)) as T;
     } finally {
@@ -927,8 +927,8 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
     : path;
 
   if (
-    (await shouldUseLocalVoicePipeline()) &&
-    isTranscribeAndAnalyzePath(resolvedPath)
+    isTranscribeAndAnalyzePath(resolvedPath) &&
+    (await shouldUseLocalVoicePipeline())
   ) {
     return (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;
   }
