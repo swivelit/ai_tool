@@ -1,9 +1,12 @@
 {
-  "version": 3,
+  "version": 4,
   "runtime": {
     "primary": "phone_local",
+    "mode": "local_adapter",
     "backendRole": "fallback_only",
-    "backendPolicy": "OpenAI/backend is fallback-only and cannot be the default runtime."
+    "openAiPolicy": "fallback_only",
+    "backendPolicy": "OpenAI/backend is fallback-only and cannot be the default runtime.",
+    "localRuntimeInterface": "LocalModelRuntime"
   },
   "agents": {
     "profiler": {

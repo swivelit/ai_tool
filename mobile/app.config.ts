@@ -7,6 +7,15 @@ const LOCAL_MODEL_BASE_URL = (
 const USE_LOCAL_CHAT_PIPELINE =
   process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ?? "true";
 
+const LOCAL_MODEL_RUNTIME_MODE =
+  process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE || "local_adapter";
+
+const LOCAL_MODEL_ADAPTER_LOCATION =
+  process.env.EXPO_PUBLIC_LOCAL_MODEL_ADAPTER_LOCATION || "external_lan";
+
+const LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK =
+  process.env.EXPO_PUBLIC_LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK || "false";
+
 export default {
   expo: {
     name: "J AI",
@@ -30,10 +39,17 @@ export default {
         "https://ai-tool-rrau.onrender.com",
 
       // phone-local runtime
-      // Chat enters the local agent pipeline first. LOCAL_MODEL_BASE_URL is an
-      // OpenAI-compatible local runtime adapter until a native on-device backend
-      // is plugged in; it is not an OpenAI/backend primary runtime.
+      // Chat enters the local agent pipeline first. Runtime mode is explicit:
+      // - native_on_device is a TODO/stub until a real bundled phone inference
+      //   binding is implemented.
+      // - local_adapter keeps /chat/completions and /embeddings as a local
+      //   adapter contract, not an OpenAI/backend primary path.
       LOCAL_MODEL_BASE_URL,
+      LOCAL_MODEL_RUNTIME_MODE,
+      LOCAL_MODEL_ADAPTER_LOCATION,
+      LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK,
+      LOCAL_MODEL_OPENAI_POLICY: "fallback_only",
+      LOCAL_MODEL_BACKEND_ROLE: "fallback_only",
       // Kept for diagnostics/legacy config only; api.ts forces normal chat local-first.
       USE_LOCAL_CHAT_PIPELINE,
       USE_LOCAL_VOICE_PIPELINE:

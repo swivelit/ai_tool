@@ -112,9 +112,16 @@ const dataRoot = "file:///mock/data";
 describe("phone-local agent configuration", () => {
   it("configures all primary agents as phone-local with fallback-only backend policy", () => {
     expect(models.runtime.primary).toBe("phone_local");
+    expect(models.runtime.mode).toBe("local_adapter");
     expect(models.runtime.backendRole).toBe("fallback_only");
+    expect(models.runtime.openAiPolicy).toBe("fallback_only");
+    expect(models.runtime.nativeRuntime).toBe("NativeOnDeviceModelRuntime");
+    expect(models.runtime.nativeImplementationStatus).toBe("todo_stub");
+    expect(models.runtime.adapterRuntime).toBe("OpenAiCompatibleLocalAdapterRuntime");
     expect(agentRegistry.runtime.primary).toBe("phone_local");
+    expect(agentRegistry.runtime.mode).toBe("local_adapter");
     expect(agentRegistry.runtime.backendRole).toBe("fallback_only");
+    expect(agentRegistry.runtime.openAiPolicy).toBe("fallback_only");
     expect(models.models.profiler).toBe("google/gemma-3-4b-it");
     expect(models.models.orchestratorMedium).toBe("Qwen/Qwen3-8B");
     expect(models.models.orchestratorLarge).toBe("Qwen/Qwen3-14B");
@@ -153,7 +160,7 @@ describe("local orchestrator and alignment", () => {
         {
           ...models,
           // Tests need a non-empty, non-loopback URL so local model calls use the mocked fetch queue.
-          // Production code intentionally rejects localhost/127.0.0.1 for device safety.
+          // This test uses an external LAN adapter URL so local model calls use the mocked fetch queue.
           baseUrl: "http://192.168.1.23:10000/v1",
           timeoutMs: 1000,
         },
@@ -359,6 +366,8 @@ describe("local orchestrator and alignment", () => {
     });
 
     expect(result.route).toBe("local_answer");
+    expect(result.source).toBe("local_model");
+    expect(apiPostMock).not.toHaveBeenCalled();
     expect(result.englishText).toBe("Hari has a meeting at 3 PM on Tuesday.");
     expect(result.assistantText).toContain("3 PM");
     expect(

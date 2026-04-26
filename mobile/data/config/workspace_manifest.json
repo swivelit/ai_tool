@@ -1,11 +1,12 @@
 {
-  "version": 4,
+  "version": 5,
   "seedVersion": "2026-04-27-phone-local-primary-runtime-abstraction",
   "description": "Phone-local agent workspace seed manifest",
   "architecture": {
     "primaryRuntime": "phone_local_agents",
     "backendRole": "fallback_only",
-    "stableContract": "/api/chat remains unchanged; /chat/completions is a local runtime adapter when needed."
+    "openAiPolicy": "fallback_only",
+    "stableContract": "/api/chat remains unchanged; /chat/completions and /embeddings are local runtime adapter contracts when needed."
   },
   "checkedInSeedFolders": [
     "config",
@@ -42,7 +43,14 @@
   ],
   "runtime": {
     "primary": "phone_local",
+    "mode": "local_adapter",
+    "backendRole": "fallback_only",
     "backendPolicy": "fallback_only",
-    "localRuntimeInterface": "LocalModelRuntime"
+    "openAiPolicy": "fallback_only",
+    "localRuntimeInterface": "LocalModelRuntime",
+    "nativeRuntime": "NativeOnDeviceModelRuntime",
+    "nativeImplementationStatus": "todo_stub",
+    "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",
+    "allowDeviceLoopback": false
   }
 }

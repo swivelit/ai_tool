@@ -162,9 +162,20 @@ type LocalModelConfig = {
   version?: number;
   runtime?: {
     primary: "phone_local" | string;
-    backendRole?: string;
+    mode?: "native_on_device" | "local_adapter" | string;
+    backendRole?: "fallback_only" | string;
     backendPolicy?: string;
+    openAiPolicy?: "fallback_only" | "disabled" | string;
     localRuntimeInterface?: string;
+    nativeRuntime?: string;
+    nativeImplementationStatus?: string;
+    adapterContract?: string;
+    adapterLocation?:
+      | "device_loopback"
+      | "external_lan"
+      | "emulator_host"
+      | string;
+    allowDeviceLoopback?: boolean;
   };
   baseUrl: string;
   apiKey: string;
@@ -368,6 +379,14 @@ type PromptCatalog = {
 
 type AgentRegistryConfig = {
   version: number;
+  runtime?: {
+    primary: "phone_local" | string;
+    mode?: "native_on_device" | "local_adapter" | string;
+    backendRole?: "fallback_only" | string;
+    openAiPolicy?: "fallback_only" | "disabled" | string;
+    backendPolicy?: string;
+    localRuntimeInterface?: string;
+  };
   agents: {
     profiler: {
       enabled: boolean;
@@ -419,10 +438,18 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
   version: 2,
   runtime: {
     primary: "phone_local",
+    mode: "local_adapter",
     backendRole: "fallback_only",
     backendPolicy:
       "OpenAI/backend is never primary; call it only after the local orchestrator or local runtime explicitly requests fallback.",
+    openAiPolicy: "fallback_only",
     localRuntimeInterface: "LocalModelRuntime",
+    nativeRuntime: "NativeOnDeviceModelRuntime",
+    nativeImplementationStatus: "todo_stub",
+    adapterContract:
+      "/chat/completions and /embeddings are local runtime adapter contracts, not OpenAI primary paths.",
+    adapterLocation: "external_lan",
+    allowDeviceLoopback: false,
   },
   baseUrl: "",
   apiKey: "",
@@ -577,7 +604,15 @@ const DEFAULT_PROMPTS: PromptCatalog = {
 };
 
 const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
-  version: 1,
+  version: 4,
+  runtime: {
+    primary: "phone_local",
+    mode: "local_adapter",
+    backendRole: "fallback_only",
+    openAiPolicy: "fallback_only",
+    backendPolicy: "OpenAI/backend is fallback-only and cannot be the default runtime.",
+    localRuntimeInterface: "LocalModelRuntime",
+  },
   agents: {
     profiler: {
       enabled: true,
@@ -618,8 +653,14 @@ const DEFAULT_WORKSPACE_MANIFEST = {
   version: 4,
   runtime: {
     primary: "phone_local",
+    mode: "local_adapter",
+    backendRole: "fallback_only",
     backendPolicy: "fallback_only",
+    openAiPolicy: "fallback_only",
     localRuntimeInterface: "LocalModelRuntime",
+    nativeRuntime: "NativeOnDeviceModelRuntime",
+    nativeImplementationStatus: "todo_stub",
+    allowDeviceLoopback: false,
   },
   architecture: {
     primaryRuntime: "phone_local_agents",
@@ -687,6 +728,17 @@ function uniq<T>(items: T[]) {
 function positiveInt(value: any, fallback: number) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function parseBooleanConfig(value: unknown, fallback: boolean) {
+  if (typeof value === "boolean") return value;
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return fallback;
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  return fallback;
 }
 
 function positiveFloat(value: any, fallback: number) {
@@ -1399,7 +1451,32 @@ async function getModelConfig() {
       ...DEFAULT_MODEL_CONFIG.runtime,
       ...(fileConfig.runtime || {}),
       primary: "phone_local",
+      mode: String(
+        extra.LOCAL_MODEL_RUNTIME_MODE ||
+          fileConfig.runtime?.mode ||
+          DEFAULT_MODEL_CONFIG.runtime?.mode ||
+          "local_adapter",
+      ),
       backendRole: "fallback_only",
+      openAiPolicy: String(
+        extra.LOCAL_MODEL_OPENAI_POLICY ||
+          fileConfig.runtime?.openAiPolicy ||
+          DEFAULT_MODEL_CONFIG.runtime?.openAiPolicy ||
+          "fallback_only",
+      ),
+      adapterLocation: String(
+        extra.LOCAL_MODEL_ADAPTER_LOCATION ||
+          fileConfig.runtime?.adapterLocation ||
+          DEFAULT_MODEL_CONFIG.runtime?.adapterLocation ||
+          "external_lan",
+      ),
+      allowDeviceLoopback: parseBooleanConfig(
+        extra.LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK,
+        Boolean(
+          fileConfig.runtime?.allowDeviceLoopback ??
+            DEFAULT_MODEL_CONFIG.runtime?.allowDeviceLoopback,
+        ),
+      ),
     },
     models: {
       ...DEFAULT_MODEL_CONFIG.models,
@@ -1717,9 +1794,15 @@ async function localChatRaw(
 ) {
   const cfg = await getModelConfig();
   const runtime = createLocalModelRuntime({
+    primary: cfg.runtime?.primary,
+    mode: cfg.runtime?.mode,
+    backendRole: cfg.runtime?.backendRole,
+    openAiPolicy: cfg.runtime?.openAiPolicy,
     baseUrl: cfg.baseUrl,
     apiKey: cfg.apiKey,
     timeoutMs: cfg.timeoutMs,
+    allowDeviceLoopback: cfg.runtime?.allowDeviceLoopback,
+    adapterLocation: cfg.runtime?.adapterLocation,
   });
   return runtime.completeChat({
     model,
@@ -1756,16 +1839,21 @@ async function embedTexts(texts: string[]) {
   const cfg = await getModelConfig();
   const baseUrl = normalizeLocalModelBaseUrl(cfg.baseUrl);
 
-  if (!baseUrl || isLoopbackLocalModelBaseUrl(baseUrl)) {
-    return fallback();
-  }
-
   try {
     const runtime = createLocalModelRuntime({
+      primary: cfg.runtime?.primary,
+      mode: cfg.runtime?.mode,
+      backendRole: cfg.runtime?.backendRole,
+      openAiPolicy: cfg.runtime?.openAiPolicy,
       baseUrl,
       apiKey: cfg.apiKey,
       timeoutMs: cfg.timeoutMs,
+      allowDeviceLoopback: cfg.runtime?.allowDeviceLoopback,
+      adapterLocation: cfg.runtime?.adapterLocation,
     });
+    if (!runtime.isConfigured()) {
+      return fallback();
+    }
     const vectors = await runtime.embedTexts({
       model: cfg.models.embedding,
       texts,
@@ -4335,14 +4423,23 @@ function canUseOpenAiFallback(opts: {
   needsLiveData: boolean;
   noSafeLocalPath: boolean;
   userAllowedCloudFallback: boolean;
+  policyAllowedWhen: string[];
+  openAiPolicy?: string;
 }) {
   if (!opts.userAllowedCloudFallback) return false;
+  if (String(opts.openAiPolicy || "fallback_only") === "disabled") return false;
+
+  const allowed = new Set(opts.policyAllowedWhen || []);
+  const explicitPolicyAllowsFallback =
+    allowed.has("explicit_user_or_config_cloud_fallback_allowed") ||
+    allowed.has("orchestrator_fallback_allowed");
 
   return (
-    opts.decision.fallbackAllowed === true ||
-    opts.localReasonerRequestedFallback ||
-    opts.needsLiveData ||
-    opts.noSafeLocalPath
+    (opts.localReasonerRequestedFallback &&
+      allowed.has("local_reasoner_returns___OPENAI_FALLBACK__")) ||
+    (opts.needsLiveData && allowed.has("orchestrator_needs_live_data")) ||
+    (opts.noSafeLocalPath && allowed.has("no_safe_local_tool_or_model_path")) ||
+    (opts.decision.fallbackAllowed === true && explicitPolicyAllowsFallback)
   );
 }
 
@@ -4671,6 +4768,8 @@ export async function runLocalAssistantTurn(opts: {
         needsLiveData: decision.needsLiveData,
         noSafeLocalPath,
         userAllowedCloudFallback: true,
+        policyAllowedWhen: routesConfig.fallbackPolicy?.openAiAllowedWhen || [],
+        openAiPolicy: cfg.runtime?.openAiPolicy,
       }),
     };
     if (decision.fallbackAllowed) {
@@ -4726,6 +4825,11 @@ export async function runLocalAssistantTurn(opts: {
     source,
     localReasonerRequestedFallback,
     noSafeLocalPath,
+    fallbackPolicy: {
+      backendRole: cfg.runtime?.backendRole || "fallback_only",
+      openAiPolicy: cfg.runtime?.openAiPolicy || "fallback_only",
+      allowedWhen: routesConfig.fallbackPolicy?.openAiAllowedWhen || [],
+    },
   });
 
   if (
@@ -4787,6 +4891,17 @@ export async function runLocalAssistantTurn(opts: {
       ragFolder: RAG_DIR,
       promptConfig: PROMPTS_PATH,
       modelConfig: MODELS_PATH,
+      runtime: {
+        primary: cfg.runtime?.primary || "phone_local",
+        mode: cfg.runtime?.mode || "local_adapter",
+        backendRole: cfg.runtime?.backendRole || "fallback_only",
+        openAiPolicy: cfg.runtime?.openAiPolicy || "fallback_only",
+        adapterLocation: cfg.runtime?.adapterLocation || "external_lan",
+        allowDeviceLoopback: Boolean(cfg.runtime?.allowDeviceLoopback),
+      },
+      fallbackPolicy: {
+        allowedWhen: routesConfig.fallbackPolicy?.openAiAllowedWhen || [],
+      },
     },
   } satisfies LocalAssistantTurnResult;
 }

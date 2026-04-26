@@ -1,6 +1,11 @@
 import Constants from "expo-constants";
 
 import { auth } from "./firebase";
+import {
+  getLocalRuntimeConfigError,
+  isLoopbackLocalRuntimeBaseUrl,
+  normalizeLocalRuntimeBaseUrl,
+} from "./localModelRuntime";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
@@ -253,33 +258,26 @@ function resolveBooleanFlag(
 }
 
 function normalizeLocalModelBaseUrl(value: unknown) {
-  return String(value || "")
-    .trim()
-    .replace(/\/$/, "");
+  return normalizeLocalRuntimeBaseUrl(value);
 }
 
 function isLoopbackLocalModelBaseUrl(value: unknown) {
-  const normalized = normalizeLocalModelBaseUrl(value).toLowerCase();
-
-  if (!normalized) {
-    return false;
-  }
-
-  return /^https?:\/\/(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::|\/|$)/.test(
-    normalized,
-  );
+  return isLoopbackLocalRuntimeBaseUrl(value);
 }
 
 function getLocalModelConfigError(featureName: string) {
-  if (!LOCAL_MODEL_BASE_URL) {
-    return `${featureName} is enabled, but no local model adapter URL is configured. The phone-local agent pipeline will still run first; generation that requires a model will fall back only after the local route fails or explicitly requests fallback. TODO(native-runtime): plug in a true on-device runtime.`;
-  }
-
-  if (isLoopbackLocalModelBaseUrl(LOCAL_MODEL_BASE_URL)) {
-    return `${featureName} is enabled, but EXPO_PUBLIC_LOCAL_MODEL_BASE_URL is ${LOCAL_MODEL_BASE_URL}. 127.0.0.1/localhost points at the phone itself on a physical device. Use your laptop's LAN IP, or 10.0.2.2 for the Android emulator.`;
-  }
-
-  return "";
+  return getLocalRuntimeConfigError(
+    {
+      primary: "phone_local",
+      mode: LOCAL_MODEL_RUNTIME_MODE,
+      backendRole: "fallback_only",
+      openAiPolicy: LOCAL_MODEL_OPENAI_POLICY,
+      baseUrl: LOCAL_MODEL_BASE_URL,
+      allowDeviceLoopback: LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK_FLAG.value,
+      adapterLocation: LOCAL_MODEL_ADAPTER_LOCATION,
+    },
+    featureName,
+  );
 }
 
 function assertUsableLocalModelBaseUrl(featureName: string) {
@@ -304,6 +302,30 @@ const LOCAL_MODEL_BASE_URL: string = normalizeLocalModelBaseUrl(
   extra.LOCAL_MODEL_BASE_URL ||
     process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL ||
     "",
+);
+
+const LOCAL_MODEL_RUNTIME_MODE: string = String(
+  extra.LOCAL_MODEL_RUNTIME_MODE ||
+    process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE ||
+    "local_adapter",
+);
+
+const LOCAL_MODEL_OPENAI_POLICY: string = String(
+  extra.LOCAL_MODEL_OPENAI_POLICY ||
+    process.env.EXPO_PUBLIC_LOCAL_MODEL_OPENAI_POLICY ||
+    "fallback_only",
+);
+
+const LOCAL_MODEL_ADAPTER_LOCATION: string = String(
+  extra.LOCAL_MODEL_ADAPTER_LOCATION ||
+    process.env.EXPO_PUBLIC_LOCAL_MODEL_ADAPTER_LOCATION ||
+    "external_lan",
+);
+
+const LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK_FLAG = resolveBooleanFlag(
+  extra.LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK,
+  process.env.EXPO_PUBLIC_LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK,
+  false,
 );
 
 // Do not read EXPO_PUBLIC_LOCAL_MODEL_API_KEY here. EXPO_PUBLIC values are bundled
@@ -350,6 +372,11 @@ export function getClientRoutingDefaults() {
     voiceSource: LOCAL_VOICE_PIPELINE_FLAG.source,
     apiBase: API_BASE,
     localModelBaseUrl: LOCAL_MODEL_BASE_URL,
+    localRuntimeMode: LOCAL_MODEL_RUNTIME_MODE,
+    backendRole: "fallback_only",
+    openAiPolicy: LOCAL_MODEL_OPENAI_POLICY,
+    localAdapterLocation: LOCAL_MODEL_ADAPTER_LOCATION,
+    allowDeviceLoopback: LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK_FLAG.value,
   };
 }
 
@@ -363,7 +390,7 @@ export function logClientRoutingBanner(
   routingBannerLogged = true;
   const routing = getClientRoutingDefaults();
   logger.info(
-    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl || "not-configured"}`,
+    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl || "not-configured"} | runtimeMode=${routing.localRuntimeMode} | backendRole=${routing.backendRole} | openAiPolicy=${routing.openAiPolicy}`,
   );
 
   const localModelError = getLocalModelConfigError("Local model routing");

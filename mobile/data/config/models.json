@@ -1,11 +1,18 @@
 {
-  "version": 2,
+  "version": 3,
   "runtime": {
     "primary": "phone_local",
+    "mode": "local_adapter",
     "backendRole": "fallback_only",
     "backendPolicy": "OpenAI/backend is never primary; call it only after the local orchestrator or local runtime explicitly requests fallback.",
+    "openAiPolicy": "fallback_only",
     "localRuntimeInterface": "LocalModelRuntime",
-    "adapterContract": "/chat/completions is treated as a local runtime-compatible adapter, not as OpenAI."
+    "nativeRuntime": "NativeOnDeviceModelRuntime",
+    "nativeImplementationStatus": "todo_stub",
+    "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",
+    "adapterContract": "/chat/completions and /embeddings are treated as local runtime adapter contracts, not as OpenAI primary paths.",
+    "adapterLocation": "external_lan",
+    "allowDeviceLoopback": false
   },
   "baseUrl": "",
   "apiKey": "",
