@@ -107,19 +107,30 @@ function queueJsonResponse(payload: any) {
   }));
 }
 
+function unitEmbedding() {
+  const out = new Array(1024).fill(0);
+  out[0] = 1;
+  return out;
+}
+
 const dataRoot = "file:///mock/data";
 
 describe("phone-local agent configuration", () => {
   it("configures all primary agents as phone-local with fallback-only backend policy", () => {
     expect(models.runtime.primary).toBe("phone_local");
-    expect(models.runtime.mode).toBe("local_adapter");
+    expect(models.runtime.mode).toBe("native_on_device");
     expect(models.runtime.backendRole).toBe("fallback_only");
     expect(models.runtime.openAiPolicy).toBe("fallback_only");
     expect(models.runtime.nativeRuntime).toBe("NativeOnDeviceModelRuntime");
-    expect(models.runtime.nativeImplementationStatus).toBe("todo_stub");
+    expect(models.runtime.nativeImplementationStatus).toBe("bridge_ready_binding_required");
+    expect(models.runtime.nativeBackend).toBe("llama_cpp");
+    expect(models.runtime.adapterDevelopmentOnly).toBe(true);
+    expect(models.native.backend).toBe("llama_cpp");
+    expect(models.native.bridgeModuleName).toBe("JaiOnDeviceModel");
+    expect(models.native.models["google/gemma-3-4b-it"].modelPath).toContain(".gguf");
     expect(models.runtime.adapterRuntime).toBe("OpenAiCompatibleLocalAdapterRuntime");
     expect(agentRegistry.runtime.primary).toBe("phone_local");
-    expect(agentRegistry.runtime.mode).toBe("local_adapter");
+    expect(agentRegistry.runtime.mode).toBe("native_on_device");
     expect(agentRegistry.runtime.backendRole).toBe("fallback_only");
     expect(agentRegistry.runtime.openAiPolicy).toBe("fallback_only");
     expect(models.models.profiler).toBe("google/gemma-3-4b-it");
@@ -159,8 +170,11 @@ describe("local orchestrator and alignment", () => {
       JSON.stringify(
         {
           ...models,
-          // Tests need a non-empty, non-loopback URL so local model calls use the mocked fetch queue.
-          // This test uses an external LAN adapter URL so local model calls use the mocked fetch queue.
+          // Tests use the explicit development-only local adapter so model calls use the mocked fetch queue.
+          runtime: {
+            ...models.runtime,
+            mode: "local_adapter",
+          },
           baseUrl: "http://192.168.1.23:10000/v1",
           timeoutMs: 1000,
         },
@@ -228,6 +242,57 @@ describe("local orchestrator and alignment", () => {
     expect(result.assistantText).toContain("music");
     expect(result.assistantText).toContain("travel");
     expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+
+  it("returns semantic cache hits without calling backend", async () => {
+    const embedding = unitEmbedding();
+    mockedState.files.set(
+      `${dataRoot}/cache/semantic_cache.json`,
+      JSON.stringify(
+        {
+          version: 2,
+          entries: [
+            {
+              id: "cache_28",
+              userId: 28,
+              sourceQuestion: "Explain local first routing",
+              normalizedQuestion: "explain local first routing",
+              canonicalAnswer: "Cached local answer.",
+              englishAnswer: "Cached local answer.",
+              lastPresentedAnswer: "Cached local answer.",
+              route: "local_answer",
+              intent: "assistant",
+              embedding,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              expiresAt: null,
+              alignmentProfile: { replyLanguage: "en", tone: "" },
+            },
+          ],
+          hits: [],
+        },
+        null,
+        2,
+      ),
+    );
+    mockedState.fetchQueue.push(async () => ({
+      ok: true,
+      json: async () => ({ data: [{ embedding }] }),
+    }));
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 28,
+      message: "Explain local first routing",
+      replyLanguage: "en",
+    });
+
+    expect(result.route).toBe("semantic_cache");
+    expect(result.cacheHit).toBe(true);
+    expect(result.assistantText).toBe("Cached local answer.");
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(mockedState.fetchQueue).toHaveLength(0);
   });
 
   it("routes weather through the live-data tool path", async () => {

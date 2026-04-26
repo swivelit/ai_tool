@@ -8,13 +8,22 @@ const USE_LOCAL_CHAT_PIPELINE =
   process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ?? "true";
 
 const LOCAL_MODEL_RUNTIME_MODE =
-  process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE || "local_adapter";
+  process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE || "native_on_device";
 
 const LOCAL_MODEL_ADAPTER_LOCATION =
   process.env.EXPO_PUBLIC_LOCAL_MODEL_ADAPTER_LOCATION || "external_lan";
 
 const LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK =
   process.env.EXPO_PUBLIC_LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK || "false";
+
+const LOCAL_ON_DEVICE_BACKEND =
+  process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_BACKEND || "llama_cpp";
+
+const LOCAL_ON_DEVICE_NATIVE_MODULE =
+  process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_NATIVE_MODULE || "JaiOnDeviceModel";
+
+const LOCAL_ON_DEVICE_MODEL_ROOT =
+  process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_MODEL_ROOT || "asset://models";
 
 export default {
   expo: {
@@ -40,16 +49,19 @@ export default {
 
       // phone-local runtime
       // Chat enters the local agent pipeline first. Runtime mode is explicit:
-      // - native_on_device is a TODO/stub until a real bundled phone inference
-      //   binding is implemented.
-      // - local_adapter keeps /chat/completions and /embeddings as a local
-      //   adapter contract, not an OpenAI/backend primary path.
+      // - native_on_device is the intended production path. It requires a
+      //   custom Expo dev client/prebuild with the native llama.cpp bridge.
+      // - local_adapter is development-only and keeps /chat/completions and
+      //   /embeddings as local adapter contracts, not OpenAI/backend primary paths.
       LOCAL_MODEL_BASE_URL,
       LOCAL_MODEL_RUNTIME_MODE,
       LOCAL_MODEL_ADAPTER_LOCATION,
       LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK,
       LOCAL_MODEL_OPENAI_POLICY: "fallback_only",
       LOCAL_MODEL_BACKEND_ROLE: "fallback_only",
+      LOCAL_ON_DEVICE_BACKEND,
+      LOCAL_ON_DEVICE_NATIVE_MODULE,
+      LOCAL_ON_DEVICE_MODEL_ROOT,
       // Kept for diagnostics/legacy config only; api.ts forces normal chat local-first.
       USE_LOCAL_CHAT_PIPELINE,
       USE_LOCAL_VOICE_PIPELINE:

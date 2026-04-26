@@ -199,6 +199,55 @@ describe("API client contracts", () => {
     expect(payload.meta.source).toBe("local_chat_proxy");
   });
 
+
+  it("does not silently call backend when native_on_device runtime is unavailable", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    const runLocalAssistantTurn = vi.fn(async () => {
+      const error = new Error("Native on-device model runtime is not linked");
+      (error as any).code = "NATIVE_ON_DEVICE_RUNTIME_UNAVAILABLE";
+      throw error;
+    });
+    vi.doMock("../lib/localAgents", () => ({
+      runLocalAssistantTurn,
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        assistant: { text: "Backend should not be called." },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost, getClientRoutingDefaults } = await import("../lib/api");
+
+    expect(getClientRoutingDefaults().localRuntimeMode).toBe("native_on_device");
+    await expect(
+      apiPost<any>("/api/chat", {
+        user_id: 7,
+        message: "Explain recursion",
+        reply_language: "en",
+      }),
+    ).rejects.toThrow("Native on-device model runtime is not linked");
+    expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("lets explicit backend fallback bypass the local chat interceptor", async () => {
     vi.doMock("expo-constants", () => ({
       default: {
@@ -237,7 +286,9 @@ describe("API client contracts", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { apiPostBackendOnly, getClientRoutingDefaults } = await import("../lib/api");
+    const { apiPostBackendOnly, getClientRoutingDefaults } = await import(
+      "../lib/api"
+    );
     const payload = await apiPostBackendOnly<any>("/api/chat", {
       user_id: 7,
       message: "Use fallback",

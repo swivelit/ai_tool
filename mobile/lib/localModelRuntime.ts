@@ -1,3 +1,12 @@
+import {
+  DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
+  NativeOnDeviceModelAsset,
+  NativeOnDeviceModelBridge,
+  getNativeOnDeviceModelBridge,
+  hasUsableNativeOnDeviceModelBridge,
+  nativeOnDeviceBridgeMissingMessage,
+} from "./nativeOnDeviceModelBridge";
+
 export const OPENAI_FALLBACK_SIGNAL = "__OPENAI_FALLBACK__";
 
 export type LocalRuntimeChatMessage = {
@@ -19,8 +28,9 @@ export type LocalRuntimeConfig = {
    */
   primary?: "phone_local" | string;
   /**
-   * native_on_device is the future bundled inference path. local_adapter is the
-   * development/runtime-contract HTTP boundary used until native inference exists.
+   * native_on_device is the production bundled inference path. local_adapter is
+   * development-only and exists to test the same /chat/completions and
+   * /embeddings contracts before a native phone runtime is linked.
    */
   mode?: LocalRuntimeMode | string;
   /**
@@ -30,7 +40,8 @@ export type LocalRuntimeConfig = {
   openAiPolicy?: "fallback_only" | "disabled" | string;
   /**
    * OpenAI-compatible local adapter base URL, for example a LAN IP, emulator
-   * host alias, or explicit device loopback endpoint.
+   * host alias, or explicit device loopback endpoint. Used only in
+   * runtime.mode=local_adapter development builds.
    */
   baseUrl?: string;
   apiKey?: string;
@@ -41,6 +52,16 @@ export type LocalRuntimeConfig = {
    */
   allowDeviceLoopback?: boolean;
   adapterLocation?: LocalAdapterLocation | string;
+  /**
+   * Native production runtime settings. The bridge is intentionally generic so
+   * the native side can be implemented with llama.cpp now and swapped later if
+   * the model format changes.
+   */
+  nativeBackend?: "llama_cpp" | string;
+  nativeModuleName?: string;
+  modelRoot?: string;
+  modelAssets?: Record<string, NativeOnDeviceModelAsset>;
+  nativeBridge?: NativeOnDeviceModelBridge | null;
 };
 
 export type LocalRuntimeInfo = {
@@ -53,6 +74,11 @@ export type LocalRuntimeInfo = {
   openAiPolicy: "fallback_only" | "disabled" | string;
   allowDeviceLoopback: boolean;
   adapterLocation: LocalAdapterLocation;
+  nativeBackend?: string;
+  nativeModuleName?: string;
+  modelRoot?: string;
+  modelCount?: number;
+  developmentOnly?: boolean;
   note: string;
 };
 
@@ -66,6 +92,22 @@ export interface LocalModelRuntime {
     temperature?: number;
   }): Promise<any>;
   embedTexts(input: { model: string; texts: string[] }): Promise<number[][]>;
+}
+
+export class NativeOnDeviceRuntimeUnavailableError extends Error {
+  readonly code = "NATIVE_ON_DEVICE_RUNTIME_UNAVAILABLE";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "NativeOnDeviceRuntimeUnavailableError";
+  }
+}
+
+export function isNativeOnDeviceRuntimeUnavailableError(error: unknown) {
+  return (
+    error instanceof NativeOnDeviceRuntimeUnavailableError ||
+    (error as any)?.code === "NATIVE_ON_DEVICE_RUNTIME_UNAVAILABLE"
+  );
 }
 
 export function normalizeLocalRuntimeBaseUrl(value: unknown) {
@@ -119,20 +161,83 @@ export function isDeviceLoopbackAllowed(config: LocalRuntimeConfig) {
   );
 }
 
+function normalizeNativeModelAssets(
+  value: LocalRuntimeConfig["modelAssets"],
+): Record<string, NativeOnDeviceModelAsset> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.entries(value).reduce<Record<string, NativeOnDeviceModelAsset>>(
+    (acc, [key, raw]) => {
+      const asset = raw as NativeOnDeviceModelAsset;
+      const id = String(asset?.id || key).trim();
+      const modelPath = String(asset?.modelPath || "").trim();
+      if (!id || !modelPath) {
+        return acc;
+      }
+      acc[id] = {
+        ...asset,
+        id,
+        modelPath,
+      };
+      return acc;
+    },
+    {},
+  );
+}
+
+function getNativeModelAsset(
+  config: LocalRuntimeConfig,
+  model: string,
+): NativeOnDeviceModelAsset | null {
+  const assets = normalizeNativeModelAssets(config.modelAssets);
+  const requested = String(model || "").trim();
+  if (!requested) return null;
+  return assets[requested] || null;
+}
+
+function getNativeRuntimeConfigError(
+  config: LocalRuntimeConfig,
+  featureName: string,
+  requestedModel?: string,
+) {
+  const moduleName = String(
+    config.nativeModuleName || DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
+  );
+  const bridge = config.nativeBridge ?? getNativeOnDeviceModelBridge(moduleName);
+
+  if (!hasUsableNativeOnDeviceModelBridge(bridge)) {
+    return nativeOnDeviceBridgeMissingMessage(featureName, moduleName);
+  }
+
+  const assets = normalizeNativeModelAssets(config.modelAssets);
+  if (!Object.keys(assets).length) {
+    return `${featureName} selected runtime.mode=native_on_device, but no native model assets are configured. Add native.models entries in mobile/data/config/models.json with bundled GGUF modelPath values for Gemma/Qwen before shipping production.`;
+  }
+
+  if (requestedModel && !getNativeModelAsset(config, requestedModel)) {
+    return `${featureName} selected runtime.mode=native_on_device, but model "${requestedModel}" has no bundled native asset entry. Add it to native.models in mobile/data/config/models.json and include the quantized GGUF file in the native app bundle.`;
+  }
+
+  return "";
+}
+
 export function getLocalRuntimeConfigError(
   config: LocalRuntimeConfig,
   featureName: string,
+  requestedModel?: string,
 ) {
   const mode = normalizeLocalRuntimeMode(config.mode);
   const baseUrl = normalizeLocalRuntimeBaseUrl(config.baseUrl);
   const adapterLocation = normalizeLocalAdapterLocation(config.adapterLocation);
 
   if (mode === "native_on_device") {
-    return `${featureName} selected native_on_device runtime, but native bundled phone inference is not implemented yet. TODO(native-runtime): plug in llama.cpp, MediaPipe LLM Inference, ExecuTorch, MLC LLM, ONNX Runtime, Core ML, or another on-device backend.`;
+    return getNativeRuntimeConfigError(config, featureName, requestedModel);
   }
 
   if (!baseUrl) {
-    return `${featureName} needs a phone-local model runtime adapter. /chat/completions and /embeddings are local adapter contracts only; backend/OpenAI remains fallback-only. Set LOCAL_MODEL_BASE_URL / EXPO_PUBLIC_LOCAL_MODEL_BASE_URL for development, or switch to native_on_device after a real native runtime is implemented.`;
+    return `${featureName} needs a phone-local model runtime adapter. /chat/completions and /embeddings are local adapter contracts only for development; backend/OpenAI remains fallback-only. Set LOCAL_MODEL_BASE_URL / EXPO_PUBLIC_LOCAL_MODEL_BASE_URL for development, or use runtime.mode=native_on_device with a real native bridge for production.`;
   }
 
   if (
@@ -145,7 +250,47 @@ export function getLocalRuntimeConfigError(
   return "";
 }
 
+function extractCompletionText(json: any) {
+  if (typeof json === "string") return json;
+  if (typeof json?.text === "string") return json.text;
+  if (typeof json?.content === "string") return json.content;
+  if (typeof json?.message === "string") return json.message;
+  const message = json?.choices?.[0]?.message?.content;
+  if (typeof message === "string") return message;
+  return "";
+}
+
+function normalizeChatCompletionResponse(value: any) {
+  if (Array.isArray(value?.choices)) {
+    return value;
+  }
+
+  const content = extractCompletionText(value);
+  if (!content) {
+    throw new Error("Native on-device chat runtime returned an empty response.");
+  }
+
+  return {
+    choices: [{ message: { role: "assistant", content } }],
+  };
+}
+
 function extractEmbeddingRows(json: any) {
+  if (Array.isArray(json) && Array.isArray(json[0])) {
+    return json.map((row: any, index: number) => {
+      const embedding = Array.isArray(row) ? row.map(Number) : [];
+      if (
+        !embedding.length ||
+        embedding.some((value: number) => !Number.isFinite(value))
+      ) {
+        throw new Error(
+          `Local embedding runtime returned an invalid vector for input ${index}.`,
+        );
+      }
+      return embedding;
+    });
+  }
+
   const data = Array.isArray(json?.data) ? json.data : [];
   if (!data.length) {
     throw new Error("Local embedding runtime returned no data.");
@@ -168,57 +313,137 @@ function extractEmbeddingRows(json: any) {
 }
 
 /**
- * Placeholder for true bundled phone inference.
+ * Production path for true bundled phone inference.
  *
- * This class is intentionally not wired to any cloud or OpenAI endpoint. It
- * fails clearly until a native model binding is implemented and injected here.
+ * This class never talks to the backend or OpenAI. It calls a native module that
+ * must be linked into a custom Expo development build/prebuild/bare app. The
+ * selected native backend is llama.cpp because the target Gemma/Qwen assets can
+ * be packaged as quantized GGUF files and used for both chat and embeddings.
  */
 export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
   readonly kind = "native_on_device" as const;
 
   private readonly config: LocalRuntimeConfig;
+  private readonly bridge: NativeOnDeviceModelBridge | null;
+  private initialized = false;
 
   constructor(config: LocalRuntimeConfig = {}) {
-    this.config = config;
+    const moduleName = String(
+      config.nativeModuleName || DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
+    );
+    this.config = {
+      ...config,
+      primary: "phone_local",
+      mode: "native_on_device",
+      backendRole: "fallback_only",
+      openAiPolicy: config.openAiPolicy || "fallback_only",
+      nativeBackend: config.nativeBackend || "llama_cpp",
+      nativeModuleName: moduleName,
+    };
+    this.bridge = config.nativeBridge ?? getNativeOnDeviceModelBridge(moduleName);
   }
 
   isConfigured() {
-    return false;
+    return !getLocalRuntimeConfigError(this.config, "Native on-device runtime");
   }
 
   describe(): LocalRuntimeInfo {
+    const assets = normalizeNativeModelAssets(this.config.modelAssets);
     return {
       kind: this.kind,
       mode: "native_on_device",
       primary: "phone_local",
-      configured: false,
+      configured: this.isConfigured(),
       backendRole: "fallback_only",
       openAiPolicy: String(
         this.config.openAiPolicy || "fallback_only",
       ) as LocalRuntimeInfo["openAiPolicy"],
       allowDeviceLoopback: false,
       adapterLocation: "unspecified",
-      note: "TODO(native-runtime): native_on_device is represented for production architecture, but no bundled Gemma/Qwen inference binding is implemented yet. It never calls backend/OpenAI directly.",
+      nativeBackend: String(this.config.nativeBackend || "llama_cpp"),
+      nativeModuleName: String(
+        this.config.nativeModuleName || DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
+      ),
+      modelRoot: this.config.modelRoot,
+      modelCount: Object.keys(assets).length,
+      developmentOnly: false,
+      note: "Production path: calls the native on-device model bridge for bundled Gemma/Qwen inference. It never calls backend/OpenAI directly; missing bindings or missing model files fail clearly.",
     };
   }
 
-  private notImplemented(featureName: string): never {
-    throw new Error(getLocalRuntimeConfigError(this.config, featureName));
+  private requireReady(featureName: string, model: string) {
+    const error = getLocalRuntimeConfigError(this.config, featureName, model);
+    if (error) {
+      throw new NativeOnDeviceRuntimeUnavailableError(error);
+    }
+
+    if (!this.bridge) {
+      throw new NativeOnDeviceRuntimeUnavailableError(
+        nativeOnDeviceBridgeMissingMessage(
+          featureName,
+          String(this.config.nativeModuleName || DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME),
+        ),
+      );
+    }
+
+    const asset = getNativeModelAsset(this.config, model);
+    if (!asset) {
+      throw new NativeOnDeviceRuntimeUnavailableError(
+        `${featureName} cannot find model asset config for "${model}".`,
+      );
+    }
+
+    return { bridge: this.bridge, asset };
   }
 
-  async completeChat(_input: {
+  private async ensureInitialized(bridge: NativeOnDeviceModelBridge) {
+    if (this.initialized || typeof bridge.initialize !== "function") {
+      this.initialized = true;
+      return;
+    }
+
+    await bridge.initialize({
+      backend: String(this.config.nativeBackend || "llama_cpp"),
+      modelRoot: this.config.modelRoot,
+      models: normalizeNativeModelAssets(this.config.modelAssets),
+    });
+    this.initialized = true;
+  }
+
+  async completeChat(input: {
     model: string;
     messages: LocalRuntimeChatMessage[];
     temperature?: number;
   }): Promise<any> {
-    this.notImplemented("Native on-device chat");
+    const { bridge, asset } = this.requireReady(
+      "Native on-device chat",
+      input.model,
+    );
+    await this.ensureInitialized(bridge);
+    const response = await bridge.completeChat({
+      model: input.model,
+      temperature: input.temperature ?? 0.2,
+      messages: input.messages,
+      asset,
+    });
+    return normalizeChatCompletionResponse(response);
   }
 
-  async embedTexts(_input: {
+  async embedTexts(input: {
     model: string;
     texts: string[];
   }): Promise<number[][]> {
-    this.notImplemented("Native on-device embeddings");
+    const { bridge, asset } = this.requireReady(
+      "Native on-device embeddings",
+      input.model,
+    );
+    await this.ensureInitialized(bridge);
+    const response = await bridge.embedTexts({
+      model: input.model,
+      texts: input.texts,
+      asset,
+    });
+    return extractEmbeddingRows(response);
   }
 }
 
@@ -267,7 +492,8 @@ export class OpenAiCompatibleLocalAdapterRuntime implements LocalModelRuntime {
       ) as LocalRuntimeInfo["openAiPolicy"],
       allowDeviceLoopback: isDeviceLoopbackAllowed(this.config),
       adapterLocation: this.adapterLocation,
-      note: "This is a local runtime adapter boundary. /chat/completions and /embeddings are treated as phone-local adapter contracts for development or device-hosted runtimes, not as OpenAI/backend primary paths.",
+      developmentOnly: true,
+      note: "Development-only adapter boundary. /chat/completions and /embeddings are treated as phone-local adapter contracts for testing; they are not OpenAI/backend primary paths and should not be used as the production runtime mode.",
     };
   }
 
@@ -350,6 +576,7 @@ export function createLocalModelRuntime(
       mode,
       backendRole: "fallback_only",
       openAiPolicy: config.openAiPolicy || "fallback_only",
+      nativeBackend: config.nativeBackend || "llama_cpp",
     });
   }
 

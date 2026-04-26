@@ -9,6 +9,7 @@ import {
 import {
   OPENAI_FALLBACK_SIGNAL,
   createLocalModelRuntime,
+  isNativeOnDeviceRuntimeUnavailableError,
   isLoopbackLocalRuntimeBaseUrl,
   normalizeLocalRuntimeBaseUrl,
 } from "./localModelRuntime";
@@ -169,6 +170,10 @@ type LocalModelConfig = {
     localRuntimeInterface?: string;
     nativeRuntime?: string;
     nativeImplementationStatus?: string;
+    nativeBackend?: string;
+    nativeModuleName?: string;
+    adapterRuntime?: string;
+    adapterDevelopmentOnly?: boolean;
     adapterContract?: string;
     adapterLocation?:
       | "device_loopback"
@@ -180,6 +185,36 @@ type LocalModelConfig = {
   baseUrl: string;
   apiKey: string;
   timeoutMs: number;
+  native?: {
+    backend?: string;
+    bridgeModuleName?: string;
+    modelRoot?: string;
+    requiresDevClient?: boolean;
+    assetPolicy?: string;
+    models?: Record<
+      string,
+      {
+        id: string;
+        roles?: string[];
+        backend?: string;
+        format?: string;
+        quantization?: string;
+        fileName?: string;
+        modelPath: string;
+        tokenizerPath?: string;
+        configPath?: string;
+        contextSize?: number;
+        batchSize?: number;
+        threads?: number;
+        gpuLayers?: number;
+        useMmap?: boolean;
+        useMetal?: boolean;
+        useGpu?: boolean;
+        embedding?: boolean;
+        description?: string;
+      }
+    >;
+  };
   models: {
     profiler: string;
     orchestratorMedium: string;
@@ -435,25 +470,108 @@ function isLoopbackLocalModelBaseUrl(value: unknown) {
 const EMBEDDING_DIMS = 1024;
 
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
-  version: 2,
+  version: 4,
   runtime: {
     primary: "phone_local",
-    mode: "local_adapter",
+    mode: "native_on_device",
     backendRole: "fallback_only",
     backendPolicy:
       "OpenAI/backend is never primary; call it only after the local orchestrator or local runtime explicitly requests fallback.",
     openAiPolicy: "fallback_only",
     localRuntimeInterface: "LocalModelRuntime",
     nativeRuntime: "NativeOnDeviceModelRuntime",
-    nativeImplementationStatus: "todo_stub",
+    nativeImplementationStatus: "bridge_ready_binding_required",
+    nativeBackend: "llama_cpp",
+    nativeModuleName: "JaiOnDeviceModel",
+    adapterRuntime: "OpenAiCompatibleLocalAdapterRuntime",
+    adapterDevelopmentOnly: true,
     adapterContract:
-      "/chat/completions and /embeddings are local runtime adapter contracts, not OpenAI primary paths.",
+      "Development-only /chat/completions and /embeddings adapter contract. Production runtime.mode is native_on_device with bundled GGUF model files.",
     adapterLocation: "external_lan",
     allowDeviceLoopback: false,
   },
   baseUrl: "",
   apiKey: "",
   timeoutMs: 45000,
+  native: {
+    backend: "llama_cpp",
+    bridgeModuleName: "JaiOnDeviceModel",
+    modelRoot: "asset://models",
+    requiresDevClient: true,
+    assetPolicy:
+      "Bundle quantized GGUF files in the native app via Expo dev client/prebuild or bare React Native. Do not claim on-device Gemma/Qwen is active until the native module loads these files.",
+    models: {
+      "google/gemma-3-4b-it": {
+        id: "google/gemma-3-4b-it",
+        roles: ["profiler", "alignment"],
+        backend: "llama_cpp",
+        format: "gguf",
+        quantization: "Q4_K_M",
+        fileName: "gemma-3-4b-it-q4_k_m.gguf",
+        modelPath: "models/gemma-3-4b-it-q4_k_m.gguf",
+        contextSize: 4096,
+        batchSize: 512,
+        threads: 4,
+        gpuLayers: 99,
+        useMmap: true,
+        useMetal: true,
+        useGpu: true,
+        description: "Profiler and alignment model; replace modelPath with the actual bundled GGUF asset path.",
+      },
+      "Qwen/Qwen3-8B": {
+        id: "Qwen/Qwen3-8B",
+        roles: ["orchestrator_medium", "memory_summarizer"],
+        backend: "llama_cpp",
+        format: "gguf",
+        quantization: "Q4_K_M",
+        fileName: "qwen3-8b-q4_k_m.gguf",
+        modelPath: "models/qwen3-8b-q4_k_m.gguf",
+        contextSize: 8192,
+        batchSize: 512,
+        threads: 4,
+        gpuLayers: 99,
+        useMmap: true,
+        useMetal: true,
+        useGpu: true,
+        description: "Medium orchestrator and memory summarizer; replace with the actual quantized Qwen3 8B GGUF file.",
+      },
+      "Qwen/Qwen3-14B": {
+        id: "Qwen/Qwen3-14B",
+        roles: ["orchestrator_large"],
+        backend: "llama_cpp",
+        format: "gguf",
+        quantization: "Q4_K_M",
+        fileName: "qwen3-14b-q4_k_m.gguf",
+        modelPath: "models/qwen3-14b-q4_k_m.gguf",
+        contextSize: 8192,
+        batchSize: 512,
+        threads: 4,
+        gpuLayers: 99,
+        useMmap: true,
+        useMetal: true,
+        useGpu: true,
+        description: "Large orchestrator model for capable devices; replace with the actual quantized Qwen3 14B GGUF file.",
+      },
+      "Qwen/Qwen3-Embedding-0.6B": {
+        id: "Qwen/Qwen3-Embedding-0.6B",
+        roles: ["memory_embedding"],
+        backend: "llama_cpp",
+        format: "gguf",
+        quantization: "Q8_0",
+        fileName: "qwen3-embedding-0.6b-q8_0.gguf",
+        modelPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
+        contextSize: 4096,
+        batchSize: 512,
+        threads: 4,
+        gpuLayers: 99,
+        useMmap: true,
+        useMetal: true,
+        useGpu: true,
+        embedding: true,
+        description: "Semantic cache and memory embedding model; native bridge must call llama.cpp embedding mode.",
+      },
+    },
+  },
   models: {
     profiler: "google/gemma-3-4b-it",
     orchestratorMedium: "Qwen/Qwen3-8B",
@@ -607,7 +725,7 @@ const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
   version: 4,
   runtime: {
     primary: "phone_local",
-    mode: "local_adapter",
+    mode: "native_on_device",
     backendRole: "fallback_only",
     openAiPolicy: "fallback_only",
     backendPolicy: "OpenAI/backend is fallback-only and cannot be the default runtime.",
@@ -650,16 +768,19 @@ const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
 };
 
 const DEFAULT_WORKSPACE_MANIFEST = {
-  version: 4,
+  version: 6,
   runtime: {
     primary: "phone_local",
-    mode: "local_adapter",
+    mode: "native_on_device",
     backendRole: "fallback_only",
     backendPolicy: "fallback_only",
     openAiPolicy: "fallback_only",
     localRuntimeInterface: "LocalModelRuntime",
     nativeRuntime: "NativeOnDeviceModelRuntime",
-    nativeImplementationStatus: "todo_stub",
+    nativeImplementationStatus: "bridge_ready_binding_required",
+    nativeBackend: "llama_cpp",
+    adapterRuntime: "OpenAiCompatibleLocalAdapterRuntime",
+    adapterDevelopmentOnly: true,
     allowDeviceLoopback: false,
   },
   architecture: {
@@ -1455,7 +1576,7 @@ async function getModelConfig() {
         extra.LOCAL_MODEL_RUNTIME_MODE ||
           fileConfig.runtime?.mode ||
           DEFAULT_MODEL_CONFIG.runtime?.mode ||
-          "local_adapter",
+          "native_on_device",
       ),
       backendRole: "fallback_only",
       openAiPolicy: String(
@@ -1463,6 +1584,18 @@ async function getModelConfig() {
           fileConfig.runtime?.openAiPolicy ||
           DEFAULT_MODEL_CONFIG.runtime?.openAiPolicy ||
           "fallback_only",
+      ),
+      nativeBackend: String(
+        extra.LOCAL_ON_DEVICE_BACKEND ||
+          fileConfig.runtime?.nativeBackend ||
+          DEFAULT_MODEL_CONFIG.runtime?.nativeBackend ||
+          "llama_cpp",
+      ),
+      nativeModuleName: String(
+        extra.LOCAL_ON_DEVICE_NATIVE_MODULE ||
+          fileConfig.runtime?.nativeModuleName ||
+          DEFAULT_MODEL_CONFIG.runtime?.nativeModuleName ||
+          "JaiOnDeviceModel",
       ),
       adapterLocation: String(
         extra.LOCAL_MODEL_ADAPTER_LOCATION ||
@@ -1477,6 +1610,32 @@ async function getModelConfig() {
             DEFAULT_MODEL_CONFIG.runtime?.allowDeviceLoopback,
         ),
       ),
+    },
+    native: {
+      ...DEFAULT_MODEL_CONFIG.native,
+      ...(fileConfig.native || {}),
+      backend: String(
+        extra.LOCAL_ON_DEVICE_BACKEND ||
+          fileConfig.native?.backend ||
+          DEFAULT_MODEL_CONFIG.native?.backend ||
+          "llama_cpp",
+      ),
+      bridgeModuleName: String(
+        extra.LOCAL_ON_DEVICE_NATIVE_MODULE ||
+          fileConfig.native?.bridgeModuleName ||
+          DEFAULT_MODEL_CONFIG.native?.bridgeModuleName ||
+          "JaiOnDeviceModel",
+      ),
+      modelRoot: String(
+        extra.LOCAL_ON_DEVICE_MODEL_ROOT ||
+          fileConfig.native?.modelRoot ||
+          DEFAULT_MODEL_CONFIG.native?.modelRoot ||
+          "asset://models",
+      ),
+      models: {
+        ...(DEFAULT_MODEL_CONFIG.native?.models || {}),
+        ...(fileConfig.native?.models || {}),
+      },
     },
     models: {
       ...DEFAULT_MODEL_CONFIG.models,
@@ -1803,6 +1962,10 @@ async function localChatRaw(
     timeoutMs: cfg.timeoutMs,
     allowDeviceLoopback: cfg.runtime?.allowDeviceLoopback,
     adapterLocation: cfg.runtime?.adapterLocation,
+    nativeBackend: cfg.native?.backend || cfg.runtime?.nativeBackend,
+    nativeModuleName: cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName,
+    modelRoot: cfg.native?.modelRoot,
+    modelAssets: cfg.native?.models,
   });
   return runtime.completeChat({
     model,
@@ -1850,6 +2013,10 @@ async function embedTexts(texts: string[]) {
       timeoutMs: cfg.timeoutMs,
       allowDeviceLoopback: cfg.runtime?.allowDeviceLoopback,
       adapterLocation: cfg.runtime?.adapterLocation,
+      nativeBackend: cfg.native?.backend || cfg.runtime?.nativeBackend,
+      nativeModuleName: cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName,
+      modelRoot: cfg.native?.modelRoot,
+      modelAssets: cfg.native?.models,
     });
     if (!runtime.isConfigured()) {
       return fallback();
@@ -4752,9 +4919,30 @@ export async function runLocalAssistantTurn(opts: {
         english = aligned.english;
         final = aligned.final;
       }
-    } catch {
-      noSafeLocalPath = true;
-      route = "fallback_openai";
+    } catch (error) {
+      if (isNativeOnDeviceRuntimeUnavailableError(error)) {
+        route = "clarify";
+        decision = {
+          ...decision,
+          route: "clarify",
+          reason: "native_on_device_runtime_unavailable",
+          needsClarification: false,
+          clarificationQuestion: "",
+          fallbackAllowed: false,
+        };
+        source = "local_rules";
+        intent = "clarify";
+        draft =
+          replyLanguage === "ta"
+            ? "Native on-device model runtime இன்னும் இந்த app build-ல இணைக்கப்படவில்லை. நான் backend/OpenAI-க்கு அமைதியாக fallback செய்ய மாட்டேன்; dev client/prebuild native bridge மற்றும் bundled model files தேவை."
+            : "Native on-device model runtime is not linked in this app build yet. I will not silently fall back to backend/OpenAI; add the dev-client/prebuild native bridge and bundled model files first.";
+        english =
+          "Native on-device model runtime is not linked in this app build yet. I will not silently fall back to backend/OpenAI; add the dev-client/prebuild native bridge and bundled model files first.";
+        final = draft;
+      } else {
+        noSafeLocalPath = true;
+        route = "fallback_openai";
+      }
     }
   }
 
@@ -4893,9 +5081,13 @@ export async function runLocalAssistantTurn(opts: {
       modelConfig: MODELS_PATH,
       runtime: {
         primary: cfg.runtime?.primary || "phone_local",
-        mode: cfg.runtime?.mode || "local_adapter",
+        mode: cfg.runtime?.mode || "native_on_device",
         backendRole: cfg.runtime?.backendRole || "fallback_only",
         openAiPolicy: cfg.runtime?.openAiPolicy || "fallback_only",
+        nativeBackend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
+        nativeModuleName:
+          cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName || "JaiOnDeviceModel",
+        modelRoot: cfg.native?.modelRoot || "asset://models",
         adapterLocation: cfg.runtime?.adapterLocation || "external_lan",
         allowDeviceLoopback: Boolean(cfg.runtime?.allowDeviceLoopback),
       },

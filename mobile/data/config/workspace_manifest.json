@@ -1,12 +1,12 @@
 {
-  "version": 5,
-  "seedVersion": "2026-04-27-phone-local-primary-runtime-abstraction",
+  "version": 6,
+  "seedVersion": "2026-04-27-native-on-device-bridge-ready",
   "description": "Phone-local agent workspace seed manifest",
   "architecture": {
     "primaryRuntime": "phone_local_agents",
     "backendRole": "fallback_only",
     "openAiPolicy": "fallback_only",
-    "stableContract": "/api/chat remains unchanged; /chat/completions and /embeddings are local runtime adapter contracts when needed."
+    "stableContract": "/api/chat remains unchanged; production uses native_on_device. /chat/completions and /embeddings are development-only local adapter contracts."
   },
   "checkedInSeedFolders": [
     "config",
@@ -30,6 +30,7 @@
     "config/memory_rules.json",
     "config/prompts.json",
     "config/agent_registry.json",
+    "config/workspace_manifest.json",
     "training/seed/classifier_dataset.csv",
     "training/seed/pipeline_questions.csv",
     "training/seed/profiler.jsonl",
@@ -43,14 +44,18 @@
   ],
   "runtime": {
     "primary": "phone_local",
-    "mode": "local_adapter",
+    "mode": "native_on_device",
+    "productionMode": "native_on_device",
+    "developmentMode": "local_adapter",
     "backendRole": "fallback_only",
     "backendPolicy": "fallback_only",
     "openAiPolicy": "fallback_only",
     "localRuntimeInterface": "LocalModelRuntime",
     "nativeRuntime": "NativeOnDeviceModelRuntime",
-    "nativeImplementationStatus": "todo_stub",
+    "nativeImplementationStatus": "bridge_ready_binding_required",
+    "nativeBackend": "llama_cpp",
     "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",
+    "adapterDevelopmentOnly": true,
     "allowDeviceLoopback": false
   }
 }

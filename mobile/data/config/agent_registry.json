@@ -1,8 +1,8 @@
 {
-  "version": 4,
+  "version": 5,
   "runtime": {
     "primary": "phone_local",
-    "mode": "local_adapter",
+    "mode": "native_on_device",
     "backendRole": "fallback_only",
     "openAiPolicy": "fallback_only",
     "backendPolicy": "OpenAI/backend is fallback-only and cannot be the default runtime.",
@@ -12,6 +12,7 @@
     "profiler": {
       "enabled": true,
       "modelKey": "profiler",
+      "runtime": "phone_local",
       "description": "Natural onboarding and profile extraction",
       "trainingFile": "training/seed/profiler.jsonl"
     },
@@ -19,12 +20,14 @@
       "enabled": true,
       "mediumModelKey": "orchestratorMedium",
       "largeModelKey": "orchestratorLarge",
+      "runtime": "phone_local",
       "description": "Route user intent, tool choice, and local-vs-backend fallback decisions",
       "trainingFile": "training/seed/orchestrator.jsonl"
     },
     "alignment": {
       "enabled": true,
       "modelKey": "aligner",
+      "runtime": "phone_local",
       "description": "Rewrite answers to match the user's tone and language",
       "trainingFile": "training/seed/alignment.jsonl"
     },
@@ -32,6 +35,7 @@
       "enabled": true,
       "embeddingModelKey": "embedding",
       "summarizerModelKey": "summarizer",
+      "runtime": "phone_local",
       "description": "Semantic cache and long-term profile updates",
       "trainingFile": "training/seed/memory.jsonl"
     },

@@ -275,6 +275,9 @@ function getLocalModelConfigError(featureName: string) {
       baseUrl: LOCAL_MODEL_BASE_URL,
       allowDeviceLoopback: LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK_FLAG.value,
       adapterLocation: LOCAL_MODEL_ADAPTER_LOCATION,
+      nativeBackend: LOCAL_ON_DEVICE_BACKEND,
+      nativeModuleName: LOCAL_ON_DEVICE_NATIVE_MODULE,
+      modelRoot: LOCAL_ON_DEVICE_MODEL_ROOT,
     },
     featureName,
   );
@@ -307,7 +310,7 @@ const LOCAL_MODEL_BASE_URL: string = normalizeLocalModelBaseUrl(
 const LOCAL_MODEL_RUNTIME_MODE: string = String(
   extra.LOCAL_MODEL_RUNTIME_MODE ||
     process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE ||
-    "local_adapter",
+    "native_on_device",
 );
 
 const LOCAL_MODEL_OPENAI_POLICY: string = String(
@@ -326,6 +329,24 @@ const LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK_FLAG = resolveBooleanFlag(
   extra.LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK,
   process.env.EXPO_PUBLIC_LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK,
   false,
+);
+
+const LOCAL_ON_DEVICE_BACKEND: string = String(
+  extra.LOCAL_ON_DEVICE_BACKEND ||
+    process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_BACKEND ||
+    "llama_cpp",
+);
+
+const LOCAL_ON_DEVICE_NATIVE_MODULE: string = String(
+  extra.LOCAL_ON_DEVICE_NATIVE_MODULE ||
+    process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_NATIVE_MODULE ||
+    "JaiOnDeviceModel",
+);
+
+const LOCAL_ON_DEVICE_MODEL_ROOT: string = String(
+  extra.LOCAL_ON_DEVICE_MODEL_ROOT ||
+    process.env.EXPO_PUBLIC_LOCAL_ON_DEVICE_MODEL_ROOT ||
+    "asset://models",
 );
 
 // Do not read EXPO_PUBLIC_LOCAL_MODEL_API_KEY here. EXPO_PUBLIC values are bundled
@@ -375,6 +396,9 @@ export function getClientRoutingDefaults() {
     localRuntimeMode: LOCAL_MODEL_RUNTIME_MODE,
     backendRole: "fallback_only",
     openAiPolicy: LOCAL_MODEL_OPENAI_POLICY,
+    nativeBackend: LOCAL_ON_DEVICE_BACKEND,
+    nativeModuleName: LOCAL_ON_DEVICE_NATIVE_MODULE,
+    modelRoot: LOCAL_ON_DEVICE_MODEL_ROOT,
     localAdapterLocation: LOCAL_MODEL_ADAPTER_LOCATION,
     allowDeviceLoopback: LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK_FLAG.value,
   };
@@ -390,7 +414,7 @@ export function logClientRoutingBanner(
   routingBannerLogged = true;
   const routing = getClientRoutingDefaults();
   logger.info(
-    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl || "not-configured"} | runtimeMode=${routing.localRuntimeMode} | backendRole=${routing.backendRole} | openAiPolicy=${routing.openAiPolicy}`,
+    `[routing] chat=${routing.chat} (source=${routing.chatSource}) | voice=${routing.voice} (source=${routing.voiceSource}) | api=${routing.apiBase} | localModel=${routing.localModelBaseUrl || "not-configured"} | runtimeMode=${routing.localRuntimeMode} | nativeBackend=${routing.nativeBackend} | nativeModule=${routing.nativeModuleName} | backendRole=${routing.backendRole} | openAiPolicy=${routing.openAiPolicy}`,
   );
 
   const localModelError = getLocalModelConfigError("Local model routing");
