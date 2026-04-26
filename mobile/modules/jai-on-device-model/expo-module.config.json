@@ -1,0 +1,9 @@
+{
+  "platforms": ["android", "ios"],
+  "android": {
+    "modules": ["com.harishajahan.jai.ondevice.JaiOnDeviceModelModule"]
+  },
+  "apple": {
+    "modules": ["JaiOnDeviceModelModule"]
+  }
+}

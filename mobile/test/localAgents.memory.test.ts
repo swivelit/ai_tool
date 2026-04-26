@@ -160,6 +160,7 @@ describe("local memory and semantic cache", () => {
       ...models,
       // Tests need a non-empty, non-loopback URL so local model calls use the mocked fetch queue.
       // Production code intentionally rejects localhost/127.0.0.1 for device safety.
+      runtime: { ...models.runtime, mode: "local_adapter" },
       baseUrl: "http://192.168.1.23:10000/v1",
       timeoutMs: 1000,
     });
@@ -511,6 +512,21 @@ describe("local memory and semantic cache", () => {
     });
 
     expect(cached.cacheHit).toBe(true);
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("does not silently replace native Qwen embeddings with hash embeddings in native_on_device mode", async () => {
+    writeJson(`${dataRoot}/config/models.json`, {
+      ...models,
+      runtime: { ...models.runtime, mode: "native_on_device" },
+      baseUrl: "",
+      timeoutMs: 1000,
+    });
+
+    const { upsertLocalRagChunks } = await import("../lib/localAgents");
+    await expect(
+      upsertLocalRagChunks(46, "doc-native", ["store this as a native embedding"]),
+    ).rejects.toThrow(/native_on_device|Qwen|hash embeddings/i);
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 });

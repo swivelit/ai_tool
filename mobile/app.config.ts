@@ -134,6 +134,7 @@ export default {
     plugins: [
       "expo-router",
       "expo-asset",
+      "./plugins/withJaiOnDeviceModelAssets",
       "expo-secure-store",
       "@react-native-google-signin/google-signin",
       [

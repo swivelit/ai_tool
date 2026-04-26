@@ -54,7 +54,7 @@ export type NativeOnDeviceEmbeddingInput = {
 
 export type NativeOnDeviceModelBridge = {
   isAvailable?: () => boolean | Promise<boolean>;
-  initialize?: (config: NativeOnDeviceBridgeInitConfig) => unknown | Promise<unknown>;
+  initialize: (config: NativeOnDeviceBridgeInitConfig) => unknown | Promise<unknown>;
   completeChat: (input: NativeOnDeviceChatInput) => unknown | Promise<unknown>;
   embedTexts: (input: NativeOnDeviceEmbeddingInput) => unknown | Promise<unknown>;
 };
@@ -81,13 +81,37 @@ function maybeRequireReactNative(): { NativeModules?: Record<string, unknown> } 
   }
 }
 
+function maybeRequireExpoModulesCore(): {
+  requireNativeModule?: (moduleName: string) => unknown;
+} | null {
+  try {
+    if (typeof require !== "function") return null;
+    return (require as (name: string) => unknown)("expo-modules-core") as {
+      requireNativeModule?: (moduleName: string) => unknown;
+    };
+  } catch {
+    return null;
+  }
+}
+
 function isBridge(value: unknown): value is NativeOnDeviceModelBridge {
   const candidate = value as Partial<NativeOnDeviceModelBridge> | null;
   return (
     Boolean(candidate) &&
+    typeof candidate?.initialize === "function" &&
     typeof candidate?.completeChat === "function" &&
     typeof candidate?.embedTexts === "function"
   );
+}
+
+function getExpoNativeModule(moduleName: string) {
+  try {
+    const requireNativeModule = maybeRequireExpoModulesCore()?.requireNativeModule;
+    if (typeof requireNativeModule !== "function") return null;
+    return requireNativeModule(moduleName);
+  } catch {
+    return null;
+  }
 }
 
 export function getNativeOnDeviceModelBridge(
@@ -100,12 +124,19 @@ export function getNativeOnDeviceModelBridge(
     return testBridge;
   }
 
-  const nativeModules = maybeRequireReactNative()?.NativeModules || {};
   const moduleNames = [
     preferredModuleName,
     ...KNOWN_NATIVE_MODULE_NAMES.filter((name) => name !== preferredModuleName),
   ];
 
+  for (const moduleName of moduleNames) {
+    const expoBridge = getExpoNativeModule(moduleName);
+    if (isBridge(expoBridge)) {
+      return expoBridge;
+    }
+  }
+
+  const nativeModules = maybeRequireReactNative()?.NativeModules || {};
   for (const moduleName of moduleNames) {
     const bridge = nativeModules[moduleName];
     if (isBridge(bridge)) {
@@ -141,5 +172,5 @@ export function nativeOnDeviceBridgeMissingMessage(
   featureName: string,
   moduleName = DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
 ) {
-  return `${featureName} selected runtime.mode=native_on_device, but the native on-device inference module "${moduleName}" is not installed in this app binary. This mode never calls backend/OpenAI by itself. Build a custom Expo development build or prebuild/bare React Native app, add the llama.cpp-backed native module, expose completeChat() and embedTexts(), and bundle the configured GGUF model files.`;
+  return `${featureName} selected runtime.mode=native_on_device, but the native on-device inference module "${moduleName}" is not installed in this app binary. This mode never calls backend/OpenAI by itself. Build a custom Expo development build or prebuild/bare React Native app, add the llama.cpp-backed native module, expose initialize(), completeChat(), and embedTexts(), and bundle the configured GGUF model files.`;
 }

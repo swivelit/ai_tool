@@ -62,6 +62,11 @@ export type LocalRuntimeConfig = {
   modelRoot?: string;
   modelAssets?: Record<string, NativeOnDeviceModelAsset>;
   nativeBridge?: NativeOnDeviceModelBridge | null;
+  /**
+   * Test/dev escape hatch only. local_adapter is intentionally blocked in
+   * production builds unless this is explicitly true.
+   */
+  allowProductionLocalAdapter?: boolean;
 };
 
 export type LocalRuntimeInfo = {
@@ -152,6 +157,14 @@ export function isLoopbackLocalRuntimeBaseUrl(value: unknown) {
   );
 }
 
+function isProductionRuntimeEnvironment() {
+  return String((globalThis as any)?.process?.env?.NODE_ENV || "").toLowerCase() === "production";
+}
+
+export function isLocalAdapterDevelopmentOnly(config: LocalRuntimeConfig) {
+  return normalizeLocalRuntimeMode(config.mode) === "local_adapter" && !config.allowProductionLocalAdapter;
+}
+
 export function isDeviceLoopbackAllowed(config: LocalRuntimeConfig) {
   return (
     normalizeLocalRuntimeMode(config.mode) === "local_adapter" &&
@@ -234,6 +247,10 @@ export function getLocalRuntimeConfigError(
 
   if (mode === "native_on_device") {
     return getNativeRuntimeConfigError(config, featureName, requestedModel);
+  }
+
+  if (isProductionRuntimeEnvironment() && isLocalAdapterDevelopmentOnly(config)) {
+    return `${featureName} selected runtime.mode=local_adapter, but local_adapter is development-only. Production must use runtime.mode=native_on_device with the JaiOnDeviceModel native bridge and bundled GGUF files.`;
   }
 
   if (!baseUrl) {
@@ -397,9 +414,20 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
   }
 
   private async ensureInitialized(bridge: NativeOnDeviceModelBridge) {
-    if (this.initialized || typeof bridge.initialize !== "function") {
-      this.initialized = true;
+    if (this.initialized) {
       return;
+    }
+
+    if (typeof bridge.isAvailable === "function") {
+      const available = await bridge.isAvailable();
+      if (!available) {
+        throw new NativeOnDeviceRuntimeUnavailableError(
+          nativeOnDeviceBridgeMissingMessage(
+            "Native on-device runtime",
+            String(this.config.nativeModuleName || DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME),
+          ),
+        );
+      }
     }
 
     await bridge.initialize({

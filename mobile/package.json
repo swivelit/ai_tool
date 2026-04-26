@@ -10,7 +10,11 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "test:profiler": "vitest run test/localAgents.profiler.test.ts",
-    "test:local-agents": "vitest run test/localAgents.*.test.ts"
+    "test:local-agents": "vitest run test/localAgents.*.test.ts",
+    "prebuild": "expo prebuild",
+    "android:native": "expo run:android",
+    "ios:native": "expo run:ios",
+    "test": "vitest run"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -61,5 +65,10 @@
     "typescript": "~5.9.2",
     "vitest": "^3.2.4"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "nativeModulesDir": "modules"
+    }
+  }
 }

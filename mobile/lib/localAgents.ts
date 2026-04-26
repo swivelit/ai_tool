@@ -169,9 +169,9 @@ type LocalModelConfig = {
     openAiPolicy?: "fallback_only" | "disabled" | string;
     localRuntimeInterface?: string;
     nativeRuntime?: string;
-    nativeImplementationStatus?: string;
     nativeBackend?: string;
     nativeModuleName?: string;
+    nativeImplementationStatus?: string;
     adapterRuntime?: string;
     adapterDevelopmentOnly?: boolean;
     adapterContract?: string;
@@ -421,6 +421,10 @@ type AgentRegistryConfig = {
     openAiPolicy?: "fallback_only" | "disabled" | string;
     backendPolicy?: string;
     localRuntimeInterface?: string;
+    nativeRuntime?: string;
+    nativeBackend?: string;
+    nativeModuleName?: string;
+    nativeImplementationStatus?: string;
   };
   agents: {
     profiler: {
@@ -480,9 +484,9 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
     openAiPolicy: "fallback_only",
     localRuntimeInterface: "LocalModelRuntime",
     nativeRuntime: "NativeOnDeviceModelRuntime",
-    nativeImplementationStatus: "bridge_ready_binding_required",
     nativeBackend: "llama_cpp",
     nativeModuleName: "JaiOnDeviceModel",
+    nativeImplementationStatus: "native_module_scaffolded_model_files_and_llama_cpp_backend_required",
     adapterRuntime: "OpenAiCompatibleLocalAdapterRuntime",
     adapterDevelopmentOnly: true,
     adapterContract:
@@ -726,6 +730,10 @@ const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
   runtime: {
     primary: "phone_local",
     mode: "native_on_device",
+    nativeRuntime: "NativeOnDeviceModelRuntime",
+    nativeBackend: "llama_cpp",
+    nativeModuleName: "JaiOnDeviceModel",
+    nativeImplementationStatus: "native_module_scaffolded_model_files_and_llama_cpp_backend_required",
     backendRole: "fallback_only",
     openAiPolicy: "fallback_only",
     backendPolicy: "OpenAI/backend is fallback-only and cannot be the default runtime.",
@@ -777,8 +785,9 @@ const DEFAULT_WORKSPACE_MANIFEST = {
     openAiPolicy: "fallback_only",
     localRuntimeInterface: "LocalModelRuntime",
     nativeRuntime: "NativeOnDeviceModelRuntime",
-    nativeImplementationStatus: "bridge_ready_binding_required",
+    nativeImplementationStatus: "native_module_scaffolded_model_files_and_llama_cpp_backend_required",
     nativeBackend: "llama_cpp",
+    nativeModuleName: "JaiOnDeviceModel",
     adapterRuntime: "OpenAiCompatibleLocalAdapterRuntime",
     adapterDevelopmentOnly: true,
     allowDeviceLoopback: false,
@@ -1258,13 +1267,21 @@ function hashEmbedding(text: string, dims = EMBEDDING_DIMS) {
   return out.map((value) => value / norm);
 }
 
-function normalizeEmbeddingVector(embedding: unknown, fallbackText: string) {
+function normalizeEmbeddingVector(
+  embedding: unknown,
+  fallbackText: string,
+  opts?: { allowHashFallback?: boolean; source?: string },
+) {
   const values = Array.isArray(embedding)
     ? embedding.map(Number).filter(Number.isFinite)
     : [];
-  return values.length === EMBEDDING_DIMS
-    ? values
-    : hashEmbedding(fallbackText);
+  if (values.length === EMBEDDING_DIMS) return values;
+  if (opts?.allowHashFallback === false) {
+    throw new Error(
+      `${opts.source || "Embedding runtime"} returned ${values.length || 0} dimensions; expected ${EMBEDDING_DIMS}. Refusing hash embedding fallback in runtime.mode=native_on_device.`,
+    );
+  }
+  return hashEmbedding(fallbackText);
 }
 
 function normalizeStoredEmbedding(embedding: unknown, fallbackText: string) {
@@ -1997,10 +2014,14 @@ async function localChatText(
   return extractCompletionText(json);
 }
 
+function isNativeOnDeviceModelConfig(cfg: LocalModelConfig) {
+  return String(cfg.runtime?.mode || "native_on_device") === "native_on_device";
+}
+
 async function embedTexts(texts: string[]) {
-  const fallback = () => texts.map((text) => hashEmbedding(text));
   const cfg = await getModelConfig();
   const baseUrl = normalizeLocalModelBaseUrl(cfg.baseUrl);
+  const nativeMode = isNativeOnDeviceModelConfig(cfg);
 
   try {
     const runtime = createLocalModelRuntime({
@@ -2019,17 +2040,28 @@ async function embedTexts(texts: string[]) {
       modelAssets: cfg.native?.models,
     });
     if (!runtime.isConfigured()) {
-      return fallback();
+      if (nativeMode) {
+        throw new Error(
+          "Native Qwen embedding runtime is not configured. runtime.mode=native_on_device requires the JaiOnDeviceModel bridge and bundled Qwen/Qwen3-Embedding-0.6B GGUF file; hash embeddings are disabled in production native mode.",
+        );
+      }
+      return texts.map((text) => hashEmbedding(text));
     }
     const vectors = await runtime.embedTexts({
       model: cfg.models.embedding,
       texts,
     });
     return vectors.map((embedding, index) =>
-      normalizeEmbeddingVector(embedding, texts[index] || ""),
+      normalizeEmbeddingVector(embedding, texts[index] || "", {
+        allowHashFallback: !nativeMode,
+        source: cfg.models.embedding,
+      }),
     );
-  } catch {
-    return fallback();
+  } catch (error) {
+    if (nativeMode) {
+      throw error;
+    }
+    return texts.map((text) => hashEmbedding(text));
   }
 }
 
@@ -4640,6 +4672,138 @@ export async function saveScheduledTask(
   return row;
 }
 
+async function runProfilerExtractionInsideNormalChat(opts: {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  answers: Record<string, string | string[]>;
+  userProfile?: LocalUserProfile;
+}) {
+  const slots = await getProfilerSlots();
+  const currentState = await loadProfilerState(opts.userId);
+  const rules = await getMemoryRules();
+  const replyLanguageName = languageLabel(
+    String(opts.answers.preferred_language || opts.replyLanguage || "english"),
+  );
+  const deterministicPreview = deterministicProfilerExtraction(
+    opts.message,
+    slots,
+    opts.answers,
+    currentState,
+    replyLanguageName,
+  );
+  const profileFacts = heuristicMemoryCandidates(
+    [{ role: "user", content: opts.message, createdAt: nowIso() }],
+    rules,
+  );
+  const hasProfileUpdates = Object.values(
+    deterministicPreview.updates || {},
+  ).some(nonEmptyAnswer);
+  const hasDurableProfileFact = profileFacts.length > 0;
+  const hasIncompleteProfile = missingSlots(slots, opts.answers).length > 0;
+  const shouldRun =
+    hasProfileUpdates ||
+    hasDurableProfileFact ||
+    (currentState.status === "active" && hasIncompleteProfile);
+
+  if (!shouldRun) {
+    return {
+      ran: false,
+      answers: opts.answers,
+      state: currentState,
+      source: "skipped" as const,
+      missingSlots: missingSlots(slots, opts.answers),
+      updates: {},
+    };
+  }
+
+  const processed = await runProfilerTurnModel(
+    opts.message,
+    replyLanguageName,
+    opts.answers,
+    currentState,
+    slots,
+    {
+      ...opts.userProfile,
+      replyLanguage: fallbackReplyLanguageCode(replyLanguageName) as ReplyLanguage,
+    },
+  );
+  const updates = normalizeMemoryProfileUpdates(
+    slots,
+    processed.output.updates || {},
+  );
+  const merged = mergeProfilerUpdates(slots, opts.answers, updates);
+  const changed =
+    JSON.stringify(merged) !== JSON.stringify(opts.answers) ||
+    (processed.output.optional_profile_notes || []).length > 0;
+  const mergedConfidenceBySlot = slotConfidenceMap(
+    slots,
+    currentState.confidenceBySlot || {},
+    processed.output.confidence_by_slot || {},
+    merged,
+  );
+  const remaining = missingSlots(slots, merged);
+  const done = remaining.length === 0;
+  const optionalProfileNotes = uniq(
+    [
+      ...(currentState.optionalProfileNotes || []),
+      ...(processed.output.optional_profile_notes || []).map(String),
+    ]
+      .map((note) => note.trim())
+      .filter(Boolean),
+  ).slice(-20);
+  const nextSlotCandidate = chooseNextProfilerSlot(
+    slots,
+    merged,
+    mergedConfidenceBySlot,
+    Object.keys(updates),
+  );
+  const nextState: LocalProfilerState = {
+    ...currentState,
+    status: done ? "complete" : currentState.status === "idle" ? "active" : currentState.status,
+    startedAt: currentState.startedAt || nowIso(),
+    lastUpdatedAt: nowIso(),
+    currentTargetSlot: done ? undefined : nextSlotCandidate?.id || remaining[0],
+    missingSlots: remaining,
+    confidenceBySlot: mergedConfidenceBySlot,
+    optionalProfileNotes,
+    lastRunSource: processed.source,
+    history: [
+      ...(currentState.history || []),
+      { role: "user" as const, content: opts.message, createdAt: nowIso() },
+    ].slice(-40),
+  };
+
+  if (changed) {
+    await saveAnswers(opts.userId, merged);
+    await saveProfilerState(opts.userId, nextState);
+    await buildProfileSummaryLocally(opts.userId, {
+      ...opts.userProfile,
+      replyLanguage: opts.replyLanguage,
+    }).catch(() => "");
+    await safeRecordTrainingSample("profiler", {
+      input: opts.message,
+      expectedOutput: JSON.stringify(updates),
+      label: "normal_chat_profile_extraction",
+      metadata: {
+        userId: opts.userId,
+        source: processed.source,
+        missingSlots: remaining,
+        profileFacts: profileFacts.map((row) => row.fact),
+      },
+    });
+  }
+
+  return {
+    ran: changed,
+    answers: merged,
+    state: nextState,
+    source: processed.source,
+    missingSlots: remaining,
+    updates,
+  };
+}
+
 export async function runLocalAssistantTurn(opts: {
   userId: number;
   message: string;
@@ -4655,7 +4819,15 @@ export async function runLocalAssistantTurn(opts: {
 
   await appendConversation(userId, "user", message);
 
-  const answers = await loadAnswers(userId);
+  let answers = await loadAnswers(userId);
+  const normalChatProfiler = await runProfilerExtractionInsideNormalChat({
+    userId,
+    message,
+    replyLanguage,
+    answers,
+    userProfile: opts.userProfile,
+  });
+  answers = normalChatProfiler.answers;
   const profileSummary =
     (await loadSummary(userId)) ||
     (await buildProfileSummaryLocally(userId, {
@@ -4724,6 +4896,12 @@ export async function runLocalAssistantTurn(opts: {
         similarity: semantic.score,
         timestamp: nowIso(),
         alignmentReapplied: needsAlignmentReapply,
+        profiler: {
+          ran: normalChatProfiler.ran,
+          source: normalChatProfiler.source,
+          missingSlots: normalChatProfiler.missingSlots,
+          updates: normalChatProfiler.updates,
+        },
         dataFolder: DATA_DIR,
         trainingFolder: TRAINING_DIR,
         ragFolder: RAG_DIR,
@@ -5093,6 +5271,12 @@ export async function runLocalAssistantTurn(opts: {
       },
       fallbackPolicy: {
         allowedWhen: routesConfig.fallbackPolicy?.openAiAllowedWhen || [],
+      },
+      profiler: {
+        ran: normalChatProfiler.ran,
+        source: normalChatProfiler.source,
+        missingSlots: normalChatProfiler.missingSlots,
+        updates: normalChatProfiler.updates,
       },
     },
   } satisfies LocalAssistantTurnResult;

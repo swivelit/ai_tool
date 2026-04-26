@@ -47,3 +47,6 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Local model weights are intentionally not committed.
+models/*.gguf

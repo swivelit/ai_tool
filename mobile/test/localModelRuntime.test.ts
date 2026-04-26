@@ -194,4 +194,50 @@ describe("local model runtime architecture", () => {
       expect(isNativeOnDeviceRuntimeUnavailableError(error)).toBe(true);
     }
   });
+
+  it("requires JaiOnDeviceModel to expose initialize/completeChat/embedTexts in native mode", () => {
+    setNativeOnDeviceModelBridgeForTests({
+      completeChat: vi.fn(),
+      embedTexts: vi.fn(),
+    } as any);
+
+    const runtime = createLocalModelRuntime({
+      mode: "native_on_device",
+      nativeBackend: "llama_cpp",
+      nativeModuleName: "JaiOnDeviceModel",
+      modelAssets: nativeAssets,
+    });
+
+    expect(runtime.kind).toBe("native_on_device");
+    expect(runtime.isConfigured()).toBe(false);
+    expect(
+      getLocalRuntimeConfigError(
+        {
+          mode: "native_on_device",
+          nativeBackend: "llama_cpp",
+          nativeModuleName: "JaiOnDeviceModel",
+          modelAssets: nativeAssets,
+        },
+        "Local chat",
+      ),
+    ).toContain("initialize()");
+  });
+
+  it("keeps local_adapter development-only in production", () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const config = {
+        mode: "local_adapter" as const,
+        baseUrl: "http://192.168.1.23:10000/v1",
+        adapterLocation: "external_lan" as const,
+      };
+      const runtime = createLocalModelRuntime(config);
+      expect(runtime.kind).toBe("openai_compatible_local_adapter");
+      expect(runtime.isConfigured()).toBe(false);
+      expect(getLocalRuntimeConfigError(config, "Local chat")).toContain("development-only");
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
+  });
 });

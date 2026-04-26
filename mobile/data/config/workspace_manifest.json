@@ -1,6 +1,6 @@
 {
   "version": 6,
-  "seedVersion": "2026-04-27-native-on-device-bridge-ready",
+  "seedVersion": "2026-04-27-native-module-scaffolded",
   "description": "Phone-local agent workspace seed manifest",
   "architecture": {
     "primaryRuntime": "phone_local_agents",
@@ -52,10 +52,11 @@
     "openAiPolicy": "fallback_only",
     "localRuntimeInterface": "LocalModelRuntime",
     "nativeRuntime": "NativeOnDeviceModelRuntime",
-    "nativeImplementationStatus": "bridge_ready_binding_required",
+    "nativeImplementationStatus": "native_module_scaffolded_model_files_and_llama_cpp_backend_required",
     "nativeBackend": "llama_cpp",
     "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",
     "adapterDevelopmentOnly": true,
-    "allowDeviceLoopback": false
+    "allowDeviceLoopback": false,
+    "nativeModuleName": "JaiOnDeviceModel"
   }
 }

@@ -6,7 +6,11 @@
     "backendRole": "fallback_only",
     "openAiPolicy": "fallback_only",
     "backendPolicy": "OpenAI/backend is fallback-only and cannot be the default runtime.",
-    "localRuntimeInterface": "LocalModelRuntime"
+    "localRuntimeInterface": "LocalModelRuntime",
+    "nativeRuntime": "NativeOnDeviceModelRuntime",
+    "nativeBackend": "llama_cpp",
+    "nativeModuleName": "JaiOnDeviceModel",
+    "nativeImplementationStatus": "native_module_scaffolded_model_files_and_llama_cpp_backend_required"
   },
   "agents": {
     "profiler": {

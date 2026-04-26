@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import agentRegistry from "../data/config/agent_registry.json";
 import alignmentRules from "../data/config/alignment_rules.json";
+import memoryRules from "../data/config/memory_rules.json";
 import models from "../data/config/models.json";
 import orchestratorRoutes from "../data/config/orchestrator_routes.json";
+import profilerSlots from "../data/config/profiler_slots.json";
 import prompts from "../data/config/prompts.json";
 
 const mockedState = vi.hoisted(() => ({
@@ -122,7 +124,7 @@ describe("phone-local agent configuration", () => {
     expect(models.runtime.backendRole).toBe("fallback_only");
     expect(models.runtime.openAiPolicy).toBe("fallback_only");
     expect(models.runtime.nativeRuntime).toBe("NativeOnDeviceModelRuntime");
-    expect(models.runtime.nativeImplementationStatus).toBe("bridge_ready_binding_required");
+    expect(models.runtime.nativeImplementationStatus).toBe("native_module_scaffolded_model_files_and_llama_cpp_backend_required");
     expect(models.runtime.nativeBackend).toBe("llama_cpp");
     expect(models.runtime.adapterDevelopmentOnly).toBe(true);
     expect(models.native.backend).toBe("llama_cpp");
@@ -164,6 +166,14 @@ describe("local orchestrator and alignment", () => {
     mockedState.files.set(
       `${dataRoot}/config/prompts.json`,
       JSON.stringify(prompts, null, 2),
+    );
+    mockedState.files.set(
+      `${dataRoot}/config/profiler_slots.json`,
+      JSON.stringify(profilerSlots, null, 2),
+    );
+    mockedState.files.set(
+      `${dataRoot}/config/memory_rules.json`,
+      JSON.stringify(memoryRules, null, 2),
     );
     mockedState.files.set(
       `${dataRoot}/config/models.json`,
@@ -438,5 +448,44 @@ describe("local orchestrator and alignment", () => {
     expect(
       mockedState.files.get(`${dataRoot}/conversations/27_routes.jsonl`),
     ).toContain('"route":"local_answer"');
+  });
+
+  it("runs the Profiler Agent inside normal chat when durable profile facts are detected", async () => {
+    queueCompletion(
+      JSON.stringify({
+        assistant_reply: "Noted.",
+        updates: {
+          preferred_language: "english",
+          occupation: "working_professional",
+          industry_or_field: "technology",
+        },
+        missing_slots: [],
+        completed: false,
+        confidence_by_slot: {
+          preferred_language: 0.92,
+          occupation: 0.9,
+          industry_or_field: 0.86,
+        },
+        optional_profile_notes: [],
+      }),
+    );
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 29,
+      message: "thanks, I prefer English and I work as a software engineer.",
+      replyLanguage: "en",
+      userProfile: { name: "Hari" },
+    });
+
+    const answers = JSON.parse(
+      mockedState.files.get(`${dataRoot}/profiles/29/answers.json`) || "{}",
+    );
+    expect(result.route).toBe("fast_greeting");
+    expect(result.meta?.profiler?.ran).toBe(true);
+    expect(answers.preferred_language).toBe("english");
+    expect(answers.occupation).toBe("working_professional");
+    expect(answers.industry_or_field).toBe("technology");
+    expect(apiPostMock).not.toHaveBeenCalled();
   });
 });
