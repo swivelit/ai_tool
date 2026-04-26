@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import alignmentRules from "../data/config/alignment_rules.json";
+import models from "../data/config/models.json";
 import orchestratorRoutes from "../data/config/orchestrator_routes.json";
 import prompts from "../data/config/prompts.json";
 
@@ -121,6 +122,20 @@ describe("local orchestrator and alignment", () => {
       JSON.stringify(alignmentRules, null, 2)
     );
     mockedState.files.set(`${dataRoot}/config/prompts.json`, JSON.stringify(prompts, null, 2));
+    mockedState.files.set(
+      `${dataRoot}/config/models.json`,
+      JSON.stringify(
+        {
+          ...models,
+          // Tests need a non-empty, non-loopback URL so local model calls use the mocked fetch queue.
+          // Production code intentionally rejects localhost/127.0.0.1 for device safety.
+          baseUrl: "http://192.168.1.23:10000/v1",
+          timeoutMs: 1000,
+        },
+        null,
+        2
+      )
+    );
   });
 
   it("routes greetings locally with no model round-trip", async () => {

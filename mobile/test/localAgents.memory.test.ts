@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as FileSystem from "expo-file-system/legacy";
+import models from "../data/config/models.json";
 
 import memoryRules from "../data/config/memory_rules.json";
 import orchestratorRoutes from "../data/config/orchestrator_routes.json";
@@ -147,6 +148,13 @@ describe("local memory and semantic cache", () => {
     writeJson(`${dataRoot}/config/orchestrator_routes.json`, orchestratorRoutes);
     writeJson(`${dataRoot}/config/profiler_slots.json`, profilerSlots);
     writeJson(`${dataRoot}/config/prompts.json`, prompts);
+    writeJson(`${dataRoot}/config/models.json`, {
+      ...models,
+      // Tests need a non-empty, non-loopback URL so local model calls use the mocked fetch queue.
+      // Production code intentionally rejects localhost/127.0.0.1 for device safety.
+      baseUrl: "http://192.168.1.23:10000/v1",
+      timeoutMs: 1000,
+    });
   });
 
   it("hits the semantic cache for paraphrased profile questions", async () => {
