@@ -34,6 +34,7 @@ export default {
       // OpenAI-compatible local runtime adapter until a native on-device backend
       // is plugged in; it is not an OpenAI/backend primary runtime.
       LOCAL_MODEL_BASE_URL,
+      // Kept for diagnostics/legacy config only; api.ts forces normal chat local-first.
       USE_LOCAL_CHAT_PIPELINE,
       USE_LOCAL_VOICE_PIPELINE:
         process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE || "false",

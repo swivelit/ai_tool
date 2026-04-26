@@ -326,7 +326,9 @@ const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
   false,
 );
 
-const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = LOCAL_CHAT_PIPELINE_FLAG.value;
+// Normal chat is local-first by product policy. The legacy flag is kept
+// for diagnostics, but it must not make backend/OpenAI the primary runtime.
+const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = true;
 const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean =
   LOCAL_VOICE_PIPELINE_FLAG.value;
 const CANONICAL_VOICE_ANALYZE_PATH = "/transcribe-and-analyze";
@@ -342,7 +344,9 @@ export function getClientRoutingDefaults() {
     voice: (USE_LOCAL_VOICE_PIPELINE_DEFAULT
       ? "local"
       : "backend") as ClientRoutingMode,
-    chatSource: LOCAL_CHAT_PIPELINE_FLAG.source,
+    chatSource: LOCAL_CHAT_PIPELINE_FLAG.value
+      ? LOCAL_CHAT_PIPELINE_FLAG.source
+      : "forced",
     voiceSource: LOCAL_VOICE_PIPELINE_FLAG.source,
     apiBase: API_BASE,
     localModelBaseUrl: LOCAL_MODEL_BASE_URL,
@@ -985,6 +989,13 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
     }
   }
 
+  return apiPostBackendOnly<T>(path, body);
+}
+
+export async function apiPostBackendOnly<T>(
+  path: string,
+  body?: any,
+): Promise<T> {
   const res = await fetchBackend(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

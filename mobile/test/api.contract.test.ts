@@ -148,6 +148,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: false,
           },
         },
       },
@@ -196,5 +197,59 @@ describe("API client contracts", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(payload.assistant.text).toBe("Local answer first.");
     expect(payload.meta.source).toBe("local_chat_proxy");
+  });
+
+  it("lets explicit backend fallback bypass the local chat interceptor", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    const runLocalAssistantTurn = vi.fn(async () => ({
+      route: "local_answer",
+      source: "local_model",
+      cacheHit: false,
+      intent: "assistant",
+      assistantText: "Local answer should not run here.",
+      englishText: "Local answer should not run here.",
+      meta: {},
+    }));
+    vi.doMock("../lib/localAgents", () => ({
+      runLocalAssistantTurn,
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        assistant: { text: "Backend fallback answer." },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPostBackendOnly, getClientRoutingDefaults } = await import("../lib/api");
+    const payload = await apiPostBackendOnly<any>("/api/chat", {
+      user_id: 7,
+      message: "Use fallback",
+      reply_language: "en",
+    });
+
+    expect(getClientRoutingDefaults().chat).toBe("local");
+    expect(runLocalAssistantTurn).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "https://api.example.test/api/chat",
+    );
+    expect(payload.assistant.text).toBe("Backend fallback answer.");
   });
 });

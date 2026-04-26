@@ -1,7 +1,7 @@
 import Constants from "expo-constants";
 import * as FileSystem from "expo-file-system/legacy";
 
-import { apiPost } from "./api";
+import { apiPost, apiPostBackendOnly } from "./api";
 import {
   ensureLocalAgentSeedData,
   LOCAL_AGENT_DATA_DIR,
@@ -4675,7 +4675,7 @@ export async function runLocalAssistantTurn(opts: {
     };
     if (decision.fallbackAllowed) {
       source = "openai_fallback";
-      const backend = await apiPost<any>("/api/chat", {
+      const backend = await apiPostBackendOnly<any>("/api/chat", {
         user_id: userId,
         message,
         reply_language: replyLanguage,
