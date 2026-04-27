@@ -46,7 +46,16 @@ npm run native:sync-llama
 npm run native:verify-llama
 ```
 
-`npm run native:verify-llama` fails release/production verification if Android CMake cannot configure with `JAI_REQUIRE_LLAMA_CPP=ON`, if Android/iOS do not emit `JAI_LLAMA_CPP_AVAILABLE=1` when llama.cpp is present, or if production/release `native_on_device` builds could fall back to `JAI_LLAMA_CPP_AVAILABLE=0`. It updates `nativeImplementationStatus` only after verification passes.
+`npm run native:verify-llama` fails release/production verification if Android CMake cannot configure with `JAI_REQUIRE_LLAMA_CPP=ON`, if the Android NDK cannot compile and link `jai_llama_runtime` against the synced llama.cpp checkout, if Android/iOS do not emit `JAI_LLAMA_CPP_AVAILABLE=1` when llama.cpp is present, or if production/release `native_on_device` builds could fall back to `JAI_LLAMA_CPP_AVAILABLE=0`. On macOS it also compiles `JaiLlamaCppBridge.mm` against llama.cpp headers; on non-macOS hosts it clearly reports the iOS compile skip and keeps podspec structural checks. It updates `nativeImplementationStatus` only after verification passes.
+
+Optional GGUF smoke test:
+
+```bash
+npm run native:verify-llama -- --smoke --model /path/to/tiny.gguf
+npm run native:verify-llama -- --smoke --model /path/to/tiny-chat.gguf --embedding-model /path/to/tiny-embed.gguf
+```
+
+Smoke mode builds a host probe against llama.cpp, loads the supplied GGUF, and calls `completeChat` plus `embedTexts`. Target-device Gemma/Qwen validation still requires running the mobile app on devices with downloaded `file://` model paths.
 
 ## Production guard behavior
 
@@ -111,9 +120,9 @@ Use public CDN URLs or release-generated signed URLs. Do not hardcode secrets in
 
 ## Current inference status
 
-The JavaScript runtime, model download flow, Android JNI bridge, iOS Objective-C++ bridge, and llama.cpp build wiring are in place. Production builds now fail before shipping if llama.cpp is missing.
+The JavaScript runtime, model download flow, Android JNI bridge, iOS Objective-C++ bridge, and llama.cpp build wiring are in place. Production builds now fail before shipping if llama.cpp is missing, and the verifier now proves the Android native runtime compiles/links against llama.cpp. On macOS, the verifier also compiles the iOS Objective-C++ bridge against llama.cpp headers.
 
-This zip still does **not** include the llama.cpp checkout itself and I did not run a native Android/iOS build with real GGUF files here. Do **not** claim true Gemma/Qwen on-device inference is complete until a native build with the synced llama.cpp checkout loads the downloaded GGUF `file://` paths and returns generated text/vectors on target devices.
+This zip still does **not** include the llama.cpp checkout itself. Do **not** claim true target-device Gemma/Qwen on-device inference is complete until a native app build with the synced llama.cpp checkout loads the downloaded GGUF `file://` paths and returns generated text/vectors on physical devices. Use the optional `--smoke --model /path/to/tiny.gguf` mode for a host-side GGUF load/generate/embed smoke test.
 
 ## Android llama.cpp implementation
 

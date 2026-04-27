@@ -156,6 +156,204 @@ function makeTempDir(label) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `jai-${label}-`));
 }
 
+function isTruthy(value) {
+  return ['1', 'true', 'yes', 'y', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
+function printUsage() {
+  console.log(`Usage: npm run native:verify-llama -- [options]
+
+Options:
+  --smoke                         After native compile checks, build and run a host GGUF smoke probe.
+  --model <path>                  GGUF model used by --smoke for completeChat and, by default, embedTexts.
+  --embedding-model <path>        Optional separate GGUF model used by --smoke for embedTexts.
+  --android-abi <abi>             Android ABI for the NDK compile probe (default: arm64-v8a).
+  --android-platform <api>        Android platform for the NDK compile probe (default: android-24).
+  --help                          Show this help message.
+
+Examples:
+  npm run native:verify-llama
+  npm run native:verify-llama -- --smoke --model /path/to/tiny.gguf
+  npm run native:verify-llama -- --smoke --model /path/to/tiny-chat.gguf --embedding-model /path/to/tiny-embed.gguf
+`);
+}
+
+function parseArgs(args) {
+  const options = {
+    help: false,
+    smoke: false,
+    smokeModel: process.env.JAI_NATIVE_VERIFY_SMOKE_MODEL || '',
+    smokeEmbeddingModel: process.env.JAI_NATIVE_VERIFY_SMOKE_EMBEDDING_MODEL || '',
+    androidAbi: process.env.JAI_NATIVE_VERIFY_ANDROID_ABI || 'arm64-v8a',
+    androidPlatform: process.env.JAI_NATIVE_VERIFY_ANDROID_PLATFORM || 'android-24',
+  };
+
+  function readValue(index, flag) {
+    const value = args[index + 1];
+    if (!value || value.startsWith('--')) {
+      fail(`${flag} requires a value`);
+    }
+    return value;
+  }
+
+  for (let i = 0; i < args.length; ++i) {
+    const arg = args[i];
+    if (arg === '--help' || arg === '-h') {
+      options.help = true;
+    } else if (arg === '--smoke') {
+      options.smoke = true;
+    } else if (arg === '--model') {
+      options.smokeModel = readValue(i, arg);
+      i += 1;
+    } else if (arg.startsWith('--model=')) {
+      options.smokeModel = arg.slice('--model='.length);
+    } else if (arg === '--embedding-model') {
+      options.smokeEmbeddingModel = readValue(i, arg);
+      i += 1;
+    } else if (arg.startsWith('--embedding-model=')) {
+      options.smokeEmbeddingModel = arg.slice('--embedding-model='.length);
+    } else if (arg === '--android-abi') {
+      options.androidAbi = readValue(i, arg);
+      i += 1;
+    } else if (arg.startsWith('--android-abi=')) {
+      options.androidAbi = arg.slice('--android-abi='.length);
+    } else if (arg === '--android-platform') {
+      options.androidPlatform = readValue(i, arg);
+      i += 1;
+    } else if (arg.startsWith('--android-platform=')) {
+      options.androidPlatform = arg.slice('--android-platform='.length);
+    } else {
+      fail(`Unknown native verification option: ${arg}`, 'Run `npm run native:verify-llama -- --help` for supported options.');
+    }
+  }
+
+  return options;
+}
+
+function cmakePath(value) {
+  return String(value).replace(/\\/g, '/').replace(/"/g, '\\"');
+}
+
+function cmakeGeneratorArgs() {
+  return commandExists('ninja') ? ['-G', 'Ninja'] : [];
+}
+
+function parallelBuildArgs() {
+  const cpuCount = Array.isArray(os.cpus()) && os.cpus().length ? os.cpus().length : 2;
+  return ['--', '-j', String(Math.max(1, Math.min(cpuCount, 8)))];
+}
+
+function fileExists(file) {
+  try {
+    return fs.existsSync(file) && fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function dirExists(dir) {
+  try {
+    return fs.existsSync(dir) && fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function androidNdkToolchainFile(ndkDir) {
+  return path.join(ndkDir, 'build', 'cmake', 'android.toolchain.cmake');
+}
+
+function isUsableAndroidNdk(ndkDir) {
+  return Boolean(ndkDir) && fileExists(androidNdkToolchainFile(ndkDir));
+}
+
+function compareVersionLikeNames(a, b) {
+  const left = String(a).split(/[^0-9]+/).filter(Boolean).map((part) => Number(part));
+  const right = String(b).split(/[^0-9]+/).filter(Boolean).map((part) => Number(part));
+  const length = Math.max(left.length, right.length);
+  for (let i = 0; i < length; ++i) {
+    const delta = (left[i] || 0) - (right[i] || 0);
+    if (delta !== 0) return delta;
+  }
+  return String(a).localeCompare(String(b));
+}
+
+function findAndroidNdk() {
+  const explicitCandidates = [
+    process.env.ANDROID_NDK_HOME,
+    process.env.ANDROID_NDK_ROOT,
+    process.env.NDK_HOME,
+  ].filter(Boolean).map((candidate) => path.resolve(candidate));
+
+  for (const candidate of explicitCandidates) {
+    if (isUsableAndroidNdk(candidate)) {
+      return candidate;
+    }
+  }
+
+  const sdkCandidates = [
+    process.env.ANDROID_SDK_ROOT,
+    process.env.ANDROID_HOME,
+    path.join(os.homedir(), 'Library', 'Android', 'sdk'),
+    path.join(os.homedir(), 'Android', 'Sdk'),
+    '/opt/android-sdk',
+    '/usr/local/lib/android/sdk',
+  ].filter(Boolean).map((candidate) => path.resolve(candidate));
+
+  for (const sdkRoot of sdkCandidates) {
+    const ndkBundle = path.join(sdkRoot, 'ndk-bundle');
+    if (isUsableAndroidNdk(ndkBundle)) {
+      return ndkBundle;
+    }
+
+    const ndkRoot = path.join(sdkRoot, 'ndk');
+    if (!dirExists(ndkRoot)) {
+      continue;
+    }
+
+    const versions = fs.readdirSync(ndkRoot)
+      .map((name) => path.join(ndkRoot, name))
+      .filter(isUsableAndroidNdk)
+      .sort((left, right) => compareVersionLikeNames(path.basename(right), path.basename(left)));
+    if (versions.length > 0) {
+      return versions[0];
+    }
+  }
+
+  return null;
+}
+
+function findFiles(root, predicate, limit = 20) {
+  const matches = [];
+  const stack = [root];
+  while (stack.length > 0 && matches.length < limit) {
+    const current = stack.pop();
+    if (!current || !fs.existsSync(current)) continue;
+    const entries = fs.readdirSync(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (entry.isFile() && predicate(fullPath)) {
+        matches.push(fullPath);
+        if (matches.length >= limit) break;
+      }
+    }
+  }
+  return matches;
+}
+
+function assertNonEmptyFile(file, description) {
+  if (!fileExists(file)) {
+    fail(`${description} was not produced`, `Expected file: ${file}`);
+  }
+  const size = fs.statSync(file).size;
+  if (size <= 0) {
+    fail(`${description} is empty`, `File: ${file}`);
+  }
+  pass(`${description} exists and is non-empty (${path.relative(repoRoot, file)})`);
+}
+
 function verifyRequiredFiles() {
   requireFile(llamaHeader, 'llama.cpp public header');
   requireFile(llamaCMake, 'llama.cpp CMake project');
@@ -278,6 +476,74 @@ function verifyAndroidCMakeConfigure() {
     fs.rmSync(missingBuildDir, { recursive: true, force: true });
   } else {
     log(`Keeping CMake verify dirs because JAI_KEEP_NATIVE_VERIFY_BUILD is set: ${buildDir}, ${missingBuildDir}`);
+  }
+}
+
+
+function verifyAndroidCMakeCompile(options) {
+  if (!commandExists('cmake')) {
+    fail('cmake is required for Android native compile verification. Install CMake before release builds.');
+  }
+
+  const ndkDir = findAndroidNdk();
+  if (!ndkDir) {
+    fail(
+      'Android NDK is required for native llama.cpp compile verification.',
+      'Install the Android NDK and set ANDROID_NDK_HOME, ANDROID_NDK_ROOT, or ANDROID_SDK_ROOT/ANDROID_HOME so the verifier can find ndk/<version>/build/cmake/android.toolchain.cmake.',
+    );
+  }
+
+  const buildDir = makeTempDir('llama-android-ndk-build');
+  const abi = options.androidAbi || 'arm64-v8a';
+  const platform = options.androidPlatform || 'android-24';
+  const toolchainFile = androidNdkToolchainFile(ndkDir);
+
+  log(`Running Android NDK compile/link probe for ${abi} (${platform}) with NDK: ${ndkDir}`);
+  try {
+    assertRunSuccess(
+      'cmake',
+      [
+        ...cmakeGeneratorArgs(),
+        '-S', androidCppRoot,
+        '-B', buildDir,
+        `-DCMAKE_TOOLCHAIN_FILE=${toolchainFile}`,
+        `-DANDROID_ABI=${abi}`,
+        `-DANDROID_PLATFORM=${platform}`,
+        '-DANDROID_STL=c++_shared',
+        '-DJAI_REQUIRE_LLAMA_CPP=ON',
+        `-DJAI_LLAMA_CPP_DIR=${llamaDir}`,
+        '-DCMAKE_BUILD_TYPE=Release',
+      ],
+      'Android CMake configures a real NDK build with JAI_REQUIRE_LLAMA_CPP=ON',
+      { stdio: 'inherit', timeoutMs: Number(process.env.JAI_NATIVE_VERIFY_ANDROID_CONFIGURE_TIMEOUT_MS || 300000) },
+    );
+
+    assertRunSuccess(
+      'cmake',
+      [
+        '--build', buildDir,
+        '--target', 'jai_llama_runtime',
+        '--config', 'Release',
+        ...parallelBuildArgs(),
+      ],
+      'Android NDK compiles and links jai_llama_runtime against llama.cpp',
+      { stdio: 'inherit', timeoutMs: Number(process.env.JAI_NATIVE_VERIFY_ANDROID_BUILD_TIMEOUT_MS || 900000) },
+    );
+
+    const outputs = findFiles(buildDir, (file) => path.basename(file) === 'libjai_llama_runtime.so', 5);
+    if (outputs.length === 0) {
+      fail(
+        'Android NDK compile probe did not produce libjai_llama_runtime.so',
+        `Build directory: ${buildDir}`,
+      );
+    }
+    assertNonEmptyFile(outputs[0], 'Android native llama.cpp bridge library');
+  } finally {
+    if (!process.env.JAI_KEEP_NATIVE_VERIFY_BUILD) {
+      fs.rmSync(buildDir, { recursive: true, force: true });
+    } else {
+      log(`Keeping Android NDK verify build dir because JAI_KEEP_NATIVE_VERIFY_BUILD is set: ${buildDir}`);
+    }
   }
 }
 
@@ -417,6 +683,398 @@ function verifyIosPodspec() {
   }
 }
 
+
+function verifyIosNativeCompile() {
+  if (process.platform !== 'darwin') {
+    log('iOS compile verification was skipped because the host is not macOS. Podspec structural checks still ran; macOS CI/release builds must run this verifier on macOS so JaiLlamaCppBridge.mm is compiled against llama.cpp.');
+    pass('iOS compile verification skipped on non-macOS host with an explicit release note');
+    return;
+  }
+
+  if (!commandExists('xcrun')) {
+    fail('xcrun is required for iOS native compile verification on macOS. Install Xcode command line tools before release builds.');
+  }
+
+  const bridgeFile = path.join(moduleRoot, 'ios', 'JaiLlamaCppBridge.mm');
+  requireFile(bridgeFile, 'iOS Objective-C++ llama.cpp bridge');
+
+  const sdkResult = assertRunSuccess(
+    'xcrun',
+    ['--sdk', 'iphonesimulator', '--show-sdk-path'],
+    'iOS simulator SDK is available for native compile verification',
+  );
+  const clangResult = assertRunSuccess(
+    'xcrun',
+    ['--sdk', 'iphonesimulator', '--find', 'clang++'],
+    'Apple clang++ is available for iOS native compile verification',
+  );
+
+  const sdkPath = sdkResult.stdout.trim();
+  const clangPath = clangResult.stdout.trim();
+  const buildDir = makeTempDir('llama-ios-compile');
+  const objectFile = path.join(buildDir, 'JaiLlamaCppBridge.o');
+  const target = process.env.JAI_IOS_VERIFY_TARGET || (os.arch() === 'arm64'
+    ? 'arm64-apple-ios15.1-simulator'
+    : 'x86_64-apple-ios15.1-simulator');
+
+  log(`Running iOS Objective-C++ compile probe for ${target}`);
+  try {
+    assertRunSuccess(
+      clangPath,
+      [
+        '-x', 'objective-c++',
+        '-std=c++17',
+        '-target', target,
+        '-mios-simulator-version-min=15.1',
+        '-isysroot', sdkPath,
+        '-fobjc-arc',
+        '-fexceptions',
+        '-frtti',
+        '-DJAI_LLAMA_CPP_AVAILABLE=1',
+        '-DGGML_USE_ACCELERATE=1',
+        '-DGGML_USE_CPU=1',
+        '-I', path.join(moduleRoot, 'ios'),
+        '-I', path.join(llamaDir, 'include'),
+        '-I', path.join(llamaDir, 'src'),
+        '-I', path.join(llamaDir, 'ggml', 'include'),
+        '-I', path.join(llamaDir, 'ggml', 'src'),
+        '-I', path.join(llamaDir, 'ggml', 'src', 'ggml-cpu'),
+        '-c', bridgeFile,
+        '-o', objectFile,
+      ],
+      'iOS Objective-C++ bridge compiles against llama.cpp headers with JAI_LLAMA_CPP_AVAILABLE=1',
+      { stdio: 'inherit', timeoutMs: Number(process.env.JAI_NATIVE_VERIFY_IOS_COMPILE_TIMEOUT_MS || 300000) },
+    );
+    assertNonEmptyFile(objectFile, 'iOS Objective-C++ bridge object file');
+  } finally {
+    if (!process.env.JAI_KEEP_NATIVE_VERIFY_BUILD) {
+      fs.rmSync(buildDir, { recursive: true, force: true });
+    } else {
+      log(`Keeping iOS verify build dir because JAI_KEEP_NATIVE_VERIFY_BUILD is set: ${buildDir}`);
+    }
+  }
+}
+
+function buildSmokeProbeSource() {
+  return String.raw`#include "llama.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <exception>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace {
+
+class SmokeError : public std::runtime_error {
+ public:
+  explicit SmokeError(const std::string &message) : std::runtime_error(message) {}
+};
+
+struct ModelDeleter {
+  void operator()(llama_model *model) const {
+    if (model != nullptr) llama_model_free(model);
+  }
+};
+
+struct ContextDeleter {
+  void operator()(llama_context *ctx) const {
+    if (ctx != nullptr) llama_free(ctx);
+  }
+};
+
+struct BatchDeleter {
+  void operator()(llama_batch *batch) const {
+    if (batch != nullptr) {
+      llama_batch_free(*batch);
+      delete batch;
+    }
+  }
+};
+
+struct SamplerDeleter {
+  void operator()(llama_sampler *sampler) const {
+    if (sampler != nullptr) llama_sampler_free(sampler);
+  }
+};
+
+using ModelPtr = std::unique_ptr<llama_model, ModelDeleter>;
+using ContextPtr = std::unique_ptr<llama_context, ContextDeleter>;
+using BatchPtr = std::unique_ptr<llama_batch, BatchDeleter>;
+using SamplerPtr = std::unique_ptr<llama_sampler, SamplerDeleter>;
+
+ModelPtr loadModel(const char *modelPath) {
+  llama_model_params params = llama_model_default_params();
+  params.use_mmap = llama_supports_mmap();
+  params.use_mlock = false;
+  params.check_tensors = false;
+  params.n_gpu_layers = 0;
+
+  llama_model *model = llama_model_load_from_file(modelPath, params);
+  if (model == nullptr) {
+    throw SmokeError(std::string("Could not load GGUF model: ") + modelPath);
+  }
+  return ModelPtr(model);
+}
+
+ContextPtr createContext(llama_model *model, bool embeddings) {
+  llama_context_params params = llama_context_default_params();
+  params.n_ctx = 128;
+  params.n_batch = 64;
+  params.n_ubatch = 64;
+  params.n_seq_max = 1;
+  params.n_threads = 1;
+  params.n_threads_batch = 1;
+  params.embeddings = embeddings;
+  params.no_perf = true;
+  if (embeddings) {
+    params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+    params.attention_type = LLAMA_ATTENTION_TYPE_NON_CAUSAL;
+  }
+
+  llama_context *ctx = llama_init_from_model(model, params);
+  if (ctx == nullptr) {
+    throw SmokeError("Could not create llama.cpp context");
+  }
+  llama_set_n_threads(ctx, 1, 1);
+  return ContextPtr(ctx);
+}
+
+std::vector<llama_token> tokenize(llama_model *model, const std::string &text, bool addSpecial, bool parseSpecial) {
+  const llama_vocab *vocab = llama_model_get_vocab(model);
+  if (vocab == nullptr) {
+    throw SmokeError("Model did not expose a vocabulary");
+  }
+
+  int32_t count = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()), nullptr, 0, addSpecial, parseSpecial);
+  if (count < 0) count = -count;
+  if (count <= 0) {
+    throw SmokeError("Tokenization returned zero tokens");
+  }
+
+  std::vector<llama_token> tokens(static_cast<size_t>(count));
+  int32_t actual = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()), tokens.data(), count, addSpecial, parseSpecial);
+  if (actual < 0) {
+    throw SmokeError("Tokenization failed after allocating token buffer");
+  }
+  tokens.resize(static_cast<size_t>(actual));
+  return tokens;
+}
+
+BatchPtr makeBatch(const std::vector<llama_token> &tokens, bool logitsLastOnly) {
+  auto batch = BatchPtr(new llama_batch(llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1)));
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    batch->token[i] = tokens[i];
+    batch->pos[i] = static_cast<llama_pos>(i);
+    batch->n_seq_id[i] = 1;
+    batch->seq_id[i][0] = 0;
+    batch->logits[i] = logitsLastOnly && i + 1 == tokens.size() ? 1 : 0;
+  }
+  return batch;
+}
+
+void decode(llama_context *ctx, const std::vector<llama_token> &tokens, bool logitsLastOnly) {
+  auto batch = makeBatch(tokens, logitsLastOnly);
+  const int32_t status = llama_decode(ctx, *batch);
+  if (status != 0) {
+    throw SmokeError("llama_decode failed with status " + std::to_string(status));
+  }
+}
+
+std::string tokenToPiece(llama_model *model, llama_token token) {
+  const llama_vocab *vocab = llama_model_get_vocab(model);
+  std::array<char, 256> stackBuffer{};
+  int32_t written = llama_token_to_piece(vocab, token, stackBuffer.data(), static_cast<int32_t>(stackBuffer.size()), 0, false);
+  if (written < 0) {
+    std::vector<char> heapBuffer(static_cast<size_t>(-written));
+    written = llama_token_to_piece(vocab, token, heapBuffer.data(), static_cast<int32_t>(heapBuffer.size()), 0, false);
+    return written > 0 ? std::string(heapBuffer.data(), static_cast<size_t>(written)) : std::string();
+  }
+  return written > 0 ? std::string(stackBuffer.data(), static_cast<size_t>(written)) : std::string();
+}
+
+std::string completeChat(const char *modelPath) {
+  auto model = loadModel(modelPath);
+  auto ctx = createContext(model.get(), false);
+  auto tokens = tokenize(model.get(), "Hello from the J AI native smoke test.", true, true);
+  if (tokens.size() > 96) {
+    tokens.erase(tokens.begin(), tokens.end() - 96);
+  }
+  decode(ctx.get(), tokens, true);
+
+  SamplerPtr sampler(llama_sampler_init_greedy());
+  if (!sampler) {
+    throw SmokeError("Could not create greedy sampler");
+  }
+
+  llama_token sampled = llama_sampler_sample(sampler.get(), ctx.get(), -1);
+  const llama_vocab *vocab = llama_model_get_vocab(model.get());
+  if (sampled == LLAMA_TOKEN_NULL || llama_vocab_is_eog(vocab, sampled)) {
+    return "<eog>";
+  }
+  llama_sampler_accept(sampler.get(), sampled);
+  return tokenToPiece(model.get(), sampled);
+}
+
+std::vector<float> embedTexts(const char *modelPath) {
+  auto model = loadModel(modelPath);
+  auto ctx = createContext(model.get(), true);
+  auto tokens = tokenize(model.get(), "embedding smoke", true, false);
+  if (tokens.size() > 64) {
+    tokens.resize(64);
+  }
+  decode(ctx.get(), tokens, true);
+
+  float *embedding = llama_get_embeddings_seq(ctx.get(), 0);
+  int32_t dimension = llama_model_n_embd(model.get());
+#if defined(LLAMA_API)
+  const int32_t outDimension = llama_model_n_embd_out(model.get());
+  if (outDimension > 0) dimension = outDimension;
+#endif
+  if (embedding == nullptr) {
+    embedding = llama_get_embeddings_ith(ctx.get(), -1);
+  }
+  if (embedding == nullptr || dimension <= 0) {
+    throw SmokeError("llama.cpp did not return embeddings for the smoke input");
+  }
+  return std::vector<float>(embedding, embedding + dimension);
+}
+
+}  // namespace
+
+int main(int argc, char **argv) {
+  if (argc < 2 || argc > 3) {
+    std::cerr << "Usage: jai_llama_smoke <chat.gguf> [embedding.gguf]" << std::endl;
+    return 2;
+  }
+
+  try {
+    llama_backend_init();
+    const std::string generated = completeChat(argv[1]);
+    const std::vector<float> embedding = embedTexts(argc >= 3 ? argv[2] : argv[1]);
+    if (embedding.empty()) {
+      throw SmokeError("embedTexts returned an empty vector");
+    }
+    std::cout << "completeChat smoke output: " << generated << std::endl;
+    std::cout << "embedTexts smoke dimensions: " << embedding.size() << std::endl;
+    return 0;
+  } catch (const std::exception &error) {
+    std::cerr << "Native llama.cpp smoke test failed: " << error.what() << std::endl;
+    return 1;
+  }
+}
+`;
+}
+
+function buildSmokeProbeCMake() {
+  return `cmake_minimum_required(VERSION 3.22.1)
+project(jai_llama_smoke LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_LTO OFF CACHE BOOL "" FORCE)
+
+set(JAI_LLAMA_CPP_DIR "${cmakePath(llamaDir)}" CACHE PATH "llama.cpp checkout")
+if(NOT EXISTS "${cmakePath(llamaDir)}/CMakeLists.txt" OR NOT EXISTS "${cmakePath(llamaDir)}/include/llama.h")
+  message(FATAL_ERROR "llama.cpp checkout is missing CMakeLists.txt or include/llama.h: ${cmakePath(llamaDir)}")
+endif()
+
+add_subdirectory("${cmakePath(llamaDir)}" llama_cpp_build EXCLUDE_FROM_ALL)
+if(NOT TARGET llama)
+  message(FATAL_ERROR "llama.cpp CMake target 'llama' was not created")
+endif()
+
+add_executable(jai_llama_smoke smoke.cpp)
+target_compile_features(jai_llama_smoke PRIVATE cxx_std_17)
+target_include_directories(jai_llama_smoke PRIVATE
+  "${cmakePath(llamaDir)}/include"
+  "${cmakePath(llamaDir)}/src"
+  "${cmakePath(llamaDir)}/ggml/include"
+  "${cmakePath(llamaDir)}/ggml/src"
+)
+target_link_libraries(jai_llama_smoke PRIVATE llama)
+`;
+}
+
+function verifyRuntimeSmokeTest(options) {
+  if (!options.smoke) {
+    log('Optional GGUF runtime smoke test was not requested. To load a tiny GGUF and call completeChat + embedTexts, run: npm run native:verify-llama -- --smoke --model /path/to/tiny.gguf');
+    return;
+  }
+
+  const chatModel = options.smokeModel ? path.resolve(options.smokeModel) : '';
+  const embeddingModel = options.smokeEmbeddingModel ? path.resolve(options.smokeEmbeddingModel) : chatModel;
+  if (!chatModel) {
+    fail('--smoke requires --model /path/to/tiny.gguf');
+  }
+  requireFile(chatModel, 'GGUF smoke test chat model');
+  requireFile(embeddingModel, 'GGUF smoke test embedding model');
+
+  const sourceDir = makeTempDir('llama-smoke-src');
+  const buildDir = makeTempDir('llama-smoke-build');
+  fs.writeFileSync(path.join(sourceDir, 'CMakeLists.txt'), buildSmokeProbeCMake());
+  fs.writeFileSync(path.join(sourceDir, 'smoke.cpp'), buildSmokeProbeSource());
+
+  try {
+    log('Building host GGUF runtime smoke probe against llama.cpp');
+    assertRunSuccess(
+      'cmake',
+      [
+        ...cmakeGeneratorArgs(),
+        '-S', sourceDir,
+        '-B', buildDir,
+        '-DCMAKE_BUILD_TYPE=Release',
+      ],
+      'Host smoke CMake configures against llama.cpp',
+      { stdio: 'inherit', timeoutMs: Number(process.env.JAI_NATIVE_VERIFY_SMOKE_CONFIGURE_TIMEOUT_MS || 300000) },
+    );
+    assertRunSuccess(
+      'cmake',
+      [
+        '--build', buildDir,
+        '--target', 'jai_llama_smoke',
+        '--config', 'Release',
+        ...parallelBuildArgs(),
+      ],
+      'Host smoke probe compiles and links against llama.cpp',
+      { stdio: 'inherit', timeoutMs: Number(process.env.JAI_NATIVE_VERIFY_SMOKE_BUILD_TIMEOUT_MS || 900000) },
+    );
+
+    const exeName = process.platform === 'win32' ? 'jai_llama_smoke.exe' : 'jai_llama_smoke';
+    const executables = findFiles(buildDir, (file) => path.basename(file) === exeName, 5);
+    if (executables.length === 0) {
+      fail('Host smoke probe executable was not produced', `Build directory: ${buildDir}`);
+    }
+    assertNonEmptyFile(executables[0], 'Host llama.cpp smoke executable');
+
+    assertRunSuccess(
+      executables[0],
+      embeddingModel === chatModel ? [chatModel] : [chatModel, embeddingModel],
+      'Host GGUF runtime smoke test loads a model and calls completeChat + embedTexts',
+      { stdio: 'inherit', timeoutMs: Number(process.env.JAI_NATIVE_VERIFY_SMOKE_RUN_TIMEOUT_MS || 900000) },
+    );
+  } finally {
+    if (!process.env.JAI_KEEP_NATIVE_VERIFY_BUILD) {
+      fs.rmSync(sourceDir, { recursive: true, force: true });
+      fs.rmSync(buildDir, { recursive: true, force: true });
+    } else {
+      log(`Keeping smoke verify dirs because JAI_KEEP_NATIVE_VERIFY_BUILD is set: ${sourceDir}, ${buildDir}`);
+    }
+  }
+}
+
 function verifyProductionGuardsAndDocs() {
   const appConfig = read(appConfigFile);
   const readme = read(readmeFile);
@@ -539,20 +1197,29 @@ function updateNativeImplementationStatusAfterVerification() {
 
 
 function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    printUsage();
+    return;
+  }
+
   log(`Using mobile root: ${mobileRoot}`);
   log(`Using llama.cpp checkout: ${llamaDir}`);
 
   verifyRequiredFiles();
   verifyAndroidStaticConfig();
   verifyAndroidCMakeConfigure();
+  verifyAndroidCMakeCompile(options);
   verifyIosPodspec();
+  verifyIosNativeCompile();
   verifyBuildApkOrder();
   verifyProductionGuardsAndDocs();
   verifyStatusCanOnlyClaimAfterVerification();
+  verifyRuntimeSmokeTest(options);
   updateNativeImplementationStatusAfterVerification();
 
   log(`✅ Native llama.cpp runtime verification passed (${results.length} checks).`);
-  log('This proves llama.cpp is present, CMake can configure it with JAI_REQUIRE_LLAMA_CPP=ON, iOS podspec resolves it, and production/release native_on_device builds cannot ship with JAI_LLAMA_CPP_AVAILABLE=0. Real GGUF generation still requires running the app on target devices with downloaded model files.');
+  log('This proves llama.cpp is present; Android CMake configures with JAI_REQUIRE_LLAMA_CPP=ON; Android NDK compiles and links jai_llama_runtime against llama.cpp; iOS podspec resolves llama.cpp; iOS Objective-C++ bridge compilation ran on macOS or was explicitly skipped on this non-macOS host; and production/release native_on_device builds cannot ship with JAI_LLAMA_CPP_AVAILABLE=0. Use --smoke --model /path/to/tiny.gguf to additionally load a GGUF and call completeChat + embedTexts on the host. Target-device Gemma/Qwen validation still requires running the app on physical devices with downloaded model files.');
 }
 
 main();

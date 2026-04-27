@@ -130,6 +130,13 @@ describe("native llama.cpp production build config", () => {
     );
     expect(verifyScript).toContain("JAI_REQUIRE_LLAMA_CPP=ON");
     expect(verifyScript).toContain("JAI_LLAMA_CPP_AVAILABLE=1");
+    expect(verifyScript).toContain("verifyAndroidCMakeCompile");
+    expect(verifyScript).toContain("--target', 'jai_llama_runtime'");
+    expect(verifyScript).toContain("libjai_llama_runtime.so");
+    expect(verifyScript).toContain("verifyIosNativeCompile");
+    expect(verifyScript).toContain("iOS compile verification was skipped because the host is not macOS");
+    expect(verifyScript).toContain("--smoke");
+    expect(verifyScript).toContain("completeChat + embedTexts");
     expect(verifyScript).toContain("updateNativeImplementationStatusAfterVerification");
   });
 

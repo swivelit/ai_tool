@@ -33,9 +33,9 @@ Do not change normal `/api/chat` into a backend-primary path. Missing model file
 - `runtime.mode = "local_adapter"` is development-only and keeps `/chat/completions` and `/embeddings` as local adapter contracts.
 - `modelDelivery.mode = "bundled_assets"` is optional developer/build-time mode only.
 
-The native Android/iOS bridge now has production llama.cpp build wiring and production guards. Production `native_on_device` builds refuse to compile if llama.cpp is missing instead of shipping with `JAI_LLAMA_CPP_AVAILABLE=0`.
+The native Android/iOS bridge now has production llama.cpp build wiring and production guards. Production `native_on_device` builds refuse to compile if llama.cpp is missing instead of shipping with `JAI_LLAMA_CPP_AVAILABLE=0`. The native verifier now performs an Android NDK compile/link probe for `jai_llama_runtime` and compiles the iOS Objective-C++ bridge on macOS.
 
-This zip does not include the llama.cpp checkout itself and no real-device native GGUF inference run was performed here. Do not claim true Gemma/Qwen on-device inference is complete until a native build with the synced llama.cpp checkout loads downloaded GGUF `file://` paths and returns generated text/vectors on target devices.
+This zip does not include the llama.cpp checkout itself, so release machines must still run `npm run native:sync-llama`. Do not claim true target-device Gemma/Qwen on-device inference is complete until a native app build with the synced llama.cpp checkout loads downloaded GGUF `file://` paths and returns generated text/vectors on physical devices. Use `npm run native:verify-llama -- --smoke --model /path/to/tiny.gguf` for an optional host GGUF smoke test that calls `completeChat` and `embedTexts`.
 
 ## llama.cpp setup
 
@@ -77,7 +77,17 @@ npx expo prebuild --platform android --clean
 # then run the platform build, for example ./gradlew assembleRelease from android/
 ```
 
-`npm run native:verify-llama` checks the vendored `include/llama.h` and `CMakeLists.txt`, configures Android CMake with `JAI_REQUIRE_LLAMA_CPP=ON`, verifies Android/iOS `JAI_LLAMA_CPP_AVAILABLE=1` wiring, verifies production/release missing-llama guards, and updates `nativeImplementationStatus` only after those checks pass. It does not claim real Gemma/Qwen target-device generation until the app loads downloaded GGUF `file://` model paths and returns text/vectors on devices.
+`npm run native:verify-llama` checks the vendored `include/llama.h` and `CMakeLists.txt`, configures Android CMake with `JAI_REQUIRE_LLAMA_CPP=ON`, compiles and links `jai_llama_runtime` with the Android NDK, verifies Android/iOS `JAI_LLAMA_CPP_AVAILABLE=1` wiring, compiles `JaiLlamaCppBridge.mm` on macOS, verifies production/release missing-llama guards, and updates `nativeImplementationStatus` only after those checks pass. On non-macOS hosts it clearly reports that iOS compile verification was skipped while keeping podspec structural checks; macOS CI/release builds must run the same verifier on macOS.
+
+Optional GGUF smoke test:
+
+```bash
+npm run native:verify-llama -- --smoke --model /path/to/tiny.gguf
+# Or use a separate embedding GGUF:
+npm run native:verify-llama -- --smoke --model /path/to/tiny-chat.gguf --embedding-model /path/to/tiny-embed.gguf
+```
+
+The smoke mode builds a small host probe against llama.cpp, loads the supplied GGUF, and calls `completeChat` plus `embedTexts`. It still does not replace real target-device Gemma/Qwen validation in the mobile app with downloaded `file://` model paths.
 
 ## Production model delivery
 
