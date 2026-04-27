@@ -2,11 +2,11 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// Objective-C++ seam for the future llama.cpp iOS backend.
+/// Objective-C++ llama.cpp bridge for local-only GGUF inference.
 ///
-/// The Swift Expo module keeps failing honestly with JAI_LLAMA_CPP_BACKEND_MISSING
-/// until these methods are implemented with real llama.cpp model loading,
-/// decoding, and embedding extraction.
+/// These methods load downloaded app-private GGUF file paths and never call
+/// backend/OpenAI. If llama.cpp is not linked into the pod, they fail clearly
+/// with JAI_LLAMA_CPP_BACKEND_MISSING.
 @interface JaiLlamaCppBridge : NSObject
 
 + (nullable NSString *)completeChatWithModelPath:(NSString *)modelPath

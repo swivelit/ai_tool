@@ -132,7 +132,9 @@ public class JaiOnDeviceModelModule: Module {
 
     if path.hasPrefix("/") || path.hasPrefix("file://") {
       let url = URL(fileURLWithPath: path.replacingOccurrences(of: "file://", with: ""))
-      guard FileManager.default.fileExists(atPath: url.path) else {
+      guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let size = attributes[.size] as? NSNumber,
+            size.int64Value > 0 else {
         throw missingModel(modelId: modelId, path: path)
       }
       return url
