@@ -5,7 +5,7 @@
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
-    "native:prepare": "node ./scripts/sync-llama-cpp.js && node ./scripts/verify-release-local-first-config.js",
+    "native:prepare": "npm run native:sync-llama && npm run native:verify-llama && npm run release:verify-local-first",
     "android": "npm run native:prepare && expo run:android",
     "ios": "npm run native:prepare && expo run:ios",
     "web": "expo start --web",

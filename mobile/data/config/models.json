@@ -10,7 +10,7 @@
     "openAiPolicy": "fallback_only",
     "localRuntimeInterface": "LocalModelRuntime",
     "nativeRuntime": "NativeOnDeviceModelRuntime",
-    "nativeImplementationStatus": "native_build_wired_requires_llama_cpp_for_production_gguf_runtime_not_verified_until_native_verify_llama_passes",
+    "nativeImplementationStatus": "native_build_verified_by_native_verify_llama_llama_cpp_linkable_production_gguf_runtime_target_device_gguf_generation_required",
     "nativeBackend": "llama_cpp",
     "nativeModuleName": "JaiOnDeviceModel",
     "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",
@@ -31,7 +31,10 @@
     "models": {
       "google/gemma-3-4b-it": {
         "id": "google/gemma-3-4b-it",
-        "roles": ["profiler", "alignment"],
+        "roles": [
+          "profiler",
+          "alignment"
+        ],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q4_K_M",
@@ -48,7 +51,10 @@
       },
       "Qwen/Qwen3-8B": {
         "id": "Qwen/Qwen3-8B",
-        "roles": ["orchestrator_medium", "memory_summarizer"],
+        "roles": [
+          "orchestrator_medium",
+          "memory_summarizer"
+        ],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q4_K_M",
@@ -65,7 +71,9 @@
       },
       "Qwen/Qwen3-14B": {
         "id": "Qwen/Qwen3-14B",
-        "roles": ["orchestrator_large"],
+        "roles": [
+          "orchestrator_large"
+        ],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q4_K_M",
@@ -82,7 +90,9 @@
       },
       "Qwen/Qwen3-Embedding-0.6B": {
         "id": "Qwen/Qwen3-Embedding-0.6B",
-        "roles": ["memory_embedding"],
+        "roles": [
+          "memory_embedding"
+        ],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q8_0",

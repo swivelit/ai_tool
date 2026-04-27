@@ -77,6 +77,7 @@ vi.mock("../lib/localAgentBootstrap", () => ({
 
 vi.mock("../lib/api", () => ({
   apiPost: apiPostMock,
+  apiPostBackendOnly: apiPostMock,
 }));
 
 global.fetch = vi.fn(async () => {

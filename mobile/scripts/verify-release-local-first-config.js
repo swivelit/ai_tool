@@ -14,12 +14,17 @@ const mobileRoot = path.resolve(__dirname, '..');
 const moduleRoot = path.join(mobileRoot, 'modules', 'jai-on-device-model');
 const appConfigFile = path.join(mobileRoot, 'app.config.ts');
 const modelsConfigFile = path.join(mobileRoot, 'data', 'config', 'models.json');
+const agentRegistryFile = path.join(mobileRoot, 'data', 'config', 'agent_registry.json');
+const syncLlamaScriptFile = path.join(mobileRoot, 'scripts', 'sync-llama-cpp.js');
 const nativeModuleFiles = [
   path.join(moduleRoot, 'index.ts'),
   path.join(moduleRoot, 'expo-module.config.json'),
   path.join(moduleRoot, 'android', 'build.gradle'),
   path.join(moduleRoot, 'android', 'src', 'main', 'cpp', 'CMakeLists.txt'),
   path.join(moduleRoot, 'android', 'src', 'main', 'cpp', 'jai_llama_runtime.cpp'),
+  path.join(moduleRoot, 'android', 'src', 'main', 'java', 'com', 'harishajahan', 'jai', 'ondevice', 'JaiLlamaCppBinding.kt'),
+  path.join(moduleRoot, 'android', 'src', 'main', 'java', 'com', 'harishajahan', 'jai', 'ondevice', 'JaiOnDeviceModelEngine.kt'),
+  path.join(moduleRoot, 'android', 'src', 'main', 'java', 'com', 'harishajahan', 'jai', 'ondevice', 'JaiOnDeviceModelModule.kt'),
   path.join(moduleRoot, 'ios', 'JaiOnDeviceModelModule.swift'),
   path.join(moduleRoot, 'ios', 'JaiLlamaCppBridge.h'),
   path.join(moduleRoot, 'ios', 'JaiLlamaCppBridge.mm'),
@@ -109,6 +114,25 @@ function requireFile(file, description) {
   pass(`${description} exists (${rel(file)})`);
 }
 
+function requireUsableLlamaCppCheckout() {
+  const cmakeFile = path.join(llamaDir, 'CMakeLists.txt');
+  const headerFile = path.join(llamaDir, 'include', 'llama.h');
+  if (fs.existsSync(cmakeFile) && fs.existsSync(headerFile)) {
+    pass(`llama.cpp checkout exists (${rel(llamaDir)})`);
+    return;
+  }
+
+  fail(
+    'llama.cpp checkout is missing or incomplete',
+    [
+      `Expected: ${cmakeFile}`,
+      `Expected: ${headerFile}`,
+      'GitHub source ZIPs do not include submodule contents.',
+      'Run `npm run native:sync-llama` from mobile/ before native verification, prebuild, or release builds.',
+    ].join('\n'),
+  );
+}
+
 function requireContains(file, content, needle, description) {
   if (!content.includes(needle)) {
     fail(`${description} is missing`, `File: ${rel(file)}\nExpected to find: ${needle}`);
@@ -177,9 +201,12 @@ function validateSha256(name, value) {
 function verifyStaticLocalFirstConfig() {
   requireFile(appConfigFile, 'Expo app config');
   requireFile(modelsConfigFile, 'Model delivery config');
+  requireFile(agentRegistryFile, 'Agent registry config');
+  requireFile(syncLlamaScriptFile, 'llama.cpp sync script');
   nativeModuleFiles.forEach((file) => requireFile(file, 'JaiOnDeviceModel native module file'));
 
   const appConfig = read(appConfigFile);
+  const syncScript = read(syncLlamaScriptFile);
   requireContains(
     appConfigFile,
     appConfig,
@@ -210,8 +237,53 @@ function verifyStaticLocalFirstConfig() {
     'LOCAL_MODEL_SHA256_GEMMA_4B',
     'Expo config exposes per-model sha256 metadata path',
   );
+  requireContains(
+    appConfigFile,
+    appConfig,
+    'LOCAL_MODEL_OPENAI_POLICY: "fallback_only"',
+    'Expo config keeps OpenAI policy fallback-only',
+  );
+  requireContains(
+    appConfigFile,
+    appConfig,
+    'LOCAL_MODEL_BACKEND_ROLE: "fallback_only"',
+    'Expo config keeps backend role fallback-only',
+  );
+  requireContains(
+    syncLlamaScriptFile,
+    syncScript,
+    'GitHub source ZIPs do not include submodule contents',
+    'llama.cpp sync script documents source ZIP submodule behavior',
+  );
+  requireContains(
+    syncLlamaScriptFile,
+    syncScript,
+    'git submodule update',
+    'llama.cpp sync script supports git submodule checkout',
+  );
+  requireContains(
+    syncLlamaScriptFile,
+    syncScript,
+    'clone fallback',
+    'llama.cpp sync script supports ZIP/checkout clone fallback',
+  );
 
   const modelsConfig = readJson(modelsConfigFile);
+  const agentRegistry = readJson(agentRegistryFile);
+  if (modelsConfig.runtime?.backendRole !== 'fallback_only') {
+    fail('models.json runtime.backendRole must remain fallback_only');
+  }
+  if (modelsConfig.runtime?.openAiPolicy !== 'fallback_only') {
+    fail('models.json runtime.openAiPolicy must remain fallback_only');
+  }
+  if (agentRegistry.runtime?.backendRole !== 'fallback_only') {
+    fail('agent_registry.json runtime.backendRole must remain fallback_only');
+  }
+  if (agentRegistry.runtime?.openAiPolicy !== 'fallback_only') {
+    fail('agent_registry.json runtime.openAiPolicy must remain fallback_only');
+  }
+  pass('backend/OpenAI policy remains fallback_only in local agent configs');
+
   const delivery = modelsConfig.modelDelivery || {};
   const deliveryModels = Array.isArray(delivery.models) ? delivery.models : [];
   if (delivery.mode !== 'download_on_first_launch') {
@@ -260,8 +332,7 @@ function verifyReleaseEnvironment() {
   }
   pass('release env keeps recorded voice on the local-first pipeline');
 
-  requireFile(path.join(llamaDir, 'CMakeLists.txt'), 'llama.cpp CMake project');
-  requireFile(path.join(llamaDir, 'include', 'llama.h'), 'llama.cpp public header');
+  requireUsableLlamaCppCheckout();
 
   const cdnBaseUrl = env('EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL') || env('EXPO_PUBLIC_MODEL_CDN_BASE_URL');
   if (cdnBaseUrl) {

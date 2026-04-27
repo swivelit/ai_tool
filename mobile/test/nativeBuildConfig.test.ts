@@ -162,6 +162,8 @@ describe("native llama.cpp production build config", () => {
     expect(syncScript).toContain("git submodule update");
     expect(syncScript).toContain("hasCommittedGitlink");
     expect(syncScript).toContain("clone fallback");
+    expect(syncScript).toContain("f53577432541bb9edc1588c4ef45c66bf07e4468");
+    expect(syncScript).toContain("GitHub source ZIPs do not include submodule contents");
   });
 
   it("adds the native llama.cpp verification package script", () => {
@@ -169,7 +171,7 @@ describe("native llama.cpp production build config", () => {
     const verifyScript = read("scripts/verify-native-llama-runtime.js");
 
     expect(packageJson.scripts["native:prepare"]).toBe(
-      "node ./scripts/sync-llama-cpp.js && node ./scripts/verify-release-local-first-config.js",
+      "npm run native:sync-llama && npm run native:verify-llama && npm run release:verify-local-first",
     );
     expect(packageJson.scripts.prebuild).toBe(
       "npm run native:prepare && expo prebuild",
@@ -330,7 +332,8 @@ describe("native llama.cpp production build config", () => {
     });
 
     expect(result.status).not.toBe(0);
-    expect(result.stdout + result.stderr).toMatch(/llama\.cpp CMake project/);
+    expect(result.stdout + result.stderr).toMatch(/llama\.cpp checkout is missing/);
+    expect(result.stdout + result.stderr).toMatch(/native:sync-llama/);
   });
 
   it("release verification fails when model URLs are unresolved placeholders", () => {

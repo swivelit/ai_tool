@@ -493,7 +493,7 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
     nativeRuntime: "NativeOnDeviceModelRuntime",
     nativeBackend: "llama_cpp",
     nativeModuleName: "JaiOnDeviceModel",
-    nativeImplementationStatus: "native_build_wired_requires_llama_cpp_for_production_gguf_runtime_not_verified_until_native_verify_llama_passes",
+    nativeImplementationStatus: "native_build_verified_by_native_verify_llama_llama_cpp_linkable_production_gguf_runtime_target_device_gguf_generation_required",
     adapterRuntime: "OpenAiCompatibleLocalAdapterRuntime",
     adapterDevelopmentOnly: true,
     adapterContract:
@@ -802,7 +802,7 @@ const DEFAULT_AGENT_REGISTRY: AgentRegistryConfig = {
     nativeRuntime: "NativeOnDeviceModelRuntime",
     nativeBackend: "llama_cpp",
     nativeModuleName: "JaiOnDeviceModel",
-    nativeImplementationStatus: "native_build_wired_requires_llama_cpp_for_production_gguf_runtime_not_verified_until_native_verify_llama_passes",
+    nativeImplementationStatus: "native_build_verified_by_native_verify_llama_llama_cpp_linkable_production_gguf_runtime_target_device_gguf_generation_required",
     backendRole: "fallback_only",
     openAiPolicy: "fallback_only",
     backendPolicy: "OpenAI/backend is fallback-only and cannot be the default runtime.",
@@ -854,7 +854,7 @@ const DEFAULT_WORKSPACE_MANIFEST = {
     openAiPolicy: "fallback_only",
     localRuntimeInterface: "LocalModelRuntime",
     nativeRuntime: "NativeOnDeviceModelRuntime",
-    nativeImplementationStatus: "native_build_wired_requires_llama_cpp_for_production_gguf_runtime_not_verified_until_native_verify_llama_passes",
+    nativeImplementationStatus: "native_build_verified_by_native_verify_llama_llama_cpp_linkable_production_gguf_runtime_target_device_gguf_generation_required",
     nativeBackend: "llama_cpp",
     nativeModuleName: "JaiOnDeviceModel",
     adapterRuntime: "OpenAiCompatibleLocalAdapterRuntime",
@@ -952,6 +952,10 @@ function simpleHash(text: string) {
     h = Math.imul(h, 16777619);
   }
   return Math.abs(h >>> 0).toString(16);
+}
+
+function escapeRegExp(text: string) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function parseJsonLoose<T>(raw: any, fallback: T): T {
@@ -2924,7 +2928,15 @@ function matchedOptionsForSlot(slot: ProfilerSlot, normalizedMessage: string) {
   return slot.options.filter((option) =>
     (keywordMap[option] || [option])
       .map((phrase) => normalizeText(phrase))
-      .some((phrase) => phrase && normalizedMessage.includes(phrase)),
+      .some((phrase) => {
+        if (!phrase) return false;
+        if (/^[a-z0-9]+$/.test(phrase) && phrase.length <= 2) {
+          return new RegExp(`\\b${escapeRegExp(phrase)}\\b`).test(
+            normalizedMessage,
+          );
+        }
+        return normalizedMessage.includes(phrase);
+      }),
   );
 }
 
@@ -2973,6 +2985,7 @@ function deterministicProfilerExtraction(
 
   for (const slot of slots) {
     if (nonEmptyAnswer(updates[slot.id])) continue;
+    if (nonEmptyAnswer(answers[slot.id])) continue;
     const matches = matchedOptionsForSlot(slot, normalizedMessage);
     if (!matches.length) continue;
     updates[slot.id] =
@@ -3003,7 +3016,7 @@ function deterministicProfilerExtraction(
     }
   }
 
-  if (!Object.keys(updates).length) {
+  if (!Object.keys(updates).length && state.status === "active") {
     const fallbackSlot =
       slots.find((slot) => slot.id === state.currentTargetSlot) ||
       chooseNextProfilerSlot(slots, answers, state.confidenceBySlot || {}, []);
@@ -4157,10 +4170,20 @@ async function lookupSemanticCache(userId: number, message: string) {
 
   if (!rows.length) return null;
 
-  const profileMemory = isProfileMemoryQuestion(message);
+  const normalizedMessage = normalizeText(message);
+  const exactMatch = rows.find(
+    (row) =>
+      normalizeText(row.normalizedQuestion || row.sourceQuestion) ===
+      normalizedMessage,
+  );
+  if (exactMatch) {
+    return { ...exactMatch, score: 1 };
+  }
 
+  const profileMemory = isProfileMemoryQuestion(message);
   // Important: compare the actual user message against cached questions.
-  // Do not inject aliases here, because aliases can bypass the similarity threshold.
+  // Do not inject aliases here, because aliases can bypass the similarity
+  // threshold. The exact check above is a narrow deterministic local cache hit.
   const queryVectors = await embedTexts([message]);
 
   let best: SemanticCacheEntry | null = null;
@@ -4715,12 +4738,16 @@ function canUseOpenAiFallback(opts: {
   const explicitPolicyAllowsFallback =
     allowed.has("explicit_user_or_config_cloud_fallback_allowed") ||
     allowed.has("orchestrator_fallback_allowed");
+  const orchestratorExplicitlyRoutedFallback =
+    opts.decision.route === "fallback_openai";
 
   return (
     (opts.localReasonerRequestedFallback &&
       allowed.has("local_reasoner_returns___OPENAI_FALLBACK__")) ||
     (opts.needsLiveData && allowed.has("orchestrator_needs_live_data")) ||
-    (opts.noSafeLocalPath && allowed.has("no_safe_local_tool_or_model_path")) ||
+    (opts.noSafeLocalPath &&
+      orchestratorExplicitlyRoutedFallback &&
+      allowed.has("no_safe_local_tool_or_model_path")) ||
     (opts.decision.fallbackAllowed === true && explicitPolicyAllowsFallback)
   );
 }

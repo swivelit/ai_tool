@@ -125,10 +125,14 @@ describe("phone-local agent configuration", () => {
     expect(models.runtime.openAiPolicy).toBe("fallback_only");
     expect(models.runtime.backendPolicy).toContain("never primary");
     expect(models.runtime.nativeRuntime).toBe("NativeOnDeviceModelRuntime");
-    expect(models.runtime.nativeImplementationStatus).toContain("native_build_wired");
+    expect(models.runtime.nativeImplementationStatus).toMatch(
+      /native_build_wired|native_build_verified_by_native_verify_llama/,
+    );
     expect(models.runtime.nativeImplementationStatus).toContain("llama_cpp");
     expect(models.runtime.nativeImplementationStatus).toContain("production_gguf_runtime");
-    expect(models.runtime.nativeImplementationStatus).toContain("not_verified_until_native_verify_llama_passes");
+    expect(models.runtime.nativeImplementationStatus).toMatch(
+      /not_verified_until_native_verify_llama_passes|native_build_verified_by_native_verify_llama/,
+    );
     expect(models.runtime.nativeBackend).toBe("llama_cpp");
     expect(models.runtime.adapterDevelopmentOnly).toBe(true);
     expect(models.native.backend).toBe("llama_cpp");
@@ -290,11 +294,6 @@ describe("local orchestrator and alignment", () => {
         2,
       ),
     );
-    mockedState.fetchQueue.push(async () => ({
-      ok: true,
-      json: async () => ({ data: [{ embedding }] }),
-    }));
-
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
     const result = await runLocalAssistantTurn({
       userId: 28,

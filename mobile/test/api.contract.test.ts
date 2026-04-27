@@ -11,6 +11,7 @@ function jsonResponse(payload: any, status = 200) {
 
 describe("API client contracts", () => {
   afterEach(() => {
+    delete (globalThis as any).__JAI_NATIVE_ON_DEVICE_MODEL_RUNTIME__;
     vi.restoreAllMocks();
     vi.resetModules();
     vi.unstubAllGlobals();
@@ -209,6 +210,87 @@ describe("API client contracts", () => {
       ),
     ).rejects.toThrow("native on-device speech-to-text bridge");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("calls native_on_device transcribeAudio before running the local voice assistant turn", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+            LOCAL_ON_DEVICE_NATIVE_MODULE: "JaiOnDeviceModel",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    const runLocalAssistantTurn = vi.fn(async () => ({
+      route: "local_answer",
+      source: "local_model",
+      cacheHit: false,
+      intent: "assistant",
+      assistantText: "Native voice answer.",
+      englishText: "Native voice answer.",
+      meta: { runtime: "phone_local" },
+    }));
+    vi.doMock("../lib/localAgents", () => ({
+      runLocalAssistantTurn,
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const transcribeAudio = vi.fn(async () => ({
+      text: "please explain local voice",
+      model: "whisper",
+    }));
+    (globalThis as any).__JAI_NATIVE_ON_DEVICE_MODEL_RUNTIME__ = {
+      isAvailable: vi.fn(async () => true),
+      initialize: vi.fn(async () => ({ ok: true })),
+      completeChat: vi.fn(),
+      embedTexts: vi.fn(),
+      transcribeAudio,
+    };
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "Backend should not run." } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPostForm } = await import("../lib/api");
+    const form = {
+      _parts: [
+        [
+          "file",
+          {
+            uri: "file:///tmp/audio.m4a",
+            name: "audio.m4a",
+            type: "audio/m4a",
+          },
+        ],
+      ],
+    } as unknown as FormData;
+    const payload = await apiPostForm<any>(
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      form,
+    );
+
+    expect(transcribeAudio).toHaveBeenCalledWith({
+      fileUri: "file:///tmp/audio.m4a",
+      model: "whisper",
+      language: "en",
+    });
+    expect(runLocalAssistantTurn).toHaveBeenCalledWith({
+      userId: 7,
+      message: "please explain local voice",
+      replyLanguage: "en",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(payload.assistant.text).toBe("Native voice answer.");
+    expect(payload.meta.stt.endpoint).toBe("JaiOnDeviceModel.transcribeAudio");
   });
 
   it("routes normal chat into the local agent pipeline by default before backend", async () => {

@@ -7,9 +7,9 @@
  * Preferred flow is a committed git submodule:
  *   git submodule update --init --recursive mobile/modules/jai-on-device-model/vendor/llama.cpp
  *
- * For zip/checkouts that do not include gitlink metadata yet, this script falls
- * back to a shallow clone into the same path. Pin JAI_LLAMA_CPP_REF in CI if you
- * are not using a submodule commit.
+ * GitHub source ZIPs do not include submodule contents or gitlink checkout
+ * metadata. In that case this script falls back to cloning the same pinned
+ * llama.cpp commit into the same path.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -21,7 +21,8 @@ const llamaDir = path.join(mobileRoot, 'modules', 'jai-on-device-model', 'vendor
 const llamaHeader = path.join(llamaDir, 'include', 'llama.h');
 const llamaCMake = path.join(llamaDir, 'CMakeLists.txt');
 const llamaRepo = process.env.JAI_LLAMA_CPP_REPO || 'https://github.com/ggml-org/llama.cpp.git';
-const llamaRef = process.env.JAI_LLAMA_CPP_REF || '';
+const pinnedLlamaRef = 'f53577432541bb9edc1588c4ef45c66bf07e4468';
+const llamaRef = process.env.JAI_LLAMA_CPP_REF || pinnedLlamaRef;
 const submodulePath = 'mobile/modules/jai-on-device-model/vendor/llama.cpp';
 
 function run(command, args, options = {}) {
@@ -86,6 +87,7 @@ if (fs.existsSync(llamaDir) && fs.readdirSync(llamaDir).length > 0) {
 }
 
 console.log(`[sync-llama-cpp] No initialized submodule found. Cloning ${llamaRepo}...`);
+console.log(`[sync-llama-cpp] GitHub source ZIPs do not include submodule contents. This clone fallback will checkout llama.cpp ref ${llamaRef}.`);
 const cloneArgs = ['clone', '--depth', '1', llamaRepo, llamaDir];
 
 if (!run('git', cloneArgs)) {

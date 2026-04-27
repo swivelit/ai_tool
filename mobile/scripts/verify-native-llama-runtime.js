@@ -685,29 +685,58 @@ function verifyIosPodspec() {
 
 
 function verifyIosNativeCompile() {
+  const requireIosNativeCompile =
+    isTruthy(process.env.JAI_REQUIRE_IOS_NATIVE_COMPILE) ||
+    ['ios', 'all'].includes(String(process.env.JAI_NATIVE_VERIFY_PLATFORM || '').trim().toLowerCase());
+
   if (process.platform !== 'darwin') {
+    if (requireIosNativeCompile) {
+      fail('iOS compile verification requires macOS with Xcode and the iPhone simulator SDK.');
+    }
     log('iOS compile verification was skipped because the host is not macOS. Podspec structural checks still ran; macOS CI/release builds must run this verifier on macOS so JaiLlamaCppBridge.mm is compiled against llama.cpp.');
     pass('iOS compile verification skipped on non-macOS host with an explicit release note');
     return;
   }
 
   if (!commandExists('xcrun')) {
-    fail('xcrun is required for iOS native compile verification on macOS. Install Xcode command line tools before release builds.');
+    if (requireIosNativeCompile) {
+      fail('xcrun is required for iOS native compile verification on macOS. Install Xcode command line tools before iOS release builds.');
+    }
+    log('iOS compile verification was skipped because xcrun is unavailable. Podspec structural checks still ran; set JAI_REQUIRE_IOS_NATIVE_COMPILE=1 in iOS CI/release builds.');
+    pass('iOS compile verification skipped because xcrun is unavailable and not explicitly required');
+    return;
   }
 
   const bridgeFile = path.join(moduleRoot, 'ios', 'JaiLlamaCppBridge.mm');
   requireFile(bridgeFile, 'iOS Objective-C++ llama.cpp bridge');
 
-  const sdkResult = assertRunSuccess(
-    'xcrun',
-    ['--sdk', 'iphonesimulator', '--show-sdk-path'],
-    'iOS simulator SDK is available for native compile verification',
-  );
-  const clangResult = assertRunSuccess(
-    'xcrun',
-    ['--sdk', 'iphonesimulator', '--find', 'clang++'],
-    'Apple clang++ is available for iOS native compile verification',
-  );
+  const sdkResult = run('xcrun', ['--sdk', 'iphonesimulator', '--show-sdk-path']);
+  if (sdkResult.error || sdkResult.status !== 0) {
+    if (requireIosNativeCompile) {
+      fail(
+        'iOS simulator SDK is required for iOS native compile verification.',
+        sdkResult.output,
+      );
+    }
+    log('iOS compile verification was skipped because the iPhone simulator SDK is unavailable. Podspec structural checks still ran; set JAI_REQUIRE_IOS_NATIVE_COMPILE=1 in iOS CI/release builds.');
+    pass('iOS compile verification skipped because the iPhone simulator SDK is unavailable and not explicitly required');
+    return;
+  }
+
+  const clangResult = run('xcrun', ['--sdk', 'iphonesimulator', '--find', 'clang++']);
+  if (clangResult.error || clangResult.status !== 0) {
+    if (requireIosNativeCompile) {
+      fail(
+        'Apple clang++ is required for iOS native compile verification.',
+        clangResult.output,
+      );
+    }
+    log('iOS compile verification was skipped because Apple clang++ is unavailable for the iPhone simulator SDK. Podspec structural checks still ran; set JAI_REQUIRE_IOS_NATIVE_COMPILE=1 in iOS CI/release builds.');
+    pass('iOS compile verification skipped because Apple clang++ is unavailable and not explicitly required');
+    return;
+  }
+  pass('iOS simulator SDK is available for native compile verification');
+  pass('Apple clang++ is available for iOS native compile verification');
 
   const sdkPath = sdkResult.stdout.trim();
   const clangPath = clangResult.stdout.trim();
@@ -1219,7 +1248,7 @@ function main() {
   updateNativeImplementationStatusAfterVerification();
 
   log(`✅ Native llama.cpp runtime verification passed (${results.length} checks).`);
-  log('This proves llama.cpp is present; Android CMake configures with JAI_REQUIRE_LLAMA_CPP=ON; Android NDK compiles and links jai_llama_runtime against llama.cpp; iOS podspec resolves llama.cpp; iOS Objective-C++ bridge compilation ran on macOS or was explicitly skipped on this non-macOS host; and production/release native_on_device builds cannot ship with JAI_LLAMA_CPP_AVAILABLE=0. Use --smoke --model /path/to/tiny.gguf to additionally load a GGUF and call completeChat + embedTexts on the host. Target-device Gemma/Qwen validation still requires running the app on physical devices with downloaded model files.');
+  log('This proves llama.cpp is present; Android CMake configures with JAI_REQUIRE_LLAMA_CPP=ON; Android NDK compiles and links jai_llama_runtime against llama.cpp; iOS podspec resolves llama.cpp; iOS Objective-C++ bridge compilation ran when the iPhone simulator SDK was available or was explicitly skipped with a release note; and production/release native_on_device builds cannot ship with JAI_LLAMA_CPP_AVAILABLE=0. Use --smoke --model /path/to/tiny.gguf to additionally load a GGUF and call completeChat + embedTexts on the host. Target-device Gemma/Qwen validation still requires running the app on physical devices with downloaded model files.');
 }
 
 main();
