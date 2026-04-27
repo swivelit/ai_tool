@@ -31,10 +31,7 @@
     "models": {
       "google/gemma-3-4b-it": {
         "id": "google/gemma-3-4b-it",
-        "roles": [
-          "profiler",
-          "alignment"
-        ],
+        "roles": ["profiler", "alignment"],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q4_K_M",
@@ -51,10 +48,7 @@
       },
       "Qwen/Qwen3-8B": {
         "id": "Qwen/Qwen3-8B",
-        "roles": [
-          "orchestrator_medium",
-          "memory_summarizer"
-        ],
+        "roles": ["orchestrator_medium", "memory_summarizer"],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q4_K_M",
@@ -71,9 +65,7 @@
       },
       "Qwen/Qwen3-14B": {
         "id": "Qwen/Qwen3-14B",
-        "roles": [
-          "orchestrator_large"
-        ],
+        "roles": ["orchestrator_large"],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q4_K_M",
@@ -90,9 +82,7 @@
       },
       "Qwen/Qwen3-Embedding-0.6B": {
         "id": "Qwen/Qwen3-Embedding-0.6B",
-        "roles": [
-          "memory_embedding"
-        ],
+        "roles": ["memory_embedding"],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q8_0",
