@@ -46,3 +46,5 @@ mobile/ios/
 mobile/node_modules/
 mobile/.turbo/
 mobile/coverage/
+# Native dependency synced by mobile/scripts/sync-llama-cpp.js
+/mobile/modules/jai-on-device-model/vendor/llama.cpp/

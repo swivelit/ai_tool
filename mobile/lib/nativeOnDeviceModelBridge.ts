@@ -52,11 +52,18 @@ export type NativeOnDeviceEmbeddingInput = {
   asset: NativeOnDeviceModelAsset;
 };
 
+export type NativeOnDeviceTranscriptionInput = {
+  fileUri: string;
+  model?: string;
+  language?: "en" | "ta" | string | null;
+};
+
 export type NativeOnDeviceModelBridge = {
   isAvailable?: () => boolean | Promise<boolean>;
   initialize: (config: NativeOnDeviceBridgeInitConfig) => unknown | Promise<unknown>;
   completeChat: (input: NativeOnDeviceChatInput) => unknown | Promise<unknown>;
   embedTexts: (input: NativeOnDeviceEmbeddingInput) => unknown | Promise<unknown>;
+  transcribeAudio?: (input: NativeOnDeviceTranscriptionInput) => unknown | Promise<unknown>;
 };
 
 declare const require: unknown;
@@ -70,10 +77,17 @@ const KNOWN_NATIVE_MODULE_NAMES = [
   "LocalLlmRuntime",
 ] as const;
 
+function isUnitTestEnvironment() {
+  const env = (globalThis as any)?.process?.env || {};
+  return env.VITEST === "true" || env.NODE_ENV === "test";
+}
+
 function maybeRequireReactNative(): { NativeModules?: Record<string, unknown> } | null {
   try {
+    if (isUnitTestEnvironment()) return null;
     if (typeof require !== "function") return null;
-    return (require as (name: string) => unknown)("react-native") as {
+    const moduleName = "react" + "-native";
+    return (require as (name: string) => unknown)(moduleName) as {
       NativeModules?: Record<string, unknown>;
     };
   } catch {
@@ -85,8 +99,10 @@ function maybeRequireExpoModulesCore(): {
   requireNativeModule?: (moduleName: string) => unknown;
 } | null {
   try {
+    if (isUnitTestEnvironment()) return null;
     if (typeof require !== "function") return null;
-    return (require as (name: string) => unknown)("expo-modules-core") as {
+    const moduleName = "expo" + "-modules-core";
+    return (require as (name: string) => unknown)(moduleName) as {
       requireNativeModule?: (moduleName: string) => unknown;
     };
   } catch {
@@ -173,4 +189,11 @@ export function nativeOnDeviceBridgeMissingMessage(
   moduleName = DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
 ) {
   return `${featureName} selected runtime.mode=native_on_device, but the native on-device inference module "${moduleName}" is not installed in this app binary. This mode never calls backend/OpenAI by itself. Build a custom Expo development build or prebuild/bare React Native app, add the llama.cpp-backed native module, expose initialize(), completeChat(), and embedTexts(), and download the configured GGUF model files into app-private storage or enable bundled_assets mode.`;
+}
+
+export function nativeOnDeviceSttMissingMessage(
+  featureName: string,
+  moduleName = DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
+) {
+  return `${featureName} selected runtime.mode=native_on_device, but the native on-device speech-to-text bridge "${moduleName}.transcribeAudio()" is not available in this app binary. Recorded voice requires a phone-local native STT implementation, such as whisper.cpp, or a configured development-only local_adapter STT endpoint. This mode never calls backend/OpenAI by itself.`;
 }

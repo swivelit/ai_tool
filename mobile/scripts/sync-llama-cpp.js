@@ -22,6 +22,7 @@ const llamaHeader = path.join(llamaDir, 'include', 'llama.h');
 const llamaCMake = path.join(llamaDir, 'CMakeLists.txt');
 const llamaRepo = process.env.JAI_LLAMA_CPP_REPO || 'https://github.com/ggml-org/llama.cpp.git';
 const llamaRef = process.env.JAI_LLAMA_CPP_REF || '';
+const submodulePath = 'mobile/modules/jai-on-device-model/vendor/llama.cpp';
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -37,6 +38,25 @@ function hasUsableCheckout() {
   return fs.existsSync(llamaHeader) && fs.existsSync(llamaCMake);
 }
 
+function gitOutput(args, options = {}) {
+  const result = spawnSync('git', args, {
+    cwd: options.cwd || repoRoot,
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+    env: process.env,
+  });
+  return {
+    ok: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+  };
+}
+
+function hasCommittedGitlink() {
+  const result = gitOutput(['ls-files', '--stage', submodulePath]);
+  return result.ok && /^160000\s/.test(result.stdout.trim());
+}
+
 function fail(message) {
   console.error(`\n[sync-llama-cpp] ${message}\n`);
   process.exit(1);
@@ -49,8 +69,12 @@ if (hasUsableCheckout()) {
 
 fs.mkdirSync(path.dirname(llamaDir), { recursive: true });
 
-console.log('[sync-llama-cpp] Trying git submodule update...');
-run('git', ['submodule', 'update', '--init', '--recursive', 'mobile/modules/jai-on-device-model/vendor/llama.cpp']);
+if (hasCommittedGitlink()) {
+  console.log('[sync-llama-cpp] Trying git submodule update...');
+  run('git', ['submodule', 'update', '--init', '--recursive', submodulePath]);
+} else {
+  console.log('[sync-llama-cpp] .gitmodules is present, but no gitlink is committed for llama.cpp yet. Using clone fallback for this checkout.');
+}
 
 if (hasUsableCheckout()) {
   console.log(`[sync-llama-cpp] llama.cpp submodule ready at ${llamaDir}`);
@@ -62,18 +86,20 @@ if (fs.existsSync(llamaDir) && fs.readdirSync(llamaDir).length > 0) {
 }
 
 console.log(`[sync-llama-cpp] No initialized submodule found. Cloning ${llamaRepo}...`);
-const cloneArgs = ['clone', '--depth', '1'];
-if (llamaRef) {
-  cloneArgs.push('--branch', llamaRef);
-}
-cloneArgs.push(llamaRepo, llamaDir);
+const cloneArgs = ['clone', '--depth', '1', llamaRepo, llamaDir];
 
 if (!run('git', cloneArgs)) {
   fail('Could not fetch llama.cpp. Check network access, git installation, or configure the repository as a submodule and run git submodule update --init --recursive.');
 }
 
-if (llamaRef && !run('git', ['checkout', llamaRef], { cwd: llamaDir })) {
-  fail(`Cloned llama.cpp but could not checkout JAI_LLAMA_CPP_REF=${llamaRef}.`);
+if (llamaRef) {
+  console.log(`[sync-llama-cpp] Checking out JAI_LLAMA_CPP_REF=${llamaRef}...`);
+  if (!run('git', ['fetch', '--depth', '1', 'origin', llamaRef], { cwd: llamaDir })) {
+    fail(`Cloned llama.cpp but could not fetch JAI_LLAMA_CPP_REF=${llamaRef}. Pin a branch, tag, or fetchable commit.`);
+  }
+  if (!run('git', ['checkout', '--detach', 'FETCH_HEAD'], { cwd: llamaDir })) {
+    fail(`Fetched llama.cpp ref ${llamaRef}, but could not checkout FETCH_HEAD.`);
+  }
 }
 
 run('git', ['submodule', 'update', '--init', '--recursive'], { cwd: llamaDir });

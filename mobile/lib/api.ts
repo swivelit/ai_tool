@@ -6,6 +6,10 @@ import {
   isLoopbackLocalRuntimeBaseUrl,
   normalizeLocalRuntimeBaseUrl,
 } from "./localModelRuntime";
+import {
+  getNativeOnDeviceModelBridge,
+  nativeOnDeviceSttMissingMessage,
+} from "./nativeOnDeviceModelBridge";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
@@ -378,8 +382,7 @@ const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
 // Normal chat is local-first by product policy. The legacy flag is kept
 // for diagnostics, but it must not make backend/OpenAI the primary runtime.
 const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = true;
-const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean =
-  LOCAL_VOICE_PIPELINE_FLAG.value;
+const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean = true;
 const CANONICAL_VOICE_ANALYZE_PATH = "/transcribe-and-analyze";
 
 let localChatInterceptionDepth = 0;
@@ -396,7 +399,9 @@ export function getClientRoutingDefaults() {
     chatSource: LOCAL_CHAT_PIPELINE_FLAG.value
       ? LOCAL_CHAT_PIPELINE_FLAG.source
       : "forced",
-    voiceSource: LOCAL_VOICE_PIPELINE_FLAG.source,
+    voiceSource: LOCAL_VOICE_PIPELINE_FLAG.value
+      ? LOCAL_VOICE_PIPELINE_FLAG.source
+      : "forced",
     apiBase: API_BASE,
     localModelBaseUrl: LOCAL_MODEL_BASE_URL,
     localRuntimeMode: LOCAL_MODEL_RUNTIME_MODE,
@@ -696,14 +701,9 @@ async function getFeatureFlags(forceRefresh = false) {
 async function shouldUseLocalVoicePipeline() {
   logClientRoutingBanner();
 
-  if (LOCAL_VOICE_PIPELINE_FLAG.source !== "default") {
-    return LOCAL_VOICE_PIPELINE_FLAG.value;
-  }
-
-  // Recorded voice is local-first by default, matching text chat. Remote feature
-  // flags must not silently make backend/OpenAI the primary recorded-voice path;
-  // backend use is reserved for explicit fallback policy after local processing
-  // cannot safely complete.
+  // Recorded voice follows text chat: it must enter the local pipeline first.
+  // The legacy flag is retained for diagnostics/release validation, but it must
+  // not silently make backend/OpenAI the primary speech-to-text path.
   return USE_LOCAL_VOICE_PIPELINE_DEFAULT;
 }
 
@@ -764,6 +764,59 @@ function getRequiredLocalModelBaseUrl() {
 }
 
 async function transcribeAudioLocally(
+  fileUri: string,
+  speechLanguage?: unknown,
+): Promise<LocalVoiceTranscription> {
+  if (
+    String(LOCAL_MODEL_RUNTIME_MODE || "")
+      .trim()
+      .toLowerCase() === "native_on_device"
+  ) {
+    return transcribeAudioWithNativeBridge(fileUri, speechLanguage);
+  }
+
+  return transcribeAudioWithLocalAdapter(fileUri, speechLanguage);
+}
+
+async function transcribeAudioWithNativeBridge(
+  fileUri: string,
+  speechLanguage?: unknown,
+): Promise<LocalVoiceTranscription> {
+  const startedAt = Date.now();
+  const normalizedSpeechLanguage = normalizeSpeechLanguage(speechLanguage);
+  const bridge = getNativeOnDeviceModelBridge(LOCAL_ON_DEVICE_NATIVE_MODULE);
+
+  if (!bridge || typeof bridge.transcribeAudio !== "function") {
+    throw new Error(
+      nativeOnDeviceSttMissingMessage(
+        "Recorded voice",
+        LOCAL_ON_DEVICE_NATIVE_MODULE,
+      ),
+    );
+  }
+
+  const payload = await bridge.transcribeAudio({
+    fileUri,
+    model: LOCAL_STT_MODEL,
+    language: normalizedSpeechLanguage,
+  });
+  const transcript = normalizeTranscriptText(extractTranscriptText(payload));
+
+  if (!transcript) {
+    throw new Error(
+      `Native on-device STT bridge "${LOCAL_ON_DEVICE_NATIVE_MODULE}.transcribeAudio()" returned an empty transcript for model "${LOCAL_STT_MODEL}". Backend/OpenAI fallback is not automatic.`,
+    );
+  }
+
+  return {
+    text: transcript,
+    model: String((payload as any)?.model || LOCAL_STT_MODEL),
+    endpoint: `${LOCAL_ON_DEVICE_NATIVE_MODULE}.transcribeAudio`,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+async function transcribeAudioWithLocalAdapter(
   fileUri: string,
   speechLanguage?: unknown,
 ): Promise<LocalVoiceTranscription> {

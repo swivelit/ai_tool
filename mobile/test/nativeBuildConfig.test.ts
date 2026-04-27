@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -10,6 +11,11 @@ const mobileRoot = path.resolve(testDir, "..");
 const moduleRoot = path.join(mobileRoot, "modules", "jai-on-device-model");
 
 const appConfigUrl = pathToFileURL(path.join(mobileRoot, "app.config.ts")).href;
+const releaseVerifierPath = path.join(
+  mobileRoot,
+  "scripts",
+  "verify-release-local-first-config.js",
+);
 const ENV_KEYS_USED_BY_APP_CONFIG = [
   "BUILD_TYPE",
   "EAS_BUILD_PROFILE",
@@ -19,6 +25,7 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "JAI_LLAMA_CPP_DIR",
   "EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE",
   "EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE",
+  "EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE",
   "EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL",
   "EXPO_PUBLIC_MODEL_CDN_BASE_URL",
   "EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256",
@@ -107,6 +114,40 @@ function readRepo(relativePath: string) {
   return fs.readFileSync(path.join(mobileRoot, "..", relativePath), "utf8");
 }
 
+function runReleaseVerifier(env: Record<string, string | undefined>) {
+  const mergedEnv = { ...process.env };
+  for (const key of ENV_KEYS_USED_BY_APP_CONFIG) {
+    delete mergedEnv[key];
+  }
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) {
+      delete mergedEnv[key];
+    } else {
+      mergedEnv[key] = value;
+    }
+  }
+
+  return spawnSync(process.execPath, [releaseVerifierPath], {
+    cwd: mobileRoot,
+    env: mergedEnv,
+    encoding: "utf8",
+  });
+}
+
+function runReleaseVerifierWithMockLlama(
+  env: Record<string, string | undefined>,
+) {
+  const llamaDir = createMockLlamaCppCheckout();
+  try {
+    return runReleaseVerifier({
+      JAI_LLAMA_CPP_DIR: llamaDir,
+      ...env,
+    });
+  } finally {
+    fs.rmSync(llamaDir, { recursive: true, force: true });
+  }
+}
+
 describe("native llama.cpp production build config", () => {
   it("documents the vendored llama.cpp path as a submodule/dependency", () => {
     const gitmodulesPath = path.join(mobileRoot, "..", ".gitmodules");
@@ -119,12 +160,23 @@ describe("native llama.cpp production build config", () => {
       "mobile/modules/jai-on-device-model/vendor/llama.cpp",
     );
     expect(syncScript).toContain("git submodule update");
+    expect(syncScript).toContain("hasCommittedGitlink");
+    expect(syncScript).toContain("clone fallback");
   });
 
   it("adds the native llama.cpp verification package script", () => {
     const packageJson = JSON.parse(read("package.json"));
     const verifyScript = read("scripts/verify-native-llama-runtime.js");
 
+    expect(packageJson.scripts["native:prepare"]).toBe(
+      "node ./scripts/sync-llama-cpp.js && node ./scripts/verify-release-local-first-config.js",
+    );
+    expect(packageJson.scripts.prebuild).toBe(
+      "npm run native:prepare && expo prebuild",
+    );
+    expect(packageJson.scripts["eas-build-pre-install"]).toBe(
+      "node ./scripts/sync-llama-cpp.js",
+    );
     expect(packageJson.scripts["native:verify-llama"]).toBe(
       "node ./scripts/verify-native-llama-runtime.js",
     );
@@ -267,6 +319,79 @@ describe("native llama.cpp production build config", () => {
     ).rejects.toThrow(/EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED/);
   });
 
+  it("release verification fails when llama.cpp is missing", () => {
+    const result = runReleaseVerifier({
+      BUILD_TYPE: "release",
+      JAI_LLAMA_CPP_DIR: path.join(os.tmpdir(), "jai-missing-llama-cpp"),
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      ...validReleaseModelMetadata,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/llama\.cpp CMake project/);
+  });
+
+  it("release verification fails when model URLs are unresolved placeholders", () => {
+    const { EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL: _unused, ...metadataWithoutBase } = validReleaseModelMetadata;
+    const result = runReleaseVerifierWithMockLlama({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      ...metadataWithoutBase,
+      EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B: "https://YOUR_MODEL_CDN/models/gemma.gguf",
+      EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B: "https://models.example.test/qwen8.gguf",
+      EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B: "https://models.example.test/qwen14.gguf",
+      EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED: "https://models.example.test/embed.gguf",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/YOUR_MODEL_CDN placeholder/);
+  });
+
+  it("release verification fails when expectedBytes are missing", () => {
+    const { EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B: _unused, ...metadataWithoutBytes } = validReleaseModelMetadata;
+    const result = runReleaseVerifierWithMockLlama({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      ...metadataWithoutBytes,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B/);
+  });
+
+  it("release verification fails when sha256 hashes are missing", () => {
+    const { EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED: _unused, ...metadataWithoutSha } = validReleaseModelMetadata;
+    const result = runReleaseVerifierWithMockLlama({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      ...metadataWithoutSha,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED/);
+  });
+
+  it("release verification fails when EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false", () => {
+    const result = runReleaseVerifierWithMockLlama({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
+      ...validReleaseModelMetadata,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true/);
+  });
+
   it("sets JAI_LLAMA_CPP_AVAILABLE=1 in Android CMake when vendored llama.cpp exists", () => {
     const cmake = read(
       "modules/jai-on-device-model/android/src/main/cpp/CMakeLists.txt",
@@ -312,8 +437,8 @@ describe("native llama.cpp production build config", () => {
   it("sets JAI_LLAMA_CPP_AVAILABLE=1 in the iOS podspec when vendored llama.cpp exists", () => {
     const podspec = read("modules/jai-on-device-model/ios/JaiOnDeviceModel.podspec");
 
-    expect(podspec).toContain("vendor/llama.cpp");
-    expect(podspec).toContain("include/llama.h");
+    expect(podspec).toContain("File.join(module_root, 'vendor', 'llama.cpp')");
+    expect(podspec).toContain("File.join(llama_dir, 'include', 'llama.h')");
     expect(podspec).toContain("JAI_LLAMA_CPP_AVAILABLE=1");
     expect(podspec).toContain("JAI_LLAMA_CPP_AVAILABLE=0");
   });

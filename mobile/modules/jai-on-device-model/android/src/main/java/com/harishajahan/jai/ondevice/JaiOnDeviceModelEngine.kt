@@ -137,6 +137,23 @@ class JaiOnDeviceModelEngine(private val context: Context) {
     )
   }
 
+  fun transcribeAudio(input: Map<String, Any?>): Map<String, Any?> {
+    val fileUri = input.stringValue("fileUri")
+      ?: input.stringValue("uri")
+      ?: throw CodedException(
+        "JAI_STT_AUDIO_FILE_REQUIRED",
+        "transcribeAudio(input) requires input.fileUri for recorded voice.",
+        null,
+      )
+    val model = input.stringValue("model") ?: "whisper"
+    val language = input.stringValue("language") ?: "auto"
+    throw CodedException(
+      "JAI_NATIVE_STT_NOT_IMPLEMENTED",
+      "Recorded voice reached JaiOnDeviceModel.transcribeAudio(fileUri=$fileUri, model=$model, language=$language), but no native phone-local STT backend is linked yet. Add a whisper.cpp-backed STT binding or use runtime.mode=local_adapter with a configured phone-local /audio/transcriptions endpoint for development. This native_on_device path never calls backend/OpenAI automatically.",
+      null,
+    )
+  }
+
   private fun ensureModelFile(modelId: String, asset: Map<String, Any?>): File {
     val rawPath = asset.stringValue("modelPath")
       ?: asset.stringValue("fileName")

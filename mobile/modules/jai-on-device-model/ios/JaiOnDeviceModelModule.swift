@@ -112,6 +112,19 @@ public class JaiOnDeviceModelModule: Module {
         "backend": self.backend,
       ]
     }
+
+    AsyncFunction("transcribeAudio") { (input: [String: Any]) -> [String: Any] in
+      let fileUri = ((input["fileUri"] as? String) ?? (input["uri"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !fileUri.isEmpty else {
+        throw JaiOnDeviceModelError("JAI_STT_AUDIO_FILE_REQUIRED", "transcribeAudio(input) requires input.fileUri for recorded voice.")
+      }
+      let model = ((input["model"] as? String) ?? "whisper").trimmingCharacters(in: .whitespacesAndNewlines)
+      let language = ((input["language"] as? String) ?? "auto").trimmingCharacters(in: .whitespacesAndNewlines)
+      throw JaiOnDeviceModelError(
+        "JAI_NATIVE_STT_NOT_IMPLEMENTED",
+        "Recorded voice reached JaiOnDeviceModel.transcribeAudio(fileUri=\(fileUri), model=\(model.isEmpty ? "whisper" : model), language=\(language.isEmpty ? "auto" : language)), but no native phone-local STT backend is linked yet. Add a whisper.cpp-backed STT binding or use runtime.mode=local_adapter with a configured phone-local /audio/transcriptions endpoint for development. This native_on_device path never calls backend/OpenAI automatically."
+      )
+    }
   }
 
   private func asset(from input: [String: Any], modelId: String) throws -> [String: Any] {

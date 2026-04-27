@@ -34,5 +34,9 @@ class JaiOnDeviceModelModule : Module() {
     AsyncFunction("embedTexts") { input: Map<String, Any?> ->
       engine.embedTexts(input)
     }
+
+    AsyncFunction("transcribeAudio") { input: Map<String, Any?> ->
+      engine.transcribeAudio(input)
+    }
   }
 }

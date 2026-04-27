@@ -373,6 +373,14 @@ describe("local orchestrator and alignment", () => {
     expect(result.source).toBe("openai_fallback");
     expect(result.assistantText).toContain("Backend answer");
     expect(apiPostMock).toHaveBeenCalledTimes(1);
+    expect(apiPostMock).toHaveBeenCalledWith(
+      "/api/chat",
+      expect.objectContaining({
+        user_id: 25,
+        message: "Help with something the local model cannot safely finish.",
+        reply_language: "en",
+      }),
+    );
     expect(result.meta?.orchestratorDecision?.fallbackAllowed).toBe(true);
   });
 

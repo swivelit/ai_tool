@@ -16,13 +16,14 @@ describe("API client contracts", () => {
     vi.unstubAllGlobals();
   });
 
-  it("canonicalizes the legacy voice analyze path before calling the backend", async () => {
+  it("does not make backend primary when the legacy voice pipeline flag is disabled", async () => {
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
             USE_LOCAL_VOICE_PIPELINE: false,
+            LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
           },
         },
       },
@@ -56,21 +57,26 @@ describe("API client contracts", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { apiPostForm } = await import("../lib/api");
-    const payload = await apiPostForm<any>(
-      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
-      new FormData(),
-    );
+    const form = {
+      _parts: [
+        [
+          "file",
+          {
+            uri: "file:///tmp/audio.m4a",
+            name: "audio.m4a",
+            type: "audio/m4a",
+          },
+        ],
+      ],
+    } as unknown as FormData;
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      "https://api.example.test/transcribe-and-analyze?user_id=7&reply_language=en",
-    );
-    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
-      Authorization: "Bearer test-token",
-    });
-    expect(payload.ok).toBe(true);
-    expect(payload.item.source).toBe("voice");
-    expect(payload.assistant.text).toBe("Hello.");
+    await expect(
+      apiPostForm<any>(
+        "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+        form,
+      ),
+    ).rejects.toThrow("transcribeAudio");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("returns the same nested voice contract from the local voice proxy", async () => {
@@ -80,6 +86,7 @@ describe("API client contracts", () => {
           extra: {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_BASE_URL: "http://192.168.1.23:10000/v1",
+            LOCAL_MODEL_RUNTIME_MODE: "local_adapter",
             USE_LOCAL_VOICE_PIPELINE: true,
           },
         },
@@ -140,6 +147,68 @@ describe("API client contracts", () => {
     expect(payload.item.datetime).toBe("tomorrow 9 AM");
     expect(payload.assistant.text).toContain("Standup");
     expect(payload.pipeline.route_taken).toBe("reminder_create");
+  });
+
+  it("defaults recorded voice to native local-first and does not silently call backend when native STT is missing", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+            USE_LOCAL_VOICE_PIPELINE: true,
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    vi.doMock("../lib/localAgents", () => ({
+      runLocalAssistantTurn: vi.fn(async () => ({
+        route: "local_answer",
+        source: "local_model",
+        cacheHit: false,
+        intent: "assistant",
+        assistantText: "Should not run without STT.",
+        englishText: "Should not run without STT.",
+        meta: {},
+      })),
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        assistant: { text: "Backend should not be called." },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPostForm, getClientRoutingDefaults } = await import("../lib/api");
+    const form = {
+      _parts: [
+        [
+          "file",
+          {
+            uri: "file:///tmp/audio.m4a",
+            name: "audio.m4a",
+            type: "audio/m4a",
+          },
+        ],
+      ],
+    } as unknown as FormData;
+
+    expect(getClientRoutingDefaults().voice).toBe("local");
+    await expect(
+      apiPostForm<any>(
+        "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+        form,
+      ),
+    ).rejects.toThrow("native on-device speech-to-text bridge");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("routes normal chat into the local agent pipeline by default before backend", async () => {
@@ -321,7 +390,7 @@ describe("API client contracts", () => {
     }));
     vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (..._args: any[]) =>
       jsonResponse({
         ok: true,
         assistant: { text: "Backend fallback answer." },
