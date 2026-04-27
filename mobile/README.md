@@ -158,6 +158,15 @@ From the repo root, `./build-apk.sh` builds a local Android APK and automaticall
 
 Local APK builds load `mobile/.env` first and `mobile/.env.local` second. Values already exported in the shell take highest priority, so command-specific overrides such as `BUILD_TYPE=debug ./build-apk.sh` are preserved. The script logs only the loaded file names and precedence, never environment values.
 
+Release APK builds default to `arm64-v8a`, which is the intended target for the on-device llama.cpp runtime on Android phones. Debug APK builds use the same `JAI_ANDROID_ABIS` source of truth across React Native, app Gradle, and the Jai native module. `./launch-debug_apk.sh` reads the connected device ABI with adb and builds a matching debug APK, including `x86_64` for supported emulators. You can override explicitly with:
+
+```bash
+JAI_ANDROID_ABIS=x86_64 BUILD_TYPE=debug ./build-apk.sh
+JAI_ANDROID_ABIS=arm64-v8a ./build-apk.sh
+```
+
+After Gradle finishes, `./build-apk.sh` validates the APK native libraries and fails before install if `libreactnative.so` or `libjai_llama_runtime.so` is missing for any selected ABI, or if the APK contains native libraries for an unselected ABI.
+
 For EAS/cloud builds, set the same `EXPO_PUBLIC_LOCAL_MODEL_*`, `EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE`, and llama.cpp-related values as EAS environment variables or CI secrets. EAS/cloud builders do not receive your local `mobile/.env` or `mobile/.env.local` unless you explicitly provide those values to the build environment.
 
 ## Optional developer bundled-assets mode

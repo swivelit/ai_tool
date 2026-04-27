@@ -14,14 +14,48 @@ const REQUIRED_GGUF_FILES = [
   "qwen3-14b-q4_k_m.gguf",
   "qwen3-embedding-0.6b-q8_0.gguf",
 ];
-const ANDROID_NATIVE_ABIS = ["arm64-v8a"];
+const DEFAULT_ANDROID_NATIVE_ABIS = ["arm64-v8a"];
+const SUPPORTED_ANDROID_NATIVE_ABIS = new Set(["arm64-v8a", "x86_64"]);
+const ANDROID_NATIVE_ABIS = getAndroidNativeAbis();
 const ANDROID_ABI_FILTERS_TAG = "jai-on-device-model-android-abi-filters";
-const ANDROID_ABI_FILTERS_BLOCK = `        // @generated begin ${ANDROID_ABI_FILTERS_TAG}
+
+function parseAndroidNativeAbis(value) {
+  const rawValue = String(value || "").trim();
+  if (!rawValue) return [...DEFAULT_ANDROID_NATIVE_ABIS];
+
+  const selectedAbis = [];
+  for (const abi of rawValue.split(/[,\s;]+/).map((entry) => entry.trim()).filter(Boolean)) {
+    if (!SUPPORTED_ANDROID_NATIVE_ABIS.has(abi)) {
+      throw new Error(
+        `[withJaiOnDeviceModelAssets] Unsupported Android ABI "${abi}". ` +
+          `Supported ABIs: ${[...SUPPORTED_ANDROID_NATIVE_ABIS].join(", ")}.`,
+      );
+    }
+
+    if (!selectedAbis.includes(abi)) {
+      selectedAbis.push(abi);
+    }
+  }
+
+  return selectedAbis.length ? selectedAbis : [...DEFAULT_ANDROID_NATIVE_ABIS];
+}
+
+function getAndroidNativeAbis(env = process.env) {
+  return parseAndroidNativeAbis(env.JAI_ANDROID_ABIS || env.ANDROID_ABIS || "");
+}
+
+function formatGradleAbiFilters(abis) {
+  return abis.map((abi) => `"${abi}"`).join(", ");
+}
+
+function androidAbiFiltersBlock(abis) {
+  return `        // @generated begin ${ANDROID_ABI_FILTERS_TAG}
         ndk {
-            abiFilters "arm64-v8a"
+            abiFilters ${formatGradleAbiFilters(abis)}
         }
         // @generated end ${ANDROID_ABI_FILTERS_TAG}
 `;
+}
 
 function getProjectRoot(config) {
   return config.modRequest?.projectRoot || process.cwd();
@@ -91,17 +125,17 @@ function removeGeneratedBlock(contents, tag) {
   return contents.replace(pattern, "\n");
 }
 
-function applyAndroidAppAbiFilters(contents) {
+function applyAndroidAppAbiFilters(contents, androidNativeAbis = ANDROID_NATIVE_ABIS) {
   const cleaned = removeGeneratedBlock(contents, ANDROID_ABI_FILTERS_TAG);
   const defaultConfigPattern = /(\n\s*defaultConfig\s*\{\n)/;
 
   if (!defaultConfigPattern.test(cleaned)) {
     throw new Error(
-      "[withJaiOnDeviceModelAssets] Could not find android.defaultConfig in app/build.gradle to apply arm64-v8a ABI filters.",
+      "[withJaiOnDeviceModelAssets] Could not find android.defaultConfig in app/build.gradle to apply Android ABI filters.",
     );
   }
 
-  return cleaned.replace(defaultConfigPattern, `$1${ANDROID_ABI_FILTERS_BLOCK}`);
+  return cleaned.replace(defaultConfigPattern, `$1${androidAbiFiltersBlock(androidNativeAbis)}`);
 }
 
 function withAndroidNativeAbiGradleProperties(config) {
@@ -119,7 +153,7 @@ function withAndroidAppNativeAbiFilters(config) {
   return withAppBuildGradle(config, (modConfig) => {
     if (modConfig.modResults.language !== "groovy") {
       throw new Error(
-        "[withJaiOnDeviceModelAssets] Expected Groovy app/build.gradle so arm64-v8a ABI filters can be applied.",
+        "[withJaiOnDeviceModelAssets] Expected Groovy app/build.gradle so Android ABI filters can be applied.",
       );
     }
 
@@ -177,10 +211,15 @@ function withIosModelAssets(config) {
   });
 }
 
-module.exports = function withJaiOnDeviceModelAssets(config) {
+function withJaiOnDeviceModelAssets(config) {
   config = withAndroidNativeAbiGradleProperties(config);
   config = withAndroidAppNativeAbiFilters(config);
   config = withAndroidModelAssets(config);
   config = withIosModelAssets(config);
   return config;
-};
+}
+
+module.exports = withJaiOnDeviceModelAssets;
+module.exports.parseAndroidNativeAbis = parseAndroidNativeAbis;
+module.exports.getAndroidNativeAbis = getAndroidNativeAbis;
+module.exports.applyAndroidAppAbiFilters = applyAndroidAppAbiFilters;

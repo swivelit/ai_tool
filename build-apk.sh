@@ -30,6 +30,11 @@ fail() {
   exit 1
 }
 
+ANDROID_ABI_UTILS="$ROOT_DIR/scripts/android-abi-utils.sh"
+[[ -f "$ANDROID_ABI_UTILS" ]] || fail "Android ABI helper not found at: $ANDROID_ABI_UTILS"
+# shellcheck disable=SC1090
+source "$ANDROID_ABI_UTILS"
+
 MOBILE_ENV_FILE_KEYS=()
 ORIGINAL_MOBILE_ENV_KEYS=()
 
@@ -242,6 +247,27 @@ export ANDROID_SDK_ROOT="$ANDROID_SDK"
 export ANDROID_HOME="$ANDROID_SDK"
 export PATH="$ANDROID_SDK/platform-tools:$ANDROID_SDK/emulator:$PATH"
 
+SELECTED_ANDROID_ABIS=""
+ANDROID_ABIS_EXPLICIT_VALUE="${JAI_ANDROID_ABIS:-${ANDROID_ABIS:-}}"
+
+if [[ -n "${ANDROID_ABIS_EXPLICIT_VALUE//[[:space:]]/}" ]]; then
+  SELECTED_ANDROID_ABIS="$(jai_android_normalize_abi_list "$ANDROID_ABIS_EXPLICIT_VALUE")" \
+    || fail "Invalid JAI_ANDROID_ABIS/ANDROID_ABIS value: $ANDROID_ABIS_EXPLICIT_VALUE"
+elif [[ "$BUILD_TYPE" == "debug" && "$IS_PRODUCTION_OR_RELEASE_BUILD" != "1" ]] && command -v adb >/dev/null 2>&1 && adb get-state >/dev/null 2>&1; then
+  DEVICE_ANDROID_ABILIST="$(jai_android_read_device_abilist)" \
+    || fail "Could not read connected Android device ABI list with adb."
+  SELECTED_ANDROID_ABIS="$(jai_android_choose_supported_device_abi "$DEVICE_ANDROID_ABILIST")" \
+    || fail "Connected Android target reports ABI list '$DEVICE_ANDROID_ABILIST', but this debug build supports only: $JAI_ANDROID_SUPPORTED_ABIS_CSV."
+  info "Detected Android target ABIs: $DEVICE_ANDROID_ABILIST"
+else
+  SELECTED_ANDROID_ABIS="$JAI_ANDROID_DEFAULT_ABIS_CSV"
+  if [[ "$BUILD_TYPE" == "debug" && "$IS_PRODUCTION_OR_RELEASE_BUILD" != "1" ]]; then
+    warn "No connected Android target detected for debug ABI selection; defaulting to $SELECTED_ANDROID_ABIS."
+  fi
+fi
+
+export JAI_ANDROID_ABIS="$SELECTED_ANDROID_ABIS"
+
 if [[ -n "${API_BASE_URL:-}" ]]; then
   export EXPO_PUBLIC_API_BASE="$API_BASE_URL"
   export EXPO_PUBLIC_API_URL="$API_BASE_URL"
@@ -249,6 +275,7 @@ fi
 
 info "Using mobile app at: $MOBILE_DIR"
 info "Build type: $BUILD_TYPE"
+info "Android ABIs: $JAI_ANDROID_ABIS"
 info "Runtime mode: ${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}"
 if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" ]]; then
   info "llama.cpp required: yes (production/release native build guard enabled)"
@@ -325,6 +352,67 @@ chmod +x gradlew
 cd ..
 
 [[ -f "$SOURCE_APK" ]] || fail "APK was not found at: $SOURCE_APK"
+
+validate_apk_native_libraries() {
+  local apk_path="$1"
+  local abi_csv="$2"
+  local listing_file
+  local abi found_abi missing=0 unexpected=0
+  local -a selected_abis=()
+  local -a found_abis=()
+
+  command -v unzip >/dev/null 2>&1 || fail "unzip is required to validate native libraries in the APK."
+
+  listing_file="$(mktemp)"
+  if ! unzip -l "$apk_path" > "$listing_file"; then
+    rm -f "$listing_file"
+    fail "Could not inspect APK native libraries with unzip: $apk_path"
+  fi
+
+  IFS="," read -ra selected_abis <<< "$abi_csv"
+  for abi in "${selected_abis[@]}"; do
+    [[ -z "$abi" ]] && continue
+
+    if ! grep -Eq "[[:space:]]lib/${abi}/libreactnative\\.so$" "$listing_file"; then
+      printf "Missing lib/%s/libreactnative.so in %s\n" "$abi" "$apk_path" >&2
+      missing=1
+    fi
+
+    if ! is_truthy "${JAI_ANDROID_SKIP_JAI_RUNTIME_APK_VALIDATION:-}"; then
+      if ! grep -Eq "[[:space:]]lib/${abi}/libjai_llama_runtime\\.so$" "$listing_file"; then
+        printf "Missing lib/%s/libjai_llama_runtime.so in %s\n" "$abi" "$apk_path" >&2
+        missing=1
+      fi
+    fi
+  done
+
+  while IFS= read -r found_abi; do
+    [[ -z "$found_abi" ]] && continue
+    found_abis+=("$found_abi")
+  done < <(awk '{ name=$4; if (name ~ /^lib\// && name ~ /\.so$/) { split(name, parts, "/"); print parts[2] } }' "$listing_file" | sort -u)
+
+  if [[ "${#found_abis[@]}" -gt 0 ]]; then
+    for found_abi in "${found_abis[@]}"; do
+      if ! jai_android_abi_list_contains "$found_abi" "$abi_csv"; then
+        printf "APK contains native libraries for unselected ABI '%s'. Selected ABIs: %s\n" "$found_abi" "$abi_csv" >&2
+        unexpected=1
+      fi
+    done
+  fi
+
+  rm -f "$listing_file"
+
+  if [[ "$missing" == "1" || "$unexpected" == "1" ]]; then
+    fail "APK native library validation failed. Rebuild with a consistent JAI_ANDROID_ABIS value."
+  fi
+
+  if is_truthy "${JAI_ANDROID_SKIP_JAI_RUNTIME_APK_VALIDATION:-}"; then
+    warn "Skipped libjai_llama_runtime.so APK validation because JAI_ANDROID_SKIP_JAI_RUNTIME_APK_VALIDATION is truthy."
+  fi
+}
+
+info "Validating APK native libraries"
+validate_apk_native_libraries "$SOURCE_APK" "$JAI_ANDROID_ABIS"
 
 mkdir -p "$DIST_DIR"
 cp "$SOURCE_APK" "$DIST_DIR/$APK_NAME"

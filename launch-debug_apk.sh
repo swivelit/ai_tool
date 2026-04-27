@@ -25,6 +25,11 @@ fail() {
   exit 1
 }
 
+ANDROID_ABI_UTILS="$ROOT_DIR/scripts/android-abi-utils.sh"
+[[ -f "$ANDROID_ABI_UTILS" ]] || fail "Android ABI helper not found at: $ANDROID_ABI_UTILS"
+# shellcheck disable=SC1090
+source "$ANDROID_ABI_UTILS"
+
 metro_running() {
   command -v curl >/dev/null 2>&1 || return 1
   curl -fsS "http://127.0.0.1:${METRO_PORT}/status" 2>/dev/null | grep -q "packager-status:running"
@@ -89,12 +94,19 @@ open_logs_terminal() {
   info "Opening Android debug logs"
 
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    osascript <<EOF
+    if ! osascript <<EOF
 tell application "Terminal"
   do script "cd '$ROOT_DIR'; adb logcat -c; $LOG_CMD"
   activate
 end tell
 EOF
+    then
+      warn "Could not open a Terminal logcat window automatically."
+      echo ""
+      echo "Run this in another terminal for logs:"
+      echo "  adb logcat -c"
+      echo "  $LOG_CMD"
+    fi
   else
     echo ""
     echo "Run this in another terminal for logs:"
@@ -113,6 +125,24 @@ cd "$ROOT_DIR"
 
 info "Checking Android device/emulator"
 adb get-state >/dev/null 2>&1 || fail "No Android device/emulator detected. Run: adb devices"
+
+DEVICE_ANDROID_ABILIST="$(jai_android_read_device_abilist)" \
+  || fail "Could not read connected Android device ABI list with adb."
+ANDROID_ABIS_EXPLICIT_VALUE="${JAI_ANDROID_ABIS:-${ANDROID_ABIS:-}}"
+
+if [[ -n "${ANDROID_ABIS_EXPLICIT_VALUE//[[:space:]]/}" ]]; then
+  SELECTED_ANDROID_ABIS="$(jai_android_normalize_abi_list "$ANDROID_ABIS_EXPLICIT_VALUE")" \
+    || fail "Invalid JAI_ANDROID_ABIS/ANDROID_ABIS value: $ANDROID_ABIS_EXPLICIT_VALUE"
+  jai_android_abi_lists_intersect "$SELECTED_ANDROID_ABIS" "$DEVICE_ANDROID_ABILIST" \
+    || fail "Connected Android target reports ABI list '$DEVICE_ANDROID_ABILIST', but JAI_ANDROID_ABIS is '$SELECTED_ANDROID_ABIS'. Choose a matching ABI."
+else
+  SELECTED_ANDROID_ABIS="$(jai_android_choose_supported_device_abi "$DEVICE_ANDROID_ABILIST")" \
+    || fail "Connected Android target reports ABI list '$DEVICE_ANDROID_ABILIST', but this debug build supports only: $JAI_ANDROID_SUPPORTED_ABIS_CSV. Use an ARM64/x86_64 target or set JAI_ANDROID_ABIS explicitly."
+fi
+
+export JAI_ANDROID_ABIS="$SELECTED_ANDROID_ABIS"
+info "Android target ABIs: $DEVICE_ANDROID_ABILIST"
+info "Debug APK ABIs: $JAI_ANDROID_ABIS"
 
 info "Building debug APK first"
 BUILD_TYPE=debug ./build-apk.sh
