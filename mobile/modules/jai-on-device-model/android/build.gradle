@@ -4,6 +4,8 @@ apply plugin: 'org.jetbrains.kotlin.android'
 group = 'com.harishajahan.jai.ondevice'
 version = '0.1.0'
 
+def jaiLlamaCppDir = (findProperty('JAI_LLAMA_CPP_DIR') ?: System.getenv('JAI_LLAMA_CPP_DIR') ?: '').toString().trim()
+
 def safeExtGet(prop, fallback) {
   rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
 }
@@ -34,6 +36,9 @@ android {
     externalNativeBuild {
       cmake {
         cppFlags '-std=c++17'
+        if (jaiLlamaCppDir) {
+          arguments "-DJAI_LLAMA_CPP_DIR=${jaiLlamaCppDir}"
+        }
       }
     }
   }

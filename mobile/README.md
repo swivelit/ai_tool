@@ -1,6 +1,6 @@
 # J AI mobile app
 
-This Expo/React Native app is configured to run chat through the phone-local agent pipeline first:
+This Expo/React Native app is configured so normal chat enters the phone-local agent pipeline first:
 
 ```text
 apiPost("/api/chat")
@@ -17,22 +17,84 @@ apiPost("/api/chat")
 Backend/OpenAI remains available only through the explicit fallback path:
 
 ```text
-local pipeline decides fallback is required
+local pipeline explicitly decides fallback is required
   -> apiPostBackendOnly("/api/chat")
   -> backend/OpenAI
   -> optional local alignment
   -> reply
 ```
 
+Do not change normal `/api/chat` into a backend-primary path. Missing model files, failed downloads, checksum mismatches, missing native bridge code, or missing llama.cpp bindings must fail clearly and must not silently call backend/OpenAI.
+
 ## Runtime modes
 
 - `runtime.mode = "native_on_device"` is the intended production mode.
+- `modelDelivery.mode = "download_on_first_launch"` is the production model delivery mode.
 - `runtime.mode = "local_adapter"` is development-only and keeps `/chat/completions` and `/embeddings` as local adapter contracts.
-- Production native mode requires the `JaiOnDeviceModel` native module and real bundled GGUF files. Missing native bridge/model files fail clearly and must not silently call backend/OpenAI or use hash embeddings.
+- `modelDelivery.mode = "bundled_assets"` is optional developer/build-time mode only.
 
-## Required local model files
+True Gemma/Qwen on-device inference is not complete until the native `JaiOnDeviceModel` module links llama.cpp and its native functions actually load GGUF files and generate text/vectors. Until then, native mode fails with `JAI_LLAMA_CPP_BACKEND_MISSING` instead of pretending inference works.
 
-Place the real quantized GGUF files in `mobile/models/` before prebuild:
+## Production model delivery
+
+Production users do **not** manually place GGUF files in `mobile/models/`.
+
+Production startup/setup flow:
+
+```text
+App launches
+  -> app checks required GGUF files in app-private storage
+  -> if any file is missing/invalid, /model-setup opens
+  -> /model-setup automatically starts required downloads
+  -> each file is saved under FileSystem.documentDirectory + "models/"
+  -> size and SHA-256 are verified
+  -> invalid files are deleted and retried
+  -> downloaded file:// paths are passed to NativeOnDeviceModelRuntime
+```
+
+The setup screen shows current model, per-model progress, total progress, required download size, Wi-Fi/storage warning, clear errors, and retry.
+
+Required files:
+
+```text
+gemma-3-4b-it-q4_k_m.gguf
+qwen3-8b-q4_k_m.gguf
+qwen3-14b-q4_k_m.gguf
+qwen3-embedding-0.6b-q8_0.gguf
+```
+
+## Required production environment values
+
+Use either one public CDN base URL or per-model public/signed URLs. Do not put long-lived secrets in `EXPO_PUBLIC_*` values because they are bundled into the app.
+
+```bash
+# Option A: one public CDN base used with cdn://models/<fileName>
+EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL=https://cdn.example.com/jai
+
+# Option B: per-model public or release-generated signed URLs
+EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B=https://cdn.example.com/jai/models/gemma-3-4b-it-q4_k_m.gguf
+EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B=https://cdn.example.com/jai/models/qwen3-8b-q4_k_m.gguf
+EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B=https://cdn.example.com/jai/models/qwen3-14b-q4_k_m.gguf
+EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED=https://cdn.example.com/jai/models/qwen3-embedding-0.6b-q8_0.gguf
+
+# Exact byte sizes from your release artifact pipeline
+EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B=<exact-bytes>
+EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B=<exact-bytes>
+EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B=<exact-bytes>
+EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED=<exact-bytes>
+
+# SHA-256 of the exact GGUF files users will download
+EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B=<64-hex-sha256>
+EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B=<64-hex-sha256>
+EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B=<64-hex-sha256>
+EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED=<64-hex-sha256>
+```
+
+For production EAS builds with `runtime.mode=native_on_device` and `modelDelivery.mode=download_on_first_launch`, `mobile/app.config.ts` fails the build clearly when the CDN URL path or integrity metadata is missing.
+
+## Optional developer bundled-assets mode
+
+Use `mobile/models/` only when intentionally testing a bundled-assets development build:
 
 ```text
 mobile/models/gemma-3-4b-it-q4_k_m.gguf
@@ -41,7 +103,13 @@ mobile/models/qwen3-14b-q4_k_m.gguf
 mobile/models/qwen3-embedding-0.6b-q8_0.gguf
 ```
 
-These files are intentionally ignored by git in this scaffold. The Expo config plugin copies non-empty files into `android/app/src/main/assets/models/` during prebuild. If a file is absent, the app can still build, but `JaiOnDeviceModel.initialize()` fails with a clear missing-model error in `native_on_device` mode.
+Then set:
+
+```bash
+EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE=bundled_assets
+```
+
+The Expo config plugin copies non-empty files from `mobile/models/` into native assets during prebuild. This is not the real-user production flow.
 
 ## Native app build path
 
@@ -61,9 +129,11 @@ The checked-in native module scaffold is at:
 modules/jai-on-device-model/
 ```
 
-Android currently exposes the bridge and validates/copies bundled model assets. The JNI seam is `JaiLlamaCppBinding`, which expects a native library named `libjai_llama_runtime.so` exporting `nativeCompleteChat` and `nativeEmbedText`. Until that llama.cpp JNI implementation is linked, native mode fails with `JAI_LLAMA_CPP_BACKEND_MISSING` rather than pretending that on-device inference works.
+Android validates downloaded/bundled GGUF paths and delegates to `JaiLlamaCppBinding`, which expects `libjai_llama_runtime.so` to export `nativeCompleteChat` and `nativeEmbedText`.
 
-iOS exposes the same bridge contract and model-file validation. The Swift llama.cpp binding is a scaffold and also fails clearly until linked.
+iOS validates downloaded/bundled GGUF paths and delegates to `JaiLlamaCppBridge.mm`.
+
+The remaining native implementation is documented in `modules/jai-on-device-model/README.md`. The native module must never call backend/OpenAI.
 
 ## Development local adapter
 

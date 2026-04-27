@@ -140,11 +140,24 @@ function configuredRoot(config?: ModelDownloadConfigRoot) {
   return (config || bundledModelConfig) as ModelDownloadConfigRoot;
 }
 
-function readRuntimeValue(name?: string | null) {
+function runtimeEnvCandidates(name?: string | null) {
   const key = String(name || "").trim();
-  if (!key) return "";
-  const candidates = key.startsWith("EXPO_PUBLIC_") ? [key] : [key, `EXPO_PUBLIC_${key}`];
-  for (const candidate of candidates) {
+  if (!key) return [];
+  const withoutPublicPrefix = key.replace(/^EXPO_PUBLIC_/, "");
+  const withPublicPrefix = key.startsWith("EXPO_PUBLIC_") ? key : `EXPO_PUBLIC_${key}`;
+  return [key, withPublicPrefix, withoutPublicPrefix].filter(
+    (candidate, index, items) => candidate && items.indexOf(candidate) === index,
+  );
+}
+
+function publicEnvName(name?: string | null) {
+  const key = String(name || "").trim();
+  if (!key) return "EXPO_PUBLIC_LOCAL_MODEL_*";
+  return key.startsWith("EXPO_PUBLIC_") ? key : `EXPO_PUBLIC_${key}`;
+}
+
+function readRuntimeValue(name?: string | null) {
+  for (const candidate of runtimeEnvCandidates(name)) {
     const extraValue = extra[candidate];
     if (extraValue !== undefined && extraValue !== null && String(extraValue).trim()) {
       return String(extraValue).trim();
@@ -175,9 +188,10 @@ function parseRuntimeBoolean(value: unknown, fallback = false) {
 
 function configuredCdnBaseUrl(config?: ModelDownloadConfigRoot) {
   const root = configuredRoot(config);
-  const envName = root.modelDelivery?.cdnBaseUrlEnv || "LOCAL_MODEL_CDN_BASE_URL";
+  const envName = root.modelDelivery?.cdnBaseUrlEnv || "EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL";
   const configured =
     readRuntimeValue(envName) ||
+    readRuntimeValue("EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL") ||
     readRuntimeValue("LOCAL_MODEL_CDN_BASE_URL") ||
     readRuntimeValue("MODEL_CDN_BASE_URL") ||
     String(root.modelDelivery?.cdnBaseUrl || "").trim();
@@ -235,9 +249,9 @@ function unresolvedDownloadUrlReason(entry: ModelDownloadConfigEntry) {
   const url = String(entry.downloadUrl || "").trim();
   if (!url) return "empty downloadUrl";
   if (PLACEHOLDER_URL_PATTERN.test(url)) return "placeholder YOUR_MODEL_CDN URL";
-  if (CDN_URL_PATTERN.test(url)) return "cdn:// URL without a configured LOCAL_MODEL_CDN_BASE_URL";
+  if (CDN_URL_PATTERN.test(url)) return "cdn:// URL without a configured EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL";
   if (TEMPLATE_TOKEN_PATTERN.test(url)) {
-    return "downloadUrl template without a configured LOCAL_MODEL_CDN_BASE_URL";
+    return "downloadUrl template without a configured EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL";
   }
   if (!/^https?:\/\//i.test(url)) return `unsupported URL scheme in ${url}`;
   return "";
@@ -247,7 +261,7 @@ function assertDownloadMetadata(entry: ModelDownloadConfigEntry, config?: ModelD
   const reason = unresolvedDownloadUrlReason(entry);
   if (reason) {
     throw new ModelInstallError(
-      `Model ${entry.id} is missing a resolved public/signed CDN URL (${reason}). Set ${entry.downloadUrlEnv || "downloadUrl"} or LOCAL_MODEL_CDN_BASE_URL in app config before shipping. Do not hardcode secrets into the mobile app.`,
+      `Model ${entry.id} is missing a resolved public/signed CDN URL (${reason}). Set ${publicEnvName(entry.downloadUrlEnv)} or EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL in app config before shipping. Do not hardcode secrets into the mobile app.`,
     );
   }
 
@@ -255,12 +269,12 @@ function assertDownloadMetadata(entry: ModelDownloadConfigEntry, config?: ModelD
     const expectedBytes = Number(entry.expectedBytes || 0);
     if (expectedBytes <= 0) {
       throw new ModelInstallError(
-        `Model ${entry.id} is missing expectedBytes. Production native_on_device downloads must provide exact byte size metadata before downloading ${entry.fileName}.`,
+        `Model ${entry.id} is missing expectedBytes. Production native_on_device downloads must provide exact byte size metadata in ${publicEnvName(entry.expectedBytesEnv)} before downloading ${entry.fileName}.`,
       );
     }
     if (!normalizeSha(entry.sha256)) {
       throw new ModelInstallError(
-        `Model ${entry.id} is missing sha256. Production native_on_device downloads must provide SHA-256 metadata before downloading ${entry.fileName}.`,
+        `Model ${entry.id} is missing sha256. Production native_on_device downloads must provide SHA-256 metadata in ${publicEnvName(entry.sha256Env)} before downloading ${entry.fileName}.`,
       );
     }
   }
@@ -304,7 +318,9 @@ function normalizeMode(value: unknown): ModelDeliveryMode {
 export function getModelDeliveryMode(config?: ModelDownloadConfigRoot) {
   const root = configuredRoot(config);
   return normalizeMode(
-    extra.LOCAL_MODEL_DELIVERY_MODE || root.modelDelivery?.mode || "download_on_first_launch",
+    readRuntimeValue("LOCAL_MODEL_DELIVERY_MODE") ||
+      root.modelDelivery?.mode ||
+      "download_on_first_launch",
   );
 }
 

@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "runtime": {
     "primary": "phone_local",
     "mode": "native_on_device",
@@ -127,7 +127,7 @@
     "storageRoot": "document://models",
     "wifiRecommended": true,
     "maxRetries": 2,
-    "notes": "Production downloads quantized GGUF files into app-private storage on first launch. Set EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL for public CDN paths or set the per-model EXPO_PUBLIC_LOCAL_MODEL_URL_* variables for signed/public URLs. Do not hardcode secrets. Production builds must provide expectedBytes and sha256 metadata; the app fails clearly when integrity metadata is missing.",
+    "notes": "Production downloads quantized GGUF files into app-private storage on first launch/setup. Configure either EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL for public CDN paths or per-model EXPO_PUBLIC_LOCAL_MODEL_URL_* values for public/release-generated signed URLs. Do not hardcode secrets. Production native_on_device builds must provide exact EXPO_PUBLIC_LOCAL_MODEL_BYTES_* and EXPO_PUBLIC_LOCAL_MODEL_SHA256_* metadata; setup/build fails clearly when URL or integrity metadata is missing.",
     "models": [
       {
         "id": "google/gemma-3-4b-it",
@@ -137,10 +137,10 @@
         "sha256": null,
         "localPath": "models/gemma-3-4b-it-q4_k_m.gguf",
         "required": true,
-        "downloadUrlEnv": "LOCAL_MODEL_URL_GEMMA_4B",
+        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B",
         "downloadPath": "models/gemma-3-4b-it-q4_k_m.gguf",
-        "expectedBytesEnv": "LOCAL_MODEL_BYTES_GEMMA_4B",
-        "sha256Env": "LOCAL_MODEL_SHA256_GEMMA_4B"
+        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B",
+        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B"
       },
       {
         "id": "Qwen/Qwen3-8B",
@@ -150,10 +150,10 @@
         "sha256": null,
         "localPath": "models/qwen3-8b-q4_k_m.gguf",
         "required": true,
-        "downloadUrlEnv": "LOCAL_MODEL_URL_QWEN_8B",
+        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B",
         "downloadPath": "models/qwen3-8b-q4_k_m.gguf",
-        "expectedBytesEnv": "LOCAL_MODEL_BYTES_QWEN_8B",
-        "sha256Env": "LOCAL_MODEL_SHA256_QWEN_8B"
+        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B",
+        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B"
       },
       {
         "id": "Qwen/Qwen3-14B",
@@ -163,10 +163,10 @@
         "sha256": null,
         "localPath": "models/qwen3-14b-q4_k_m.gguf",
         "required": true,
-        "downloadUrlEnv": "LOCAL_MODEL_URL_QWEN_14B",
+        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B",
         "downloadPath": "models/qwen3-14b-q4_k_m.gguf",
-        "expectedBytesEnv": "LOCAL_MODEL_BYTES_QWEN_14B",
-        "sha256Env": "LOCAL_MODEL_SHA256_QWEN_14B"
+        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B",
+        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B"
       },
       {
         "id": "Qwen/Qwen3-Embedding-0.6B",
@@ -176,10 +176,10 @@
         "sha256": null,
         "localPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
         "required": true,
-        "downloadUrlEnv": "LOCAL_MODEL_URL_QWEN_EMBED",
+        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED",
         "downloadPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
-        "expectedBytesEnv": "LOCAL_MODEL_BYTES_QWEN_EMBED",
-        "sha256Env": "LOCAL_MODEL_SHA256_QWEN_EMBED"
+        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED",
+        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED"
       }
     ],
     "developmentModes": {
@@ -187,6 +187,27 @@
       "local_adapter_dev": "Development-only adapter mode for /chat/completions and /embeddings contracts. Do not use in production."
     },
     "requireIntegrityMetadataInProduction": true,
-    "cdnBaseUrlEnv": "LOCAL_MODEL_CDN_BASE_URL"
+    "cdnBaseUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL",
+    "productionEnv": {
+      "cdnBaseUrl": "EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL",
+      "perModelUrls": [
+        "EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B",
+        "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B",
+        "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B",
+        "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED"
+      ],
+      "expectedBytes": [
+        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B",
+        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B",
+        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B",
+        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED"
+      ],
+      "sha256": [
+        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B",
+        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B",
+        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B",
+        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED"
+      ]
+    }
   }
 }
