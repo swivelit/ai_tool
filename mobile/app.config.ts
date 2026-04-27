@@ -10,6 +10,9 @@ const LOCAL_MODEL_BASE_URL = (
 const USE_LOCAL_CHAT_PIPELINE =
   process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ?? "true";
 
+const USE_LOCAL_VOICE_PIPELINE =
+  process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ?? "true";
+
 const LOCAL_MODEL_RUNTIME_MODE =
   process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE || "native_on_device";
 
@@ -92,6 +95,13 @@ if (isProductionOrReleaseBuild && normalizedRuntimeMode === "local_adapter") {
   throw new Error(
     "Production/release builds cannot use runtime.mode=local_adapter. " +
       "local_adapter is development-only; use EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device.",
+  );
+}
+
+if (isProductionOrReleaseBuild && !isTruthyEnv(USE_LOCAL_VOICE_PIPELINE)) {
+  throw new Error(
+    "Production/release builds must keep recorded voice on the local-first pipeline. " +
+      "Set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true so /api/transcribe-and-analyze enters local STT/agents before backend fallback.",
   );
 }
 
@@ -286,8 +296,10 @@ export default {
       ...modelDeliveryExtra,
       // Kept for diagnostics/legacy config only; api.ts forces normal chat local-first.
       USE_LOCAL_CHAT_PIPELINE,
-      USE_LOCAL_VOICE_PIPELINE:
-        process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE || "false",
+      // Recorded voice follows the same local-first policy as text chat by default.
+      // Set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true in release env files/CI;
+      // production/release builds fail above if this is explicitly disabled.
+      USE_LOCAL_VOICE_PIPELINE,
 
       // Do not bundle a bearer token into the mobile app. EXPO_PUBLIC_* values are public.
       // Use Firebase-authenticated backend proxying or a short-lived pairing token instead.

@@ -372,7 +372,7 @@ const LOCAL_CHAT_PIPELINE_FLAG = resolveBooleanFlag(
 const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
   extra.USE_LOCAL_VOICE_PIPELINE,
   process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE,
-  false,
+  true,
 );
 
 // Normal chat is local-first by product policy. The legacy flag is kept
@@ -657,6 +657,18 @@ function getFormFilePart(form: FormData) {
   return null;
 }
 
+function isFormDataPayload(value: unknown): value is FormData {
+  if (!value || typeof value !== "object") return false;
+  if (typeof FormData !== "undefined" && value instanceof FormData) {
+    return true;
+  }
+
+  // React Native FormData stores parts in a private _parts array. This keeps
+  // apiPost("/api/transcribe-and-analyze", formData) on the same local-first
+  // path as apiPostForm(...) without making backend the default route.
+  return Array.isArray((value as any)?._parts);
+}
+
 async function getFeatureFlags(forceRefresh = false) {
   const now = Date.now();
   if (
@@ -688,19 +700,10 @@ async function shouldUseLocalVoicePipeline() {
     return LOCAL_VOICE_PIPELINE_FLAG.value;
   }
 
-  const flags = await getFeatureFlags();
-  const voiceRoutingMode = String(flags?.voiceRoutingMode || "")
-    .trim()
-    .toLowerCase();
-
-  if (voiceRoutingMode === "local") {
-    return true;
-  }
-
-  if (voiceRoutingMode === "backend") {
-    return false;
-  }
-
+  // Recorded voice is local-first by default, matching text chat. Remote feature
+  // flags must not silently make backend/OpenAI the primary recorded-voice path;
+  // backend use is reserved for explicit fallback policy after local processing
+  // cannot safely complete.
   return USE_LOCAL_VOICE_PIPELINE_DEFAULT;
 }
 
@@ -1034,6 +1037,20 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
+  if (isTranscribeAndAnalyzePath(path)) {
+    if (isFormDataPayload(body)) {
+      return apiPostForm<T>(path, body);
+    }
+
+    if (await shouldUseLocalVoicePipeline()) {
+      throw new Error(
+        "Local-first recorded voice routing requires FormData with a file part. " +
+          "Use apiPostForm('/api/transcribe-and-analyze', formData) or pass FormData to apiPost; " +
+          "backend/OpenAI fallback is not automatic when audio input is missing.",
+      );
+    }
+  }
+
   if (
     localChatInterceptionDepth === 0 &&
     isChatPath(path) &&

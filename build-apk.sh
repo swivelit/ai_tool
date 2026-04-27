@@ -74,6 +74,12 @@ if [[ -z "${EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE:-}" ]]; then
   export EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE="download_on_first_launch"
 fi
 
+if [[ -z "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" ]]; then
+  # Recorded voice must enter the same local-first pipeline as text chat.
+  # Release verification below fails if this is explicitly disabled.
+  export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="true"
+fi
+
 info() {
   printf "\n▶ %s\n" "$1"
 }
@@ -159,6 +165,13 @@ if [[ "$SHOULD_SYNC_LLAMA_CPP" == "1" ]]; then
 fi
 
 if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
+  info "Verifying local-first release configuration"
+  if npm run release:verify-local-first; then
+    info "Local-first release configuration verified"
+  else
+    fail "Local-first release verification failed. Configure llama.cpp, the native module, GGUF model URLs, exact byte sizes, SHA-256 hashes, and EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true."
+  fi
+
   info "Verifying native llama.cpp build/runtime wiring"
   if npm run native:verify-llama; then
     info "Native llama.cpp build/runtime wiring verified"
