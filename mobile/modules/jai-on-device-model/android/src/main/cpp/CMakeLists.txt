@@ -47,6 +47,13 @@ add_library(jai_llama_runtime SHARED
 target_compile_features(jai_llama_runtime PRIVATE cxx_std_17)
 target_include_directories(jai_llama_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+if(ANDROID)
+  target_link_options(jai_llama_runtime PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+  )
+endif()
+
 # llama.cpp is optional only for local development/test scaffolds. Production
 # release/production native_on_device builds must set JAI_REQUIRE_LLAMA_CPP=ON from Gradle/CI and
 # must fail here if the vendored checkout is absent.

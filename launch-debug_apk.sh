@@ -30,6 +30,11 @@ ANDROID_ABI_UTILS="$ROOT_DIR/scripts/android-abi-utils.sh"
 # shellcheck disable=SC1090
 source "$ANDROID_ABI_UTILS"
 
+ANDROID_16KB_UTILS="$ROOT_DIR/scripts/android-16kb-utils.sh"
+[[ -f "$ANDROID_16KB_UTILS" ]] || fail "Android 16 KB validation helper not found at: $ANDROID_16KB_UTILS"
+# shellcheck disable=SC1090
+source "$ANDROID_16KB_UTILS"
+
 metro_running() {
   command -v curl >/dev/null 2>&1 || return 1
   curl -fsS "http://127.0.0.1:${METRO_PORT}/status" 2>/dev/null | grep -q "packager-status:running"
@@ -121,10 +126,35 @@ command -v npm >/dev/null 2>&1 || fail "npm is required but was not found in PAT
 
 [[ -d "$MOBILE_DIR" ]] || fail "Mobile folder not found at: $MOBILE_DIR"
 
+ANDROID_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+if [[ -z "$ANDROID_SDK" ]]; then
+  for candidate in \
+    "$HOME/Library/Android/sdk" \
+    "$HOME/Android/Sdk" \
+    "/Users/$USER/Library/Android/sdk"
+  do
+    if [[ -d "$candidate" ]]; then
+      ANDROID_SDK="$candidate"
+      break
+    fi
+  done
+fi
+
 cd "$ROOT_DIR"
 
 info "Checking Android device/emulator"
 adb get-state >/dev/null 2>&1 || fail "No Android device/emulator detected. Run: adb devices"
+
+DEVICE_PAGE_SIZE="$(adb shell getconf PAGE_SIZE 2>/dev/null | tr -d '\r' | tr -d '[:space:]' || true)"
+DEVICE_REQUIRES_16KB_APK=0
+if [[ "$DEVICE_PAGE_SIZE" == "16384" ]]; then
+  DEVICE_REQUIRES_16KB_APK=1
+  info "16 KB page-size emulator detected; APK must pass 16 KB native library validation."
+elif [[ -n "$DEVICE_PAGE_SIZE" ]]; then
+  info "Android target page size: $DEVICE_PAGE_SIZE"
+else
+  warn "Could not read Android target page size with: adb shell getconf PAGE_SIZE"
+fi
 
 DEVICE_ANDROID_ABILIST="$(jai_android_read_device_abilist)" \
   || fail "Could not read connected Android device ABI list with adb."
@@ -148,6 +178,13 @@ info "Building debug APK first"
 BUILD_TYPE=debug ./build-apk.sh
 
 [[ -f "$APK_PATH" ]] || fail "Debug APK not found at $APK_PATH"
+
+if [[ "$DEVICE_REQUIRES_16KB_APK" == "1" ]]; then
+  info "Validating debug APK before install"
+  if ! jai_android_validate_apk_16kb_or_allow_debug_skip "$APK_PATH" "debug" "$ANDROID_SDK"; then
+    fail "16 KB page-size emulator requires a 16 KB-compatible APK. Stopping before install."
+  fi
+fi
 
 info "Cleaning old installed APK"
 adb uninstall "$PACKAGE_NAME" >/dev/null 2>&1 || true

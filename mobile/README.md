@@ -167,6 +167,37 @@ JAI_ANDROID_ABIS=arm64-v8a ./build-apk.sh
 
 After Gradle finishes, `./build-apk.sh` validates the APK native libraries and fails before install if `libreactnative.so` or `libjai_llama_runtime.so` is missing for any selected ABI, or if the APK contains native libraries for an unselected ABI.
 
+Android 15 introduced devices and emulator images with 16 KB memory pages. Apps that package native `.so` files must have uncompressed APK entries aligned for 16 KB loading and every ELF `LOAD` segment aligned to at least `0x4000`; otherwise Android 15+/Android 16-style 16 KB devices can show the Android App Compatibility warning or refuse to load the native code in future releases. [Android's guidance](https://developer.android.com/guide/practices/page-sizes) says NDK r28+ emits 16 KB-aligned shared libraries by default, while NDK r27 requires `-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON` or explicit linker flags. Expo SDK 54 / React Native 0.81.5 currently pins NDK `27.1.12297006` in `react-native/gradle/libs.versions.toml`, and the local SDK used by this repo has NDK r27 installed, so this project keeps r27 and applies the documented r27 flags instead of overriding Expo/RN to r28.
+
+The custom Jai runtime is source-built by `mobile/modules/jai-on-device-model/android/src/main/cpp/CMakeLists.txt` and links `libjai_llama_runtime.so` with:
+
+```text
+-Wl,-z,max-page-size=16384
+-Wl,-z,common-page-size=16384
+```
+
+The generated app CMake target (`libappmodules.so`) gets `-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON` from the local Expo config plugin. React Native, Hermes, Expo modules, Reanimated/Worklets, Screens, and other source-built native dependencies already receive the same r27 CMake argument from their Gradle integrations. Prebuilt AAR/Prefab libraries such as `libreactnative.so`, `libhermes.so`, `libhermestooling.so`, `libjsi.so`, `libfbjni.so`, `libc++_shared.so`, and Fresco/image pipeline libraries must come from package versions that ship 16 KB-compatible prebuilts; `./build-apk.sh` validates the final APK so incompatible dependency upgrades are caught immediately.
+
+`./build-apk.sh` now runs both checks on the final `dist/tamil-ai-<type>.apk`:
+
+```bash
+zipalign -c -P 16 -v 4 dist/tamil-ai-debug.apk
+llvm-readelf -l -W <each extracted lib/<abi>/*.so>
+```
+
+If `zipalign` or `llvm-readelf`/`readelf` is missing, the build fails with the exact Android SDK Build-Tools or NDK path to install. For quick local debug installs only, `JAI_ANDROID_ALLOW_16KB_INCOMPATIBLE_DEBUG=1 BUILD_TYPE=debug ./build-apk.sh` allows the build to continue after printing a strong warning. Release/production builds can never skip 16 KB validation.
+
+To test on a 16 KB emulator:
+
+```bash
+adb shell getconf PAGE_SIZE
+BUILD_TYPE=debug ./build-apk.sh
+./launch-debug_apk.sh
+zipalign -c -P 16 -v 4 dist/tamil-ai-debug.apk
+```
+
+`./launch-debug_apk.sh` prints `16 KB page-size emulator detected; APK must pass 16 KB native library validation.` when `adb shell getconf PAGE_SIZE` returns `16384`, and stops before install if validation fails unless the explicit debug escape hatch above is set.
+
 For EAS/cloud builds, set the same `EXPO_PUBLIC_LOCAL_MODEL_*`, `EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE`, and llama.cpp-related values as EAS environment variables or CI secrets. EAS/cloud builders do not receive your local `mobile/.env` or `mobile/.env.local` unless you explicitly provide those values to the build environment.
 
 ## Optional developer bundled-assets mode

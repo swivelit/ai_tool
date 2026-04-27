@@ -176,6 +176,15 @@ npx expo start
 npm run test:local-agents
 ```
 
+Local Android APKs are built from the repo root:
+
+```bash
+BUILD_TYPE=debug ./build-apk.sh
+./launch-debug_apk.sh
+```
+
+The APK build validates native library ABI selection and Android 15+/16 KB page-size compatibility. On a 16 KB emulator, confirm `adb shell getconf PAGE_SIZE` returns `16384`; the build then checks `zipalign -c -P 16 -v 4 dist/tamil-ai-debug.apk` and every `lib/<abi>/*.so` ELF `LOAD` segment alignment before install. See [mobile/README.md](mobile/README.md) for the NDK r27/r28 decision and the debug-only escape hatch.
+
 Focused regression tests for auth persistence, boot fail-open behavior, route resolution, and password visibility can also be run with:
 
 ```bash

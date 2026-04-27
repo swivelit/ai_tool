@@ -63,6 +63,7 @@ The Android Gradle/CMake path and iOS podspec now refuse production `native_on_d
 
 - Android passes `-DJAI_REQUIRE_LLAMA_CPP=ON` for `EAS_BUILD_PROFILE=production` and `EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device`.
 - Android CMake sets `JAI_LLAMA_CPP_AVAILABLE=1` only when it finds `CMakeLists.txt` and `include/llama.h` in the llama.cpp checkout.
+- Android CMake links the final `libjai_llama_runtime.so` with 16 KB page-size ELF alignment flags so Android 15+/16 KB-page devices can load the runtime without the App Compatibility warning.
 - Android CMake fails production configure instead of silently compiling `JAI_LLAMA_CPP_AVAILABLE=0`.
 - iOS podspec raises during pod install/build for the same production profile when llama.cpp is missing.
 - iOS podspec sets `JAI_LLAMA_CPP_AVAILABLE=1` when the vendored checkout exists, or `0` only for non-production development scaffolds.

@@ -35,6 +35,11 @@ ANDROID_ABI_UTILS="$ROOT_DIR/scripts/android-abi-utils.sh"
 # shellcheck disable=SC1090
 source "$ANDROID_ABI_UTILS"
 
+ANDROID_16KB_UTILS="$ROOT_DIR/scripts/android-16kb-utils.sh"
+[[ -f "$ANDROID_16KB_UTILS" ]] || fail "Android 16 KB validation helper not found at: $ANDROID_16KB_UTILS"
+# shellcheck disable=SC1090
+source "$ANDROID_16KB_UTILS"
+
 MOBILE_ENV_FILE_KEYS=()
 ORIGINAL_MOBILE_ENV_KEYS=()
 
@@ -416,6 +421,11 @@ validate_apk_native_libraries "$SOURCE_APK" "$JAI_ANDROID_ABIS"
 
 mkdir -p "$DIST_DIR"
 cp "$SOURCE_APK" "$DIST_DIR/$APK_NAME"
+
+info "Validating APK 16 KB native library compatibility"
+if ! jai_android_validate_apk_16kb_or_allow_debug_skip "$DIST_DIR/$APK_NAME" "$BUILD_TYPE" "$ANDROID_SDK"; then
+  fail "APK 16 KB native library validation failed. Rebuild native libraries with 16 KB ELF LOAD alignment; debug builds may set JAI_ANDROID_ALLOW_16KB_INCOMPATIBLE_DEBUG=1 only for temporary local testing."
+fi
 
 info "APK ready"
 echo "Saved to: $DIST_DIR/$APK_NAME"

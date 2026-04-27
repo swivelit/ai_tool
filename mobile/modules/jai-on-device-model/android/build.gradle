@@ -113,7 +113,8 @@ android {
     externalNativeBuild {
       cmake {
         cppFlags '-std=c++17'
-        arguments "-DJAI_REQUIRE_LLAMA_CPP=${requireLlamaCpp ? 'ON' : 'OFF'}"
+        arguments "-DJAI_REQUIRE_LLAMA_CPP=${requireLlamaCpp ? 'ON' : 'OFF'}",
+          "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
         if (jaiLlamaCppDir) {
           arguments "-DJAI_LLAMA_CPP_DIR=${configuredLlamaCppDir.absolutePath}"
         }

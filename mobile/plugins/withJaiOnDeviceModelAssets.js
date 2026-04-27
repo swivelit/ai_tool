@@ -18,6 +18,7 @@ const DEFAULT_ANDROID_NATIVE_ABIS = ["arm64-v8a"];
 const SUPPORTED_ANDROID_NATIVE_ABIS = new Set(["arm64-v8a", "x86_64"]);
 const ANDROID_NATIVE_ABIS = getAndroidNativeAbis();
 const ANDROID_ABI_FILTERS_TAG = "jai-on-device-model-android-abi-filters";
+const ANDROID_16KB_CMAKE_TAG = "jai-on-device-model-android-16kb-cmake";
 
 function parseAndroidNativeAbis(value) {
   const rawValue = String(value || "").trim();
@@ -54,6 +55,17 @@ function androidAbiFiltersBlock(abis) {
             abiFilters ${formatGradleAbiFilters(abis)}
         }
         // @generated end ${ANDROID_ABI_FILTERS_TAG}
+`;
+}
+
+function androidFlexiblePageSizeCMakeBlock() {
+  return `        // @generated begin ${ANDROID_16KB_CMAKE_TAG}
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+            }
+        }
+        // @generated end ${ANDROID_16KB_CMAKE_TAG}
 `;
 }
 
@@ -138,6 +150,23 @@ function applyAndroidAppAbiFilters(contents, androidNativeAbis = ANDROID_NATIVE_
   return cleaned.replace(defaultConfigPattern, `$1${androidAbiFiltersBlock(androidNativeAbis)}`);
 }
 
+function applyAndroidFlexiblePageSizeCMakeArgument(contents) {
+  if (contents.includes("-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")) {
+    return removeGeneratedBlock(contents, ANDROID_16KB_CMAKE_TAG);
+  }
+
+  const cleaned = removeGeneratedBlock(contents, ANDROID_16KB_CMAKE_TAG);
+  const defaultConfigPattern = /(\n\s*defaultConfig\s*\{\n)/;
+
+  if (!defaultConfigPattern.test(cleaned)) {
+    throw new Error(
+      "[withJaiOnDeviceModelAssets] Could not find android.defaultConfig in app/build.gradle to apply Android 16 KB CMake flags.",
+    );
+  }
+
+  return cleaned.replace(defaultConfigPattern, `$1${androidFlexiblePageSizeCMakeBlock()}`);
+}
+
 function withAndroidNativeAbiGradleProperties(config) {
   return withGradleProperties(config, (modConfig) => {
     upsertGradleProperty(
@@ -157,7 +186,9 @@ function withAndroidAppNativeAbiFilters(config) {
       );
     }
 
-    modConfig.modResults.contents = applyAndroidAppAbiFilters(modConfig.modResults.contents);
+    modConfig.modResults.contents = applyAndroidFlexiblePageSizeCMakeArgument(
+      applyAndroidAppAbiFilters(modConfig.modResults.contents),
+    );
     return modConfig;
   });
 }
@@ -223,3 +254,5 @@ module.exports = withJaiOnDeviceModelAssets;
 module.exports.parseAndroidNativeAbis = parseAndroidNativeAbis;
 module.exports.getAndroidNativeAbis = getAndroidNativeAbis;
 module.exports.applyAndroidAppAbiFilters = applyAndroidAppAbiFilters;
+module.exports.applyAndroidFlexiblePageSizeCMakeArgument =
+  applyAndroidFlexiblePageSizeCMakeArgument;
