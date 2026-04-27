@@ -10,7 +10,7 @@
     "openAiPolicy": "fallback_only",
     "localRuntimeInterface": "LocalModelRuntime",
     "nativeRuntime": "NativeOnDeviceModelRuntime",
-    "nativeImplementationStatus": "native_module_scaffolded_downloaded_model_delivery_llama_cpp_backend_required",
+    "nativeImplementationStatus": "native_build_wired_requires_llama_cpp_for_production_gguf_runtime_not_verified_in_this_zip",
     "nativeBackend": "llama_cpp",
     "nativeModuleName": "JaiOnDeviceModel",
     "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",

@@ -5,6 +5,21 @@ group = 'com.harishajahan.jai.ondevice'
 version = '0.1.0'
 
 def jaiLlamaCppDir = (findProperty('JAI_LLAMA_CPP_DIR') ?: System.getenv('JAI_LLAMA_CPP_DIR') ?: '').toString().trim()
+def vendoredLlamaCppDir = new File(projectDir, '../vendor/llama.cpp').canonicalFile
+def configuredLlamaCppDir = jaiLlamaCppDir ? file(jaiLlamaCppDir).canonicalFile : vendoredLlamaCppDir
+def hasLlamaCpp = new File(configuredLlamaCppDir, 'CMakeLists.txt').exists() && new File(configuredLlamaCppDir, 'include/llama.h').exists()
+
+def easBuildProfile = (System.getenv('EAS_BUILD_PROFILE') ?: '').toString().trim().toLowerCase(Locale.ROOT)
+def runtimeMode = (System.getenv('EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE') ?: 'native_on_device').toString().trim().toLowerCase(Locale.ROOT)
+def requireLlamaCpp = easBuildProfile == 'production' && runtimeMode == 'native_on_device'
+
+if (requireLlamaCpp && !hasLlamaCpp) {
+  throw new GradleException(
+    'Production native_on_device Android build requires llama.cpp at ' + vendoredLlamaCppDir +
+      ' (or JAI_LLAMA_CPP_DIR). Run `npm run native:sync-llama` from mobile/ or ' +
+      '`git submodule update --init --recursive` before building. Refusing to compile with JAI_LLAMA_CPP_AVAILABLE=0.'
+  )
+}
 
 def safeExtGet(prop, fallback) {
   rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
@@ -36,8 +51,9 @@ android {
     externalNativeBuild {
       cmake {
         cppFlags '-std=c++17'
+        arguments "-DJAI_REQUIRE_LLAMA_CPP=${requireLlamaCpp ? 'ON' : 'OFF'}"
         if (jaiLlamaCppDir) {
-          arguments "-DJAI_LLAMA_CPP_DIR=${jaiLlamaCppDir}"
+          arguments "-DJAI_LLAMA_CPP_DIR=${configuredLlamaCppDir.absolutePath}"
         }
       }
     }

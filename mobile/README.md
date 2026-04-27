@@ -33,7 +33,36 @@ Do not change normal `/api/chat` into a backend-primary path. Missing model file
 - `runtime.mode = "local_adapter"` is development-only and keeps `/chat/completions` and `/embeddings` as local adapter contracts.
 - `modelDelivery.mode = "bundled_assets"` is optional developer/build-time mode only.
 
-True Gemma/Qwen on-device inference is not complete until the native `JaiOnDeviceModel` module links llama.cpp and its native functions actually load GGUF files and generate text/vectors. Until then, native mode fails with `JAI_LLAMA_CPP_BACKEND_MISSING` instead of pretending inference works.
+The native Android/iOS bridge now has production llama.cpp build wiring and production guards. Production `native_on_device` builds refuse to compile if llama.cpp is missing instead of shipping with `JAI_LLAMA_CPP_AVAILABLE=0`.
+
+This zip does not include the llama.cpp checkout itself and no real-device native GGUF inference run was performed here. Do not claim true Gemma/Qwen on-device inference is complete until a native build with the synced llama.cpp checkout loads downloaded GGUF `file://` paths and returns generated text/vectors on target devices.
+
+## llama.cpp setup
+
+Preferred path:
+
+```text
+mobile/modules/jai-on-device-model/vendor/llama.cpp
+```
+
+Initialize it on a fresh machine:
+
+```bash
+# From repo root, when the llama.cpp submodule is committed:
+git submodule update --init --recursive
+
+# Or from mobile/, works for submodule and zip checkouts:
+npm run native:sync-llama
+```
+
+For CI/builds that use an external checkout:
+
+```bash
+JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run android:native
+JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run ios:native
+```
+
+For reproducible production builds, commit the submodule pointer or set `JAI_LLAMA_CPP_REF=<tag-or-commit>` when using the clone fallback in `npm run native:sync-llama`.
 
 ## Production model delivery
 
@@ -92,6 +121,8 @@ EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED=<64-hex-sha256>
 
 For production EAS builds with `runtime.mode=native_on_device` and `modelDelivery.mode=download_on_first_launch`, `mobile/app.config.ts` fails the build clearly when the CDN URL path or integrity metadata is missing.
 
+For any production EAS build with `runtime.mode=native_on_device`, `mobile/app.config.ts`, Android Gradle/CMake, and the iOS podspec fail clearly when llama.cpp is missing.
+
 ## Optional developer bundled-assets mode
 
 Use `mobile/models/` only when intentionally testing a bundled-assets development build:
@@ -117,6 +148,7 @@ Expo Go cannot load custom native inference code. Use a custom development build
 
 ```bash
 npm install
+npm run native:sync-llama
 npx expo prebuild --clean
 npm run android:native
 # or
@@ -131,9 +163,11 @@ modules/jai-on-device-model/
 
 Android validates downloaded/bundled GGUF paths and delegates to `JaiLlamaCppBinding`, which expects `libjai_llama_runtime.so` to export `nativeCompleteChat` and `nativeEmbedText`.
 
-iOS validates downloaded/bundled GGUF paths and delegates to `JaiLlamaCppBridge.mm`.
+Android CMake links the vendored llama.cpp `llama` target and sets `JAI_LLAMA_CPP_AVAILABLE=1` when the checkout exists.
 
-The remaining native implementation is documented in `modules/jai-on-device-model/README.md`. The native module must never call backend/OpenAI.
+iOS validates downloaded/bundled GGUF paths and delegates to `JaiLlamaCppBridge.mm`. The podspec compiles the vendored llama.cpp/ggml sources or links prebuilt static libraries under `vendor/llama.cpp/build-ios/**/lib*.a`, and sets `JAI_LLAMA_CPP_AVAILABLE=1` when the checkout exists.
+
+The native module must never call backend/OpenAI.
 
 ## Development local adapter
 

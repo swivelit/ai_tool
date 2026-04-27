@@ -1,3 +1,5 @@
+require 'pathname'
+
 Pod::Spec.new do |s|
   s.name           = 'JaiOnDeviceModel'
   s.version        = '0.1.0'
@@ -16,9 +18,23 @@ Pod::Spec.new do |s|
   s.frameworks = 'Accelerate'
   s.resources = []
 
-  llama_dir = File.expand_path('../vendor/llama.cpp', __dir__)
+  module_root = File.expand_path('..', __dir__)
+  default_llama_dir = File.join(module_root, 'vendor', 'llama.cpp')
+  llama_dir = File.expand_path(ENV.fetch('JAI_LLAMA_CPP_DIR', default_llama_dir))
+  llama_spec_path = Pathname.new(llama_dir).relative_path_from(Pathname.new(__dir__)).to_s
   llama_header = File.join(llama_dir, 'include', 'llama.h')
-  prebuilt_libs = Dir[File.join(llama_dir, 'build-ios', '**', 'lib*.a')]
+  llama_cmake = File.join(llama_dir, 'CMakeLists.txt')
+  has_llama_cpp = File.exist?(llama_header) && File.exist?(llama_cmake)
+  production_native_on_device = ENV.fetch('EAS_BUILD_PROFILE', '').strip.downcase == 'production' &&
+    ENV.fetch('EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE', 'native_on_device').strip.downcase == 'native_on_device'
+
+  if production_native_on_device && !has_llama_cpp
+    raise <<~MSG
+      Production native_on_device iOS build requires llama.cpp at #{default_llama_dir} or JAI_LLAMA_CPP_DIR.
+      Run `npm run native:sync-llama` from mobile/ or `git submodule update --init --recursive` before pod install/build.
+      Refusing to compile with JAI_LLAMA_CPP_AVAILABLE=0.
+    MSG
+  end
 
   s.source_files = [
     '**/*.{h,m,mm,swift}',
@@ -29,49 +45,50 @@ Pod::Spec.new do |s|
     '$(PODS_TARGET_SRCROOT)',
   ]
 
-  if File.exist?(llama_header)
+  if has_llama_cpp
     s.preserve_paths = [
-      '../vendor/llama.cpp/**/*',
+      File.join(llama_spec_path, '**/*'),
     ]
 
     header_search_paths += [
-      '$(PODS_TARGET_SRCROOT)/../vendor/llama.cpp/include',
-      '$(PODS_TARGET_SRCROOT)/../vendor/llama.cpp/src',
-      '$(PODS_TARGET_SRCROOT)/../vendor/llama.cpp/ggml/include',
-      '$(PODS_TARGET_SRCROOT)/../vendor/llama.cpp/ggml/src',
-      '$(PODS_TARGET_SRCROOT)/../vendor/llama.cpp/ggml/src/ggml-cpu',
+      "$(PODS_TARGET_SRCROOT)/#{llama_spec_path}/include",
+      "$(PODS_TARGET_SRCROOT)/#{llama_spec_path}/src",
+      "$(PODS_TARGET_SRCROOT)/#{llama_spec_path}/ggml/include",
+      "$(PODS_TARGET_SRCROOT)/#{llama_spec_path}/ggml/src",
+      "$(PODS_TARGET_SRCROOT)/#{llama_spec_path}/ggml/src/ggml-cpu",
     ]
 
+    prebuilt_libs = Dir[File.join(llama_dir, 'build-ios', '**', 'lib*.a')]
     if prebuilt_libs.any?
-      s.vendored_libraries = prebuilt_libs.map do |path|
-        path.sub(File.expand_path('..', __dir__) + '/', '../')
+      s.vendored_libraries = prebuilt_libs.map do |lib|
+        lib.start_with?(module_root + '/') ? lib.sub(module_root + '/', '../') : lib
       end
     else
       s.source_files += [
-        '../vendor/llama.cpp/include/**/*.h',
-        '../vendor/llama.cpp/src/**/*.{c,cc,cpp,h,hpp}',
-        '../vendor/llama.cpp/ggml/include/**/*.h',
-        '../vendor/llama.cpp/ggml/src/**/*.{c,cc,cpp,h,hpp}',
+        File.join(llama_spec_path, 'include/**/*.h'),
+        File.join(llama_spec_path, 'src/**/*.{c,cc,cpp,h,hpp}'),
+        File.join(llama_spec_path, 'ggml/include/**/*.h'),
+        File.join(llama_spec_path, 'ggml/src/**/*.{c,cc,cpp,h,hpp}'),
       ]
       s.exclude_files = [
-        '../vendor/llama.cpp/src/**/*-cuda*',
-        '../vendor/llama.cpp/src/**/*-vulkan*',
-        '../vendor/llama.cpp/src/**/*-sycl*',
-        '../vendor/llama.cpp/src/**/*-kompute*',
-        '../vendor/llama.cpp/src/**/*-rpc*',
-        '../vendor/llama.cpp/ggml/src/**/*-cuda*',
-        '../vendor/llama.cpp/ggml/src/**/*-vulkan*',
-        '../vendor/llama.cpp/ggml/src/**/*-sycl*',
-        '../vendor/llama.cpp/ggml/src/**/*-kompute*',
-        '../vendor/llama.cpp/ggml/src/**/*-rpc*',
-        '../vendor/llama.cpp/ggml/src/ggml-vulkan/**/*',
-        '../vendor/llama.cpp/ggml/src/ggml-cuda/**/*',
-        '../vendor/llama.cpp/ggml/src/ggml-sycl/**/*',
-        '../vendor/llama.cpp/ggml/src/ggml-kompute/**/*',
-        '../vendor/llama.cpp/ggml/src/ggml-rpc/**/*',
-        '../vendor/llama.cpp/examples/**/*',
-        '../vendor/llama.cpp/tools/**/*',
-        '../vendor/llama.cpp/tests/**/*',
+        File.join(llama_spec_path, 'src/**/*-cuda*'),
+        File.join(llama_spec_path, 'src/**/*-vulkan*'),
+        File.join(llama_spec_path, 'src/**/*-sycl*'),
+        File.join(llama_spec_path, 'src/**/*-kompute*'),
+        File.join(llama_spec_path, 'src/**/*-rpc*'),
+        File.join(llama_spec_path, 'ggml/src/**/*-cuda*'),
+        File.join(llama_spec_path, 'ggml/src/**/*-vulkan*'),
+        File.join(llama_spec_path, 'ggml/src/**/*-sycl*'),
+        File.join(llama_spec_path, 'ggml/src/**/*-kompute*'),
+        File.join(llama_spec_path, 'ggml/src/**/*-rpc*'),
+        File.join(llama_spec_path, 'ggml/src/ggml-vulkan/**/*'),
+        File.join(llama_spec_path, 'ggml/src/ggml-cuda/**/*'),
+        File.join(llama_spec_path, 'ggml/src/ggml-sycl/**/*'),
+        File.join(llama_spec_path, 'ggml/src/ggml-kompute/**/*'),
+        File.join(llama_spec_path, 'ggml/src/ggml-rpc/**/*'),
+        File.join(llama_spec_path, 'examples/**/*'),
+        File.join(llama_spec_path, 'tools/**/*'),
+        File.join(llama_spec_path, 'tests/**/*'),
       ]
     end
 
@@ -80,7 +97,8 @@ Pod::Spec.new do |s|
       'CLANG_CXX_LIBRARY' => 'libc++',
       'HEADER_SEARCH_PATHS' => header_search_paths.map { |path| '"' + path + '"' }.join(' '),
       'GCC_PREPROCESSOR_DEFINITIONS' => '$(inherited) JAI_LLAMA_CPP_AVAILABLE=1 GGML_USE_ACCELERATE=1 GGML_USE_CPU=1',
-      'OTHER_CPLUSPLUSFLAGS' => '$(inherited) -fexceptions -frtti',
+      'OTHER_CFLAGS' => '$(inherited) -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU=1',
+      'OTHER_CPLUSPLUSFLAGS' => '$(inherited) -fexceptions -frtti -DGGML_USE_ACCELERATE=1 -DGGML_USE_CPU=1',
     }
   else
     s.pod_target_xcconfig = {

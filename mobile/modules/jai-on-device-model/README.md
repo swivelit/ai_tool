@@ -8,6 +8,45 @@ This local Expo module exposes the JavaScript bridge expected by `mobile/lib/nat
 
 The module is local-only. It must never call OpenAI or the backend.
 
+## llama.cpp source requirement
+
+Production `native_on_device` builds require a usable llama.cpp checkout at:
+
+```text
+mobile/modules/jai-on-device-model/vendor/llama.cpp
+```
+
+Fresh machines should initialize it before prebuild/build:
+
+```bash
+# From the repository root, when this repo is configured with the submodule:
+git submodule update --init --recursive
+
+# Or from mobile/, works for submodule checkouts and zip checkouts:
+npm run native:sync-llama
+```
+
+`npm run native:sync-llama` first tries the submodule path and then falls back to a shallow clone into the same vendor directory. Set `JAI_LLAMA_CPP_REF=<tag-or-commit>` in CI if you use the clone fallback instead of a committed submodule pointer.
+
+You may also point native builds at an external checkout:
+
+```bash
+JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run android:native
+JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run ios:native
+```
+
+## Production guard behavior
+
+The Android Gradle/CMake path and iOS podspec now refuse production `native_on_device` builds when llama.cpp is missing:
+
+- Android passes `-DJAI_REQUIRE_LLAMA_CPP=ON` for `EAS_BUILD_PROFILE=production` and `EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device`.
+- Android CMake sets `JAI_LLAMA_CPP_AVAILABLE=1` only when it finds `CMakeLists.txt` and `include/llama.h` in the llama.cpp checkout.
+- Android CMake fails production configure instead of silently compiling `JAI_LLAMA_CPP_AVAILABLE=0`.
+- iOS podspec raises during pod install/build for the same production profile when llama.cpp is missing.
+- iOS podspec sets `JAI_LLAMA_CPP_AVAILABLE=1` when the vendored checkout exists, or `0` only for non-production development scaffolds.
+
+`JAI_LLAMA_CPP_BACKEND_MISSING` is therefore allowed only in non-production/dev missing-backend builds.
+
 ## Model delivery
 
 Production uses `modelDelivery.mode = "download_on_first_launch"` from `mobile/data/config/models.json`.
@@ -59,66 +98,38 @@ Use public CDN URLs or release-generated signed URLs. Do not hardcode secrets in
 
 ## Current inference status
 
-The JavaScript runtime and native module scaffolds are wired, but true llama.cpp inference is not complete in this zip because no llama.cpp checkout or implementation is vendored.
+The JavaScript runtime, model download flow, Android JNI bridge, iOS Objective-C++ bridge, and llama.cpp build wiring are in place. Production builds now fail before shipping if llama.cpp is missing.
 
-Do **not** claim Gemma/Qwen run on-device until the native runtime actually loads the downloaded GGUF file paths and returns generated text/vectors. Until then, both platforms fail clearly with `JAI_LLAMA_CPP_BACKEND_MISSING` and do not call backend/OpenAI.
+This zip still does **not** include the llama.cpp checkout itself and I did not run a native Android/iOS build with real GGUF files here. Do **not** claim true Gemma/Qwen on-device inference is complete until a native build with the synced llama.cpp checkout loads the downloaded GGUF `file://` paths and returns generated text/vectors on target devices.
 
-## Android llama.cpp implementation checklist
+## Android llama.cpp implementation
 
-Files to finish:
+Files involved:
 
 ```text
+mobile/modules/jai-on-device-model/android/build.gradle
 mobile/modules/jai-on-device-model/android/src/main/cpp/CMakeLists.txt
 mobile/modules/jai-on-device-model/android/src/main/cpp/jai_llama_runtime.cpp
 mobile/modules/jai-on-device-model/android/src/main/java/com/harishajahan/jai/ondevice/JaiLlamaCppBinding.kt
 mobile/modules/jai-on-device-model/android/src/main/java/com/harishajahan/jai/ondevice/JaiOnDeviceModelEngine.kt
 ```
 
-Build-ready vendoring options:
-
-```bash
-# Option A: local module vendor path
-git submodule add https://github.com/ggml-org/llama.cpp \
-  mobile/modules/jai-on-device-model/vendor/llama.cpp
-
-# Option B: android cpp-local path
-git submodule add https://github.com/ggml-org/llama.cpp \
-  mobile/modules/jai-on-device-model/android/src/main/cpp/llama.cpp
-
-# Option C: pass an absolute/relative CMake path from Gradle/CMake
--DJAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp
-```
-
-Native functions that must be implemented without changing the Kotlin signatures:
-
-```text
-Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeCompleteChat(
-  JNIEnv*, jobject, jstring model_path, jstring prompt,
-  jint context_size, jint threads, jdouble temperature, jint max_tokens
-) -> jstring
-
-Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeEmbedText(
-  JNIEnv*, jobject, jstring model_path, jstring text,
-  jint context_size, jint threads
-) -> jfloatArray
-```
-
-Required Android behavior:
+Behavior:
 
 1. Strip/resolve any `file://` model path and load the GGUF via `llama_model_load_from_file`.
-2. Create/reuse a `llama_context` with requested `contextSize`, batch size, thread count, and mobile-safe defaults.
+2. Create a llama.cpp context with requested `contextSize`, batch size, thread count, and mobile-safe defaults.
 3. Format prompt from the Kotlin-built prompt string.
 4. Tokenize prompt with the model vocab.
 5. Decode prompt tokens and generated tokens with max-token handling.
 6. Use temperature sampling and stop on EOS/stop tokens.
 7. Return generated UTF-8 text.
 8. For embeddings, create an embedding-enabled context, decode the input, read pooled embeddings via the llama.cpp embedding API, validate dimensions, and return `jfloatArray`.
-9. Cache/reuse model/context safely per model path, and free all resources when replaced or on process shutdown.
+9. Cache/reuse model handles safely by model path.
 10. Never call backend/OpenAI from native code.
 
-## iOS llama.cpp implementation checklist
+## iOS llama.cpp implementation
 
-Files to finish:
+Files involved:
 
 ```text
 mobile/modules/jai-on-device-model/ios/JaiLlamaCppBridge.h
@@ -127,32 +138,4 @@ mobile/modules/jai-on-device-model/ios/JaiOnDeviceModelModule.swift
 mobile/modules/jai-on-device-model/ios/JaiOnDeviceModel.podspec
 ```
 
-Build-ready vendoring options:
-
-```bash
-# Suggested local vendor path
-git submodule add https://github.com/ggml-org/llama.cpp \
-  mobile/modules/jai-on-device-model/vendor/llama.cpp
-```
-
-Then update `JaiOnDeviceModel.podspec` to compile the needed llama.cpp/ggml source files or link a prebuilt static library built from that checkout.
-
-Objective-C++ methods that must be implemented without changing Swift call sites:
-
-```objc
-+ (nullable NSString *)completeChatWithModelPath:(NSString *)modelPath
-                                          prompt:(NSString *)prompt
-                                     contextSize:(NSInteger)contextSize
-                                         threads:(NSInteger)threads
-                                     temperature:(double)temperature
-                                       maxTokens:(NSInteger)maxTokens
-                                           error:(NSError **)error;
-
-+ (nullable NSArray<NSNumber *> *)embedTextWithModelPath:(NSString *)modelPath
-                                                    text:(NSString *)text
-                                             contextSize:(NSInteger)contextSize
-                                                 threads:(NSInteger)threads
-                                                   error:(NSError **)error;
-```
-
-Required iOS behavior is the same as Android: load downloaded GGUF file paths, create llama.cpp model/context lifecycle, tokenize, decode, sample with temperature, enforce context/max-token limits, extract embeddings, and clean up/reuse resources safely. The native module must never call backend/OpenAI.
+The iOS behavior mirrors Android: load downloaded GGUF file paths, create llama.cpp model/context lifecycle, tokenize, decode, sample with temperature, enforce context/max-token limits, extract embeddings, and clean up/reuse resources safely. The native module must never call backend/OpenAI.

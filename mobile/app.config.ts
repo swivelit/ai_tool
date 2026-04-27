@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 const APP_SCHEME = "com.harishajahan.tamilai";
 
 const LOCAL_MODEL_BASE_URL = (
@@ -52,6 +55,44 @@ const LOCAL_MODEL_SHA256_GEMMA_4B = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_G
 const LOCAL_MODEL_SHA256_QWEN_8B = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B || "";
 const LOCAL_MODEL_SHA256_QWEN_14B = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B || "";
 const LOCAL_MODEL_SHA256_QWEN_EMBED = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED || "";
+
+const isProductionNativeOnDeviceBuild =
+  process.env.EAS_BUILD_PROFILE === "production" &&
+  LOCAL_MODEL_RUNTIME_MODE.trim().toLowerCase() === "native_on_device";
+
+const MOBILE_ROOT = fs.existsSync(path.join(process.cwd(), "app.config.ts"))
+  ? process.cwd()
+  : fs.existsSync(path.join(process.cwd(), "mobile", "app.config.ts"))
+    ? path.join(process.cwd(), "mobile")
+    : process.cwd();
+
+const DEFAULT_LLAMA_CPP_DIR = path.join(
+  MOBILE_ROOT,
+  "modules",
+  "jai-on-device-model",
+  "vendor",
+  "llama.cpp",
+);
+
+const LOCAL_LLAMA_CPP_DIR = process.env.JAI_LLAMA_CPP_DIR
+  ? path.resolve(MOBILE_ROOT, process.env.JAI_LLAMA_CPP_DIR)
+  : DEFAULT_LLAMA_CPP_DIR;
+
+function hasUsableLlamaCppCheckout(dir: string) {
+  return (
+    fs.existsSync(path.join(dir, "CMakeLists.txt")) &&
+    fs.existsSync(path.join(dir, "include", "llama.h"))
+  );
+}
+
+if (isProductionNativeOnDeviceBuild && !hasUsableLlamaCppCheckout(LOCAL_LLAMA_CPP_DIR)) {
+  throw new Error(
+    `Production native_on_device build requires llama.cpp at ${DEFAULT_LLAMA_CPP_DIR} ` +
+      "or JAI_LLAMA_CPP_DIR. Run `npm run native:sync-llama` from mobile/ or " +
+      "`git submodule update --init --recursive` before prebuild/build. " +
+      "Refusing to ship with JAI_LLAMA_CPP_AVAILABLE=0.",
+  );
+}
 
 const isProductionNativeDownloadBuild =
   process.env.EAS_BUILD_PROFILE === "production" &&
