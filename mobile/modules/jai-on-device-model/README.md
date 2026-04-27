@@ -35,6 +35,19 @@ JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run android:native
 JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run ios:native
 ```
 
+## CI/release verification
+
+Run the native verification gate after llama.cpp sync and before Expo prebuild:
+
+```bash
+cd mobile
+npm ci
+npm run native:sync-llama
+npm run native:verify-llama
+```
+
+`npm run native:verify-llama` fails release/production verification if Android CMake cannot configure with `JAI_REQUIRE_LLAMA_CPP=ON`, if Android/iOS do not emit `JAI_LLAMA_CPP_AVAILABLE=1` when llama.cpp is present, or if production/release `native_on_device` builds could fall back to `JAI_LLAMA_CPP_AVAILABLE=0`. It updates `nativeImplementationStatus` only after verification passes.
+
 ## Production guard behavior
 
 The Android Gradle/CMake path and iOS podspec now refuse production `native_on_device` builds when llama.cpp is missing:

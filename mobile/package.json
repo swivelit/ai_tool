@@ -15,6 +15,7 @@
     "android:native": "expo run:android",
     "ios:native": "expo run:ios",
     "native:sync-llama": "node ./scripts/sync-llama-cpp.js",
+    "native:verify-llama": "node ./scripts/verify-native-llama-runtime.js",
     "test": "vitest run"
   },
   "dependencies": {

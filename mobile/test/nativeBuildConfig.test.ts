@@ -121,17 +121,32 @@ describe("native llama.cpp production build config", () => {
     expect(syncScript).toContain("git submodule update");
   });
 
-  it("runs llama.cpp sync before Android prebuild for local release/native builds", () => {
+  it("adds the native llama.cpp verification package script", () => {
+    const packageJson = JSON.parse(read("package.json"));
+    const verifyScript = read("scripts/verify-native-llama-runtime.js");
+
+    expect(packageJson.scripts["native:verify-llama"]).toBe(
+      "node ./scripts/verify-native-llama-runtime.js",
+    );
+    expect(verifyScript).toContain("JAI_REQUIRE_LLAMA_CPP=ON");
+    expect(verifyScript).toContain("JAI_LLAMA_CPP_AVAILABLE=1");
+    expect(verifyScript).toContain("updateNativeImplementationStatusAfterVerification");
+  });
+
+  it("runs llama.cpp sync and verification before Android prebuild for local release/native builds", () => {
     const buildApk = readRepo("build-apk.sh");
     const syncIndex = buildApk.indexOf("npm run native:sync-llama");
+    const verifyIndex = buildApk.indexOf("npm run native:verify-llama");
     const prebuildIndex = buildApk.indexOf("npx expo prebuild --platform android --clean");
 
     expect(buildApk).toContain("SHOULD_SYNC_LLAMA_CPP=0");
     expect(buildApk).toContain('$BUILD_TYPE" == "release"');
     expect(buildApk).toContain('$RUNTIME_MODE" == "native_on_device"');
     expect(syncIndex).toBeGreaterThanOrEqual(0);
+    expect(verifyIndex).toBeGreaterThanOrEqual(0);
     expect(prebuildIndex).toBeGreaterThanOrEqual(0);
-    expect(syncIndex).toBeLessThan(prebuildIndex);
+    expect(syncIndex).toBeLessThan(verifyIndex);
+    expect(verifyIndex).toBeLessThan(prebuildIndex);
   });
 
   it("marks local release APK builds as llama.cpp-required without making backend primary", () => {

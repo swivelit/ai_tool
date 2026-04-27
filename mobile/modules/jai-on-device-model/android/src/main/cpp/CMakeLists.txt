@@ -1,6 +1,44 @@
 cmake_minimum_required(VERSION 3.22.1)
 
+# The verifier runs this CMake file before Expo prebuild. In that mode, avoid
+# host compiler/toolchain probes and only exercise the llama.cpp path/guard
+# resolution that release Android builds rely on. The normal build path below
+# still creates and links libjai_llama_runtime.so.
+set(JAI_LLAMA_CPP_DIR "" CACHE PATH "Path to a vendored llama.cpp checkout")
+set(JAI_REQUIRE_LLAMA_CPP OFF CACHE BOOL "Fail configure when llama.cpp is missing")
+set(JAI_VERIFY_LLAMA_CPP_CONFIGURE_ONLY OFF CACHE BOOL "Verify llama.cpp path guards without compiling native sources")
+
+if(JAI_VERIFY_LLAMA_CPP_CONFIGURE_ONLY)
+  project(jai_llama_runtime_verify LANGUAGES NONE)
+
+  set(JAI_VERIFY_LLAMA_CPP_DIR "${JAI_LLAMA_CPP_DIR}")
+  if(NOT JAI_VERIFY_LLAMA_CPP_DIR)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../../../vendor/llama.cpp/CMakeLists.txt")
+      get_filename_component(JAI_VERIFY_LLAMA_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../vendor/llama.cpp" ABSOLUTE)
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/CMakeLists.txt")
+      set(JAI_VERIFY_LLAMA_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp")
+    endif()
+  elseif(NOT IS_ABSOLUTE "${JAI_VERIFY_LLAMA_CPP_DIR}")
+    get_filename_component(JAI_VERIFY_LLAMA_CPP_DIR "${JAI_VERIFY_LLAMA_CPP_DIR}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  endif()
+
+  if(JAI_VERIFY_LLAMA_CPP_DIR AND EXISTS "${JAI_VERIFY_LLAMA_CPP_DIR}/CMakeLists.txt" AND EXISTS "${JAI_VERIFY_LLAMA_CPP_DIR}/include/llama.h")
+    message(STATUS "JaiOnDeviceModel verify: llama.cpp present at ${JAI_VERIFY_LLAMA_CPP_DIR}; production build will set JAI_LLAMA_CPP_AVAILABLE=1")
+  elseif(JAI_REQUIRE_LLAMA_CPP)
+    message(FATAL_ERROR
+      "JaiOnDeviceModel release/production native_on_device build requires llama.cpp at "
+      "mobile/modules/jai-on-device-model/vendor/llama.cpp or -DJAI_LLAMA_CPP_DIR=/path/to/llama.cpp. "
+      "Run `npm run native:sync-llama` from mobile/ or `git submodule update --init --recursive` before building."
+    )
+  else()
+    message(WARNING "JaiOnDeviceModel verify: llama.cpp not found; only non-production dev builds may use JAI_LLAMA_CPP_AVAILABLE=0")
+  endif()
+
+  return()
+endif()
+
 project(jai_llama_runtime LANGUAGES C CXX)
+
 
 add_library(jai_llama_runtime SHARED
   jai_llama_runtime.cpp
@@ -75,4 +113,6 @@ else()
 endif()
 
 find_library(log_lib log)
-target_link_libraries(jai_llama_runtime PRIVATE ${log_lib})
+if(log_lib)
+  target_link_libraries(jai_llama_runtime PRIVATE ${log_lib})
+endif()

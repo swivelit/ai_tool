@@ -64,6 +64,21 @@ JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run ios:native
 
 For reproducible production builds, commit the submodule pointer or set `JAI_LLAMA_CPP_REF=<tag-or-commit>` when using the clone fallback in `npm run native:sync-llama`.
 
+## CI/release native verification order
+
+Release CI must prove llama.cpp is present and linkable before Expo prebuild generates native projects:
+
+```bash
+cd mobile
+npm ci
+npm run native:sync-llama
+npm run native:verify-llama
+npx expo prebuild --platform android --clean
+# then run the platform build, for example ./gradlew assembleRelease from android/
+```
+
+`npm run native:verify-llama` checks the vendored `include/llama.h` and `CMakeLists.txt`, configures Android CMake with `JAI_REQUIRE_LLAMA_CPP=ON`, verifies Android/iOS `JAI_LLAMA_CPP_AVAILABLE=1` wiring, verifies production/release missing-llama guards, and updates `nativeImplementationStatus` only after those checks pass. It does not claim real Gemma/Qwen target-device generation until the app loads downloaded GGUF `file://` model paths and returns text/vectors on devices.
+
 ## Production model delivery
 
 Production users do **not** manually place GGUF files in `mobile/models/`.

@@ -52,7 +52,7 @@
     "openAiPolicy": "fallback_only",
     "localRuntimeInterface": "LocalModelRuntime",
     "nativeRuntime": "NativeOnDeviceModelRuntime",
-    "nativeImplementationStatus": "native_module_scaffolded_model_files_and_llama_cpp_backend_required",
+    "nativeImplementationStatus": "native_build_wired_requires_llama_cpp_for_production_gguf_runtime_not_verified_until_native_verify_llama_passes",
     "nativeBackend": "llama_cpp",
     "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",
     "adapterDevelopmentOnly": true,

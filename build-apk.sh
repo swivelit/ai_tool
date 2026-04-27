@@ -158,6 +158,15 @@ if [[ "$SHOULD_SYNC_LLAMA_CPP" == "1" ]]; then
   fi
 fi
 
+if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
+  info "Verifying native llama.cpp build/runtime wiring"
+  if npm run native:verify-llama; then
+    info "Native llama.cpp build/runtime wiring verified"
+  else
+    fail "Native llama.cpp verification failed. Run npm run native:sync-llama, then npm run native:verify-llama from mobile/ and fix the reported native build guard/linkage issue."
+  fi
+fi
+
 info "Validating Expo native/model delivery configuration"
 CI=1 npx expo config --type public >/dev/null
 

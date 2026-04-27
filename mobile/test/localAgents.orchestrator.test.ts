@@ -128,7 +128,7 @@ describe("phone-local agent configuration", () => {
     expect(models.runtime.nativeImplementationStatus).toContain("native_build_wired");
     expect(models.runtime.nativeImplementationStatus).toContain("llama_cpp");
     expect(models.runtime.nativeImplementationStatus).toContain("production_gguf_runtime");
-    expect(models.runtime.nativeImplementationStatus).toContain("not_verified_in_this_zip");
+    expect(models.runtime.nativeImplementationStatus).toContain("not_verified_until_native_verify_llama_passes");
     expect(models.runtime.nativeBackend).toBe("llama_cpp");
     expect(models.runtime.adapterDevelopmentOnly).toBe(true);
     expect(models.native.backend).toBe("llama_cpp");
