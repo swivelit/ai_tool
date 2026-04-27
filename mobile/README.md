@@ -148,6 +148,18 @@ For production EAS builds with `runtime.mode=native_on_device` and `modelDeliver
 
 For any production EAS build with `runtime.mode=native_on_device`, `mobile/app.config.ts`, Android Gradle/CMake, and the iOS podspec fail clearly when llama.cpp is missing.
 
+## Local APK builds
+
+From the repo root, `./build-apk.sh` builds a local Android APK and automatically loads mobile environment files before release verification, native verification, Expo config, Expo prebuild, and Gradle:
+
+```bash
+./build-apk.sh
+```
+
+Local APK builds load `mobile/.env` first and `mobile/.env.local` second. Values already exported in the shell take highest priority, so command-specific overrides such as `BUILD_TYPE=debug ./build-apk.sh` are preserved. The script logs only the loaded file names and precedence, never environment values.
+
+For EAS/cloud builds, set the same `EXPO_PUBLIC_LOCAL_MODEL_*`, `EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE`, and llama.cpp-related values as EAS environment variables or CI secrets. EAS/cloud builders do not receive your local `mobile/.env` or `mobile/.env.local` unless you explicitly provide those values to the build environment.
+
 ## Optional developer bundled-assets mode
 
 Use `mobile/models/` only when intentionally testing a bundled-assets development build:

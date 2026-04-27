@@ -2,7 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const {
   IOSConfig,
+  withAppBuildGradle,
   withDangerousMod,
+  withGradleProperties,
   withXcodeProject,
 } = require("@expo/config-plugins");
 
@@ -12,6 +14,14 @@ const REQUIRED_GGUF_FILES = [
   "qwen3-14b-q4_k_m.gguf",
   "qwen3-embedding-0.6b-q8_0.gguf",
 ];
+const ANDROID_NATIVE_ABIS = ["arm64-v8a"];
+const ANDROID_ABI_FILTERS_TAG = "jai-on-device-model-android-abi-filters";
+const ANDROID_ABI_FILTERS_BLOCK = `        // @generated begin ${ANDROID_ABI_FILTERS_TAG}
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+        // @generated end ${ANDROID_ABI_FILTERS_TAG}
+`;
 
 function getProjectRoot(config) {
   return config.modRequest?.projectRoot || process.cwd();
@@ -61,6 +71,61 @@ function addIosResourceFile(project, filePath, groupUuid) {
   );
   if (alreadyAdded) return;
   project.addResourceFile(normalized, { lastKnownFileType: "file" }, groupUuid);
+}
+
+function upsertGradleProperty(properties, key, value) {
+  const existing = properties.find((entry) => entry.type === "property" && entry.key === key);
+  if (existing) {
+    existing.value = value;
+    return;
+  }
+
+  properties.push({ type: "property", key, value });
+}
+
+function removeGeneratedBlock(contents, tag) {
+  const pattern = new RegExp(
+    `\\n?[ \\t]*// @generated begin ${tag}\\n[\\s\\S]*?\\n[ \\t]*// @generated end ${tag}\\n?`,
+    "g",
+  );
+  return contents.replace(pattern, "\n");
+}
+
+function applyAndroidAppAbiFilters(contents) {
+  const cleaned = removeGeneratedBlock(contents, ANDROID_ABI_FILTERS_TAG);
+  const defaultConfigPattern = /(\n\s*defaultConfig\s*\{\n)/;
+
+  if (!defaultConfigPattern.test(cleaned)) {
+    throw new Error(
+      "[withJaiOnDeviceModelAssets] Could not find android.defaultConfig in app/build.gradle to apply arm64-v8a ABI filters.",
+    );
+  }
+
+  return cleaned.replace(defaultConfigPattern, `$1${ANDROID_ABI_FILTERS_BLOCK}`);
+}
+
+function withAndroidNativeAbiGradleProperties(config) {
+  return withGradleProperties(config, (modConfig) => {
+    upsertGradleProperty(
+      modConfig.modResults,
+      "reactNativeArchitectures",
+      ANDROID_NATIVE_ABIS.join(","),
+    );
+    return modConfig;
+  });
+}
+
+function withAndroidAppNativeAbiFilters(config) {
+  return withAppBuildGradle(config, (modConfig) => {
+    if (modConfig.modResults.language !== "groovy") {
+      throw new Error(
+        "[withJaiOnDeviceModelAssets] Expected Groovy app/build.gradle so arm64-v8a ABI filters can be applied.",
+      );
+    }
+
+    modConfig.modResults.contents = applyAndroidAppAbiFilters(modConfig.modResults.contents);
+    return modConfig;
+  });
 }
 
 function withAndroidModelAssets(config) {
@@ -113,6 +178,8 @@ function withIosModelAssets(config) {
 }
 
 module.exports = function withJaiOnDeviceModelAssets(config) {
+  config = withAndroidNativeAbiGradleProperties(config);
+  config = withAndroidAppNativeAbiFilters(config);
   config = withAndroidModelAssets(config);
   config = withIosModelAssets(config);
   return config;

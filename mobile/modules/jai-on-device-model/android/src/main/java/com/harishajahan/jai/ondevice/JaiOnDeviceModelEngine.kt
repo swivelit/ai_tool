@@ -13,7 +13,7 @@ private class CodedException(code: String, detail: String, cause: Throwable? = n
  *
  * Production model files are normally downloaded by modelDownloadManager.ts into
  * app-private storage and passed as file:// paths. Optional bundled_assets dev
- * builds can still copy mobile/models/*.gguf into android/app/src/main/assets.
+ * builds can still copy GGUF files from mobile/models into android/app/src/main/assets.
  *
  * Production native_on_device mode must fail clearly when a file is missing;
  * it must not call the backend and must not synthesize fake embeddings.

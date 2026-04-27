@@ -17,6 +17,138 @@ else
   exit 1
 fi
 
+info() {
+  printf "\n▶ %s\n" "$1"
+}
+
+warn() {
+  printf "\n⚠️  %s\n" "$1"
+}
+
+fail() {
+  printf "\n❌ %s\n" "$1"
+  exit 1
+}
+
+MOBILE_ENV_FILE_KEYS=()
+ORIGINAL_MOBILE_ENV_KEYS=()
+
+add_mobile_env_file_key() {
+  local env_name="$1"
+  local item
+
+  for item in "${MOBILE_ENV_FILE_KEYS[@]:-}"; do
+    [[ -z "$item" ]] && continue
+    [[ "$item" == "$env_name" ]] && return 0
+  done
+
+  MOBILE_ENV_FILE_KEYS+=("$env_name")
+}
+
+collect_mobile_env_file_keys() {
+  local env_file="$1"
+  local line trimmed
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$trimmed" || "${trimmed:0:1}" == "#" ]] && continue
+
+    if [[ "$trimmed" =~ ^(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*= ]]; then
+      add_mobile_env_file_key "${BASH_REMATCH[2]}"
+    fi
+  done < "$env_file"
+}
+
+remember_original_mobile_env_values() {
+  local env_name
+  local saved_name
+
+  for env_name in "${MOBILE_ENV_FILE_KEYS[@]:-}"; do
+    [[ -z "$env_name" ]] && continue
+
+    if [[ "${!env_name+x}" == "x" ]]; then
+      saved_name="ORIGINAL_MOBILE_ENV_VALUE_${env_name}"
+      printf -v "$saved_name" "%s" "${!env_name}"
+      ORIGINAL_MOBILE_ENV_KEYS+=("$env_name")
+    fi
+  done
+}
+
+restore_original_mobile_env_values() {
+  local env_name
+  local saved_name
+
+  for env_name in "${ORIGINAL_MOBILE_ENV_KEYS[@]:-}"; do
+    [[ -z "$env_name" ]] && continue
+
+    saved_name="ORIGINAL_MOBILE_ENV_VALUE_${env_name}"
+    export "$env_name=${!saved_name}"
+  done
+}
+
+source_mobile_env_file() {
+  local env_file="$1"
+  local display_path="${env_file#"$REPO_DIR"/}"
+  local restore_allexport=0
+  local restore_nounset=0
+
+  case "$-" in
+    *a*) restore_allexport=1 ;;
+    *) set -a ;;
+  esac
+
+  case "$-" in
+    *u*)
+      restore_nounset=1
+      set +u
+      ;;
+  esac
+
+  # shellcheck disable=SC1090
+  if ! source "$env_file"; then
+    [[ "$restore_nounset" == "1" ]] && set -u
+    [[ "$restore_allexport" == "0" ]] && set +a
+    fail "Failed to load environment file: $display_path"
+  fi
+
+  [[ "$restore_nounset" == "1" ]] && set -u
+  [[ "$restore_allexport" == "0" ]] && set +a
+
+  printf "Loaded environment file: %s\n" "$display_path"
+}
+
+load_mobile_env_files() {
+  local loaded_count=0
+  local env_files=()
+  local env_file
+
+  for env_file in "$MOBILE_DIR/.env" "$MOBILE_DIR/.env.local"; do
+    if [[ -f "$env_file" ]]; then
+      collect_mobile_env_file_keys "$env_file"
+      env_files+=("$env_file")
+    fi
+  done
+
+  remember_original_mobile_env_values
+
+  for env_file in "${env_files[@]:-}"; do
+    [[ -z "$env_file" ]] && continue
+
+    source_mobile_env_file "$env_file"
+    loaded_count=$((loaded_count + 1))
+  done
+
+  restore_original_mobile_env_values
+
+  if [[ "$loaded_count" -gt 0 ]]; then
+    printf "Environment precedence: mobile/.env < mobile/.env.local < already-exported shell variables\n"
+  else
+    printf "No mobile environment file found; using already-exported shell variables only.\n"
+  fi
+}
+
+load_mobile_env_files
+
 BUILD_TYPE="${BUILD_TYPE:-release}"
 BUILD_TYPE="$(printf '%s' "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')"
 
@@ -79,19 +211,6 @@ if [[ -z "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" ]]; then
   # Release verification below fails if this is explicitly disabled.
   export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="true"
 fi
-
-info() {
-  printf "\n▶ %s\n" "$1"
-}
-
-warn() {
-  printf "\n⚠️  %s\n" "$1"
-}
-
-fail() {
-  printf "\n❌ %s\n" "$1"
-  exit 1
-}
 
 command -v node >/dev/null 2>&1 || fail "Node.js is required. Install Node 20+ first."
 command -v npm >/dev/null 2>&1 || fail "npm is required. Install Node.js first."
