@@ -6,7 +6,7 @@ static NSString *const JaiLlamaCppBridgeErrorDomain = @"JaiOnDeviceModel";
 
 + (NSError *)missingBackendErrorForOperation:(NSString *)operation modelPath:(NSString *)modelPath {
   NSString *message = [NSString stringWithFormat:
-    @"JaiOnDeviceModel error [JAI_LLAMA_CPP_BACKEND_MISSING]: %@ reached the Objective-C++ bridge for model %@, but llama.cpp is not linked yet. Add llama.cpp model loading, tokenization, decoding, and embedding extraction before claiming Gemma/Qwen runs on-device.",
+    @"JaiOnDeviceModel error [JAI_LLAMA_CPP_BACKEND_MISSING]: %@ reached the Objective-C++ bridge for model %@, but llama.cpp is not linked/implemented yet. Exact remaining TODOs: load the downloaded GGUF path with llama_model_load_from_file, create a llama_context with the requested context size/thread count, format/tokenize prompts, decode tokens up to maxTokens with temperature sampling, return generated UTF-8 text, and implement embedding extraction for the Qwen embedding model. The native module must never call backend/OpenAI.",
     operation,
     modelPath.length ? modelPath : @"<missing>"];
   return [NSError errorWithDomain:JaiLlamaCppBridgeErrorDomain

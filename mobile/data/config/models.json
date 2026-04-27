@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "runtime": {
     "primary": "phone_local",
     "mode": "native_on_device",
@@ -127,48 +127,66 @@
     "storageRoot": "document://models",
     "wifiRecommended": true,
     "maxRetries": 2,
-    "notes": "Replace placeholder downloadUrl values, expectedBytes, and sha256 with your signed CDN metadata before production release. If sha256 is set, the app verifies it and deletes/retries mismatches.",
+    "notes": "Production downloads quantized GGUF files into app-private storage on first launch. Set EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL for public CDN paths or set the per-model EXPO_PUBLIC_LOCAL_MODEL_URL_* variables for signed/public URLs. Do not hardcode secrets. Production builds must provide expectedBytes and sha256 metadata; the app fails clearly when integrity metadata is missing.",
     "models": [
       {
         "id": "google/gemma-3-4b-it",
         "fileName": "gemma-3-4b-it-q4_k_m.gguf",
-        "downloadUrl": "https://YOUR_MODEL_CDN/models/gemma-3-4b-it-q4_k_m.gguf",
+        "downloadUrl": "cdn://models/gemma-3-4b-it-q4_k_m.gguf",
         "expectedBytes": null,
         "sha256": null,
         "localPath": "models/gemma-3-4b-it-q4_k_m.gguf",
-        "required": true
+        "required": true,
+        "downloadUrlEnv": "LOCAL_MODEL_URL_GEMMA_4B",
+        "downloadPath": "models/gemma-3-4b-it-q4_k_m.gguf",
+        "expectedBytesEnv": "LOCAL_MODEL_BYTES_GEMMA_4B",
+        "sha256Env": "LOCAL_MODEL_SHA256_GEMMA_4B"
       },
       {
         "id": "Qwen/Qwen3-8B",
         "fileName": "qwen3-8b-q4_k_m.gguf",
-        "downloadUrl": "https://YOUR_MODEL_CDN/models/qwen3-8b-q4_k_m.gguf",
+        "downloadUrl": "cdn://models/qwen3-8b-q4_k_m.gguf",
         "expectedBytes": null,
         "sha256": null,
         "localPath": "models/qwen3-8b-q4_k_m.gguf",
-        "required": true
+        "required": true,
+        "downloadUrlEnv": "LOCAL_MODEL_URL_QWEN_8B",
+        "downloadPath": "models/qwen3-8b-q4_k_m.gguf",
+        "expectedBytesEnv": "LOCAL_MODEL_BYTES_QWEN_8B",
+        "sha256Env": "LOCAL_MODEL_SHA256_QWEN_8B"
       },
       {
         "id": "Qwen/Qwen3-14B",
         "fileName": "qwen3-14b-q4_k_m.gguf",
-        "downloadUrl": "https://YOUR_MODEL_CDN/models/qwen3-14b-q4_k_m.gguf",
+        "downloadUrl": "cdn://models/qwen3-14b-q4_k_m.gguf",
         "expectedBytes": null,
         "sha256": null,
         "localPath": "models/qwen3-14b-q4_k_m.gguf",
-        "required": true
+        "required": true,
+        "downloadUrlEnv": "LOCAL_MODEL_URL_QWEN_14B",
+        "downloadPath": "models/qwen3-14b-q4_k_m.gguf",
+        "expectedBytesEnv": "LOCAL_MODEL_BYTES_QWEN_14B",
+        "sha256Env": "LOCAL_MODEL_SHA256_QWEN_14B"
       },
       {
         "id": "Qwen/Qwen3-Embedding-0.6B",
         "fileName": "qwen3-embedding-0.6b-q8_0.gguf",
-        "downloadUrl": "https://YOUR_MODEL_CDN/models/qwen3-embedding-0.6b-q8_0.gguf",
+        "downloadUrl": "cdn://models/qwen3-embedding-0.6b-q8_0.gguf",
         "expectedBytes": null,
         "sha256": null,
         "localPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
-        "required": true
+        "required": true,
+        "downloadUrlEnv": "LOCAL_MODEL_URL_QWEN_EMBED",
+        "downloadPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
+        "expectedBytesEnv": "LOCAL_MODEL_BYTES_QWEN_EMBED",
+        "sha256Env": "LOCAL_MODEL_SHA256_QWEN_EMBED"
       }
     ],
     "developmentModes": {
       "bundled_assets": "Optional build-time mode. Put GGUF files in mobile/models/ and keep plugins/withJaiOnDeviceModelAssets.js enabled before prebuild.",
       "local_adapter_dev": "Development-only adapter mode for /chat/completions and /embeddings contracts. Do not use in production."
-    }
+    },
+    "requireIntegrityMetadataInProduction": true,
+    "cdnBaseUrlEnv": "LOCAL_MODEL_CDN_BASE_URL"
   }
 }

@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   files: new Map<string, FakeFile>(),
   downloads: [] as FakeDownload[],
   downloadAttempts: 0,
+  freeDiskBytes: 20 * 1024 * 1024 * 1024,
 }));
 
 function fakeFsModule() {
@@ -37,6 +38,7 @@ function fakeFsModule() {
       if (!file) throw new Error(`Missing file ${uri}`);
       return Buffer.from(file.content).toString("base64");
     }),
+    getFreeDiskStorageAsync: vi.fn(async () => state.freeDiskBytes),
     createDownloadResumable: vi.fn((url: string, targetUri: string, _options: any, onProgress: any) => ({
       downloadAsync: vi.fn(async () => {
         state.downloadAttempts += 1;
@@ -103,6 +105,7 @@ describe("modelDownloadManager", () => {
     state.files.clear();
     state.downloads.length = 0;
     state.downloadAttempts = 0;
+    state.freeDiskBytes = 20 * 1024 * 1024 * 1024;
   });
 
   async function importManager() {
@@ -202,6 +205,68 @@ describe("modelDownloadManager", () => {
             {
               ...baseModels[0],
               downloadUrl: "https://YOUR_MODEL_CDN/models/gemma-3-4b-it-q4_k_m.gguf",
+            },
+          ],
+        }),
+      }),
+    ).rejects.toBeInstanceOf(ModelInstallError);
+  });
+
+
+  it("resolves cdn:// model URLs from the configured public CDN base URL", async () => {
+    state.downloads.push({ url: "https://models.example.test/models/gemma-3-4b-it-q4_k_m.gguf", content: "gemma" });
+
+    const { downloadRequiredModels } = await importManager();
+    const status = await downloadRequiredModels({
+      config: testConfig({
+        cdnBaseUrl: "https://models.example.test",
+        models: [
+          {
+            ...baseModels[0],
+            downloadUrl: "cdn://models/gemma-3-4b-it-q4_k_m.gguf",
+          },
+        ],
+      }),
+    });
+
+    expect(status.ready).toBe(true);
+    expect(state.downloadAttempts).toBe(1);
+  });
+
+
+  it("checks free device storage before downloading expected-size GGUF files", async () => {
+    state.freeDiskBytes = 1024;
+
+    const { downloadRequiredModels, ModelInstallError } = await importManager();
+
+    await expect(
+      downloadRequiredModels({
+        config: testConfig({
+          minFreeBytesBuffer: 1024,
+          models: [
+            {
+              ...baseModels[0],
+              expectedBytes: 2048,
+            },
+          ],
+        }),
+      }),
+    ).rejects.toBeInstanceOf(ModelInstallError);
+    expect(state.downloadAttempts).toBe(0);
+  });
+
+  it("requires expectedBytes and sha256 when production integrity metadata is enabled", async () => {
+    const { downloadRequiredModels, ModelInstallError } = await importManager();
+
+    await expect(
+      downloadRequiredModels({
+        config: testConfig({
+          requireIntegrityMetadataInProduction: true,
+          models: [
+            {
+              ...baseModels[0],
+              expectedBytes: null,
+              sha256: null,
             },
           ],
         }),

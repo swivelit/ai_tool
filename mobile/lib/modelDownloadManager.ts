@@ -13,8 +13,12 @@ export type ModelDownloadConfigEntry = {
   id: string;
   fileName: string;
   downloadUrl: string;
+  downloadUrlEnv?: string | null;
+  downloadPath?: string | null;
   expectedBytes?: number | null;
+  expectedBytesEnv?: string | null;
   sha256?: string | null;
+  sha256Env?: string | null;
   localPath?: string;
   required?: boolean;
 };
@@ -24,6 +28,10 @@ export type ModelDeliveryConfig = {
   storageRoot?: string;
   wifiRecommended?: boolean;
   maxRetries?: number;
+  cdnBaseUrl?: string;
+  cdnBaseUrlEnv?: string | null;
+  requireIntegrityMetadataInProduction?: boolean;
+  minFreeBytesBuffer?: number;
   models?: ModelDownloadConfigEntry[] | Record<string, ModelDownloadConfigEntry>;
 };
 
@@ -93,6 +101,7 @@ type ModelFileSystem = Pick<
 > & {
   createDownloadResumable?: typeof FileSystem.createDownloadResumable;
   readAsStringAsync?: typeof FileSystem.readAsStringAsync;
+  getFreeDiskStorageAsync?: () => Promise<number>;
 };
 
 const DEFAULT_STORAGE_FOLDER = "models";
@@ -103,6 +112,10 @@ const REQUIRED_MODEL_IDS = [
   "Qwen/Qwen3-Embedding-0.6B",
 ];
 const PLACEHOLDER_URL_PATTERN = /^https:\/\/YOUR_MODEL_CDN\//i;
+const CDN_URL_PATTERN = /^cdn:\/\//i;
+const TEMPLATE_TOKEN_PATTERN = /\{\{\s*(?:MODEL_CDN_BASE_URL|LOCAL_MODEL_CDN_BASE_URL)\s*\}\}/i;
+const TEMPLATE_TOKEN_REPLACE_PATTERN = /\{\{\s*(?:MODEL_CDN_BASE_URL|LOCAL_MODEL_CDN_BASE_URL)\s*\}\}/gi;
+const DEFAULT_FREE_SPACE_BUFFER_BYTES = 512 * 1024 * 1024;
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
@@ -125,6 +138,159 @@ export function isModelInstallError(error: unknown) {
 
 function configuredRoot(config?: ModelDownloadConfigRoot) {
   return (config || bundledModelConfig) as ModelDownloadConfigRoot;
+}
+
+function readRuntimeValue(name?: string | null) {
+  const key = String(name || "").trim();
+  if (!key) return "";
+  const candidates = key.startsWith("EXPO_PUBLIC_") ? [key] : [key, `EXPO_PUBLIC_${key}`];
+  for (const candidate of candidates) {
+    const extraValue = extra[candidate];
+    if (extraValue !== undefined && extraValue !== null && String(extraValue).trim()) {
+      return String(extraValue).trim();
+    }
+    const envValue = (globalThis as any)?.process?.env?.[candidate];
+    if (envValue !== undefined && envValue !== null && String(envValue).trim()) {
+      return String(envValue).trim();
+    }
+  }
+  return "";
+}
+
+function parseRuntimeNumber(value: unknown) {
+  const normalized = String(value ?? "").trim().replace(/_/g, "");
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+}
+
+function parseRuntimeBoolean(value: unknown, fallback = false) {
+  if (typeof value === "boolean") return value;
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function configuredCdnBaseUrl(config?: ModelDownloadConfigRoot) {
+  const root = configuredRoot(config);
+  const envName = root.modelDelivery?.cdnBaseUrlEnv || "LOCAL_MODEL_CDN_BASE_URL";
+  const configured =
+    readRuntimeValue(envName) ||
+    readRuntimeValue("LOCAL_MODEL_CDN_BASE_URL") ||
+    readRuntimeValue("MODEL_CDN_BASE_URL") ||
+    String(root.modelDelivery?.cdnBaseUrl || "").trim();
+  return configured.replace(/\/+$/, "");
+}
+
+function resolveDownloadUrl(entry: ModelDownloadConfigEntry, config?: ModelDownloadConfigRoot) {
+  const explicitUrl = readRuntimeValue(entry.downloadUrlEnv);
+  const rawUrl = String(
+    explicitUrl || entry.downloadUrl || (entry.downloadPath ? `cdn://${entry.downloadPath}` : ""),
+  ).trim();
+
+  if (!rawUrl) return "";
+
+  const baseUrl = configuredCdnBaseUrl(config);
+  if (CDN_URL_PATTERN.test(rawUrl)) {
+    if (!baseUrl) return rawUrl;
+    const suffix = rawUrl.replace(CDN_URL_PATTERN, "").replace(/^\/+/, "");
+    return `${baseUrl}/${suffix}`;
+  }
+
+  if (TEMPLATE_TOKEN_PATTERN.test(rawUrl)) {
+    if (!baseUrl) return rawUrl;
+    return rawUrl.replace(TEMPLATE_TOKEN_REPLACE_PATTERN, baseUrl);
+  }
+
+  return rawUrl;
+}
+
+function applyRuntimeEntryOverrides(
+  entry: ModelDownloadConfigEntry,
+  config?: ModelDownloadConfigRoot,
+): ModelDownloadConfigEntry {
+  const expectedBytesFromEnv = parseRuntimeNumber(readRuntimeValue(entry.expectedBytesEnv));
+  const shaFromEnv = readRuntimeValue(entry.sha256Env);
+  return {
+    ...entry,
+    downloadUrl: resolveDownloadUrl(entry, config),
+    expectedBytes: expectedBytesFromEnv ?? entry.expectedBytes ?? null,
+    sha256: shaFromEnv || entry.sha256 || null,
+  };
+}
+
+function requiresProductionIntegrityMetadata(config?: ModelDownloadConfigRoot) {
+  const root = configuredRoot(config);
+  return parseRuntimeBoolean(
+    readRuntimeValue("LOCAL_MODEL_REQUIRE_SHA256") ||
+      readRuntimeValue("LOCAL_MODEL_REQUIRE_INTEGRITY_METADATA") ||
+      root.modelDelivery?.requireIntegrityMetadataInProduction,
+    false,
+  );
+}
+
+function unresolvedDownloadUrlReason(entry: ModelDownloadConfigEntry) {
+  const url = String(entry.downloadUrl || "").trim();
+  if (!url) return "empty downloadUrl";
+  if (PLACEHOLDER_URL_PATTERN.test(url)) return "placeholder YOUR_MODEL_CDN URL";
+  if (CDN_URL_PATTERN.test(url)) return "cdn:// URL without a configured LOCAL_MODEL_CDN_BASE_URL";
+  if (TEMPLATE_TOKEN_PATTERN.test(url)) {
+    return "downloadUrl template without a configured LOCAL_MODEL_CDN_BASE_URL";
+  }
+  if (!/^https?:\/\//i.test(url)) return `unsupported URL scheme in ${url}`;
+  return "";
+}
+
+function assertDownloadMetadata(entry: ModelDownloadConfigEntry, config?: ModelDownloadConfigRoot) {
+  const reason = unresolvedDownloadUrlReason(entry);
+  if (reason) {
+    throw new ModelInstallError(
+      `Model ${entry.id} is missing a resolved public/signed CDN URL (${reason}). Set ${entry.downloadUrlEnv || "downloadUrl"} or LOCAL_MODEL_CDN_BASE_URL in app config before shipping. Do not hardcode secrets into the mobile app.`,
+    );
+  }
+
+  if (requiresProductionIntegrityMetadata(config)) {
+    const expectedBytes = Number(entry.expectedBytes || 0);
+    if (expectedBytes <= 0) {
+      throw new ModelInstallError(
+        `Model ${entry.id} is missing expectedBytes. Production native_on_device downloads must provide exact byte size metadata before downloading ${entry.fileName}.`,
+      );
+    }
+    if (!normalizeSha(entry.sha256)) {
+      throw new ModelInstallError(
+        `Model ${entry.id} is missing sha256. Production native_on_device downloads must provide SHA-256 metadata before downloading ${entry.fileName}.`,
+      );
+    }
+  }
+}
+
+function freeSpaceBufferBytes(config?: ModelDownloadConfigRoot) {
+  const configured = Number(configuredRoot(config).modelDelivery?.minFreeBytesBuffer || 0);
+  return configured > 0 ? configured : DEFAULT_FREE_SPACE_BUFFER_BYTES;
+}
+
+async function assertEnoughFreeStorage(
+  entries: ModelDownloadConfigEntry[],
+  options: EnsureModelsOptions,
+) {
+  const fs = options.fileSystem || FileSystem;
+  const getFreeDiskStorageAsync = fs.getFreeDiskStorageAsync || (FileSystem as any).getFreeDiskStorageAsync;
+  if (typeof getFreeDiskStorageAsync !== "function") return;
+
+  const requiredBytes = entries.reduce((sum, entry) => sum + Math.max(0, Number(entry.expectedBytes || 0)), 0);
+  if (requiredBytes <= 0) return;
+
+  const freeBytes = Number(await getFreeDiskStorageAsync());
+  if (!Number.isFinite(freeBytes) || freeBytes <= 0) return;
+
+  const requiredWithBuffer = requiredBytes + freeSpaceBufferBytes(options.config);
+  if (freeBytes < requiredWithBuffer) {
+    throw new ModelInstallError(
+      `Not enough device storage for required GGUF downloads. Need ${requiredWithBuffer} bytes including safety buffer, but only ${freeBytes} bytes are reported free. Free space and retry; the app will not fall back to backend/OpenAI because models are missing.`,
+    );
+  }
 }
 
 function normalizeMode(value: unknown): ModelDeliveryMode {
@@ -167,14 +333,23 @@ function normalizeEntries(config?: ModelDownloadConfigRoot): ModelDownloadConfig
       : [];
 
   const fromDelivery = entries
-    .map((entry) => ({
-      ...entry,
-      id: String(entry?.id || "").trim(),
-      fileName: String(entry?.fileName || "").trim(),
-      downloadUrl: String(entry?.downloadUrl || "").trim(),
-      localPath: String(entry?.localPath || entry?.fileName || "").trim(),
-      required: entry?.required !== false,
-    }))
+    .map((entry) =>
+      applyRuntimeEntryOverrides(
+        {
+          ...entry,
+          id: String(entry?.id || "").trim(),
+          fileName: String(entry?.fileName || "").trim(),
+          downloadUrl: String(entry?.downloadUrl || "").trim(),
+          downloadUrlEnv: entry?.downloadUrlEnv || null,
+          downloadPath: String(entry?.downloadPath || entry?.localPath || entry?.fileName || "").trim(),
+          expectedBytesEnv: entry?.expectedBytesEnv || null,
+          sha256Env: entry?.sha256Env || null,
+          localPath: String(entry?.localPath || entry?.fileName || "").trim(),
+          required: entry?.required !== false,
+        },
+        root,
+      ),
+    )
     .filter((entry) => entry.id && entry.fileName);
 
   if (fromDelivery.length) return fromDelivery;
@@ -183,15 +358,19 @@ function normalizeEntries(config?: ModelDownloadConfigRoot): ModelDownloadConfig
   return REQUIRED_MODEL_IDS.map((id) => {
     const asset = nativeModels[id] || ({} as NativeOnDeviceModelAsset);
     const fileName = String(asset.fileName || asset.modelPath || "").split("/").pop() || `${id}.gguf`;
-    return {
-      id,
-      fileName,
-      downloadUrl: "",
-      localPath: `models/${fileName}`,
-      expectedBytes: null,
-      sha256: null,
-      required: true,
-    };
+    return applyRuntimeEntryOverrides(
+      {
+        id,
+        fileName,
+        downloadUrl: `cdn://models/${fileName}`,
+        downloadPath: `models/${fileName}`,
+        localPath: `models/${fileName}`,
+        expectedBytes: null,
+        sha256: null,
+        required: true,
+      },
+      root,
+    );
   });
 }
 
@@ -364,11 +543,8 @@ async function downloadOneModel(
   const tempUri = `${targetUri}.download`;
   const expectedBytes = Number(entry.expectedBytes || 0) || null;
 
-  if (!entry.downloadUrl || PLACEHOLDER_URL_PATTERN.test(entry.downloadUrl)) {
-    throw new ModelInstallError(
-      `Model ${entry.id} is missing a real download URL. Replace ${entry.downloadUrl || "the empty URL"} in mobile/data/config/models.json with your signed CDN URL before shipping.`,
-    );
-  }
+  assertDownloadMetadata(entry, config);
+  await assertEnoughFreeStorage([entry], options);
 
   await fs.deleteAsync(tempUri, { idempotent: true }).catch(() => undefined);
   options.onProgress?.({
@@ -485,6 +661,9 @@ export async function downloadRequiredModels(
   );
 
   if (!targets.length) return firstStatus;
+
+  targets.forEach((entry) => assertDownloadMetadata(entry, config));
+  await assertEnoughFreeStorage(targets, options);
 
   for (const target of firstStatus.invalid) {
     await fs.deleteAsync(target.fileUri, { idempotent: true }).catch(() => undefined);

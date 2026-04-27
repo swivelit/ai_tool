@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -46,6 +46,7 @@ export default function ModelSetupScreen() {
   const [progress, setProgress] = useState<ModelDownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const autoStartedRef = useRef(false);
 
   const missingCount = (status?.missing.length || 0) + (status?.invalid.length || 0);
   const totalProgress = progressPercent(progress?.totalProgress);
@@ -67,7 +68,8 @@ export default function ModelSetupScreen() {
     });
   }, [refreshStatus]);
 
-  async function startDownload() {
+  const startDownload = useCallback(async () => {
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
@@ -89,7 +91,23 @@ export default function ModelSetupScreen() {
     } finally {
       setBusy(false);
     }
-  }
+  }, [busy, refreshStatus]);
+
+  useEffect(() => {
+    if (!status || status.ready || busy || autoStartedRef.current) return;
+    const needsInstall = status.missing.length > 0 || status.invalid.length > 0;
+    if (!needsInstall) return;
+    autoStartedRef.current = true;
+    setProgress({
+      phase: "checking",
+      totalModels: status.required.length,
+      totalBytes: status.totalRequiredBytes,
+      totalProgress: 0,
+      modelProgress: 0,
+      message: "Starting required local model download automatically…",
+    });
+    void startDownload();
+  }, [busy, startDownload, status]);
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
@@ -212,7 +230,7 @@ export default function ModelSetupScreen() {
           >
             {busy ? <ActivityIndicator color={Brand.ink} /> : null}
             <Text style={styles.primaryButtonText}>
-              {status?.ready ? "Continue" : error ? "Retry download" : "Download required models"}
+              {status?.ready ? "Continue" : error ? "Retry download" : busy ? "Downloading required models" : "Download now"}
             </Text>
           </Pressable>
         </GlassCard>
