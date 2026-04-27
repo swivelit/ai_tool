@@ -58,14 +58,20 @@ fi
 
 if [[ "$BUILD_TYPE" == "release" ]]; then
   # Local release APKs are production-like for the native runtime even when they
-  # are not running on EAS. Gradle/CMake/app.config use this explicit guard to
-  # refuse JAI_LLAMA_CPP_AVAILABLE=0 builds.
+  # are not running on EAS. Gradle/CMake/app.config use these explicit guards to
+  # refuse JAI_LLAMA_CPP_AVAILABLE=0 and unresolved GGUF CDN/integrity metadata.
   export JAI_BUILD_TYPE="release"
   export JAI_REQUIRE_LLAMA_CPP="1"
+  export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256="true"
+  export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_INTEGRITY_METADATA="true"
 fi
 
 if [[ -z "${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-}" ]]; then
   export EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE="native_on_device"
+fi
+
+if [[ -z "${EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE:-}" ]]; then
+  export EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE="download_on_first_launch"
 fi
 
 info() {
@@ -151,6 +157,9 @@ if [[ "$SHOULD_SYNC_LLAMA_CPP" == "1" ]]; then
     warn "llama.cpp sync failed. Continuing because this is not a production/release-required build; native calls will fail clearly with JAI_LLAMA_CPP_BACKEND_MISSING."
   fi
 fi
+
+info "Validating Expo native/model delivery configuration"
+CI=1 npx expo config --type public >/dev/null
 
 info "Generating native Android project (clean prebuild)"
 CI=1 npx expo prebuild --platform android --clean

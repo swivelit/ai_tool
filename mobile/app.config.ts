@@ -37,11 +37,6 @@ const LOCAL_MODEL_CDN_BASE_URL = (
   ""
 ).trim();
 
-const LOCAL_MODEL_REQUIRE_SHA256 =
-  process.env.EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256 ||
-  process.env.EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_INTEGRITY_METADATA ||
-  (process.env.EAS_BUILD_PROFILE === "production" ? "true" : "false");
-
 const LOCAL_MODEL_URL_GEMMA_4B = process.env.EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B || "";
 const LOCAL_MODEL_URL_QWEN_8B = process.env.EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B || "";
 const LOCAL_MODEL_URL_QWEN_14B = process.env.EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B || "";
@@ -81,6 +76,17 @@ const isProductionOrReleaseBuild =
 
 const isProductionNativeOnDeviceBuild =
   isProductionOrReleaseBuild && isNativeOnDeviceRuntime;
+const normalizedModelDeliveryMode = normalizeEnvFlag(LOCAL_MODEL_DELIVERY_MODE);
+const isProductionNativeDownloadBuild =
+  isProductionOrReleaseBuild &&
+  isNativeOnDeviceRuntime &&
+  normalizedModelDeliveryMode === "download_on_first_launch";
+
+const LOCAL_MODEL_REQUIRE_SHA256 = isProductionNativeDownloadBuild
+  ? "true"
+  : process.env.EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256 ||
+    process.env.EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_INTEGRITY_METADATA ||
+    "false";
 
 if (isProductionOrReleaseBuild && normalizedRuntimeMode === "local_adapter") {
   throw new Error(
@@ -123,37 +129,83 @@ if (isProductionNativeOnDeviceBuild && !hasUsableLlamaCppCheckout(LOCAL_LLAMA_CP
   );
 }
 
-const isProductionNativeDownloadBuild =
-  normalizedEasProfile === "production" &&
-  isNativeOnDeviceRuntime &&
-  LOCAL_MODEL_DELIVERY_MODE.trim().toLowerCase() === "download_on_first_launch";
+const CDN_URL_PATTERN = /^cdn:\/\//i;
+const TEMPLATE_TOKEN_PATTERN = /\{\{\s*(?:MODEL_CDN_BASE_URL|LOCAL_MODEL_CDN_BASE_URL)\s*\}\}/i;
+const PLACEHOLDER_URL_PATTERN = /^https:\/\/YOUR_MODEL_CDN\//i;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+
+function unresolvedProductionUrlReason(value: string, label: string) {
+  const url = String(value || "").trim();
+  if (!url) return `${label} is empty`;
+  if (PLACEHOLDER_URL_PATTERN.test(url)) return `${label} still uses the YOUR_MODEL_CDN placeholder`;
+  if (CDN_URL_PATTERN.test(url)) return `${label} is still a cdn:// placeholder`;
+  if (TEMPLATE_TOKEN_PATTERN.test(url)) return `${label} still contains an unresolved CDN template token`;
+  if (!/^https?:\/\//i.test(url)) return `${label} must be an http(s) URL`;
+  return "";
+}
 
 function requireProductionValue(name: string, value: string) {
   if (!isProductionNativeDownloadBuild) return;
   if (String(value || "").trim()) return;
   throw new Error(
-    `Production native_on_device download build is missing ${name}. ` +
-      "Set it in EAS/env before building. Use public CDN URLs or release-generated signed URLs only; do not hardcode secrets.",
+    `Release/production native_on_device download_on_first_launch build is missing ${name}. ` +
+      "Set it before prebuild/build. Use public CDN URLs or release-generated signed URLs only; do not hardcode secrets.",
   );
 }
 
-function requireProductionModelUrl(name: string, value: string) {
-  if (!isProductionNativeDownloadBuild || LOCAL_MODEL_CDN_BASE_URL) return;
+function requireProductionResolvedUrl(name: string, value: string) {
+  if (!isProductionNativeDownloadBuild) return;
   requireProductionValue(name, value);
+  const reason = unresolvedProductionUrlReason(value, name);
+  if (reason) {
+    throw new Error(
+      `Release/production native_on_device download_on_first_launch build has unresolved model URL metadata: ${reason}. ` +
+        "Configure EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL or all per-model EXPO_PUBLIC_LOCAL_MODEL_URL_* values with real public/signed http(s) URLs.",
+    );
+  }
 }
 
-requireProductionModelUrl("EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B or EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL", LOCAL_MODEL_URL_GEMMA_4B);
-requireProductionModelUrl("EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B or EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL", LOCAL_MODEL_URL_QWEN_8B);
-requireProductionModelUrl("EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B or EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL", LOCAL_MODEL_URL_QWEN_14B);
-requireProductionModelUrl("EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED or EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL", LOCAL_MODEL_URL_QWEN_EMBED);
-requireProductionValue("EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B", LOCAL_MODEL_BYTES_GEMMA_4B);
-requireProductionValue("EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B", LOCAL_MODEL_BYTES_QWEN_8B);
-requireProductionValue("EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B", LOCAL_MODEL_BYTES_QWEN_14B);
-requireProductionValue("EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED", LOCAL_MODEL_BYTES_QWEN_EMBED);
-requireProductionValue("EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B", LOCAL_MODEL_SHA256_GEMMA_4B);
-requireProductionValue("EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B", LOCAL_MODEL_SHA256_QWEN_8B);
-requireProductionValue("EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B", LOCAL_MODEL_SHA256_QWEN_14B);
-requireProductionValue("EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED", LOCAL_MODEL_SHA256_QWEN_EMBED);
+function requireProductionPositiveInteger(name: string, value: string) {
+  if (!isProductionNativeDownloadBuild) return;
+  requireProductionValue(name, value);
+  const normalized = String(value || "").trim().replace(/_/g, "");
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `Release/production native_on_device download_on_first_launch build requires ${name} to be an exact positive integer byte size.`,
+    );
+  }
+}
+
+function requireProductionSha256(name: string, value: string) {
+  if (!isProductionNativeDownloadBuild) return;
+  requireProductionValue(name, value);
+  if (!SHA256_PATTERN.test(String(value || "").trim())) {
+    throw new Error(
+      `Release/production native_on_device download_on_first_launch build requires ${name} to be a 64-character SHA-256 hex digest.`,
+    );
+  }
+}
+
+if (isProductionNativeDownloadBuild) {
+  if (LOCAL_MODEL_CDN_BASE_URL) {
+    requireProductionResolvedUrl("EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL", LOCAL_MODEL_CDN_BASE_URL);
+  } else {
+    requireProductionResolvedUrl("EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B or EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL", LOCAL_MODEL_URL_GEMMA_4B);
+    requireProductionResolvedUrl("EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B or EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL", LOCAL_MODEL_URL_QWEN_8B);
+    requireProductionResolvedUrl("EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B or EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL", LOCAL_MODEL_URL_QWEN_14B);
+    requireProductionResolvedUrl("EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED or EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL", LOCAL_MODEL_URL_QWEN_EMBED);
+  }
+}
+
+requireProductionPositiveInteger("EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B", LOCAL_MODEL_BYTES_GEMMA_4B);
+requireProductionPositiveInteger("EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B", LOCAL_MODEL_BYTES_QWEN_8B);
+requireProductionPositiveInteger("EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B", LOCAL_MODEL_BYTES_QWEN_14B);
+requireProductionPositiveInteger("EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED", LOCAL_MODEL_BYTES_QWEN_EMBED);
+requireProductionSha256("EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B", LOCAL_MODEL_SHA256_GEMMA_4B);
+requireProductionSha256("EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B", LOCAL_MODEL_SHA256_QWEN_8B);
+requireProductionSha256("EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B", LOCAL_MODEL_SHA256_QWEN_14B);
+requireProductionSha256("EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED", LOCAL_MODEL_SHA256_QWEN_EMBED);
 
 const modelDeliveryExtra = {
   LOCAL_MODEL_CDN_BASE_URL,
