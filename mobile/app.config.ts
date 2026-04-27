@@ -56,9 +56,38 @@ const LOCAL_MODEL_SHA256_QWEN_8B = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_QW
 const LOCAL_MODEL_SHA256_QWEN_14B = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B || "";
 const LOCAL_MODEL_SHA256_QWEN_EMBED = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED || "";
 
+function normalizeEnvFlag(value: unknown) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function isTruthyEnv(value: unknown) {
+  return ["1", "true", "yes", "y", "on"].includes(normalizeEnvFlag(value));
+}
+
+const normalizedRuntimeMode = normalizeEnvFlag(LOCAL_MODEL_RUNTIME_MODE);
+const normalizedEasProfile = normalizeEnvFlag(process.env.EAS_BUILD_PROFILE);
+const normalizedJaiBuildProfile = normalizeEnvFlag(process.env.JAI_BUILD_PROFILE);
+const normalizedJaiBuildType = normalizeEnvFlag(
+  process.env.JAI_BUILD_TYPE || process.env.BUILD_TYPE,
+);
+const isNativeOnDeviceRuntime = normalizedRuntimeMode === "native_on_device";
+const isProductionOrReleaseBuild =
+  normalizedEasProfile === "production" ||
+  normalizedEasProfile === "release" ||
+  normalizedJaiBuildProfile === "production" ||
+  normalizedJaiBuildProfile === "release" ||
+  normalizedJaiBuildType === "release" ||
+  isTruthyEnv(process.env.JAI_REQUIRE_LLAMA_CPP);
+
 const isProductionNativeOnDeviceBuild =
-  process.env.EAS_BUILD_PROFILE === "production" &&
-  LOCAL_MODEL_RUNTIME_MODE.trim().toLowerCase() === "native_on_device";
+  isProductionOrReleaseBuild && isNativeOnDeviceRuntime;
+
+if (isProductionOrReleaseBuild && normalizedRuntimeMode === "local_adapter") {
+  throw new Error(
+    "Production/release builds cannot use runtime.mode=local_adapter. " +
+      "local_adapter is development-only; use EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device.",
+  );
+}
 
 const MOBILE_ROOT = fs.existsSync(path.join(process.cwd(), "app.config.ts"))
   ? process.cwd()
@@ -87,7 +116,7 @@ function hasUsableLlamaCppCheckout(dir: string) {
 
 if (isProductionNativeOnDeviceBuild && !hasUsableLlamaCppCheckout(LOCAL_LLAMA_CPP_DIR)) {
   throw new Error(
-    `Production native_on_device build requires llama.cpp at ${DEFAULT_LLAMA_CPP_DIR} ` +
+    `Release/production native_on_device build requires llama.cpp at ${DEFAULT_LLAMA_CPP_DIR} ` +
       "or JAI_LLAMA_CPP_DIR. Run `npm run native:sync-llama` from mobile/ or " +
       "`git submodule update --init --recursive` before prebuild/build. " +
       "Refusing to ship with JAI_LLAMA_CPP_AVAILABLE=0.",
@@ -95,8 +124,8 @@ if (isProductionNativeOnDeviceBuild && !hasUsableLlamaCppCheckout(LOCAL_LLAMA_CP
 }
 
 const isProductionNativeDownloadBuild =
-  process.env.EAS_BUILD_PROFILE === "production" &&
-  LOCAL_MODEL_RUNTIME_MODE.trim().toLowerCase() === "native_on_device" &&
+  normalizedEasProfile === "production" &&
+  isNativeOnDeviceRuntime &&
   LOCAL_MODEL_DELIVERY_MODE.trim().toLowerCase() === "download_on_first_launch";
 
 function requireProductionValue(name: string, value: string) {

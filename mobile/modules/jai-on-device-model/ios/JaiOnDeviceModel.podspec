@@ -25,12 +25,31 @@ Pod::Spec.new do |s|
   llama_header = File.join(llama_dir, 'include', 'llama.h')
   llama_cmake = File.join(llama_dir, 'CMakeLists.txt')
   has_llama_cpp = File.exist?(llama_header) && File.exist?(llama_cmake)
-  production_native_on_device = ENV.fetch('EAS_BUILD_PROFILE', '').strip.downcase == 'production' &&
-    ENV.fetch('EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE', 'native_on_device').strip.downcase == 'native_on_device'
+
+  normalize_env = lambda { |value| value.to_s.strip.downcase }
+  truthy_env = lambda { |value| %w[1 true yes y on].include?(normalize_env.call(value)) }
+  runtime_mode = normalize_env.call(ENV.fetch('EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE', 'native_on_device'))
+  eas_build_profile = normalize_env.call(ENV.fetch('EAS_BUILD_PROFILE', ''))
+  jai_build_profile = normalize_env.call(ENV.fetch('JAI_BUILD_PROFILE', ''))
+  jai_build_type = normalize_env.call(ENV['JAI_BUILD_TYPE'] || ENV['BUILD_TYPE'])
+  explicit_require_llama_cpp = truthy_env.call(ENV['JAI_REQUIRE_LLAMA_CPP'])
+  production_or_release_build =
+    %w[production release].include?(eas_build_profile) ||
+    %w[production release].include?(jai_build_profile) ||
+    jai_build_type == 'release' ||
+    explicit_require_llama_cpp
+  production_native_on_device = production_or_release_build && runtime_mode == 'native_on_device'
+
+  if runtime_mode == 'local_adapter' && production_or_release_build
+    raise <<~MSG
+      local_adapter is development-only.
+      Release/production iOS builds must use EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device.
+    MSG
+  end
 
   if production_native_on_device && !has_llama_cpp
     raise <<~MSG
-      Production native_on_device iOS build requires llama.cpp at #{default_llama_dir} or JAI_LLAMA_CPP_DIR.
+      Release/production native_on_device iOS build requires llama.cpp at #{default_llama_dir} or JAI_LLAMA_CPP_DIR.
       Run `npm run native:sync-llama` from mobile/ or `git submodule update --init --recursive` before pod install/build.
       Refusing to compile with JAI_LLAMA_CPP_AVAILABLE=0.
     MSG

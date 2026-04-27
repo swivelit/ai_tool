@@ -9,13 +9,38 @@ def vendoredLlamaCppDir = new File(projectDir, '../vendor/llama.cpp').canonicalF
 def configuredLlamaCppDir = jaiLlamaCppDir ? file(jaiLlamaCppDir).canonicalFile : vendoredLlamaCppDir
 def hasLlamaCpp = new File(configuredLlamaCppDir, 'CMakeLists.txt').exists() && new File(configuredLlamaCppDir, 'include/llama.h').exists()
 
-def easBuildProfile = (System.getenv('EAS_BUILD_PROFILE') ?: '').toString().trim().toLowerCase(Locale.ROOT)
-def runtimeMode = (System.getenv('EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE') ?: 'native_on_device').toString().trim().toLowerCase(Locale.ROOT)
-def requireLlamaCpp = easBuildProfile == 'production' && runtimeMode == 'native_on_device'
+def normalizedEnv = { value ->
+  (value ?: '').toString().trim().toLowerCase(Locale.ROOT)
+}
+def truthyEnv = { value ->
+  ['1', 'true', 'yes', 'y', 'on'].contains(normalizedEnv(value))
+}
+
+def easBuildProfile = normalizedEnv(System.getenv('EAS_BUILD_PROFILE'))
+def jaiBuildProfile = normalizedEnv(System.getenv('JAI_BUILD_PROFILE'))
+def jaiBuildType = normalizedEnv(System.getenv('JAI_BUILD_TYPE') ?: System.getenv('BUILD_TYPE'))
+def runtimeMode = normalizedEnv(System.getenv('EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE') ?: 'native_on_device')
+def requestedGradleTasks = gradle.startParameter.taskNames.join(' ').toLowerCase(Locale.ROOT)
+def requestedReleaseTask = requestedGradleTasks.contains('release')
+def explicitRequireLlamaCpp = truthyEnv(findProperty('JAI_REQUIRE_LLAMA_CPP') ?: System.getenv('JAI_REQUIRE_LLAMA_CPP'))
+def productionOrReleaseBuild =
+  easBuildProfile in ['production', 'release'] ||
+    jaiBuildProfile in ['production', 'release'] ||
+    jaiBuildType == 'release' ||
+    requestedReleaseTask ||
+    explicitRequireLlamaCpp
+def requireLlamaCpp = runtimeMode == 'native_on_device' && productionOrReleaseBuild
+
+if (runtimeMode == 'local_adapter' && productionOrReleaseBuild) {
+  throw new GradleException(
+    'local_adapter is development-only. Release/production Android builds must use ' +
+      'EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device.'
+  )
+}
 
 if (requireLlamaCpp && !hasLlamaCpp) {
   throw new GradleException(
-    'Production native_on_device Android build requires llama.cpp at ' + vendoredLlamaCppDir +
+    'Release/production native_on_device Android build requires llama.cpp at ' + vendoredLlamaCppDir +
       ' (or JAI_LLAMA_CPP_DIR). Run `npm run native:sync-llama` from mobile/ or ' +
       '`git submodule update --init --recursive` before building. Refusing to compile with JAI_LLAMA_CPP_AVAILABLE=0.'
   )

@@ -31,6 +31,43 @@ esac
 APK_NAME="tamil-ai-${BUILD_TYPE}.apk"
 DIST_DIR="$REPO_DIR/dist"
 
+runtime_mode_normalized() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]'
+}
+
+is_truthy() {
+  case "$(runtime_mode_normalized "${1:-}")" in
+    1|true|yes|y|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+RUNTIME_MODE="$(runtime_mode_normalized "${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}")"
+EAS_PROFILE="$(runtime_mode_normalized "${EAS_BUILD_PROFILE:-}")"
+JAI_BUILD_PROFILE="$(runtime_mode_normalized "${JAI_BUILD_PROFILE:-}")"
+
+IS_PRODUCTION_OR_RELEASE_BUILD=0
+if [[ "$BUILD_TYPE" == "release" || "$EAS_PROFILE" == "production" || "$EAS_PROFILE" == "release" || "$JAI_BUILD_PROFILE" == "production" || "$JAI_BUILD_PROFILE" == "release" ]]; then
+  IS_PRODUCTION_OR_RELEASE_BUILD=1
+fi
+
+SHOULD_SYNC_LLAMA_CPP=0
+if [[ "$BUILD_TYPE" == "release" || "$RUNTIME_MODE" == "native_on_device" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]] || is_truthy "${JAI_REQUIRE_LLAMA_CPP:-}"; then
+  SHOULD_SYNC_LLAMA_CPP=1
+fi
+
+if [[ "$BUILD_TYPE" == "release" ]]; then
+  # Local release APKs are production-like for the native runtime even when they
+  # are not running on EAS. Gradle/CMake/app.config use this explicit guard to
+  # refuse JAI_LLAMA_CPP_AVAILABLE=0 builds.
+  export JAI_BUILD_TYPE="release"
+  export JAI_REQUIRE_LLAMA_CPP="1"
+fi
+
+if [[ -z "${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-}" ]]; then
+  export EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE="native_on_device"
+fi
+
 info() {
   printf "\n▶ %s\n" "$1"
 }
@@ -81,6 +118,10 @@ fi
 
 info "Using mobile app at: $MOBILE_DIR"
 info "Build type: $BUILD_TYPE"
+info "Runtime mode: ${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}"
+if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" ]]; then
+  info "llama.cpp required: yes (production/release native build guard enabled)"
+fi
 [[ -n "${API_BASE_URL:-}" ]] && info "API base: $API_BASE_URL"
 
 cd "$MOBILE_DIR"
@@ -99,6 +140,17 @@ fi
 
 info "Ensuring Expo CLI is available"
 npx expo --version >/dev/null
+
+if [[ "$SHOULD_SYNC_LLAMA_CPP" == "1" ]]; then
+  info "Ensuring llama.cpp native backend is available"
+  if npm run native:sync-llama; then
+    info "llama.cpp native backend is ready"
+  elif [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
+    fail "llama.cpp is required for this production/release native build. Run npm run native:sync-llama or git submodule update --init --recursive before building."
+  else
+    warn "llama.cpp sync failed. Continuing because this is not a production/release-required build; native calls will fail clearly with JAI_LLAMA_CPP_BACKEND_MISSING."
+  fi
+fi
 
 info "Generating native Android project (clean prebuild)"
 CI=1 npx expo prebuild --platform android --clean

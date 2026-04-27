@@ -10,7 +10,7 @@ target_compile_features(jai_llama_runtime PRIVATE cxx_std_17)
 target_include_directories(jai_llama_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # llama.cpp is optional only for local development/test scaffolds. Production
-# native_on_device builds must set JAI_REQUIRE_LLAMA_CPP=ON from Gradle/CI and
+# release/production native_on_device builds must set JAI_REQUIRE_LLAMA_CPP=ON from Gradle/CI and
 # must fail here if the vendored checkout is absent.
 #
 # Supported locations:
@@ -64,7 +64,7 @@ if(JAI_LLAMA_CPP_FOUND)
 else()
   if(JAI_REQUIRE_LLAMA_CPP)
     message(FATAL_ERROR
-      "JaiOnDeviceModel production native_on_device build requires llama.cpp at "
+      "JaiOnDeviceModel release/production native_on_device build requires llama.cpp at "
       "mobile/modules/jai-on-device-model/vendor/llama.cpp or -DJAI_LLAMA_CPP_DIR=/path/to/llama.cpp. "
       "Run `npm run native:sync-llama` from mobile/ or `git submodule update --init --recursive` before building."
     )

@@ -123,8 +123,12 @@ describe("phone-local agent configuration", () => {
     expect(models.runtime.mode).toBe("native_on_device");
     expect(models.runtime.backendRole).toBe("fallback_only");
     expect(models.runtime.openAiPolicy).toBe("fallback_only");
+    expect(models.runtime.backendPolicy).toContain("never primary");
     expect(models.runtime.nativeRuntime).toBe("NativeOnDeviceModelRuntime");
-    expect(models.runtime.nativeImplementationStatus).toBe("native_module_scaffolded_model_files_and_llama_cpp_backend_required");
+    expect(models.runtime.nativeImplementationStatus).toContain("native_build_wired");
+    expect(models.runtime.nativeImplementationStatus).toContain("llama_cpp");
+    expect(models.runtime.nativeImplementationStatus).toContain("production_gguf_runtime");
+    expect(models.runtime.nativeImplementationStatus).toContain("not_verified_in_this_zip");
     expect(models.runtime.nativeBackend).toBe("llama_cpp");
     expect(models.runtime.adapterDevelopmentOnly).toBe(true);
     expect(models.native.backend).toBe("llama_cpp");
