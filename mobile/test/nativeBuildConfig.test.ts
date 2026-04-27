@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,6 +10,16 @@ import { describe, expect, it } from "vitest";
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const mobileRoot = path.resolve(testDir, "..");
 const moduleRoot = path.join(mobileRoot, "modules", "jai-on-device-model");
+const require = createRequire(import.meta.url);
+const nativeLlamaVerifierPath = path.join(
+  mobileRoot,
+  "scripts",
+  "verify-native-llama-runtime.js",
+);
+const nativeLlamaVerifier = require(nativeLlamaVerifierPath) as {
+  PENDING_NATIVE_STATUS: string;
+  VERIFIED_NATIVE_STATUS: string;
+};
 
 const appConfigUrl = pathToFileURL(path.join(mobileRoot, "app.config.ts")).href;
 const releaseVerifierPath = path.join(
@@ -148,6 +159,61 @@ function runReleaseVerifierWithMockLlama(
   }
 }
 
+function createNativeStatusFixture(localAgentsContent: string) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jai-native-status-"));
+  const files = {
+    modelConfigFile: path.join(dir, "models.json"),
+    agentRegistryFile: path.join(dir, "agent_registry.json"),
+    workspaceManifestFile: path.join(dir, "workspace_manifest.json"),
+    localAgentsFile: path.join(dir, "localAgents.ts"),
+  };
+
+  for (const file of [
+    files.modelConfigFile,
+    files.agentRegistryFile,
+    files.workspaceManifestFile,
+  ]) {
+    fs.writeFileSync(
+      file,
+      `${JSON.stringify({ runtime: { nativeImplementationStatus: nativeLlamaVerifier.PENDING_NATIVE_STATUS } }, null, 2)}\n`,
+    );
+  }
+  fs.writeFileSync(files.localAgentsFile, localAgentsContent);
+
+  return { dir, files };
+}
+
+function runNativeStatusUpdateFixture(
+  files: ReturnType<typeof createNativeStatusFixture>["files"],
+) {
+  const code = `
+const verifier = require(process.argv[1]);
+verifier.updateNativeImplementationStatusAfterVerification({
+  modelConfigFile: process.argv[2],
+  agentRegistryFile: process.argv[3],
+  workspaceManifestFile: process.argv[4],
+  localAgentsFile: process.argv[5],
+});
+`;
+
+  return spawnSync(
+    process.execPath,
+    [
+      "-e",
+      code,
+      nativeLlamaVerifierPath,
+      files.modelConfigFile,
+      files.agentRegistryFile,
+      files.workspaceManifestFile,
+      files.localAgentsFile,
+    ],
+    {
+      cwd: mobileRoot,
+      encoding: "utf8",
+    },
+  );
+}
+
 describe("native llama.cpp production build config", () => {
   it("documents the vendored llama.cpp path as a submodule/dependency", () => {
     const gitmodulesPath = path.join(mobileRoot, "..", ".gitmodules");
@@ -192,6 +258,62 @@ describe("native llama.cpp production build config", () => {
     expect(verifyScript).toContain("--smoke");
     expect(verifyScript).toContain("completeChat + embedTexts");
     expect(verifyScript).toContain("updateNativeImplementationStatusAfterVerification");
+  });
+
+  it("updates nativeImplementationStatus idempotently after native verification", () => {
+    const pendingFixture = createNativeStatusFixture(`
+export const runtime = {
+  nativeImplementationStatus: "${nativeLlamaVerifier.PENDING_NATIVE_STATUS}",
+};
+`);
+    try {
+      const result = runNativeStatusUpdateFixture(pendingFixture.files);
+
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(pendingFixture.files.localAgentsFile, "utf8")).toContain(
+        `nativeImplementationStatus: "${nativeLlamaVerifier.VERIFIED_NATIVE_STATUS}"`,
+      );
+      expect(result.stdout + result.stderr).toContain(
+        "fallback nativeImplementationStatus updated after verification",
+      );
+    } finally {
+      fs.rmSync(pendingFixture.dir, { recursive: true, force: true });
+    }
+
+    const verifiedFixture = createNativeStatusFixture(`
+export const runtime = {
+  nativeImplementationStatus: "${nativeLlamaVerifier.VERIFIED_NATIVE_STATUS}",
+};
+`);
+    try {
+      const result = runNativeStatusUpdateFixture(verifiedFixture.files);
+
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(verifiedFixture.files.localAgentsFile, "utf8")).toContain(
+        `nativeImplementationStatus: "${nativeLlamaVerifier.VERIFIED_NATIVE_STATUS}"`,
+      );
+      expect(result.stdout + result.stderr).toContain(
+        "fallback nativeImplementationStatus already verified; no update needed",
+      );
+    } finally {
+      fs.rmSync(verifiedFixture.dir, { recursive: true, force: true });
+    }
+
+    const missingFixture = createNativeStatusFixture(`
+export const runtime = {
+  adapter: "native_on_device",
+};
+`);
+    try {
+      const result = runNativeStatusUpdateFixture(missingFixture.files);
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout + result.stderr).toMatch(
+        /Expected a pending or verified nativeImplementationStatus string literal/,
+      );
+    } finally {
+      fs.rmSync(missingFixture.dir, { recursive: true, force: true });
+    }
   });
 
   it("runs llama.cpp sync and verification before Android prebuild for local release/native builds", () => {

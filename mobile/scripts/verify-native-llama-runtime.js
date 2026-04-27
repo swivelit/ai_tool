@@ -29,6 +29,8 @@ const llamaHeader = path.join(llamaDir, 'include', 'llama.h');
 const llamaCMake = path.join(llamaDir, 'CMakeLists.txt');
 const PENDING_NATIVE_STATUS = 'native_build_wired_requires_llama_cpp_for_production_gguf_runtime_not_verified_until_native_verify_llama_passes';
 const VERIFIED_NATIVE_STATUS = 'native_build_verified_by_native_verify_llama_llama_cpp_linkable_production_gguf_runtime_target_device_gguf_generation_required';
+const NATIVE_IMPLEMENTATION_STATUS_LITERAL_PATTERN = /nativeImplementationStatus:\s*(['"])[^'"\r\n]*\1/g;
+const NATIVE_VERIFICATION_STATUS_REFERENCE_PATTERN = /native_(?:build_)?verified_by_native_verify_llama|native:verify-llama|not_verified_until_native_verify_llama_passes/;
 
 const results = [];
 
@@ -1174,18 +1176,29 @@ function verifyStatusCanOnlyClaimAfterVerification() {
     requirePattern(
       file,
       content,
-      /native_(?:build_)?verified_by_native_verify_llama|native:verify-llama|not_verified_until_native_verify_llama_passes/,
+      NATIVE_VERIFICATION_STATUS_REFERENCE_PATTERN,
       `${path.relative(repoRoot, file)} status references native verification instead of zip-only trust`,
     );
   }
 }
 
 function replaceNativeStatusInText(content) {
-  const quotedStatusPattern = /nativeImplementationStatus:\s*"[^"]+"/g;
-  return content.replace(
-    quotedStatusPattern,
-    `nativeImplementationStatus: "${VERIFIED_NATIVE_STATUS}"`,
+  const desiredLiteral = `nativeImplementationStatus: "${VERIFIED_NATIVE_STATUS}"`;
+  const statusLiterals = content.match(NATIVE_IMPLEMENTATION_STATUS_LITERAL_PATTERN) || [];
+  const replacementCount = statusLiterals.filter((literal) => literal !== desiredLiteral).length;
+  const updatedContent = content.replace(
+    NATIVE_IMPLEMENTATION_STATUS_LITERAL_PATTERN,
+    desiredLiteral,
   );
+
+  return {
+    content: updatedContent,
+    replacementCount,
+    statusLiteralCount: statusLiterals.length,
+    hasPendingNativeImplementationStatus: statusLiterals.some((literal) => literal.includes(PENDING_NATIVE_STATUS)),
+    hasVerifiedNativeImplementationStatus: statusLiterals.some((literal) => literal.includes(VERIFIED_NATIVE_STATUS)),
+    hasNativeVerificationStatusReference: NATIVE_VERIFICATION_STATUS_REFERENCE_PATTERN.test(content),
+  };
 }
 
 function writeJsonRuntimeStatus(file) {
@@ -1202,26 +1215,38 @@ function writeJsonRuntimeStatus(file) {
   pass(`${path.relative(repoRoot, file)} nativeImplementationStatus updated after verification`);
 }
 
-function updateNativeImplementationStatusAfterVerification() {
-  const modelConfigFile = path.join(mobileRoot, 'data', 'config', 'models.json');
-  const agentRegistryFile = path.join(mobileRoot, 'data', 'config', 'agent_registry.json');
-  const workspaceManifestFile = path.join(mobileRoot, 'data', 'config', 'workspace_manifest.json');
-  const localAgentsFile = path.join(mobileRoot, 'lib', 'localAgents.ts');
+function updateNativeImplementationStatusAfterVerification(files = {}) {
+  const modelConfigFile = files.modelConfigFile || path.join(mobileRoot, 'data', 'config', 'models.json');
+  const agentRegistryFile = files.agentRegistryFile || path.join(mobileRoot, 'data', 'config', 'agent_registry.json');
+  const workspaceManifestFile = files.workspaceManifestFile || path.join(mobileRoot, 'data', 'config', 'workspace_manifest.json');
+  const localAgentsFile = files.localAgentsFile || path.join(mobileRoot, 'lib', 'localAgents.ts');
 
   writeJsonRuntimeStatus(modelConfigFile);
   writeJsonRuntimeStatus(agentRegistryFile);
   writeJsonRuntimeStatus(workspaceManifestFile);
 
   const before = read(localAgentsFile);
-  const after = replaceNativeStatusInText(before);
-  if (after === before) {
+  const statusUpdate = replaceNativeStatusInText(before);
+  if (statusUpdate.replacementCount > 0) {
+    fs.writeFileSync(localAgentsFile, statusUpdate.content);
+    pass(`${path.relative(repoRoot, localAgentsFile)} fallback nativeImplementationStatus updated after verification`);
+    return;
+  }
+  if (statusUpdate.hasVerifiedNativeImplementationStatus) {
+    pass(`${path.relative(repoRoot, localAgentsFile)} fallback nativeImplementationStatus already verified; no update needed`);
+    return;
+  }
+  if (statusUpdate.hasNativeVerificationStatusReference) {
+    pass(`${path.relative(repoRoot, localAgentsFile)} keeps a native verification status reference; no nativeImplementationStatus literal update needed`);
+    return;
+  }
+
+  if (statusUpdate.statusLiteralCount === 0) {
     fail(
-      `Could not update nativeImplementationStatus in ${path.relative(repoRoot, localAgentsFile)}`,
-      'Expected at least one nativeImplementationStatus string literal.',
+      `Could not verify nativeImplementationStatus in ${path.relative(repoRoot, localAgentsFile)}`,
+      'Expected a pending or verified nativeImplementationStatus string literal, an existing nativeImplementationStatus string literal to update, or another native verification status reference.',
     );
   }
-  fs.writeFileSync(localAgentsFile, after);
-  pass(`${path.relative(repoRoot, localAgentsFile)} fallback nativeImplementationStatus updated after verification`);
 }
 
 
@@ -1251,4 +1276,13 @@ function main() {
   log('This proves llama.cpp is present; Android CMake configures with JAI_REQUIRE_LLAMA_CPP=ON; Android NDK compiles and links jai_llama_runtime against llama.cpp; iOS podspec resolves llama.cpp; iOS Objective-C++ bridge compilation ran when the iPhone simulator SDK was available or was explicitly skipped with a release note; and production/release native_on_device builds cannot ship with JAI_LLAMA_CPP_AVAILABLE=0. Use --smoke --model /path/to/tiny.gguf to additionally load a GGUF and call completeChat + embedTexts on the host. Target-device Gemma/Qwen validation still requires running the app on physical devices with downloaded model files.');
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  PENDING_NATIVE_STATUS,
+  VERIFIED_NATIVE_STATUS,
+  replaceNativeStatusInText,
+  updateNativeImplementationStatusAfterVerification,
+};
