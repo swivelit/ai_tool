@@ -16,6 +16,8 @@
   ],
   "exclude": [
     "node_modules",
-    "modules/jai-on-device-model/vendor/**"
+    "modules/jai-on-device-model/vendor",
+    "modules/jai-on-device-model/vendor/**",
+    "modules/jai-on-device-model/vendor/llama.cpp/tools/server/webui/**"
   ]
 }

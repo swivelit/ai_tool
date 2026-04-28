@@ -7,9 +7,11 @@ import {
   nativeOnDeviceBridgeMissingMessage,
 } from "./nativeOnDeviceModelBridge";
 import {
+  DeviceCapabilitySnapshot,
   ModelDeliveryConfig,
   ModelDeliveryMode,
   ModelDownloadConfigRoot,
+  ModelTierName,
   getModelDeliveryMode,
   resolveInstalledNativeModelAssets,
 } from "./modelDownloadManager";
@@ -71,6 +73,9 @@ export type LocalRuntimeConfig = {
   modelAssets?: Record<string, NativeOnDeviceModelAsset>;
   modelDeliveryMode?: ModelDeliveryMode | string;
   modelDelivery?: ModelDeliveryConfig;
+  modelTier?: ModelTierName;
+  deviceInfo?: DeviceCapabilitySnapshot;
+  proOptIn?: boolean;
   nativeBridge?: NativeOnDeviceModelBridge | null;
   /**
    * Test/dev escape hatch only. local_adapter is intentionally blocked in
@@ -415,7 +420,12 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
 
     const resolvedAssets = await resolveInstalledNativeModelAssets(
       normalizeNativeModelAssets(this.config.modelAssets),
-      { config: this.modelDeliveryConfig() },
+      {
+        config: this.modelDeliveryConfig(),
+        modelTier: this.config.modelTier,
+        deviceInfo: this.config.deviceInfo,
+        proOptIn: this.config.proOptIn,
+      },
     );
     this.config.modelAssets = resolvedAssets;
     this.config.modelRoot = this.config.modelRoot || "document://models";

@@ -49,3 +49,13 @@ def test_optional_embedding_paths_raise_clear_error_without_sentence_transformer
 
     with pytest.raises(RuntimeError, match="sentence-transformers"):
         continuous_learning.get_embed_model()
+
+
+def test_manual_pipeline_reports_missing_sentence_transformers_clearly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _block_sentence_transformers(monkeypatch)
+    test_pipeline = importlib.reload(importlib.import_module("test_pipeline"))
+
+    with pytest.raises(RuntimeError, match="Manual pipeline comparison.*sentence-transformers"):
+        test_pipeline._load_similarity_dependencies()

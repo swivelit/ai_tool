@@ -11,10 +11,6 @@ This directory contains two categories of files:
 Runtime/private data must stay out of git. Safe examples should live under
 `backend/data/sample/` with scrubbed placeholder values.
 
-The following files currently look like runtime data and should be removed from
-git tracking in a separate cleanup commit after confirming no user data is
-needed in history:
-
-- `backend/data/logs/guest_history.jsonl`
-- `backend/data/profiles/1.json`
-- `backend/data/profiles/guest.json`
+The runtime directories `backend/data/logs/` and `backend/data/profiles/` are
+ignored by git and excluded from repository archives. Keep seed CSVs and
+scrubbed sample profiles tracked.

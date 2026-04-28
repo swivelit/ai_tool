@@ -1,0 +1,4 @@
+backend/data/logs/ export-ignore
+backend/data/logs/** export-ignore
+backend/data/profiles/ export-ignore
+backend/data/profiles/** export-ignore

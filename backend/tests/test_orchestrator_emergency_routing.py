@@ -40,3 +40,20 @@ def test_orchestrator_does_not_route_harmless_mentions_as_emergencies(message: s
     assert result["intent"] != "EMERGENCY"
     assert result["next_action"] != "Emergency Agent"
     assert result["priority"] != "high"
+
+
+@pytest.mark.parametrize("message", ["Debug my broken code", "My build is broken"])
+def test_orchestrator_does_not_route_ok_substrings_as_smalltalk(message: str) -> None:
+    result = run_orchestrator(None, message)
+
+    assert result["intent"] != "SMALLTALK"
+    assert result["next_action"] != "Greeting Agent"
+
+
+@pytest.mark.parametrize("message", ["ok", "thanks", "thank you", "cool"])
+def test_orchestrator_routes_exact_smalltalk_phrases(message: str) -> None:
+    result = run_orchestrator(None, message)
+
+    assert result["intent"] == "SMALLTALK"
+    assert result["next_action"] == "Greeting Agent"
+    assert result["matched_keyword"] == message

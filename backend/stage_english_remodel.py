@@ -51,15 +51,7 @@ CURRENT_HEALTH_TOPIC_TERMS = set(HEALTH_RISK_KEYWORDS) | {
     "prescription",
     "medication",
     "allergic",
-    "diet",
-    "food",
-    "eat",
-    "eating",
-    "nutrition",
-    "exercise",
-    "workout",
     "fever",
-    "pain",
     "cough",
     "headache",
     "dizzy",
@@ -78,12 +70,82 @@ CURRENT_HEALTH_TOPIC_TERMS = set(HEALTH_RISK_KEYWORDS) | {
     "சர்க்கரை",
     "நீரிழிவு",
     "கர்ப்ப",
-    "உணவு",
-    "சாப்பாடு",
-    "சாப்பிட",
     "ஒவ்வாமை",
-    "உடற்பயிற்சி",
 }
+
+BODY_PART_TERMS = (
+    "stomach",
+    "abdomen",
+    "abdominal",
+    "chest",
+    "head",
+    "back",
+    "neck",
+    "throat",
+    "ear",
+    "tooth",
+    "teeth",
+    "leg",
+    "arm",
+    "hand",
+    "foot",
+    "feet",
+    "knee",
+    "shoulder",
+    "hip",
+    "joint",
+    "muscle",
+)
+
+MEDICAL_CONDITION_TERMS = (
+    "diabetes",
+    "blood pressure",
+    "bp",
+    "pregnant",
+    "pregnancy",
+    "postpartum",
+    "breastfeeding",
+    "allergy",
+    "allergic",
+    "kidney",
+    "heart",
+    "thyroid",
+    "cholesterol",
+    "asthma",
+)
+
+PERSONAL_DIET_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"what\s+(?:should|can)\s+i\s+eat|"
+    r"can\s+i\s+eat|"
+    r"foods?\s+(?:should|can)\s+i|"
+    r"(?:my\s+)?(?:diet|meal)\s+plan|"
+    r"(?:breakfast|lunch|dinner)\s+(?:plan|ideas?|for\s+me)|"
+    r"nutrition\s+(?:advice|plan|for\s+me)"
+    r")\b"
+)
+
+PERSONAL_EXERCISE_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:can|should)\s+i\s+(?:exercise|work\s*out)|"
+    r"(?:my\s+)?(?:exercise|workout)\s+(?:plan|routine|advice)|"
+    r"(?:exercise|workout)\s+for\s+me"
+    r")\b"
+)
+
+SLEEP_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:i\s+)?(?:can(?:not|'t)|cant|unable\s+to|struggling\s+to)\s+sleep|"
+    r"sleep(?:ing)?\s+(?:problem|problems|trouble|difficulty|disorder)|"
+    r"insomnia|sleepless"
+    r")\b"
+)
+
+PAIN_HEALTH_CONTEXT_RE = re.compile(
+    rf"\b(?:{'|'.join(BODY_PART_TERMS)})\s+(?:pain|ache|aches|hurts?)\b|"
+    rf"\b(?:pain|ache|aches|hurts?)\s+(?:in|near|around|inside)\s+(?:my\s+|the\s+)?(?:{'|'.join(BODY_PART_TERMS)})\b|"
+    r"\bi\s+(?:have|feel|am\s+in|am\s+having)\s+(?:[a-z0-9_]+\s+){0,3}(?:pain|ache|aches|hurt|hurts)\b"
+)
 
 PROFILE_MEDICAL_FACT_TERMS = set(HEALTH_RISK_KEYWORDS) | {
     "diabetes_or_sugar_control",
@@ -347,15 +409,55 @@ class EnglishRemodeler:
                 return True
         return False
 
+    @classmethod
+    def _contains_medical_condition_term(cls, text: str) -> bool:
+        return cls._contains_any_term(text, MEDICAL_CONDITION_TERMS)
+
+    @classmethod
+    def _contains_health_topic_context(cls, text: str) -> bool:
+        haystack = _normalize_text(text)
+        if cls._contains_any_term(haystack, CURRENT_HEALTH_TOPIC_TERMS):
+            return True
+        if SLEEP_HEALTH_CONTEXT_RE.search(haystack):
+            return True
+        if PAIN_HEALTH_CONTEXT_RE.search(haystack):
+            return True
+        if cls._contains_medical_condition_term(haystack):
+            return True
+        return False
+
+    @classmethod
+    def _contains_profile_health_trigger_context(cls, text: str) -> bool:
+        haystack = _normalize_text(text)
+        contextual_terms = {
+            "diet",
+            "food",
+            "eat",
+            "eating",
+            "nutrition",
+            "exercise",
+            "workout",
+            "sleep",
+            "pain",
+        }
+        if cls._contains_any_term(haystack, PROFILE_HEALTH_TRIGGER_TERMS - contextual_terms):
+            return True
+        return (
+            SLEEP_HEALTH_CONTEXT_RE.search(haystack) is not None
+            or PAIN_HEALTH_CONTEXT_RE.search(haystack) is not None
+            or PERSONAL_DIET_CONTEXT_RE.search(haystack) is not None
+            or PERSONAL_EXERCISE_CONTEXT_RE.search(haystack) is not None
+        )
+
     def _is_health_sensitive(self, user_query: str, raw_answer: str, profile: Dict[str, Any]) -> bool:
         current_turn_text = f"{user_query} {raw_answer}".lower()
-        if self._contains_any_term(current_turn_text, CURRENT_HEALTH_TOPIC_TERMS):
+        if self._contains_health_topic_context(current_turn_text):
             return True
 
         profile_text = json_safe(profile).lower() if profile else ""
         if not self._contains_any_term(profile_text, PROFILE_MEDICAL_FACT_TERMS):
             return False
-        return self._contains_any_term(current_turn_text, PROFILE_HEALTH_TRIGGER_TERMS)
+        return self._contains_profile_health_trigger_context(current_turn_text)
 
     @staticmethod
     def _post_process_answer(text: str) -> str:

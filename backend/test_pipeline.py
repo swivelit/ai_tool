@@ -10,6 +10,28 @@ from __future__ import annotations
 __test__ = False
 
 
+def _load_similarity_dependencies():
+    try:
+        from sklearn.metrics.pairwise import cosine_similarity
+    except ImportError as exc:
+        raise RuntimeError(
+            "Manual pipeline comparison requires optional ML dependency "
+            "scikit-learn. Install backend optional/dev dependencies before "
+            "running backend/test_pipeline.py."
+        ) from exc
+
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise RuntimeError(
+            "Manual pipeline comparison requires optional ML dependency "
+            "sentence-transformers. Install it before running "
+            "backend/test_pipeline.py, or skip this manual similarity script."
+        ) from exc
+
+    return cosine_similarity, SentenceTransformer
+
+
 def main() -> None:
     from dotenv import load_dotenv
 
@@ -18,12 +40,11 @@ def main() -> None:
     import os
     import time
 
-    from sklearn.metrics.pairwise import cosine_similarity
-    from sentence_transformers import SentenceTransformer
-
     from app.database import get_session
     from app.main import _run_stage_pipeline
     from stage_openai_core import OpenAICore
+
+    cosine_similarity, SentenceTransformer = _load_similarity_dependencies()
 
     print("DATABASE_URL:", os.getenv("DATABASE_URL"))
 

@@ -89,6 +89,38 @@ def test_real_health_query_still_triggers_health_sensitive_handling(tmp_path: Pa
     assert MEDICAL_SAFETY_NOTE in result["answer"]
 
 
+def test_broad_non_medical_terms_do_not_trigger_health_sensitive_routing(tmp_path: Path) -> None:
+    raw_answer = "Here is a practical next step."
+    remodeler = _remodeler(tmp_path, raw_answer)
+
+    for prompt in [
+        "What are customer pain points in my startup?",
+        "Help me pitch my food startup",
+        "My laptop sleep mode is broken",
+        "Give me a Python exercise",
+    ]:
+        result = remodeler.remodel_with_meta(prompt, raw_answer, _profile_with_medical_notes())
+
+        assert result["risk_level"] != "high", prompt
+        assert MEDICAL_SAFETY_NOTE not in result["answer"], prompt
+
+
+def test_medical_phrase_context_still_triggers_health_sensitive_routing(tmp_path: Path) -> None:
+    raw_answer = "Use cautious self-care and seek professional guidance if needed."
+    remodeler = _remodeler(tmp_path, raw_answer)
+
+    for prompt in [
+        "I have stomach pain",
+        "What should I eat with diabetes?",
+        "Diet for blood pressure",
+        "I cannot sleep for many days",
+    ]:
+        result = remodeler.remodel_with_meta(prompt, raw_answer, {})
+
+        assert result["risk_level"] == "high", prompt
+        assert MEDICAL_SAFETY_NOTE in result["answer"], prompt
+
+
 def _base_answers() -> dict[str, Any]:
     return {
         "age_group": "26-35",

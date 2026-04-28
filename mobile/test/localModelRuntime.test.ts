@@ -274,6 +274,106 @@ describe("local model runtime architecture", () => {
     );
   });
 
+  it("passes the selected Standard tier into native downloaded asset resolution", async () => {
+    vi.resetModules();
+
+    const downloadedFiles = new Set([
+      "file:///mock/models/qwen3-8b-q4_k_m.gguf",
+      "file:///mock/models/qwen3-embedding-0.6b-q8_0.gguf",
+    ]);
+
+    vi.doMock("expo-constants", () => ({
+      default: { expoConfig: { extra: {} } },
+    }));
+    vi.doMock("expo-file-system/legacy", () => ({
+      documentDirectory: "file:///mock/",
+      EncodingType: { Base64: "base64" },
+      getInfoAsync: vi.fn(async (uri: string) => ({
+        exists: downloadedFiles.has(uri),
+        size: downloadedFiles.has(uri) ? 123 : 0,
+      })),
+      makeDirectoryAsync: vi.fn(async () => undefined),
+      deleteAsync: vi.fn(async () => undefined),
+      moveAsync: vi.fn(async () => undefined),
+      readAsStringAsync: vi.fn(async () => ""),
+      createDownloadResumable: vi.fn(),
+    }));
+
+    const bridge = {
+      initialize: vi.fn(async () => ({ ok: true })),
+      completeChat: vi.fn(async () => ({ text: "Standard tier native answer." })),
+      embedTexts: vi.fn(async () => ({ data: [{ embedding: [0.4, 0.6] }] })),
+    };
+
+    const { setNativeOnDeviceModelBridgeForTests } = await import("../lib/nativeOnDeviceModelBridge");
+    setNativeOnDeviceModelBridgeForTests(bridge);
+    const { createLocalModelRuntime } = await import("../lib/localModelRuntime");
+
+    const runtime = createLocalModelRuntime({
+      mode: "native_on_device",
+      nativeBackend: "llama_cpp",
+      nativeModuleName: "JaiOnDeviceModel",
+      modelRoot: "document://models",
+      modelTier: "standard",
+      deviceInfo: {
+        totalMemoryBytes: 12 * 1024 * 1024 * 1024,
+        freeStorageBytes: 12 * 1024 * 1024 * 1024,
+      },
+      modelAssets: {
+        ...nativeAssets,
+        "Qwen/Qwen3-8B": {
+          id: "Qwen/Qwen3-8B",
+          backend: "llama_cpp",
+          format: "gguf",
+          modelPath: "models/qwen3-8b-q4_k_m.gguf",
+          chatTemplate: "qwen3",
+        },
+      },
+      modelDelivery: {
+        mode: "download_on_first_launch",
+        storageRoot: "document://models",
+        defaultTier: "lite",
+        modelTiers: {
+          lite: {
+            requiredModelIds: [
+              "google/gemma-3-4b-it",
+              "Qwen/Qwen3-Embedding-0.6B",
+            ],
+          },
+          standard: {
+            requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+            minRamBytes: 8 * 1024 * 1024 * 1024,
+            minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
+          },
+        },
+        models: [
+          { id: "google/gemma-3-4b-it", fileName: "gemma-3-4b-it-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/gemma.gguf", localPath: "models/gemma-3-4b-it-q4_k_m.gguf", required: true, requiredForTiers: ["lite"] },
+          { id: "Qwen/Qwen3-8B", fileName: "qwen3-8b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen8.gguf", localPath: "models/qwen3-8b-q4_k_m.gguf", required: false, requiredForTiers: ["standard"] },
+          { id: "Qwen/Qwen3-Embedding-0.6B", fileName: "qwen3-embedding-0.6b-q8_0.gguf", downloadUrl: "https://cdn.example.test/embed.gguf", localPath: "models/qwen3-embedding-0.6b-q8_0.gguf", required: true, requiredForTiers: ["lite", "standard"] },
+        ],
+      },
+    });
+
+    await runtime.completeChat({
+      model: "Qwen/Qwen3-8B",
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    const initArg = (bridge.initialize as any).mock.calls[0][0] as any;
+    expect(initArg.models["Qwen/Qwen3-8B"].modelPath).toBe(
+      "file:///mock/models/qwen3-8b-q4_k_m.gguf",
+    );
+    expect(initArg.models["google/gemma-3-4b-it"]).toBeUndefined();
+    expect(bridge.completeChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "Qwen/Qwen3-8B",
+        asset: expect.objectContaining({
+          modelPath: "file:///mock/models/qwen3-8b-q4_k_m.gguf",
+        }),
+      }),
+    );
+  });
+
   it("fails clearly when native_on_device has no native binding and never configures backend", async () => {
     const runtime = createLocalModelRuntime({
       mode: "native_on_device",

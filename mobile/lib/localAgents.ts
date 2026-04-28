@@ -3,10 +3,15 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import { apiPost, apiPostBackendOnly } from "./api";
 import {
+  DeviceCapabilitySnapshot,
   ModelDeliveryConfig,
+  ModelInstallStatus,
+  ModelTierName,
   ensureRequiredModelsInstalled,
   getModelDeliveryMode,
+  getRequiredModelIdsForTier,
   isModelInstallError,
+  selectModelTier,
 } from "./modelDownloadManager";
 import {
   ensureLocalAgentSeedData,
@@ -414,6 +419,14 @@ type OrchestratorDecision = {
   needsLiveData: boolean;
   selectedModel: string;
   fallbackAllowed: boolean;
+};
+
+type ModelRuntimeTierOptions = {
+  modelTier?: ModelTierName;
+  deviceInfo?: DeviceCapabilitySnapshot;
+  proOptIn?: boolean;
+  selectedTier?: ModelTierName;
+  installedModelIds?: string[];
 };
 
 type MemoryRules = {
@@ -978,7 +991,7 @@ const DEFAULT_PROMPTS: PromptCatalog = {
   profileSummarySystem:
     "Write a compact factual English profile summary from the provided onboarding facts. Mention only grounded user facts and stable preferences. Do not invent anything.",
   orchestratorSystem:
-    "You are the Orchestrator Agent using Qwen 3. Route the request local-first and return JSON only with: route, reason, confidence, needs_clarification, clarification_question, needs_live_data, selected_model, fallback_allowed.",
+    "You are the Orchestrator Agent. Route the request local-first and return JSON only with: route, reason, confidence, needs_clarification, clarification_question, needs_live_data, selected_model, fallback_allowed. Set selected_model to the selected_model value provided in the input.",
   reminderExtractorSystem:
     "Extract reminder title, details, datetime_text, and assistant_reply as JSON.",
   alignmentSystem:
@@ -2257,6 +2270,7 @@ async function localChatRaw(
   userPrompt: string,
   model: string,
   temperature = 0.2,
+  runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
   const cfg = await getModelConfig();
   const runtime = createLocalModelRuntime({
@@ -2275,6 +2289,9 @@ async function localChatRaw(
     modelAssets: cfg.native?.models,
     modelDeliveryMode: getModelDeliveryMode(cfg),
     modelDelivery: cfg.modelDelivery,
+    modelTier: runtimeOptions.selectedTier || runtimeOptions.modelTier,
+    deviceInfo: runtimeOptions.deviceInfo,
+    proOptIn: runtimeOptions.proOptIn,
   });
   return runtime.completeChat({
     model,
@@ -2291,8 +2308,9 @@ async function localChatJson(
   userPrompt: string,
   model: string,
   temperature = 0.2,
+  runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
-  const json = await localChatRaw(systemPrompt, userPrompt, model, temperature);
+  const json = await localChatRaw(systemPrompt, userPrompt, model, temperature, runtimeOptions);
   return parseJsonLoose<any>(extractCompletionText(json), {});
 }
 
@@ -2301,8 +2319,9 @@ async function localChatText(
   userPrompt: string,
   model: string,
   temperature = 0.2,
+  runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
-  const json = await localChatRaw(systemPrompt, userPrompt, model, temperature);
+  const json = await localChatRaw(systemPrompt, userPrompt, model, temperature, runtimeOptions);
   return extractCompletionText(json);
 }
 
@@ -3870,6 +3889,7 @@ export const __assistantTestUtils = {
   sanitizeDecision,
   generateClarifyingQuestion,
   ruleBasedOrchestratorDecision,
+  selectedReasonerModel,
 };
 
 export const __memoryTestUtils = {
@@ -5109,14 +5129,63 @@ function toolPlanAvailable(plan: ToolPlan, registry: AgentRegistryConfig) {
   });
 }
 
+function selectedTierForRuntime(
+  cfg: LocalModelConfig,
+  options: ModelRuntimeTierOptions = {},
+): ModelTierName {
+  if (options.selectedTier) return options.selectedTier;
+  return selectModelTier(
+    cfg,
+    {
+      ...(options.deviceInfo || {}),
+      proOptIn: options.proOptIn ?? options.deviceInfo?.proOptIn ?? false,
+    },
+    options.modelTier,
+  );
+}
+
+function installedModelIdsFromStatus(status: ModelInstallStatus) {
+  return status.required
+    .concat(status.optional)
+    .filter((entry) => entry.valid)
+    .map((entry) => entry.id);
+}
+
+function modelTierOptionsFromInstallStatus(
+  options: ModelRuntimeTierOptions,
+  status: ModelInstallStatus,
+): ModelRuntimeTierOptions {
+  return {
+    ...options,
+    selectedTier: status.selectedTier,
+    installedModelIds: installedModelIdsFromStatus(status),
+  };
+}
+
+function isReasonerModelAvailableForTier(
+  cfg: LocalModelConfig,
+  modelId: string | undefined,
+  options: ModelRuntimeTierOptions = {},
+) {
+  const id = String(modelId || "").trim();
+  if (!id) return false;
+  const selectedTier = selectedTierForRuntime(cfg, options);
+  const requiredIds = new Set(getRequiredModelIdsForTier(cfg, selectedTier));
+  const installedIds = new Set(options.installedModelIds || []);
+  return requiredIds.has(id) || installedIds.has(id);
+}
+
 function selectedReasonerModel(
   cfg: LocalModelConfig,
   routesConfig: OrchestratorConfig,
   message: string,
   recentTurns: number,
   forcedModel?: string,
+  runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
-  if (forcedModel) return forcedModel;
+  if (forcedModel && isReasonerModelAvailableForTier(cfg, forcedModel, runtimeOptions)) {
+    return forcedModel;
+  }
   const normalized = normalizeText(message);
   const largeChars = positiveInt(
     routesConfig.complexityThresholds?.largeModelQuestionChars,
@@ -5135,6 +5204,26 @@ function selectedReasonerModel(
     message.length >= largeChars ||
     hasMultiStepCue ||
     recentTurns >= longConversationThreshold
+  ) {
+    const selectedTier = selectedTierForRuntime(cfg, runtimeOptions);
+    if (
+      selectedTier === "pro" &&
+      cfg.models.orchestratorPro &&
+      isReasonerModelAvailableForTier(cfg, cfg.models.orchestratorPro, runtimeOptions)
+    ) {
+      return cfg.models.orchestratorPro;
+    }
+    if (
+      (selectedTier === "standard" || selectedTier === "pro") &&
+      isReasonerModelAvailableForTier(cfg, cfg.models.orchestratorLarge, runtimeOptions)
+    ) {
+      return cfg.models.orchestratorLarge;
+    }
+    return cfg.models.orchestratorMedium;
+  }
+  if (
+    !isReasonerModelAvailableForTier(cfg, cfg.models.orchestratorMedium, runtimeOptions) &&
+    isReasonerModelAvailableForTier(cfg, cfg.models.orchestratorLarge, runtimeOptions)
   ) {
     return cfg.models.orchestratorLarge;
   }
@@ -5319,9 +5408,7 @@ function sanitizeDecision(
       ).trim() ||
       (needsClarification ? generateClarifyingQuestion("", replyLanguage) : ""),
     needsLiveData: Boolean(raw.needsLiveData ?? raw.needs_live_data),
-    selectedModel:
-      String(raw.selectedModel || raw.selected_model || selectedModel).trim() ||
-      selectedModel,
+    selectedModel,
     fallbackAllowed: Boolean(raw.fallbackAllowed ?? raw.fallback_allowed),
   };
 }
@@ -5332,6 +5419,7 @@ async function classifyRouteWithModel(
   answers: Record<string, any>,
   profileSummary: string,
   selectedModel: string,
+  runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
   const prompts = await getPromptCatalog();
   const registry = await getAgentRegistry();
@@ -5344,9 +5432,12 @@ async function classifyRouteWithModel(
         structured_profile: answers,
         profile_summary: profileSummary,
         tool_agents_available: registry.agents.toolAgents,
+        selected_model: selectedModel,
+        selected_model_tier: runtimeOptions.selectedTier,
       }),
       selectedModel,
       0.05,
+      runtimeOptions,
     );
     return sanitizeDecision(out, selectedModel, replyLanguage);
   } catch {
@@ -6090,6 +6181,7 @@ async function buildLocalReasoningWithContext(opts: {
   profileSummary: string;
   userProfile?: LocalUserProfile;
   selectedModel: string;
+  runtimeOptions?: ModelRuntimeTierOptions;
 }) {
   const prompts = await getPromptCatalog();
   const memories = await loadDailySummaries(opts.userId);
@@ -6135,6 +6227,7 @@ async function buildLocalReasoningWithContext(opts: {
     }),
     opts.selectedModel,
     0.25,
+    opts.runtimeOptions,
   );
   return {
     draft: draft.trim(),
@@ -6152,6 +6245,7 @@ async function buildLocalReasoningDraft(opts: {
   profileSummary: string;
   userProfile?: LocalUserProfile;
   selectedModel: string;
+  runtimeOptions?: ModelRuntimeTierOptions;
 }) {
   return (await buildLocalReasoningWithContext(opts)).draft;
 }
@@ -6164,6 +6258,7 @@ async function buildProfileGroundedDraft(opts: {
   profileSummary: string;
   userProfile?: LocalUserProfile;
   selectedModel: string;
+  runtimeOptions?: ModelRuntimeTierOptions;
 }) {
   const direct = heuristicProfileAnswer(
     opts.message,
@@ -6370,6 +6465,9 @@ export async function runLocalAssistantTurn(opts: {
   replyLanguage?: ReplyLanguage;
   userProfile?: LocalUserProfile;
   userAllowedCloudFallback?: boolean;
+  modelTier?: ModelTierName;
+  deviceInfo?: DeviceCapabilitySnapshot;
+  proOptIn?: boolean;
 }): Promise<LocalAssistantTurnResult> {
   await ensureLocalAgentData();
   const userId = opts.userId;
@@ -6383,11 +6481,30 @@ export async function runLocalAssistantTurn(opts: {
   if (!message) throw new Error("Message is required.");
 
   const installCfg = await getModelConfig();
+  let modelRuntimeOptions: ModelRuntimeTierOptions = {
+    modelTier: opts.modelTier,
+    deviceInfo: opts.deviceInfo,
+    proOptIn: opts.proOptIn,
+    selectedTier: selectedTierForRuntime(installCfg, {
+      modelTier: opts.modelTier,
+      deviceInfo: opts.deviceInfo,
+      proOptIn: opts.proOptIn,
+    }),
+  };
   if (
     String(installCfg.runtime?.mode || "native_on_device") === "native_on_device" &&
     getModelDeliveryMode(installCfg) === "download_on_first_launch"
   ) {
-    await ensureRequiredModelsInstalled({ config: installCfg });
+    const status = await ensureRequiredModelsInstalled({
+      config: installCfg,
+      modelTier: opts.modelTier,
+      deviceInfo: opts.deviceInfo,
+      proOptIn: opts.proOptIn,
+    });
+    modelRuntimeOptions = modelTierOptionsFromInstallStatus(
+      modelRuntimeOptions,
+      status,
+    );
   }
 
   await appendConversation(userId, "user", message);
@@ -6504,6 +6621,8 @@ export async function runLocalAssistantTurn(opts: {
     routesConfig,
     message,
     turns.length,
+    undefined,
+    modelRuntimeOptions,
   );
   const fastDecision = ruleBasedOrchestratorDecision(
     message,
@@ -6519,6 +6638,7 @@ export async function runLocalAssistantTurn(opts: {
         answers,
         profileSummary,
         preferredSelectedModel,
+        modelRuntimeOptions,
       );
 
   await safeRecordTrainingSample("orchestrator", {
@@ -6531,6 +6651,7 @@ export async function runLocalAssistantTurn(opts: {
       profileSummary,
       availableToolAgents: registry.agents.toolAgents,
       selectedModel: preferredSelectedModel,
+      selectedModelTier: modelRuntimeOptions.selectedTier,
     },
   });
 
@@ -6639,6 +6760,7 @@ export async function runLocalAssistantTurn(opts: {
       profileSummary,
       userProfile: opts.userProfile,
       selectedModel: decision.selectedModel,
+      runtimeOptions: modelRuntimeOptions,
     }).catch(() =>
       replyLanguage === "ta"
         ? "உங்களைப் பற்றிய சில தகவல்கள் என்கிட்ட இருக்கு. இதை கொஞ்சம் நேராக கேளுங்கள்."
@@ -6727,6 +6849,7 @@ export async function runLocalAssistantTurn(opts: {
         profileSummary,
         userProfile: opts.userProfile,
         selectedModel: decision.selectedModel,
+        runtimeOptions: modelRuntimeOptions,
       });
       draft = reasoned.draft;
       ragResponseMetadata = {
@@ -6985,6 +7108,7 @@ export async function runLocalAssistantTurn(opts: {
           cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName || "JaiOnDeviceModel",
         modelRoot: cfg.native?.modelRoot || "document://models",
         modelDeliveryMode: getModelDeliveryMode(cfg),
+        selectedModelTier: modelRuntimeOptions.selectedTier,
         adapterLocation: cfg.runtime?.adapterLocation || "external_lan",
         allowDeviceLoopback: Boolean(cfg.runtime?.allowDeviceLoopback),
       },

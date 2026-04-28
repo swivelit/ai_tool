@@ -219,6 +219,45 @@ describe("local orchestrator and alignment", () => {
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 
+  it("selects reasoner models only from the selected installed tier", async () => {
+    const { __assistantTestUtils } = await import("../lib/localAgents");
+    const complexPrompt =
+      "Design a detailed multi step offline reasoning workflow with storage choices, edge cases, testing strategy, and failure handling.";
+    const selectReasoner = __assistantTestUtils.selectedReasonerModel;
+
+    expect(
+      selectReasoner(models as any, orchestratorRoutes as any, complexPrompt, 0, undefined, {
+        selectedTier: "lite",
+        installedModelIds: ["google/gemma-3-4b-it", "Qwen/Qwen3-Embedding-0.6B"],
+      }),
+    ).toBe("google/gemma-3-4b-it");
+
+    expect(
+      selectReasoner(models as any, orchestratorRoutes as any, complexPrompt, 0, undefined, {
+        selectedTier: "standard",
+        installedModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+      }),
+    ).toBe("Qwen/Qwen3-8B");
+
+    expect(
+      selectReasoner(models as any, orchestratorRoutes as any, complexPrompt, 0, undefined, {
+        selectedTier: "standard",
+        installedModelIds: [
+          "Qwen/Qwen3-8B",
+          "Qwen/Qwen3-14B",
+          "Qwen/Qwen3-Embedding-0.6B",
+        ],
+      }),
+    ).toBe("Qwen/Qwen3-8B");
+
+    expect(
+      selectReasoner(models as any, orchestratorRoutes as any, complexPrompt, 0, undefined, {
+        selectedTier: "pro",
+        installedModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+      }),
+    ).toBe("Qwen/Qwen3-14B");
+  });
+
   it("routes ambiguous input into a specific clarification question", async () => {
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
     const result = await runLocalAssistantTurn({
@@ -583,6 +622,45 @@ describe("local orchestrator and alignment", () => {
     expect(result.route).toBe("local_answer");
     expect(result.assistantText).toContain("Compilers");
     expect(result.meta?.tools).toBeUndefined();
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps complex Lite chats on the Lite installed model", async () => {
+    const complexPrompt =
+      "Explain compiler optimization techniques thoroughly across parsing, intermediate representation, register allocation, runtime checks, benchmark design, and offline testing strategy for a local demo application without live data.";
+    queueCompletion(
+      JSON.stringify({
+        route: "local_answer",
+        reason: "complex_offline_reasoning",
+        confidence: 0.86,
+        needs_clarification: false,
+        clarification_question: "",
+        needs_live_data: false,
+        selected_model: "Qwen/Qwen3-8B",
+        fallback_allowed: false,
+      }),
+    );
+    queueJsonResponse({ data: [{ embedding: unitEmbedding() }] });
+    queueCompletion("Lite tier answer for a complex offline prompt.");
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 247,
+      message: complexPrompt,
+      replyLanguage: "en",
+    });
+
+    const fetchPayloads = ((global.fetch as any).mock.calls as any[]).map((call) =>
+      JSON.parse(String(call[1]?.body || "{}")),
+    );
+
+    expect(result.route).toBe("local_answer");
+    expect(result.assistantText).toContain("Lite tier answer");
+    expect(result.meta?.orchestratorDecision?.selectedModel).toBe("google/gemma-3-4b-it");
+    expect(fetchPayloads[0].model).toBe("google/gemma-3-4b-it");
+    expect(fetchPayloads[1].model).toBe("google/gemma-3-4b-it");
+    expect(fetchPayloads.map((payload) => payload.model)).not.toContain("Qwen/Qwen3-8B");
+    expect(fetchPayloads.map((payload) => payload.model)).not.toContain("Qwen/Qwen3-14B");
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 

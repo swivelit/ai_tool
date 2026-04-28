@@ -46,6 +46,15 @@ _SMALLTALK_KWS: set = {
     "how are you", "how r u", "epdi iruka", "எப்படி இருக்கீங்க", 
     "thanks", "thank you", "nandri", "நன்றி", "thx", "ok", "cool",
 }
+_SMALLTALK_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = tuple(
+    (
+        keyword,
+        re.compile(
+            rf"(?<![a-z0-9_\u0B80-\u0BFF]){re.escape(keyword)}(?![a-z0-9_\u0B80-\u0BFF])"
+        ),
+    )
+    for keyword in sorted(_SMALLTALK_KWS, key=len, reverse=True)
+)
 
 _PROFILE_KWS: set = {"name", "place", "location", "who am i", "where do i live"}
 
@@ -158,6 +167,12 @@ def _match_emergency(norm: str) -> str:
             return label
     return ""
 
+def _match_smalltalk(norm: str) -> str:
+    for label, pattern in _SMALLTALK_PATTERNS:
+        if pattern.search(norm):
+            return label
+    return ""
+
 def _make_result(
     *,
     intent: str,
@@ -206,8 +221,14 @@ def _rule_classify(message: str) -> Optional[Dict[str, Any]]:
         return _make_result(intent="GREETING", next_action="Greeting Agent", priority="low", matched_keyword=norm)
 
     # 3. SMALLTALK / THANKS
-    if any(kw in norm for kw in _SMALLTALK_KWS):
-        return _make_result(intent="SMALLTALK", next_action="Greeting Agent", priority="low")
+    smalltalk_match = _match_smalltalk(norm)
+    if smalltalk_match:
+        return _make_result(
+            intent="SMALLTALK",
+            next_action="Greeting Agent",
+            priority="low",
+            matched_keyword=smalltalk_match,
+        )
 
     # 4. PROFILE / ASSISTANT INFO
     if any(kw in norm for kw in _PROFILE_KWS):
