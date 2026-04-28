@@ -56,6 +56,44 @@ _NON_RETRYABLE_EXCEPTIONS = (
     UnprocessableEntityError,
 )
 
+_CONTEXTUAL_HEALTH_RISK_TERMS = {"heart", "medicine", "tablet", "dose", "dosage"}
+_HEALTH_ADJACENT_TERMS = {
+    "health",
+    "medical",
+    "doctor",
+    "clinic",
+    "hospital",
+    "symptom",
+    "symptoms",
+    "diagnosis",
+    "diagnose",
+    "treatment",
+    "prescription",
+    "medication",
+    "diet",
+    "food",
+    "eat",
+    "exercise",
+    "workout",
+    "sleep",
+    "pain",
+}
+_HEART_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"heart\s+(?:attack|disease|condition|failure|rate|palpitations?|symptoms?)|"
+    r"symptoms?\s+of\s+(?:a\s+)?heart\s+attack"
+    r")\b"
+)
+_MEDICATION_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:what|which|safe|recommended|correct)\s+(?:dose|dosage)\b|"
+    r"(?:dose|dosage)\s+of\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:can|should)\s+i\s+take\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:take|taking)\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:medicine|medication|tablet)\s+(?:dose|dosage|side\s+effects?|for|with)\b"
+    r")"
+)
+
 
 def _status_code_from_exception(exc: BaseException) -> Optional[int]:
     status_code = getattr(exc, "status_code", None)
@@ -153,9 +191,39 @@ class OpenAICore:
         return response_format
 
     @staticmethod
-    def _contains_health_risk(text: str) -> bool:
+    def _normalize_health_text(text: str) -> str:
         normalized = str(text or "").lower()
-        return any(keyword in normalized for keyword in HEALTH_RISK_KEYWORDS)
+        normalized = re.sub(r"[^\w\s\u0B80-\u0BFF]", " ", normalized)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @staticmethod
+    def _contains_any_health_term(text: str, terms: set[str]) -> bool:
+        haystack = OpenAICore._normalize_health_text(text)
+        for raw_term in terms:
+            term = OpenAICore._normalize_health_text(raw_term)
+            if not term:
+                continue
+            if re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", haystack):
+                return True
+        return False
+
+    @classmethod
+    def _contains_health_risk(cls, text: str) -> bool:
+        normalized = str(text or "").lower()
+        non_contextual_terms = set(HEALTH_RISK_KEYWORDS) - _CONTEXTUAL_HEALTH_RISK_TERMS
+        if cls._contains_any_health_term(normalized, non_contextual_terms):
+            return True
+        return (
+            _HEART_HEALTH_CONTEXT_RE.search(cls._normalize_health_text(normalized)) is not None
+            or _MEDICATION_HEALTH_CONTEXT_RE.search(cls._normalize_health_text(normalized)) is not None
+        )
+
+    @classmethod
+    def _is_health_adjacent_query(cls, text: str) -> bool:
+        normalized = cls._normalize_health_text(text)
+        if cls._contains_health_risk(normalized):
+            return True
+        return cls._contains_any_health_term(normalized, _HEALTH_ADJACENT_TERMS)
 
     def _cache_key(
         self,
@@ -320,7 +388,9 @@ class OpenAICore:
         return parsed
 
     def answer_user_query_structured(self, user_query: str, profile_context: str) -> Dict[str, str]:
-        health_sensitive = self._contains_health_risk(user_query) or self._contains_health_risk(profile_context)
+        query_health_sensitive = self._contains_health_risk(user_query)
+        profile_health_relevant = self._contains_health_risk(profile_context) and self._is_health_adjacent_query(user_query)
+        health_sensitive = query_health_sensitive or profile_health_relevant
         safety_block = MEDICAL_SAFETY_NOTE if ENABLE_HEALTH_SAFETY_GUARD and health_sensitive else ""
         system_prompt = (
             "You are the English core answer engine for a persona-aware assistant. "

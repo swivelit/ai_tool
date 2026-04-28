@@ -6,6 +6,7 @@ from typing import Any
 from config import MEDICAL_SAFETY_NOTE
 from stage_behaviour_questions import BehaviourQuestionnaire
 from stage_english_remodel import EnglishRemodeler
+from stage_openai_core import OpenAICore
 
 
 class FixedCore:
@@ -105,6 +106,38 @@ def test_broad_non_medical_terms_do_not_trigger_health_sensitive_routing(tmp_pat
         assert MEDICAL_SAFETY_NOTE not in result["answer"], prompt
 
 
+def test_health_sensitive_routing_ignores_contextual_non_medical_words(tmp_path: Path) -> None:
+    raw_answer = "Here is a practical next step."
+    remodeler = _remodeler(tmp_path, raw_answer)
+
+    for prompt in [
+        "What is the heart of this project?",
+        "How to make tablet layout responsive?",
+        "Give me a dose of motivation",
+        "The heart icon is not centered",
+    ]:
+        result = remodeler.remodel_with_meta(prompt, raw_answer, _profile_with_medical_notes())
+
+        assert result["risk_level"] != "high", prompt
+        assert MEDICAL_SAFETY_NOTE not in result["answer"], prompt
+
+
+def test_health_sensitive_routing_keeps_medical_contexts(tmp_path: Path) -> None:
+    raw_answer = "Use cautious self-care and seek professional guidance if needed."
+    remodeler = _remodeler(tmp_path, raw_answer)
+
+    for prompt in [
+        "heart attack symptoms",
+        "what dose of this medicine should I take?",
+        "can I take this tablet with diabetes?",
+        "I have chest pain",
+    ]:
+        result = remodeler.remodel_with_meta(prompt, raw_answer, {})
+
+        assert result["risk_level"] == "high", prompt
+        assert MEDICAL_SAFETY_NOTE in result["answer"], prompt
+
+
 def test_medical_phrase_context_still_triggers_health_sensitive_routing(tmp_path: Path) -> None:
     raw_answer = "Use cautious self-care and seek professional guidance if needed."
     remodeler = _remodeler(tmp_path, raw_answer)
@@ -192,3 +225,34 @@ def test_runtime_context_filters_stale_default_medical_note_without_health_conte
 
     assert MEDICAL_SAFETY_NOTE not in context
     assert "No special notes" in context
+
+
+def test_stage_openai_core_profile_medical_context_does_not_inject_safety_for_career_query() -> None:
+    core = OpenAICore.__new__(OpenAICore)
+    captured: dict[str, str] = {}
+
+    def fake_generate_json(system_prompt: str, user_prompt: str, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return {
+            "answer": "Focus on one target role, update your resume, and apply consistently.",
+            "answer_style": "practical",
+            "risk_level": "low",
+            "safety_notes": "",
+        }
+
+    core.generate_json = fake_generate_json  # type: ignore[method-assign]
+    profile_context = (
+        "User profile notes: diabetes, BP follow-up, and medical reminders are saved. "
+        "Main goal: career_or_business."
+    )
+
+    result = core.answer_user_query_structured(
+        "I am not getting a job. What should I do?",
+        profile_context,
+    )
+
+    assert MEDICAL_SAFETY_NOTE not in captured["user_prompt"]
+    assert result["risk_level"] == "low"
+    assert result["safety_notes"] == ""
+    assert MEDICAL_SAFETY_NOTE not in result["answer"]

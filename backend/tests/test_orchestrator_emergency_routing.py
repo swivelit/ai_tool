@@ -57,3 +57,38 @@ def test_orchestrator_routes_exact_smalltalk_phrases(message: str) -> None:
     assert result["intent"] == "SMALLTALK"
     assert result["next_action"] == "Greeting Agent"
     assert result["matched_keyword"] == message
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Explain namespace in Python",
+        "How do I replace text in JS?",
+        "What is placement in memory?",
+        "Help me debug my code",
+        "Can you help me with homework?",
+    ],
+)
+def test_orchestrator_does_not_route_profile_or_identity_substrings(message: str) -> None:
+    result = run_orchestrator(None, message)
+
+    assert result["intent"] not in {"PROFILE", "IDENTITY"}
+    assert result["next_action"] != "Greeting Agent"
+
+
+@pytest.mark.parametrize(
+    "message,expected_intent",
+    [
+        ("help", "IDENTITY"),
+        ("what can you do", "IDENTITY"),
+        ("who are you", "IDENTITY"),
+        ("what is my name", "PROFILE"),
+        ("where do I live", "PROFILE"),
+        ("what is my location", "PROFILE"),
+    ],
+)
+def test_orchestrator_routes_profile_and_identity_phrases(message: str, expected_intent: str) -> None:
+    result = run_orchestrator(None, message)
+
+    assert result["intent"] == expected_intent
+    assert result["next_action"] == "Greeting Agent"

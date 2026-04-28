@@ -56,9 +56,33 @@ _SMALLTALK_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = tuple(
     for keyword in sorted(_SMALLTALK_KWS, key=len, reverse=True)
 )
 
-_PROFILE_KWS: set = {"name", "place", "location", "who am i", "where do i live"}
+_PROFILE_PHRASES: Tuple[str, ...] = (
+    "my name",
+    "my place",
+    "my location",
+    "who am i",
+    "where do i live",
+    "what is my name",
+    "what is my location",
+)
 
-_ASSISTANT_KWS: set = {"who are you", "help", "what can you do", "assistant name"}
+_ASSISTANT_EXACT_PHRASES: set = {"help"}
+_ASSISTANT_PHRASES: Tuple[str, ...] = ("who are you", "what can you do", "assistant name")
+
+
+def _compile_phrase_patterns(phrases: Tuple[str, ...]) -> Tuple[Tuple[str, re.Pattern[str]], ...]:
+    boundary = r"[a-z0-9_\u0B80-\u0BFF]"
+    return tuple(
+        (
+            phrase,
+            re.compile(rf"(?<!{boundary}){re.escape(phrase)}(?!{boundary})"),
+        )
+        for phrase in sorted(set(phrases), key=len, reverse=True)
+    )
+
+
+_PROFILE_PATTERNS = _compile_phrase_patterns(_PROFILE_PHRASES)
+_ASSISTANT_PATTERNS = _compile_phrase_patterns(_ASSISTANT_PHRASES)
 
 _EMERGENCY_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     (
@@ -173,6 +197,17 @@ def _match_smalltalk(norm: str) -> str:
             return label
     return ""
 
+def _match_phrase(norm: str, patterns: Tuple[Tuple[str, re.Pattern[str]], ...]) -> str:
+    for label, pattern in patterns:
+        if pattern.search(norm):
+            return label
+    return ""
+
+def _match_assistant(norm: str) -> str:
+    if norm in _ASSISTANT_EXACT_PHRASES:
+        return norm
+    return _match_phrase(norm, _ASSISTANT_PATTERNS)
+
 def _make_result(
     *,
     intent: str,
@@ -231,10 +266,22 @@ def _rule_classify(message: str) -> Optional[Dict[str, Any]]:
         )
 
     # 4. PROFILE / ASSISTANT INFO
-    if any(kw in norm for kw in _PROFILE_KWS):
-        return _make_result(intent="PROFILE", next_action="Greeting Agent", priority="low")
-    if any(kw in norm for kw in _ASSISTANT_KWS):
-        return _make_result(intent="IDENTITY", next_action="Greeting Agent", priority="low")
+    profile_match = _match_phrase(norm, _PROFILE_PATTERNS)
+    if profile_match:
+        return _make_result(
+            intent="PROFILE",
+            next_action="Greeting Agent",
+            priority="low",
+            matched_keyword=profile_match,
+        )
+    assistant_match = _match_assistant(norm)
+    if assistant_match:
+        return _make_result(
+            intent="IDENTITY",
+            next_action="Greeting Agent",
+            priority="low",
+            matched_keyword=assistant_match,
+        )
 
     # 5. TOOLS
     if any(kw in norm for kw in _WEATHER_KWS):

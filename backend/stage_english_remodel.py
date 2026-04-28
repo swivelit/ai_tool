@@ -25,6 +25,7 @@ from config import (
 
 
 WORD_RE = re.compile(r"[a-zA-Z0-9_\u0B80-\u0BFF]+")
+CONTEXTUAL_HEALTH_RISK_TERMS = {"heart", "medicine", "tablet", "dose", "dosage"}
 
 DEFAULT_CLASSIFIER_ROWS: List[Dict[str, str]] = [
     {"text": "hi", "label": "greeting", "answer": "Hi there, how are you doing?"},
@@ -37,7 +38,7 @@ DEFAULT_CLASSIFIER_ROWS: List[Dict[str, str]] = [
     {"text": "help", "label": "assistant_identity", "answer": "I can help with reminders, schedules, and quick answers."},
 ]
 
-CURRENT_HEALTH_TOPIC_TERMS = set(HEALTH_RISK_KEYWORDS) | {
+CURRENT_HEALTH_TOPIC_TERMS = (set(HEALTH_RISK_KEYWORDS) - CONTEXTUAL_HEALTH_RISK_TERMS) | {
     "health",
     "medical",
     "doctor",
@@ -108,7 +109,9 @@ MEDICAL_CONDITION_TERMS = (
     "allergy",
     "allergic",
     "kidney",
-    "heart",
+    "heart attack",
+    "heart disease",
+    "heart condition",
     "thyroid",
     "cholesterol",
     "asthma",
@@ -145,6 +148,23 @@ PAIN_HEALTH_CONTEXT_RE = re.compile(
     rf"\b(?:{'|'.join(BODY_PART_TERMS)})\s+(?:pain|ache|aches|hurts?)\b|"
     rf"\b(?:pain|ache|aches|hurts?)\s+(?:in|near|around|inside)\s+(?:my\s+|the\s+)?(?:{'|'.join(BODY_PART_TERMS)})\b|"
     r"\bi\s+(?:have|feel|am\s+in|am\s+having)\s+(?:[a-z0-9_]+\s+){0,3}(?:pain|ache|aches|hurt|hurts)\b"
+)
+
+HEART_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"heart\s+(?:attack|disease|condition|failure|rate|palpitations?|symptoms?)|"
+    r"symptoms?\s+of\s+(?:a\s+)?heart\s+attack"
+    r")\b"
+)
+
+MEDICATION_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:what|which|safe|recommended|correct)\s+(?:dose|dosage)\b|"
+    r"(?:dose|dosage)\s+of\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:can|should)\s+i\s+take\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:take|taking)\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:medicine|medication|tablet)\s+(?:dose|dosage|side\s+effects?|for|with)\b"
+    r")"
 )
 
 PROFILE_MEDICAL_FACT_TERMS = set(HEALTH_RISK_KEYWORDS) | {
@@ -418,6 +438,10 @@ class EnglishRemodeler:
         haystack = _normalize_text(text)
         if cls._contains_any_term(haystack, CURRENT_HEALTH_TOPIC_TERMS):
             return True
+        if HEART_HEALTH_CONTEXT_RE.search(haystack):
+            return True
+        if MEDICATION_HEALTH_CONTEXT_RE.search(haystack):
+            return True
         if SLEEP_HEALTH_CONTEXT_RE.search(haystack):
             return True
         if PAIN_HEALTH_CONTEXT_RE.search(haystack):
@@ -439,11 +463,19 @@ class EnglishRemodeler:
             "workout",
             "sleep",
             "pain",
+            "heart",
+            "medicine",
+            "medication",
+            "tablet",
+            "dose",
+            "dosage",
         }
         if cls._contains_any_term(haystack, PROFILE_HEALTH_TRIGGER_TERMS - contextual_terms):
             return True
         return (
-            SLEEP_HEALTH_CONTEXT_RE.search(haystack) is not None
+            HEART_HEALTH_CONTEXT_RE.search(haystack) is not None
+            or MEDICATION_HEALTH_CONTEXT_RE.search(haystack) is not None
+            or SLEEP_HEALTH_CONTEXT_RE.search(haystack) is not None
             or PAIN_HEALTH_CONTEXT_RE.search(haystack) is not None
             or PERSONAL_DIET_CONTEXT_RE.search(haystack) is not None
             or PERSONAL_EXERCISE_CONTEXT_RE.search(haystack) is not None
