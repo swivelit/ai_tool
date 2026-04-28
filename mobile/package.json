@@ -20,7 +20,8 @@
     "native:sync-llama": "node ./scripts/sync-llama-cpp.js",
     "native:verify-llama": "node ./scripts/verify-native-llama-runtime.js",
     "release:verify-local-first": "node ./scripts/verify-release-local-first-config.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

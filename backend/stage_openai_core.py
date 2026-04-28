@@ -57,6 +57,23 @@ _NON_RETRYABLE_EXCEPTIONS = (
 )
 
 _CONTEXTUAL_HEALTH_RISK_TERMS = {"heart", "medicine", "tablet", "dose", "dosage"}
+_CONTEXTUAL_HEALTH_ADJACENT_TERMS = {
+    "diet",
+    "food",
+    "eat",
+    "eating",
+    "nutrition",
+    "exercise",
+    "workout",
+    "sleep",
+    "pain",
+    "heart",
+    "medicine",
+    "medication",
+    "tablet",
+    "dose",
+    "dosage",
+}
 _HEALTH_ADJACENT_TERMS = {
     "health",
     "medical",
@@ -70,14 +87,35 @@ _HEALTH_ADJACENT_TERMS = {
     "treatment",
     "prescription",
     "medication",
-    "diet",
-    "food",
-    "eat",
-    "exercise",
-    "workout",
-    "sleep",
-    "pain",
+    "pregnant",
+    "pregnancy",
+    "allergy",
+    "allergic",
+    "fever",
 }
+_BODY_PART_TERMS = (
+    "stomach",
+    "abdomen",
+    "abdominal",
+    "chest",
+    "head",
+    "back",
+    "neck",
+    "throat",
+    "ear",
+    "tooth",
+    "teeth",
+    "leg",
+    "arm",
+    "hand",
+    "foot",
+    "feet",
+    "knee",
+    "shoulder",
+    "hip",
+    "joint",
+    "muscle",
+)
 _HEART_HEALTH_CONTEXT_RE = re.compile(
     r"\b(?:"
     r"heart\s+(?:attack|disease|condition|failure|rate|palpitations?|symptoms?)|"
@@ -92,6 +130,35 @@ _MEDICATION_HEALTH_CONTEXT_RE = re.compile(
     r"(?:take|taking)\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
     r"(?:medicine|medication|tablet)\s+(?:dose|dosage|side\s+effects?|for|with)\b"
     r")"
+)
+_PERSONAL_DIET_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"what\s+(?:should|can)\s+i\s+eat|"
+    r"can\s+i\s+eat|"
+    r"foods?\s+(?:should|can)\s+i|"
+    r"(?:my\s+)?(?:diet|meal)\s+plan|"
+    r"(?:breakfast|lunch|dinner)\s+(?:plan|ideas?|for\s+me)|"
+    r"nutrition\s+(?:advice|plan|for\s+me)"
+    r")\b"
+)
+_PERSONAL_EXERCISE_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:can|should)\s+i\s+(?:exercise|work\s*out)|"
+    r"(?:my\s+)?(?:exercise|workout)\s+(?:plan|routine|advice)|"
+    r"(?:exercise|workout)\s+for\s+me"
+    r")\b"
+)
+_SLEEP_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:i\s+)?(?:can(?:not|'t)|cant|unable\s+to|struggling\s+to)\s+sleep|"
+    r"sleep(?:ing)?\s+(?:problem|problems|trouble|difficulty|disorder)|"
+    r"insomnia|sleepless"
+    r")\b"
+)
+_PAIN_HEALTH_CONTEXT_RE = re.compile(
+    rf"\b(?:{'|'.join(_BODY_PART_TERMS)})\s+(?:pain|ache|aches|hurts?)\b|"
+    rf"\b(?:pain|ache|aches|hurts?)\s+(?:in|near|around|inside)\s+(?:my\s+|the\s+)?(?:{'|'.join(_BODY_PART_TERMS)})\b|"
+    r"\bi\s+(?:have|feel|am\s+in|am\s+having)\s+(?:[a-z0-9_]+\s+){0,3}(?:pain|ache|aches|hurt|hurts)\b"
 )
 
 
@@ -223,7 +290,24 @@ class OpenAICore:
         normalized = cls._normalize_health_text(text)
         if cls._contains_health_risk(normalized):
             return True
-        return cls._contains_any_health_term(normalized, _HEALTH_ADJACENT_TERMS)
+
+        # Do not treat broad words such as food, pain, sleep, or exercise as
+        # medical by themselves. They are common in business/software prompts
+        # (for example, "food startup", "pain points", "sleep mode",
+        # "Python exercise"). Only profile medical facts should influence the
+        # core prompt when the current turn has an actual health context.
+        always_health_adjacent = _HEALTH_ADJACENT_TERMS - _CONTEXTUAL_HEALTH_ADJACENT_TERMS
+        if cls._contains_any_health_term(normalized, always_health_adjacent):
+            return True
+
+        return (
+            _HEART_HEALTH_CONTEXT_RE.search(normalized) is not None
+            or _MEDICATION_HEALTH_CONTEXT_RE.search(normalized) is not None
+            or _SLEEP_HEALTH_CONTEXT_RE.search(normalized) is not None
+            or _PAIN_HEALTH_CONTEXT_RE.search(normalized) is not None
+            or _PERSONAL_DIET_CONTEXT_RE.search(normalized) is not None
+            or _PERSONAL_EXERCISE_CONTEXT_RE.search(normalized) is not None
+        )
 
     def _cache_key(
         self,
