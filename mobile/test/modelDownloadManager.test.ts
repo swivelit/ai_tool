@@ -61,20 +61,23 @@ const baseModels = [
     downloadUrl: "https://cdn.example.test/gemma.gguf",
     localPath: "models/gemma-3-4b-it-q4_k_m.gguf",
     required: true,
+    requiredForTiers: ["lite"],
   },
   {
     id: "Qwen/Qwen3-8B",
     fileName: "qwen3-8b-q4_k_m.gguf",
     downloadUrl: "https://cdn.example.test/qwen8.gguf",
     localPath: "models/qwen3-8b-q4_k_m.gguf",
-    required: true,
+    required: false,
+    requiredForTiers: ["standard"],
   },
   {
     id: "Qwen/Qwen3-14B",
     fileName: "qwen3-14b-q4_k_m.gguf",
     downloadUrl: "https://cdn.example.test/qwen14.gguf",
     localPath: "models/qwen3-14b-q4_k_m.gguf",
-    required: true,
+    required: false,
+    requiredForTiers: ["pro"],
   },
   {
     id: "Qwen/Qwen3-Embedding-0.6B",
@@ -82,6 +85,7 @@ const baseModels = [
     downloadUrl: "https://cdn.example.test/embed.gguf",
     localPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
     required: true,
+    requiredForTiers: ["lite", "standard", "pro"],
   },
 ];
 
@@ -91,6 +95,26 @@ function testConfig(overrides: Record<string, any> = {}) {
       mode: "download_on_first_launch",
       storageRoot: "document://models",
       maxRetries: 1,
+      defaultTier: "lite",
+      modelTiers: {
+        lite: {
+          requiredModelIds: [
+            "google/gemma-3-4b-it",
+            "Qwen/Qwen3-Embedding-0.6B",
+          ],
+          optionalModelIds: ["Qwen/Qwen3-8B"],
+        },
+        standard: {
+          requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+          minRamBytes: 8 * 1024 * 1024 * 1024,
+          minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
+        },
+        pro: {
+          requiredModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+          minRamBytes: 16 * 1024 * 1024 * 1024,
+          minFreeStorageBytes: 16 * 1024 * 1024 * 1024,
+        },
+      },
       models: baseModels,
       ...overrides,
     },
@@ -122,15 +146,17 @@ describe("modelDownloadManager", () => {
 
     expect(status.mode).toBe("download_on_first_launch");
     expect(status.ready).toBe(false);
-    expect(status.missing).toHaveLength(4);
+    expect(status.selectedTier).toBe("lite");
+    expect(status.missing.map((entry) => entry.id).sort()).toEqual([
+      "Qwen/Qwen3-Embedding-0.6B",
+      "google/gemma-3-4b-it",
+    ].sort());
     expect(status.storageRoot).toBe("file:///mock/models/");
   });
 
-  it("downloads missing models, verifies non-zero size, and returns file:// paths", async () => {
+  it("downloads only the Lite pack by default and returns file:// paths", async () => {
     state.downloads.push(
       { url: "https://cdn.example.test/gemma.gguf", content: "gemma" },
-      { url: "https://cdn.example.test/qwen8.gguf", content: "qwen8" },
-      { url: "https://cdn.example.test/qwen14.gguf", content: "qwen14" },
       { url: "https://cdn.example.test/embed.gguf", content: "embed" },
     );
 
@@ -138,7 +164,11 @@ describe("modelDownloadManager", () => {
     const status = await downloadRequiredModels({ config: testConfig() });
 
     expect(status.ready).toBe(true);
-    expect(state.downloadAttempts).toBe(4);
+    expect(status.required.map((entry) => entry.id).sort()).toEqual([
+      "Qwen/Qwen3-Embedding-0.6B",
+      "google/gemma-3-4b-it",
+    ].sort());
+    expect(state.downloadAttempts).toBe(2);
 
     const assets = await resolveInstalledNativeModelAssets(
       {
@@ -170,6 +200,42 @@ describe("modelDownloadManager", () => {
 
     expect(status.ready).toBe(true);
     expect(state.downloadAttempts).toBe(0);
+  });
+
+  it("selects Lite for unknown or low device capability and keeps 14B out of the default pack", async () => {
+    const { getModelInstallStatus, selectModelTier } = await importManager();
+
+    expect(selectModelTier(testConfig(), {})).toBe("lite");
+    expect(
+      selectModelTier(testConfig(), {
+        preferredTier: "pro",
+        totalMemoryBytes: 4 * 1024 * 1024 * 1024,
+        freeStorageBytes: 4 * 1024 * 1024 * 1024,
+      }),
+    ).toBe("lite");
+
+    const status = await getModelInstallStatus({ config: testConfig(), deviceInfo: {} });
+    expect(status.required.some((entry) => entry.id === "Qwen/Qwen3-14B")).toBe(false);
+  });
+
+  it("allows Pro only after explicit opt-in or high device capability", async () => {
+    const { selectModelTier } = await importManager();
+
+    expect(
+      selectModelTier(testConfig(), {
+        preferredTier: "pro",
+        totalMemoryBytes: 8 * 1024 * 1024 * 1024,
+        freeStorageBytes: 32 * 1024 * 1024 * 1024,
+      }),
+    ).toBe("standard");
+    expect(selectModelTier(testConfig(), { preferredTier: "pro", proOptIn: true })).toBe("pro");
+    expect(
+      selectModelTier(testConfig(), {
+        preferredTier: "pro",
+        totalMemoryBytes: 24 * 1024 * 1024 * 1024,
+        freeStorageBytes: 32 * 1024 * 1024 * 1024,
+      }),
+    ).toBe("pro");
   });
 
   it("deletes and retries a SHA-256 mismatch", async () => {
@@ -272,5 +338,29 @@ describe("modelDownloadManager", () => {
         }),
       }),
     ).rejects.toBeInstanceOf(ModelInstallError);
+  });
+
+  it("validates production integrity metadata for remote entries unless explicitly marked dev-only", async () => {
+    const { validateModelDeliveryConfig, ModelInstallError } = await importManager();
+
+    expect(() =>
+      validateModelDeliveryConfig(testConfig(), { production: true }),
+    ).toThrow(ModelInstallError);
+
+    expect(() =>
+      validateModelDeliveryConfig(
+        testConfig({
+          models: [
+            {
+              ...baseModels[0],
+              expectedBytes: null,
+              sha256: null,
+              allowMissingIntegrity: true,
+            },
+          ],
+        }),
+        { production: true },
+      ),
+    ).not.toThrow();
   });
 });

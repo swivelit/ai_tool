@@ -28,6 +28,28 @@ def _env_enabled(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def normalize_app_env(value: str | None = None) -> str:
+    raw = value
+    if raw is None:
+        raw = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development"))
+    return str(raw or "development").strip().lower()
+
+
+def is_production_environment(value: str | None = None) -> bool:
+    return normalize_app_env(value) in {"prod", "production"}
+
+
+def _dev_token_allowed() -> bool:
+    return _env_enabled("AUTH_ALLOW_DEV_TOKENS")
+
+
+def validate_auth_configuration() -> None:
+    if is_production_environment() and _dev_token_allowed():
+        raise AuthConfigurationError(
+            "AUTH_ALLOW_DEV_TOKENS must be disabled in production."
+        )
+
+
 def _adc_environment_present() -> bool:
     return any(
         os.getenv(name, "").strip()
@@ -125,16 +147,14 @@ def _firebase_auth_module():
     return firebase_auth
 
 
-def _dev_token_allowed() -> bool:
-    return _env_enabled("AUTH_ALLOW_DEV_TOKENS")
-
-
 def verify_firebase_id_token(token: str) -> dict[str, Any]:
     """Verify a Firebase ID token and return the decoded claims.
 
     Local tests can opt into deterministic tokens with AUTH_ALLOW_DEV_TOKENS=true
     and Authorization: Bearer dev:<firebase_uid>[:<email>]. Do not enable that in prod.
     """
+    validate_auth_configuration()
+
     if _dev_token_allowed() and token.startswith("dev:"):
         _, uid, *rest = token.split(":")
         uid = uid.strip()

@@ -372,6 +372,34 @@ class BehaviourQuestionnaire:
         safe = "".join(ch for ch in str(user_id).strip() if ch.isalnum() or ch in ("_", "-"))
         return safe or "default_user"
 
+    @staticmethod
+    def _normalize_health_conditions(raw_health_conditions: Any) -> List[str]:
+        if isinstance(raw_health_conditions, str):
+            values = [raw_health_conditions]
+        else:
+            values = list(raw_health_conditions or [])
+        return [str(value).strip() for value in values if str(value).strip()]
+
+    @staticmethod
+    def _has_health_note_context(answers: Dict[str, Any], rules: Optional[Dict[str, Any]] = None) -> bool:
+        health_conditions = BehaviourQuestionnaire._normalize_health_conditions(answers.get("health_conditions", []))
+        has_named_health_condition = any(condition != "none" for condition in health_conditions)
+        life_stage = str(answers.get("life_stage", ""))
+        food_caution = str(answers.get("food_caution", ""))
+        main_goal = str(answers.get("main_goal", ""))
+        if (
+            has_named_health_condition
+            or life_stage in {"pregnant", "postpartum_or_breastfeeding", "trying_to_conceive"}
+            or food_caution in {"avoid_sugary_foods", "allergy_or_doctor_given_restrictions"}
+            or main_goal == "health"
+        ):
+            return True
+
+        health_flags = (rules or {}).get("health_flags", {}) or {}
+        if not isinstance(health_flags, dict):
+            return False
+        return any(bool(value) for value in health_flags.values())
+
     def _profile_path(self, user_id: str) -> Path:
         return self.profiles_dir / f"{self._sanitize_user_id(user_id)}.json"
 
@@ -488,11 +516,12 @@ class BehaviourQuestionnaire:
             return selected
 
     def _derive_behaviour_rules(self, answers: Dict[str, Any]) -> Dict[str, Any]:
-        health_conditions = answers.get("health_conditions", []) or []
+        health_conditions = self._normalize_health_conditions(answers.get("health_conditions", []))
         life_stage = str(answers.get("life_stage", ""))
         food_caution = str(answers.get("food_caution", ""))
         sleep_pattern = str(answers.get("sleep_pattern", ""))
         daily_activity = str(answers.get("daily_activity", ""))
+        main_goal = str(answers.get("main_goal", ""))
 
         is_pregnant = life_stage == "pregnant"
         postpartum_related = life_stage == "postpartum_or_breastfeeding"
@@ -504,8 +533,10 @@ class BehaviourQuestionnaire:
 
         avoid_items: List[str] = []
         avoid_topics: List[str] = []
-        mandatory_notes: List[str] = [MEDICAL_SAFETY_NOTE]
+        mandatory_notes: List[str] = []
         response_style_bias: List[str] = []
+        if self._has_health_note_context(answers):
+            mandatory_notes.append(MEDICAL_SAFETY_NOTE)
 
         if is_pregnant:
             avoid_items.extend(PREGNANCY_CUSTOM_AVOID_LIST)
@@ -559,7 +590,6 @@ class BehaviourQuestionnaire:
 
         personality_style = str(answers.get("personality_style", ""))
         stress_support = str(answers.get("stress_support", ""))
-        main_goal = str(answers.get("main_goal", ""))
         family_role = str(answers.get("family_role", ""))
 
         personality_bias_map = {
@@ -932,7 +962,9 @@ class BehaviourQuestionnaire:
         profile_card = profile.get("profile_card", {}) or {}
         rag_hints = profile.get("rag_personality_hints", {}) or {}
 
-        mandatory_notes = rules.get("mandatory_notes", [])
+        mandatory_notes = list(rules.get("mandatory_notes", []) or [])
+        if not self._has_health_note_context(answers, rules):
+            mandatory_notes = [note for note in mandatory_notes if str(note).strip() != MEDICAL_SAFETY_NOTE]
         mandatory_notes_block = "\n- ".join(mandatory_notes) if mandatory_notes else "No special notes"
 
         return f"""

@@ -19,8 +19,12 @@ import {
   isLoopbackLocalRuntimeBaseUrl,
   normalizeLocalRuntimeBaseUrl,
 } from "./localModelRuntime";
+import {
+  PRODUCT_DEFAULT_REPLY_LANGUAGE,
+  ReplyLanguage,
+  resolveReplyLanguage,
+} from "./replyLanguage";
 
-type ReplyLanguage = "en" | "ta";
 type ChatRole = "system" | "user" | "assistant";
 
 type OrchestratorRoute =
@@ -141,6 +145,29 @@ export type LocalRagChunk = {
   updatedAt: string;
 };
 
+export type LocalRagSourceMetadata = {
+  source_name: string;
+  chunk_id: string;
+  file?: string;
+  path?: string;
+  category?: string;
+  freshness_date?: string;
+  confidence: number;
+  relevance_score: number;
+};
+
+export type LocalRagSearchResult = LocalRagChunk & {
+  score: number;
+  confidence: number;
+  source_name: string;
+  chunk_id: string;
+  file?: string;
+  path?: string;
+  category?: string;
+  freshness_date?: string;
+  sourceMetadata: LocalRagSourceMetadata;
+};
+
 export type LocalTrainingSample = {
   id: string;
   agent: "profiler" | "orchestrator" | "alignment" | "memory" | "rag" | string;
@@ -152,6 +179,7 @@ export type LocalTrainingSample = {
 };
 
 export type LocalAssistantTurnResult = {
+  kind?: "assistant_turn" | "cloud_consent_required";
   route: OrchestratorRoute | "semantic_cache";
   source: "local_model" | "local_rules" | "semantic_cache" | "openai_fallback";
   cacheHit: boolean;
@@ -162,7 +190,107 @@ export type LocalAssistantTurnResult = {
   details?: string | null;
   datetimeText?: string | null;
   profileSummary?: string;
+  cloudFallback?: CloudConsentRequiredState;
   meta?: Record<string, any> & { orchestratorDecision?: OrchestratorDecision };
+};
+
+export type ToolResult<T> = {
+  ok: boolean;
+  tool: string;
+  data?: T;
+  error?: string;
+  source?: string;
+  timestamp?: string;
+  confidence?: number;
+};
+
+type CloudConsentRequiredState = {
+  kind: "cloud_consent_required";
+  reason: string;
+  localAnswerAvailable?: boolean;
+  suggestedAction?: "ask_user_consent";
+};
+
+type LocalToolName =
+  | "getWeather"
+  | "createReminder"
+  | "listReminders"
+  | "getProfile"
+  | "updateMemory"
+  | "searchLocalRag";
+
+type ToolPlanStep = {
+  tool: LocalToolName;
+  args: Record<string, any>;
+  reason: string;
+};
+
+type ToolPlan = {
+  id: string;
+  complex: boolean;
+  reason: string;
+  steps: ToolPlanStep[];
+};
+
+type WeatherToolData = {
+  summary: string;
+  location?: string;
+  date?: string;
+};
+
+type ReminderDraftToolData = {
+  title: string;
+  details?: string;
+  datetimeText?: string | null;
+  recurrence?: string | null;
+  requiresConfirmation: boolean;
+  assistantReply: string;
+};
+
+type ReminderListToolData = {
+  summary: string;
+  dateRange: string;
+};
+
+type ProfileToolData = {
+  fields: Record<string, any>;
+  summary: string;
+};
+
+type MemoryUpdateToolData = {
+  fact: string;
+  category: MemoryFactCategory;
+  confidence: number;
+};
+
+type RagSearchToolData = {
+  hits: LocalRagSearchResult[];
+};
+
+type LocalToolResult =
+  | ToolResult<WeatherToolData>
+  | ToolResult<ReminderDraftToolData>
+  | ToolResult<ReminderListToolData>
+  | ToolResult<ProfileToolData>
+  | ToolResult<MemoryUpdateToolData>
+  | ToolResult<RagSearchToolData>;
+
+type ToolExecutionContext = {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  answers: Record<string, any>;
+  profileSummary: string;
+  userProfile?: LocalUserProfile;
+};
+
+type ToolVerificationResult = {
+  ok: boolean;
+  issues: string[];
+  sourceLabels: string[];
+  missingData: string[];
+  cloudFallbackUsed: boolean;
+  language: ReplyLanguage;
 };
 
 type LocalModelConfig = {
@@ -217,6 +345,9 @@ type LocalModelConfig = {
         useMmap?: boolean;
         useMetal?: boolean;
         useGpu?: boolean;
+        acceleration?: string;
+        chatTemplate?: string;
+        promptFormat?: string;
         embedding?: boolean;
         description?: string;
       }
@@ -226,6 +357,7 @@ type LocalModelConfig = {
     profiler: string;
     orchestratorMedium: string;
     orchestratorLarge: string;
+    orchestratorPro?: string;
     aligner: string;
     embedding: string;
     summarizer: string;
@@ -332,6 +464,8 @@ type SemanticCacheEntry = {
     replyLanguage: ReplyLanguage;
     tone?: string;
   };
+  confidence?: number;
+  sourceLabels?: string[];
 };
 
 type SemanticCacheHitRecord = {
@@ -339,6 +473,7 @@ type SemanticCacheHitRecord = {
   sourceQuestion: string;
   matchedQuestion: string;
   similarity: number;
+  confidence?: number;
   timestamp: string;
   alignmentReapplied: boolean;
   route: string;
@@ -350,11 +485,29 @@ type SemanticCacheStore = {
   hits: SemanticCacheHitRecord[];
 };
 
+type MemoryFactCategory =
+  | "identity"
+  | "location"
+  | "communication_preference"
+  | "goal"
+  | "schedule_preference"
+  | "health_context"
+  | "work_or_education"
+  | "other";
+
+type MemoryFactStatus = "active" | "stale" | "deleted";
+
 type DurableFactRecord = {
+  id: string;
   fact: string;
   confidence: number;
-  category: string;
-  source: "model" | "heuristic";
+  category: MemoryFactCategory;
+  source_turn_id?: string;
+  created_at: string;
+  last_confirmed_at?: string;
+  expires_at?: string | null;
+  status: MemoryFactStatus;
+  source?: "model" | "heuristic" | "local_tool" | "user" | string;
   firstSeenAt: string;
   lastSeenAt: string;
   evidence: string[];
@@ -481,7 +634,7 @@ function isLoopbackLocalModelBaseUrl(value: unknown) {
 const EMBEDDING_DIMS = 1024;
 
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
-  version: 5,
+  version: 8,
   runtime: {
     primary: "phone_local",
     mode: "native_on_device",
@@ -509,6 +662,34 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
     storageRoot: "document://models",
     wifiRecommended: true,
     maxRetries: 2,
+    defaultTier: "lite",
+    modelTiers: {
+      lite: {
+        id: "lite",
+        label: "Lite",
+        requiredModelIds: [
+          "google/gemma-3-4b-it",
+          "Qwen/Qwen3-Embedding-0.6B",
+        ],
+        optionalModelIds: ["Qwen/Qwen3-8B"],
+      },
+      standard: {
+        id: "standard",
+        label: "Standard",
+        requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+        optionalModelIds: ["google/gemma-3-4b-it"],
+        minRamBytes: 8 * 1024 * 1024 * 1024,
+        minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
+      },
+      pro: {
+        id: "pro",
+        label: "Pro",
+        requiredModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+        optionalModelIds: ["Qwen/Qwen3-8B", "google/gemma-3-4b-it"],
+        minRamBytes: 16 * 1024 * 1024 * 1024,
+        minFreeStorageBytes: 16 * 1024 * 1024 * 1024,
+      },
+    },
     cdnBaseUrlEnv: "LOCAL_MODEL_CDN_BASE_URL",
     requireIntegrityMetadataInProduction: true,
     models: [
@@ -524,6 +705,7 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
         sha256Env: "LOCAL_MODEL_SHA256_GEMMA_4B",
         localPath: "models/gemma-3-4b-it-q4_k_m.gguf",
         required: true,
+        requiredForTiers: ["lite"],
       },
       {
         id: "Qwen/Qwen3-8B",
@@ -536,7 +718,8 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
         sha256: null,
         sha256Env: "LOCAL_MODEL_SHA256_QWEN_8B",
         localPath: "models/qwen3-8b-q4_k_m.gguf",
-        required: true,
+        required: false,
+        requiredForTiers: ["standard"],
       },
       {
         id: "Qwen/Qwen3-14B",
@@ -549,7 +732,8 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
         sha256: null,
         sha256Env: "LOCAL_MODEL_SHA256_QWEN_14B",
         localPath: "models/qwen3-14b-q4_k_m.gguf",
-        required: true,
+        required: false,
+        requiredForTiers: ["pro"],
       },
       {
         id: "Qwen/Qwen3-Embedding-0.6B",
@@ -563,6 +747,7 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
         sha256Env: "LOCAL_MODEL_SHA256_QWEN_EMBED",
         localPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
         required: true,
+        requiredForTiers: ["lite", "standard", "pro"],
       },
     ],
   },
@@ -576,20 +761,22 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
     models: {
       "google/gemma-3-4b-it": {
         id: "google/gemma-3-4b-it",
-        roles: ["profiler", "alignment"],
+        roles: ["profiler", "orchestrator_lite", "memory_summarizer", "alignment"],
         backend: "llama_cpp",
         format: "gguf",
         quantization: "Q4_K_M",
+        chatTemplate: "gemma3",
         fileName: "gemma-3-4b-it-q4_k_m.gguf",
         modelPath: "models/gemma-3-4b-it-q4_k_m.gguf",
         contextSize: 4096,
         batchSize: 512,
         threads: 4,
-        gpuLayers: 99,
+        gpuLayers: 0,
         useMmap: true,
-        useMetal: true,
-        useGpu: true,
-        description: "Profiler and alignment model; replace modelPath with the actual bundled GGUF asset path.",
+        useMetal: false,
+        useGpu: false,
+        acceleration: "cpu_only",
+        description: "Lite chat, profiler, summarizer, and alignment model; replace modelPath with the actual bundled GGUF asset path.",
       },
       "Qwen/Qwen3-8B": {
         id: "Qwen/Qwen3-8B",
@@ -597,33 +784,37 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
         backend: "llama_cpp",
         format: "gguf",
         quantization: "Q4_K_M",
+        chatTemplate: "qwen3",
         fileName: "qwen3-8b-q4_k_m.gguf",
         modelPath: "models/qwen3-8b-q4_k_m.gguf",
         contextSize: 8192,
         batchSize: 512,
         threads: 4,
-        gpuLayers: 99,
+        gpuLayers: 0,
         useMmap: true,
-        useMetal: true,
-        useGpu: true,
-        description: "Medium orchestrator and memory summarizer; replace with the actual quantized Qwen3 8B GGUF file.",
+        useMetal: false,
+        useGpu: false,
+        acceleration: "cpu_only",
+        description: "Standard tier orchestrator; replace with the actual quantized Qwen3 8B GGUF file.",
       },
       "Qwen/Qwen3-14B": {
         id: "Qwen/Qwen3-14B",
-        roles: ["orchestrator_large"],
+        roles: ["orchestrator_pro"],
         backend: "llama_cpp",
         format: "gguf",
         quantization: "Q4_K_M",
+        chatTemplate: "qwen3",
         fileName: "qwen3-14b-q4_k_m.gguf",
         modelPath: "models/qwen3-14b-q4_k_m.gguf",
         contextSize: 8192,
         batchSize: 512,
         threads: 4,
-        gpuLayers: 99,
+        gpuLayers: 0,
         useMmap: true,
-        useMetal: true,
-        useGpu: true,
-        description: "Large orchestrator model for capable devices; replace with the actual quantized Qwen3 14B GGUF file.",
+        useMetal: false,
+        useGpu: false,
+        acceleration: "cpu_only",
+        description: "Pro tier 14B orchestrator for high-RAM devices or explicit opt-in; replace with the actual quantized Qwen3 14B GGUF file.",
       },
       "Qwen/Qwen3-Embedding-0.6B": {
         id: "Qwen/Qwen3-Embedding-0.6B",
@@ -631,15 +822,17 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
         backend: "llama_cpp",
         format: "gguf",
         quantization: "Q8_0",
+        promptFormat: "embedding",
         fileName: "qwen3-embedding-0.6b-q8_0.gguf",
         modelPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
         contextSize: 4096,
         batchSize: 512,
         threads: 4,
-        gpuLayers: 99,
+        gpuLayers: 0,
         useMmap: true,
-        useMetal: true,
-        useGpu: true,
+        useMetal: false,
+        useGpu: false,
+        acceleration: "cpu_only",
         embedding: true,
         description: "Semantic cache and memory embedding model; native bridge must call llama.cpp embedding mode.",
       },
@@ -647,11 +840,12 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
   },
   models: {
     profiler: "google/gemma-3-4b-it",
-    orchestratorMedium: "Qwen/Qwen3-8B",
-    orchestratorLarge: "Qwen/Qwen3-14B",
+    orchestratorMedium: "google/gemma-3-4b-it",
+    orchestratorLarge: "Qwen/Qwen3-8B",
+    orchestratorPro: "Qwen/Qwen3-14B",
     aligner: "google/gemma-3-4b-it",
     embedding: "Qwen/Qwen3-Embedding-0.6B",
-    summarizer: "Qwen/Qwen3-8B",
+    summarizer: "google/gemma-3-4b-it",
   },
   thresholds: {
     semanticCache: 0.95,
@@ -790,7 +984,7 @@ const DEFAULT_PROMPTS: PromptCatalog = {
   alignmentSystem:
     "Rewrite the factual draft to match the user's tone and language without changing facts or adding claims. Return JSON with english_answer and final_answer.",
   memorySyncSystem:
-    "You are the local Memory & Cache Agent. Use only the provided recent conversation, route logs, profiler state, and alignment captures. Extract durable user facts conservatively. Ignore transient facts unless the user explicitly marks them important. Return JSON only with: summary, durable_facts[{fact, confidence, category, important, evidence, profile_updates}], profile_updates.",
+    "You are the local Memory & Cache Agent. Use only the provided recent conversation, route logs, profiler state, and alignment captures. Extract durable user facts conservatively. Ignore transient facts unless the user explicitly marks them important. Use categories only from identity, location, communication_preference, goal, schedule_preference, health_context, work_or_education, other. Store health_context only when the user explicitly gives health context. Return JSON only with: summary, durable_facts[{fact, confidence, category, important, evidence, profile_updates}], profile_updates.",
   localReasonerSystem: `Use only local context. Reply ${OPENAI_FALLBACK_SIGNAL} if live public data is required.`,
 };
 
@@ -1746,14 +1940,19 @@ async function getModelConfig() {
           DEFAULT_MODEL_CONFIG.models.profiler,
       ),
       orchestratorMedium: String(
-        extra.LOCAL_MODEL_QWEN_8B ||
+        extra.LOCAL_MODEL_GEMMA_4B ||
           fileConfig.models?.orchestratorMedium ||
           DEFAULT_MODEL_CONFIG.models.orchestratorMedium,
       ),
       orchestratorLarge: String(
-        extra.LOCAL_MODEL_QWEN_14B ||
+        extra.LOCAL_MODEL_QWEN_8B ||
           fileConfig.models?.orchestratorLarge ||
           DEFAULT_MODEL_CONFIG.models.orchestratorLarge,
+      ),
+      orchestratorPro: String(
+        extra.LOCAL_MODEL_QWEN_14B ||
+          fileConfig.models?.orchestratorPro ||
+          DEFAULT_MODEL_CONFIG.models.orchestratorPro,
       ),
       aligner: String(
         extra.LOCAL_MODEL_GEMMA_4B ||
@@ -1766,7 +1965,7 @@ async function getModelConfig() {
           DEFAULT_MODEL_CONFIG.models.embedding,
       ),
       summarizer: String(
-        extra.LOCAL_MODEL_QWEN_8B ||
+        extra.LOCAL_MODEL_GEMMA_4B ||
           fileConfig.models?.summarizer ||
           DEFAULT_MODEL_CONFIG.models.summarizer,
       ),
@@ -1997,11 +2196,19 @@ async function updateRagChunks(
 }
 
 async function loadDurableFacts(userId: number) {
-  return readJson<DurableFactRecord[]>(durableFactsPath(userId), []);
+  const rows = await readJson<any[]>(durableFactsPath(userId), []);
+  return rows
+    .map(normalizeDurableFact)
+    .filter(Boolean) as DurableFactRecord[];
 }
 
 async function saveDurableFacts(userId: number, rows: DurableFactRecord[]) {
-  await writeJson(durableFactsPath(userId), rows);
+  await writeJson(
+    durableFactsPath(userId),
+    rows
+      .map(normalizeDurableFact)
+      .filter(Boolean) as DurableFactRecord[],
+  );
 }
 
 async function loadDailySummaries(userId: number) {
@@ -2173,33 +2380,255 @@ function normalizedValueFingerprint(value: any) {
   return normalizeText(value);
 }
 
+const ACTIVE_MEMORY_STATUSES: MemoryFactStatus[] = ["active"];
+
+function normalizeMemoryCategory(
+  category: unknown,
+  fact?: string,
+): MemoryFactCategory {
+  const normalizedCategory = normalizeText(String(category || ""));
+  const normalizedFact = normalizeText(fact || "");
+  if (
+    normalizedCategory === "identity" ||
+    /\b(name:|my name|identity|who i am)\b/.test(normalizedFact)
+  ) {
+    return "identity";
+  }
+  if (
+    normalizedCategory === "location" ||
+    /\b(location|place|live in|moved to|from|city|hometown)\b/.test(
+      normalizedFact,
+    )
+  ) {
+    return "location";
+  }
+  if (
+    [
+      "communication_preference",
+      "preference",
+      "language",
+      "style",
+    ].includes(normalizedCategory) ||
+    /\b(language|reply|respond|tone|english|tamil|hindi|telugu|malayalam)\b/.test(
+      normalizedFact,
+    )
+  ) {
+    return "communication_preference";
+  }
+  if (normalizedCategory === "goal" || /\b(goal|focus|priority)\b/.test(normalizedFact)) {
+    return "goal";
+  }
+  if (
+    normalizedCategory === "schedule_preference" ||
+    /\b(schedule|wake|sleep|morning|evening|routine|meeting)\b/.test(
+      normalizedFact,
+    )
+  ) {
+    return "schedule_preference";
+  }
+  if (
+    normalizedCategory === "health_context" ||
+    /\b(health|diabetes|blood pressure|allergy|allergic|pregnant|medicine|medication|asthma|thyroid|kidney|symptom|diagnosed)\b/.test(
+      normalizedFact,
+    )
+  ) {
+    return "health_context";
+  }
+  if (
+    ["work_or_education", "occupation", "work", "education"].includes(
+      normalizedCategory,
+    ) ||
+    /\b(work|job|occupation|student|school|college|engineer|developer|teacher)\b/.test(
+      normalizedFact,
+    )
+  ) {
+    return "work_or_education";
+  }
+  return "other";
+}
+
+function normalizeMemoryStatus(status: unknown): MemoryFactStatus {
+  const normalized = normalizeText(String(status || ""));
+  return ["active", "stale", "deleted"].includes(normalized)
+    ? (normalized as MemoryFactStatus)
+    : "active";
+}
+
+function createMemoryFactId(category: MemoryFactCategory, fact: string) {
+  return `mem_${category}_${simpleHash(normalizeText(fact))}`;
+}
+
+function normalizeDurableFact(row: any): DurableFactRecord | null {
+  const fact = String(row?.fact || "").trim();
+  if (!fact) return null;
+  const category = normalizeMemoryCategory(row?.category, fact);
+  const createdAt = String(
+    row?.created_at || row?.firstSeenAt || row?.createdAt || nowIso(),
+  );
+  const lastConfirmedAt = String(
+    row?.last_confirmed_at || row?.lastSeenAt || row?.updatedAt || createdAt,
+  );
+  return {
+    id: String(row?.id || createMemoryFactId(category, fact)),
+    fact,
+    category,
+    source_turn_id: row?.source_turn_id
+      ? String(row.source_turn_id)
+      : Array.isArray(row?.evidence) && row.evidence[0]
+        ? String(row.evidence[0])
+        : undefined,
+    confidence: clampConfidence(row?.confidence, 0.78),
+    created_at: createdAt,
+    last_confirmed_at: lastConfirmedAt,
+    expires_at:
+      row?.expires_at === undefined ? null : (row.expires_at as string | null),
+    status: normalizeMemoryStatus(row?.status),
+    source: row?.source ? String(row.source) : "heuristic",
+    firstSeenAt: createdAt,
+    lastSeenAt: lastConfirmedAt,
+    evidence: trimList(row?.evidence).slice(-8),
+    important: Boolean(row?.important),
+    profileUpdates:
+      row?.profileUpdates && typeof row.profileUpdates === "object"
+        ? row.profileUpdates
+        : row?.profile_updates && typeof row.profile_updates === "object"
+          ? row.profile_updates
+          : {},
+  };
+}
+
+function createDurableFactRecord(opts: {
+  fact: string;
+  confidence: number;
+  category?: string;
+  source?: DurableFactRecord["source"];
+  sourceTurnId?: string;
+  evidence?: string[];
+  important?: boolean;
+  profileUpdates?: Record<string, any>;
+  createdAt?: string;
+}): DurableFactRecord | null {
+  const fact = String(opts.fact || "").trim();
+  if (!fact) return null;
+  const category = normalizeMemoryCategory(opts.category, fact);
+  const createdAt = opts.createdAt || nowIso();
+  return normalizeDurableFact({
+    id: createMemoryFactId(category, fact),
+    fact,
+    category,
+    confidence: opts.confidence,
+    source: opts.source || "heuristic",
+    source_turn_id: opts.sourceTurnId,
+    created_at: createdAt,
+    last_confirmed_at: createdAt,
+    expires_at: null,
+    status: "active",
+    evidence: opts.evidence || (opts.sourceTurnId ? [opts.sourceTurnId] : []),
+    important: opts.important,
+    profileUpdates: opts.profileUpdates || {},
+  });
+}
+
+function isActiveMemoryFact(row: DurableFactRecord, at = Date.now()) {
+  if (!ACTIVE_MEMORY_STATUSES.includes(row.status)) return false;
+  if (!row.expires_at) return true;
+  const expiresAt = new Date(row.expires_at).getTime();
+  return Number.isFinite(expiresAt) ? expiresAt > at : true;
+}
+
+function activeDurableFacts(rows: DurableFactRecord[]) {
+  return rows.filter((row) => isActiveMemoryFact(row));
+}
+
+function isHealthRelatedMemoryQuery(message: string) {
+  const normalized = normalizeText(message);
+  return /\b(health|medical|doctor|medicine|medication|symptom|diagnosis|treatment|allergy|allergic|pregnan|diabetes|blood pressure|asthma|thyroid|kidney|diet|food|exercise|workout)\b/.test(
+    normalized,
+  );
+}
+
+function relevantDurableFactsForMessage(
+  facts: DurableFactRecord[],
+  message: string,
+) {
+  const healthRelevant = isHealthRelatedMemoryQuery(message);
+  return activeDurableFacts(facts).filter(
+    (row) => row.category !== "health_context" || healthRelevant,
+  );
+}
+
+function contradictionKey(row: DurableFactRecord) {
+  const normalized = normalizeText(row.fact);
+  if (row.category === "location") return "location:current";
+  if (
+    row.category === "communication_preference" &&
+    /\b(language|reply|respond|english|tamil|hindi|telugu|malayalam)\b/.test(
+      normalized,
+    )
+  ) {
+    return "communication_preference:language";
+  }
+  if (row.category === "identity" && /\b(name)\b/.test(normalized)) {
+    return "identity:name";
+  }
+  return "";
+}
+
 function mergeDurableFacts(
   existing: DurableFactRecord[],
   additions: DurableFactRecord[],
 ) {
-  const byFact = new Map(
-    existing.map((row) => [normalizeText(row.fact), row] as const),
-  );
+  const byFact = new Map<string, DurableFactRecord>();
+  const normalizedExisting = existing
+    .map(normalizeDurableFact)
+    .filter(Boolean) as DurableFactRecord[];
+  for (const row of normalizedExisting) {
+    byFact.set(normalizeText(row.fact), row);
+  }
   for (const row of additions) {
-    const key = normalizeText(row.fact);
+    const normalizedRow = normalizeDurableFact(row);
+    if (!normalizedRow) continue;
+    const key = normalizeText(normalizedRow.fact);
     if (!key) continue;
     const current = byFact.get(key);
     if (!current) {
-      byFact.set(key, row);
+      const nextContradictionKey = contradictionKey(normalizedRow);
+      if (nextContradictionKey) {
+        for (const [existingKey, existingRow] of Array.from(byFact.entries())) {
+          if (
+            existingRow.status === "active" &&
+            contradictionKey(existingRow) === nextContradictionKey &&
+            normalizeText(existingRow.fact) !== key
+          ) {
+            byFact.set(existingKey, {
+              ...existingRow,
+              status: "stale",
+              lastSeenAt: normalizedRow.lastSeenAt,
+              last_confirmed_at:
+                existingRow.last_confirmed_at || existingRow.lastSeenAt,
+            });
+          }
+        }
+      }
+      byFact.set(key, normalizedRow);
       continue;
     }
     byFact.set(key, {
       ...current,
-      confidence: Math.max(current.confidence, row.confidence),
-      lastSeenAt: row.lastSeenAt,
-      important: current.important || row.important,
+      id: current.id || normalizedRow.id,
+      status: current.status === "deleted" ? "deleted" : "active",
+      confidence: Math.max(current.confidence, normalizedRow.confidence),
+      lastSeenAt: normalizedRow.lastSeenAt,
+      last_confirmed_at: normalizedRow.last_confirmed_at,
+      important: current.important || normalizedRow.important,
       evidence: uniq([
         ...(current.evidence || []),
-        ...(row.evidence || []),
+        ...(normalizedRow.evidence || []),
       ]).slice(-6),
+      source_turn_id: normalizedRow.source_turn_id || current.source_turn_id,
       profileUpdates: {
         ...(current.profileUpdates || {}),
-        ...(row.profileUpdates || {}),
+        ...(normalizedRow.profileUpdates || {}),
       },
     });
   }
@@ -2212,8 +2641,9 @@ function buildFallbackMemorySummary(
   facts: DurableFactRecord[],
   turns: LocalChatMessage[],
 ) {
-  if (facts.length) {
-    return `Durable user facts: ${facts.map((row) => row.fact).join("; ")}.`;
+  const activeFacts = activeDurableFacts(facts);
+  if (activeFacts.length) {
+    return `Durable user facts: ${activeFacts.map((row) => row.fact).join("; ")}.`;
   }
   const recentUserTurns = turns
     .filter((row) => row.role === "user")
@@ -2234,9 +2664,10 @@ function heuristicMemoryCandidates(
   const candidates: Array<{
     fact: string;
     confidence: number;
-    category: string;
+    category: MemoryFactCategory;
     important: boolean;
     evidence: string[];
+    sourceTurnId?: string;
   }> = [];
 
   const extract = (
@@ -2245,20 +2676,23 @@ function heuristicMemoryCandidates(
     category: string,
     evidence: string,
     important = false,
+    sourceTurnId?: string,
   ) => {
     const clean = String(fact || "").trim();
     if (!clean || isTransientFact(clean, rules)) return;
     candidates.push({
       fact: clean,
       confidence,
-      category,
+      category: normalizeMemoryCategory(category, clean),
       important,
       evidence: [evidence],
+      sourceTurnId,
     });
   };
 
   for (const row of userTurns) {
     const content = row.content.trim();
+    const sourceTurnId = row.createdAt || simpleHash(content);
     const important = (rules.durableFacts?.importantMarkers || []).some(
       (marker) => normalizeText(content).includes(normalizeText(marker)),
     );
@@ -2271,28 +2705,64 @@ function heuristicMemoryCandidates(
         (match) => [`Name: ${match[1].trim()}`, "identity", 0.96],
       ],
       [
+        /\b(?:i live in|i am living in|my location is|my city is|my place is) ([^.!,\n]+)/i,
+        (match) => [`Location: ${match[1].trim()}`, "location", 0.94],
+      ],
+      [
+        /\b(?:i moved to|i have moved to|we moved to) ([^.!,\n]+)/i,
+        (match) => [`Location: ${match[1].trim()}`, "location", 0.96],
+      ],
+      [
         /\bi am(?: a| an)? ([^.!,\n]+)/i,
         (match) => [`Identity: ${match[1].trim()}`, "identity", 0.82],
       ],
       [
         /\bi work as(?: a| an)? ([^.!,\n]+)/i,
-        (match) => [`Occupation: ${match[1].trim()}`, "occupation", 0.92],
+        (match) => [`Occupation: ${match[1].trim()}`, "work_or_education", 0.92],
+      ],
+      [
+        /\bi (?:study|am studying) ([^.!,\n]+)/i,
+        (match) => [`Education: ${match[1].trim()}`, "work_or_education", 0.88],
+      ],
+      [
+        /\bi (?:prefer|want) (?:you to )?(?:reply|respond|speak) (?:in )?([^.!,\n]+)/i,
+        (match) => [
+          `Preferred language: ${match[1].trim()}`,
+          "communication_preference",
+          0.9,
+        ],
+      ],
+      [
+        /\bi prefer (english|tamil|hindi|telugu|malayalam)(?:\s+(?:replies|responses|answers))?\b/i,
+        (match) => [
+          `Preferred language: ${match[1].trim()}`,
+          "communication_preference",
+          0.9,
+        ],
       ],
       [
         /\bi (?:prefer|want) ([^.!,\n]+)/i,
-        (match) => [`Preference: ${match[1].trim()}`, "preference", 0.85],
+        (match) => [`Preference: ${match[1].trim()}`, "communication_preference", 0.85],
       ],
       [
         /\bi (?:like|love|enjoy) ([^.!,\n]+)/i,
-        (match) => [`Likes: ${match[1].trim()}`, "preference", 0.83],
+        (match) => [`Likes: ${match[1].trim()}`, "other", 0.83],
       ],
       [
         /\bi (?:speak|use) ([^.!,\n]+)/i,
-        (match) => [`Languages: ${match[1].trim()}`, "language", 0.84],
+        (match) => [`Languages: ${match[1].trim()}`, "communication_preference", 0.84],
       ],
       [
         /\bmy goal is ([^.!,\n]+)/i,
         (match) => [`Goal: ${match[1].trim()}`, "goal", 0.88],
+      ],
+      [
+        /\bi usually (?:wake up|sleep|work|study) ([^.!,\n]+)/i,
+        (match) => [`Schedule preference: ${match[1].trim()}`, "schedule_preference", 0.82],
+      ],
+      [
+        /\bi (?:have|am diagnosed with|am allergic to|take medicine for) ([^.!,\n]*(?:diabetes|blood pressure|allergy|allergic|asthma|thyroid|kidney|pregnan|medicine|medication|symptom)[^.!,\n]*)/i,
+        (match) => [`Health context: ${match[1].trim()}`, "health_context", 0.9],
       ],
     ];
 
@@ -2300,7 +2770,21 @@ function heuristicMemoryCandidates(
       const match = regex.exec(content);
       if (!match) continue;
       const [fact, category, confidence] = build(match);
-      extract(fact, confidence, category, content, important);
+      const normalizedFact = normalizeText(fact);
+      if (
+        normalizedFact.startsWith("preference") &&
+        /\b(english|tamil|hindi|telugu|malayalam|replies|responses|answers)\b/.test(
+          normalizedFact,
+        ) &&
+        candidates.some(
+          (candidate) =>
+            candidate.category === "communication_preference" &&
+            normalizeText(candidate.fact).startsWith("preferred language"),
+        )
+      ) {
+        continue;
+      }
+      extract(fact, confidence, category, content, important, sourceTurnId);
     }
   }
 
@@ -2319,19 +2803,19 @@ function buildDurableFactsFromHeuristics(
         positiveFloat(rules.durableFacts?.confidenceThreshold, 0.78),
     )
     .slice(0, positiveInt(rules.durableFacts?.maxFactsPerSync, 6))
-    .map(
-      (row): DurableFactRecord => ({
+    .map((row) =>
+      createDurableFactRecord({
         fact: row.fact,
         confidence: row.confidence,
         category: row.category,
         source: "heuristic",
-        firstSeenAt: nowIso(),
-        lastSeenAt: nowIso(),
+        sourceTurnId: row.sourceTurnId,
         evidence: row.evidence,
         important: row.important,
         profileUpdates,
       }),
-    );
+    )
+    .filter(Boolean) as DurableFactRecord[];
   return extracted;
 }
 
@@ -2663,24 +3147,147 @@ export async function upsertLocalRagChunks(
   return nextRows;
 }
 
+function ragMetadataValue(metadata: Record<string, any>, keys: string[]) {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (value != null && String(value).trim()) return String(value).trim();
+  }
+  return "";
+}
+
+function ragFreshnessDate(row: LocalRagChunk) {
+  const metadata = row.metadata || {};
+  return (
+    ragMetadataValue(metadata, [
+      "freshness_date",
+      "freshnessDate",
+      "date",
+      "updated_at",
+      "updatedAt",
+      "created_at",
+      "createdAt",
+    ]) || row.updatedAt
+  );
+}
+
+function ragSourceMetadata(
+  row: LocalRagChunk,
+  score: number,
+): LocalRagSourceMetadata {
+  const metadata = row.metadata || {};
+  const path = ragMetadataValue(metadata, [
+    "path",
+    "file_path",
+    "filePath",
+    "filepath",
+    "uri",
+  ]);
+  const file = ragMetadataValue(metadata, ["file", "fileName", "filename"]);
+  const sourceName =
+    ragMetadataValue(metadata, [
+      "source_name",
+      "sourceName",
+      "title",
+      "name",
+      "label",
+    ]) ||
+    file ||
+    path ||
+    row.sourceId ||
+    row.sourceType;
+  return {
+    source_name: sourceName,
+    chunk_id: row.id,
+    ...(file ? { file } : {}),
+    ...(path ? { path } : {}),
+    category:
+      ragMetadataValue(metadata, ["category", "kind", "topic"]) ||
+      row.sourceType,
+    freshness_date: ragFreshnessDate(row),
+    confidence: clampConfidence(score, 0),
+    relevance_score: score,
+  };
+}
+
+function isTimeSensitiveRagQuery(query: string) {
+  const normalized = normalizeText(query);
+  return /\b(today|tomorrow|tonight|current|currently|latest|now|news|weather|forecast|rain|temperature|score|price|stock|exchange rate|live)\b/.test(
+    normalized,
+  );
+}
+
+function isStaleRagChunk(row: LocalRagChunk, nowMs = Date.now()) {
+  const metadata = row.metadata || {};
+  const status = normalizeText(String(metadata.status || ""));
+  if (status === "stale" || status === "deleted") return true;
+  if (metadata.stale === true) return true;
+  const expiresAt = ragMetadataValue(metadata, [
+    "expires_at",
+    "expiresAt",
+    "valid_until",
+    "validUntil",
+  ]);
+  if (expiresAt) {
+    const parsed = new Date(expiresAt).getTime();
+    if (Number.isFinite(parsed) && parsed <= nowMs) return true;
+  }
+  return false;
+}
+
+function freshnessRank(row: LocalRagChunk, nowMs = Date.now()) {
+  const parsed = new Date(ragFreshnessDate(row)).getTime();
+  if (!Number.isFinite(parsed)) return 0;
+  const ageDays = Math.max(0, (nowMs - parsed) / 86_400_000);
+  return 1 / (1 + ageDays / 30);
+}
+
+function decorateRagResult(
+  row: LocalRagChunk,
+  score: number,
+): LocalRagSearchResult {
+  const sourceMetadata = ragSourceMetadata(row, score);
+  return {
+    ...row,
+    score,
+    confidence: sourceMetadata.confidence,
+    source_name: sourceMetadata.source_name,
+    chunk_id: sourceMetadata.chunk_id,
+    ...(sourceMetadata.file ? { file: sourceMetadata.file } : {}),
+    ...(sourceMetadata.path ? { path: sourceMetadata.path } : {}),
+    ...(sourceMetadata.category ? { category: sourceMetadata.category } : {}),
+    ...(sourceMetadata.freshness_date
+      ? { freshness_date: sourceMetadata.freshness_date }
+      : {}),
+    sourceMetadata,
+  };
+}
+
 export async function searchLocalRag(userId: number, query: string, limit = 6) {
   await ensureLocalAgentData();
   const clean = String(query || "").trim();
-  if (!clean) return [] as (LocalRagChunk & { score: number })[];
+  if (!clean) return [] as LocalRagSearchResult[];
   const rows = await loadRagChunks(userId);
-  if (!rows.length) return [] as (LocalRagChunk & { score: number })[];
+  if (!rows.length) return [] as LocalRagSearchResult[];
   const [queryVec] = await embedTexts([clean]);
+  const timeSensitive = isTimeSensitiveRagQuery(clean);
+  const nowMs = Date.now();
   return rows
+    .filter((row) => !timeSensitive || !isStaleRagChunk(row, nowMs))
     .map((row) => ({
-      ...row,
+      row,
       score: cosine(
         queryVec,
         normalizeStoredEmbedding(row.embedding, row.text),
       ),
     }))
-    .sort((a, b) => b.score - a.score)
+    .filter(({ score }) => score >= 0.2)
+    .sort((a, b) => {
+      const scoreDelta = b.score - a.score;
+      if (Math.abs(scoreDelta) > 0.03) return scoreDelta;
+      return freshnessRank(b.row, nowMs) - freshnessRank(a.row, nowMs);
+    })
     .slice(0, Math.max(1, limit))
-    .filter((row) => row.score >= 0.2);
+    .map(({ row, score }) => decorateRagResult(row, score));
 }
 
 export async function appendLocalTrainingSample(
@@ -3814,6 +4421,694 @@ async function parseReminderLocally(
   }
 }
 
+function toolOk<T>(
+  tool: LocalToolName,
+  data: T,
+  opts?: { source?: string; confidence?: number },
+): ToolResult<T> {
+  return {
+    ok: true,
+    tool,
+    data,
+    source: opts?.source,
+    timestamp: nowIso(),
+    confidence: opts?.confidence,
+  };
+}
+
+function toolFail<T>(
+  tool: LocalToolName,
+  error: string,
+  opts?: { source?: string; confidence?: number; data?: T },
+): ToolResult<T> {
+  return {
+    ok: false,
+    tool,
+    ...(opts?.data ? { data: opts.data } : {}),
+    error,
+    source: opts?.source,
+    timestamp: nowIso(),
+    confidence: opts?.confidence ?? 0,
+  };
+}
+
+function inferDateRange(message: string) {
+  const normalized = normalizeText(message);
+  if (normalized.includes("tomorrow")) return "tomorrow";
+  if (normalized.includes("today")) return "today";
+  if (/\b(this week|week|next week)\b/.test(normalized)) return "this_week";
+  return "upcoming";
+}
+
+function isWeatherToolIntent(normalized: string) {
+  return /\b(weather|temperature|rain|forecast|climate|humid|wind)\b/.test(
+    normalized,
+  );
+}
+
+function isReminderCreateToolIntent(normalized: string) {
+  return /\b(remind me|set a reminder|add reminder|do not let me forget|don t let me forget|create a task)\b/.test(
+    normalized,
+  );
+}
+
+function isReminderListToolIntent(normalized: string) {
+  if (isReminderCreateToolIntent(normalized)) return false;
+  return /\b(reminders?|tasks?|schedule|agenda|calendar|today plan|tomorrow plan|plan my day|what do i have|this week|upcoming)\b/.test(
+    normalized,
+  );
+}
+
+function isProfileToolIntent(normalized: string) {
+  return /\b(my name|who am i|my hobbies|what do i like|my goal|my language|my job|my work|my profile|saved profile|what do you know about me|job applications?|resume|career)\b/.test(
+    normalized,
+  );
+}
+
+function isMemoryUpdateToolIntent(normalized: string) {
+  return /\b(remember that|remember this|save this|note that|keep in mind)\b/.test(
+    normalized,
+  );
+}
+
+function isRagToolIntent(normalized: string) {
+  return /\b(local knowledge|knowledge base|rag|saved notes?|documents?|docs|what do we know)\b/.test(
+    normalized,
+  );
+}
+
+function isComplexToolPrompt(normalized: string) {
+  return /\b(plan my day|prepare for job applications?|job applications?|summarize what i need to do|what i need to do this week|based on weather and reminders|based on reminders and weather|this week)\b/.test(
+    normalized,
+  );
+}
+
+function inferProfileFields(message: string) {
+  const normalized = normalizeText(message);
+  if (/\b(name|who am i)\b/.test(normalized)) return ["name"];
+  if (/\b(hobbies|like|interests|enjoy)\b/.test(normalized)) return ["hobbies"];
+  if (/\b(language|speak)\b/.test(normalized)) {
+    return ["preferred_language", "secondary_language", "replyLanguage"];
+  }
+  if (/\b(job|work|career|application|resume)\b/.test(normalized)) {
+    return ["occupation", "industry_or_field", "main_goal", "skills"];
+  }
+  if (/\b(goal|focus|priority)\b/.test(normalized)) return ["main_goal"];
+  return [];
+}
+
+function extractMemoryFact(message: string) {
+  const raw = String(message || "").trim();
+  const match = raw.match(
+    /\b(?:remember that|remember this|save this|note that|keep in mind)\b[:,\s-]*(.+)$/i,
+  );
+  return String(match?.[1] || raw).trim();
+}
+
+function planLocalTools(opts: {
+  message: string;
+  decision: OrchestratorDecision;
+}): ToolPlan {
+  const normalized = normalizeText(opts.message);
+  const complex = isComplexToolPrompt(normalized);
+  const steps: ToolPlanStep[] = [];
+  const addStep = (
+    tool: LocalToolName,
+    args: Record<string, any>,
+    reason: string,
+  ) => {
+    if (!steps.some((step) => step.tool === tool)) {
+      steps.push({ tool, args, reason });
+    }
+  };
+
+  if (isMemoryUpdateToolIntent(normalized)) {
+    addStep(
+      "updateMemory",
+      {
+        fact: extractMemoryFact(opts.message),
+        category: "user_note",
+        confidence: 0.82,
+      },
+      "user_asked_to_store_memory",
+    );
+  }
+
+  if (
+    opts.decision.route === "weather" ||
+    isWeatherToolIntent(normalized) ||
+    (complex && /\bweather|forecast|rain\b/.test(normalized))
+  ) {
+    addStep(
+      "getWeather",
+      {
+        location: weatherLocationFromMessage(opts.message),
+        date: inferDateRange(opts.message),
+      },
+      "weather_intent",
+    );
+  }
+
+  if (isReminderCreateToolIntent(normalized)) {
+    addStep(
+      "createReminder",
+      { recurrence: null },
+      "reminder_creation_intent",
+    );
+  } else if (
+    opts.decision.route === "calendar_query" ||
+    isReminderListToolIntent(normalized) ||
+    (complex && /\b(day|week|reminders?|tasks?|schedule|plan)\b/.test(normalized))
+  ) {
+    addStep(
+      "listReminders",
+      { dateRange: inferDateRange(opts.message) },
+      "reminder_lookup_intent",
+    );
+  }
+
+  if (
+    opts.decision.route === "profile" ||
+    isProfileToolIntent(normalized) ||
+    (complex && /\b(profile|job|career|resume|application)\b/.test(normalized))
+  ) {
+    addStep(
+      "getProfile",
+      { fields: inferProfileFields(opts.message) },
+      "profile_context_intent",
+    );
+  }
+
+  if (isRagToolIntent(normalized)) {
+    addStep("searchLocalRag", { query: opts.message }, "local_rag_intent");
+  }
+
+  return {
+    id: `tool_plan_${simpleHash(opts.message)}`,
+    complex,
+    reason: complex ? "complex_local_task" : "single_tool_intent",
+    steps,
+  };
+}
+
+async function runGetWeatherTool(
+  args: Record<string, any>,
+  context: ToolExecutionContext,
+): Promise<ToolResult<WeatherToolData>> {
+  const location = String(args.location || "").trim();
+  const message = location ? `weather in ${location}` : context.message;
+  const resolvedLocation = weatherLocationFromMessage(
+    message,
+    context.userProfile,
+  );
+  if (!resolvedLocation) {
+    return toolFail("getWeather", "I need a location to check the weather.", {
+      source: "open-meteo",
+      confidence: 0.2,
+      data: {
+        summary: "",
+        date: String(args.date || inferDateRange(context.message)),
+      },
+    });
+  }
+  try {
+    const summary = await fetchWeatherSummary(message, context.userProfile);
+    if (summary.startsWith("I need") || summary.startsWith("I couldn")) {
+      return toolFail("getWeather", summary, {
+        source: "open-meteo",
+        confidence: 0.3,
+        data: {
+          summary,
+          location: resolvedLocation,
+          date: String(args.date || inferDateRange(context.message)),
+        },
+      });
+    }
+    return toolOk(
+      "getWeather",
+      {
+        summary,
+        location: resolvedLocation,
+        date: String(args.date || inferDateRange(context.message)),
+      },
+      { source: "open-meteo", confidence: 0.88 },
+    );
+  } catch (error) {
+    return toolFail(
+      "getWeather",
+      error instanceof Error
+        ? error.message
+        : "Weather data is unavailable right now.",
+      { source: "open-meteo", confidence: 0.2 },
+    );
+  }
+}
+
+async function runCreateReminderTool(
+  args: Record<string, any>,
+  context: ToolExecutionContext,
+): Promise<ToolResult<ReminderDraftToolData>> {
+  const parsed = await parseReminderLocally(
+    context.message,
+    context.replyLanguage,
+  );
+  return toolOk(
+    "createReminder",
+    {
+      title: parsed.title,
+      details: parsed.details,
+      datetimeText: parsed.datetimeText,
+      recurrence: args.recurrence ? String(args.recurrence) : null,
+      // TODO: commit reminders only through the existing user-confirmed save path.
+      requiresConfirmation: true,
+      assistantReply: parsed.assistantReply,
+    },
+    { source: "local_reminder_parser", confidence: 0.78 },
+  );
+}
+
+async function runListRemindersTool(
+  args: Record<string, any>,
+  context: ToolExecutionContext,
+): Promise<ToolResult<ReminderListToolData>> {
+  const summary = await buildScheduleAnswer(context.userId, context.message);
+  const data = {
+    summary,
+    dateRange: String(args.dateRange || inferDateRange(context.message)),
+  };
+  if (summary.startsWith("You do not have")) {
+    return toolFail("listReminders", summary, {
+      source: "local_reminders",
+      confidence: 0.65,
+      data,
+    });
+  }
+  return toolOk("listReminders", data, {
+    source: "local_reminders",
+    confidence: 0.9,
+  });
+}
+
+function selectedProfileFields(
+  answers: Record<string, any>,
+  userProfile: LocalUserProfile | undefined,
+  requestedFields: unknown,
+) {
+  const combined: Record<string, any> = {
+    ...(userProfile?.name ? { name: userProfile.name } : {}),
+    ...(userProfile?.place ? { place: userProfile.place } : {}),
+    ...(userProfile?.assistantName
+      ? { assistantName: userProfile.assistantName }
+      : {}),
+    ...(userProfile?.replyLanguage
+      ? { replyLanguage: userProfile.replyLanguage }
+      : {}),
+    ...answers,
+  };
+  const requested = Array.isArray(requestedFields)
+    ? requestedFields.map((field) => String(field || "").trim()).filter(Boolean)
+    : [];
+  const keys = requested.length ? requested : Object.keys(combined);
+  return Object.fromEntries(
+    keys
+      .filter((key) => combined[key] != null && displayValue(combined[key]))
+      .map((key) => [key, combined[key]]),
+  );
+}
+
+async function runGetProfileTool(
+  args: Record<string, any>,
+  context: ToolExecutionContext,
+): Promise<ToolResult<ProfileToolData>> {
+  const fields = selectedProfileFields(
+    context.answers,
+    context.userProfile,
+    args.fields,
+  );
+  const summary =
+    context.profileSummary ||
+    profileFactsText(context.answers) ||
+    formatProfileFields(fields);
+  if (!Object.keys(fields).length && !summary) {
+    return toolFail("getProfile", "No saved profile facts are available yet.", {
+      source: "local_profile",
+      confidence: 0.4,
+      data: { fields, summary: "" },
+    });
+  }
+  return toolOk("getProfile", { fields, summary }, {
+    source: "local_profile",
+    confidence: 0.86,
+  });
+}
+
+async function runUpdateMemoryTool(
+  args: Record<string, any>,
+  context: ToolExecutionContext,
+): Promise<ToolResult<MemoryUpdateToolData>> {
+  const fact = String(args.fact || extractMemoryFact(context.message)).trim();
+  if (!fact) {
+    return toolFail("updateMemory", "No memory fact was provided.", {
+      source: "local_memory",
+      confidence: 0.2,
+    });
+  }
+  const category = String(args.category || "user_note").trim() || "user_note";
+  const confidence = Number.isFinite(Number(args.confidence))
+    ? Math.max(0, Math.min(1, Number(args.confidence)))
+    : 0.8;
+  const current = await loadDurableFacts(context.userId);
+  const nextFact = createDurableFactRecord({
+    fact,
+    category,
+    confidence,
+    source: "local_tool",
+    sourceTurnId: String(args.sourceTurnId || "local_tool_updateMemory"),
+    evidence: [String(args.sourceTurnId || context.message)],
+  });
+  if (!nextFact) {
+    return toolFail("updateMemory", "No memory fact was provided.", {
+      source: "local_memory",
+      confidence: 0.2,
+    });
+  }
+  const merged = mergeDurableFacts(current, [nextFact]);
+  await saveDurableFacts(context.userId, merged.slice(-500));
+  return toolOk(
+    "updateMemory",
+    {
+      fact: nextFact.fact,
+      category: nextFact.category,
+      confidence: nextFact.confidence,
+    },
+    { source: "local_memory", confidence },
+  );
+}
+
+async function runSearchLocalRagTool(
+  args: Record<string, any>,
+  context: ToolExecutionContext,
+): Promise<ToolResult<RagSearchToolData>> {
+  const query = String(args.query || context.message).trim();
+  if (!query) {
+    return toolFail("searchLocalRag", "No local RAG query was provided.", {
+      source: "local_rag",
+      confidence: 0.2,
+    });
+  }
+  try {
+    const hits = await searchLocalRag(context.userId, query, 6);
+    if (!hits.length) {
+      return toolFail("searchLocalRag", "No matching local knowledge was found.", {
+        source: "local_rag",
+        confidence: 0.45,
+        data: { hits },
+      });
+    }
+    return toolOk("searchLocalRag", { hits }, {
+      source: "local_rag",
+      confidence: Math.max(...hits.map((hit) => hit.score), 0.5),
+    });
+  } catch (error) {
+    return toolFail(
+      "searchLocalRag",
+      error instanceof Error
+        ? error.message
+        : "Local RAG search is unavailable.",
+      { source: "local_rag", confidence: 0.25 },
+    );
+  }
+}
+
+async function executeToolStep(
+  step: ToolPlanStep,
+  context: ToolExecutionContext,
+): Promise<LocalToolResult> {
+  if (step.tool === "getWeather") return runGetWeatherTool(step.args, context);
+  if (step.tool === "createReminder") {
+    return runCreateReminderTool(step.args, context);
+  }
+  if (step.tool === "listReminders") {
+    return runListRemindersTool(step.args, context);
+  }
+  if (step.tool === "getProfile") return runGetProfileTool(step.args, context);
+  if (step.tool === "updateMemory") {
+    return runUpdateMemoryTool(step.args, context);
+  }
+  if (step.tool === "searchLocalRag") {
+    return runSearchLocalRagTool(step.args, context);
+  }
+  return toolFail(step.tool, "Tool is not implemented yet.", {
+    source: "local_tool_stub",
+  }) as LocalToolResult;
+}
+
+async function executeToolPlan(plan: ToolPlan, context: ToolExecutionContext) {
+  const results: LocalToolResult[] = [];
+  for (const step of plan.steps) {
+    results.push(await executeToolStep(step, context));
+  }
+  return results;
+}
+
+function toolSourceLabel(result: LocalToolResult) {
+  if (result.tool === "getWeather") return "weather";
+  if (result.tool === "createReminder" || result.tool === "listReminders") {
+    return "reminders";
+  }
+  if (result.tool === "getProfile") return "profile";
+  if (result.tool === "updateMemory") return "memory";
+  if (result.tool === "searchLocalRag") return "local_rag";
+  return result.tool;
+}
+
+function formatProfileFields(fields: Record<string, any>) {
+  const rows = Object.entries(fields)
+    .filter(([, value]) => displayValue(value))
+    .map(([key, value]) => `${key}: ${displayValue(value)}`);
+  return rows.join("; ");
+}
+
+function resultByTool<T>(results: LocalToolResult[], tool: LocalToolName) {
+  return results.find((result) => result.tool === tool) as
+    | ToolResult<T>
+    | undefined;
+}
+
+function composeToolDraft(
+  plan: ToolPlan,
+  results: LocalToolResult[],
+  context: ToolExecutionContext,
+) {
+  const lines: string[] = [];
+  const weather = resultByTool<WeatherToolData>(results, "getWeather");
+  const reminderDraft = resultByTool<ReminderDraftToolData>(
+    results,
+    "createReminder",
+  );
+  const reminders = resultByTool<ReminderListToolData>(
+    results,
+    "listReminders",
+  );
+  const profile = resultByTool<ProfileToolData>(results, "getProfile");
+  const memory = resultByTool<MemoryUpdateToolData>(results, "updateMemory");
+  const rag = resultByTool<RagSearchToolData>(results, "searchLocalRag");
+
+  if (!plan.complex && reminderDraft?.ok && reminderDraft.data) {
+    return reminderDraft.data.assistantReply;
+  }
+
+  if (!plan.complex && weather) {
+    return weather.ok && weather.data?.summary
+      ? weather.data.summary
+      : `I could not get weather data: ${weather.error || "weather is unavailable"}`;
+  }
+
+  if (!plan.complex && reminders) {
+    return reminders.ok && reminders.data?.summary
+      ? reminders.data.summary
+      : reminders.error || "I do not have reminder data for that range.";
+  }
+
+  if (!plan.complex && profile) {
+    return profile.ok && profile.data
+      ? `Based on your saved profile: ${formatProfileFields(profile.data.fields) || profile.data.summary}`
+      : profile.error || "I do not have saved profile data for that yet.";
+  }
+
+  if (!plan.complex && memory) {
+    return memory.ok
+      ? "Noted. I saved that to local memory."
+      : memory.error || "I could not save that memory locally.";
+  }
+
+  if (!plan.complex && rag) {
+    if (!rag.ok || !rag.data?.hits.length) {
+      return rag.error || "I could not find matching local knowledge.";
+    }
+    const sourceLabels = uniq(
+      rag.data.hits.map((hit) => hit.source_name).filter(Boolean),
+    ).slice(0, 3);
+    return [
+      `Based on local knowledge${sourceLabels.length ? ` (${sourceLabels.join(", ")})` : ""}:`,
+      ...rag.data.hits
+        .slice(0, 3)
+        .map((hit) => `- ${hit.text}`),
+    ].join("\n");
+  }
+
+  if (profile) {
+    if (profile.ok && profile.data) {
+      lines.push(
+        `Based on your saved profile: ${formatProfileFields(profile.data.fields) || profile.data.summary}`,
+      );
+    } else {
+      lines.push(
+        `Profile data missing: ${profile.error || "no saved profile facts are available"}`,
+      );
+    }
+  }
+
+  if (weather) {
+    if (weather.ok && weather.data?.summary) {
+      lines.push(`Based on weather data: ${weather.data.summary}`);
+    } else {
+      lines.push(
+        `Weather data missing: ${weather.error || "weather is unavailable"}`,
+      );
+    }
+  }
+
+  if (reminders) {
+    if (reminders.ok && reminders.data?.summary) {
+      lines.push(`Based on your reminders:\n${reminders.data.summary}`);
+    } else {
+      lines.push(
+        `Reminder data missing: ${reminders.error || "no reminders were found"}`,
+      );
+    }
+  }
+
+  if (rag) {
+    if (rag.ok && rag.data?.hits.length) {
+      const sourceLabels = uniq(
+        rag.data.hits.map((hit) => hit.source_name).filter(Boolean),
+      ).slice(0, 3);
+      lines.push(
+        [
+          `Based on local knowledge${sourceLabels.length ? ` (${sourceLabels.join(", ")})` : ""}:`,
+          ...rag.data.hits
+            .slice(0, 3)
+            .map((hit) => `- ${hit.text}`),
+        ].join("\n"),
+      );
+    } else {
+      lines.push(
+        `Local knowledge missing: ${rag.error || "no matching local knowledge was found"}`,
+      );
+    }
+  }
+
+  if (memory) {
+    lines.push(
+      memory.ok
+        ? "I saved the new fact to local memory."
+        : `Memory update missing: ${memory.error || "local memory update failed"}`,
+    );
+  }
+
+  const normalized = normalizeText(context.message);
+  if (/\b(plan my day|tomorrow plan|today plan)\b/.test(normalized)) {
+    lines.push(
+      "Suggested plan: handle fixed reminders first, then use the weather note to decide travel or outdoor timing. If either source is missing, treat this as a partial local plan.",
+    );
+  } else if (/\b(job applications?|resume|career)\b/.test(normalized)) {
+    lines.push(
+      "Suggested next step: use the saved profile facts above to tailor your resume, shortlist roles, and prepare examples. I will not invent profile details that are not saved locally.",
+    );
+  } else if (/\b(this week|week)\b/.test(normalized)) {
+    lines.push(
+      "Suggested weekly focus: start with the listed reminders. If reminder data is missing, I need saved reminders before I can summarize the week reliably.",
+    );
+  }
+
+  if (!lines.length) {
+    return "I could not find enough local tool data to answer that reliably.";
+  }
+  return lines.join("\n\n");
+}
+
+function verifyToolDraft(
+  draft: string,
+  results: LocalToolResult[],
+  replyLanguage: ReplyLanguage,
+): ToolVerificationResult {
+  const sourceLabels = uniq(results.map(toolSourceLabel));
+  const missingData = results
+    .filter((result) => !result.ok)
+    .map((result) => result.error || `${result.tool} data is unavailable.`);
+  const issues: string[] = [];
+  if (results.length && !sourceLabels.length) {
+    issues.push("tool_sources_missing");
+  }
+  if (
+    missingData.length &&
+    !/missing|could not|unavailable|do not have|need/i.test(draft)
+  ) {
+    issues.push("missing_data_not_disclosed");
+  }
+  return {
+    ok: issues.length === 0,
+    issues,
+    sourceLabels,
+    missingData,
+    cloudFallbackUsed: false,
+    language: replyLanguage,
+  };
+}
+
+function routeForToolPlan(plan: ToolPlan, currentRoute: OrchestratorRoute) {
+  if (plan.complex) return "local_answer" as OrchestratorRoute;
+  const first = plan.steps[0]?.tool;
+  if (first === "getWeather") return "weather" as OrchestratorRoute;
+  if (first === "createReminder") {
+    return "reminder_create" as OrchestratorRoute;
+  }
+  if (first === "listReminders") return "calendar_query" as OrchestratorRoute;
+  if (first === "getProfile" || first === "updateMemory") {
+    return "profile" as OrchestratorRoute;
+  }
+  if (first === "searchLocalRag") return "local_answer" as OrchestratorRoute;
+  return currentRoute === "fallback_openai" ? "local_answer" : currentRoute;
+}
+
+function shouldExecuteToolPlan(plan: ToolPlan, route: OrchestratorRoute) {
+  if (!plan.steps.length) return false;
+  if (plan.complex) return true;
+  if (
+    plan.steps.some((step) =>
+      ["updateMemory", "searchLocalRag"].includes(step.tool),
+    )
+  ) {
+    return true;
+  }
+  return [
+    "weather",
+    "calendar_query",
+    "reminder_create",
+    "profile",
+  ].includes(route);
+}
+
+function toolPlanAvailable(plan: ToolPlan, registry: AgentRegistryConfig) {
+  return plan.steps.every((step) => {
+    if (step.tool === "getWeather") return registry.agents.toolAgents.weather;
+    if (step.tool === "listReminders") return registry.agents.toolAgents.calendar;
+    if (step.tool === "getProfile") return registry.agents.toolAgents.profile;
+    return true;
+  });
+}
+
 function selectedReasonerModel(
   cfg: LocalModelConfig,
   routesConfig: OrchestratorConfig,
@@ -4159,6 +5454,9 @@ function isProfileMemoryQuestion(message: string) {
 
 async function lookupSemanticCache(userId: number, message: string) {
   const rules = await getMemoryRules();
+  if (isTimeSensitiveRagQuery(message)) {
+    return null;
+  }
   const store = await loadSemanticCacheStore(userId);
   const now = Date.now();
 
@@ -4177,7 +5475,11 @@ async function lookupSemanticCache(userId: number, message: string) {
       normalizedMessage,
   );
   if (exactMatch) {
-    return { ...exactMatch, score: 1 };
+    const confidence = clampConfidence(exactMatch.confidence, 1);
+    const threshold = positiveFloat(rules.cache?.similarityThreshold, 0.92);
+    return confidence >= threshold
+      ? { ...exactMatch, score: 1, confidence }
+      : null;
   }
 
   const profileMemory = isProfileMemoryQuestion(message);
@@ -4214,7 +5516,7 @@ async function lookupSemanticCache(userId: number, message: string) {
   const threshold = positiveFloat(rules.cache?.similarityThreshold, 0.92);
 
   if (best && bestScore >= threshold) {
-    return { ...best, score: bestScore };
+    return { ...best, score: bestScore, confidence: bestScore };
   }
 
   return null;
@@ -4264,6 +5566,8 @@ async function writeSemanticCache(
     updatedAt: createdAt,
     expiresAt,
     alignmentProfile,
+    confidence: 1,
+    sourceLabels: [route],
   };
   await updateSemanticCacheStore(userId, rules, async (store) => {
     const filtered = store.entries.filter((row) => row.id !== newEntry.id);
@@ -4413,20 +5717,18 @@ async function buildMemoryConsolidation(
         )
           return null;
         if (isTransientFact(fact, rules) && !row?.important) return null;
-        return {
+        return createDurableFactRecord({
           fact,
           confidence,
-          category: String(row?.category || "general").trim() || "general",
+          category: String(row?.category || "other").trim() || "other",
           source: "model",
-          firstSeenAt: nowIso(),
-          lastSeenAt: nowIso(),
           evidence: trimList(row?.evidence).slice(0, 4),
           important: Boolean(row?.important),
           profileUpdates: normalizeMemoryProfileUpdates(
             slots,
             row?.profile_updates || {},
           ),
-        };
+        });
       })
       .filter(Boolean) as DurableFactRecord[];
     const factDerived = deriveUpdatesFromFacts(durableFacts);
@@ -4535,9 +5837,10 @@ async function refreshMemoryRagArtifacts(
   summaryRow: DailySummaryRecord,
   durableFacts: DurableFactRecord[],
 ) {
+  const activeFacts = activeDurableFacts(durableFacts);
   const texts = [
     summaryRow.summary ? `Summary: ${summaryRow.summary}` : "",
-    ...durableFacts.map((row) => `Fact: ${row.fact}`),
+    ...activeFacts.map((row) => `Fact: ${row.fact}`),
   ].filter(Boolean);
   if (!texts.length) {
     await saveMemoryChunks(userId, []);
@@ -4556,7 +5859,7 @@ async function refreshMemoryRagArtifacts(
       userId,
       createdAt: summaryRow.createdAt,
       kind: index === 0 ? "summary" : "durable_fact",
-      factCount: durableFacts.length,
+      factCount: activeFacts.length,
     },
     updatedAt: summaryRow.createdAt,
   }));
@@ -4609,13 +5912,14 @@ export async function consolidateLocalMemoryOnIdle(
   );
   const existingFacts = await loadDurableFacts(userId);
   const mergedFacts = mergeDurableFacts(existingFacts, built.durableFacts);
+  const activeMergedFacts = activeDurableFacts(mergedFacts);
   const summaryRow: DailySummaryRecord = {
     userId,
     createdAt: nowIso(),
     windowStartAt: turns[0]?.createdAt,
     windowEndAt: turns[turns.length - 1]?.createdAt,
     summary: built.summary,
-    durableFacts: mergedFacts.slice(
+    durableFacts: activeMergedFacts.slice(
       -positiveInt(rules.durableFacts?.maxFactsPerSync, 6),
     ),
     profileUpdates: built.profileUpdates,
@@ -4664,7 +5968,121 @@ export async function consolidateLocalMemoryOnIdle(
   };
 }
 
-async function buildLocalReasoningDraft(opts: {
+export async function listActiveMemories(userId: number) {
+  await ensureLocalAgentData();
+  return activeDurableFacts(await loadDurableFacts(userId)).map((row) => ({
+    id: row.id,
+    fact: row.fact,
+    category: row.category,
+    confidence: row.confidence,
+    created_at: row.created_at,
+    last_confirmed_at: row.last_confirmed_at,
+    source: row.source,
+  }));
+}
+
+async function updateMemoryFactStatus(
+  userId: number,
+  memoryId: string,
+  status: MemoryFactStatus,
+) {
+  await ensureLocalAgentData();
+  const facts = await loadDurableFacts(userId);
+  let changed = false;
+  const updated = facts.map((row) => {
+    if (row.id !== memoryId) return row;
+    changed = true;
+    return {
+      ...row,
+      status,
+      lastSeenAt: nowIso(),
+    };
+  });
+  if (changed) {
+    await saveDurableFacts(userId, updated);
+    await refreshMemoryRagArtifacts(
+      userId,
+      {
+        userId,
+        createdAt: nowIso(),
+        summary: "Memory user-control update.",
+        durableFacts: activeDurableFacts(updated),
+        profileUpdates: {},
+        source: "fallback",
+        conversationTurnCount: 0,
+        routeLogCount: 0,
+      },
+      updated,
+    ).catch(() => []);
+  }
+  return {
+    ok: changed,
+    id: memoryId,
+    status,
+  };
+}
+
+export async function markLocalMemoryStale(userId: number, memoryId: string) {
+  return updateMemoryFactStatus(userId, memoryId, "stale");
+}
+
+export async function deleteLocalMemoryFact(userId: number, memoryId: string) {
+  return updateMemoryFactStatus(userId, memoryId, "deleted");
+}
+
+function isFollowUpQuery(message: string) {
+  const normalized = normalizeText(message);
+  return (
+    /^(what about|and for|how about|and what about|what if|and tomorrow|tomorrow|today)\b/.test(
+      normalized,
+    ) || /^(and\s+)?(for|in)\s+[a-z\s]+$/.test(normalized)
+  );
+}
+
+function previousUserTurnForFollowUp(
+  turns: LocalChatMessage[],
+  currentMessage: string,
+) {
+  let skippedCurrent = false;
+  for (const turn of [...turns].reverse()) {
+    if (turn.role !== "user") continue;
+    if (!skippedCurrent && turn.content.trim() === currentMessage.trim()) {
+      skippedCurrent = true;
+      continue;
+    }
+    if (!isFollowUpQuery(turn.content) && normalizeText(turn.content).length > 8) {
+      return turn.content.trim();
+    }
+  }
+  return "";
+}
+
+function rewriteFollowUpRagQuery(opts: {
+  message: string;
+  turns: LocalChatMessage[];
+  userProfile?: LocalUserProfile;
+}) {
+  const message = opts.message.trim();
+  if (!isFollowUpQuery(message)) return message;
+  const previous = previousUserTurnForFollowUp(opts.turns, message);
+  const profilePlace = opts.userProfile?.place
+    ? ` in ${opts.userProfile.place}`
+    : "";
+  if (previous) return `${previous} ${message}`.trim();
+  if (profilePlace && /\b(today|tomorrow|weather|forecast|rain)\b/.test(normalizeText(message))) {
+    return `${message}${profilePlace}`;
+  }
+  return message;
+}
+
+type LocalReasoningBuildResult = {
+  draft: string;
+  rewrittenQuery: string;
+  ragHits: LocalRagSearchResult[];
+  usedSources: LocalRagSourceMetadata[];
+};
+
+async function buildLocalReasoningWithContext(opts: {
   userId: number;
   message: string;
   replyLanguage: ReplyLanguage;
@@ -4675,13 +6093,23 @@ async function buildLocalReasoningDraft(opts: {
 }) {
   const prompts = await getPromptCatalog();
   const memories = await loadDailySummaries(opts.userId);
-  const durableFacts = await loadDurableFacts(opts.userId);
+  const durableFacts = relevantDurableFactsForMessage(
+    await loadDurableFacts(opts.userId),
+    opts.message,
+  );
   const turns = await recentConversation(opts.userId, 10);
-  const ragHits = await searchLocalRag(opts.userId, opts.message, 6);
+  const rewrittenQuery = rewriteFollowUpRagQuery({
+    message: opts.message,
+    turns,
+    userProfile: opts.userProfile,
+  });
+  const ragHits = await searchLocalRag(opts.userId, rewrittenQuery, 6);
+  const usedSources = ragHits.map((row) => row.sourceMetadata);
   const draft = await localChatText(
     prompts.localReasonerSystem,
     JSON.stringify({
       user_message: opts.message,
+      rewritten_retrieval_query: rewrittenQuery,
       reply_language: opts.replyLanguage,
       structured_profile: opts.answers,
       profile_summary: opts.profileSummary,
@@ -4693,15 +6121,39 @@ async function buildLocalReasoningDraft(opts: {
       rag_hits: ragHits.map((row) => ({
         source_id: row.sourceId,
         source_type: row.sourceType,
+        source_name: row.source_name,
+        chunk_id: row.chunk_id,
+        path: row.path,
+        file: row.file,
+        category: row.category,
+        freshness_date: row.freshness_date,
         text: row.text,
         score: row.score,
+        confidence: row.confidence,
         metadata: row.metadata || {},
       })),
     }),
     opts.selectedModel,
     0.25,
   );
-  return draft.trim();
+  return {
+    draft: draft.trim(),
+    rewrittenQuery,
+    ragHits,
+    usedSources,
+  };
+}
+
+async function buildLocalReasoningDraft(opts: {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  answers: Record<string, any>;
+  profileSummary: string;
+  userProfile?: LocalUserProfile;
+  selectedModel: string;
+}) {
+  return (await buildLocalReasoningWithContext(opts)).draft;
 }
 
 async function buildProfileGroundedDraft(opts: {
@@ -4727,11 +6179,9 @@ function canUseOpenAiFallback(opts: {
   localReasonerRequestedFallback: boolean;
   needsLiveData: boolean;
   noSafeLocalPath: boolean;
-  userAllowedCloudFallback: boolean;
   policyAllowedWhen: string[];
   openAiPolicy?: string;
 }) {
-  if (!opts.userAllowedCloudFallback) return false;
   if (String(opts.openAiPolicy || "fallback_only") === "disabled") return false;
 
   const allowed = new Set(opts.policyAllowedWhen || []);
@@ -4919,12 +6369,17 @@ export async function runLocalAssistantTurn(opts: {
   message: string;
   replyLanguage?: ReplyLanguage;
   userProfile?: LocalUserProfile;
-}) {
+  userAllowedCloudFallback?: boolean;
+}): Promise<LocalAssistantTurnResult> {
   await ensureLocalAgentData();
   const userId = opts.userId;
   const message = String(opts.message || "").trim();
-  const replyLanguage: ReplyLanguage =
-    opts.replyLanguage === "en" ? "en" : "ta";
+  const replyLanguage = resolveReplyLanguage({
+    explicit: opts.replyLanguage,
+    profile: opts.userProfile?.replyLanguage,
+    message,
+    productDefault: PRODUCT_DEFAULT_REPLY_LANGUAGE,
+  });
   if (!message) throw new Error("Message is required.");
 
   const installCfg = await getModelConfig();
@@ -4983,6 +6438,7 @@ export async function runLocalAssistantTurn(opts: {
       sourceQuestion: message,
       matchedQuestion: semantic.sourceQuestion,
       similarity: semantic.score,
+      confidence: semantic.confidence ?? semantic.score,
       timestamp: nowIso(),
       alignmentReapplied: needsAlignmentReapply,
       route: semantic.route,
@@ -4995,6 +6451,7 @@ export async function runLocalAssistantTurn(opts: {
         userId,
         route: semantic.route,
         score: semantic.score,
+        confidence: semantic.confidence ?? semantic.score,
         matchedQuestion: semantic.sourceQuestion,
         alignmentReapplied: needsAlignmentReapply,
       },
@@ -5012,6 +6469,17 @@ export async function runLocalAssistantTurn(opts: {
         sourceQuestion: message,
         matchedQuestion: semantic.sourceQuestion,
         similarity: semantic.score,
+        confidence: semantic.confidence ?? semantic.score,
+        semanticCache: {
+          confidence: semantic.confidence ?? semantic.score,
+          sourceQuestion: semantic.sourceQuestion,
+          sourceLabels: semantic.sourceLabels || [semantic.route],
+        },
+        sources: (semantic.sourceLabels || [semantic.route]).map((label) => ({
+          source_name: label,
+          category: "semantic_cache",
+          confidence: semantic.confidence ?? semantic.score,
+        })),
         timestamp: nowIso(),
         alignmentReapplied: needsAlignmentReapply,
         profiler: {
@@ -5079,12 +6547,72 @@ export async function runLocalAssistantTurn(opts: {
   let final = "";
   let localReasonerRequestedFallback = false;
   let noSafeLocalPath = false;
+  let cloudFallback: CloudConsentRequiredState | undefined;
+  let toolPlan: ToolPlan | undefined;
+  let toolResults: LocalToolResult[] = [];
+  let toolVerification: ToolVerificationResult | undefined;
+  let handledByToolPlan = false;
+  let ragResponseMetadata:
+    | {
+        rewrittenQuery: string;
+        usedSources: LocalRagSourceMetadata[];
+      }
+    | undefined;
 
   if (decision.needsLiveData && route !== "weather") {
     route = "fallback_openai";
   }
 
-  if (route === "fast_greeting") {
+  toolPlan = planLocalTools({ message, decision });
+  if (
+    shouldExecuteToolPlan(toolPlan, route) &&
+    toolPlanAvailable(toolPlan, registry)
+  ) {
+    handledByToolPlan = true;
+    route = routeForToolPlan(toolPlan, route);
+    source = "local_rules";
+    toolResults = await executeToolPlan(toolPlan, {
+      userId,
+      message,
+      replyLanguage,
+      answers,
+      profileSummary,
+      userProfile: opts.userProfile,
+    });
+    draft = composeToolDraft(toolPlan, toolResults, {
+      userId,
+      message,
+      replyLanguage,
+      answers,
+      profileSummary,
+      userProfile: opts.userProfile,
+    });
+    toolVerification = verifyToolDraft(draft, toolResults, replyLanguage);
+    const reminderDraft = resultByTool<ReminderDraftToolData>(
+      toolResults,
+      "createReminder",
+    );
+    if (reminderDraft?.ok && reminderDraft.data) {
+      intent = "reminder";
+      title = reminderDraft.data.title;
+      details = reminderDraft.data.details;
+      datetimeText = reminderDraft.data.datetimeText;
+    }
+    const aligned = await alignAnswer(
+      draft,
+      replyLanguage,
+      route,
+      answers,
+      profileSummary,
+      opts.userProfile,
+    );
+    english = aligned.english;
+    final = aligned.final;
+  }
+
+  if (handledByToolPlan) {
+    // The deterministic planner/executor already produced the local answer.
+  } else if (route === "fast_greeting") {
     draft =
       replyLanguage === "ta"
         ? `வணக்கம் ${opts.userProfile?.name || ""}. நான் எப்படி உதவலாம்?`.trim()
@@ -5189,9 +6717,9 @@ export async function runLocalAssistantTurn(opts: {
     route = "local_answer";
   }
 
-  if (route === "local_answer") {
+  if (!handledByToolPlan && route === "local_answer") {
     try {
-      draft = await buildLocalReasoningDraft({
+      const reasoned = await buildLocalReasoningWithContext({
         userId,
         message,
         replyLanguage,
@@ -5200,6 +6728,11 @@ export async function runLocalAssistantTurn(opts: {
         userProfile: opts.userProfile,
         selectedModel: decision.selectedModel,
       });
+      draft = reasoned.draft;
+      ragResponseMetadata = {
+        rewrittenQuery: reasoned.rewrittenQuery,
+        usedSources: reasoned.usedSources,
+      };
       if (draft === OPENAI_FALLBACK_SIGNAL) {
         localReasonerRequestedFallback = true;
         route = "fallback_openai";
@@ -5243,18 +6776,19 @@ export async function runLocalAssistantTurn(opts: {
   }
 
   if (route === "fallback_openai") {
+    const userAllowedCloudFallback = opts.userAllowedCloudFallback === true;
+    const fallbackAllowedWithConsent = canUseOpenAiFallback({
+      decision,
+      localReasonerRequestedFallback,
+      needsLiveData: decision.needsLiveData,
+      noSafeLocalPath,
+      policyAllowedWhen: routesConfig.fallbackPolicy?.openAiAllowedWhen || [],
+      openAiPolicy: cfg.runtime?.openAiPolicy,
+    });
     decision = {
       ...decision,
       route: "fallback_openai",
-      fallbackAllowed: canUseOpenAiFallback({
-        decision,
-        localReasonerRequestedFallback,
-        needsLiveData: decision.needsLiveData,
-        noSafeLocalPath,
-        userAllowedCloudFallback: true,
-        policyAllowedWhen: routesConfig.fallbackPolicy?.openAiAllowedWhen || [],
-        openAiPolicy: cfg.runtime?.openAiPolicy,
-      }),
+      fallbackAllowed: userAllowedCloudFallback && fallbackAllowedWithConsent,
     };
     if (decision.fallbackAllowed) {
       source = "openai_fallback";
@@ -5281,6 +6815,32 @@ export async function runLocalAssistantTurn(opts: {
       );
       english = aligned.english;
       final = aligned.final;
+    } else if (!userAllowedCloudFallback && fallbackAllowedWithConsent) {
+      route = "clarify";
+      cloudFallback = {
+        kind: "cloud_consent_required",
+        reason: decision.needsLiveData
+          ? "current_or_live_data_requires_cloud_fallback"
+          : "local_model_could_not_safely_complete_without_cloud_fallback",
+        localAnswerAvailable: Boolean(draft || english || final),
+        suggestedAction: "ask_user_consent",
+      };
+      decision = {
+        ...decision,
+        route: "clarify",
+        reason: cloudFallback.reason,
+        needsClarification: false,
+        clarificationQuestion: "",
+      };
+      source = "local_rules";
+      intent = "clarify";
+      draft =
+        replyLanguage === "ta"
+          ? "இதற்கு backend/cloud உதவி தேவை. உங்கள் அனுமதி இல்லாமல் நான் அதை அனுப்ப மாட்டேன்."
+          : "This needs backend/cloud help. I will not send it without your permission.";
+      english =
+        "This needs backend/cloud help. I will not send it without your permission.";
+      final = draft;
     } else {
       route = "clarify";
       decision = {
@@ -5309,6 +6869,15 @@ export async function runLocalAssistantTurn(opts: {
     source,
     localReasonerRequestedFallback,
     noSafeLocalPath,
+    cloudFallback,
+    ...(toolPlan?.steps.length
+      ? {
+          toolPlan,
+          toolResults,
+          toolVerification,
+        }
+      : {}),
+    ...(ragResponseMetadata ? { rag: ragResponseMetadata } : {}),
     fallbackPolicy: {
       backendRole: cfg.runtime?.backendRole || "fallback_only",
       openAiPolicy: cfg.runtime?.openAiPolicy || "fallback_only",
@@ -5347,7 +6916,19 @@ export async function runLocalAssistantTurn(opts: {
     }),
     expectedOutput: assistantText,
     label: route,
-    metadata: { userId, source, decision },
+    metadata: {
+      userId,
+      source,
+      decision,
+      ...(toolPlan?.steps.length
+        ? {
+            toolPlan,
+            toolResults,
+            toolVerification,
+          }
+        : {}),
+      ...(ragResponseMetadata ? { rag: ragResponseMetadata } : {}),
+    },
   });
 
   if (shouldAttemptLocalMemoryConsolidation(userId)) {
@@ -5357,6 +6938,7 @@ export async function runLocalAssistantTurn(opts: {
   }
 
   return {
+    kind: cloudFallback?.kind || "assistant_turn",
     route,
     source,
     cacheHit: false,
@@ -5367,9 +6949,27 @@ export async function runLocalAssistantTurn(opts: {
     details,
     datetimeText,
     profileSummary,
+    cloudFallback,
     meta: {
       classified: decision,
       orchestratorDecision: decision,
+      ...(cloudFallback ? { cloudFallback } : {}),
+      ...(toolPlan?.steps.length
+        ? {
+            tools: {
+              plan: toolPlan,
+              results: toolResults,
+              verification: toolVerification,
+              sourceLabels: toolVerification?.sourceLabels || [],
+            },
+          }
+        : {}),
+      ...(ragResponseMetadata
+        ? {
+            rag: ragResponseMetadata,
+            sources: ragResponseMetadata.usedSources,
+          }
+        : {}),
       dataFolder: DATA_DIR,
       trainingFolder: TRAINING_DIR,
       ragFolder: RAG_DIR,

@@ -67,6 +67,7 @@ function normalizeSettings(value?: Partial<AssistantSettings> | null): Assistant
       value?.languageMode === "en" || value?.languageMode === "ta"
         ? value.languageMode
         : DEFAULTS.settings.languageMode,
+    allowCloudFallback: value?.allowCloudFallback === true,
     handsFreeEnabled: Boolean(value?.handsFreeEnabled),
     wakePhrase: normalizeWakePhrase(value?.wakePhrase),
     wakeTrainingSamples: normalizeWakeTrainingSamples(value?.wakeTrainingSamples),
@@ -118,6 +119,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
     const settingsChanged =
       resolvedSettings.tone !== normalizedStoredSettings.tone ||
       resolvedSettings.languageMode !== normalizedStoredSettings.languageMode ||
+      resolvedSettings.allowCloudFallback !== normalizedStoredSettings.allowCloudFallback ||
       resolvedSettings.handsFreeEnabled !== normalizedStoredSettings.handsFreeEnabled ||
       resolvedSettings.wakePhrase !== normalizedStoredSettings.wakePhrase ||
       JSON.stringify(resolvedSettings.wakeTrainingSamples) !==

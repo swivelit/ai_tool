@@ -134,6 +134,7 @@ export default function CustomiseScreen() {
   const [assistantNameInput, setAssistantNameInput] = useState(name || "Elli");
   const [tone, setTone] = useState<Tone>(settings.tone);
   const [languageMode, setLanguageMode] = useState<LanguageMode>(settings.languageMode);
+  const [allowCloudFallback, setAllowCloudFallback] = useState(settings.allowCloudFallback);
   const [handsFreeEnabled, setHandsFreeEnabled] = useState(settings.handsFreeEnabled);
   const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase || `Hey ${name || "Elli"}`);
   const [wakeTrainingSamples, setWakeTrainingSamples] = useState<string[]>(
@@ -175,6 +176,7 @@ export default function CustomiseScreen() {
   useEffect(() => {
     setTone(settings.tone);
     setLanguageMode(settings.languageMode);
+    setAllowCloudFallback(settings.allowCloudFallback);
     setHandsFreeEnabled(settings.handsFreeEnabled);
     setWakePhrase(settings.wakePhrase || `Hey ${name || "Elli"}`);
     setWakeTrainingSamples(settings.wakeTrainingSamples || []);
@@ -224,6 +226,7 @@ export default function CustomiseScreen() {
     assistantNameInput.trim() !== assistantLabel ||
     tone !== settings.tone ||
     languageMode !== settings.languageMode ||
+    allowCloudFallback !== settings.allowCloudFallback ||
     handsFreeEnabled !== settings.handsFreeEnabled ||
     wakePrompt !== (settings.wakePhrase || `Hey ${name || "Elli"}`).trim() ||
     JSON.stringify(uniqueSamples(wakeTrainingSamples)) !==
@@ -730,6 +733,7 @@ export default function CustomiseScreen() {
       if (
         tone !== settings.tone ||
         languageMode !== settings.languageMode ||
+        allowCloudFallback !== settings.allowCloudFallback ||
         handsFreeEnabled !== settings.handsFreeEnabled ||
         wakePrompt !== (settings.wakePhrase || `Hey ${name || "Elli"}`).trim() ||
         JSON.stringify(uniqueSamples(wakeTrainingSamples)) !==
@@ -738,6 +742,7 @@ export default function CustomiseScreen() {
         await updateSettings({
           tone,
           languageMode,
+          allowCloudFallback,
           handsFreeEnabled,
           wakePhrase: wakePrompt,
           wakeTrainingSamples: uniqueSamples(wakeTrainingSamples),
@@ -804,6 +809,11 @@ export default function CustomiseScreen() {
                 icon="radio-outline"
                 label="Hands-free"
                 value={handsFreeEnabled ? "On" : "Off"}
+              />
+              <MetricCard
+                icon="cloud-outline"
+                label="Cloud fallback"
+                value={allowCloudFallback ? "On" : "Off"}
               />
             </View>
           </GlassCard>
@@ -901,6 +911,21 @@ export default function CustomiseScreen() {
                 </View>
               </View>
             ) : null}
+
+            <View style={styles.switchCard}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={styles.inputLabel}>Cloud fallback</Text>
+                <Text style={styles.helperText}>
+                  Ask first before sending unresolved local requests to backend/cloud.
+                </Text>
+              </View>
+              <Switch
+                value={allowCloudFallback}
+                onValueChange={setAllowCloudFallback}
+                trackColor={{ false: "rgba(124, 99, 80, 0.18)", true: "rgba(215,154,89,0.55)" }}
+                thumbColor="#fff7ef"
+              />
+            </View>
 
             <Pressable
               onPress={handleSave}

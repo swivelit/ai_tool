@@ -6,17 +6,19 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 import numpy as np
 import openai
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
 from sqlalchemy import text
 
 from .database import SessionLocal, engine
 from .model_runtime import patch_openai_client
 from .observability import bootstrap_observability
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +84,7 @@ def initialize_continuous_learning() -> None:
 _load_config_from_env()
 
 _client: Optional[openai.OpenAI] = None
-_embed_model: Optional[SentenceTransformer] = None
+_embed_model: Optional["SentenceTransformer"] = None
 _client_lock = threading.Lock()
 _embed_model_lock = threading.Lock()
 _schema_lock = threading.Lock()
@@ -156,13 +158,24 @@ def get_openai_client() -> openai.OpenAI:
     return _client
 
 
-def get_embed_model() -> SentenceTransformer:
+def _load_sentence_transformer_class():
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise RuntimeError(
+            "sentence-transformers is optional and required only for continuous "
+            "learning embeddings. Install sentence-transformers to enable this feature."
+        ) from exc
+    return SentenceTransformer
+
+
+def get_embed_model() -> "SentenceTransformer":
     initialize_continuous_learning()
     global _embed_model
     if _embed_model is None:
         with _embed_model_lock:
             if _embed_model is None:
-                _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
+                _embed_model = _load_sentence_transformer_class()(EMBED_MODEL_NAME)
     return _embed_model
 
 

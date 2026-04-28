@@ -21,6 +21,35 @@ export type ModelDownloadConfigEntry = {
   sha256Env?: string | null;
   localPath?: string;
   required?: boolean;
+  requiredForTiers?: ModelTierName[];
+  tier?: ModelTierName;
+  devOnly?: boolean;
+  allowMissingIntegrity?: boolean;
+};
+
+export type ModelTierName = "lite" | "standard" | "pro" | (string & {});
+
+export type DeviceCapabilitySnapshot = {
+  totalMemoryBytes?: number | null;
+  availableMemoryBytes?: number | null;
+  freeStorageBytes?: number | null;
+  thermalState?: "nominal" | "fair" | "serious" | "critical" | string | null;
+  lowPowerMode?: boolean | null;
+  batteryLevel?: number | null;
+  gpuSupported?: boolean | null;
+  preferredTier?: ModelTierName | null;
+  proOptIn?: boolean | null;
+};
+
+export type ModelTierConfig = {
+  id?: ModelTierName;
+  label?: string;
+  description?: string;
+  requiredModelIds: string[];
+  optionalModelIds?: string[];
+  minRamBytes?: number;
+  minFreeStorageBytes?: number;
+  requiresOptIn?: boolean;
 };
 
 export type ModelDeliveryConfig = {
@@ -32,6 +61,8 @@ export type ModelDeliveryConfig = {
   cdnBaseUrlEnv?: string | null;
   requireIntegrityMetadataInProduction?: boolean;
   minFreeBytesBuffer?: number;
+  defaultTier?: ModelTierName;
+  modelTiers?: Record<string, ModelTierConfig>;
   models?: ModelDownloadConfigEntry[] | Record<string, ModelDownloadConfigEntry>;
 };
 
@@ -52,6 +83,7 @@ export type ModelInstallRecord = ModelDownloadConfigEntry & {
 
 export type ModelInstallStatus = {
   mode: ModelDeliveryMode;
+  selectedTier: ModelTierName;
   ready: boolean;
   requiredReady: boolean;
   storageRoot: string;
@@ -89,6 +121,9 @@ export type EnsureModelsOptions = {
   retries?: number;
   fileSystem?: ModelFileSystem;
   hashFileAsync?: (fileUri: string) => Promise<string>;
+  modelTier?: ModelTierName;
+  deviceInfo?: DeviceCapabilitySnapshot;
+  proOptIn?: boolean;
 };
 
 type ModelFileSystem = Pick<
@@ -105,12 +140,40 @@ type ModelFileSystem = Pick<
 };
 
 const DEFAULT_STORAGE_FOLDER = "models";
-const REQUIRED_MODEL_IDS = [
+const LITE_REQUIRED_MODEL_IDS = [
+  "google/gemma-3-4b-it",
+  "Qwen/Qwen3-Embedding-0.6B",
+];
+const ALL_KNOWN_MODEL_IDS = [
   "google/gemma-3-4b-it",
   "Qwen/Qwen3-8B",
   "Qwen/Qwen3-14B",
   "Qwen/Qwen3-Embedding-0.6B",
 ];
+const DEFAULT_MODEL_TIERS: Record<string, ModelTierConfig> = {
+  lite: {
+    id: "lite",
+    requiredModelIds: LITE_REQUIRED_MODEL_IDS,
+    optionalModelIds: ["Qwen/Qwen3-8B"],
+    description: "Phone-safe starter pack for basic local chat and memory.",
+  },
+  standard: {
+    id: "standard",
+    requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+    optionalModelIds: ["google/gemma-3-4b-it"],
+    minRamBytes: 8 * 1024 * 1024 * 1024,
+    minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
+    description: "7B/8B class reasoning pack for capable devices.",
+  },
+  pro: {
+    id: "pro",
+    requiredModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+    optionalModelIds: ["Qwen/Qwen3-8B", "google/gemma-3-4b-it"],
+    minRamBytes: 16 * 1024 * 1024 * 1024,
+    minFreeStorageBytes: 16 * 1024 * 1024 * 1024,
+    description: "14B model pack for high-RAM devices or explicit user opt-in.",
+  },
+};
 const PLACEHOLDER_URL_PATTERN = /^https:\/\/YOUR_MODEL_CDN\//i;
 const CDN_URL_PATTERN = /^cdn:\/\//i;
 const TEMPLATE_TOKEN_PATTERN = /\{\{\s*(?:MODEL_CDN_BASE_URL|LOCAL_MODEL_CDN_BASE_URL)\s*\}\}/i;
@@ -265,7 +328,11 @@ function assertDownloadMetadata(entry: ModelDownloadConfigEntry, config?: ModelD
     );
   }
 
-  if (requiresProductionIntegrityMetadata(config)) {
+  if (
+    requiresProductionIntegrityMetadata(config) &&
+    entry.devOnly !== true &&
+    entry.allowMissingIntegrity !== true
+  ) {
     const expectedBytes = Number(entry.expectedBytes || 0);
     if (expectedBytes <= 0) {
       throw new ModelInstallError(
@@ -278,6 +345,74 @@ function assertDownloadMetadata(entry: ModelDownloadConfigEntry, config?: ModelD
       );
     }
   }
+}
+
+export function validateModelDeliveryConfig(
+  config?: ModelDownloadConfigRoot,
+  options: { production?: boolean; modelTier?: ModelTierName; deviceInfo?: DeviceCapabilitySnapshot } = {},
+) {
+  const root = configuredRoot(config);
+  const selectedTier = selectModelTier(root, options.deviceInfo, options.modelTier);
+  const requiredIds = getRequiredModelIdsForTier(root, selectedTier);
+
+  if (selectedTier === configuredDefaultTier(root) && requiredIds.includes("Qwen/Qwen3-14B")) {
+    throw new ModelInstallError(
+      "Default model tier must not require Qwen/Qwen3-14B. Pro/14B downloads require high device capability or explicit opt-in.",
+    );
+  }
+
+  const deliveryModels = root.modelDelivery?.models;
+  const entries = Array.isArray(deliveryModels)
+    ? deliveryModels
+    : deliveryModels && typeof deliveryModels === "object"
+      ? Object.values(deliveryModels)
+      : [];
+
+  if (options.production) {
+    for (const rawEntry of entries) {
+      const entry = applyRuntimeEntryOverrides(
+        {
+          ...rawEntry,
+          id: String(rawEntry?.id || "").trim(),
+          fileName: String(rawEntry?.fileName || "").trim(),
+          downloadUrl: String(rawEntry?.downloadUrl || "").trim(),
+          downloadUrlEnv: rawEntry?.downloadUrlEnv || null,
+          downloadPath: String(rawEntry?.downloadPath || rawEntry?.localPath || rawEntry?.fileName || "").trim(),
+          expectedBytesEnv: rawEntry?.expectedBytesEnv || null,
+          sha256Env: rawEntry?.sha256Env || null,
+          localPath: String(rawEntry?.localPath || rawEntry?.fileName || "").trim(),
+          devOnly: rawEntry?.devOnly === true,
+          allowMissingIntegrity: rawEntry?.allowMissingIntegrity === true,
+        },
+        root,
+      );
+      if (entry.devOnly || entry.allowMissingIntegrity) continue;
+      if (!entry.id || !entry.fileName) {
+        throw new ModelInstallError("Production model delivery entry is missing id or fileName.");
+      }
+      const reason = unresolvedDownloadUrlReason(entry);
+      if (reason) {
+        throw new ModelInstallError(
+          `Production model ${entry.id} has unresolved download metadata: ${reason}.`,
+        );
+      }
+      if (Number(entry.expectedBytes || 0) <= 0) {
+        throw new ModelInstallError(
+          `Production model ${entry.id} is missing expectedBytes integrity metadata.`,
+        );
+      }
+      if (!normalizeSha(entry.sha256)) {
+        throw new ModelInstallError(
+          `Production model ${entry.id} is missing sha256 integrity metadata.`,
+        );
+      }
+    }
+  }
+
+  return {
+    selectedTier,
+    requiredModelIds: requiredIds,
+  };
 }
 
 function freeSpaceBufferBytes(config?: ModelDownloadConfigRoot) {
@@ -339,8 +474,131 @@ function getStorageRoot(
   return `${fs.documentDirectory || ""}${DEFAULT_STORAGE_FOLDER}/`;
 }
 
-function normalizeEntries(config?: ModelDownloadConfigRoot): ModelDownloadConfigEntry[] {
+function normalizeTierName(value: unknown, fallback: ModelTierName = "lite"): ModelTierName {
+  const normalized = String(value || "").trim().toLowerCase();
+  return (normalized || fallback) as ModelTierName;
+}
+
+function configuredTiers(config?: ModelDownloadConfigRoot): Record<string, ModelTierConfig> {
   const root = configuredRoot(config);
+  return {
+    ...DEFAULT_MODEL_TIERS,
+    ...(root.modelDelivery?.modelTiers || {}),
+  };
+}
+
+function configuredDefaultTier(config?: ModelDownloadConfigRoot): ModelTierName {
+  return normalizeTierName(configuredRoot(config).modelDelivery?.defaultTier, "lite");
+}
+
+function finitePositiveBytes(value: unknown) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function meetsTierFloor(tier: ModelTierConfig, deviceInfo: DeviceCapabilitySnapshot = {}) {
+  const minRam = finitePositiveBytes(tier.minRamBytes);
+  if (minRam) {
+    const memory =
+      finitePositiveBytes(deviceInfo.totalMemoryBytes) ||
+      finitePositiveBytes(deviceInfo.availableMemoryBytes);
+    if (!memory || memory < minRam) return false;
+  }
+
+  const minStorage = finitePositiveBytes(tier.minFreeStorageBytes);
+  if (minStorage) {
+    const freeStorage = finitePositiveBytes(deviceInfo.freeStorageBytes);
+    if (!freeStorage || freeStorage < minStorage) return false;
+  }
+
+  return true;
+}
+
+function deviceIsConstrained(deviceInfo: DeviceCapabilitySnapshot = {}) {
+  const thermal = String(deviceInfo.thermalState || "").trim().toLowerCase();
+  return (
+    thermal === "serious" ||
+    thermal === "critical" ||
+    deviceInfo.lowPowerMode === true ||
+    (typeof deviceInfo.batteryLevel === "number" &&
+      Number.isFinite(deviceInfo.batteryLevel) &&
+      deviceInfo.batteryLevel > 0 &&
+      deviceInfo.batteryLevel < 0.15)
+  );
+}
+
+export function selectModelTier(
+  config?: ModelDownloadConfigRoot,
+  deviceInfo: DeviceCapabilitySnapshot = {},
+  explicitTier?: ModelTierName,
+): ModelTierName {
+  const tiers = configuredTiers(config);
+  const defaultTier = configuredDefaultTier(config);
+  const requested = normalizeTierName(explicitTier || deviceInfo.preferredTier || defaultTier, defaultTier);
+  const fallbackTier = tiers[defaultTier] ? defaultTier : "lite";
+
+  if (deviceIsConstrained(deviceInfo)) {
+    return fallbackTier;
+  }
+
+  if (!tiers[requested]) {
+    return fallbackTier;
+  }
+
+  if (requested === "lite") {
+    return requested;
+  }
+
+  const tier = tiers[requested];
+  if (requested === "pro") {
+    const optedIn = deviceInfo.proOptIn === true;
+    return optedIn || meetsTierFloor(tier, deviceInfo)
+      ? requested
+      : tiers.standard && meetsTierFloor(tiers.standard, deviceInfo)
+        ? "standard"
+        : fallbackTier;
+  }
+
+  return meetsTierFloor(tier, deviceInfo) ? requested : fallbackTier;
+}
+
+export function getRequiredModelIdsForTier(
+  config?: ModelDownloadConfigRoot,
+  tier?: ModelTierName,
+) {
+  const tiers = configuredTiers(config);
+  const selectedTier = normalizeTierName(tier || configuredDefaultTier(config), "lite");
+  const tierConfig = tiers[selectedTier] || tiers[configuredDefaultTier(config)] || tiers.lite;
+  return (tierConfig?.requiredModelIds || LITE_REQUIRED_MODEL_IDS).filter(Boolean);
+}
+
+function normalizeTierList(value: unknown): ModelTierName[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => normalizeTierName(item)).filter(Boolean);
+}
+
+function normalizedSelectedTier(
+  config?: ModelDownloadConfigRoot,
+  options: Pick<EnsureModelsOptions, "modelTier" | "deviceInfo" | "proOptIn"> = {},
+) {
+  return selectModelTier(
+    config,
+    {
+      ...(options.deviceInfo || {}),
+      proOptIn: options.proOptIn ?? options.deviceInfo?.proOptIn ?? false,
+    },
+    options.modelTier,
+  );
+}
+
+function normalizeEntries(
+  config?: ModelDownloadConfigRoot,
+  options: Pick<EnsureModelsOptions, "modelTier" | "deviceInfo" | "proOptIn"> = {},
+): ModelDownloadConfigEntry[] {
+  const root = configuredRoot(config);
+  const selectedTier = normalizedSelectedTier(root, options);
+  const tierRequiredIds = new Set(getRequiredModelIdsForTier(root, selectedTier));
+  const hasTierRules = Boolean(root.modelDelivery?.modelTiers);
   const deliveryModels = root.modelDelivery?.models;
   const entries = Array.isArray(deliveryModels)
     ? deliveryModels
@@ -361,7 +619,14 @@ function normalizeEntries(config?: ModelDownloadConfigRoot): ModelDownloadConfig
           expectedBytesEnv: entry?.expectedBytesEnv || null,
           sha256Env: entry?.sha256Env || null,
           localPath: String(entry?.localPath || entry?.fileName || "").trim(),
-          required: entry?.required !== false,
+          required: hasTierRules
+            ? tierRequiredIds.has(String(entry?.id || "").trim()) ||
+              normalizeTierList(entry?.requiredForTiers).includes(selectedTier)
+            : entry?.required !== false,
+          requiredForTiers: normalizeTierList(entry?.requiredForTiers),
+          tier: entry?.tier,
+          devOnly: entry?.devOnly === true,
+          allowMissingIntegrity: entry?.allowMissingIntegrity === true,
         },
         root,
       ),
@@ -371,7 +636,8 @@ function normalizeEntries(config?: ModelDownloadConfigRoot): ModelDownloadConfig
   if (fromDelivery.length) return fromDelivery;
 
   const nativeModels = root.native?.models || {};
-  return REQUIRED_MODEL_IDS.map((id) => {
+  const ids = Object.keys(nativeModels).length ? Object.keys(nativeModels) : ALL_KNOWN_MODEL_IDS;
+  return ids.map((id) => {
     const asset = nativeModels[id] || ({} as NativeOnDeviceModelAsset);
     const fileName = String(asset.fileName || asset.modelPath || "").split("/").pop() || `${id}.gguf`;
     return applyRuntimeEntryOverrides(
@@ -383,7 +649,7 @@ function normalizeEntries(config?: ModelDownloadConfigRoot): ModelDownloadConfig
         localPath: `models/${fileName}`,
         expectedBytes: null,
         sha256: null,
-        required: true,
+        required: tierRequiredIds.has(id),
       },
       root,
     );
@@ -480,8 +746,9 @@ export async function getModelInstallStatus(
   const fs = options.fileSystem || FileSystem;
   const config = options.config;
   const mode = getModelDeliveryMode(config);
+  const selectedTier = normalizedSelectedTier(config, options);
   const storageRoot = getStorageRoot(config, fs);
-  const entries = normalizeEntries(config);
+  const entries = normalizeEntries(config, options);
   const requiredEntries = entries.filter((entry) => entry.required !== false);
   const optionalEntries = entries.filter((entry) => entry.required === false);
 
@@ -505,6 +772,7 @@ export async function getModelInstallStatus(
     const optional = records.filter((entry) => entry.required === false);
     return {
       mode,
+      selectedTier,
       ready: true,
       requiredReady: true,
       storageRoot,
@@ -532,6 +800,7 @@ export async function getModelInstallStatus(
 
   return {
     mode,
+    selectedTier,
     ready: requiredReady,
     requiredReady,
     storageRoot,
@@ -753,22 +1022,28 @@ export async function resolveInstalledNativeModelAssets(
   const mode = getModelDeliveryMode(options.config);
   const assets = { ...(modelAssets || {}) };
   if (mode !== "download_on_first_launch") {
-    return assets;
+    const selectedTier = normalizedSelectedTier(options.config, options);
+    const selectedIds = new Set(getRequiredModelIdsForTier(options.config, selectedTier));
+    const tierAssets = Object.fromEntries(
+      Object.entries(assets).filter(([modelId]) => selectedIds.has(modelId)),
+    ) as Record<string, NativeOnDeviceModelAsset>;
+    return Object.keys(tierAssets).length ? tierAssets : assets;
   }
 
   const status = await ensureRequiredModelsInstalled(options);
   const installed = new Map(status.required.concat(status.optional).map((entry) => [entry.id, entry]));
+  const resolvedAssets: Record<string, NativeOnDeviceModelAsset> = {};
   for (const [modelId, asset] of Object.entries(assets)) {
     const record = installed.get(modelId);
     if (record?.valid) {
-      assets[modelId] = {
+      resolvedAssets[modelId] = {
         ...asset,
         fileName: asset.fileName || record.fileName,
         modelPath: record.fileUri,
       };
     }
   }
-  return assets;
+  return resolvedAssets;
 }
 
 function rotr(value: number, amount: number) {

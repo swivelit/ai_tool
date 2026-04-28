@@ -21,6 +21,10 @@ public class JaiOnDeviceModelModule: Module {
       return true
     }
 
+    Function("isSpeechToTextAvailable") {
+      return false
+    }
+
     AsyncFunction("initialize") { (config: [String: Any]) -> [String: Any] in
       self.backend = (config["backend"] as? String) ?? "llama_cpp"
       self.modelRoot = (config["modelRoot"] as? String) ?? "asset://models"
@@ -32,15 +36,8 @@ public class JaiOnDeviceModelModule: Module {
       }
       self.models = rawModels
 
-      let required = [
-        "google/gemma-3-4b-it",
-        "Qwen/Qwen3-8B",
-        "Qwen/Qwen3-14B",
-        "Qwen/Qwen3-Embedding-0.6B",
-      ]
-      let missing = required.filter { self.models[$0] == nil }
-      if !missing.isEmpty {
-        throw JaiOnDeviceModelError("JAI_REQUIRED_MODELS_MISSING", "JaiOnDeviceModel config is missing required local model entries: \(missing.joined(separator: ", ")).")
+      if self.models.isEmpty {
+        throw JaiOnDeviceModelError("JAI_NATIVE_MODELS_MISSING", "JaiOnDeviceModel config has no selected local model entries. The JS runtime should pass only installed models for the selected Lite/Standard/Pro tier.")
       }
 
       for (modelId, asset) in self.models {
@@ -62,7 +59,7 @@ public class JaiOnDeviceModelModule: Module {
       let asset = try self.asset(from: input, modelId: modelId)
       let modelPath = try self.resolveModelFile(modelId: modelId, asset: asset).path
       let messages = (input["messages"] as? [[String: Any]]) ?? []
-      let prompt = self.buildPrompt(messages: messages)
+      let prompt = (input["prompt"] as? String) ?? self.buildPrompt(messages: messages, asset: asset)
       let temperature = (input["temperature"] as? Double) ?? 0.2
       let maxTokens = (input["maxTokens"] as? Int) ?? (input["max_tokens"] as? Int) ?? 768
       let contextSize = (asset["contextSize"] as? Int) ?? 4096
@@ -172,11 +169,78 @@ public class JaiOnDeviceModelModule: Module {
     )
   }
 
-  private func buildPrompt(messages: [[String: Any]]) -> String {
-    let lines = messages.map { message -> String in
-      let role = ((message["role"] as? String) ?? "user").lowercased()
-      let content = (message["content"] as? String) ?? ""
-      switch role {
+  private func buildPrompt(messages: [[String: Any]], asset: [String: Any]) -> String {
+    switch promptTemplate(asset: asset) {
+    case "qwen3": return buildQwenPrompt(messages: messages)
+    case "gemma3": return buildGemmaPrompt(messages: messages)
+    default: return buildGenericPrompt(messages: messages)
+    }
+  }
+
+  private func promptTemplate(asset: [String: Any]) -> String {
+    let configured = (((asset["chatTemplate"] as? String) ?? (asset["promptFormat"] as? String)) ?? "")
+      .lowercased()
+      .replacingOccurrences(of: #"[_\s-]+"#, with: "", options: .regularExpression)
+    if ["qwen", "qwen3", "chatml"].contains(configured) {
+      return "qwen3"
+    }
+    if ["gemma", "gemma3"].contains(configured) {
+      return "gemma3"
+    }
+
+    let modelId = ((asset["id"] as? String) ?? "").lowercased()
+    if modelId.contains("qwen") {
+      return "qwen3"
+    }
+    if modelId.contains("gemma") {
+      return "gemma3"
+    }
+    return "generic"
+  }
+
+  private func roleOf(message: [String: Any]) -> String {
+    let role = ((message["role"] as? String) ?? "user").lowercased()
+    return role == "system" || role == "assistant" ? role : "user"
+  }
+
+  private func cleanContent(message: [String: Any]) -> String {
+    return ((message["content"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func buildQwenPrompt(messages: [[String: Any]]) -> String {
+    let turns = messages.compactMap { message -> String? in
+      let content = cleanContent(message: message)
+      if content.isEmpty { return nil }
+      return "<|im_start|>\(roleOf(message: message))\n\(content)\n<|im_end|>"
+    }
+    return turns.joined(separator: "\n") + "\n<|im_start|>assistant\n"
+  }
+
+  private func buildGemmaPrompt(messages: [[String: Any]]) -> String {
+    let system = messages
+      .filter { roleOf(message: $0) == "system" }
+      .map { cleanContent(message: $0) }
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n\n")
+    var turns: [String] = []
+    if !system.isEmpty {
+      turns.append("<start_of_turn>user\nSystem instructions:\n\(system)<end_of_turn>")
+    }
+    for message in messages {
+      let role = roleOf(message: message)
+      if role == "system" { continue }
+      let content = cleanContent(message: message)
+      if content.isEmpty { continue }
+      turns.append("<start_of_turn>\(role == "assistant" ? "model" : "user")\n\(content)<end_of_turn>")
+    }
+    return turns.joined(separator: "\n") + "\n<start_of_turn>model\n"
+  }
+
+  private func buildGenericPrompt(messages: [[String: Any]]) -> String {
+    let lines = messages.compactMap { message -> String? in
+      let content = cleanContent(message: message)
+      if content.isEmpty { return nil }
+      switch roleOf(message: message) {
       case "system": return "<|system|>\n\(content)"
       case "assistant": return "<|assistant|>\n\(content)"
       default: return "<|user|>\n\(content)"

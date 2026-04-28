@@ -27,9 +27,7 @@
     "primary_goal": "career_or_business",
     "avoid_items": [],
     "avoid_topics": [],
-    "mandatory_notes": [
-      "For pregnancy, diabetes, blood pressure, allergies, kidney issues, or other health conditions, avoid definitive medical instructions. Give cautious lifestyle guidance and suggest a clinician for diagnosis, medication, or emergency concerns."
-    ],
+    "mandatory_notes": [],
     "response_style_bias": [
       "Prefer concrete, actionable steps over abstract advice.",
       "Prefer numbered or stepwise explanations.",

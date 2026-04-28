@@ -36,10 +36,14 @@ const llamaDir = process.env.JAI_LLAMA_CPP_DIR
   ? path.resolve(mobileRoot, process.env.JAI_LLAMA_CPP_DIR)
   : defaultLlamaDir;
 
-const REQUIRED_MODEL_IDS = [
+const PRODUCTION_MODEL_IDS = [
   'google/gemma-3-4b-it',
   'Qwen/Qwen3-8B',
   'Qwen/Qwen3-14B',
+  'Qwen/Qwen3-Embedding-0.6B',
+];
+const DEFAULT_REQUIRED_MODEL_IDS = [
+  'google/gemma-3-4b-it',
   'Qwen/Qwen3-Embedding-0.6B',
 ];
 
@@ -293,7 +297,24 @@ function verifyStaticLocalFirstConfig() {
     fail('models.json must require integrity metadata in production');
   }
 
-  for (const modelId of REQUIRED_MODEL_IDS) {
+  if (delivery.defaultTier !== 'lite') {
+    fail('models.json must default modelDelivery.defaultTier to lite');
+  }
+  const liteRequired = delivery.modelTiers?.lite?.requiredModelIds || [];
+  const proRequired = delivery.modelTiers?.pro?.requiredModelIds || [];
+  for (const modelId of DEFAULT_REQUIRED_MODEL_IDS) {
+    if (!liteRequired.includes(modelId)) {
+      fail(`models.json Lite tier must require ${modelId}`);
+    }
+  }
+  if (liteRequired.includes('Qwen/Qwen3-14B')) {
+    fail('models.json Lite tier must not require Qwen/Qwen3-14B');
+  }
+  if (!proRequired.includes('Qwen/Qwen3-14B')) {
+    fail('models.json Pro tier must be the only tier that requires Qwen/Qwen3-14B');
+  }
+
+  for (const modelId of PRODUCTION_MODEL_IDS) {
     const entry = deliveryModels.find((model) => model && model.id === modelId);
     if (!entry) fail(`models.json is missing required model delivery entry for ${modelId}`);
     if (entry.downloadUrlEnv !== PER_MODEL_URL_ENV[modelId]) {
@@ -305,11 +326,42 @@ function verifyStaticLocalFirstConfig() {
     if (entry.sha256Env !== SHA256_ENV[modelId]) {
       fail(`${modelId} sha256Env must be ${SHA256_ENV[modelId]}`);
     }
-    if (entry.required !== true) {
-      fail(`${modelId} must be marked required=true`);
+    const expectedRequired = DEFAULT_REQUIRED_MODEL_IDS.includes(modelId);
+    if (entry.required !== expectedRequired) {
+      fail(`${modelId} required must be ${expectedRequired} for first-launch Lite installs`);
+    }
+    if (modelId === 'Qwen/Qwen3-14B' && entry.required === true) {
+      fail('Qwen/Qwen3-14B must not be marked required=true for first launch/basic chat');
     }
   }
-  pass('models.json has release URL, expectedBytes, and sha256 environment paths for all required GGUF models');
+  pass('models.json has tiered Lite/Standard/Pro delivery metadata and does not require 14B by default');
+
+  const nativeModels = modelsConfig.native?.models || {};
+  for (const modelId of PRODUCTION_MODEL_IDS) {
+    const asset = nativeModels[modelId];
+    if (!asset) fail(`native.models is missing ${modelId}`);
+    if (asset.gpuLayers !== 0 || asset.useGpu !== false || asset.useMetal !== false) {
+      fail(`${modelId} native config must be CPU-only while native llama.cpp sets n_gpu_layers=0`);
+    }
+    if (!asset.embedding && !asset.chatTemplate) {
+      fail(`${modelId} chat model must declare chatTemplate`);
+    }
+  }
+  const androidRuntime = read(path.join(moduleRoot, 'android', 'src', 'main', 'cpp', 'jai_llama_runtime.cpp'));
+  const iosRuntime = read(path.join(moduleRoot, 'ios', 'JaiLlamaCppBridge.mm'));
+  requireContains(
+    path.join(moduleRoot, 'android', 'src', 'main', 'cpp', 'jai_llama_runtime.cpp'),
+    androidRuntime,
+    'model_params.n_gpu_layers = 0;',
+    'Android native llama.cpp runtime is CPU-only',
+  );
+  requireContains(
+    path.join(moduleRoot, 'ios', 'JaiLlamaCppBridge.mm'),
+    iosRuntime,
+    'modelParams.n_gpu_layers = 0;',
+    'iOS native llama.cpp runtime is CPU-only',
+  );
+  pass('models.json CPU-only runtime config matches native llama.cpp initialization');
 }
 
 function verifyReleaseEnvironment() {
@@ -339,18 +391,18 @@ function verifyReleaseEnvironment() {
     validateUrl('EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL', cdnBaseUrl);
     pass('release env has a resolved model CDN base URL');
   } else {
-    for (const modelId of REQUIRED_MODEL_IDS) {
+    for (const modelId of PRODUCTION_MODEL_IDS) {
       const name = PER_MODEL_URL_ENV[modelId];
       validateUrl(name, env(name));
     }
     pass('release env has resolved per-model GGUF URLs');
   }
 
-  for (const modelId of REQUIRED_MODEL_IDS) {
+  for (const modelId of PRODUCTION_MODEL_IDS) {
     validatePositiveInteger(EXPECTED_BYTES_ENV[modelId], env(EXPECTED_BYTES_ENV[modelId]));
     validateSha256(SHA256_ENV[modelId], env(SHA256_ENV[modelId]));
   }
-  pass('release env has exact expectedBytes and SHA-256 metadata for all required GGUF models');
+  pass('release env has exact expectedBytes and SHA-256 metadata for all production GGUF models');
 }
 
 function main() {

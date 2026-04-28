@@ -37,6 +37,112 @@ DEFAULT_CLASSIFIER_ROWS: List[Dict[str, str]] = [
     {"text": "help", "label": "assistant_identity", "answer": "I can help with reminders, schedules, and quick answers."},
 ]
 
+CURRENT_HEALTH_TOPIC_TERMS = set(HEALTH_RISK_KEYWORDS) | {
+    "health",
+    "medical",
+    "doctor",
+    "clinic",
+    "hospital",
+    "symptom",
+    "symptoms",
+    "diagnosis",
+    "diagnose",
+    "treatment",
+    "prescription",
+    "medication",
+    "allergic",
+    "diet",
+    "food",
+    "eat",
+    "eating",
+    "nutrition",
+    "exercise",
+    "workout",
+    "fever",
+    "pain",
+    "cough",
+    "headache",
+    "dizzy",
+    "dizziness",
+    "vomit",
+    "vomiting",
+    "bleeding",
+    "உடல்",
+    "உடம்பு",
+    "மருத்துவர்",
+    "மருந்து",
+    "சிகிச்சை",
+    "அறிகுறி",
+    "வலி",
+    "காய்ச்சல்",
+    "சர்க்கரை",
+    "நீரிழிவு",
+    "கர்ப்ப",
+    "உணவு",
+    "சாப்பாடு",
+    "சாப்பிட",
+    "ஒவ்வாமை",
+    "உடற்பயிற்சி",
+}
+
+PROFILE_MEDICAL_FACT_TERMS = set(HEALTH_RISK_KEYWORDS) | {
+    "diabetes_or_sugar_control",
+    "blood_pressure_or_heart_care",
+    "thyroid_or_hormonal_care",
+    "allergy_digestion_kidney_or_other",
+    "pregnant",
+    "postpartum_or_breastfeeding",
+    "trying_to_conceive",
+    "avoid_sugary_foods",
+    "allergy_or_doctor_given_restrictions",
+}
+
+PROFILE_HEALTH_TRIGGER_TERMS = {
+    "health",
+    "medical",
+    "doctor",
+    "clinic",
+    "hospital",
+    "medicine",
+    "medication",
+    "tablet",
+    "dose",
+    "dosage",
+    "symptom",
+    "symptoms",
+    "diagnosis",
+    "diagnose",
+    "treatment",
+    "pregnant",
+    "pregnancy",
+    "allergy",
+    "allergic",
+    "diet",
+    "food",
+    "eat",
+    "eating",
+    "nutrition",
+    "exercise",
+    "workout",
+    "sleep",
+    "pain",
+    "fever",
+    "உடல்",
+    "உடம்பு",
+    "மருத்துவர்",
+    "மருந்து",
+    "சிகிச்சை",
+    "அறிகுறி",
+    "வலி",
+    "காய்ச்சல்",
+    "கர்ப்ப",
+    "உணவு",
+    "சாப்பாடு",
+    "சாப்பிட",
+    "ஒவ்வாமை",
+    "உடற்பயிற்சி",
+}
+
 
 def _ensure_default_classifier_dataset(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,9 +333,29 @@ class EnglishRemodeler:
         values = [str(item).strip() for item in items if str(item).strip()]
         return ", ".join(values) if values else default
 
-    def _is_health_sensitive(self, text: str, profile: Dict[str, Any]) -> bool:
-        haystack = f"{text} {json_safe(profile)}".lower()
-        return any(keyword in haystack for keyword in HEALTH_RISK_KEYWORDS)
+    @staticmethod
+    def _contains_any_term(text: str, terms: Iterable[str]) -> bool:
+        haystack = str(text or "").lower()
+        for raw_term in terms:
+            term = str(raw_term or "").strip().lower()
+            if not term:
+                continue
+            if re.search(r"[a-z0-9_]", term):
+                if re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", haystack):
+                    return True
+            elif term in haystack:
+                return True
+        return False
+
+    def _is_health_sensitive(self, user_query: str, raw_answer: str, profile: Dict[str, Any]) -> bool:
+        current_turn_text = f"{user_query} {raw_answer}".lower()
+        if self._contains_any_term(current_turn_text, CURRENT_HEALTH_TOPIC_TERMS):
+            return True
+
+        profile_text = json_safe(profile).lower() if profile else ""
+        if not self._contains_any_term(profile_text, PROFILE_MEDICAL_FACT_TERMS):
+            return False
+        return self._contains_any_term(current_turn_text, PROFILE_HEALTH_TRIGGER_TERMS)
 
     @staticmethod
     def _post_process_answer(text: str) -> str:
@@ -257,7 +383,7 @@ class EnglishRemodeler:
     def decide_route(self, user_query: str, raw_answer: str, profile: Dict[str, Any]) -> RoutingDecision:
         match = self.get_direct_answer_match(user_query)
         predicted_label = self.classifier.predict(user_query)
-        risk_level = "high" if self._is_health_sensitive(user_query, profile) else ("medium" if predicted_label == "High" else "low")
+        risk_level = "high" if self._is_health_sensitive(user_query, raw_answer, profile) else ("medium" if predicted_label == "High" else "low")
 
         if match and match.confidence >= DIRECT_MATCH_FORCE_THRESHOLD:
             return RoutingDecision(

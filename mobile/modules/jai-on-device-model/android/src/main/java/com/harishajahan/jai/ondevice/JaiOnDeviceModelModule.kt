@@ -23,6 +23,10 @@ class JaiOnDeviceModelModule : Module() {
       true
     }
 
+    Function("isSpeechToTextAvailable") {
+      false
+    }
+
     AsyncFunction("initialize") { config: Map<String, Any?> ->
       engine.initialize(config)
     }

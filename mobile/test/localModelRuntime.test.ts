@@ -15,6 +15,7 @@ const nativeAssets = {
     format: "gguf",
     quantization: "Q4_K_M",
     modelPath: "models/gemma-3-4b-it-q4_k_m.gguf",
+    chatTemplate: "gemma3",
   },
   "Qwen/Qwen3-Embedding-0.6B": {
     id: "Qwen/Qwen3-Embedding-0.6B",
@@ -22,6 +23,7 @@ const nativeAssets = {
     format: "gguf",
     quantization: "Q8_0",
     modelPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
+    promptFormat: "embedding",
     embedding: true,
   },
 };
@@ -29,6 +31,7 @@ const nativeAssets = {
 describe("local model runtime architecture", () => {
   afterEach(() => {
     setNativeOnDeviceModelBridgeForTests(null);
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
@@ -140,6 +143,7 @@ describe("local model runtime architecture", () => {
     expect(completeChat).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "google/gemma-3-4b-it",
+        prompt: expect.stringContaining("<start_of_turn>user"),
         asset: expect.objectContaining({ modelPath: "models/gemma-3-4b-it-q4_k_m.gguf" }),
       }),
     );
@@ -160,8 +164,6 @@ describe("local model runtime architecture", () => {
 
     const downloadedFiles = new Set([
       "file:///mock/models/gemma-3-4b-it-q4_k_m.gguf",
-      "file:///mock/models/qwen3-8b-q4_k_m.gguf",
-      "file:///mock/models/qwen3-14b-q4_k_m.gguf",
       "file:///mock/models/qwen3-embedding-0.6b-q8_0.gguf",
     ]);
 
@@ -204,22 +206,43 @@ describe("local model runtime architecture", () => {
           backend: "llama_cpp",
           format: "gguf",
           modelPath: "models/qwen3-8b-q4_k_m.gguf",
+          chatTemplate: "qwen3",
         },
         "Qwen/Qwen3-14B": {
           id: "Qwen/Qwen3-14B",
           backend: "llama_cpp",
           format: "gguf",
           modelPath: "models/qwen3-14b-q4_k_m.gguf",
+          chatTemplate: "qwen3",
         },
       },
       modelDelivery: {
         mode: "download_on_first_launch",
         storageRoot: "document://models",
+        defaultTier: "lite",
+        modelTiers: {
+          lite: {
+            requiredModelIds: [
+              "google/gemma-3-4b-it",
+              "Qwen/Qwen3-Embedding-0.6B",
+            ],
+          },
+          standard: {
+            requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+            minRamBytes: 8 * 1024 * 1024 * 1024,
+            minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
+          },
+          pro: {
+            requiredModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+            minRamBytes: 16 * 1024 * 1024 * 1024,
+            minFreeStorageBytes: 16 * 1024 * 1024 * 1024,
+          },
+        },
         models: [
-          { id: "google/gemma-3-4b-it", fileName: "gemma-3-4b-it-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/gemma.gguf", localPath: "models/gemma-3-4b-it-q4_k_m.gguf", required: true },
-          { id: "Qwen/Qwen3-8B", fileName: "qwen3-8b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen8.gguf", localPath: "models/qwen3-8b-q4_k_m.gguf", required: true },
-          { id: "Qwen/Qwen3-14B", fileName: "qwen3-14b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen14.gguf", localPath: "models/qwen3-14b-q4_k_m.gguf", required: true },
-          { id: "Qwen/Qwen3-Embedding-0.6B", fileName: "qwen3-embedding-0.6b-q8_0.gguf", downloadUrl: "https://cdn.example.test/embed.gguf", localPath: "models/qwen3-embedding-0.6b-q8_0.gguf", required: true },
+          { id: "google/gemma-3-4b-it", fileName: "gemma-3-4b-it-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/gemma.gguf", localPath: "models/gemma-3-4b-it-q4_k_m.gguf", required: true, requiredForTiers: ["lite"] },
+          { id: "Qwen/Qwen3-8B", fileName: "qwen3-8b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen8.gguf", localPath: "models/qwen3-8b-q4_k_m.gguf", required: false, requiredForTiers: ["standard"] },
+          { id: "Qwen/Qwen3-14B", fileName: "qwen3-14b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen14.gguf", localPath: "models/qwen3-14b-q4_k_m.gguf", required: false, requiredForTiers: ["pro"] },
+          { id: "Qwen/Qwen3-Embedding-0.6B", fileName: "qwen3-embedding-0.6b-q8_0.gguf", downloadUrl: "https://cdn.example.test/embed.gguf", localPath: "models/qwen3-embedding-0.6b-q8_0.gguf", required: true, requiredForTiers: ["lite", "standard", "pro"] },
         ],
       },
     });
@@ -239,6 +262,9 @@ describe("local model runtime architecture", () => {
         }),
       }),
     );
+    const initArg = (bridge.initialize as any).mock.calls[0][0] as any;
+    expect(initArg.models["Qwen/Qwen3-14B"]).toBeUndefined();
+    expect(initArg.models["Qwen/Qwen3-8B"]).toBeUndefined();
     expect(bridge.completeChat).toHaveBeenCalledWith(
       expect.objectContaining({
         asset: expect.objectContaining({
@@ -323,20 +349,15 @@ describe("local model runtime architecture", () => {
   });
 
   it("keeps local_adapter development-only in production", () => {
-    const previous = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
-    try {
-      const config = {
-        mode: "local_adapter" as const,
-        baseUrl: "http://192.168.1.23:10000/v1",
-        adapterLocation: "external_lan" as const,
-      };
-      const runtime = createLocalModelRuntime(config);
-      expect(runtime.kind).toBe("openai_compatible_local_adapter");
-      expect(runtime.isConfigured()).toBe(false);
-      expect(getLocalRuntimeConfigError(config, "Local chat")).toContain("development-only");
-    } finally {
-      process.env.NODE_ENV = previous;
-    }
+    vi.stubEnv("NODE_ENV", "production");
+    const config = {
+      mode: "local_adapter" as const,
+      baseUrl: "http://192.168.1.23:10000/v1",
+      adapterLocation: "external_lan" as const,
+    };
+    const runtime = createLocalModelRuntime(config);
+    expect(runtime.kind).toBe("openai_compatible_local_adapter");
+    expect(runtime.isConfigured()).toBe(false);
+    expect(getLocalRuntimeConfigError(config, "Local chat")).toContain("development-only");
   });
 });

@@ -144,11 +144,12 @@ describe("phone-local agent configuration", () => {
     expect(agentRegistry.runtime.backendRole).toBe("fallback_only");
     expect(agentRegistry.runtime.openAiPolicy).toBe("fallback_only");
     expect(models.models.profiler).toBe("google/gemma-3-4b-it");
-    expect(models.models.orchestratorMedium).toBe("Qwen/Qwen3-8B");
-    expect(models.models.orchestratorLarge).toBe("Qwen/Qwen3-14B");
+    expect(models.models.orchestratorMedium).toBe("google/gemma-3-4b-it");
+    expect(models.models.orchestratorLarge).toBe("Qwen/Qwen3-8B");
+    expect(models.models.orchestratorPro).toBe("Qwen/Qwen3-14B");
     expect(models.models.aligner).toBe("google/gemma-3-4b-it");
     expect(models.models.embedding).toBe("Qwen/Qwen3-Embedding-0.6B");
-    expect(models.models.summarizer).toBe("Qwen/Qwen3-8B");
+    expect(models.models.summarizer).toBe("google/gemma-3-4b-it");
     expect(agentRegistry.agents.profiler.enabled).toBe(true);
     expect(agentRegistry.agents.orchestrator.enabled).toBe(true);
     expect(agentRegistry.agents.alignment.enabled).toBe(true);
@@ -338,6 +339,250 @@ describe("local orchestrator and alignment", () => {
     expect(result.route).toBe("weather");
     expect(result.assistantText).toContain("Chennai");
     expect(result.meta?.orchestratorDecision?.needsLiveData).toBe(true);
+    expect(result.meta?.tools?.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ok: true,
+          tool: "getWeather",
+          source: "open-meteo",
+        }),
+      ]),
+    );
+    expect(result.meta?.tools?.sourceLabels).toContain("weather");
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("routes reminder creation through the typed reminder tool", async () => {
+    queueCompletion(
+      JSON.stringify({
+        title: "Call Sam",
+        details: "Call Sam",
+        datetime_text: "tomorrow at 9 AM",
+        assistant_reply: "Okay, I can set a reminder for Call Sam tomorrow at 9 AM.",
+      }),
+    );
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 241,
+      message: "Remind me to call Sam tomorrow at 9 AM",
+      replyLanguage: "en",
+    });
+
+    expect(result.route).toBe("reminder_create");
+    expect(result.intent).toBe("reminder");
+    expect(result.title).toBe("Call Sam");
+    expect(result.datetimeText).toBe("tomorrow at 9 AM");
+    expect(result.meta?.tools?.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ok: true,
+          tool: "createReminder",
+          source: "local_reminder_parser",
+        }),
+      ]),
+    );
+    expect(result.meta?.tools?.sourceLabels).toContain("reminders");
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("plans a day with both reminder and weather tools", async () => {
+    const tomorrowIso = new Date(Date.now() + 86_400_000).toISOString();
+    mockedState.files.set(
+      `${dataRoot}/tasks/242.json`,
+      JSON.stringify(
+        [
+          {
+            id: "task_1",
+            title: "Standup",
+            details: "Team sync",
+            datetimeText: "tomorrow 9 AM",
+            isoDatetime: tomorrowIso,
+            status: "scheduled",
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        null,
+        2,
+      ),
+    );
+    queueJsonResponse({
+      results: [
+        {
+          name: "Chennai",
+          country: "India",
+          latitude: 13.08,
+          longitude: 80.27,
+        },
+      ],
+    });
+    queueJsonResponse({
+      current: {
+        temperature_2m: 30,
+        apparent_temperature: 34,
+        weather_code: 2,
+        wind_speed_10m: 9,
+      },
+    });
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 242,
+      message: "Plan my day tomorrow based on reminders and weather",
+      replyLanguage: "en",
+      userProfile: { place: "Chennai" },
+    });
+
+    expect(result.route).toBe("local_answer");
+    expect(result.assistantText).toContain("Chennai");
+    expect(result.assistantText).toContain("Standup");
+    expect(result.meta?.tools?.plan?.complex).toBe(true);
+    expect(result.meta?.tools?.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ok: true, tool: "getWeather" }),
+        expect.objectContaining({ ok: true, tool: "listReminders" }),
+      ]),
+    );
+    expect(result.meta?.tools?.verification).toEqual(
+      expect.objectContaining({
+        cloudFallbackUsed: false,
+        language: "en",
+      }),
+    );
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("discloses missing weather and reminder data for complex local plans", async () => {
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 243,
+      message: "Plan my day tomorrow based on reminders and weather",
+      replyLanguage: "en",
+    });
+
+    expect(result.route).toBe("local_answer");
+    expect(result.assistantText).toContain("Weather data missing");
+    expect(result.assistantText).toContain("Reminder data missing");
+    expect(result.meta?.tools?.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ok: false, tool: "getWeather" }),
+        expect.objectContaining({ ok: false, tool: "listReminders" }),
+      ]),
+    );
+    expect(result.meta?.tools?.verification?.missingData.length).toBeGreaterThan(
+      0,
+    );
+    expect(result.meta?.tools?.verification?.cloudFallbackUsed).toBe(false);
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves selected reply language through tool-planned answers", async () => {
+    mockedState.files.set(
+      `${dataRoot}/profiles/244/answers.json`,
+      JSON.stringify(
+        {
+          occupation: "software engineer",
+          industry_or_field: "technology",
+        },
+        null,
+        2,
+      ),
+    );
+    queueCompletion(
+      JSON.stringify({
+        english_answer:
+          "Based on your saved profile: occupation: software engineer; industry_or_field: technology",
+        final_answer:
+          "உங்கள் saved profileப்படி நீங்கள் technology துறையில் software engineer.",
+      }),
+    );
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 244,
+      message: "What is my job?",
+      replyLanguage: "ta",
+    });
+
+    expect(result.route).toBe("profile");
+    expect(result.assistantText).toContain("software engineer");
+    expect(result.assistantText).toContain("உங்கள்");
+    expect(result.meta?.tools?.verification?.language).toBe("ta");
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("routes explicit memory updates through the local memory tool", async () => {
+    queueCompletion(
+      JSON.stringify({
+        route: "local_answer",
+        reason: "memory_update_request",
+        confidence: 0.82,
+        needs_clarification: false,
+        clarification_question: "",
+        needs_live_data: false,
+        selected_model: "Qwen/Qwen3-8B",
+        fallback_allowed: false,
+      }),
+    );
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 246,
+      message: "Remember that project code name is JAI",
+      replyLanguage: "en",
+    });
+
+    const durableFacts = JSON.parse(
+      mockedState.files.get(`${dataRoot}/memory/durable_facts/246.json`) || "[]",
+    );
+    expect(result.route).toBe("profile");
+    expect(result.assistantText).toContain("local memory");
+    expect(result.meta?.tools?.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ok: true,
+          tool: "updateMemory",
+          source: "local_memory",
+        }),
+      ]),
+    );
+    expect(durableFacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fact: "project code name is JAI",
+          category: "other",
+          status: "active",
+        }),
+      ]),
+    );
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("does not call tools for general chat", async () => {
+    queueCompletion(
+      JSON.stringify({
+        route: "local_answer",
+        reason: "general_offline_chat",
+        confidence: 0.82,
+        needs_clarification: false,
+        clarification_question: "",
+        needs_live_data: false,
+        selected_model: "Qwen/Qwen3-8B",
+        fallback_allowed: false,
+      }),
+    );
+    queueCompletion("Compilers translate source code into executable forms.");
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 245,
+      message: "Tell me a fun fact about compilers",
+      replyLanguage: "en",
+    });
+
+    expect(result.route).toBe("local_answer");
+    expect(result.assistantText).toContain("Compilers");
+    expect(result.meta?.tools).toBeUndefined();
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 
@@ -367,6 +612,7 @@ describe("local orchestrator and alignment", () => {
       userId: 25,
       message: "Help with something the local model cannot safely finish.",
       replyLanguage: "en",
+      userAllowedCloudFallback: true,
     });
 
     expect(result.source).toBe("openai_fallback");
@@ -381,6 +627,41 @@ describe("local orchestrator and alignment", () => {
       }),
     );
     expect(result.meta?.orchestratorDecision?.fallbackAllowed).toBe(true);
+  });
+
+  it("requires cloud consent by default for live/current data fallback", async () => {
+    queueCompletion(
+      JSON.stringify({
+        route: "local_answer",
+        reason: "current_data_required",
+        confidence: 0.82,
+        needs_clarification: false,
+        clarification_question: "",
+        needs_live_data: true,
+        selected_model: "Qwen/Qwen3-8B",
+        fallback_allowed: false,
+      }),
+    );
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 251,
+      message: "What is the latest news about electric vehicles?",
+      replyLanguage: "en",
+    });
+
+    expect(result.kind).toBe("cloud_consent_required");
+    expect(result.route).toBe("clarify");
+    expect(result.source).toBe("local_rules");
+    expect(result.cloudFallback).toEqual({
+      kind: "cloud_consent_required",
+      reason: "current_or_live_data_requires_cloud_fallback",
+      localAnswerAvailable: false,
+      suggestedAction: "ask_user_consent",
+    });
+    expect(result.meta?.cloudFallback).toEqual(result.cloudFallback);
+    expect(result.meta?.orchestratorDecision?.fallbackAllowed).toBe(false);
+    expect(apiPostMock).not.toHaveBeenCalled();
   });
 
   it("blocks OpenAI fallback when policy conditions are not met", async () => {
@@ -410,6 +691,19 @@ describe("local orchestrator and alignment", () => {
     expect(result.meta?.orchestratorDecision?.reason).toBe(
       "openai_fallback_blocked_by_policy",
     );
+  });
+
+  it("does not hard-code cloud fallback consent in the local agent", async () => {
+    const [{ readFile }, { fileURLToPath }] = await Promise.all([
+      import("node:fs/promises"),
+      import("node:url"),
+    ]);
+    const source = await readFile(
+      fileURLToPath(new URL("../lib/localAgents.ts", import.meta.url).toString()),
+      "utf8",
+    );
+
+    expect(source).not.toContain("userAllowedCloudFallback: true");
   });
 
   it("aligns tone and language without changing the factual English mirror", async () => {

@@ -19,7 +19,6 @@ from typing import List, Sequence, Tuple
 import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
-from sentence_transformers import SentenceTransformer
 
 # ==============================
 # CONFIG & INIT
@@ -42,6 +41,17 @@ _db_lock = threading.RLock()
 _TOKEN_RE = re.compile(r"[\w\u0B80-\u0BFF]+", re.UNICODE)
 
 
+def _load_sentence_transformer_class():
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise RuntimeError(
+            "sentence-transformers is optional and required only for the deprecated "
+            "semantic cache embedding path. Install sentence-transformers to use it."
+        ) from exc
+    return SentenceTransformer
+
+
 def get_openai_client():
     global _client
     if _client is None:
@@ -53,7 +63,7 @@ def get_embedding_model():
     global _model
     if _model is None:
         # Load E5-small for efficient embeddings
-        _model = SentenceTransformer("intfloat/e5-small")
+        _model = _load_sentence_transformer_class()("intfloat/e5-small")
     return _model
 
 

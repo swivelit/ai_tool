@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlmodel import Session
 
 import app.main as main_module
@@ -94,13 +98,87 @@ def test_users_create_or_update_for_valid_auth(client: TestClient) -> None:
     assert updated["reply_language"] == "ta"
 
 
-def test_health_reports_firebase_auth_configuration(client: TestClient) -> None:
-    response = client.get("/health")
+def test_public_health_does_not_leak_auth_configuration(client: TestClient) -> None:
+    for path in ("/health", "/api/health"):
+        response = client.get(path)
+        payload = response.json()
 
-    assert "auth" in response.json()
+        assert set(payload) == {"status", "app"}
+        assert payload["app"] == "J AI"
+        assert "auth" not in payload
+        assert "services" not in payload
+        assert "errors" not in payload
+        assert "dev_tokens_enabled" not in json.dumps(payload)
+        assert "credentials_json_set" not in json.dumps(payload)
+        assert "firebase" not in json.dumps(payload).lower()
+
+
+def test_debug_health_reports_firebase_auth_configuration_in_development(
+    client: TestClient,
+) -> None:
+    response = client.get("/api/debug/health")
+
     firebase = response.json()["auth"]["firebase"]
     assert firebase["token_verification_configured"] is True
     assert firebase["dev_tokens_enabled"] is True
+
+
+def test_debug_health_is_not_public_in_production(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module, "APP_ENV", "production")
+
+    response = client.get("/api/debug/health")
+
+    assert response.status_code == 404
+
+
+def test_production_rejects_dev_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "true")
+
+    with pytest.raises(
+        auth_module.AuthConfigurationError,
+        match="AUTH_ALLOW_DEV_TOKENS",
+    ):
+        auth_module.validate_auth_configuration()
+
+
+def test_test_environment_can_allow_dev_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "true")
+
+    auth_module.validate_auth_configuration()
+
+
+def test_backend_startup_fails_loudly_with_prod_dev_tokens(tmp_path: Path) -> None:
+    backend_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env.update(
+        {
+            "APP_ENV": "production",
+            "AUTH_ALLOW_DEV_TOKENS": "true",
+            "DOWNLOAD_TOKEN_SECRET": "test-secret",
+            "DATABASE_URL": f"sqlite:///{(tmp_path / 'startup.sqlite3').as_posix()}",
+            "AUTO_CREATE_TABLES": "false",
+            "JOB_WORKER_ENABLED": "false",
+            "OPENAI_API_KEY": "",
+            "SARVAM_API_KEY": "",
+            "SENTRY_DSN": "",
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.main"],
+        cwd=backend_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode != 0
+    assert "AUTH_ALLOW_DEV_TOKENS" in (result.stderr + result.stdout)
 
 
 def test_missing_firebase_admin_config_returns_clear_503(

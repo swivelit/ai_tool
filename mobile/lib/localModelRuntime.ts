@@ -13,6 +13,7 @@ import {
   getModelDeliveryMode,
   resolveInstalledNativeModelAssets,
 } from "./modelDownloadManager";
+import { renderNativeChatPrompt } from "./nativePromptTemplates";
 
 export const OPENAI_FALLBACK_SIGNAL = "__OPENAI_FALLBACK__";
 
@@ -491,6 +492,7 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
       model: input.model,
       temperature: input.temperature ?? 0.2,
       messages: input.messages,
+      prompt: renderNativeChatPrompt(input.messages, asset),
       asset,
     });
     return normalizeChatCompletionResponse(response);

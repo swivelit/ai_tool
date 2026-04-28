@@ -29,6 +29,9 @@ export type NativeOnDeviceModelAsset = {
   useMmap?: boolean;
   useMetal?: boolean;
   useGpu?: boolean;
+  acceleration?: "cpu_only" | "gpu" | string;
+  chatTemplate?: "qwen3" | "gemma3" | "generic" | string;
+  promptFormat?: "qwen3" | "gemma3" | "generic" | string;
   embedding?: boolean;
   description?: string;
 };
@@ -42,6 +45,7 @@ export type NativeOnDeviceBridgeInitConfig = {
 export type NativeOnDeviceChatInput = {
   model: string;
   messages: NativeOnDeviceChatMessage[];
+  prompt?: string;
   temperature?: number;
   asset: NativeOnDeviceModelAsset;
 };
@@ -60,10 +64,19 @@ export type NativeOnDeviceTranscriptionInput = {
 
 export type NativeOnDeviceModelBridge = {
   isAvailable?: () => boolean | Promise<boolean>;
+  isSpeechToTextAvailable?: () => boolean | Promise<boolean>;
   initialize: (config: NativeOnDeviceBridgeInitConfig) => unknown | Promise<unknown>;
   completeChat: (input: NativeOnDeviceChatInput) => unknown | Promise<unknown>;
   embedTexts: (input: NativeOnDeviceEmbeddingInput) => unknown | Promise<unknown>;
   transcribeAudio?: (input: NativeOnDeviceTranscriptionInput) => unknown | Promise<unknown>;
+};
+
+export type NativeOnDeviceSpeechToTextCapability = {
+  available: boolean;
+  bridgeAvailable: boolean;
+  moduleName: string;
+  endpoint?: string;
+  reason?: string;
 };
 
 declare const require: unknown;
@@ -196,4 +209,66 @@ export function nativeOnDeviceSttMissingMessage(
   moduleName = DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
 ) {
   return `${featureName} selected runtime.mode=native_on_device, but the native on-device speech-to-text bridge "${moduleName}.transcribeAudio()" is not available in this app binary. Recorded voice requires a phone-local native STT implementation, such as whisper.cpp, or a configured development-only local_adapter STT endpoint. This mode never calls backend/OpenAI by itself.`;
+}
+
+export const LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE =
+  "Local voice recognition is not available in this build yet.";
+
+export async function getNativeOnDeviceSpeechToTextCapability(
+  preferredModuleName = DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
+): Promise<NativeOnDeviceSpeechToTextCapability> {
+  const bridge = getNativeOnDeviceModelBridge(preferredModuleName);
+  const endpoint = `${preferredModuleName}.transcribeAudio`;
+
+  if (!bridge) {
+    return {
+      available: false,
+      bridgeAvailable: false,
+      moduleName: preferredModuleName,
+      endpoint,
+      reason: LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+    };
+  }
+
+  if (typeof bridge.transcribeAudio !== "function") {
+    return {
+      available: false,
+      bridgeAvailable: true,
+      moduleName: preferredModuleName,
+      endpoint,
+      reason: LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+    };
+  }
+
+  if (typeof bridge.isSpeechToTextAvailable !== "function") {
+    return {
+      available: false,
+      bridgeAvailable: true,
+      moduleName: preferredModuleName,
+      endpoint,
+      reason: LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+    };
+  }
+
+  try {
+    const available = await bridge.isSpeechToTextAvailable();
+    return {
+      available: available === true,
+      bridgeAvailable: true,
+      moduleName: preferredModuleName,
+      endpoint,
+      reason:
+        available === true
+          ? undefined
+          : LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+    };
+  } catch {
+    return {
+      available: false,
+      bridgeAvailable: true,
+      moduleName: preferredModuleName,
+      endpoint,
+      reason: LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+    };
+  }
 }

@@ -1353,8 +1353,6 @@ Return ONLY JSON:
     ) -> Dict[str, Any]:
         if not self.enabled:
             return pipeline_runner(session, user_id, message, reply_language)
-        if onboarding_profile:
-            base_profile_context += f"\n\n[ONBOARDING PROFILE]\n{json.dumps(onboarding_profile, ensure_ascii=False)}"
         total_start = time.perf_counter()
         user, profile, routine = self._get_user_bundle(session, int(user_id)) if user_id else (None, None, None)
         resolved_lang = self._normalize_reply_language(
@@ -1371,6 +1369,8 @@ Return ONLY JSON:
         route = str(classification.get("route", "pipeline")).strip() or "pipeline"
         draft_english = ""
         tool_meta = {"classification": classification}
+        if onboarding_profile:
+            tool_meta["onboarding_profile"] = onboarding_profile
 
         if route == "fast_greeting":
             try:

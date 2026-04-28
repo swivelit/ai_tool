@@ -43,6 +43,8 @@ from .auth import (
     firebase_auth_runtime_status,
     get_current_user,
     get_owned_user,
+    normalize_app_env,
+    validate_auth_configuration,
 )
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
@@ -117,7 +119,9 @@ _download_token_secret = (
     or os.getenv("SECRET_KEY", "").strip()
 )
 
-APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+APP_ENV = normalize_app_env()
+
+validate_auth_configuration()
 
 if not _download_token_secret:
     if APP_ENV in {"prod", "production"}:
@@ -834,7 +838,18 @@ def root():
     }
 
 
-def _health_payload() -> Dict[str, Any]:
+def _health_status_code(payload: Dict[str, Any]) -> int:
+    return 200 if payload["status"] == "ok" else 503
+
+
+def _public_health_payload() -> Dict[str, Any]:
+    return {
+        "status": RUNTIME_STATUS.get("status") or "starting",
+        "app": "J AI",
+    }
+
+
+def _debug_health_payload() -> Dict[str, Any]:
     return {
         "status": RUNTIME_STATUS.get("status") or "starting",
         "app": "J AI",
@@ -844,20 +859,6 @@ def _health_payload() -> Dict[str, Any]:
             "firebase": firebase_auth_runtime_status(),
         },
         "errors": RUNTIME_STATUS.get("errors", []),
-    }
-
-
-@app.get("/health")
-def health():
-    payload = _health_payload()
-    status_code = 200 if payload["status"] == "ok" else 503
-    return JSONResponse(payload, status_code=status_code)
-
-
-@app.get("/api/health")
-def api_health():
-    payload = _health_payload()
-    payload.update({
         "mode": PIPELINE_VERSION,
         "features": [
             "persona_context",
@@ -870,9 +871,27 @@ def api_health():
             "semantic_memory_rag",
             "qa_cache_rag",
         ],
-    })
-    status_code = 200 if payload["status"] == "ok" else 503
-    return JSONResponse(payload, status_code=status_code)
+    }
+
+
+@app.get("/health")
+def health():
+    payload = _public_health_payload()
+    return JSONResponse(payload, status_code=_health_status_code(payload))
+
+
+@app.get("/api/health")
+def api_health():
+    payload = _public_health_payload()
+    return JSONResponse(payload, status_code=_health_status_code(payload))
+
+
+@app.get("/api/debug/health")
+def debug_health():
+    if APP_ENV in {"prod", "production"}:
+        raise HTTPException(status_code=404, detail="Not found")
+    payload = _debug_health_payload()
+    return JSONResponse(payload, status_code=_health_status_code(payload))
 
 
 PARSE_DT_PROMPT = """

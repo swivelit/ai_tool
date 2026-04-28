@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "runtime": {
     "primary": "phone_local",
     "mode": "native_on_device",
@@ -33,21 +33,25 @@
         "id": "google/gemma-3-4b-it",
         "roles": [
           "profiler",
+          "orchestrator_lite",
+          "memory_summarizer",
           "alignment"
         ],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q4_K_M",
+        "chatTemplate": "gemma3",
         "fileName": "gemma-3-4b-it-q4_k_m.gguf",
         "modelPath": "models/gemma-3-4b-it-q4_k_m.gguf",
         "contextSize": 4096,
         "batchSize": 512,
         "threads": 4,
-        "gpuLayers": 99,
+        "gpuLayers": 0,
         "useMmap": true,
-        "useMetal": true,
-        "useGpu": true,
-        "description": "Profiler and alignment model. In production this path is replaced at runtime with the downloaded file:// GGUF path."
+        "useMetal": false,
+        "useGpu": false,
+        "acceleration": "cpu_only",
+        "description": "Lite chat, profiler, summarizer, and alignment model. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; in production this path is replaced at runtime with the downloaded file:// GGUF path."
       },
       "Qwen/Qwen3-8B": {
         "id": "Qwen/Qwen3-8B",
@@ -58,35 +62,39 @@
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q4_K_M",
+        "chatTemplate": "qwen3",
         "fileName": "qwen3-8b-q4_k_m.gguf",
         "modelPath": "models/qwen3-8b-q4_k_m.gguf",
         "contextSize": 8192,
         "batchSize": 512,
         "threads": 4,
-        "gpuLayers": 99,
+        "gpuLayers": 0,
         "useMmap": true,
-        "useMetal": true,
-        "useGpu": true,
-        "description": "Medium orchestrator and memory summarizer. In production this path is replaced at runtime with the downloaded file:// GGUF path."
+        "useMetal": false,
+        "useGpu": false,
+        "acceleration": "cpu_only",
+        "description": "Standard tier orchestrator. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; in production this path is replaced at runtime with the downloaded file:// GGUF path."
       },
       "Qwen/Qwen3-14B": {
         "id": "Qwen/Qwen3-14B",
         "roles": [
-          "orchestrator_large"
+          "orchestrator_pro"
         ],
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q4_K_M",
+        "chatTemplate": "qwen3",
         "fileName": "qwen3-14b-q4_k_m.gguf",
         "modelPath": "models/qwen3-14b-q4_k_m.gguf",
         "contextSize": 8192,
         "batchSize": 512,
         "threads": 4,
-        "gpuLayers": 99,
+        "gpuLayers": 0,
         "useMmap": true,
-        "useMetal": true,
-        "useGpu": true,
-        "description": "Large orchestrator for capable devices. In production this path is replaced at runtime with the downloaded file:// GGUF path."
+        "useMetal": false,
+        "useGpu": false,
+        "acceleration": "cpu_only",
+        "description": "Pro tier 14B orchestrator for high-RAM devices or explicit opt-in. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; in production this path is replaced at runtime with the downloaded file:// GGUF path."
       },
       "Qwen/Qwen3-Embedding-0.6B": {
         "id": "Qwen/Qwen3-Embedding-0.6B",
@@ -96,27 +104,30 @@
         "backend": "llama_cpp",
         "format": "gguf",
         "quantization": "Q8_0",
+        "promptFormat": "embedding",
         "fileName": "qwen3-embedding-0.6b-q8_0.gguf",
         "modelPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
         "contextSize": 4096,
         "batchSize": 512,
         "threads": 4,
-        "gpuLayers": 99,
+        "gpuLayers": 0,
         "useMmap": true,
-        "useMetal": true,
-        "useGpu": true,
+        "useMetal": false,
+        "useGpu": false,
+        "acceleration": "cpu_only",
         "embedding": true,
-        "description": "Semantic cache and memory embedding model. Production native_on_device mode must use this downloaded GGUF file; hash embeddings are disabled."
+        "description": "Semantic cache and memory embedding model. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; production native_on_device mode must use this downloaded GGUF file; hash embeddings are disabled."
       }
     }
   },
   "models": {
     "profiler": "google/gemma-3-4b-it",
-    "orchestratorMedium": "Qwen/Qwen3-8B",
-    "orchestratorLarge": "Qwen/Qwen3-14B",
+    "orchestratorMedium": "google/gemma-3-4b-it",
+    "orchestratorLarge": "Qwen/Qwen3-8B",
+    "orchestratorPro": "Qwen/Qwen3-14B",
     "aligner": "google/gemma-3-4b-it",
     "embedding": "Qwen/Qwen3-Embedding-0.6B",
-    "summarizer": "Qwen/Qwen3-8B"
+    "summarizer": "google/gemma-3-4b-it"
   },
   "thresholds": {
     "semanticCache": 0.95,
@@ -127,7 +138,51 @@
     "storageRoot": "document://models",
     "wifiRecommended": true,
     "maxRetries": 2,
-    "notes": "Production downloads quantized GGUF files into app-private storage on first launch/setup. Configure either EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL for public CDN paths or per-model EXPO_PUBLIC_LOCAL_MODEL_URL_* values for public/release-generated signed URLs. Do not hardcode secrets. Production native_on_device builds must provide exact EXPO_PUBLIC_LOCAL_MODEL_BYTES_* and EXPO_PUBLIC_LOCAL_MODEL_SHA256_* metadata; setup/build fails clearly when URL or integrity metadata is missing.",
+    "defaultTier": "lite",
+    "modelTiers": {
+      "lite": {
+        "id": "lite",
+        "label": "Lite",
+        "description": "Phone-safe first-launch pack for basic local chat and memory.",
+        "requiredModelIds": [
+          "google/gemma-3-4b-it",
+          "Qwen/Qwen3-Embedding-0.6B"
+        ],
+        "optionalModelIds": [
+          "Qwen/Qwen3-8B"
+        ]
+      },
+      "standard": {
+        "id": "standard",
+        "label": "Standard",
+        "description": "7B/8B class chat pack for capable devices.",
+        "requiredModelIds": [
+          "Qwen/Qwen3-8B",
+          "Qwen/Qwen3-Embedding-0.6B"
+        ],
+        "optionalModelIds": [
+          "google/gemma-3-4b-it"
+        ],
+        "minRamBytes": 8589934592,
+        "minFreeStorageBytes": 8589934592
+      },
+      "pro": {
+        "id": "pro",
+        "label": "Pro",
+        "description": "14B model pack for high-RAM devices or explicit opt-in.",
+        "requiredModelIds": [
+          "Qwen/Qwen3-14B",
+          "Qwen/Qwen3-Embedding-0.6B"
+        ],
+        "optionalModelIds": [
+          "Qwen/Qwen3-8B",
+          "google/gemma-3-4b-it"
+        ],
+        "minRamBytes": 17179869184,
+        "minFreeStorageBytes": 17179869184
+      }
+    },
+    "notes": "Production downloads quantized GGUF files into app-private storage as tiered packs. First launch/basic chat uses the Lite pack only. Configure either EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL for public CDN paths or per-model EXPO_PUBLIC_LOCAL_MODEL_URL_* values for public/release-generated signed URLs. Do not hardcode secrets. Production native_on_device builds must provide exact EXPO_PUBLIC_LOCAL_MODEL_BYTES_* and EXPO_PUBLIC_LOCAL_MODEL_SHA256_* metadata; setup/build fails clearly when URL or integrity metadata is missing.",
     "models": [
       {
         "id": "google/gemma-3-4b-it",
@@ -137,6 +192,9 @@
         "sha256": null,
         "localPath": "models/gemma-3-4b-it-q4_k_m.gguf",
         "required": true,
+        "requiredForTiers": [
+          "lite"
+        ],
         "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B",
         "downloadPath": "models/gemma-3-4b-it-q4_k_m.gguf",
         "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B",
@@ -149,7 +207,10 @@
         "expectedBytes": null,
         "sha256": null,
         "localPath": "models/qwen3-8b-q4_k_m.gguf",
-        "required": true,
+        "required": false,
+        "requiredForTiers": [
+          "standard"
+        ],
         "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B",
         "downloadPath": "models/qwen3-8b-q4_k_m.gguf",
         "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B",
@@ -162,7 +223,10 @@
         "expectedBytes": null,
         "sha256": null,
         "localPath": "models/qwen3-14b-q4_k_m.gguf",
-        "required": true,
+        "required": false,
+        "requiredForTiers": [
+          "pro"
+        ],
         "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B",
         "downloadPath": "models/qwen3-14b-q4_k_m.gguf",
         "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B",
@@ -176,6 +240,11 @@
         "sha256": null,
         "localPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
         "required": true,
+        "requiredForTiers": [
+          "lite",
+          "standard",
+          "pro"
+        ],
         "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED",
         "downloadPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
         "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED",

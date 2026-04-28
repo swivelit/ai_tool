@@ -7,9 +7,22 @@ import {
   normalizeLocalRuntimeBaseUrl,
 } from "./localModelRuntime";
 import {
+  LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+  getNativeOnDeviceSpeechToTextCapability,
   getNativeOnDeviceModelBridge,
   nativeOnDeviceSttMissingMessage,
 } from "./nativeOnDeviceModelBridge";
+import {
+  loadCachedLocalAssistantProfile,
+  withResolvedReplyLanguage,
+} from "./localAssistantProfile";
+import { loadCloudFallbackConsent } from "./localAssistantSettings";
+import {
+  PRODUCT_DEFAULT_REPLY_LANGUAGE,
+  ReplyLanguage,
+  normalizeReplyLanguage,
+  resolveReplyLanguage,
+} from "./replyLanguage";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
@@ -556,7 +569,6 @@ type FeatureFlagPayload = {
 let featureFlagsCache: FeatureFlagPayload["flags"] | null = null;
 let featureFlagsFetchedAt = 0;
 
-type ReplyLanguage = "en" | "ta";
 type SpeechLanguage = "en" | "ta" | null;
 
 type LocalVoiceTranscription = {
@@ -579,6 +591,7 @@ type LocalAnalyzeItem = {
 
 type LocalChatProxyResponse = {
   ok: boolean;
+  kind?: "assistant_turn" | "voice_unavailable" | "cloud_consent_required";
   item: {
     id: number;
     intent: string;
@@ -600,6 +613,36 @@ type LocalChatProxyResponse = {
   pipeline?: Record<string, any>;
   meta?: Record<string, any>;
 };
+
+type VoiceUnavailableAction =
+  | "ask_user_consent"
+  | "install_local_stt"
+  | "configure_local_stt";
+
+type VoiceUnavailableState = {
+  kind: "voice_unavailable" | "cloud_consent_required";
+  reason: string;
+  localAnswerAvailable: false;
+  suggestedAction: VoiceUnavailableAction;
+};
+
+class LocalVoiceUnavailableError extends Error {
+  state: VoiceUnavailableState;
+
+  constructor(
+    reason = LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+    details: Partial<VoiceUnavailableState> = {},
+  ) {
+    super(reason);
+    this.name = "LocalVoiceUnavailableError";
+    this.state = {
+      kind: details.kind || "voice_unavailable",
+      reason,
+      localAnswerAvailable: false,
+      suggestedAction: details.suggestedAction || "configure_local_stt",
+    };
+  }
+}
 
 function buildUrl(path: string) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
@@ -751,6 +794,105 @@ function parseQueryParam(path: string, key: string) {
   }
 }
 
+function extractErrorCode(error: unknown) {
+  const value = error as Record<string, unknown> | null;
+  const direct = value?.code || value?.nativeCode || value?.errorCode;
+  return typeof direct === "string" ? direct : "";
+}
+
+function isNativeSttNotImplementedError(error: unknown) {
+  const code = extractErrorCode(error);
+  const message = String((error as any)?.message || error || "");
+  return (
+    code === "JAI_NATIVE_STT_NOT_IMPLEMENTED" ||
+    message.includes("JAI_NATIVE_STT_NOT_IMPLEMENTED") ||
+    message.toLowerCase().includes("no native phone-local stt backend")
+  );
+}
+
+function sanitizeVoiceUnavailableReason(error: unknown) {
+  if (error instanceof LocalVoiceUnavailableError) {
+    return error.state.reason;
+  }
+  if (isNativeSttNotImplementedError(error)) {
+    return LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE;
+  }
+  return LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE;
+}
+
+function isVoiceUnavailableCause(error: unknown) {
+  return (
+    error instanceof LocalVoiceUnavailableError ||
+    isNativeSttNotImplementedError(error)
+  );
+}
+
+function toVoiceUnavailableError(error: unknown) {
+  if (error instanceof LocalVoiceUnavailableError) return error;
+  return new LocalVoiceUnavailableError(sanitizeVoiceUnavailableReason(error));
+}
+
+function buildVoiceUnavailableResponse(
+  state: VoiceUnavailableState,
+  options: {
+    userId: number;
+    replyLanguage: ReplyLanguage;
+  },
+): LocalChatProxyResponse {
+  const createdAt = new Date().toISOString();
+  const userMessage =
+    state.kind === "cloud_consent_required"
+      ? `${LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE} Enable cloud fallback to use cloud speech recognition.`
+      : LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE;
+
+  return {
+    ok: false,
+    kind: state.kind,
+    item: {
+      id: Date.now(),
+      intent: "assistant",
+      category: "Voice",
+      raw_text: "",
+      transcript: null,
+      datetime: null,
+      title: "Voice unavailable",
+      details: userMessage,
+      created_at: createdAt,
+      source: "voice",
+    },
+    assistant: {
+      text: userMessage,
+      english: userMessage,
+      tamil: options.replyLanguage === "ta" ? userMessage : undefined,
+      theni_tamil: options.replyLanguage === "ta" ? userMessage : undefined,
+    },
+    pipeline: {
+      route_taken: state.kind,
+      predicted_label: "assistant",
+      raw_english: "",
+      remodeled_english: userMessage,
+      tamil_text: options.replyLanguage === "ta" ? userMessage : "",
+      theni_tamil_text: options.replyLanguage === "ta" ? userMessage : "",
+      direct_answer_source: "local_rules",
+      meta: {
+        voice: state,
+      },
+    },
+    meta: {
+      source: "local_voice_proxy",
+      route: state.kind,
+      cacheHit: false,
+      voice: state,
+      stt: {
+        available: false,
+        reason: state.reason,
+      },
+      userId: options.userId,
+      created_at: createdAt,
+    },
+  };
+}
+
 function getFormFilePart(form: FormData) {
   const internal = (form as any)?._parts;
   if (!Array.isArray(internal)) return null;
@@ -886,22 +1028,48 @@ async function transcribeAudioWithNativeBridge(
 ): Promise<LocalVoiceTranscription> {
   const startedAt = Date.now();
   const normalizedSpeechLanguage = normalizeSpeechLanguage(speechLanguage);
-  const bridge = getNativeOnDeviceModelBridge(LOCAL_ON_DEVICE_NATIVE_MODULE);
-
-  if (!bridge || typeof bridge.transcribeAudio !== "function") {
-    throw new Error(
-      nativeOnDeviceSttMissingMessage(
-        "Recorded voice",
-        LOCAL_ON_DEVICE_NATIVE_MODULE,
-      ),
+  const capability = await getNativeOnDeviceSpeechToTextCapability(
+    LOCAL_ON_DEVICE_NATIVE_MODULE,
+  );
+  if (!capability.available) {
+    throw new LocalVoiceUnavailableError(
+      capability.reason || LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+      { suggestedAction: "configure_local_stt" },
     );
   }
 
-  const payload = await bridge.transcribeAudio({
-    fileUri,
-    model: LOCAL_STT_MODEL,
-    language: normalizedSpeechLanguage,
-  });
+  const bridge = getNativeOnDeviceModelBridge(LOCAL_ON_DEVICE_NATIVE_MODULE);
+
+  if (!bridge || typeof bridge.transcribeAudio !== "function") {
+    throw new LocalVoiceUnavailableError(
+      LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+      { suggestedAction: "configure_local_stt" },
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = await bridge.transcribeAudio({
+      fileUri,
+      model: LOCAL_STT_MODEL,
+      language: normalizedSpeechLanguage,
+    });
+  } catch (error) {
+    if (isNativeSttNotImplementedError(error)) {
+      throw new LocalVoiceUnavailableError(
+        LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+        { suggestedAction: "configure_local_stt" },
+      );
+    }
+
+    throw new Error(
+      `${nativeOnDeviceSttMissingMessage(
+        "Recorded voice",
+        LOCAL_ON_DEVICE_NATIVE_MODULE,
+      )} ${error instanceof Error ? error.message : String(error || "")}`.trim(),
+    );
+  }
+
   const transcript = normalizeTranscriptText(extractTranscriptText(payload));
 
   if (!transcript) {
@@ -986,6 +1154,45 @@ async function transcribeAudioWithLocalAdapter(
   );
 }
 
+async function postVoiceFormToBackend(
+  path: string,
+  form: FormData,
+): Promise<LocalChatProxyResponse> {
+  const res = await fetchBackend(path, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(
+      `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
+      res.status,
+      {
+        method: "POST",
+        path,
+        endpoint: buildUrl(path),
+        apiBase: API_BASE,
+      },
+    );
+  }
+
+  const payload = normalizeBackendDates(
+    (await res.json()) as LocalChatProxyResponse,
+  );
+  return {
+    ...payload,
+    meta: {
+      ...(payload?.meta || {}),
+      cloudFallback: {
+        kind: "cloud_voice_fallback",
+        reason:
+          "Local voice recognition is unavailable and explicit cloud fallback consent is enabled.",
+      },
+    },
+  };
+}
+
 async function handleLocalTranscribeAndAnalyze(
   path: string,
   form: FormData,
@@ -1005,15 +1212,48 @@ async function handleLocalTranscribeAndAnalyze(
     throw new Error("Valid user_id is required for local voice routing.");
   }
 
-  const replyLanguage: ReplyLanguage = replyLanguageRaw === "en" ? "en" : "ta";
+  const cachedProfile = await loadCachedLocalAssistantProfile(userId);
+  const userAllowedCloudFallback = await loadCloudFallbackConsent();
+  const explicitReplyLanguage = normalizeReplyLanguage(replyLanguageRaw);
+  const initialReplyLanguage: ReplyLanguage =
+    explicitReplyLanguage ||
+    cachedProfile?.replyLanguage ||
+    PRODUCT_DEFAULT_REPLY_LANGUAGE;
   const requestedSpeechLanguage = normalizeSpeechLanguage(speechLanguageRaw);
   const resolvedSpeechLanguage: SpeechLanguage =
-    requestedSpeechLanguage || replyLanguage;
+    requestedSpeechLanguage ||
+    explicitReplyLanguage ||
+    cachedProfile?.replyLanguage ||
+    null;
 
-  let transcript = await transcribeAudioLocally(
-    fileUri,
-    resolvedSpeechLanguage,
-  );
+  let transcript: LocalVoiceTranscription;
+  try {
+    transcript = await transcribeAudioLocally(
+      fileUri,
+      resolvedSpeechLanguage,
+    );
+  } catch (error) {
+    if (!isVoiceUnavailableCause(error)) {
+      throw error;
+    }
+
+    const unavailable = toVoiceUnavailableError(error);
+    if (userAllowedCloudFallback) {
+      return postVoiceFormToBackend(path, form);
+    }
+
+    return buildVoiceUnavailableResponse(
+      {
+        ...unavailable.state,
+        kind: "cloud_consent_required",
+        suggestedAction: "ask_user_consent",
+      },
+      {
+        userId,
+        replyLanguage: initialReplyLanguage,
+      },
+    );
+  }
 
   if (isPunctuationOnlyTranscript(transcript.text) && resolvedSpeechLanguage) {
     try {
@@ -1037,11 +1277,21 @@ async function handleLocalTranscribeAndAnalyze(
     );
   }
 
+  const replyLanguage = resolveReplyLanguage({
+    explicit: replyLanguageRaw,
+    profile: cachedProfile?.replyLanguage,
+    message: normalizedTranscriptText,
+    productDefault: initialReplyLanguage,
+  });
+  const userProfile = withResolvedReplyLanguage(cachedProfile, replyLanguage);
+
   const { runLocalAssistantTurn } = await import("./localAgents");
   const turn = await runLocalAssistantTurn({
     userId,
     message: normalizedTranscriptText,
     replyLanguage,
+    userAllowedCloudFallback,
+    ...(userProfile ? { userProfile } : {}),
   });
   const createdAt = new Date().toISOString();
   const item: LocalAnalyzeItem = {
@@ -1085,6 +1335,7 @@ async function handleLocalTranscribeAndAnalyze(
       source: "local_voice_proxy",
       cacheHit: Boolean(turn.cacheHit),
       route: turn.route,
+      ...(turn.cloudFallback ? { cloudFallback: turn.cloudFallback } : {}),
       stt: {
         model: transcript.model,
         endpoint: transcript.endpoint,
@@ -1115,8 +1366,6 @@ async function handleLocalChat(
 ): Promise<LocalChatProxyResponse> {
   const userId = Number(body?.user_id ?? body?.userId ?? 0);
   const message = String(body?.message ?? body?.text ?? "").trim();
-  const replyLanguage: ReplyLanguage =
-    body?.reply_language === "en" || body?.replyLanguage === "en" ? "en" : "ta";
 
   if (!Number.isFinite(userId) || userId <= 0 || !message) {
     throw new Error(
@@ -1124,11 +1373,22 @@ async function handleLocalChat(
     );
   }
 
+  const cachedProfile = await loadCachedLocalAssistantProfile(userId);
+  const userAllowedCloudFallback = await loadCloudFallbackConsent();
+  const replyLanguage = resolveReplyLanguage({
+    explicit: body?.reply_language ?? body?.replyLanguage,
+    profile: cachedProfile?.replyLanguage,
+    message,
+  });
+  const userProfile = withResolvedReplyLanguage(cachedProfile, replyLanguage);
+
   const { runLocalAssistantTurn } = await import("./localAgents");
   const turn = await runLocalAssistantTurn({
     userId,
     message,
     replyLanguage,
+    userAllowedCloudFallback,
+    ...(userProfile ? { userProfile } : {}),
   });
 
   const createdAt = new Date().toISOString();
@@ -1174,6 +1434,7 @@ async function handleLocalChat(
       source: "local_chat_proxy",
       cacheHit: Boolean(turn.cacheHit),
       route: turn.route,
+      ...(turn.cloudFallback ? { cloudFallback: turn.cloudFallback } : {}),
       created_at: createdAt,
     },
   };

@@ -52,17 +52,10 @@ class JaiOnDeviceModelEngine(private val context: Context) {
       }
     }
 
-    val required = listOf(
-      "google/gemma-3-4b-it",
-      "Qwen/Qwen3-8B",
-      "Qwen/Qwen3-14B",
-      "Qwen/Qwen3-Embedding-0.6B",
-    )
-    val missing = required.filter { models[it] == null }
-    if (missing.isNotEmpty()) {
+    if (models.isEmpty()) {
       throw CodedException(
-        "JAI_REQUIRED_MODELS_MISSING",
-        "JaiOnDeviceModel config is missing required local model entries: ${missing.joinToString(", ")}",
+        "JAI_NATIVE_MODELS_MISSING",
+        "JaiOnDeviceModel config has no selected local model entries. The JS runtime should pass only installed models for the selected Lite/Standard/Pro tier.",
         null,
       )
     }
@@ -86,7 +79,7 @@ class JaiOnDeviceModelEngine(private val context: Context) {
     val asset = input.assetValue(modelId, models)
     val modelFile = ensureModelFile(modelId, asset)
     val messages = input.messageList("messages")
-    val prompt = buildChatPrompt(messages)
+    val prompt = input.stringValue("prompt") ?: buildChatPrompt(messages, asset)
     val temperature = input.doubleValue("temperature") ?: 0.2
     val maxTokens = input.intValue("maxTokens") ?: input.intValue("max_tokens") ?: 768
 
@@ -214,16 +207,78 @@ class JaiOnDeviceModelEngine(private val context: Context) {
     )
   }
 
-  private fun buildChatPrompt(messages: List<Map<String, String>>): String {
-    return messages.joinToString("\n") { message ->
-      val role = message["role"]?.lowercase(Locale.US) ?: "user"
-      val content = message["content"] ?: ""
-      when (role) {
-        "system" -> "<|system|>\n$content"
-        "assistant" -> "<|assistant|>\n$content"
-        else -> "<|user|>\n$content"
+  private fun buildChatPrompt(messages: List<Map<String, String>>, asset: Map<String, Any?>): String {
+    return when (promptTemplate(asset)) {
+      "qwen3" -> buildQwenPrompt(messages)
+      "gemma3" -> buildGemmaPrompt(messages)
+      else -> buildGenericPrompt(messages)
+    }
+  }
+
+  private fun promptTemplate(asset: Map<String, Any?>): String {
+    val explicit = (asset.stringValue("chatTemplate") ?: asset.stringValue("promptFormat") ?: "")
+      .lowercase(Locale.US)
+      .replace(Regex("[_\\s-]+"), "")
+    if (explicit == "qwen" || explicit == "qwen3" || explicit == "chatml") return "qwen3"
+    if (explicit == "gemma" || explicit == "gemma3") return "gemma3"
+
+    val modelId = (asset.stringValue("id") ?: "").lowercase(Locale.US)
+    if (modelId.contains("qwen")) return "qwen3"
+    if (modelId.contains("gemma")) return "gemma3"
+    return "generic"
+  }
+
+  private fun roleOf(message: Map<String, String>): String {
+    val role = message["role"]?.lowercase(Locale.US) ?: "user"
+    return when (role) {
+      "system", "assistant" -> role
+      else -> "user"
+    }
+  }
+
+  private fun buildQwenPrompt(messages: List<Map<String, String>>): String {
+    val turns = messages.mapNotNull { message ->
+      val content = (message["content"] ?: "").trim()
+      if (content.isEmpty()) null else "<|im_start|>${roleOf(message)}\n$content\n<|im_end|>"
+    }
+    return turns.joinToString("\n") + "\n<|im_start|>assistant\n"
+  }
+
+  private fun buildGemmaPrompt(messages: List<Map<String, String>>): String {
+    val system = messages
+      .filter { roleOf(it) == "system" }
+      .map { (it["content"] ?: "").trim() }
+      .filter { it.isNotEmpty() }
+      .joinToString("\n\n")
+    val turns = mutableListOf<String>()
+    if (system.isNotEmpty()) {
+      turns.add("<start_of_turn>user\nSystem instructions:\n$system<end_of_turn>")
+    }
+    messages.forEach { message ->
+      val role = roleOf(message)
+      if (role == "system") return@forEach
+      val content = (message["content"] ?: "").trim()
+      if (content.isNotEmpty()) {
+        turns.add("<start_of_turn>${if (role == "assistant") "model" else "user"}\n$content<end_of_turn>")
       }
-    } + "\n<|assistant|>\n"
+    }
+    return turns.joinToString("\n") + "\n<start_of_turn>model\n"
+  }
+
+  private fun buildGenericPrompt(messages: List<Map<String, String>>): String {
+    val turns = messages.mapNotNull { message ->
+      val content = (message["content"] ?: "").trim()
+      if (content.isEmpty()) {
+        null
+      } else {
+        when (roleOf(message)) {
+          "system" -> "<|system|>\n$content"
+          "assistant" -> "<|assistant|>\n$content"
+          else -> "<|user|>\n$content"
+        }
+      }
+    }
+    return turns.joinToString("\n") + "\n<|assistant|>\n"
   }
 }
 
