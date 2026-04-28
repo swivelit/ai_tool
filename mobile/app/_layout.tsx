@@ -239,18 +239,29 @@ function toRawPath(path?: string | null) {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
+function isDebugBuild() {
+  return Boolean((globalThis as any).__DEV__);
+}
+
 function AppShell() {
   const pathname = usePathname();
   const segments = useSegments();
   const rootNavigationState = useRootNavigationState();
 
-  const { user, loading: authLoading } = useAuth();
-  const { profile, loading: profileLoading } = useAssistant();
+  const {
+    user,
+    loading: authLoading,
+    profileSyncIssue,
+    retryProfileSync,
+    clearProfileSyncIssue,
+  } = useAuth();
+  const { profile, loading: profileLoading, refresh: refreshAssistant } = useAssistant();
 
   const lastRedirectRef = useRef<string | null>(null);
   const [modelStatus, setModelStatus] = useState<ModelInstallStatus | null>(null);
   const [modelStatusLoading, setModelStatusLoading] = useState(false);
   const [modelStatusError, setModelStatusError] = useState<unknown>(null);
+  const [profileRetrying, setProfileRetrying] = useState(false);
 
   const activeProfile = useMemo(() => {
     if (!user) return null;
@@ -260,10 +271,9 @@ function AppShell() {
   }, [profile, user]);
 
   const shouldCheckModelSetup = Boolean(
-    user &&
+      user &&
       activeProfile?.userId &&
       activeProfile?.questionnaireCompleted &&
-      !activeProfile?.restoreFailed &&
       getModelDeliveryMode() === "download_on_first_launch"
   );
 
@@ -310,7 +320,6 @@ function AppShell() {
         hasUser: Boolean(user),
         hasProfile: Boolean(activeProfile?.userId),
         questionnaireCompleted: Boolean(activeProfile?.questionnaireCompleted),
-        profileRestoreFailed: Boolean(activeProfile?.restoreFailed),
         inTabsGroup: segments[0] === "(tabs)",
         modelSetupRequired,
       }),
@@ -320,7 +329,6 @@ function AppShell() {
       user,
       activeProfile?.userId,
       activeProfile?.questionnaireCompleted,
-      activeProfile?.restoreFailed,
       modelSetupRequired,
     ]
   );
@@ -361,6 +369,30 @@ function AppShell() {
     return () => cancelAnimationFrame(frame);
   }, [shouldShowBoot, pathname, targetRoute]);
 
+  async function handleProfileRetry() {
+    if (profileRetrying) return;
+
+    try {
+      setProfileRetrying(true);
+      await retryProfileSync();
+      await refreshAssistant();
+    } finally {
+      setProfileRetrying(false);
+    }
+  }
+
+  function continueProfileSetup() {
+    clearProfileSyncIssue();
+    router.replace("/onboarding/profile");
+  }
+
+  const shouldShowProfileIssue =
+    !shouldShowBoot && Boolean(profileSyncIssue) && !activeProfile?.userId;
+  const profileIssueMessage =
+    profileSyncIssue && isDebugBuild()
+      ? profileSyncIssue.debugMessage
+      : profileSyncIssue?.message;
+
   return (
     <View style={styles.appShell}>
       <StatusBar style="dark" />
@@ -378,13 +410,46 @@ function AppShell() {
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
 
-      {!shouldShowBoot && activeProfile?.restoreFailed ? (
+      {shouldShowProfileIssue ? (
         <View style={styles.restoreOverlay}>
           <GlassCard style={styles.restoreCard}>
-            <Text style={styles.restoreTitle}>Couldn’t restore profile</Text>
-            <Text style={styles.restoreText}>
-              We could not restore your profile. Check your connection and try again.
-            </Text>
+            <View style={styles.restoreIconWrap}>
+              <Ionicons name="cloud-offline-outline" size={22} color={Brand.danger} />
+            </View>
+            <Text style={styles.restoreTitle}>Backend profile restore failed</Text>
+            <Text style={styles.restoreText}>{profileIssueMessage}</Text>
+            {profileSyncIssue?.apiBase && isDebugBuild() ? (
+              <Text style={styles.restoreMeta}>API: {profileSyncIssue.apiBase}</Text>
+            ) : null}
+
+            <View style={styles.restoreActions}>
+              {profileSyncIssue?.canContinueSetup ? (
+                <Pressable
+                  onPress={continueProfileSetup}
+                  style={({ pressed }) => [
+                    styles.restoreButtonBase,
+                    styles.restoreSecondaryButton,
+                    pressed && styles.alertPressed,
+                  ]}
+                >
+                  <Text style={styles.restoreSecondaryText}>Continue setup</Text>
+                </Pressable>
+              ) : null}
+
+              <Pressable
+                disabled={profileRetrying}
+                onPress={handleProfileRetry}
+                style={({ pressed }) => [
+                  styles.restoreButtonBase,
+                  styles.restorePrimaryButton,
+                  (pressed || profileRetrying) && styles.alertPressed,
+                ]}
+              >
+                <Text style={styles.restorePrimaryText}>
+                  {profileRetrying ? "Retrying..." : "Retry"}
+                </Text>
+              </Pressable>
+            </View>
           </GlassCard>
         </View>
       ) : null}
@@ -435,7 +500,18 @@ const styles = StyleSheet.create({
 
   restoreCard: {
     padding: 18,
-    gap: 8,
+    gap: 10,
+    width: "100%",
+    maxWidth: 360,
+  },
+
+  restoreIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(176,47,47,0.12)",
   },
 
   restoreTitle: {
@@ -448,6 +524,50 @@ const styles = StyleSheet.create({
     color: Brand.muted,
     fontSize: 14,
     lineHeight: 20,
+  },
+
+  restoreMeta: {
+    color: Brand.muted,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+
+  restoreActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    justifyContent: "flex-end",
+    marginTop: 4,
+  },
+
+  restoreButtonBase: {
+    minHeight: 44,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+
+  restorePrimaryButton: {
+    backgroundColor: Brand.ink,
+  },
+
+  restoreSecondaryButton: {
+    borderWidth: 1,
+    borderColor: "rgba(74,49,38,0.18)",
+    backgroundColor: "rgba(255,255,255,0.58)",
+  },
+
+  restorePrimaryText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  restoreSecondaryText: {
+    color: Brand.cocoa,
+    fontSize: 14,
+    fontWeight: "800",
   },
 
   bootPage: {

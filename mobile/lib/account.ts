@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { apiDelete, apiGet, apiPost } from "./api";
+import { apiDelete, apiGet, apiPost, getApiErrorDetails } from "./api";
 
 let SecureStore: any = null;
 try {
@@ -51,6 +51,72 @@ export class BackendProfileRestoreError extends Error {
     super(message);
     this.name = "BackendProfileRestoreError";
   }
+}
+
+export type BackendProfileErrorKind = "auth_error" | "backend_error" | "offline";
+
+export type BackendProfileErrorDetails = ReturnType<typeof getApiErrorDetails> & {
+  kind: BackendProfileErrorKind;
+  debugMessage: string;
+  userMessage: string;
+};
+
+export type ProfileRestoreResult =
+  | { status: "ok"; profile: UserProfile }
+  | { status: "not_found" }
+  | {
+      status: "offline";
+      error: BackendProfileErrorDetails;
+      cachedProfile?: UserProfile;
+    }
+  | {
+      status: "auth_error";
+      error: BackendProfileErrorDetails;
+      cachedProfile?: UserProfile;
+    }
+  | {
+      status: "backend_error";
+      error: BackendProfileErrorDetails;
+      cachedProfile?: UserProfile;
+    };
+
+function statusLabel(status?: number) {
+  if (status === 408) return "timeout";
+  if (status === 0 || typeof status === "undefined") return "network error";
+  return String(status);
+}
+
+export function classifyBackendProfileError(
+  error: unknown,
+  fallback: { method: string; path: string },
+  operation = "Backend profile restore failed"
+): BackendProfileErrorDetails {
+  const details = getApiErrorDetails(error, fallback);
+  const status = details.status;
+  const kind: BackendProfileErrorKind =
+    status === 401 || status === 403
+      ? "auth_error"
+      : status === 408 || status === 0 || typeof status === "undefined"
+        ? "offline"
+        : "backend_error";
+  const method = details.method || fallback.method;
+  const path = details.path || fallback.path;
+  const debugMessage = `${operation}: ${method} ${path} returned ${statusLabel(status)}.`;
+  const userMessage =
+    kind === "auth_error"
+      ? "We could not verify your login with the backend. Please retry, or sign in again if it continues."
+      : kind === "offline"
+        ? "We could not reach the backend. Check your connection and try again."
+        : "The backend could not restore your profile right now. Please try again.";
+
+  return {
+    ...details,
+    kind,
+    method,
+    path,
+    debugMessage,
+    userMessage,
+  };
 }
 
 async function secureSet(key: string, value: string) {
@@ -148,6 +214,22 @@ function safeParseProfile(raw: string | null): UserProfile | null {
   } catch {
     return null;
   }
+}
+
+function stripRuntimeProfileFlags(profile: UserProfile): UserProfile {
+  const sanitized: UserProfile = { ...profile };
+  delete sanitized.restoreFailed;
+  return sanitized;
+}
+
+function normalizeCachedProfile(profile: UserProfile | null): UserProfile | null {
+  if (!profile) return null;
+
+  if (profile.restoreFailed && !profile.userId) {
+    return null;
+  }
+
+  return stripRuntimeProfileFlags(profile);
 }
 
 function toPositiveNumber(value: any): number | undefined {
@@ -350,17 +432,18 @@ async function clearCachedProfileKeys() {
 }
 
 async function writeProfileCache(profile: UserProfile) {
+  const cacheableProfile = stripRuntimeProfileFlags(profile);
   const writes: Promise<any>[] = [
-    secureSet(KEY, JSON.stringify(profile)),
-    secureSet(BACKUP_KEY, JSON.stringify(profile)),
+    secureSet(KEY, JSON.stringify(cacheableProfile)),
+    secureSet(BACKUP_KEY, JSON.stringify(cacheableProfile)),
   ];
 
-  if (profile.userId) {
-    writes.push(secureSet(LAST_USER_ID_KEY, String(profile.userId)));
+  if (cacheableProfile.userId) {
+    writes.push(secureSet(LAST_USER_ID_KEY, String(cacheableProfile.userId)));
   }
 
-  if (profile.firebaseUid) {
-    writes.push(secureSet(LAST_FIREBASE_UID_KEY, profile.firebaseUid));
+  if (cacheableProfile.firebaseUid) {
+    writes.push(secureSet(LAST_FIREBASE_UID_KEY, cacheableProfile.firebaseUid));
   }
 
   await Promise.all(writes);
@@ -369,17 +452,33 @@ async function writeProfileCache(profile: UserProfile) {
 async function readCachedProfile(): Promise<UserProfile | null> {
   const raw = await secureGet(KEY);
   const parsed = safeParseProfile(raw);
+  const normalized = normalizeCachedProfile(parsed);
 
-  if (parsed) {
-    return parsed;
+  if (normalized) {
+    if (parsed?.restoreFailed) {
+      await secureSet(KEY, JSON.stringify(normalized));
+    }
+    return normalized;
+  }
+
+  if (parsed?.restoreFailed) {
+    await secureDelete(KEY);
   }
 
   const backupRaw = await secureGet(BACKUP_KEY);
   const backup = safeParseProfile(backupRaw);
+  const normalizedBackup = normalizeCachedProfile(backup);
 
-  if (backup) {
-    await secureSet(KEY, JSON.stringify(backup));
-    return backup;
+  if (normalizedBackup) {
+    await secureSet(KEY, JSON.stringify(normalizedBackup));
+    if (backup?.restoreFailed) {
+      await secureSet(BACKUP_KEY, JSON.stringify(normalizedBackup));
+    }
+    return normalizedBackup;
+  }
+
+  if (backup?.restoreFailed) {
+    await secureDelete(BACKUP_KEY);
   }
 
   return null;
@@ -389,14 +488,16 @@ export async function getProfile(): Promise<UserProfile | null> {
   return readCachedProfile();
 }
 
-export async function getProfileForFirebaseUid(
+export async function restoreProfileForFirebaseUid(
   firebaseUid?: string | null,
   email?: string | null
-) {
+): Promise<ProfileRestoreResult> {
   const normalizedUid = (firebaseUid || "").trim();
   const normalizedEmail = normalizeEmail(email);
 
-  if (!normalizedUid && !normalizedEmail) return null;
+  if (!normalizedUid && !normalizedEmail) {
+    return { status: "not_found" };
+  }
 
   const cachedProfile = await readCachedProfile();
   const cachedMatch = cachedProfile
@@ -409,8 +510,6 @@ export async function getProfileForFirebaseUid(
 
     await clearCachedProfileKeys();
   }
-
-  let backendRestoreFailed = false;
 
   try {
     const restored = await resolveProfileFromBackendByAuth(normalizedUid, normalizedEmail);
@@ -425,11 +524,29 @@ export async function getProfileForFirebaseUid(
       };
 
       await writeProfileCache(merged);
-      return merged;
+      return { status: "ok", profile: merged };
     }
   } catch (error) {
-    backendRestoreFailed = true;
-    console.warn("[account] Failed to resolve profile from backend.");
+    const details = classifyBackendProfileError(
+      error,
+      { method: "GET", path: "/users/resolve" },
+      "Backend profile restore failed"
+    );
+    console.warn("[account] Failed to resolve profile from backend.", details);
+
+    const patchedCachedProfile = matchedCachedProfile
+      ? mergeProfileWithAuth(matchedCachedProfile, normalizedUid, normalizedEmail)
+      : undefined;
+
+    if (patchedCachedProfile) {
+      await writeProfileCache(patchedCachedProfile);
+    }
+
+    return {
+      status: details.kind,
+      error: details,
+      cachedProfile: patchedCachedProfile,
+    };
   }
 
   if (matchedCachedProfile) {
@@ -440,19 +557,24 @@ export async function getProfileForFirebaseUid(
     );
 
     await writeProfileCache(patched);
-    return patched;
+    return { status: "ok", profile: patched };
   }
 
-  if (backendRestoreFailed) {
-    return {
-      firebaseUid: normalizedUid || undefined,
-      email: normalizedEmail,
-      name: "User",
-      timezone: "Asia/Kolkata",
-      assistantName: "Elli",
-      questionnaireCompleted: false,
-      restoreFailed: true,
-    };
+  return { status: "not_found" };
+}
+
+export async function getProfileForFirebaseUid(
+  firebaseUid?: string | null,
+  email?: string | null
+) {
+  const result = await restoreProfileForFirebaseUid(firebaseUid, email);
+
+  if (result.status === "ok") {
+    return result.profile;
+  }
+
+  if ("cachedProfile" in result && result.cachedProfile) {
+    return result.cachedProfile;
   }
 
   return null;
@@ -467,17 +589,31 @@ export async function clearProfile() {
 }
 
 export async function createProfileOnBackend(profile: UserProfile) {
+  const profileForRequest = stripRuntimeProfileFlags(profile);
   const requestBody = {
-    firebase_uid: profile.firebaseUid,
-    email: normalizeEmail(profile.email) || undefined,
-    name: profile.name,
-    place: profile.place,
-    timezone: profile.timezone || "Asia/Kolkata",
-    assistant_name: profile.assistantName || "Elli",
-    reply_language: profile.replyLanguage === "en" ? "en" : "ta",
+    firebase_uid: profileForRequest.firebaseUid,
+    email: normalizeEmail(profileForRequest.email) || undefined,
+    name: profileForRequest.name,
+    place: profileForRequest.place,
+    timezone: profileForRequest.timezone || "Asia/Kolkata",
+    assistant_name: profileForRequest.assistantName || "Elli",
+    reply_language: profileForRequest.replyLanguage === "en" ? "en" : "ta",
   };
 
-  const user = await apiPost<any>("/users", requestBody);
+  let user: any;
+  try {
+    user = await apiPost<any>("/users", requestBody);
+  } catch (error) {
+    console.warn(
+      "[account] Failed to create or update profile on backend.",
+      classifyBackendProfileError(
+        error,
+        { method: "POST", path: "/users" },
+        "Backend profile sync failed"
+      )
+    );
+    throw error;
+  }
 
   const resolvedUserId = normalizeUserId(user);
 
@@ -490,16 +626,16 @@ export async function createProfileOnBackend(profile: UserProfile) {
   const backendProfile = mapBackendUserToProfile(user) || null;
 
   const merged: UserProfile = {
-    ...profile,
+    ...profileForRequest,
     ...backendProfile,
     userId: resolvedUserId,
-    firebaseUid: profile.firebaseUid || backendProfile?.firebaseUid,
-    email: normalizeEmail(profile.email) || backendProfile?.email,
+    firebaseUid: profileForRequest.firebaseUid || backendProfile?.firebaseUid,
+    email: normalizeEmail(profileForRequest.email) || backendProfile?.email,
     questionnaireCompleted: resolveQuestionnaireCompleted(
       undefined,
       backendProfile?.questionnaireCompleted
     ),
-    replyLanguage: backendProfile?.replyLanguage || profile.replyLanguage || "ta",
+    replyLanguage: backendProfile?.replyLanguage || profileForRequest.replyLanguage || "ta",
   };
 
   await saveProfile(merged);

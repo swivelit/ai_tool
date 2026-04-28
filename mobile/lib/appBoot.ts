@@ -173,10 +173,6 @@ export function resolveDesiredRoute(input: {
     return SIGNED_OUT_ENTRY_ROUTE;
   }
 
-  if (input.profileRestoreFailed) {
-    return null;
-  }
-
   if (!input.hasProfile) {
     return atProfile ? null : "/onboarding/profile";
   }

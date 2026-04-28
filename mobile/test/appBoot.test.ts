@@ -93,6 +93,18 @@ describe("resolveDesiredRoute", () => {
     ).toBe("/onboarding/profile");
   });
 
+  it("does not freeze routing solely because profile restore failed", () => {
+    expect(
+      resolveDesiredRoute({
+        pathname: "/auth/login",
+        hasUser: true,
+        hasProfile: false,
+        questionnaireCompleted: false,
+        profileRestoreFailed: true,
+      })
+    ).toBe("/onboarding/profile");
+  });
+
   it("routes signed-in users with an incomplete questionnaire to questionnaire onboarding", () => {
     expect(
       resolveDesiredRoute({

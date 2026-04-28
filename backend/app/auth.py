@@ -24,8 +24,76 @@ class AuthConfigurationError(RuntimeError):
     pass
 
 
+def _env_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _adc_environment_present() -> bool:
+    return any(
+        os.getenv(name, "").strip()
+        for name in (
+            "GOOGLE_CLOUD_PROJECT",
+            "GCP_PROJECT",
+            "GCLOUD_PROJECT",
+            "FIREBASE_CONFIG",
+        )
+    )
+
+
+def firebase_auth_runtime_status() -> dict[str, Any]:
+    credentials_json_set = bool(os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip())
+    credentials_path_set = bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip())
+    adc_environment_set = _adc_environment_present()
+    dev_tokens_enabled = _dev_token_allowed()
+    firebase_admin_configured = (
+        credentials_json_set or credentials_path_set or adc_environment_set
+    )
+
+    return {
+        "firebase_admin_configured": firebase_admin_configured,
+        "token_verification_configured": firebase_admin_configured or dev_tokens_enabled,
+        "credentials_json_set": credentials_json_set,
+        "credentials_path_set": credentials_path_set,
+        "application_default_credentials_environment_set": adc_environment_set,
+        "dev_tokens_enabled": dev_tokens_enabled,
+        "initialized": bool(_get_firebase_admin_apps()),
+    }
+
+
+def _get_firebase_admin_apps() -> list[Any]:
+    try:
+        import firebase_admin
+    except Exception:
+        return []
+
+    return list(getattr(firebase_admin, "_apps", {}) or {})
+
+
+def _looks_like_firebase_configuration_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "application default credentials",
+            "could not automatically determine credentials",
+            "credentials",
+            "project id",
+            "service account",
+            "default app",
+        )
+    )
+
+
 @lru_cache(maxsize=1)
 def _firebase_auth_module():
+    credentials_json = os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip()
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+
+    if not credentials_json and not credentials_path and not _adc_environment_present():
+        raise AuthConfigurationError(
+            "Firebase Admin credentials are not configured. Set FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
+        )
+
     try:
         import firebase_admin
         from firebase_admin import auth as firebase_auth
@@ -36,31 +104,29 @@ def _firebase_auth_module():
         ) from exc
 
     if not firebase_admin._apps:
-        credentials_json = os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip()
-        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-
-        if credentials_json:
-            try:
+        try:
+            if credentials_json:
                 cred_payload = json.loads(credentials_json)
-            except json.JSONDecodeError as exc:
-                raise AuthConfigurationError("FIREBASE_CREDENTIALS_JSON is invalid JSON.") from exc
-            firebase_admin.initialize_app(credentials.Certificate(cred_payload))
-        elif credentials_path:
-            firebase_admin.initialize_app(credentials.Certificate(credentials_path))
-        else:
-            # Allows Google-managed runtime credentials / ADC in production.
-            firebase_admin.initialize_app()
+                firebase_admin.initialize_app(credentials.Certificate(cred_payload))
+            elif credentials_path:
+                firebase_admin.initialize_app(credentials.Certificate(credentials_path))
+            else:
+                # Allows Google-managed runtime credentials / ADC in production.
+                firebase_admin.initialize_app()
+        except json.JSONDecodeError as exc:
+            raise AuthConfigurationError("FIREBASE_CREDENTIALS_JSON is invalid JSON.") from exc
+        except AuthConfigurationError:
+            raise
+        except Exception as exc:
+            raise AuthConfigurationError(
+                "Firebase Admin could not initialize. Check FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
+            ) from exc
 
     return firebase_auth
 
 
 def _dev_token_allowed() -> bool:
-    return os.getenv("AUTH_ALLOW_DEV_TOKENS", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return _env_enabled("AUTH_ALLOW_DEV_TOKENS")
 
 
 def verify_firebase_id_token(token: str) -> dict[str, Any]:
@@ -78,7 +144,14 @@ def verify_firebase_id_token(token: str) -> dict[str, Any]:
         return {"uid": uid, "email": email or None}
 
     firebase_auth = _firebase_auth_module()
-    return firebase_auth.verify_id_token(token, check_revoked=True)
+    try:
+        return firebase_auth.verify_id_token(token, check_revoked=True)
+    except Exception as exc:
+        if _looks_like_firebase_configuration_error(exc):
+            raise AuthConfigurationError(
+                "Firebase Admin token verification is not configured correctly. Check FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
+            ) from exc
+        raise
 
 
 async def get_current_user(
@@ -106,6 +179,7 @@ async def get_current_user(
             detail=str(exc),
         ) from exc
     except Exception as exc:
+        logger.warning("Firebase token verification failed", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid auth token",

@@ -32,11 +32,15 @@ import {
 import { auth } from "@/lib/firebase";
 import {
   clearProfile,
-  createProfileOnBackend,
   getProfile,
   deleteAccountOnBackend,
   getProfileForFirebaseUid,
 } from "@/lib/account";
+import { getApiErrorDetails } from "@/lib/api";
+import {
+  syncProfileForAuthenticatedUser as syncBackendProfileForAuthenticatedUser,
+  type ProfileSyncResult,
+} from "@/lib/profileSync";
 import { clearAssistantStorage } from "@/lib/storage";
 import { clearLocalAgentDataForUser } from "@/lib/localAgents";
 
@@ -125,30 +129,17 @@ function mapGoogleError(error: any) {
   return message || "Google sign-in failed. Please try again.";
 }
 
-function detectProvider(user: User): "password" | "google" {
-  if (hasProvider(user, "google.com")) {
-    return "google";
-  }
-
-  return "password";
-}
-
-function buildFallbackName(user: User) {
-  const displayName = user.displayName?.trim();
-  if (displayName) {
-    return displayName;
-  }
-
-  const email = user.email?.trim();
-  if (email && email.includes("@")) {
-    const localPart = email.split("@")[0]?.trim();
-    if (localPart) {
-      return localPart;
-    }
-  }
-
-  return "User";
-}
+type ProfileSyncIssue = {
+  kind: "auth_error" | "backend_error" | "offline";
+  message: string;
+  debugMessage: string;
+  canContinueSetup: boolean;
+  status?: number;
+  method?: string;
+  path?: string;
+  endpoint?: string;
+  apiBase?: string;
+};
 
 type AuthContextType = {
   user: User | null;
@@ -163,6 +154,9 @@ type AuthContextType = {
   linkPasswordForCurrentUser: (password: string, displayName?: string) => Promise<void>;
   signOutUser: () => Promise<void>;
   deleteCurrentAccount: (backendUserId?: number) => Promise<void>;
+  profileSyncIssue: ProfileSyncIssue | null;
+  retryProfileSync: () => Promise<void>;
+  clearProfileSyncIssue: () => void;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -172,7 +166,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [googleReady, setGoogleReady] = useState(false);
   const [locallySignedOut, setLocallySignedOut] = useState(false);
+  const [profileSyncIssue, setProfileSyncIssue] = useState<ProfileSyncIssue | null>(null);
   const blockAuthRestoreRef = useRef(false);
+  const lastAuthUserRef = useRef<User | null>(null);
 
   const googleConfigured = Platform.OS !== "web" && Boolean(googleWebClientId);
   const user = locallySignedOut ? null : firebaseUser;
@@ -199,11 +195,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
       setFirebaseUser(nextUser);
+      lastAuthUserRef.current = nextUser;
       setLoading(false);
 
       if (!nextUser) {
         blockAuthRestoreRef.current = false;
         setLocallySignedOut(false);
+        setProfileSyncIssue(null);
         return;
       }
 
@@ -225,73 +223,73 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return auth.currentUser || authUser;
   }
 
+  function issueFromProfileSyncResult(result: ProfileSyncResult): ProfileSyncIssue | null {
+    const cachedProfile = "cachedProfile" in result ? result.cachedProfile : undefined;
+
+    if (result.status === "ok" || result.status === "not_found" || cachedProfile) {
+      return null;
+    }
+
+    return {
+      kind: result.status,
+      message: result.error.userMessage,
+      debugMessage: result.error.debugMessage,
+      canContinueSetup: result.status === "offline" || result.status === "backend_error",
+      status: result.error.status,
+      method: result.error.method,
+      path: result.error.path,
+      endpoint: result.error.endpoint,
+      apiBase: result.error.apiBase,
+    };
+  }
+
   async function syncProfileForAuthenticatedUser(authUser: User) {
     try {
-      const provider = detectProvider(authUser);
-      const restoredProfile = await getProfileForFirebaseUid(authUser.uid, authUser.email);
+      const result = await syncBackendProfileForAuthenticatedUser(authUser);
+      const nextIssue = issueFromProfileSyncResult(result);
 
-      if (!restoredProfile) {
-        if (provider === "google") {
-          // Brand-new Google users should go through profile onboarding first.
-          return null;
-        }
-
-        const createdProfile = await createProfileOnBackend({
-          userId: undefined,
-          firebaseUid: authUser.uid,
-          firebaseEmailVerified: authUser.emailVerified,
-          email: authUser.email || "",
-          avatarUrl: authUser.photoURL || undefined,
-          authProvider: provider,
-          name: buildFallbackName(authUser),
-          place: "",
-          assistantName: "Elli",
-          timezone: "Asia/Kolkata",
-          questionnaireCompleted: false,
-        });
-
-        return createdProfile;
+      if (result.status !== "ok" && result.status !== "not_found") {
+        console.warn(
+          "[auth] Failed to sync backend profile after authentication.",
+          result.error
+        );
       }
 
-      const normalizedAuthEmail = normalizeEmail(authUser.email);
-      const normalizedProfileEmail = normalizeEmail(restoredProfile.email);
-      const fallbackName = buildFallbackName(authUser);
+      setProfileSyncIssue(nextIssue);
 
-      const shouldSyncBackend =
-        restoredProfile.firebaseUid !== authUser.uid ||
-        normalizedProfileEmail !== normalizedAuthEmail ||
-        !restoredProfile.name?.trim() ||
-        restoredProfile.firebaseEmailVerified !== authUser.emailVerified;
-
-      if (!shouldSyncBackend) {
-        return restoredProfile;
+      if (result.status === "ok") {
+        return result.profile;
       }
 
-      const upsertedProfile = await createProfileOnBackend({
-        ...restoredProfile,
-        userId: restoredProfile.userId,
-        firebaseUid: authUser.uid,
-        firebaseEmailVerified: authUser.emailVerified,
-        email: authUser.email || restoredProfile.email || "",
-        avatarUrl: authUser.photoURL || restoredProfile.avatarUrl,
-        authProvider: provider,
-        name: restoredProfile.name || fallbackName,
-        place: restoredProfile.place || "",
-        assistantName: restoredProfile.assistantName || "Elli",
-        timezone: restoredProfile.timezone || "Asia/Kolkata",
-        questionnaireCompleted: restoredProfile.questionnaireCompleted ?? false,
-        replyLanguage: restoredProfile.replyLanguage,
-      });
-
-      return upsertedProfile;
+      return "cachedProfile" in result ? result.cachedProfile || null : null;
     } catch (error) {
-      console.warn("[auth] Failed to sync backend profile after authentication.");
+      const details = getApiErrorDetails(error);
+      console.warn(
+        "[auth] Failed to sync backend profile after authentication.",
+        details
+      );
+      setProfileSyncIssue({
+        kind: "backend_error",
+        message: "The backend could not restore your profile right now. Please try again.",
+        debugMessage: details.path
+          ? `Backend profile sync failed: ${details.method || "REQUEST"} ${details.path} returned ${
+              details.status ?? "unknown error"
+            }.`
+          : `Backend profile sync failed: ${details.message}`,
+        canContinueSetup: true,
+        status: details.status,
+        method: details.method,
+        path: details.path,
+        endpoint: details.endpoint,
+        apiBase: details.apiBase,
+      });
       return null;
     }
   }
 
   async function finalizeAuthenticatedUser(authUser: User) {
     const freshUser = await reloadUser(authUser);
+    lastAuthUserRef.current = freshUser;
     blockAuthRestoreRef.current = false;
     setLocallySignedOut(false);
     setLoading(true);
@@ -299,6 +297,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await syncProfileForAuthenticatedUser(freshUser);
     setLoading(false);
     return freshUser;
+  }
+
+  async function retryProfileSync() {
+    const candidate = auth.currentUser || lastAuthUserRef.current || firebaseUser;
+
+    if (!candidate) {
+      setProfileSyncIssue(null);
+      return;
+    }
+
+    const freshUser = await reloadUser(candidate);
+    lastAuthUserRef.current = freshUser;
+    setFirebaseUser(freshUser);
+    await syncProfileForAuthenticatedUser(freshUser);
+  }
+
+  function clearProfileSyncIssue() {
+    setProfileSyncIssue(null);
   }
 
   async function tryLinkPendingGoogleCredential(authUser: User) {
@@ -533,6 +549,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     pendingGoogleLink = null;
     blockAuthRestoreRef.current = true;
     setLocallySignedOut(true);
+    setProfileSyncIssue(null);
     setLoading(false);
     await Promise.all([clearProfile(), clearAssistantStorage()]);
   }
@@ -637,8 +654,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       linkPasswordForCurrentUser,
       signOutUser,
       deleteCurrentAccount,
+      profileSyncIssue,
+      retryProfileSync,
+      clearProfileSyncIssue,
     }),
-    [googleConfigured, googleReady, loading, user]
+    [googleConfigured, googleReady, loading, profileSyncIssue, user]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

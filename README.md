@@ -185,6 +185,16 @@ BUILD_TYPE=debug ./build-apk.sh
 
 The APK build validates native library ABI selection and Android 15+/16 KB page-size compatibility. On a 16 KB emulator, confirm `adb shell getconf PAGE_SIZE` returns `16384`; the build then checks `zipalign -c -P 16 -v 4 dist/tamil-ai-debug.apk` and every `lib/<abi>/*.so` ELF `LOAD` segment alignment before install. See [mobile/README.md](mobile/README.md) for the NDK r27/r28 decision and the debug-only escape hatch.
 
+Profile restore/auth diagnostics for debug APK runs:
+
+```bash
+adb logcat -c
+adb logcat | grep --line-buffered -E 'ReactNativeJS|\[account\]|\[auth\]|ApiError|users/resolve|Backend profile|Firebase'
+
+curl -i https://ai-tool-rrau.onrender.com/health
+curl -i https://ai-tool-rrau.onrender.com/api/health
+```
+
 Focused regression tests for auth persistence, boot fail-open behavior, route resolution, and password visibility can also be run with:
 
 ```bash

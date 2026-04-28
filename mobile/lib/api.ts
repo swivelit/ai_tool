@@ -15,11 +15,33 @@ const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
 export class ApiError extends Error {
   status: number;
+  method?: string;
+  path?: string;
+  endpoint?: string;
+  apiBase?: string;
 
-  constructor(message: string, status: number) {
-    super(message);
+  constructor(
+    message: string,
+    status: number,
+    details: {
+      method?: string;
+      path?: string;
+      endpoint?: string;
+      apiBase?: string;
+      cause?: unknown;
+    } = {},
+  ) {
+    super(redactSensitiveText(message));
     this.name = "ApiError";
     this.status = status;
+    this.method = details.method;
+    this.path = details.path;
+    this.endpoint = details.endpoint;
+    this.apiBase = details.apiBase;
+
+    if (typeof details.cause !== "undefined") {
+      (this as any).cause = details.cause;
+    }
   }
 }
 
@@ -32,6 +54,76 @@ function isAbortError(error: unknown) {
       error.name === "AbortError") ||
     (error as any)?.name === "AbortError"
   );
+}
+
+function redactSensitiveText(value: unknown) {
+  return String(value ?? "")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/("idToken"\s*:\s*")[^"]+(")/gi, "$1[REDACTED]$2")
+    .replace(/("token"\s*:\s*")[^"]+(")/gi, "$1[REDACTED]$2");
+}
+
+function applyApiErrorContext(
+  error: ApiError,
+  method: string,
+  path: string,
+) {
+  error.method ||= method;
+  error.path ||= path;
+  error.apiBase ||= API_BASE;
+  error.endpoint ||= buildUrl(path);
+  return error;
+}
+
+function normalizeFetchFailure(
+  error: unknown,
+  method: string,
+  path: string,
+) {
+  if (error instanceof ApiError) {
+    return applyApiErrorContext(error, method, path);
+  }
+
+  const message =
+    typeof (error as any)?.message === "string" && (error as any).message.trim()
+      ? (error as any).message
+      : "Network request failed";
+
+  return new ApiError(`${method} ${path} failed: ${message}`, 0, {
+    method,
+    path,
+    endpoint: buildUrl(path),
+    apiBase: API_BASE,
+    cause: error,
+  });
+}
+
+export function getApiErrorDetails(
+  error: unknown,
+  fallback: { method?: string; path?: string } = {},
+) {
+  const maybeError = error as any;
+  const method = maybeError?.method || fallback.method;
+  const path = maybeError?.path || fallback.path;
+  const endpoint = maybeError?.endpoint || (path ? buildUrl(path) : undefined);
+  const status =
+    typeof maybeError?.status === "number" && Number.isFinite(maybeError.status)
+      ? maybeError.status
+      : undefined;
+  const rawMessage =
+    typeof maybeError?.message === "string" && maybeError.message.trim()
+      ? maybeError.message
+      : String(error ?? "Unknown error");
+
+  return {
+    name: maybeError?.name || "Error",
+    status,
+    message: redactSensitiveText(rawMessage),
+    method,
+    path,
+    endpoint,
+    apiBase: maybeError?.apiBase || API_BASE,
+  };
 }
 
 function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
@@ -182,15 +274,21 @@ async function fetchBackend(
 ): Promise<Response> {
   const shouldAttachAuth = config?.auth !== false;
   const baseHeaders = headersToRecord(options.headers);
+  const method = String(options.method || "GET").toUpperCase();
 
-  const res = await fetchWithTimeout(
-    buildUrl(path),
-    {
-      ...options,
-      headers: await buildHeaders(baseHeaders, { auth: shouldAttachAuth }),
-    },
-    config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
-  );
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      buildUrl(path),
+      {
+        ...options,
+        headers: await buildHeaders(baseHeaders, { auth: shouldAttachAuth }),
+      },
+      config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
+    );
+  } catch (error) {
+    throw normalizeFetchFailure(error, method, path);
+  }
 
   if (res.status !== 401 || !shouldAttachAuth || !auth.currentUser) {
     return res;
@@ -199,17 +297,21 @@ async function fetchBackend(
   // Firebase ID tokens normally refresh automatically, but an expired cached
   // token can still produce a backend 401. Force refresh once, then retry the
   // same request before surfacing the error to the caller.
-  return fetchWithTimeout(
-    buildUrl(path),
-    {
-      ...options,
-      headers: await buildHeaders(baseHeaders, {
-        auth: true,
-        forceRefreshToken: true,
-      }),
-    },
-    config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
-  );
+  try {
+    return await fetchWithTimeout(
+      buildUrl(path),
+      {
+        ...options,
+        headers: await buildHeaders(baseHeaders, {
+          auth: true,
+          forceRefreshToken: true,
+        }),
+      },
+      config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
+    );
+  } catch (error) {
+    throw normalizeFetchFailure(error, method, path);
+  }
 }
 
 type ClientRoutingMode = "local" | "backend";
@@ -1084,6 +1186,12 @@ export async function apiGet<T>(path: string): Promise<T> {
     throw new ApiError(
       `GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
       res.status,
+      {
+        method: "GET",
+        path,
+        endpoint: buildUrl(path),
+        apiBase: API_BASE,
+      },
     );
   }
   return normalizeBackendDates((await res.json()) as T);
@@ -1134,6 +1242,12 @@ export async function apiPostBackendOnly<T>(
     throw new ApiError(
       `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
       res.status,
+      {
+        method: "POST",
+        path,
+        endpoint: buildUrl(path),
+        apiBase: API_BASE,
+      },
     );
   }
   return normalizeBackendDates((await res.json()) as T);
@@ -1161,6 +1275,12 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
     throw new ApiError(
       `POST ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
       res.status,
+      {
+        method: "POST",
+        path,
+        endpoint: buildUrl(path),
+        apiBase: API_BASE,
+      },
     );
   }
 
@@ -1178,6 +1298,12 @@ export async function apiPut<T>(path: string, body?: any): Promise<T> {
     throw new ApiError(
       `PUT ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
       res.status,
+      {
+        method: "PUT",
+        path,
+        endpoint: buildUrl(path),
+        apiBase: API_BASE,
+      },
     );
   }
   return normalizeBackendDates((await res.json()) as T);
@@ -1192,6 +1318,12 @@ export async function apiDelete<T>(path: string): Promise<T> {
     throw new ApiError(
       `DELETE ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
       res.status,
+      {
+        method: "DELETE",
+        path,
+        endpoint: buildUrl(path),
+        apiBase: API_BASE,
+      },
     );
   }
   return normalizeBackendDates((await res.json()) as T);

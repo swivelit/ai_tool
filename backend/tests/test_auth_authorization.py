@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 import app.main as main_module
+from app import auth as auth_module
 from app.database import SessionLocal
 from app.models import Item, User, UserProfile
 
@@ -35,6 +36,100 @@ def _create_user(uid: str, email: str, name: str = "User") -> User:
 def test_users_route_requires_auth(client: TestClient) -> None:
     response = client.get("/users/resolve")
     assert response.status_code == 401
+
+
+def test_invalid_auth_returns_401(client: TestClient) -> None:
+    response = client.get("/users/resolve", headers={"Authorization": "Bearer dev:"})
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid auth token"
+
+
+def test_users_resolve_returns_not_found_for_valid_auth_without_user(client: TestClient) -> None:
+    response = client.get("/users/resolve", headers=_auth("uid-new", "new@example.com"))
+
+    assert response.status_code == 200
+    assert response.json() == {"found": False}
+
+
+def test_users_create_or_update_for_valid_auth(client: TestClient) -> None:
+    create_response = client.post(
+        "/users",
+        headers=_auth("uid-new", "new@example.com"),
+        json={
+            "firebase_uid": "client-spoof-ignored",
+            "email": "ignored@example.com",
+            "name": "New User",
+            "place": "Chennai",
+            "timezone": "Asia/Kolkata",
+            "assistant_name": "Elli",
+            "reply_language": "en",
+        },
+    )
+
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["firebase_uid"] == "uid-new"
+    assert created["email"] == "new@example.com"
+    assert created["name"] == "New User"
+    assert created["id"]
+
+    update_response = client.post(
+        "/users",
+        headers=_auth("uid-new", "new@example.com"),
+        json={
+            "firebase_uid": "uid-new",
+            "email": "new@example.com",
+            "name": "Updated User",
+            "place": "Madurai",
+            "timezone": "Asia/Kolkata",
+            "assistant_name": "Elli",
+            "reply_language": "ta",
+        },
+    )
+
+    assert update_response.status_code == 200
+    updated = update_response.json()
+    assert updated["id"] == created["id"]
+    assert updated["name"] == "Updated User"
+    assert updated["reply_language"] == "ta"
+
+
+def test_health_reports_firebase_auth_configuration(client: TestClient) -> None:
+    response = client.get("/health")
+
+    assert "auth" in response.json()
+    firebase = response.json()["auth"]["firebase"]
+    assert firebase["token_verification_configured"] is True
+    assert firebase["dev_tokens_enabled"] is True
+
+
+def test_missing_firebase_admin_config_returns_clear_503(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
+    for name in (
+        "FIREBASE_CREDENTIALS_JSON",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCP_PROJECT",
+        "GCLOUD_PROJECT",
+        "FIREBASE_CONFIG",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    auth_module._firebase_auth_module.cache_clear()
+    try:
+        import firebase_admin
+
+        for app in list(getattr(firebase_admin, "_apps", {}).values()):
+            firebase_admin.delete_app(app)
+    except Exception:
+        pass
+
+    response = client.get("/users/resolve", headers={"Authorization": "Bearer real-token"})
+
+    assert response.status_code == 503
+    assert "Firebase Admin credentials are not configured" in response.json()["detail"]
 
 
 def test_user_cannot_read_another_user(client: TestClient) -> None:

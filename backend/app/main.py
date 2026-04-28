@@ -37,7 +37,13 @@ if str(BACKEND_ROOT) not in sys.path:
 
 load_dotenv()
 
-from .auth import AuthUser, assert_owner, get_current_user, get_owned_user
+from .auth import (
+    AuthUser,
+    assert_owner,
+    firebase_auth_runtime_status,
+    get_current_user,
+    get_owned_user,
+)
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
@@ -834,6 +840,9 @@ def _health_payload() -> Dict[str, Any]:
         "app": "J AI",
         "pipeline_version": PIPELINE_VERSION,
         "services": RUNTIME_STATUS.get("services", {}),
+        "auth": {
+            "firebase": firebase_auth_runtime_status(),
+        },
         "errors": RUNTIME_STATUS.get("errors", []),
     }
 
