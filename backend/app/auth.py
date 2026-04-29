@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import Header, HTTPException, status
@@ -22,6 +23,17 @@ class AuthUser(BaseModel):
 
 class AuthConfigurationError(RuntimeError):
     pass
+
+
+PRODUCTION_FIREBASE_ADMIN_REQUIRED_MESSAGE = (
+    "Firebase Admin credentials are required in production. Set "
+    "FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
+)
+
+FIREBASE_ADMIN_NOT_CONFIGURED_MESSAGE = (
+    "Firebase Admin credentials are not configured. Set "
+    "FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
+)
 
 
 def _env_enabled(name: str) -> bool:
@@ -43,11 +55,51 @@ def _dev_token_allowed() -> bool:
     return _env_enabled("AUTH_ALLOW_DEV_TOKENS")
 
 
-def validate_auth_configuration() -> None:
-    if is_production_environment() and _dev_token_allowed():
+def _firebase_credentials_json_payload() -> dict[str, Any] | None:
+    credentials_json = os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip()
+    if not credentials_json:
+        return None
+
+    try:
+        payload = json.loads(credentials_json)
+    except json.JSONDecodeError:
+        raise AuthConfigurationError("FIREBASE_CREDENTIALS_JSON is invalid JSON.") from None
+
+    if not isinstance(payload, dict):
+        raise AuthConfigurationError("FIREBASE_CREDENTIALS_JSON must be a JSON object.")
+
+    return payload
+
+
+def _google_application_credentials_path() -> str | None:
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if not credentials_path:
+        return None
+
+    if not Path(credentials_path).is_file():
+        raise AuthConfigurationError("GOOGLE_APPLICATION_CREDENTIALS file does not exist.")
+
+    return credentials_path
+
+
+def validate_auth_configuration(app_env: str | None = None) -> None:
+    production = is_production_environment(app_env)
+
+    if production and _dev_token_allowed():
         raise AuthConfigurationError(
             "AUTH_ALLOW_DEV_TOKENS must be disabled in production."
         )
+
+    credentials_json_configured = bool(os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip())
+    credentials_path_configured = bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip())
+
+    if credentials_json_configured:
+        _firebase_credentials_json_payload()
+    if credentials_path_configured:
+        _google_application_credentials_path()
+
+    if production and not (credentials_json_configured or credentials_path_configured):
+        raise AuthConfigurationError(PRODUCTION_FIREBASE_ADMIN_REQUIRED_MESSAGE)
 
 
 def _adc_environment_present() -> bool:
@@ -67,9 +119,7 @@ def firebase_auth_runtime_status() -> dict[str, Any]:
     credentials_path_set = bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip())
     adc_environment_set = _adc_environment_present()
     dev_tokens_enabled = _dev_token_allowed()
-    firebase_admin_configured = (
-        credentials_json_set or credentials_path_set or adc_environment_set
-    )
+    firebase_admin_configured = credentials_json_set or credentials_path_set
 
     return {
         "firebase_admin_configured": firebase_admin_configured,
@@ -108,13 +158,11 @@ def _looks_like_firebase_configuration_error(exc: Exception) -> bool:
 
 @lru_cache(maxsize=1)
 def _firebase_auth_module():
-    credentials_json = os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip()
-    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    cred_payload = _firebase_credentials_json_payload()
+    credentials_path = _google_application_credentials_path()
 
-    if not credentials_json and not credentials_path and not _adc_environment_present():
-        raise AuthConfigurationError(
-            "Firebase Admin credentials are not configured. Set FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
-        )
+    if cred_payload is None and not credentials_path:
+        raise AuthConfigurationError(FIREBASE_ADMIN_NOT_CONFIGURED_MESSAGE)
 
     try:
         import firebase_admin
@@ -127,22 +175,16 @@ def _firebase_auth_module():
 
     if not firebase_admin._apps:
         try:
-            if credentials_json:
-                cred_payload = json.loads(credentials_json)
+            if cred_payload is not None:
                 firebase_admin.initialize_app(credentials.Certificate(cred_payload))
             elif credentials_path:
                 firebase_admin.initialize_app(credentials.Certificate(credentials_path))
-            else:
-                # Allows Google-managed runtime credentials / ADC in production.
-                firebase_admin.initialize_app()
-        except json.JSONDecodeError as exc:
-            raise AuthConfigurationError("FIREBASE_CREDENTIALS_JSON is invalid JSON.") from exc
         except AuthConfigurationError:
             raise
-        except Exception as exc:
+        except Exception:
             raise AuthConfigurationError(
                 "Firebase Admin could not initialize. Check FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
-            ) from exc
+            ) from None
 
     return firebase_auth
 

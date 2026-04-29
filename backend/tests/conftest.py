@@ -11,6 +11,7 @@ TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 # app.database calls load_dotenv(), which does not override existing environment
 # variables, so these must be set before any app modules are imported.
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.as_posix()}"
+os.environ["APP_ENV"] = "test"
 os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["JOB_WORKER_ENABLED"] = "false"
 os.environ["RAG_ENABLE_FAST_RAG_SEMANTIC"] = "false"
@@ -18,6 +19,15 @@ os.environ["OPENAI_API_KEY"] = ""
 os.environ["SARVAM_API_KEY"] = ""
 os.environ["SENTRY_DSN"] = ""
 os.environ["AUTH_ALLOW_DEV_TOKENS"] = "true"
+for name in (
+    "FIREBASE_CREDENTIALS_JSON",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GCP_PROJECT",
+    "GCLOUD_PROJECT",
+    "FIREBASE_CONFIG",
+):
+    os.environ.pop(name, None)
 
 
 import pytest

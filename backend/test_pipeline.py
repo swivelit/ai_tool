@@ -37,7 +37,6 @@ def main() -> None:
 
     load_dotenv()
 
-    import os
     import time
 
     from app.database import get_session
@@ -45,8 +44,6 @@ def main() -> None:
     from stage_openai_core import OpenAICore
 
     cosine_similarity, SentenceTransformer = _load_similarity_dependencies()
-
-    print("DATABASE_URL:", os.getenv("DATABASE_URL"))
 
     similarity_model = SentenceTransformer("all-mpnet-base-v2")
     openai_only = OpenAICore()

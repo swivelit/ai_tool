@@ -35,6 +35,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _is_production_environment() -> bool:
+    value = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development"))
+    return str(value or "development").strip().lower() in {"prod", "production"}
+
+
 def _terminate_background_migration() -> None:
     global _migration_process
     process = _migration_process
@@ -113,7 +118,8 @@ def main() -> None:
     # In production, Alembic owns schema changes.
     # Runtime create_all() is only for local SQLite/dev.
     os.environ.setdefault("AUTO_CREATE_TABLES", "false")
-    os.environ.setdefault("FAIL_STARTUP_ON_REQUIRED_SERVICE_ERROR", "false")
+    startup_failure_default = "true" if _is_production_environment() else "false"
+    os.environ.setdefault("FAIL_STARTUP_ON_REQUIRED_SERVICE_ERROR", startup_failure_default)
 
     _start_migrations_with_grace_period()
 

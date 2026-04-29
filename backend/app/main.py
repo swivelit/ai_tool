@@ -38,11 +38,13 @@ if str(BACKEND_ROOT) not in sys.path:
 load_dotenv()
 
 from .auth import (
+    AuthConfigurationError,
     AuthUser,
     assert_owner,
     firebase_auth_runtime_status,
     get_current_user,
     get_owned_user,
+    is_production_environment,
     normalize_app_env,
     validate_auth_configuration,
 )
@@ -120,8 +122,6 @@ _download_token_secret = (
 )
 
 APP_ENV = normalize_app_env()
-
-validate_auth_configuration()
 
 if not _download_token_secret:
     if APP_ENV in {"prod", "production"}:
@@ -754,6 +754,29 @@ def startup_runtime_services() -> None:
         _record_runtime_service("openai", ok=False, required=False, detail="OPENAI_API_KEY is not configured.")
     else:
         _record_runtime_service("openai", ok=True, required=False)
+
+    auth_required = is_production_environment(APP_ENV)
+    try:
+        validate_auth_configuration(APP_ENV)
+        auth_status = firebase_auth_runtime_status()
+        token_verification_configured = bool(auth_status.get("token_verification_configured"))
+        if token_verification_configured:
+            _record_runtime_service("firebase_auth", ok=True, required=auth_required)
+        else:
+            _record_runtime_service(
+                "firebase_auth",
+                ok=False,
+                required=auth_required,
+                detail="Firebase token verification is not configured.",
+            )
+    except AuthConfigurationError as exc:
+        logger.error("Firebase auth configuration check failed: %s", exc)
+        _record_runtime_service(
+            "firebase_auth",
+            ok=False,
+            required=auth_required,
+            detail=str(exc),
+        )
 
     auto_create_tables = os.getenv("AUTO_CREATE_TABLES", "").strip().lower() in {"1", "true", "yes", "on"}
     if str(engine.url).startswith("sqlite"):

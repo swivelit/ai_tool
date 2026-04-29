@@ -21,6 +21,18 @@ def _auth(uid: str, email: str | None = None) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _clear_firebase_admin_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "FIREBASE_CREDENTIALS_JSON",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCP_PROJECT",
+        "GCLOUD_PROJECT",
+        "FIREBASE_CONFIG",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _create_user(uid: str, email: str, name: str = "User") -> User:
     with SessionLocal() as session:
         user = User(
@@ -53,6 +65,35 @@ def test_users_resolve_returns_not_found_for_valid_auth_without_user(client: Tes
 
     assert response.status_code == 200
     assert response.json() == {"found": False}
+
+
+def test_users_resolve_uses_verified_bearer_identity_not_query_params(client: TestClient) -> None:
+    user_a = _create_user("uid-a", "a@example.com", "A")
+    _create_user("uid-b", "b@example.com", "B")
+
+    response = client.get(
+        "/users/resolve",
+        params={"firebase_uid": "uid-b", "email": "b@example.com"},
+        headers=_auth("uid-a", "a@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["found"] is True
+    assert payload["user"]["id"] == user_a.id
+    assert payload["user"]["firebase_uid"] == "uid-a"
+    assert payload["user"]["email"] == "a@example.com"
+
+
+def test_users_resolve_query_params_still_require_bearer_auth(client: TestClient) -> None:
+    _create_user("uid-a", "a@example.com", "A")
+
+    response = client.get(
+        "/users/resolve",
+        params={"firebase_uid": "uid-a", "email": "a@example.com"},
+    )
+
+    assert response.status_code == 401
 
 
 def test_users_create_or_update_for_valid_auth(client: TestClient) -> None:
@@ -144,9 +185,114 @@ def test_production_rejects_dev_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
         auth_module.validate_auth_configuration()
 
 
-def test_test_environment_can_allow_dev_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APP_ENV", "test")
+def test_production_requires_explicit_firebase_admin_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
+    _clear_firebase_admin_env(monkeypatch)
+
+    with pytest.raises(
+        auth_module.AuthConfigurationError,
+        match="Firebase Admin credentials are required in production",
+    ):
+        auth_module.validate_auth_configuration()
+
+
+def test_production_does_not_accept_firebase_config_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
+    _clear_firebase_admin_env(monkeypatch)
+    monkeypatch.setenv("FIREBASE_CONFIG", '{"projectId":"mobile-client-config"}')
+
+    with pytest.raises(
+        auth_module.AuthConfigurationError,
+        match="Firebase Admin credentials are required in production",
+    ):
+        auth_module.validate_auth_configuration()
+
+
+@pytest.mark.parametrize("project_env", ["GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "GCLOUD_PROJECT"])
+def test_production_does_not_accept_google_project_env_alone(
+    monkeypatch: pytest.MonkeyPatch,
+    project_env: str,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
+    _clear_firebase_admin_env(monkeypatch)
+    monkeypatch.setenv(project_env, "ai-tool")
+
+    with pytest.raises(
+        auth_module.AuthConfigurationError,
+        match="Firebase Admin credentials are required in production",
+    ):
+        auth_module.validate_auth_configuration()
+
+
+def test_invalid_firebase_credentials_json_fails_without_logging_contents(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret_payload = '{"sensitive":"do-not-log-this-value"'
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
+    _clear_firebase_admin_env(monkeypatch)
+    monkeypatch.setenv("FIREBASE_CREDENTIALS_JSON", secret_payload)
+
+    with pytest.raises(
+        auth_module.AuthConfigurationError,
+        match="FIREBASE_CREDENTIALS_JSON is invalid JSON",
+    ):
+        auth_module.validate_auth_configuration()
+
+    assert secret_payload not in caplog.text
+    assert "do-not-log-this-value" not in caplog.text
+
+
+def test_firebase_credentials_json_must_be_an_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
+    _clear_firebase_admin_env(monkeypatch)
+    monkeypatch.setenv("FIREBASE_CREDENTIALS_JSON", '["not-an-object"]')
+
+    with pytest.raises(
+        auth_module.AuthConfigurationError,
+        match="FIREBASE_CREDENTIALS_JSON must be a JSON object",
+    ):
+        auth_module.validate_auth_configuration()
+
+
+def test_google_application_credentials_file_must_exist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
+    _clear_firebase_admin_env(monkeypatch)
+    monkeypatch.setenv(
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        str(tmp_path / "missing-firebase-admin.json"),
+    )
+
+    with pytest.raises(
+        auth_module.AuthConfigurationError,
+        match="GOOGLE_APPLICATION_CREDENTIALS file does not exist",
+    ):
+        auth_module.validate_auth_configuration()
+
+
+@pytest.mark.parametrize("app_env", ["development", "test"])
+def test_non_production_environment_can_allow_dev_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+    app_env: str,
+) -> None:
+    monkeypatch.setenv("APP_ENV", app_env)
     monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "true")
+    _clear_firebase_admin_env(monkeypatch)
 
     auth_module.validate_auth_configuration()
 
@@ -161,6 +307,7 @@ def test_backend_startup_fails_loudly_with_prod_dev_tokens(tmp_path: Path) -> No
             "DOWNLOAD_TOKEN_SECRET": "test-secret",
             "DATABASE_URL": f"sqlite:///{(tmp_path / 'startup.sqlite3').as_posix()}",
             "AUTO_CREATE_TABLES": "false",
+            "FAIL_STARTUP_ON_REQUIRED_SERVICE_ERROR": "true",
             "JOB_WORKER_ENABLED": "false",
             "OPENAI_API_KEY": "",
             "SARVAM_API_KEY": "",
@@ -169,7 +316,11 @@ def test_backend_startup_fails_loudly_with_prod_dev_tokens(tmp_path: Path) -> No
     )
 
     result = subprocess.run(
-        [sys.executable, "-c", "import app.main"],
+        [
+            sys.executable,
+            "-c",
+            "from fastapi.testclient import TestClient; from app.main import app; TestClient(app).__enter__()",
+        ],
         cwd=backend_root,
         env=env,
         capture_output=True,
@@ -185,15 +336,7 @@ def test_missing_firebase_admin_config_returns_clear_503(
     client: TestClient, monkeypatch
 ) -> None:
     monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
-    for name in (
-        "FIREBASE_CREDENTIALS_JSON",
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "GOOGLE_CLOUD_PROJECT",
-        "GCP_PROJECT",
-        "GCLOUD_PROJECT",
-        "FIREBASE_CONFIG",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    _clear_firebase_admin_env(monkeypatch)
 
     auth_module._firebase_auth_module.cache_clear()
     try:
