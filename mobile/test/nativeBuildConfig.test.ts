@@ -33,6 +33,7 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "JAI_BUILD_PROFILE",
   "JAI_BUILD_TYPE",
   "JAI_REQUIRE_LLAMA_CPP",
+  "JAI_SKIP_LOCAL_ENV_FILES",
   "JAI_LLAMA_CPP_DIR",
   "EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE",
   "EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE",
@@ -53,6 +54,7 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B",
   "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B",
   "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED",
+  "EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID",
 ];
 
 function createMockLlamaCppCheckout() {
@@ -136,6 +138,9 @@ function runReleaseVerifier(env: Record<string, string | undefined>) {
     } else {
       mergedEnv[key] = value;
     }
+  }
+  if (!Object.prototype.hasOwnProperty.call(env, "JAI_SKIP_LOCAL_ENV_FILES")) {
+    mergedEnv.JAI_SKIP_LOCAL_ENV_FILES = "1";
   }
 
   return spawnSync(process.execPath, [releaseVerifierPath], {
@@ -248,6 +253,7 @@ describe("native llama.cpp production build config", () => {
     expect(packageJson.scripts["native:verify-llama"]).toBe(
       "node ./scripts/verify-native-llama-runtime.js",
     );
+    expect(packageJson.scripts.release).toBe("npm run release:verify-local-first");
     expect(verifyScript).toContain("JAI_REQUIRE_LLAMA_CPP=ON");
     expect(verifyScript).toContain("JAI_LLAMA_CPP_AVAILABLE=1");
     expect(verifyScript).toContain("verifyAndroidCMakeCompile");
@@ -258,6 +264,19 @@ describe("native llama.cpp production build config", () => {
     expect(verifyScript).toContain("--smoke");
     expect(verifyScript).toContain("completeChat + embedTexts");
     expect(verifyScript).toContain("updateNativeImplementationStatusAfterVerification");
+  });
+
+  it("fails clearly for EEXPO_PUBLIC_ environment variable typos without printing values", () => {
+    const result = runReleaseVerifier({
+      EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID: "do-not-print-this-value",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID");
+    expect(result.stderr).toContain(
+      "likely a typo for EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID",
+    );
+    expect(result.stderr).not.toContain("do-not-print-this-value");
   });
 
   it("updates nativeImplementationStatus idempotently after native verification", () => {

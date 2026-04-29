@@ -42,5 +42,9 @@ class JaiOnDeviceModelModule : Module() {
     AsyncFunction("transcribeAudio") { input: Map<String, Any?> ->
       engine.transcribeAudio(input)
     }
+
+    AsyncFunction("sha256File") { input: Map<String, Any?> ->
+      engine.sha256File(input)
+    }
   }
 }

@@ -2,7 +2,10 @@ import Constants from "expo-constants";
 import * as FileSystem from "expo-file-system/legacy";
 
 import bundledModelConfig from "@/data/config/models.json";
-import { NativeOnDeviceModelAsset } from "./nativeOnDeviceModelBridge";
+import {
+  getNativeOnDeviceModelBridge,
+  NativeOnDeviceModelAsset,
+} from "./nativeOnDeviceModelBridge";
 
 export type ModelDeliveryMode =
   | "download_on_first_launch"
@@ -179,6 +182,7 @@ const CDN_URL_PATTERN = /^cdn:\/\//i;
 const TEMPLATE_TOKEN_PATTERN = /\{\{\s*(?:MODEL_CDN_BASE_URL|LOCAL_MODEL_CDN_BASE_URL)\s*\}\}/i;
 const TEMPLATE_TOKEN_REPLACE_PATTERN = /\{\{\s*(?:MODEL_CDN_BASE_URL|LOCAL_MODEL_CDN_BASE_URL)\s*\}\}/gi;
 const DEFAULT_FREE_SPACE_BUFFER_BYTES = 512 * 1024 * 1024;
+const MAX_JS_SHA256_FALLBACK_BYTES = 10 * 1024 * 1024;
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
@@ -1125,6 +1129,34 @@ function base64ToBytes(base64: string) {
 }
 
 async function defaultHashFileSha256Async(fileUri: string) {
+  const bridge = getNativeOnDeviceModelBridge();
+  if (typeof bridge?.sha256File === "function") {
+    const nativeResult = await bridge.sha256File({ fileUri });
+    const nativeSha =
+      typeof nativeResult === "string" ? nativeResult : nativeResult?.sha256;
+    const normalizedNativeSha = normalizeSha(nativeSha);
+    if (!normalizedNativeSha) {
+      throw new ModelInstallError(
+        "Native streaming SHA-256 returned no sha256 value for the downloaded GGUF file.",
+      );
+    }
+    return normalizedNativeSha;
+  }
+
+  const info = await FileSystem.getInfoAsync(fileUri, { size: true } as any);
+  const bytesOnDisk = Number((info as any)?.size || 0);
+  if (!info.exists || bytesOnDisk <= 0) {
+    throw new ModelInstallError(
+      `Cannot verify SHA-256 because the local file is missing or empty: ${fileUri}`,
+    );
+  }
+
+  if (bytesOnDisk > MAX_JS_SHA256_FALLBACK_BYTES) {
+    throw new ModelInstallError(
+      `Native streaming SHA-256 is required for production GGUF verification. The file at ${fileUri} is ${bytesOnDisk} bytes, which is too large for the JS/base64 fallback. Build the app with JaiOnDeviceModel.sha256File() available; the app will not skip checksum verification or fall back to backend/OpenAI because native hashing is missing.`,
+    );
+  }
+
   const cryptoApi = (globalThis as any).crypto;
   if (cryptoApi?.subtle && typeof fetch === "function") {
     try {

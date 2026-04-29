@@ -70,6 +70,7 @@ export default function QuestionnaireScreen() {
   const [sessionReplyLanguage, setSessionReplyLanguage] = useState<"en" | "ta">(
     settings.languageMode === "en" ? "en" : "ta"
   );
+  const sessionReplyLanguageRef = useRef(sessionReplyLanguage);
   const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const [, setCompletedSlots] = useState(0);
   const [, setTotalSlots] = useState(15);
@@ -82,6 +83,10 @@ export default function QuestionnaireScreen() {
   useEffect(() => {
     setSessionReplyLanguage(settings.languageMode === "en" ? "en" : "ta");
   }, [settings.languageMode]);
+
+  useEffect(() => {
+    sessionReplyLanguageRef.current = sessionReplyLanguage;
+  }, [sessionReplyLanguage]);
 
   function inferReplyLanguageFromAnswer(message: string): "en" | "ta" {
     if (activeSlotId !== "preferred_language") {
@@ -157,7 +162,7 @@ export default function QuestionnaireScreen() {
               assistantName: profile?.assistantName || assistantName || "Elli",
               timezone: profile?.timezone || "Asia/Kolkata",
               questionnaireCompleted: false,
-              replyLanguage: sessionReplyLanguage,
+              replyLanguage: sessionReplyLanguageRef.current,
             });
 
             nextUserId = rebuilt?.userId ?? null;
@@ -197,7 +202,7 @@ export default function QuestionnaireScreen() {
           setMessages(current.state.history);
         } else {
           const started = await startProfilerOnPhone(nextUserId, {
-            replyLanguage: sessionReplyLanguage,
+            replyLanguage: sessionReplyLanguageRef.current,
             userProfile: {
               name: profile?.name || user?.displayName || "User",
               place: profile?.place || "",

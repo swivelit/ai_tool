@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -438,11 +438,7 @@ export default function Setup() {
     };
   }, []);
 
-  useEffect(() => {
-    void refreshEnrollmentStatus();
-  }, [normalizedWakePhrase]);
-
-  async function refreshEnrollmentStatus() {
+  const refreshEnrollmentStatus = useCallback(async () => {
     try {
       const next = await loadEnrollmentStatus(normalizedWakePhrase);
       setStatus(next);
@@ -459,7 +455,11 @@ export default function Setup() {
     } catch (nextError) {
       console.warn("[setup] Failed to refresh local wake phrase status:", nextError);
     }
-  }
+  }, [normalizedWakePhrase]);
+
+  useEffect(() => {
+    void refreshEnrollmentStatus();
+  }, [refreshEnrollmentStatus]);
 
   async function resetEnrollment() {
     setBusy(true);

@@ -135,7 +135,6 @@ export default function RoutineScreen() {
   const [notice, setNotice] = useState<NoticeState>(null);
 
   const isSmallPhone = width < 370 || height < 760;
-  const isVerySmallPhone = width < 345 || height < 700;
   const isCompactSettingsLayout = width < 390;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 6 : 10);
@@ -940,39 +939,6 @@ function StatusChip({
         {label}
       </Text>
     </View>
-  );
-}
-
-function ChoiceCard({
-  label,
-  helper,
-  icon,
-  active,
-  onPress,
-}: {
-  label: string;
-  helper: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.choiceCard,
-        active && styles.choiceCardActive,
-        pressed && styles.pressed,
-      ]}
-    >
-      <View style={styles.choiceCardIconWrap}>
-        <Ionicons name={icon} size={16} color={active ? Brand.ink : Brand.bronze} />
-      </View>
-      <Text style={[styles.choiceCardTitle, active && styles.choiceCardTitleActive]}>
-        {label}
-      </Text>
-      <Text style={styles.choiceCardHelper}>{helper}</Text>
-    </Pressable>
   );
 }
 

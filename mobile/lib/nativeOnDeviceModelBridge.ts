@@ -62,6 +62,10 @@ export type NativeOnDeviceTranscriptionInput = {
   language?: "en" | "ta" | string | null;
 };
 
+export type NativeOnDeviceSha256FileInput = {
+  fileUri: string;
+};
+
 export type NativeOnDeviceModelBridge = {
   isAvailable?: () => boolean | Promise<boolean>;
   isSpeechToTextAvailable?: () => boolean | Promise<boolean>;
@@ -69,6 +73,9 @@ export type NativeOnDeviceModelBridge = {
   completeChat: (input: NativeOnDeviceChatInput) => unknown | Promise<unknown>;
   embedTexts: (input: NativeOnDeviceEmbeddingInput) => unknown | Promise<unknown>;
   transcribeAudio?: (input: NativeOnDeviceTranscriptionInput) => unknown | Promise<unknown>;
+  sha256File?: (
+    input: NativeOnDeviceSha256FileInput,
+  ) => Promise<{ sha256: string } | string> | { sha256: string } | string;
 };
 
 export type NativeOnDeviceSpeechToTextCapability = {

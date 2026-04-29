@@ -3,6 +3,8 @@ package com.harishajahan.jai.ondevice
 import android.content.Context
 import java.io.File
 import java.io.FileNotFoundException
+import java.net.URI
+import java.security.MessageDigest
 import java.util.Locale
 
 private class CodedException(code: String, detail: String, cause: Throwable? = null) :
@@ -147,6 +149,33 @@ class JaiOnDeviceModelEngine(private val context: Context) {
     )
   }
 
+  fun sha256File(input: Map<String, Any?>): Map<String, Any?> {
+    val fileUri = input.stringValue("fileUri")
+      ?: input.stringValue("uri")
+      ?: throw CodedException(
+        "JAI_SHA256_FILE_REQUIRED",
+        "sha256File(input) requires input.fileUri with a file:// URI or absolute local path.",
+        null,
+      )
+    val file = resolveLocalFileForSha256(fileUri)
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buffer = ByteArray(1024 * 1024)
+
+    file.inputStream().use { inputStream ->
+      while (true) {
+        val read = inputStream.read(buffer)
+        if (read < 0) break
+        if (read > 0) digest.update(buffer, 0, read)
+      }
+    }
+
+    return mapOf(
+      "sha256" to digest.digest().joinToString("") { byte ->
+        "%02x".format(byte.toInt() and 0xff)
+      },
+    )
+  }
+
   private fun ensureModelFile(modelId: String, asset: Map<String, Any?>): File {
     val rawPath = asset.stringValue("modelPath")
       ?: asset.stringValue("fileName")
@@ -205,6 +234,48 @@ class JaiOnDeviceModelEngine(private val context: Context) {
       "Missing local GGUF model file for $modelId at $path. In production, let the app download required GGUF files into app-private storage and pass file:// paths through modelDelivery=download_on_first_launch. For optional bundled_assets development builds, place files in mobile/models/ before prebuild. Production native_on_device mode does not fall back to backend/OpenAI or hash embeddings for this error.",
       null,
     )
+  }
+
+  private fun resolveLocalFileForSha256(fileUri: String): File {
+    val trimmed = fileUri.trim()
+    if (trimmed.isEmpty()) {
+      throw CodedException(
+        "JAI_SHA256_FILE_REQUIRED",
+        "sha256File(input) requires a non-empty file:// URI or absolute local path.",
+        null,
+      )
+    }
+
+    val file = when {
+      trimmed.startsWith("file://") -> try {
+        File(URI(trimmed))
+      } catch (_: Exception) {
+        File(trimmed.removePrefix("file://"))
+      }
+      trimmed.startsWith("/") -> File(trimmed)
+      else -> throw CodedException(
+        "JAI_SHA256_FILE_PATH_INVALID",
+        "sha256File(input) only accepts file:// URIs or absolute local file paths. Received: $trimmed",
+        null,
+      )
+    }
+
+    if (!file.exists()) {
+      throw CodedException(
+        "JAI_SHA256_FILE_MISSING",
+        "Cannot compute SHA-256 because the local file does not exist: ${file.absolutePath}",
+        null,
+      )
+    }
+    if (!file.isFile) {
+      throw CodedException(
+        "JAI_SHA256_FILE_NOT_FILE",
+        "Cannot compute SHA-256 because the path is not a regular file: ${file.absolutePath}",
+        null,
+      )
+    }
+
+    return file
   }
 
   private fun buildChatPrompt(messages: List<Map<String, String>>, asset: Map<String, Any?>): String {

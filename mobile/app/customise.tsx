@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -215,13 +215,6 @@ export default function CustomiseScreen() {
     [displayName, wakePhrase]
   );
 
-  useEffect(() => {
-    if (trainerVisible) {
-      setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
-      void refreshTrainingDiagnostics();
-    }
-  }, [speechLocale, trainerVisible, wakePrompt]);
-
   const isDirty =
     assistantNameInput.trim() !== assistantLabel ||
     tone !== settings.tone ||
@@ -259,7 +252,7 @@ export default function CustomiseScreen() {
     );
   }
 
-  async function refreshTrainingDiagnostics() {
+  const refreshTrainingDiagnostics = useCallback(async () => {
     if (Platform.OS !== "android") return;
 
     setTrainingDiagnostics((prev) => ({ ...prev, checking: true }));
@@ -317,7 +310,14 @@ export default function CustomiseScreen() {
       installedLocales,
       canUseOnDeviceForLocale: localeMatchesInstalled(speechLocale, installedLocales),
     });
-  }
+  }, [speechLocale]);
+
+  useEffect(() => {
+    if (trainerVisible) {
+      setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
+      void refreshTrainingDiagnostics();
+    }
+  }, [refreshTrainingDiagnostics, trainerVisible, wakePrompt]);
 
   async function downloadOnDeviceSpeechModel() {
     if (Platform.OS !== "android") return;
@@ -461,7 +461,7 @@ export default function CustomiseScreen() {
 
   useSpeechRecognitionEvent(
     "result",
-    (event: { results?: Array<{ transcript?: string }>; isFinal?: boolean } | undefined) => {
+    (event: { results?: { transcript?: string }[]; isFinal?: boolean } | undefined) => {
       if (!trainerVisibleRef.current || !trainingRef.current) return;
 
       const transcript = normalizeRecognitionTranscript(

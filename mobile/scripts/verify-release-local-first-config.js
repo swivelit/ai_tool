@@ -72,6 +72,16 @@ const PLACEHOLDER_URL_PATTERN = /^https:\/\/YOUR_MODEL_CDN\//i;
 const CDN_URL_PATTERN = /^cdn:\/\//i;
 const TEMPLATE_TOKEN_PATTERN = /\{\{\s*(?:MODEL_CDN_BASE_URL|LOCAL_MODEL_CDN_BASE_URL)\s*\}\}/i;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+const LOCAL_ENV_FILES = ['.env', '.env.local'];
+const LOCAL_ENV_ALLOWED_NAMES = new Set([
+  'BUILD_TYPE',
+  'EAS_BUILD_PROFILE',
+]);
+const LOCAL_ENV_ALLOWED_PREFIXES = [
+  'EXPO_PUBLIC_',
+  'EEXPO_PUBLIC_',
+  'JAI_',
+];
 
 const results = [];
 
@@ -158,6 +168,90 @@ function isFalsey(value) {
 
 function env(name) {
   return String(process.env[name] || '').trim();
+}
+
+function shouldLoadLocalEnvName(name) {
+  return (
+    LOCAL_ENV_ALLOWED_NAMES.has(name) ||
+    LOCAL_ENV_ALLOWED_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
+}
+
+function parseEnvValue(rawValue) {
+  let value = String(rawValue || '').trim();
+  const quote = value[0];
+  if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+    value = value.slice(1, -1);
+    return quote === '"' ? value.replace(/\\n/g, '\n').replace(/\\"/g, '"') : value;
+  }
+  return value.replace(/\s+#.*$/, '').trim();
+}
+
+function loadLocalEnvFiles() {
+  if (isTruthy(process.env.JAI_SKIP_LOCAL_ENV_FILES)) return;
+
+  const shellEnvNames = new Set(Object.keys(process.env));
+  const localValues = {};
+  const loadedFiles = [];
+
+  for (const fileName of LOCAL_ENV_FILES) {
+    const file = path.join(mobileRoot, fileName);
+    if (!fs.existsSync(file)) continue;
+    loadedFiles.push(fileName);
+
+    for (const line of read(file).split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      const normalized = trimmed.startsWith('export ') ? trimmed.slice(7).trim() : trimmed;
+      const equalsIndex = normalized.indexOf('=');
+      if (equalsIndex <= 0) continue;
+
+      const name = normalized.slice(0, equalsIndex).trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !shouldLoadLocalEnvName(name)) {
+        continue;
+      }
+
+      localValues[name] = parseEnvValue(normalized.slice(equalsIndex + 1));
+    }
+  }
+
+  for (const [name, value] of Object.entries(localValues)) {
+    if (!shellEnvNames.has(name)) {
+      process.env[name] = value;
+    }
+  }
+
+  if (loadedFiles.length) {
+    log(`Loaded local env file(s) for verification: ${loadedFiles.join(', ')}. Existing shell variables keep precedence.`);
+  }
+}
+
+function verifyPublicEnvNameTypos() {
+  const typoNames = Object.keys(process.env)
+    .filter((name) => name.startsWith('EEXPO_PUBLIC_'))
+    .sort();
+
+  if (!typoNames.length) {
+    pass('environment variable names do not use the EEXPO_PUBLIC_ typo prefix');
+    return;
+  }
+
+  const details = [
+    'Only variable names are shown here; values are intentionally omitted.',
+    `Mistyped variable name(s): ${typoNames.join(', ')}`,
+  ];
+
+  if (typoNames.includes('EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID')) {
+    details.push(
+      'EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID is likely a typo for EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID.',
+    );
+  }
+
+  fail(
+    'Found environment variables starting with EEXPO_PUBLIC_. Use EXPO_PUBLIC_ instead.',
+    details.join('\n'),
+  );
 }
 
 function isReleaseLike() {
@@ -408,6 +502,8 @@ function verifyReleaseEnvironment() {
 function main() {
   log(`Using mobile root: ${mobileRoot}`);
   log(`Using llama.cpp checkout: ${llamaDir}`);
+  loadLocalEnvFiles();
+  verifyPublicEnvNameTypos();
   verifyStaticLocalFirstConfig();
   verifyReleaseEnvironment();
   log(`✅ Local-first release configuration verification passed (${results.length} checks).`);

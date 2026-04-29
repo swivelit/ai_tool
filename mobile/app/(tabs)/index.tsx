@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   ActivityIndicator,
@@ -356,6 +356,13 @@ export default function Home() {
   const handsFreeRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handsFreePermissionAlertedRef = useRef(false);
   const handsFreeBlockedRef = useRef(false);
+  const handsFreeRuntimeRef = useRef({
+    busy: false,
+    listening: false,
+    foreground: false,
+    wakePhrase: "",
+    locale: "en-IN",
+  });
 
   const isSmallPhone = width < 370 || height < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
@@ -383,11 +390,22 @@ export default function Home() {
       ),
     [assistantLabel, handsFreeWakePhrase, settings.wakeTrainingSamples]
   );
+  const handsFreeWakeVariantKey = useMemo(
+    () => handsFreeWakeVariants.join("|"),
+    [handsFreeWakeVariants]
+  );
   const handsFreeLocale = useMemo(
     () => (settings.languageMode === "ta" ? "ta-IN" : "en-IN"),
     [settings.languageMode]
   );
   const handsFreeForegroundEnabled = settings.handsFreeEnabled && appState === "active";
+  handsFreeRuntimeRef.current = {
+    busy,
+    listening,
+    foreground: handsFreeForegroundEnabled,
+    wakePhrase: handsFreeWakePhrase,
+    locale: handsFreeLocale,
+  };
   const chatSessionStorageKey = useMemo(
     () => `${CHAT_SESSIONS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
     [profile?.userId]
@@ -502,6 +520,176 @@ export default function Home() {
     inputRange: [0, 1],
     outputRange: [0, 1],
   });
+
+  const clearHandsFreeRestartTimer = useCallback(() => {
+    if (handsFreeRestartTimerRef.current) {
+      clearTimeout(handsFreeRestartTimerRef.current);
+      handsFreeRestartTimerRef.current = null;
+    }
+  }, []);
+
+  const startHandsFreeRecognizer = useCallback(async (nextMode: "wake" | "command") => {
+    const runtime = handsFreeRuntimeRef.current;
+    if (!runtime.foreground || handsFreeBlockedRef.current) return;
+    if (
+      runtime.busy ||
+      runtime.listening ||
+      replySoundRef.current ||
+      handsFreeStartingRef.current
+    ) {
+      return;
+    }
+
+    clearHandsFreeRestartTimer();
+
+    if (!ExpoSpeechRecognitionModule.isRecognitionAvailable()) {
+      handsFreeBlockedRef.current = true;
+      handsFreeDesiredModeRef.current = "off";
+      setHandsFreeMode("off");
+      setHandsFreeStatus("Speech recognition is unavailable on this device.");
+      if (!handsFreePermissionAlertedRef.current) {
+        handsFreePermissionAlertedRef.current = true;
+        Alert.alert(
+          "Speech recognition unavailable",
+          "Speech recognition is not available on this device. Check Siri/Dictation on iPhone or the Google voice service on Android."
+        );
+      }
+      return;
+    }
+
+    try {
+      handsFreeStartingRef.current = true;
+
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission.granted) {
+        handsFreeBlockedRef.current = true;
+        handsFreeDesiredModeRef.current = "off";
+        setHandsFreeMode("off");
+        setHandsFreeStatus("Grant microphone and speech permissions in Settings to enable wake phrase mode.");
+        if (!handsFreePermissionAlertedRef.current) {
+          handsFreePermissionAlertedRef.current = true;
+          Alert.alert(
+            "Hands-free permission needed",
+            "Please allow microphone and speech recognition access to use wake phrase mode."
+          );
+        }
+        return;
+      }
+
+      const latestRuntime = handsFreeRuntimeRef.current;
+      handsFreeDesiredModeRef.current = nextMode;
+      setHandsFreeMode(nextMode);
+      setHandsFreeStatus(
+        nextMode === "command" ? "Listening for your request…" : `Say "${latestRuntime.wakePhrase}"`
+      );
+      setHandsFreeTranscript("");
+
+      ExpoSpeechRecognitionModule.start({
+        lang: latestRuntime.locale,
+        interimResults: true,
+        maxAlternatives: 1,
+        continuous:
+          nextMode === "wake"
+            ? Platform.OS !== "android" || Number(Platform.Version) >= 33
+            : false,
+        requiresOnDeviceRecognition: Platform.OS === "ios",
+        addsPunctuation: false,
+      });
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Could not start hands-free listening.";
+      console.warn("[hands-free]", message);
+      setHandsFreeStatus(message);
+    } finally {
+      handsFreeStartingRef.current = false;
+    }
+  }, [clearHandsFreeRestartTimer]);
+
+  const queueHandsFreeRestart = useCallback((
+    nextMode: "wake" | "command" = "wake",
+    delay = 350
+  ) => {
+    if (!handsFreeRuntimeRef.current.foreground || handsFreeBlockedRef.current) return;
+
+    clearHandsFreeRestartTimer();
+    handsFreeDesiredModeRef.current = nextMode;
+
+    handsFreeRestartTimerRef.current = setTimeout(() => {
+      void startHandsFreeRecognizer(nextMode);
+    }, delay);
+  }, [clearHandsFreeRestartTimer, startHandsFreeRecognizer]);
+
+  const abortHandsFreeRecognizer = useCallback(async (clearDesiredMode = false) => {
+    clearHandsFreeRestartTimer();
+
+    if (clearDesiredMode) {
+      handsFreeDesiredModeRef.current = "off";
+      setHandsFreeMode("off");
+    }
+
+    try {
+      ExpoSpeechRecognitionModule.abort();
+    } catch {
+      // ignore
+    }
+  }, [clearHandsFreeRestartTimer]);
+
+  const shutdownHandsFree = useCallback(async (clearStatus = false) => {
+    clearHandsFreeRestartTimer();
+    handsFreeBlockedRef.current = false;
+    handsFreeDesiredModeRef.current = "off";
+    setHandsFreeMode("off");
+    setHandsFreeActive(false);
+
+    if (clearStatus) {
+      setHandsFreeStatus("");
+      setHandsFreeTranscript("");
+    }
+
+    try {
+      ExpoSpeechRecognitionModule.abort();
+    } catch {
+      // ignore
+    }
+  }, [clearHandsFreeRestartTimer]);
+
+  const releaseReplySound = useCallback(async (soundToRelease?: Audio.Sound | null) => {
+    const target = soundToRelease ?? replySoundRef.current;
+    if (!target) return;
+
+    if (!soundToRelease || replySoundRef.current === target) {
+      replySoundRef.current = null;
+    }
+
+    try {
+      target.setOnPlaybackStatusUpdate(null);
+    } catch {
+      // ignore
+    }
+
+    try {
+      await target.stopAsync();
+    } catch {
+      // ignore
+    }
+
+    try {
+      await target.unloadAsync();
+    } catch {
+      // ignore
+    }
+
+    if (replySoundRef.current === target) {
+      replySoundRef.current = null;
+    }
+
+    if (
+      handsFreeRuntimeRef.current.foreground &&
+      handsFreeDesiredModeRef.current !== "off"
+    ) {
+      queueHandsFreeRestart("wake", 320);
+    }
+  }, [queueHandsFreeRestart]);
 
   useSpeechRecognitionEvent("start", () => {
     if (handsFreeDesiredModeRef.current === "off") return;
@@ -627,8 +815,10 @@ export default function Home() {
     handsFreeForegroundEnabled,
     handsFreeLocale,
     handsFreeWakePhrase,
-    handsFreeWakeVariants.join("|"),
+    handsFreeWakeVariantKey,
     profile?.userId,
+    queueHandsFreeRestart,
+    shutdownHandsFree,
   ]);
 
   useEffect(() => {
@@ -647,7 +837,14 @@ export default function Home() {
     ) {
       queueHandsFreeRestart(handsFreeDesiredModeRef.current, 220);
     }
-  }, [busy, listening, handsFreeForegroundEnabled, handsFreeActive]);
+  }, [
+    abortHandsFreeRecognizer,
+    busy,
+    listening,
+    handsFreeForegroundEnabled,
+    handsFreeActive,
+    queueHandsFreeRestart,
+  ]);
 
   useEffect(() => {
     if (!handsFreeForegroundEnabled) return;
@@ -658,11 +855,7 @@ export default function Home() {
     if (!busy && !listening && handsFreeForegroundEnabled && !handsFreeBlockedRef.current) {
       queueHandsFreeRestart("wake", 450);
     }
-  }, [busy, listening, handsFreeForegroundEnabled]);
-
-  useEffect(() => {
-    void bootstrapChatState();
-  }, [chatSessionStorageKey, hiddenChatStorageKey, hiddenChatItemStorageKey, profile?.userId]);
+  }, [busy, listening, handsFreeForegroundEnabled, queueHandsFreeRestart]);
 
   useEffect(() => {
     recordingRef.current = recording;
@@ -676,7 +869,7 @@ export default function Home() {
     return () => {
       subscription.remove();
     };
-  }, []);
+  }, [releaseReplySound, shutdownHandsFree]);
 
   useEffect(() => {
     return () => {
@@ -685,7 +878,7 @@ export default function Home() {
         handsFreeRestartTimerRef.current = null;
       }
     };
-  }, []);
+  }, [releaseReplySound, shutdownHandsFree]);
 
   useEffect(() => {
     const timeout = setTimeout(() => {
@@ -710,42 +903,7 @@ export default function Home() {
         playsInSilentModeIOS: false,
       }).catch(() => undefined);
     };
-  }, []);
-
-  async function releaseReplySound(soundToRelease?: Audio.Sound | null) {
-    const target = soundToRelease ?? replySoundRef.current;
-    if (!target) return;
-
-    if (!soundToRelease || replySoundRef.current === target) {
-      replySoundRef.current = null;
-    }
-
-    try {
-      target.setOnPlaybackStatusUpdate(null);
-    } catch {
-      // ignore
-    }
-
-    try {
-      await target.stopAsync();
-    } catch {
-      // ignore
-    }
-
-    try {
-      await target.unloadAsync();
-    } catch {
-      // ignore
-    }
-
-    if (replySoundRef.current === target) {
-      replySoundRef.current = null;
-    }
-
-    if (handsFreeForegroundEnabled && handsFreeDesiredModeRef.current !== "off") {
-      queueHandsFreeRestart("wake", 320);
-    }
-  }
+  }, [releaseReplySound, shutdownHandsFree]);
 
   useEffect(() => {
     if (drawerOpen) {
@@ -788,127 +946,7 @@ export default function Home() {
     }
   }
 
-  function clearHandsFreeRestartTimer() {
-    if (handsFreeRestartTimerRef.current) {
-      clearTimeout(handsFreeRestartTimerRef.current);
-      handsFreeRestartTimerRef.current = null;
-    }
-  }
-
-  function queueHandsFreeRestart(nextMode: "wake" | "command" = "wake", delay = 350) {
-    if (!handsFreeForegroundEnabled || handsFreeBlockedRef.current) return;
-
-    clearHandsFreeRestartTimer();
-    handsFreeDesiredModeRef.current = nextMode;
-
-    handsFreeRestartTimerRef.current = setTimeout(() => {
-      void startHandsFreeRecognizer(nextMode);
-    }, delay);
-  }
-
-  async function abortHandsFreeRecognizer(clearDesiredMode = false) {
-    clearHandsFreeRestartTimer();
-
-    if (clearDesiredMode) {
-      handsFreeDesiredModeRef.current = "off";
-      setHandsFreeMode("off");
-    }
-
-    try {
-      ExpoSpeechRecognitionModule.abort();
-    } catch {
-      // ignore
-    }
-  }
-
-  async function shutdownHandsFree(clearStatus = false) {
-    clearHandsFreeRestartTimer();
-    handsFreeBlockedRef.current = false;
-    handsFreeDesiredModeRef.current = "off";
-    setHandsFreeMode("off");
-    setHandsFreeActive(false);
-
-    if (clearStatus) {
-      setHandsFreeStatus("");
-      setHandsFreeTranscript("");
-    }
-
-    try {
-      ExpoSpeechRecognitionModule.abort();
-    } catch {
-      // ignore
-    }
-  }
-
-  async function startHandsFreeRecognizer(nextMode: "wake" | "command") {
-    if (!handsFreeForegroundEnabled || handsFreeBlockedRef.current) return;
-    if (busy || listening || replySoundRef.current || handsFreeStartingRef.current) return;
-
-    clearHandsFreeRestartTimer();
-
-    if (!ExpoSpeechRecognitionModule.isRecognitionAvailable()) {
-      handsFreeBlockedRef.current = true;
-      handsFreeDesiredModeRef.current = "off";
-      setHandsFreeMode("off");
-      setHandsFreeStatus("Speech recognition is unavailable on this device.");
-      if (!handsFreePermissionAlertedRef.current) {
-        handsFreePermissionAlertedRef.current = true;
-        Alert.alert(
-          "Speech recognition unavailable",
-          "Speech recognition is not available on this device. Check Siri/Dictation on iPhone or the Google voice service on Android."
-        );
-      }
-      return;
-    }
-
-    try {
-      handsFreeStartingRef.current = true;
-
-      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-      if (!permission.granted) {
-        handsFreeBlockedRef.current = true;
-        handsFreeDesiredModeRef.current = "off";
-        setHandsFreeMode("off");
-        setHandsFreeStatus("Grant microphone and speech permissions in Settings to enable wake phrase mode.");
-        if (!handsFreePermissionAlertedRef.current) {
-          handsFreePermissionAlertedRef.current = true;
-          Alert.alert(
-            "Hands-free permission needed",
-            "Please allow microphone and speech recognition access to use wake phrase mode."
-          );
-        }
-        return;
-      }
-
-      handsFreeDesiredModeRef.current = nextMode;
-      setHandsFreeMode(nextMode);
-      setHandsFreeStatus(
-        nextMode === "command" ? "Listening for your request…" : `Say "${handsFreeWakePhrase}"`
-      );
-      setHandsFreeTranscript("");
-
-      ExpoSpeechRecognitionModule.start({
-        lang: handsFreeLocale,
-        interimResults: true,
-        maxAlternatives: 1,
-        continuous:
-          nextMode === "wake"
-            ? Platform.OS !== "android" || Number(Platform.Version) >= 33
-            : false,
-        requiresOnDeviceRecognition: Platform.OS === "ios",
-        addsPunctuation: false,
-      });
-    } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : "Could not start hands-free listening.";
-      console.warn("[hands-free]", message);
-      setHandsFreeStatus(message);
-    } finally {
-      handsFreeStartingRef.current = false;
-    }
-  }
-
-  async function readChatHistoryFromApi(): Promise<ChatHistoryItem[]> {
+  const readChatHistoryFromApi = useCallback(async (): Promise<ChatHistoryItem[]> => {
     try {
       const suffix = profile?.userId ? `?user_id=${profile.userId}` : "";
       const data = await apiGet<ChatHistoryItem[]>(`/items${suffix}`);
@@ -916,9 +954,9 @@ export default function Home() {
     } catch {
       return [];
     }
-  }
+  }, [profile?.userId]);
 
-  async function readStoredChatSessions(): Promise<ChatSessionRecord[]> {
+  const readStoredChatSessions = useCallback(async (): Promise<ChatSessionRecord[]> => {
     try {
       const raw = await AsyncStorage.getItem(chatSessionStorageKey);
       if (!raw) return [];
@@ -932,9 +970,9 @@ export default function Home() {
     } catch {
       return [];
     }
-  }
+  }, [chatSessionStorageKey]);
 
-  async function readHiddenChatSessionIds(): Promise<string[]> {
+  const readHiddenChatSessionIds = useCallback(async (): Promise<string[]> => {
     try {
       const raw = await AsyncStorage.getItem(hiddenChatStorageKey);
       if (!raw) return [];
@@ -952,9 +990,9 @@ export default function Home() {
     } catch {
       return [];
     }
-  }
+  }, [hiddenChatStorageKey]);
 
-  async function readHiddenChatItemIds(): Promise<number[]> {
+  const readHiddenChatItemIds = useCallback(async (): Promise<number[]> => {
     try {
       const raw = await AsyncStorage.getItem(hiddenChatItemStorageKey);
       if (!raw) return [];
@@ -966,7 +1004,7 @@ export default function Home() {
     } catch {
       return [];
     }
-  }
+  }, [hiddenChatItemStorageKey]);
 
   async function persistHiddenChatSessionIds(nextIds: string[]) {
     const normalized = Array.from(
@@ -994,7 +1032,7 @@ export default function Home() {
     }
   }
 
-  async function bootstrapChatState() {
+  const bootstrapChatState = useCallback(async () => {
     const [itemsFromApi, storedSessions, storedHiddenSessionIds, storedHiddenItemIds] =
       await Promise.all([
         readChatHistoryFromApi(),
@@ -1034,7 +1072,18 @@ export default function Home() {
     } catch {
       // ignore storage failures
     }
-  }
+  }, [
+    chatSessionStorageKey,
+    hiddenChatItemStorageKey,
+    readChatHistoryFromApi,
+    readHiddenChatItemIds,
+    readHiddenChatSessionIds,
+    readStoredChatSessions,
+  ]);
+
+  useEffect(() => {
+    void bootstrapChatState();
+  }, [bootstrapChatState]);
 
   async function refreshHistoryAndSessions(extraItems: ChatHistoryItem[] = []) {
     const itemsFromApi = await readChatHistoryFromApi();
@@ -1593,12 +1642,6 @@ export default function Home() {
       closeReminderConfirm();
     }
   }
-
-  function clearComposer() {
-    setText("");
-    setComposerInputHeight(MIN_INPUT_HEIGHT);
-  }
-
 
   async function signOut() {
     Alert.alert("Sign out", "Do you want to sign out from this account?", [

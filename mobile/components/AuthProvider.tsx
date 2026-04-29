@@ -2,7 +2,6 @@ import React, {
   createContext,
   useContext,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -640,26 +639,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await cleanupGoogleSdk({ revokeGoogleAccess: shouldCleanupGoogleSdk });
     }
 
-  const value = useMemo(
-    () => ({
-      user,
-      loading,
-      googleReady,
-      googleConfigured,
-      passwordLinked: hasProvider(user, "password"),
-      googleLinked: hasProvider(user, "google.com"),
-      signInWithPassword,
-      signUpWithPassword,
-      signInWithGoogle,
-      linkPasswordForCurrentUser,
-      signOutUser,
-      deleteCurrentAccount,
-      profileSyncIssue,
-      retryProfileSync,
-      clearProfileSyncIssue,
-    }),
-    [googleConfigured, googleReady, loading, profileSyncIssue, user]
-  );
+  const value: AuthContextType = {
+    user,
+    loading,
+    googleReady,
+    googleConfigured,
+    passwordLinked: hasProvider(user, "password"),
+    googleLinked: hasProvider(user, "google.com"),
+    signInWithPassword,
+    signUpWithPassword,
+    signInWithGoogle,
+    linkPasswordForCurrentUser,
+    signOutUser,
+    deleteCurrentAccount,
+    profileSyncIssue,
+    retryProfileSync,
+    clearProfileSyncIssue,
+  };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

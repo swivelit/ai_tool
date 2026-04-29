@@ -1,4 +1,5 @@
 import ExpoModulesCore
+import CryptoKit
 import Foundation
 
 /**
@@ -122,6 +123,14 @@ public class JaiOnDeviceModelModule: Module {
         "Recorded voice reached JaiOnDeviceModel.transcribeAudio(fileUri=\(fileUri), model=\(model.isEmpty ? "whisper" : model), language=\(language.isEmpty ? "auto" : language)), but no native phone-local STT backend is linked yet. Add a whisper.cpp-backed STT binding or use runtime.mode=local_adapter with a configured phone-local /audio/transcriptions endpoint for development. This native_on_device path never calls backend/OpenAI automatically."
       )
     }
+
+    AsyncFunction("sha256File") { (input: [String: Any]) -> [String: Any] in
+      let fileUri = ((input["fileUri"] as? String) ?? (input["uri"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !fileUri.isEmpty else {
+        throw JaiOnDeviceModelError("JAI_SHA256_FILE_REQUIRED", "sha256File(input) requires input.fileUri with a file:// URI or absolute local path.")
+      }
+      return ["sha256": try self.sha256File(fileUri: fileUri)]
+    }
   }
 
   private func asset(from input: [String: Any], modelId: String) throws -> [String: Any] {
@@ -167,6 +176,51 @@ public class JaiOnDeviceModelModule: Module {
       "JAI_MODEL_FILE_MISSING",
       "Missing local GGUF model file for \(modelId) at \(path). In production, let the app download required GGUF files into app-private storage and pass file:// paths through modelDelivery=download_on_first_launch. For optional bundled_assets development builds, place files in mobile/models/ before prebuild. Production native_on_device mode does not fall back to backend/OpenAI or hash embeddings for this error."
     )
+  }
+
+  private func resolveLocalFileForSha256(fileUri: String) throws -> URL {
+    let path = fileUri.trimmingCharacters(in: .whitespacesAndNewlines)
+    let url: URL
+
+    if path.hasPrefix("file://") {
+      guard let parsed = URL(string: path), parsed.isFileURL else {
+        throw JaiOnDeviceModelError("JAI_SHA256_FILE_PATH_INVALID", "sha256File(input) only accepts file:// URIs or absolute local file paths. Received: \(path).")
+      }
+      url = parsed
+    } else if path.hasPrefix("/") {
+      url = URL(fileURLWithPath: path)
+    } else {
+      throw JaiOnDeviceModelError("JAI_SHA256_FILE_PATH_INVALID", "sha256File(input) only accepts file:// URIs or absolute local file paths. Received: \(path).")
+    }
+
+    var isDirectory = ObjCBool(false)
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+      throw JaiOnDeviceModelError("JAI_SHA256_FILE_MISSING", "Cannot compute SHA-256 because the local file does not exist: \(url.path).")
+    }
+    guard !isDirectory.boolValue else {
+      throw JaiOnDeviceModelError("JAI_SHA256_FILE_NOT_FILE", "Cannot compute SHA-256 because the path is not a regular file: \(url.path).")
+    }
+
+    return url
+  }
+
+  private func sha256File(fileUri: String) throws -> String {
+    let url = try resolveLocalFileForSha256(fileUri: fileUri)
+    let handle = try FileHandle(forReadingFrom: url)
+    defer {
+      try? handle.close()
+    }
+
+    var hasher = SHA256()
+    while true {
+      let data = try handle.read(upToCount: 1024 * 1024) ?? Data()
+      if data.isEmpty {
+        break
+      }
+      hasher.update(data: data)
+    }
+
+    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
   }
 
   private func buildPrompt(messages: [[String: Any]], asset: [String: Any]) -> String {

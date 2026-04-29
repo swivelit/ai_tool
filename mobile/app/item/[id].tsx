@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -258,7 +258,7 @@ export default function ItemDetail() {
     ];
   }, [item]);
 
-  async function load() {
+  const load = useCallback(async () => {
     if (!Number.isFinite(itemId)) {
       setLoading(false);
       Alert.alert("Invalid item", "This item ID is not valid.");
@@ -274,11 +274,11 @@ export default function ItemDetail() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [itemId]);
 
   useEffect(() => {
     void load();
-  }, [itemId]);
+  }, [load]);
 
   async function gen(kind: ExportKind) {
     if (!item || exporting) return;

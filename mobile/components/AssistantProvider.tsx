@@ -210,7 +210,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
         console.warn("[assistant] Failed to sync assistant settings to backend:", error);
       }
     },
-    [name, profile, settings]
+    [profile, settings]
   );
 
   const value = useMemo<AssistantContextType>(

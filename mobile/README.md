@@ -108,14 +108,21 @@ App launches
 
 The setup screen shows current model, per-model progress, total progress, required download size, Wi-Fi/storage warning, clear errors, and retry.
 
-Required files:
+Lite first-launch required files:
 
 ```text
 gemma-3-4b-it-q4_k_m.gguf
-qwen3-8b-q4_k_m.gguf
-qwen3-14b-q4_k_m.gguf
 qwen3-embedding-0.6b-q8_0.gguf
 ```
+
+Tiered/optional files:
+
+```text
+qwen3-8b-q4_k_m.gguf
+qwen3-14b-q4_k_m.gguf
+```
+
+`mobile/data/config/models.json` defaults `modelDelivery.defaultTier` to `lite`, so first launch/basic chat requires only Gemma 4B plus the Qwen embedding model. Qwen 8B and Qwen 14B are downloaded only when the selected tier requires them, or when a release configuration deliberately validates metadata for all production model entries.
 
 ## Required production environment values
 

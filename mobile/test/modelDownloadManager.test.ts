@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 type FakeFile = { content: string; size: number };
@@ -12,6 +14,7 @@ const state = vi.hoisted(() => ({
   files: new Map<string, FakeFile>(),
   downloads: [] as FakeDownload[],
   downloadAttempts: 0,
+  readAsStringCalls: 0,
   freeDiskBytes: 20 * 1024 * 1024 * 1024,
 }));
 
@@ -34,6 +37,7 @@ function fakeFsModule() {
       state.files.delete(from);
     }),
     readAsStringAsync: vi.fn(async (uri: string) => {
+      state.readAsStringCalls += 1;
       const file = state.files.get(uri);
       if (!file) throw new Error(`Missing file ${uri}`);
       return Buffer.from(file.content).toString("base64");
@@ -129,6 +133,7 @@ describe("modelDownloadManager", () => {
     state.files.clear();
     state.downloads.length = 0;
     state.downloadAttempts = 0;
+    state.readAsStringCalls = 0;
     state.freeDiskBytes = 20 * 1024 * 1024 * 1024;
   });
 
@@ -338,6 +343,71 @@ describe("modelDownloadManager", () => {
         }),
       }),
     ).rejects.toBeInstanceOf(ModelInstallError);
+  });
+
+  it("uses native sha256File when the bridge provides streaming hashing", async () => {
+    const nativeHash = "f".repeat(64);
+    const sha256File = vi.fn(async ({ fileUri }: { fileUri: string }) => {
+      expect(fileUri).toBe("file:///mock/models/gemma-3-4b-it-q4_k_m.gguf");
+      return { sha256: nativeHash };
+    });
+    vi.stubGlobal("__JAI_NATIVE_ON_DEVICE_MODEL_RUNTIME__", {
+      initialize: vi.fn(),
+      completeChat: vi.fn(),
+      embedTexts: vi.fn(),
+      sha256File,
+    });
+    state.files.set("file:///mock/models/gemma-3-4b-it-q4_k_m.gguf", {
+      content: "large-production-model",
+      size: 12 * 1024 * 1024,
+    });
+
+    const { getModelInstallStatus } = await importManager();
+    const status = await getModelInstallStatus({
+      config: testConfig({
+        models: [{ ...baseModels[0], expectedBytes: 12 * 1024 * 1024, sha256: nativeHash }],
+      }),
+    });
+
+    expect(status.ready).toBe(true);
+    expect(sha256File).toHaveBeenCalledTimes(1);
+    expect(state.readAsStringCalls).toBe(0);
+  });
+
+  it("does not full-read large files in JS when native hashing is unavailable", async () => {
+    state.files.set("file:///mock/models/gemma-3-4b-it-q4_k_m.gguf", {
+      content: "",
+      size: 12 * 1024 * 1024,
+    });
+
+    const { getModelInstallStatus } = await importManager();
+    await expect(
+      getModelInstallStatus({
+        config: testConfig({
+          models: [{ ...baseModels[0], expectedBytes: 12 * 1024 * 1024, sha256: "a".repeat(64) }],
+        }),
+      }),
+    ).rejects.toThrow("Native streaming SHA-256 is required");
+    expect(state.readAsStringCalls).toBe(0);
+  });
+
+  it("keeps JS SHA-256 fallback for small test fixtures", async () => {
+    const content = "small fixture";
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    state.files.set("file:///mock/models/gemma-3-4b-it-q4_k_m.gguf", {
+      content,
+      size: Buffer.byteLength(content),
+    });
+
+    const { getModelInstallStatus } = await importManager();
+    const status = await getModelInstallStatus({
+      config: testConfig({
+        models: [{ ...baseModels[0], expectedBytes: Buffer.byteLength(content), sha256 }],
+      }),
+    });
+
+    expect(status.ready).toBe(true);
+    expect(state.readAsStringCalls).toBe(1);
   });
 
   it("validates production integrity metadata for remote entries unless explicitly marked dev-only", async () => {
