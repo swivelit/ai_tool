@@ -54,6 +54,12 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B",
   "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B",
   "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED",
+  "EXPO_PUBLIC_FIREBASE_API_KEY",
+  "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN",
+  "EXPO_PUBLIC_FIREBASE_PROJECT_ID",
+  "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET",
+  "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
+  "EXPO_PUBLIC_FIREBASE_APP_ID",
   "EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID",
 ];
 
@@ -117,6 +123,15 @@ const validReleaseModelMetadata = {
   EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B: "b".repeat(64),
   EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B: "c".repeat(64),
   EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED: "d".repeat(64),
+};
+
+const validReleaseFirebaseEnv = {
+  EXPO_PUBLIC_FIREBASE_API_KEY: "firebase-api-key",
+  EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN: "firebase-auth.example.test",
+  EXPO_PUBLIC_FIREBASE_PROJECT_ID: "firebase-project",
+  EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET: "firebase-project.appspot.com",
+  EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "1234567890",
+  EXPO_PUBLIC_FIREBASE_APP_ID: "1:1234567890:android:abcdef",
 };
 
 function read(relativePath: string) {
@@ -391,8 +406,26 @@ export const runtime = {
         BUILD_TYPE: "release",
         EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
         EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+        ...validReleaseFirebaseEnv,
       }),
     ).rejects.toThrow(/download_on_first_launch build is missing EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B/);
+  });
+
+  it("fails release app.config when Firebase env is missing", async () => {
+    const {
+      EXPO_PUBLIC_FIREBASE_PROJECT_ID: _missingProjectId,
+      ...firebaseWithoutProjectId
+    } = validReleaseFirebaseEnv;
+
+    await expect(
+      importAppConfigWithEnv({
+        BUILD_TYPE: "release",
+        EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+        EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+        ...validReleaseModelMetadata,
+        ...firebaseWithoutProjectId,
+      }),
+    ).rejects.toThrow(/EXPO_PUBLIC_FIREBASE_PROJECT_ID/);
   });
 
   it("allows debug app.config to omit release CDN metadata", async () => {
@@ -406,12 +439,23 @@ export const runtime = {
     expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("false");
   });
 
+  it("allows debug app.config to omit Firebase env", async () => {
+    const appConfig = await importAppConfigWithEnv({
+      BUILD_TYPE: "debug",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+    });
+
+    expect(appConfig.expo.extra.firebaseApiKey).toBeUndefined();
+    expect(appConfig.expo.extra.firebaseProjectId).toBeUndefined();
+  });
+
   it("accepts local release app.config only when CDN base, expectedBytes, and sha256 are present", async () => {
     const appConfig = await importAppConfigWithEnv({
       BUILD_TYPE: "release",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
       ...validReleaseModelMetadata,
+      ...validReleaseFirebaseEnv,
     });
 
     expect(appConfig.expo.extra.LOCAL_MODEL_CDN_BASE_URL).toBe("https://models.example.test");
@@ -428,6 +472,7 @@ export const runtime = {
         EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
         EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
         ...metadataWithoutBase,
+        ...validReleaseFirebaseEnv,
         EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B: "cdn://models/gemma.gguf",
         EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B: "https://models.example.test/qwen8.gguf",
         EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B: "https://models.example.test/qwen14.gguf",
@@ -445,6 +490,7 @@ export const runtime = {
         EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
         EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
         ...metadataWithoutBytes,
+        ...validReleaseFirebaseEnv,
       }),
     ).rejects.toThrow(/EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B/);
   });
@@ -458,6 +504,7 @@ export const runtime = {
         EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
         EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
         ...metadataWithoutSha,
+        ...validReleaseFirebaseEnv,
       }),
     ).rejects.toThrow(/EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED/);
   });
@@ -470,11 +517,36 @@ export const runtime = {
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
       EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
       ...validReleaseModelMetadata,
+      ...validReleaseFirebaseEnv,
     });
 
     expect(result.status).not.toBe(0);
     expect(result.stdout + result.stderr).toMatch(/llama\.cpp checkout is missing/);
     expect(result.stdout + result.stderr).toMatch(/native:sync-llama/);
+  });
+
+  it("release verifier rejects missing Firebase env without printing values", () => {
+    const {
+      EXPO_PUBLIC_FIREBASE_PROJECT_ID: _missingProjectId,
+      ...firebaseWithoutProjectId
+    } = validReleaseFirebaseEnv;
+    const secretLikeValue = "do-not-print-this-firebase-value";
+    const result = runReleaseVerifierWithMockLlama({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      ...validReleaseModelMetadata,
+      ...firebaseWithoutProjectId,
+      EXPO_PUBLIC_FIREBASE_API_KEY: secretLikeValue,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain("EXPO_PUBLIC_FIREBASE_PROJECT_ID");
+    expect(result.stdout + result.stderr).toContain(
+      "Only variable names are shown here; values are intentionally omitted.",
+    );
+    expect(result.stdout + result.stderr).not.toContain(secretLikeValue);
   });
 
   it("release verification fails when model URLs are unresolved placeholders", () => {
@@ -485,6 +557,7 @@ export const runtime = {
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
       EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
       ...metadataWithoutBase,
+      ...validReleaseFirebaseEnv,
       EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B: "https://YOUR_MODEL_CDN/models/gemma.gguf",
       EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B: "https://models.example.test/qwen8.gguf",
       EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B: "https://models.example.test/qwen14.gguf",
@@ -503,6 +576,7 @@ export const runtime = {
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
       EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
       ...metadataWithoutBytes,
+      ...validReleaseFirebaseEnv,
     });
 
     expect(result.status).not.toBe(0);
@@ -517,6 +591,7 @@ export const runtime = {
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
       EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
       ...metadataWithoutSha,
+      ...validReleaseFirebaseEnv,
     });
 
     expect(result.status).not.toBe(0);
@@ -530,6 +605,7 @@ export const runtime = {
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
       EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
       ...validReleaseModelMetadata,
+      ...validReleaseFirebaseEnv,
     });
 
     expect(result.status).not.toBe(0);

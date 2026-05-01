@@ -54,6 +54,15 @@ const LOCAL_MODEL_SHA256_QWEN_8B = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_QW
 const LOCAL_MODEL_SHA256_QWEN_14B = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B || "";
 const LOCAL_MODEL_SHA256_QWEN_EMBED = process.env.EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED || "";
 
+const FIREBASE_PUBLIC_ENV_NAMES = [
+  "EXPO_PUBLIC_FIREBASE_API_KEY",
+  "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN",
+  "EXPO_PUBLIC_FIREBASE_PROJECT_ID",
+  "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET",
+  "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
+  "EXPO_PUBLIC_FIREBASE_APP_ID",
+];
+
 function normalizeEnvFlag(value: unknown) {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -84,6 +93,18 @@ const isProductionNativeDownloadBuild =
   isProductionOrReleaseBuild &&
   isNativeOnDeviceRuntime &&
   normalizedModelDeliveryMode === "download_on_first_launch";
+
+const missingFirebaseEnvNames = FIREBASE_PUBLIC_ENV_NAMES.filter(
+  (name) => !String(process.env[name] || "").trim(),
+);
+
+if (isProductionOrReleaseBuild && missingFirebaseEnvNames.length) {
+  throw new Error(
+    `Release/production native builds require Firebase config. Missing: ${missingFirebaseEnvNames.join(
+      ", ",
+    )}. Set all EXPO_PUBLIC_FIREBASE_* values before expo config/prebuild/build.`,
+  );
+}
 
 const LOCAL_MODEL_REQUIRE_SHA256 = isProductionNativeDownloadBuild
   ? "true"

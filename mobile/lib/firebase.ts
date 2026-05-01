@@ -1,6 +1,6 @@
 import Constants from "expo-constants";
 import { Platform } from "react-native";
-import { initializeApp, getApp, getApps } from "firebase/app";
+import { initializeApp, getApp, getApps, type FirebaseApp } from "firebase/app";
 import * as FirebaseAuth from "firebase/auth";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -20,13 +20,28 @@ const missingKeys = Object.entries(firebaseConfig)
   .filter(([, value]) => !value)
   .map(([key]) => key);
 
-if (missingKeys.length) {
-  throw new Error(
-    `Missing Firebase config: ${missingKeys.join(", ")}. Add the EXPO_PUBLIC_FIREBASE_* values to your .env file.`
-  );
-}
+export const firebaseConfigStatus: {
+  configured: boolean;
+  missingKeys: string[];
+  message?: string;
+} = missingKeys.length
+  ? {
+      configured: false,
+      missingKeys,
+      message: `Missing Firebase config: ${missingKeys.join(
+        ", "
+      )}. Add EXPO_PUBLIC_FIREBASE_* values before building.`,
+    }
+  : {
+      configured: true,
+      missingKeys: [],
+    };
 
-export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
+export const firebaseApp: FirebaseApp | null = firebaseConfigStatus.configured
+  ? getApps().length
+    ? getApp()
+    : initializeApp(firebaseConfig)
+  : null;
 
 type NativeInitializeAuthOptions = NonNullable<Parameters<typeof FirebaseAuth.initializeAuth>[1]>;
 type NativePersistenceValue = NonNullable<NativeInitializeAuthOptions["persistence"]>;
@@ -71,18 +86,29 @@ export function getInitializeAuthOptions(
   };
 }
 
-function buildAuth() {
+function buildAuth(app: FirebaseApp) {
   const options = getInitializeAuthOptions(Platform.OS);
 
   if (!options) {
-    return FirebaseAuth.getAuth(firebaseApp);
+    return FirebaseAuth.getAuth(app);
   }
 
   try {
-    return FirebaseAuth.initializeAuth(firebaseApp, options);
+    return FirebaseAuth.initializeAuth(app, options);
   } catch {
-    return FirebaseAuth.getAuth(firebaseApp);
+    return FirebaseAuth.getAuth(app);
   }
 }
 
-export const auth = buildAuth();
+export const auth: FirebaseAuth.Auth | null = firebaseApp ? buildAuth(firebaseApp) : null;
+
+export function requireFirebaseAuth(): FirebaseAuth.Auth {
+  if (auth) {
+    return auth;
+  }
+
+  throw new Error(
+    firebaseConfigStatus.message ||
+      "Firebase Auth is not configured. Add EXPO_PUBLIC_FIREBASE_* values before building."
+  );
+}

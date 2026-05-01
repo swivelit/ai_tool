@@ -68,6 +68,15 @@ const SHA256_ENV = {
   'Qwen/Qwen3-Embedding-0.6B': 'EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED',
 };
 
+const FIREBASE_ENV_NAMES = [
+  'EXPO_PUBLIC_FIREBASE_API_KEY',
+  'EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN',
+  'EXPO_PUBLIC_FIREBASE_PROJECT_ID',
+  'EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET',
+  'EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID',
+  'EXPO_PUBLIC_FIREBASE_APP_ID',
+];
+
 const PLACEHOLDER_URL_PATTERN = /^https:\/\/YOUR_MODEL_CDN\//i;
 const CDN_URL_PATTERN = /^cdn:\/\//i;
 const TEMPLATE_TOKEN_PATTERN = /\{\{\s*(?:MODEL_CDN_BASE_URL|LOCAL_MODEL_CDN_BASE_URL)\s*\}\}/i;
@@ -338,6 +347,18 @@ function verifyStaticLocalFirstConfig() {
   requireContains(
     appConfigFile,
     appConfig,
+    'FIREBASE_PUBLIC_ENV_NAMES',
+    'Expo config declares required Firebase public env names',
+  );
+  requireContains(
+    appConfigFile,
+    appConfig,
+    'Release/production native builds require Firebase config',
+    'Expo config rejects release builds with missing Firebase config',
+  );
+  requireContains(
+    appConfigFile,
+    appConfig,
     'LOCAL_MODEL_OPENAI_POLICY: "fallback_only"',
     'Expo config keeps OpenAI policy fallback-only',
   );
@@ -477,6 +498,19 @@ function verifyReleaseEnvironment() {
     fail('Release builds must set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true', voiceValue);
   }
   pass('release env keeps recorded voice on the local-first pipeline');
+
+  const missingFirebaseEnvNames = FIREBASE_ENV_NAMES.filter((name) => !env(name));
+  if (missingFirebaseEnvNames.length) {
+    fail(
+      'Release builds are missing Firebase public config',
+      [
+        'Only variable names are shown here; values are intentionally omitted.',
+        `Missing variable name(s): ${missingFirebaseEnvNames.join(', ')}`,
+        'Set all EXPO_PUBLIC_FIREBASE_* values before expo config/prebuild/build.',
+      ].join('\n'),
+    );
+  }
+  pass('release env has Firebase public config required by Firebase Auth');
 
   requireUsableLlamaCppCheckout();
 

@@ -28,7 +28,7 @@ import {
   statusCodes,
 } from "@react-native-google-signin/google-signin";
 
-import { auth } from "@/lib/firebase";
+import { auth, firebaseConfigStatus } from "@/lib/firebase";
 import {
   clearProfile,
   getProfile,
@@ -128,6 +128,17 @@ function mapGoogleError(error: any) {
   return message || "Google sign-in failed. Please try again.";
 }
 
+function requireConfiguredAuth() {
+  if (auth) {
+    return auth;
+  }
+
+  throw new Error(
+    firebaseConfigStatus.message ||
+      "Firebase Auth is not configured. Add EXPO_PUBLIC_FIREBASE_* values before building."
+  );
+}
+
 type ProfileSyncIssue = {
   kind: "auth_error" | "backend_error" | "offline";
   message: string;
@@ -192,6 +203,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!auth) {
+      setFirebaseUser(null);
+      lastAuthUserRef.current = null;
+      setLoading(false);
+      setLocallySignedOut(false);
+      setProfileSyncIssue(null);
+      return;
+    }
+
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
       setFirebaseUser(nextUser);
       lastAuthUserRef.current = nextUser;
@@ -213,13 +233,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   async function reloadUser(authUser: User) {
+    const configuredAuth = requireConfiguredAuth();
+
     try {
       await authUser.reload();
     } catch {
       // Ignore reload failures and continue with the current user object.
     }
 
-    return auth.currentUser || authUser;
+    return configuredAuth.currentUser || authUser;
   }
 
   function issueFromProfileSyncResult(result: ProfileSyncResult): ProfileSyncIssue | null {
@@ -299,7 +321,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function retryProfileSync() {
-    const candidate = auth.currentUser || lastAuthUserRef.current || firebaseUser;
+    const configuredAuth = requireConfiguredAuth();
+    const candidate = configuredAuth.currentUser || lastAuthUserRef.current || firebaseUser;
 
     if (!candidate) {
       setProfileSyncIssue(null);
@@ -317,6 +340,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function tryLinkPendingGoogleCredential(authUser: User) {
+    const configuredAuth = requireConfiguredAuth();
     const pending = pendingGoogleLink;
     if (!pending?.credential) {
       return authUser;
@@ -343,14 +367,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       pendingGoogleLink = null;
     }
 
-    return auth.currentUser || authUser;
+    return configuredAuth.currentUser || authUser;
   }
 
   async function signInWithPassword(email: string, password: string) {
     const normalizedEmail = email.trim();
 
     try {
-      const credential = await signInWithEmailAndPassword(auth, normalizedEmail, password);
+      const configuredAuth = requireConfiguredAuth();
+      const credential = await signInWithEmailAndPassword(
+        configuredAuth,
+        normalizedEmail,
+        password
+      );
       const maybeLinkedUser = await tryLinkPendingGoogleCredential(credential.user);
       await finalizeAuthenticatedUser(maybeLinkedUser);
     } catch (error) {
@@ -359,7 +388,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function linkPasswordForCurrentUser(password: string, displayName?: string) {
-    const currentUser = auth.currentUser;
+    const configuredAuth = requireConfiguredAuth();
+    const currentUser = configuredAuth.currentUser;
 
     if (!currentUser) {
       throw new Error("No logged-in user found.");
@@ -393,7 +423,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await updateProfile(currentUser, { displayName: displayName.trim() });
       }
 
-      await finalizeAuthenticatedUser(auth.currentUser || currentUser);
+      await finalizeAuthenticatedUser(configuredAuth.currentUser || currentUser);
     } catch (error) {
       throw new Error(mapFirebaseError(error));
     }
@@ -401,23 +431,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function signUpWithPassword(name: string, email: string, password: string) {
     const normalizedEmail = email.trim();
-    const currentUser = auth.currentUser;
-    const currentUserEmail = normalizeEmail(currentUser?.email);
 
     try {
+      const configuredAuth = requireConfiguredAuth();
+      const currentUser = configuredAuth.currentUser;
+      const currentUserEmail = normalizeEmail(currentUser?.email);
+
       if (currentUser && currentUserEmail && currentUserEmail === normalizeEmail(normalizedEmail)) {
         await linkPasswordForCurrentUser(password, name.trim());
         return;
       }
 
-      const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
+      const credential = await createUserWithEmailAndPassword(
+        configuredAuth,
+        normalizedEmail,
+        password
+      );
 
       if (name.trim()) {
         await updateProfile(credential.user, { displayName: name.trim() });
       }
 
       const maybeLinkedUser = await tryLinkPendingGoogleCredential(
-        auth.currentUser || credential.user
+        configuredAuth.currentUser || credential.user
       );
       await finalizeAuthenticatedUser(maybeLinkedUser);
     } catch (error: any) {
@@ -428,7 +464,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ) {
         try {
           const existingCredential = await signInWithEmailAndPassword(
-            auth,
+            requireConfiguredAuth(),
             normalizedEmail,
             password
           );
@@ -466,6 +502,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let googleCredential: AuthCredential | null = null;
 
     try {
+      const configuredAuth = requireConfiguredAuth();
+
       await GoogleSignin.hasPlayServices({
         showPlayServicesUpdateDialog: true,
       });
@@ -487,7 +525,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       googleCredential = GoogleAuthProvider.credential(idToken);
 
-      const currentUser = auth.currentUser;
+      const currentUser = configuredAuth.currentUser;
       const currentEmail = normalizeEmail(currentUser?.email);
 
       if (currentUser && currentEmail && googleEmail && currentEmail === googleEmail) {
@@ -505,11 +543,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         pendingGoogleLink = null;
-        await finalizeAuthenticatedUser(auth.currentUser || currentUser);
+        await finalizeAuthenticatedUser(configuredAuth.currentUser || currentUser);
         return;
       }
 
-      const userCredential = await signInWithCredential(auth, googleCredential);
+      const userCredential = await signInWithCredential(configuredAuth, googleCredential);
       pendingGoogleLink = null;
       await finalizeAuthenticatedUser(userCredential.user);
     } catch (error: any) {
@@ -574,10 +612,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function clearLocalSession(options?: { revokeGoogleAccess?: boolean }) {
+    const configuredAuth = requireConfiguredAuth();
+
     await primeLocalSignedOutState();
 
     try {
-      await signOut(auth);
+      await signOut(configuredAuth);
     } catch {
       // Ignore Firebase sign-out errors during forced local cleanup.
     }
@@ -589,55 +629,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await clearLocalSession();
   }
 
-    async function deleteCurrentAccount(backendUserId?: number) {
-      const currentUser = auth.currentUser;
+  async function deleteCurrentAccount(backendUserId?: number) {
+    const configuredAuth = requireConfiguredAuth();
+    const currentUser = configuredAuth.currentUser;
 
-      if (!currentUser) {
-        throw new Error("No logged-in user found.");
-      }
-
-      const restoredProfile = await getProfileForFirebaseUid(
-        currentUser.uid,
-        currentUser.email
-      );
-      const resolvedBackendUserId = backendUserId || restoredProfile?.userId;
-      const shouldCleanupGoogleSdk = hasProvider(currentUser, "google.com");
-
-      try {
-        if (resolvedBackendUserId) {
-          await deleteAccountOnBackend(resolvedBackendUserId);
-        }
-      } catch (error: any) {
-        throw new Error(
-          error?.message ||
-            "Backend cleanup failed. Please try again before deleting the login account."
-        );
-      }
-
-      try {
-        await currentUser.reload();
-      } catch {
-        // Ignore reload failures and continue with the current auth user.
-      }
-
-      const liveUser = auth.currentUser || currentUser;
-
-      try {
-        await deleteUser(liveUser);
-      } catch (error) {
-        throw new Error(mapFirebaseError(error));
-      }
-
-      await primeLocalSignedOutState(resolvedBackendUserId);
-
-      try {
-        await signOut(auth);
-      } catch {
-        // Ignore sign-out errors after account deletion attempts.
-      }
-
-      await cleanupGoogleSdk({ revokeGoogleAccess: shouldCleanupGoogleSdk });
+    if (!currentUser) {
+      throw new Error("No logged-in user found.");
     }
+
+    const restoredProfile = await getProfileForFirebaseUid(
+      currentUser.uid,
+      currentUser.email
+    );
+    const resolvedBackendUserId = backendUserId || restoredProfile?.userId;
+    const shouldCleanupGoogleSdk = hasProvider(currentUser, "google.com");
+
+    try {
+      if (resolvedBackendUserId) {
+        await deleteAccountOnBackend(resolvedBackendUserId);
+      }
+    } catch (error: any) {
+      throw new Error(
+        error?.message ||
+          "Backend cleanup failed. Please try again before deleting the login account."
+      );
+    }
+
+    try {
+      await currentUser.reload();
+    } catch {
+      // Ignore reload failures and continue with the current auth user.
+    }
+
+    const liveUser = configuredAuth.currentUser || currentUser;
+
+    try {
+      await deleteUser(liveUser);
+    } catch (error) {
+      throw new Error(mapFirebaseError(error));
+    }
+
+    await primeLocalSignedOutState(resolvedBackendUserId);
+
+    try {
+      await signOut(configuredAuth);
+    } catch {
+      // Ignore sign-out errors after account deletion attempts.
+    }
+
+    await cleanupGoogleSdk({ revokeGoogleAccess: shouldCleanupGoogleSdk });
+  }
 
   const value: AuthContextType = {
     user,

@@ -266,7 +266,7 @@ async function buildHeaders(
 ) {
   const headers: Record<string, string> = headersToRecord(baseHeaders);
   const shouldAttachAuth = options?.auth !== false;
-  const currentUser = auth.currentUser;
+  const currentUser = auth?.currentUser ?? null;
 
   if (shouldAttachAuth && currentUser) {
     const token = await currentUser.getIdToken(
@@ -303,7 +303,8 @@ async function fetchBackend(
     throw normalizeFetchFailure(error, method, path);
   }
 
-  if (res.status !== 401 || !shouldAttachAuth || !auth.currentUser) {
+  const currentUser = auth?.currentUser ?? null;
+  if (res.status !== 401 || !shouldAttachAuth || !currentUser) {
     return res;
   }
 
