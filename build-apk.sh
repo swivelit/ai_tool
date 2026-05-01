@@ -184,7 +184,6 @@ is_truthy() {
   esac
 }
 
-RUNTIME_MODE="$(runtime_mode_normalized "${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}")"
 EAS_PROFILE="$(runtime_mode_normalized "${EAS_BUILD_PROFILE:-}")"
 JAI_BUILD_PROFILE="$(runtime_mode_normalized "${JAI_BUILD_PROFILE:-}")"
 
@@ -193,9 +192,14 @@ if [[ "$BUILD_TYPE" == "release" || "$EAS_PROFILE" == "production" || "$EAS_PROF
   IS_PRODUCTION_OR_RELEASE_BUILD=1
 fi
 
-SHOULD_SYNC_LLAMA_CPP=0
-if [[ "$BUILD_TYPE" == "release" || "$RUNTIME_MODE" == "native_on_device" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]] || is_truthy "${JAI_REQUIRE_LLAMA_CPP:-}"; then
-  SHOULD_SYNC_LLAMA_CPP=1
+if is_truthy "${JAI_DEBUG_LITE:-}"; then
+  if [[ "$BUILD_TYPE" != "debug" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
+    fail "JAI_DEBUG_LITE=1 is debug-only and cannot be used for production/release builds."
+  fi
+
+  export EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE="local_adapter"
+  export EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE="local_adapter_dev"
+  info "Debug-lite mode enabled: using local_adapter/local_adapter_dev so emulator can boot without native llama.cpp."
 fi
 
 if [[ "$BUILD_TYPE" == "release" ]]; then
@@ -214,6 +218,12 @@ fi
 
 if [[ -z "${EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE:-}" ]]; then
   export EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE="download_on_first_launch"
+fi
+
+RUNTIME_MODE="$(runtime_mode_normalized "${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}")"
+SHOULD_SYNC_LLAMA_CPP=0
+if [[ "$BUILD_TYPE" == "release" || "$RUNTIME_MODE" == "native_on_device" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]] || is_truthy "${JAI_REQUIRE_LLAMA_CPP:-}"; then
+  SHOULD_SYNC_LLAMA_CPP=1
 fi
 
 if [[ -z "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" ]]; then
@@ -282,6 +292,7 @@ info "Using mobile app at: $MOBILE_DIR"
 info "Build type: $BUILD_TYPE"
 info "Android ABIs: $JAI_ANDROID_ABIS"
 info "Runtime mode: ${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}"
+info "Model delivery mode: ${EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE:-download_on_first_launch}"
 if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" ]]; then
   info "llama.cpp required: yes (production/release native build guard enabled)"
 fi

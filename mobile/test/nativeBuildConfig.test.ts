@@ -428,6 +428,18 @@ export const runtime = {
     ).rejects.toThrow(/EXPO_PUBLIC_FIREBASE_PROJECT_ID/);
   });
 
+  it("rejects release app.config when runtime mode is local_adapter", async () => {
+    await expect(
+      importAppConfigWithEnv({
+        BUILD_TYPE: "release",
+        EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "local_adapter",
+        EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "local_adapter_dev",
+        ...validReleaseModelMetadata,
+        ...validReleaseFirebaseEnv,
+      }),
+    ).rejects.toThrow(/Production\/release builds cannot use runtime\.mode=local_adapter/);
+  });
+
   it("allows debug app.config to omit release CDN metadata", async () => {
     const appConfig = await importAppConfigWithEnv({
       BUILD_TYPE: "debug",
@@ -447,6 +459,18 @@ export const runtime = {
 
     expect(appConfig.expo.extra.firebaseApiKey).toBeUndefined();
     expect(appConfig.expo.extra.firebaseProjectId).toBeUndefined();
+  });
+
+  it("allows debug-lite app.config to use local_adapter_dev without GGUF release metadata", async () => {
+    const appConfig = await importAppConfigWithEnv({
+      BUILD_TYPE: "debug",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "local_adapter",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "local_adapter_dev",
+    });
+
+    expect(appConfig.expo.extra.LOCAL_MODEL_RUNTIME_MODE).toBe("local_adapter");
+    expect(appConfig.expo.extra.LOCAL_MODEL_DELIVERY_MODE).toBe("local_adapter_dev");
+    expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("false");
   });
 
   it("accepts local release app.config only when CDN base, expectedBytes, and sha256 are present", async () => {
@@ -547,6 +571,22 @@ export const runtime = {
       "Only variable names are shown here; values are intentionally omitted.",
     );
     expect(result.stdout + result.stderr).not.toContain(secretLikeValue);
+  });
+
+  it("release verification rejects local_adapter and requires native_on_device", () => {
+    const result = runReleaseVerifierWithMockLlama({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "local_adapter",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "local_adapter_dev",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      ...validReleaseModelMetadata,
+      ...validReleaseFirebaseEnv,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(
+      /EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device/,
+    );
   });
 
   it("release verification fails when model URLs are unresolved placeholders", () => {

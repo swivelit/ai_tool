@@ -84,6 +84,35 @@ describe("Android native ABI filters", () => {
     expect(launchDebug).toContain("BUILD_TYPE=debug ./build-apk.sh");
   });
 
+  it("enables debug-lite for x86_64 debug launches unless full native is requested", () => {
+    const launchDebug = readRepo("launch-debug_apk.sh");
+
+    expect(launchDebug).toContain('jai_android_abi_list_contains "x86_64" "$SELECTED_ANDROID_ABIS"');
+    expect(launchDebug).toContain('! is_truthy "${JAI_DEBUG_FULL_NATIVE:-}"');
+    expect(launchDebug).toContain('export JAI_DEBUG_LITE="1"');
+    expect(launchDebug).toContain(
+      "x86_64 emulator detected; enabling JAI_DEBUG_LITE=1. Set JAI_DEBUG_FULL_NATIVE=1 to test the full native runtime.",
+    );
+  });
+
+  it("build-apk supports debug-lite local_adapter/local_adapter_dev without release guards", () => {
+    const buildApk = readRepo("build-apk.sh");
+
+    expect(buildApk).toContain('is_truthy "${JAI_DEBUG_LITE:-}"');
+    expect(buildApk).toContain("JAI_DEBUG_LITE=1 is debug-only");
+    expect(buildApk).toContain('export EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE="local_adapter"');
+    expect(buildApk).toContain('export EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE="local_adapter_dev"');
+    expect(buildApk).toContain(
+      "Debug-lite mode enabled: using local_adapter/local_adapter_dev so emulator can boot without native llama.cpp.",
+    );
+    expect(buildApk.indexOf('export EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE="local_adapter"')).toBeLessThan(
+      buildApk.indexOf("SHOULD_SYNC_LLAMA_CPP=0"),
+    );
+    expect(buildApk.indexOf('export JAI_BUILD_TYPE="release"')).toBeLessThan(
+      buildApk.indexOf('export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256="true"'),
+    );
+  });
+
   it("validates generated APK native libraries for the selected ABI set", () => {
     const buildApk = readRepo("build-apk.sh");
 

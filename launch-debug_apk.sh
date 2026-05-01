@@ -25,6 +25,13 @@ fail() {
   exit 1
 }
 
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+    1|true|yes|y|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 ANDROID_ABI_UTILS="$ROOT_DIR/scripts/android-abi-utils.sh"
 [[ -f "$ANDROID_ABI_UTILS" ]] || fail "Android ABI helper not found at: $ANDROID_ABI_UTILS"
 # shellcheck disable=SC1090
@@ -173,6 +180,11 @@ fi
 export JAI_ANDROID_ABIS="$SELECTED_ANDROID_ABIS"
 info "Android target ABIs: $DEVICE_ANDROID_ABILIST"
 info "Debug APK ABIs: $JAI_ANDROID_ABIS"
+
+if jai_android_abi_list_contains "x86_64" "$SELECTED_ANDROID_ABIS" && ! is_truthy "${JAI_DEBUG_FULL_NATIVE:-}"; then
+  export JAI_DEBUG_LITE="1"
+  info "x86_64 emulator detected; enabling JAI_DEBUG_LITE=1. Set JAI_DEBUG_FULL_NATIVE=1 to test the full native runtime."
+fi
 
 info "Building debug APK first"
 BUILD_TYPE=debug ./build-apk.sh

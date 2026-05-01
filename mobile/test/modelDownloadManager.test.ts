@@ -159,6 +159,23 @@ describe("modelDownloadManager", () => {
     expect(status.storageRoot).toBe("file:///mock/models/");
   });
 
+  it("treats local_adapter_dev as ready without requiring GGUF downloads", async () => {
+    const { downloadRequiredModels, getModelInstallStatus } = await importManager();
+    const config = testConfig({ mode: "local_adapter_dev" });
+
+    const status = await getModelInstallStatus({ config });
+    expect(status.mode).toBe("local_adapter_dev");
+    expect(status.ready).toBe(true);
+    expect(status.requiredReady).toBe(true);
+    expect(status.missing).toEqual([]);
+    expect(status.invalid).toEqual([]);
+    expect(status.required.every((entry) => entry.exists && entry.valid)).toBe(true);
+
+    const downloadStatus = await downloadRequiredModels({ config });
+    expect(downloadStatus.ready).toBe(true);
+    expect(state.downloadAttempts).toBe(0);
+  });
+
   it("downloads only the Lite pack by default and returns file:// paths", async () => {
     state.downloads.push(
       { url: "https://cdn.example.test/gemma.gguf", content: "gemma" },
