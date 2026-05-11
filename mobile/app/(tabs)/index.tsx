@@ -45,6 +45,7 @@ import {
   normalizeChatTurnPayload,
 } from "@/lib/chatResponse";
 import { parseDatetime } from "@/lib/datetime";
+import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import { saveScheduledTask } from "@/lib/localAgents";
 import {
   friendlyLocalTimeoutMessage,
@@ -1401,6 +1402,20 @@ export default function Home() {
     );
   }
 
+  async function getChatTurnTimeoutMs(source: ChatRequestSource) {
+    try {
+      const deviceInfo = await getCachedDeviceCapabilities();
+      return getLocalTurnTimeoutMs({
+        source,
+        deviceInfo,
+        selectedTier: deviceInfo.preferredTier,
+        preferredTier: deviceInfo.preferredTier,
+      });
+    } catch {
+      return getLocalTurnTimeoutMs({ source });
+    }
+  }
+
   function handleComposerLayout(event: LayoutChangeEvent) {
     const nextHeight = Math.ceil(event.nativeEvent.layout.height || 0);
     if (nextHeight > 0 && Math.abs(nextHeight - composerHeight) > 1) {
@@ -1523,7 +1538,7 @@ export default function Home() {
         setHandsFreeStatus("Working on it…");
       }
 
-      const timeoutMs = getLocalTurnTimeoutMs({ source });
+      const timeoutMs = await getChatTurnTimeoutMs(source);
       const response = await withLocalTimeout(
         apiPost<BackendChatResponse>("/api/chat", {
           user_id: profile.userId,
@@ -1701,7 +1716,7 @@ export default function Home() {
         } as any
       );
 
-      const timeoutMs = getLocalTurnTimeoutMs({ source: "voice" });
+      const timeoutMs = await getChatTurnTimeoutMs("voice");
       const res = await withLocalTimeout(
         apiPostForm<BackendChatResponse | ChatHistoryItem>(
           `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
@@ -2703,6 +2718,7 @@ const styles = StyleSheet.create({
 
   composerShell: {
     flexShrink: 0,
+    alignItems: "center",
   },
 
   composerCard: {

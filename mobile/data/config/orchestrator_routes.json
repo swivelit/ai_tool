@@ -3,6 +3,7 @@
   "routes": {
     "fastGreetingKeywords": ["hi", "hello", "hey", "vanakkam", "thanks", "thank you", "good morning", "good evening", "good night", "good afternoon", "okay thanks", "cool thanks"],
     "smallTalkKeywords": ["how are you", "what's up", "whats up", "how is it going", "nice to meet you"],
+    "wellbeingKeywords": ["tired", "so tired", "exhausted", "sleepy", "drained", "stressed", "not feeling good"],
     "calendarKeywords": ["schedule", "agenda", "plan", "today plan", "tomorrow plan", "what do i have", "calendar", "my reminders", "upcoming tasks", "my tasks"],
     "reminderKeywords": ["remind me", "set a reminder", "add reminder", "remember this", "next week at", "today at", "tomorrow at", "don't let me forget", "create a task"],
     "weatherKeywords": ["weather", "temperature", "rain", "forecast", "climate", "humid", "wind"],

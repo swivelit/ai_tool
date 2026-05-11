@@ -19,7 +19,7 @@ describe("chat screen layout", () => {
     expect(layout.composerBottomY).toBeLessThanOrEqual(340);
   });
 
-  it("bases ScrollView bottom padding on composer height and safe area", () => {
+  it("bases ScrollView bottom padding on measured composer height without double-counting bottom padding", () => {
     const layout = computeChatScreenLayout({
       platform: "ios",
       screenWidth: 390,
@@ -28,8 +28,32 @@ describe("chat screen layout", () => {
       composerHeight: 82,
     });
 
-    expect(layout.scrollBottomPadding).toBe(128);
+    expect(layout.scrollBottomPadding).toBe(94);
     expect(layout.scrollBottomPadding).not.toBe(210);
+    expect(layout.scrollBottomPadding).toBeLessThan(
+      82 + layout.composerBottomPadding + 12,
+    );
+  });
+
+  it("clamps inflated Android bottom safe area values", () => {
+    const layout74 = computeChatScreenLayout({
+      platform: "android",
+      screenWidth: 390,
+      screenHeight: 844,
+      safeAreaBottom: 74,
+      composerHeight: 82,
+    });
+    const layout100 = computeChatScreenLayout({
+      platform: "android",
+      screenWidth: 390,
+      screenHeight: 844,
+      safeAreaBottom: 100,
+      composerHeight: 82,
+    });
+
+    expect(layout74.composerBottomPadding).toBeLessThanOrEqual(24);
+    expect(layout100.composerBottomPadding).toBeLessThanOrEqual(24);
+    expect(layout100.scrollBottomPadding).toBe(94);
   });
 
   it("keeps hidden-keyboard composer inside the safe area", () => {

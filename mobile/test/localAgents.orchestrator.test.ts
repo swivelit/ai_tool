@@ -220,6 +220,24 @@ describe("local orchestrator and alignment", () => {
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 
+  it("returns simple wellbeing support locally with no model or backend call", async () => {
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 210,
+      message: "I’m feeling so tired!",
+      replyLanguage: "en",
+      userProfile: { name: "Hari" },
+    });
+
+    expect(result.route).toBe("wellbeing_support");
+    expect(result.source).toBe("local_rules");
+    expect(result.assistantText).toContain("Take a short rest");
+    expect(result.assistantText).toContain("medical professional");
+    expect(mockedState.fetchQueue).toHaveLength(0);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
   it("selects reasoner models only from the selected installed tier", async () => {
     const { __assistantTestUtils } = await import("../lib/localAgents");
     const complexPrompt =

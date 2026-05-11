@@ -40,7 +40,7 @@ export function computeChatScreenLayout(
   const screenWidth = Math.max(0, finiteNumber(input.screenWidth, 0));
   const screenHeight = Math.max(0, finiteNumber(input.screenHeight, 0));
   const safeAreaTop = Math.max(0, finiteNumber(input.safeAreaTop, 0));
-  const safeAreaBottom = Math.max(0, finiteNumber(input.safeAreaBottom, 0));
+  const rawSafeAreaBottom = Math.max(0, finiteNumber(input.safeAreaBottom, 0));
   const composerHeight = Math.max(0, finiteNumber(input.composerHeight, 0));
   const keyboardHeight =
     input.keyboardVisible === true
@@ -48,6 +48,8 @@ export function computeChatScreenLayout(
       : 0;
   const platform = String(input.platform || "").toLowerCase();
   const maxChatWidth = Math.max(320, finiteNumber(input.maxChatWidth, 560));
+  const safeAreaBottom =
+    platform === "android" ? clamp(rawSafeAreaBottom, 0, 24) : rawSafeAreaBottom;
   const isSmallPhone = screenWidth < 370 || screenHeight < 760;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = safeAreaTop + (isSmallPhone ? 10 : 16);
@@ -57,17 +59,14 @@ export function computeChatScreenLayout(
     Math.max(0, screenWidth - horizontalPadding * 2),
     maxChatWidth,
   );
-  const scrollBottomPadding = Math.max(
-    24,
-    Math.ceil(composerHeight + composerBottomPadding + 12),
-  );
+  const scrollBottomPadding = Math.max(24, Math.ceil(composerHeight + 12));
   const keyboardTopY = Math.max(0, screenHeight - keyboardHeight);
   const composerBottomY = keyboardHeight
     ? keyboardTopY
     : Math.max(0, screenHeight - safeAreaBottom);
   const composerTopY = Math.max(
     topPadding,
-    composerBottomY - composerHeight - composerBottomPadding,
+    composerBottomY - composerHeight,
   );
 
   return {

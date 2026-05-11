@@ -380,9 +380,9 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
       openAiPolicy: config.openAiPolicy || "fallback_only",
       nativeBackend: config.nativeBackend || "llama_cpp",
       nativeModuleName: moduleName,
-      timeoutMs: Number(config.timeoutMs || 45_000),
+      timeoutMs: Number(config.timeoutMs || 120_000),
     };
-    this.timeoutMs = Number(this.config.timeoutMs || 45_000);
+    this.timeoutMs = Number(this.config.timeoutMs || 120_000);
     this.bridge = config.nativeBridge ?? getNativeOnDeviceModelBridge(moduleName);
   }
 
@@ -595,7 +595,7 @@ export class OpenAiCompatibleLocalAdapterRuntime implements LocalModelRuntime {
   constructor(config: LocalRuntimeConfig) {
     this.baseUrl = normalizeLocalRuntimeBaseUrl(config.baseUrl);
     this.apiKey = String(config.apiKey || "");
-    this.timeoutMs = Number(config.timeoutMs || 45_000);
+    this.timeoutMs = Number(config.timeoutMs || 120_000);
     this.adapterLocation = normalizeLocalAdapterLocation(
       config.adapterLocation,
     );

@@ -21,7 +21,7 @@
   },
   "baseUrl": "",
   "apiKey": "",
-  "timeoutMs": 45000,
+  "timeoutMs": 120000,
   "native": {
     "backend": "llama_cpp",
     "bridgeModuleName": "JaiOnDeviceModel",

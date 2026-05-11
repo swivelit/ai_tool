@@ -326,7 +326,7 @@ export default {
       // Use Firebase-authenticated backend proxying or a short-lived pairing token instead.
       LOCAL_MODEL_API_KEY: "",
       LOCAL_MODEL_TIMEOUT_MS: Number(
-        process.env.EXPO_PUBLIC_LOCAL_MODEL_TIMEOUT_MS || 45000,
+        process.env.EXPO_PUBLIC_LOCAL_MODEL_TIMEOUT_MS || 120000,
       ),
 
       // local speech-to-text model

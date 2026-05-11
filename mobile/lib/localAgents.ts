@@ -38,6 +38,7 @@ type ChatRole = "system" | "user" | "assistant";
 
 type OrchestratorRoute =
   | "fast_greeting"
+  | "wellbeing_support"
   | "clarify"
   | "profile"
   | "calendar_query"
@@ -383,6 +384,7 @@ type OrchestratorConfig = {
   routes: {
     fastGreetingKeywords: string[];
     smallTalkKeywords?: string[];
+    wellbeingKeywords?: string[];
     calendarKeywords: string[];
     reminderKeywords: string[];
     weatherKeywords: string[];
@@ -694,7 +696,7 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
   },
   baseUrl: "",
   apiKey: "",
-  timeoutMs: 45000,
+  timeoutMs: 120000,
   modelDelivery: {
     mode: "download_on_first_launch",
     storageRoot: "document://models",
@@ -917,6 +919,15 @@ const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   routes: {
     fastGreetingKeywords: ["hi", "hello", "hey", "vanakkam", "thanks"],
     smallTalkKeywords: ["how are you", "what's up", "whats up"],
+    wellbeingKeywords: [
+      "tired",
+      "so tired",
+      "exhausted",
+      "sleepy",
+      "drained",
+      "stressed",
+      "not feeling good",
+    ],
     calendarKeywords: ["schedule", "agenda", "calendar", "reminders"],
     reminderKeywords: ["remind me", "set a reminder", "add reminder"],
     weatherKeywords: ["weather", "temperature", "rain", "forecast"],
@@ -5288,6 +5299,37 @@ function hasKeywordMatch(message: string, keywords: string[]) {
   });
 }
 
+function isSimpleWellbeingSupportMessage(
+  message: string,
+  routesConfig: OrchestratorConfig,
+  tokenCount: number,
+) {
+  if (!hasKeywordMatch(message, routesConfig.routes.wellbeingKeywords || [])) {
+    return false;
+  }
+
+  if (tokenCount > 14) {
+    return false;
+  }
+
+  return !hasKeywordMatch(message, [
+    ...(routesConfig.routes.calendarKeywords || []),
+    ...(routesConfig.routes.reminderKeywords || []),
+    ...(routesConfig.routes.weatherKeywords || []),
+    ...(routesConfig.routes.profileKeywords || []),
+    ...(routesConfig.routes.liveDataKeywords || []),
+    ...((routesConfig.routes.multiStepKeywords || []) as string[]),
+  ]);
+}
+
+function wellbeingSupportAnswer(replyLanguage: ReplyLanguage) {
+  if (replyLanguage === "ta") {
+    return "அது ரொம்ப சோர்வாக இருக்கலாம். கொஞ்சம் ஓய்வு எடுத்துக்கோங்க, தண்ணீர் குடிங்க, உங்களை அதிகம் அழுத்த வேண்டாம். இது வழக்கத்துக்கு மாறாக, கடுமையாக, அல்லது தொடர்ந்து இருந்தால் மருத்துவரிடம் பேசுங்கள்.";
+  }
+
+  return "That sounds exhausting. Take a short rest, drink some water, and don't push yourself too hard. If this feels unusual, severe, or keeps happening, please consider checking with a medical professional.";
+}
+
 function generateClarifyingQuestion(
   message: string,
   replyLanguage: ReplyLanguage,
@@ -5405,6 +5447,19 @@ function ruleBasedOrchestratorDecision(
     };
   }
 
+  if (isSimpleWellbeingSupportMessage(message, routesConfig, tokenCount)) {
+    return {
+      route: "wellbeing_support",
+      reason: "matched_simple_wellbeing_support_rule",
+      confidence: 0.97,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel: "rules",
+      fallbackAllowed: false,
+    };
+  }
+
   if (ambiguousPronounOnly || tokenCount <= shortThreshold) {
     return {
       route: "clarify",
@@ -5436,6 +5491,7 @@ function sanitizeDecision(
   const route = String(raw.route || "local_answer") as OrchestratorRoute;
   const safeRoute: OrchestratorRoute = [
     "fast_greeting",
+    "wellbeing_support",
     "clarify",
     "profile",
     "calendar_query",
@@ -6560,43 +6616,19 @@ export async function runLocalAssistantTurn(opts: {
   });
   if (!message) throw new Error("Message is required.");
 
-  let installCfg = DEFAULT_MODEL_CONFIG;
-  let modelRuntimeOptions: ModelRuntimeTierOptions = {};
-  await timeStage("ensure_models", async () => {
-    await ensureLocalAgentData();
-    installCfg = await getModelConfig();
-    modelRuntimeOptions = {
+  await timeStage("ensure_agent_data", () => ensureLocalAgentData());
+  const routesConfig = await getOrchestratorConfig();
+  const cfg = await getModelConfig();
+  let modelRuntimeOptions: ModelRuntimeTierOptions = {
+    modelTier: opts.modelTier,
+    deviceInfo: opts.deviceInfo,
+    proOptIn: opts.proOptIn,
+    selectedTier: selectedTierForRuntime(cfg, {
       modelTier: opts.modelTier,
       deviceInfo: opts.deviceInfo,
       proOptIn: opts.proOptIn,
-      selectedTier: selectedTierForRuntime(installCfg, {
-        modelTier: opts.modelTier,
-        deviceInfo: opts.deviceInfo,
-        proOptIn: opts.proOptIn,
-      }),
-    };
-    if (
-      String(installCfg.runtime?.mode || "native_on_device") === "native_on_device" &&
-      getModelDeliveryMode(installCfg) === "download_on_first_launch"
-    ) {
-      const status = await ensureRequiredModelsInstalled({
-        config: installCfg,
-        modelTier: opts.modelTier,
-        deviceInfo: opts.deviceInfo,
-        proOptIn: opts.proOptIn,
-      });
-      modelRuntimeOptions = modelTierOptionsFromInstallStatus(
-        modelRuntimeOptions,
-        status,
-      );
-    }
-  });
-
-  await appendConversation(userId, "user", message);
-
-  const routesConfig = await getOrchestratorConfig();
-  const cfg = await getModelConfig();
-  const registry = await getAgentRegistry();
+    }),
+  };
   const earlyRuleDecision = ruleBasedOrchestratorDecision(
     message,
     replyLanguage,
@@ -6604,16 +6636,24 @@ export async function runLocalAssistantTurn(opts: {
     "rules",
   );
   if (
-    earlyRuleDecision?.route === "fast_greeting" &&
-    canReturnImmediateFastGreeting(message)
+    (earlyRuleDecision?.route === "fast_greeting" &&
+      canReturnImmediateFastGreeting(message)) ||
+    earlyRuleDecision?.route === "wellbeing_support"
   ) {
     const assistantText =
-      replyLanguage === "ta"
-        ? `வணக்கம் ${opts.userProfile?.name || ""}. நான் எப்படி உதவலாம்?`.trim()
-        : `Hi ${opts.userProfile?.name || "there"}, how can I help?`;
+      earlyRuleDecision.route === "wellbeing_support"
+        ? wellbeingSupportAnswer(replyLanguage)
+        : replyLanguage === "ta"
+          ? `வணக்கம் ${opts.userProfile?.name || ""}. நான் எப்படி உதவலாம்?`.trim()
+          : `Hi ${opts.userProfile?.name || "there"}, how can I help?`;
+    const englishText =
+      earlyRuleDecision.route === "wellbeing_support"
+        ? wellbeingSupportAnswer("en")
+        : assistantText;
+    await appendConversation(userId, "user", message);
     await appendConversation(userId, "assistant", assistantText);
     await appendRouteDecisionLog(userId, message, earlyRuleDecision, {
-      routeUsed: "fast_greeting",
+      routeUsed: earlyRuleDecision.route,
       source: "local_rules",
       fastPath: true,
       fallbackPolicy: {
@@ -6623,11 +6663,11 @@ export async function runLocalAssistantTurn(opts: {
       },
     });
     return {
-      route: "fast_greeting",
+      route: earlyRuleDecision.route,
       source: "local_rules",
       cacheHit: false,
       assistantText,
-      englishText: assistantText,
+      englishText,
       intent: "assistant",
       profileSummary: "",
       meta: {
@@ -6657,6 +6697,28 @@ export async function runLocalAssistantTurn(opts: {
       },
     } satisfies LocalAssistantTurnResult;
   }
+
+  await timeStage("ensure_models", async () => {
+    if (
+      String(cfg.runtime?.mode || "native_on_device") === "native_on_device" &&
+      getModelDeliveryMode(cfg) === "download_on_first_launch"
+    ) {
+      const status = await ensureRequiredModelsInstalled({
+        config: cfg,
+        modelTier: opts.modelTier,
+        deviceInfo: opts.deviceInfo,
+        proOptIn: opts.proOptIn,
+      });
+      modelRuntimeOptions = modelTierOptionsFromInstallStatus(
+        modelRuntimeOptions,
+        status,
+      );
+    }
+  });
+
+  await appendConversation(userId, "user", message);
+
+  const registry = await getAgentRegistry();
 
   let answers = await loadAnswers(userId);
   const normalChatProfiler = await timeStage("profiler", () =>
@@ -6903,6 +6965,11 @@ export async function runLocalAssistantTurn(opts: {
         ? `வணக்கம் ${opts.userProfile?.name || ""}. நான் எப்படி உதவலாம்?`.trim()
         : `Hi ${opts.userProfile?.name || "there"}, how can I help?`;
     english = draft;
+    final = draft;
+  } else if (route === "wellbeing_support") {
+    source = "local_rules";
+    draft = wellbeingSupportAnswer(replyLanguage);
+    english = wellbeingSupportAnswer("en");
     final = draft;
   } else if (route === "clarify" || decision.needsClarification) {
     route = "clarify";
