@@ -657,7 +657,7 @@ export default function ItemDetail() {
               </Pressable>
 
               <Pressable
-                onPress={() => router.replace("/(tabs)")}
+                onPress={() => router.replace("/(chat)" as any)}
                 style={({ pressed }) => [
                   styles.bottomActionPrimary,
                   pressed && styles.pressed,

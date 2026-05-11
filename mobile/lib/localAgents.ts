@@ -33,12 +33,20 @@ import {
   ReplyLanguage,
   resolveReplyLanguage,
 } from "./replyLanguage";
+import {
+  QuickLocalReplyResult,
+  tryBuildQuickLocalReply,
+} from "./localQuickReplies";
 
 type ChatRole = "system" | "user" | "assistant";
 
 type OrchestratorRoute =
   | "fast_greeting"
+  | "small_talk"
   | "wellbeing_support"
+  | "capabilities"
+  | "thanks"
+  | "goodbye"
   | "clarify"
   | "profile"
   | "calendar_query"
@@ -384,6 +392,7 @@ type OrchestratorConfig = {
   routes: {
     fastGreetingKeywords: string[];
     smallTalkKeywords?: string[];
+    capabilitiesKeywords?: string[];
     wellbeingKeywords?: string[];
     calendarKeywords: string[];
     reminderKeywords: string[];
@@ -917,8 +926,38 @@ const DEFAULT_PROFILER_SLOTS: ProfilerSlot[] = [
 const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   version: 3,
   routes: {
-    fastGreetingKeywords: ["hi", "hello", "hey", "vanakkam", "thanks"],
-    smallTalkKeywords: ["how are you", "what's up", "whats up"],
+    fastGreetingKeywords: [
+      "hi",
+      "hello",
+      "hey",
+      "vanakkam",
+      "thanks",
+      "thank you",
+      "good morning",
+      "good evening",
+      "good night",
+      "okay thanks",
+      "cool thanks",
+    ],
+    smallTalkKeywords: [
+      "what are you up to",
+      "what are you doing",
+      "what's up",
+      "whats up",
+      "how are you",
+      "how is it going",
+      "are you there",
+      "can you hear me",
+      "are you awake",
+      "nice to meet you",
+    ],
+    capabilitiesKeywords: [
+      "what can you do",
+      "how can you help",
+      "help me",
+      "your features",
+      "what are your features",
+    ],
     wellbeingKeywords: [
       "tired",
       "so tired",
@@ -5330,6 +5369,87 @@ function wellbeingSupportAnswer(replyLanguage: ReplyLanguage) {
   return "That sounds exhausting. Take a short rest, drink some water, and don't push yourself too hard. If this feels unusual, severe, or keeps happening, please consider checking with a medical professional.";
 }
 
+function quickLocalDecision(
+  quick: QuickLocalReplyResult,
+): OrchestratorDecision {
+  return {
+    route: quick.route,
+    reason: `matched_${quick.route}_quick_reply_rule`,
+    confidence: quick.confidence,
+    needsClarification: false,
+    clarificationQuestion: "",
+    needsLiveData: false,
+    selectedModel: "rules",
+    fallbackAllowed: false,
+  };
+}
+
+const QUICK_ROUTE_CANONICAL_MESSAGE: Partial<Record<OrchestratorRoute, string>> = {
+  fast_greeting: "hello",
+  small_talk: "what are you up to",
+  wellbeing_support: "tired",
+  capabilities: "what can you do",
+  thanks: "thanks",
+  goodbye: "bye",
+};
+
+function deterministicQuickReplyForRoute(
+  route: OrchestratorRoute,
+  opts: {
+    message: string;
+    replyLanguage: ReplyLanguage;
+    userProfile?: LocalUserProfile;
+  },
+) {
+  return (
+    tryBuildQuickLocalReply({
+      message: opts.message,
+      replyLanguage: opts.replyLanguage,
+      assistantName: opts.userProfile?.assistantName,
+      userName: opts.userProfile?.name,
+    }) ||
+    tryBuildQuickLocalReply({
+      message: QUICK_ROUTE_CANONICAL_MESSAGE[route] || "",
+      replyLanguage: opts.replyLanguage,
+      assistantName: opts.userProfile?.assistantName,
+      userName: opts.userProfile?.name,
+    })
+  );
+}
+
+async function appendQuickLocalReplyIfReady(
+  userId: number,
+  message: string,
+  quick: QuickLocalReplyResult,
+  decision: OrchestratorDecision,
+) {
+  const timeoutMs = 25;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  await Promise.race([
+    (async () => {
+      if (!(await exists(DATA_DIR))) {
+        return;
+      }
+
+      await appendConversation(userId, "user", message);
+      await appendConversation(userId, "assistant", quick.assistantText);
+      await appendRouteDecisionLog(userId, message, decision, {
+        routeUsed: quick.route,
+        source: quick.source,
+        fastPath: true,
+      });
+    })(),
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(resolve, timeoutMs);
+    }),
+  ]).catch(() => undefined);
+
+  if (timeout) {
+    clearTimeout(timeout);
+  }
+}
+
 function generateClarifyingQuestion(
   message: string,
   replyLanguage: ReplyLanguage,
@@ -5378,14 +5498,37 @@ function ruleBasedOrchestratorDecision(
     !hasKeywordMatch(message, routesConfig.routes.weatherKeywords);
 
   if (
-    hasKeywordMatch(message, [
-      ...(routesConfig.routes.fastGreetingKeywords || []),
-      ...((routesConfig.routes.smallTalkKeywords || []) as string[]),
-    ])
+    hasKeywordMatch(message, routesConfig.routes.fastGreetingKeywords || [])
   ) {
     return {
       route: "fast_greeting",
-      reason: "matched_greeting_or_small_talk_rule",
+      reason: "matched_greeting_rule",
+      confidence: 0.99,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel: "rules",
+      fallbackAllowed: false,
+    };
+  }
+
+  if (hasKeywordMatch(message, routesConfig.routes.smallTalkKeywords || [])) {
+    return {
+      route: "small_talk",
+      reason: "matched_small_talk_rule",
+      confidence: 0.98,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel: "rules",
+      fallbackAllowed: false,
+    };
+  }
+
+  if (hasKeywordMatch(message, routesConfig.routes.capabilitiesKeywords || [])) {
+    return {
+      route: "capabilities",
+      reason: "matched_capabilities_rule",
       confidence: 0.99,
       needsClarification: false,
       clarificationQuestion: "",
@@ -5491,7 +5634,11 @@ function sanitizeDecision(
   const route = String(raw.route || "local_answer") as OrchestratorRoute;
   const safeRoute: OrchestratorRoute = [
     "fast_greeting",
+    "small_talk",
     "wellbeing_support",
+    "capabilities",
+    "thanks",
+    "goodbye",
     "clarify",
     "profile",
     "calendar_query",
@@ -6616,6 +6763,40 @@ export async function runLocalAssistantTurn(opts: {
   });
   if (!message) throw new Error("Message is required.");
 
+  const quick = tryBuildQuickLocalReply({
+    message,
+    replyLanguage,
+    assistantName: opts.userProfile?.assistantName,
+    userName: opts.userProfile?.name,
+  });
+
+  if (quick) {
+    const decision = quickLocalDecision(quick);
+
+    await appendQuickLocalReplyIfReady(userId, message, quick, decision);
+
+    return {
+      route: quick.route,
+      source: quick.source,
+      cacheHit: false,
+      assistantText: quick.assistantText,
+      englishText: quick.englishText,
+      intent: quick.intent,
+      title: quick.title,
+      details: quick.assistantText,
+      profileSummary: "",
+      meta: {
+        source: quick.source,
+        route: quick.route,
+        fastPath: true,
+        confidence: quick.confidence,
+        classified: decision,
+        orchestratorDecision: decision,
+        stageTimings,
+      },
+    } satisfies LocalAssistantTurnResult;
+  }
+
   await timeStage("ensure_agent_data", () => ensureLocalAgentData());
   const routesConfig = await getOrchestratorConfig();
   const cfg = await getModelConfig();
@@ -6960,16 +7141,43 @@ export async function runLocalAssistantTurn(opts: {
   if (handledByToolPlan) {
     // The deterministic planner/executor already produced the local answer.
   } else if (route === "fast_greeting") {
+    const quickDraft = deterministicQuickReplyForRoute(route, {
+      message,
+      replyLanguage,
+      userProfile: opts.userProfile,
+    });
+    source = "local_rules";
     draft =
-      replyLanguage === "ta"
+      quickDraft?.assistantText ||
+      (replyLanguage === "ta"
         ? `வணக்கம் ${opts.userProfile?.name || ""}. நான் எப்படி உதவலாம்?`.trim()
-        : `Hi ${opts.userProfile?.name || "there"}, how can I help?`;
-    english = draft;
+        : `Hi ${opts.userProfile?.name || "there"}, how can I help?`);
+    english = quickDraft?.englishText || draft;
+    final = draft;
+  } else if (
+    route === "small_talk" ||
+    route === "capabilities" ||
+    route === "thanks" ||
+    route === "goodbye"
+  ) {
+    const quickDraft = deterministicQuickReplyForRoute(route, {
+      message,
+      replyLanguage,
+      userProfile: opts.userProfile,
+    });
+    source = "local_rules";
+    draft = quickDraft?.assistantText || "I'm here with you. What would you like to do?";
+    english = quickDraft?.englishText || draft;
     final = draft;
   } else if (route === "wellbeing_support") {
     source = "local_rules";
-    draft = wellbeingSupportAnswer(replyLanguage);
-    english = wellbeingSupportAnswer("en");
+    const quickDraft = deterministicQuickReplyForRoute(route, {
+      message,
+      replyLanguage,
+      userProfile: opts.userProfile,
+    });
+    draft = quickDraft?.assistantText || wellbeingSupportAnswer(replyLanguage);
+    english = quickDraft?.englishText || wellbeingSupportAnswer("en");
     final = draft;
   } else if (route === "clarify" || decision.needsClarification) {
     route = "clarify";

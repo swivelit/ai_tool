@@ -28,11 +28,9 @@ describe("chat screen layout", () => {
       composerHeight: 82,
     });
 
-    expect(layout.scrollBottomPadding).toBe(94);
+    expect(layout.scrollBottomPadding).toBe(126);
     expect(layout.scrollBottomPadding).not.toBe(210);
-    expect(layout.scrollBottomPadding).toBeLessThan(
-      82 + layout.composerBottomPadding + 12,
-    );
+    expect(layout.scrollBottomPadding).toBe(82 + layout.composerBottomPadding + 10);
   });
 
   it("clamps inflated Android bottom safe area values", () => {
@@ -51,9 +49,9 @@ describe("chat screen layout", () => {
       composerHeight: 82,
     });
 
-    expect(layout74.composerBottomPadding).toBeLessThanOrEqual(24);
-    expect(layout100.composerBottomPadding).toBeLessThanOrEqual(24);
-    expect(layout100.scrollBottomPadding).toBe(94);
+    expect(layout74.composerBottomPadding).toBeLessThanOrEqual(12);
+    expect(layout100.composerBottomPadding).toBeLessThanOrEqual(12);
+    expect(layout100.scrollBottomPadding).toBe(104);
   });
 
   it("keeps hidden-keyboard composer inside the safe area", () => {
@@ -68,6 +66,39 @@ describe("chat screen layout", () => {
 
     expect(layout.composerBottomY).toBe(810);
     expect(layout.composerTopY).toBeGreaterThan(0);
+  });
+
+  it("keeps inflated Android safe-area bottoms from creating a tab-sized composer gap", () => {
+    const layout = computeChatScreenLayout({
+      platform: "android",
+      screenWidth: 1080,
+      screenHeight: 1792,
+      safeAreaTop: 24,
+      safeAreaBottom: 74,
+      composerHeight: 82,
+      keyboardVisible: false,
+    });
+
+    expect(layout.composerBottomPadding).toBeLessThanOrEqual(12);
+    expect(1792 - layout.composerBottomY).toBeLessThanOrEqual(12);
+    expect(layout.scrollBottomPadding).toBe(104);
+    expect(layout.scrollBottomPadding).toBeLessThan(140);
+  });
+
+  it("uses an explicit keyboard offset and reports the composer as clearing the keyboard", () => {
+    const layout = computeChatScreenLayout({
+      platform: "android",
+      screenWidth: 390,
+      screenHeight: 844,
+      safeAreaBottom: 100,
+      composerHeight: 82,
+      keyboardVisible: true,
+      keyboardHeight: 310,
+    });
+
+    expect(layout.composerBottomPadding).toBeLessThanOrEqual(12);
+    expect(layout.composerBottomOffset).toBe(310);
+    expect(layout.composerClearsKeyboard).toBe(true);
   });
 
   it("caps chat width on large screens", () => {

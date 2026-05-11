@@ -322,7 +322,8 @@ function AppShell() {
         hasUser: Boolean(user),
         hasProfile: Boolean(activeProfile?.userId),
         questionnaireCompleted: Boolean(activeProfile?.questionnaireCompleted),
-        inTabsGroup: segments[0] === "(tabs)",
+        inTabsGroup: String(segments[0] || "") === "(tabs)",
+        inChatGroup: String(segments[0] || "") === "(chat)",
         modelSetupRequired,
       }),
     [
@@ -407,6 +408,7 @@ function AppShell() {
         <Stack.Screen name="onboarding/questionnaire" />
         <Stack.Screen name="setup" />
         <Stack.Screen name="model-setup" />
+        <Stack.Screen name="(chat)" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="item/[id]" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />

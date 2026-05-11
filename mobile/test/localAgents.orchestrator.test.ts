@@ -207,7 +207,7 @@ describe("local orchestrator and alignment", () => {
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
     const result = await runLocalAssistantTurn({
       userId: 21,
-      message: "thanks",
+      message: "hello",
       replyLanguage: "en",
       userProfile: { name: "Hari" },
     });
@@ -218,6 +218,29 @@ describe("local orchestrator and alignment", () => {
     expect(mockedState.fetchQueue).toHaveLength(0);
     expect(global.fetch).not.toHaveBeenCalled();
     expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("answers small talk instantly with local rules and no backend or model calls", async () => {
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 211,
+      message: "What are you up to ?",
+      replyLanguage: "en",
+      userProfile: { name: "Hari" },
+    });
+
+    expect(result.route).toBe("small_talk");
+    expect(result.source).toBe("local_rules");
+    expect(result.assistantText).toContain("right here with you");
+    expect(result.assistantText).toContain("What would you like to do?");
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(mockedState.fetchQueue).toHaveLength(0);
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("ensure_models");
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("profiler");
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("semantic_cache");
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("local_reasoner");
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("alignment");
   });
 
   it("returns simple wellbeing support locally with no model or backend call", async () => {

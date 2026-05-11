@@ -611,7 +611,7 @@ export default function Explore() {
                   </View>
 
                   <Pressable
-                    onPress={() => router.replace("/(tabs)")}
+                    onPress={() => router.replace("/(chat)" as any)}
                     style={styles.nextUpAction}
                   >
                     <Text style={styles.nextUpActionText}>Create more</Text>
@@ -743,7 +743,7 @@ export default function Explore() {
 
             {!q.trim() ? (
               <Pressable
-                onPress={() => router.replace("/(tabs)")}
+                onPress={() => router.replace("/(chat)" as any)}
                 style={({ pressed }) => [
                   styles.emptyCta,
                   pressed && styles.pressed,

@@ -328,7 +328,7 @@ export default function QuestionnaireScreen() {
       Alert.alert("Sync pending", "Please wait for profile sync to finish before continuing.");
       return;
     }
-    router.replace("/(tabs)");
+    router.replace("/(chat)" as any);
   }
 
   function toggleMultiOption(option: string) {

@@ -445,7 +445,7 @@ export default function RoutineScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.topBar}>
-            <Pressable style={styles.topIconBtn} onPress={() => router.replace("/(tabs)")}>
+            <Pressable style={styles.topIconBtn} onPress={() => router.replace("/(chat)" as any)}>
               <Ionicons name="sparkles-outline" size={18} color={Brand.cocoa} />
             </Pressable>
 

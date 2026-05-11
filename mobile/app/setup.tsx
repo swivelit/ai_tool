@@ -649,13 +649,13 @@ export default function Setup() {
     const trimmed = input.trim();
     await updateName(trimmed.length ? trimmed : "Elli");
     await updateSettings({ wakePhrase: normalizedWakePhrase });
-    router.replace("/(tabs)");
+    router.replace("/(chat)" as any);
   }
 
   async function onSkip() {
     await updateName("Elli");
     await updateSettings({ wakePhrase: "Hey Elli" });
-    router.replace("/(tabs)");
+    router.replace("/(chat)" as any);
   }
 
   return (

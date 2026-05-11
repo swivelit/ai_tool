@@ -17,6 +17,7 @@ import {
   loadCachedLocalAssistantProfile,
   withResolvedReplyLanguage,
 } from "./localAssistantProfile";
+import { tryBuildQuickLocalReply } from "./localQuickReplies";
 import { loadCloudFallbackConsent } from "./localAssistantSettings";
 import {
   PRODUCT_DEFAULT_REPLY_LANGUAGE,
@@ -1375,6 +1376,63 @@ async function handleLocalChat(
     throw new Error(
       "Valid user_id and message are required for local chat routing.",
     );
+  }
+
+  const explicitReplyLanguage = normalizeReplyLanguage(
+    body?.reply_language ?? body?.replyLanguage,
+  );
+  const quick = tryBuildQuickLocalReply({
+    message,
+    replyLanguage: explicitReplyLanguage,
+  });
+
+  if (quick) {
+    const createdAt = new Date().toISOString();
+
+    return {
+      ok: true,
+      item: {
+        id: Date.now(),
+        intent: "assistant",
+        category: "Other",
+        raw_text: message,
+        transcript: null,
+        datetime: null,
+        title: quick.title,
+        details: quick.assistantText,
+        created_at: createdAt,
+        source: "text",
+      },
+      assistant: {
+        text: quick.assistantText,
+        english: quick.englishText,
+        tamil: explicitReplyLanguage === "ta" ? quick.assistantText : undefined,
+        theni_tamil:
+          explicitReplyLanguage === "ta" ? quick.assistantText : undefined,
+      },
+      pipeline: {
+        route_taken: quick.route,
+        predicted_label: "assistant",
+        raw_english: quick.englishText || message,
+        remodeled_english: quick.englishText || quick.assistantText,
+        tamil_text: explicitReplyLanguage === "ta" ? quick.assistantText : "",
+        theni_tamil_text:
+          explicitReplyLanguage === "ta" ? quick.assistantText : "",
+        direct_answer_source: "local_rules",
+        meta: {
+          source: quick.source,
+          route: quick.route,
+          confidence: quick.confidence,
+          fastPath: true,
+        },
+      },
+      meta: {
+        source: "local_quick_reply",
+        route: quick.route,
+        fastPath: true,
+        created_at: createdAt,
+      },
+    };
   }
 
   const cachedProfile = await loadCachedLocalAssistantProfile(userId);

@@ -536,6 +536,52 @@ describe("API client contracts", () => {
     expect(payload.meta.source).toBe("local_chat_proxy");
   });
 
+  it("answers simple chat through the local quick-reply fast path", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: { currentUser: null },
+    }));
+    const runLocalAssistantTurn = vi.fn(async () => ({
+      route: "local_answer",
+      source: "local_model",
+      cacheHit: false,
+      intent: "assistant",
+      assistantText: "This should not run.",
+      englishText: "This should not run.",
+      meta: {},
+    }));
+    vi.doMock("../lib/localAgents", () => ({ runLocalAssistantTurn }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "Backend should not run." } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    const payload = await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "What are you up to ?",
+      reply_language: "en",
+    });
+
+    expect(payload.ok).toBe(true);
+    expect(payload.meta.source).toBe("local_quick_reply");
+    expect(payload.meta.fastPath).toBe(true);
+    expect(payload.pipeline.route_taken).toBe("small_talk");
+    expect(payload.pipeline.direct_answer_source).toBe("local_rules");
+    expect(payload.assistant.text).toContain("right here with you");
+    expect(runLocalAssistantTurn).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("keeps guest/no-profile local chat working and uses English for English input", async () => {
     mockCachedProfile(null);
     vi.doMock("expo-constants", () => ({
@@ -938,7 +984,7 @@ describe("API client contracts", () => {
     await expect(
       apiPost<any>("/api/chat", {
         user_id: 7,
-        message: "Hello",
+        message: "Explain recursion",
         reply_language: "en",
       }),
     ).rejects.toThrow("Required local GGUF model download failed");
@@ -979,7 +1025,7 @@ describe("API client contracts", () => {
     await expect(
       apiPost<any>("/api/chat", {
         user_id: 7,
-        message: "Hello",
+        message: "Explain recursion",
         reply_language: "en",
       }),
     ).rejects.toThrow("timed out");

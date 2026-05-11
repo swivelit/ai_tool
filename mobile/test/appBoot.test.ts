@@ -74,10 +74,11 @@ describe("resolveDesiredRoute", () => {
   it("sends signed-out users away from protected routes", () => {
     expect(
       resolveDesiredRoute({
-        pathname: "/(tabs)",
+        pathname: "/(chat)",
         hasUser: false,
         hasProfile: false,
         questionnaireCompleted: false,
+        inChatGroup: true,
       })
     ).toBe("/auth/login");
   });
@@ -116,7 +117,7 @@ describe("resolveDesiredRoute", () => {
     ).toBe("/onboarding/questionnaire");
   });
 
-  it("routes fully onboarded users to tabs from auth and onboarding routes", () => {
+  it("routes fully onboarded users to chat from auth and onboarding routes", () => {
     expect(
       resolveDesiredRoute({
         pathname: "/auth/signup",
@@ -124,17 +125,18 @@ describe("resolveDesiredRoute", () => {
         hasProfile: true,
         questionnaireCompleted: true,
       })
-    ).toBe("/(tabs)");
+    ).toBe("/(chat)");
   });
 
   it("routes fully onboarded users to model setup when required models are missing", () => {
     expect(
       resolveDesiredRoute({
-        pathname: "/(tabs)",
+        pathname: "/(chat)",
         hasUser: true,
         hasProfile: true,
         questionnaireCompleted: true,
         modelSetupRequired: true,
+        inChatGroup: true,
       })
     ).toBe("/model-setup");
 
@@ -149,10 +151,29 @@ describe("resolveDesiredRoute", () => {
     ).toBeNull();
   });
 
-  it("keeps fully onboarded users on tabs and setup routes", () => {
+  it("keeps fully onboarded users on chat, tabs, and setup routes", () => {
+    expect(
+      resolveDesiredRoute({
+        pathname: "/(chat)",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+        inChatGroup: true,
+      })
+    ).toBeNull();
+
     expect(
       resolveDesiredRoute({
         pathname: "/(tabs)/explore",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+      })
+    ).toBeNull();
+
+    expect(
+      resolveDesiredRoute({
+        pathname: "/(tabs)/routine",
         hasUser: true,
         hasProfile: true,
         questionnaireCompleted: true,
@@ -175,6 +196,6 @@ describe("resolveDesiredRoute", () => {
         hasProfile: true,
         questionnaireCompleted: true,
       })
-    ).toBe("/(tabs)");
+    ).toBe("/(chat)");
   });
 });

@@ -110,7 +110,7 @@ export default function ModelSetupScreen() {
   }, [snapshot.status]);
 
   const continueToApp = useCallback(() => {
-    router.replace("/(tabs)" as any);
+    router.replace("/(chat)" as any);
   }, []);
 
   useEffect(() => {

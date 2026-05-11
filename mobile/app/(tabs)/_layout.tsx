@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
-import { Tabs, router, useRootNavigationState, useSegments } from "expo-router";
+import { Tabs, router, useRootNavigationState } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
@@ -47,12 +47,9 @@ function LoadingScreen() {
 export default function TabLayout() {
   const { user, loading } = useAuth();
   const rootNavigationState = useRootNavigationState();
-  const segments = useSegments();
   const hasRedirectedRef = useRef(false);
 
   const navigatorReady = Boolean(rootNavigationState?.key);
-  const activeTabSegment = String(segments[1] || "");
-  const isChatRoute = !activeTabSegment || activeTabSegment === "index";
 
   useEffect(() => {
     if (loading || user || !navigatorReady) {
@@ -91,7 +88,6 @@ export default function TabLayout() {
 
   return (
     <Tabs
-      tabBar={isChatRoute ? () => null : undefined}
       screenOptions={{
         headerShown: false,
         tabBarHideOnKeyboard: true,
@@ -141,10 +137,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "AI",
-          tabBarIcon: ({ focused, color }) => (
-            <TabIcon focused={focused} color={color} name="sparkles-outline" />
-          ),
+          href: null,
         }}
       />
 

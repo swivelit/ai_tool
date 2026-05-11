@@ -3,9 +3,10 @@ export const LOCAL_AGENT_SEED_TIMEOUT_MS = 4000;
 export const PROFILE_BOOT_TIMEOUT_MS = 5000;
 
 const SIGNED_OUT_ENTRY_ROUTE = "/auth/login";
-const SIGNED_IN_HOME_ROUTE = "/(tabs)";
+const SIGNED_IN_HOME_ROUTE = "/(chat)";
 const TAB_ROUTES = new Set(["/explore", "/routine"]);
 const TAB_GROUP_ROOT_ROUTE = "/(tabs)";
+const CHAT_GROUP_ROOT_ROUTE = "/(chat)";
 
 type BootLogger = (message: string, error?: unknown) => void;
 
@@ -118,6 +119,11 @@ export function normalizePathname(pathname?: string | null) {
     return stripped || "/";
   }
 
+  if (normalized.startsWith("/(chat)/")) {
+    const stripped = normalized.replace("/(chat)", "");
+    return stripped || "/";
+  }
+
   return normalized;
 }
 
@@ -141,18 +147,21 @@ export function resolveDesiredRoute(input: {
   questionnaireCompleted: boolean;
   profileRestoreFailed?: boolean;
   inTabsGroup?: boolean;
+  inChatGroup?: boolean;
   modelSetupRequired?: boolean;
 }) {
   const rawPathname = normalizeRawPathname(input.pathname);
   const pathname = normalizePathname(rawPathname);
 
-  // Expo Router route groups are pathless. At runtime, the `(tabs)` index can
+  // Expo Router route groups are pathless. At runtime, a group index can
   // report the same pathname (`/`) as the public landing page. The caller can
-  // pass `inTabsGroup` from `useSegments()` so the boot guard can distinguish
-  // "already on the real tab home" from "stuck on the public root".
+  // pass group state from `useSegments()` so the boot guard can distinguish
+  // "already on the real app home" from "stuck on the public root".
   const inTabsGroup = Boolean(input.inTabsGroup);
+  const inChatGroup = Boolean(input.inChatGroup);
   const atTabsGroupRoot = rawPathname === TAB_GROUP_ROOT_ROUTE || (inTabsGroup && pathname === "/");
-  const atPublicRoot = pathname === "/" && !atTabsGroupRoot;
+  const atChatGroupRoot = rawPathname === CHAT_GROUP_ROOT_ROUTE || (inChatGroup && pathname === "/");
+  const atPublicRoot = pathname === "/" && !atTabsGroupRoot && !atChatGroupRoot;
   const inAuth = pathname === "/auth" || pathname.startsWith("/auth/");
   const inOnboarding = pathname === "/onboarding" || pathname.startsWith("/onboarding/");
   const atProfile = pathname === "/onboarding/profile";
@@ -163,7 +172,7 @@ export function resolveDesiredRoute(input: {
 
   if (!input.hasUser) {
     if (
-      pathname === "/" ||
+      (pathname === "/" && !atTabsGroupRoot && !atChatGroupRoot) ||
       (pathname === SIGNED_OUT_ENTRY_ROUTE && !atTabsGroupRoot) ||
       inAuth
     ) {
@@ -189,7 +198,7 @@ export function resolveDesiredRoute(input: {
     return SIGNED_IN_HOME_ROUTE;
   }
 
-  if (inTabs || atSetup) {
+  if (atChatGroupRoot || inChatGroup || inTabs || atSetup) {
     return null;
   }
 
