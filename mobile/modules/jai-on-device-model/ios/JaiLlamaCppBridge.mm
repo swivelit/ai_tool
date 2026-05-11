@@ -268,14 +268,30 @@ std::string tokenToPiece(const llama_model *model, llama_token token) {
 
 LlamaBatchPtr makeBatch(const std::vector<llama_token> &tokens, size_t offset, size_t count, llama_pos startPos, bool logitsLastOnly) {
   auto batch = LlamaBatchPtr(new llama_batch(llama_batch_init(static_cast<int32_t>(count), 0, 1)));
+  batch->n_tokens = 0;
   for (size_t i = 0; i < count; ++i) {
-    batch->token[i] = tokens[offset + i];
-    batch->pos[i] = startPos + static_cast<llama_pos>(i);
-    batch->n_seq_id[i] = 1;
-    batch->seq_id[i][0] = 0;
-    batch->logits[i] = logitsLastOnly && i + 1 == count ? 1 : 0;
+    const int32_t index = batch->n_tokens++;
+    batch->token[index] = tokens[offset + i];
+    batch->pos[index] = startPos + static_cast<llama_pos>(i);
+    batch->n_seq_id[index] = 1;
+    batch->seq_id[index][0] = 0;
+    batch->logits[index] = logitsLastOnly && i + 1 == count ? 1 : 0;
   }
   return batch;
+}
+
+std::string decodeFailureDetail(
+    const std::string &operation,
+    int32_t status,
+    llama_context *ctx,
+    const llama_batch &batch,
+    size_t inputTokenCount) {
+  return "llama.cpp failed while decoding " + operation +
+      ". Status=" + std::to_string(status) +
+      ", tokens=" + std::to_string(inputTokenCount) +
+      ", batch.n_tokens=" + std::to_string(batch.n_tokens) +
+      ", n_ctx=" + std::to_string(llama_n_ctx(ctx)) +
+      ", n_batch=" + std::to_string(llama_n_batch(ctx)) + ".";
 }
 
 void decodeTokens(llama_context *ctx, const std::vector<llama_token> &tokens, bool logitsOnLastToken) {
@@ -294,7 +310,7 @@ void decodeTokens(llama_context *ctx, const std::vector<llama_token> &tokens, bo
     if (status != 0) {
       throw JaiNativeError(
           "JAI_LLAMA_CPP_DECODE_FAILED",
-          "llama.cpp failed while decoding prompt/input tokens. Status=" + std::to_string(status) + ".");
+          decodeFailureDetail("prompt/input tokens", status, ctx, *batch, tokens.size()));
     }
     pos += static_cast<llama_pos>(count);
     offset += count;
@@ -308,7 +324,7 @@ void decodeSingleToken(llama_context *ctx, llama_token token, llama_pos pos) {
   if (status != 0) {
     throw JaiNativeError(
         "JAI_LLAMA_CPP_DECODE_FAILED",
-        "llama.cpp failed while decoding a generated token. Status=" + std::to_string(status) + ".");
+        decodeFailureDetail("a generated token", status, ctx, *batch, 1));
   }
 }
 
@@ -399,19 +415,21 @@ std::vector<float> embedTextNative(
   }
 
   auto batch = LlamaBatchPtr(new llama_batch(llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1)));
+  batch->n_tokens = 0;
   for (size_t i = 0; i < tokens.size(); ++i) {
-    batch->token[i] = tokens[i];
-    batch->pos[i] = static_cast<llama_pos>(i);
-    batch->n_seq_id[i] = 1;
-    batch->seq_id[i][0] = 0;
-    batch->logits[i] = 1;
+    const int32_t index = batch->n_tokens++;
+    batch->token[index] = tokens[i];
+    batch->pos[index] = static_cast<llama_pos>(i);
+    batch->n_seq_id[index] = 1;
+    batch->seq_id[index][0] = 0;
+    batch->logits[index] = 1;
   }
 
   const int32_t status = llama_decode(ctx.get(), *batch);
   if (status != 0) {
     throw JaiNativeError(
         "JAI_LLAMA_CPP_EMBEDDING_DECODE_FAILED",
-        "llama.cpp failed while decoding embedding input. Status=" + std::to_string(status) + ".");
+        decodeFailureDetail("embedding input", status, ctx.get(), *batch, tokens.size()));
   }
 
   float *embedding = llama_get_embeddings_seq(ctx.get(), 0);

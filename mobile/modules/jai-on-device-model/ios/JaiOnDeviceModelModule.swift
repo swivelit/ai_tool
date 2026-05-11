@@ -131,6 +131,55 @@ public class JaiOnDeviceModelModule: Module {
       }
       return ["sha256": try self.sha256File(fileUri: fileUri)]
     }
+
+    AsyncFunction("getDeviceCapabilities") { () -> [String: Any] in
+      return self.deviceCapabilities()
+    }
+  }
+
+  private func deviceCapabilities() -> [String: Any] {
+    let processInfo = ProcessInfo.processInfo
+    return [
+      "totalMemoryBytes": NSNumber(value: processInfo.physicalMemory),
+      "freeStorageBytes": NSNumber(value: self.freeDiskCapacityBytes()),
+      "thermalState": self.thermalStateLabel(processInfo.thermalState),
+      "lowPowerMode": processInfo.isLowPowerModeEnabled,
+      "cpuCoreCount": processInfo.processorCount,
+    ]
+  }
+
+  private func freeDiskCapacityBytes() -> Int64 {
+    let fileManager = FileManager.default
+    let url = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+      ?? URL(fileURLWithPath: NSHomeDirectory())
+
+    if #available(iOS 11.0, *) {
+      if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+         let capacity = values.volumeAvailableCapacityForImportantUsage {
+        return Int64(capacity)
+      }
+    }
+
+    let attributes = try? fileManager.attributesOfFileSystem(forPath: url.path)
+    if let freeSize = attributes?[.systemFreeSize] as? NSNumber {
+      return freeSize.int64Value
+    }
+    return 0
+  }
+
+  private func thermalStateLabel(_ state: ProcessInfo.ThermalState) -> String {
+    switch state {
+    case .nominal:
+      return "nominal"
+    case .fair:
+      return "fair"
+    case .serious:
+      return "serious"
+    case .critical:
+      return "critical"
+    @unknown default:
+      return "unknown"
+    }
   }
 
   private func asset(from input: [String: Any], modelId: String) throws -> [String: Any] {

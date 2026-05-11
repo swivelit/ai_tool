@@ -1,6 +1,13 @@
 package com.harishajahan.jai.ondevice
 
+import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+import android.os.Build
+import android.os.PowerManager
+import android.os.StatFs
 import java.io.File
 import java.io.FileNotFoundException
 import java.net.URI
@@ -174,6 +181,71 @@ class JaiOnDeviceModelEngine(private val context: Context) {
         "%02x".format(byte.toInt() and 0xff)
       },
     )
+  }
+
+  fun getDeviceCapabilities(): Map<String, Any?> {
+    val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+    val memoryInfo = ActivityManager.MemoryInfo()
+    activityManager?.getMemoryInfo(memoryInfo)
+
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+    val batteryLevel = readBatteryLevel(batteryManager)
+
+    return mapOf(
+      "totalMemoryBytes" to memoryInfo.totalMem,
+      "availableMemoryBytes" to memoryInfo.availMem,
+      "freeStorageBytes" to readFreeStorageBytes(),
+      "lowMemory" to memoryInfo.lowMemory,
+      "lowRamDevice" to (activityManager?.isLowRamDevice ?: false),
+      "lowPowerMode" to (powerManager?.isPowerSaveMode ?: false),
+      "batteryLevel" to batteryLevel,
+      "thermalState" to readThermalState(powerManager),
+      "cpuCoreCount" to Runtime.getRuntime().availableProcessors(),
+      "supportedAbis" to Build.SUPPORTED_ABIS.toList(),
+    )
+  }
+
+  private fun readFreeStorageBytes(): Long {
+    return try {
+      StatFs(context.noBackupFilesDir.absolutePath).availableBytes
+    } catch (_: Exception) {
+      0L
+    }
+  }
+
+  private fun readBatteryLevel(batteryManager: BatteryManager?): Double? {
+    val capacity = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+      batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+    } else {
+      null
+    }
+    if (capacity != null && capacity >= 0) {
+      return capacity.toDouble() / 100.0
+    }
+
+    val status = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+      ?: return null
+    val level = status.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+    val scale = status.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+    if (level < 0 || scale <= 0) return null
+    return level.toDouble() / scale.toDouble()
+  }
+
+  private fun readThermalState(powerManager: PowerManager?): String {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || powerManager == null) {
+      return "unknown"
+    }
+    return when (powerManager.currentThermalStatus) {
+      PowerManager.THERMAL_STATUS_NONE -> "nominal"
+      PowerManager.THERMAL_STATUS_LIGHT,
+      PowerManager.THERMAL_STATUS_MODERATE -> "fair"
+      PowerManager.THERMAL_STATUS_SEVERE -> "serious"
+      PowerManager.THERMAL_STATUS_CRITICAL,
+      PowerManager.THERMAL_STATUS_EMERGENCY,
+      PowerManager.THERMAL_STATUS_SHUTDOWN -> "critical"
+      else -> "unknown"
+    }
   }
 
   private fun ensureModelFile(modelId: String, asset: Map<String, Any?>): File {

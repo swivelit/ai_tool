@@ -15,65 +15,121 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
+import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import {
-  ModelDownloadProgress,
-  ModelInstallStatus,
   downloadRequiredModels,
   getModelInstallStatus,
 } from "@/lib/modelDownloadManager";
-
-function formatBytes(value?: number | null) {
-  const bytes = Number(value || 0);
-  if (!Number.isFinite(bytes) || bytes <= 0) return "Unknown size";
-  const units = ["B", "KB", "MB", "GB"];
-  let current = bytes;
-  let unit = 0;
-  while (current >= 1024 && unit < units.length - 1) {
-    current /= 1024;
-    unit += 1;
-  }
-  return `${current.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
-}
+import type {
+  DeviceCapabilitySnapshot,
+  ModelDownloadProgress,
+  ModelInstallStatus,
+} from "@/lib/modelDownloadManager";
 
 function progressPercent(progress?: number) {
   if (!Number.isFinite(progress)) return 0;
   return Math.max(0, Math.min(100, Math.round(Number(progress) * 100)));
 }
 
+function formatEta(progress: ModelDownloadProgress | null, ready: boolean, busy: boolean) {
+  if (ready) return "Ready";
+  if (!busy) return "Estimating...";
+  if (progress?.phase === "verifying" || progress?.phase === "installed") {
+    return "Finalizing setup...";
+  }
+  const etaSeconds = Number(progress?.etaSeconds);
+  if (!Number.isFinite(etaSeconds) || etaSeconds <= 0) {
+    return "Estimating...";
+  }
+  const minutes = Math.max(1, Math.ceil(etaSeconds / 60));
+  return `About ${minutes} min left`;
+}
+
+function statusCopy(
+  status: ModelInstallStatus | null,
+  progress: ModelDownloadProgress | null,
+  busy: boolean,
+  error: string,
+) {
+  if (error) return "Setup could not finish.";
+  if (status?.ready) return "Finalizing setup...";
+  if (progress?.phase === "verifying" || progress?.phase === "installed") {
+    return "Finalizing setup...";
+  }
+  if (busy || progress?.phase === "downloading") {
+    return "Downloading local AI files...";
+  }
+  return "Checking this phone...";
+}
+
 export default function ModelSetupScreen() {
   const insets = useSafeAreaInsets();
+  const [deviceInfo, setDeviceInfo] = useState<DeviceCapabilitySnapshot | null>(null);
   const [status, setStatus] = useState<ModelInstallStatus | null>(null);
   const [progress, setProgress] = useState<ModelDownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const autoStartedRef = useRef(false);
+  const autoContinuedRef = useRef(false);
 
-  const missingCount = (status?.missing.length || 0) + (status?.invalid.length || 0);
-  const totalProgress = progressPercent(progress?.totalProgress);
-  const modelProgress = progressPercent(progress?.modelProgress);
-  const requiredSize = useMemo(
-    () => formatBytes(status?.totalRequiredBytes || null),
-    [status?.totalRequiredBytes],
+  const percent = progressPercent(
+    progress?.totalProgress ?? (status?.ready ? 1 : 0),
+  );
+  const etaText = useMemo(
+    () => formatEta(progress, Boolean(status?.ready), busy),
+    [busy, progress, status?.ready],
+  );
+  const currentStatusText = statusCopy(status, progress, busy, error);
+
+  const loadDeviceInfo = useCallback(async () => {
+    if (deviceInfo) return deviceInfo;
+    const next = await getCachedDeviceCapabilities();
+    setDeviceInfo(next);
+    return next;
+  }, [deviceInfo]);
+
+  const refreshStatus = useCallback(
+    async (snapshot?: DeviceCapabilitySnapshot) => {
+      const nextDeviceInfo = snapshot || (await loadDeviceInfo());
+      const next = await getModelInstallStatus({ deviceInfo: nextDeviceInfo });
+      setStatus(next);
+      return next;
+    },
+    [loadDeviceInfo],
   );
 
-  const refreshStatus = useCallback(async () => {
-    const next = await getModelInstallStatus();
-    setStatus(next);
-    return next;
-  }, []);
-
   useEffect(() => {
-    void refreshStatus().catch((nextError) => {
-      setError(nextError instanceof Error ? nextError.message : "Could not check model files.");
-    });
-  }, [refreshStatus]);
+    let cancelled = false;
+
+    async function check() {
+      try {
+        const snapshot = await getCachedDeviceCapabilities();
+        if (cancelled) return;
+        setDeviceInfo(snapshot);
+        const next = await getModelInstallStatus({ deviceInfo: snapshot });
+        if (cancelled) return;
+        setStatus(next);
+        setError("");
+      } catch (nextError) {
+        if (cancelled) return;
+        setError(nextError instanceof Error ? nextError.message : "Could not check setup.");
+      }
+    }
+
+    void check();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const startDownload = useCallback(async () => {
     if (busy) return;
     setBusy(true);
     setError("");
     try {
+      const snapshot = await loadDeviceInfo();
       const next = await downloadRequiredModels({
+        deviceInfo: snapshot,
         onProgress: setProgress,
       });
       setStatus(next);
@@ -81,17 +137,17 @@ export default function ModelSetupScreen() {
         phase: "installed",
         totalProgress: 1,
         modelProgress: 1,
-        message: "All required local models are installed.",
+        etaSeconds: 0,
+        message: "Finalizing setup...",
       });
-      requestAnimationFrame(() => router.replace("/(tabs)" as any));
     } catch (nextError) {
-      const message = nextError instanceof Error ? nextError.message : "Model download failed.";
+      const message = nextError instanceof Error ? nextError.message : "Model setup failed.";
       setError(message);
       await refreshStatus().catch(() => undefined);
     } finally {
       setBusy(false);
     }
-  }, [busy, refreshStatus]);
+  }, [busy, loadDeviceInfo, refreshStatus]);
 
   useEffect(() => {
     if (!status || status.ready || busy || autoStartedRef.current) return;
@@ -104,10 +160,17 @@ export default function ModelSetupScreen() {
       totalBytes: status.totalRequiredBytes,
       totalProgress: 0,
       modelProgress: 0,
-      message: "Starting required local model download automatically…",
+      message: "Checking this phone...",
     });
     void startDownload();
   }, [busy, startDownload, status]);
+
+  useEffect(() => {
+    if (!status?.ready || error || autoContinuedRef.current) return;
+    autoContinuedRef.current = true;
+    const timer = setTimeout(() => router.replace("/(tabs)" as any), 700);
+    return () => clearTimeout(timer);
+  }, [error, status?.ready]);
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
@@ -115,10 +178,11 @@ export default function ModelSetupScreen() {
       <ScrollView
         style={styles.page}
         contentContainerStyle={{
-          paddingTop: insets.top + 16,
+          paddingTop: insets.top + 18,
           paddingBottom: Math.max(insets.bottom + 24, 24),
           paddingHorizontal: 18,
-          gap: 16,
+          flexGrow: 1,
+          justifyContent: "center",
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -126,113 +190,58 @@ export default function ModelSetupScreen() {
           <Pressable onPress={() => router.back()} style={styles.iconButton}>
             <Ionicons name="chevron-back" size={20} color={Brand.cocoa} />
           </Pressable>
-          <View style={styles.tag}>
-            <Ionicons name="phone-portrait-outline" size={14} color={Brand.bronze} />
-            <Text style={styles.tagText}>On-device model setup</Text>
-          </View>
         </View>
 
-        <GlassCard>
-          <View style={styles.heroRow}>
-            <Text style={styles.title}>Local Gemma/Qwen models</Text>
-            <View style={[styles.stateChip, status?.ready && styles.stateChipReady]}>
-              <Ionicons
-                name={status?.ready ? "checkmark-circle-outline" : "cloud-download-outline"}
-                size={14}
-                color={Brand.bronze}
-              />
-              <Text style={styles.stateChipText}>{status?.ready ? "Ready" : "Required"}</Text>
-            </View>
+        <GlassCard style={styles.card}>
+          <View style={styles.iconWrap}>
+            <Ionicons
+              name={error ? "alert-circle-outline" : status?.ready ? "checkmark-circle-outline" : "phone-portrait-outline"}
+              size={26}
+              color={error ? Brand.danger : Brand.bronze}
+            />
           </View>
-          <Text style={styles.subtitle}>
-            J AI runs the profiler, memory, orchestrator, and alignment agents on the phone.
-            Required GGUF files are downloaded into app-private storage and verified before native inference.
-          </Text>
 
-          <View style={styles.summaryBox}>
-            <Text style={styles.summaryTitle}>Delivery mode</Text>
-            <Text style={styles.summaryValue}>{status?.mode || "checking"}</Text>
-            <Text style={styles.summaryMeta}>Storage: {status?.storageRoot || "app-private models folder"}</Text>
-            <Text style={styles.summaryMeta}>Required download size: {requiredSize}</Text>
-            {status?.wifiRecommended ? (
-              <Text style={styles.warningText}>Wi‑Fi is recommended because these files can be several GB.</Text>
-            ) : null}
+          <Text style={styles.title}>Preparing Elli for this phone</Text>
+          <Text style={styles.subtitle}>{currentStatusText}</Text>
+
+          <View style={styles.progressHeader}>
+            <Text style={styles.progressLabel}>{percent}% complete</Text>
+            <Text style={styles.progressLabel}>{etaText}</Text>
           </View>
-        </GlassCard>
-
-        <GlassCard>
-          <Text style={styles.sectionTitle}>Required files</Text>
-          {status?.required.map((model) => (
-            <View key={model.id} style={styles.modelRow}>
-              <View style={styles.modelIcon}>
-                <Ionicons
-                  name={model.valid ? "checkmark-circle-outline" : "alert-circle-outline"}
-                  size={17}
-                  color={model.valid ? Brand.success : Brand.danger}
-                />
-              </View>
-              <View style={styles.modelTextWrap}>
-                <Text style={styles.modelTitle}>{model.fileName}</Text>
-                <Text style={styles.modelMeta}>{model.id}</Text>
-                <Text style={styles.modelMeta}>
-                  {model.valid ? `Installed • ${formatBytes(model.bytesOnDisk)}` : model.reason || "Missing"}
-                </Text>
-              </View>
-            </View>
-          )) || (
-            <View style={styles.loadingRow}>
-              <ActivityIndicator color={Brand.cocoa} />
-              <Text style={styles.loadingText}>Checking model files…</Text>
-            </View>
-          )}
-        </GlassCard>
-
-        <GlassCard>
-          <Text style={styles.sectionTitle}>Download status</Text>
-          <Text style={styles.statusText}>
-            {progress?.message ||
-              (status?.ready
-                ? "All required local model files are installed."
-                : missingCount
-                  ? `${missingCount} model file${missingCount === 1 ? "" : "s"} need download or verification.`
-                  : "Checking local model readiness…")}
-          </Text>
-
-          {busy ? (
-            <View style={styles.progressBlock}>
-              <View style={styles.progressHeader}>
-                <Text style={styles.progressLabel}>Total</Text>
-                <Text style={styles.progressLabel}>{totalProgress}%</Text>
-              </View>
-              <View style={styles.progressTrack}>
-                <View style={[styles.progressFill, { width: `${totalProgress}%` }]} />
-              </View>
-              <View style={styles.progressHeader}>
-                <Text style={styles.progressLabel}>Current model</Text>
-                <Text style={styles.progressLabel}>{modelProgress}%</Text>
-              </View>
-              <View style={styles.progressTrack}>
-                <View style={[styles.progressFill, { width: `${modelProgress}%` }]} />
-              </View>
-            </View>
-          ) : null}
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${percent}%` }]} />
+          </View>
 
           {!!error && <Text style={styles.errorText}>{error}</Text>}
 
-          <Pressable
-            onPress={status?.ready ? () => router.replace("/(tabs)" as any) : startDownload}
-            disabled={busy}
-            style={({ pressed }) => [
-              styles.primaryButton,
-              busy && styles.buttonDisabled,
-              pressed && styles.pressed,
-            ]}
-          >
-            {busy ? <ActivityIndicator color={Brand.ink} /> : null}
-            <Text style={styles.primaryButtonText}>
-              {status?.ready ? "Continue" : error ? "Retry download" : busy ? "Downloading required models" : "Download now"}
-            </Text>
-          </Pressable>
+          <View style={styles.actions}>
+            {error ? (
+              <Pressable
+                onPress={startDownload}
+                disabled={busy}
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  busy && styles.buttonDisabled,
+                  pressed && styles.pressed,
+                ]}
+              >
+                {busy ? <ActivityIndicator color={Brand.ink} /> : null}
+                <Text style={styles.primaryButtonText}>Retry</Text>
+              </Pressable>
+            ) : null}
+
+            {status?.ready ? (
+              <Pressable
+                onPress={() => router.replace("/(tabs)" as any)}
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.primaryButtonText}>Continue</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </GlassCard>
       </ScrollView>
     </LinearGradient>
@@ -242,91 +251,83 @@ export default function ModelSetupScreen() {
 const styles = StyleSheet.create({
   page: { flex: 1 },
   headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    position: "absolute",
+    top: 18,
+    left: 18,
+    zIndex: 2,
   },
   iconButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.74)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
   },
-  tag: {
-    flexDirection: "row",
+  card: {
+    paddingVertical: 28,
+  },
+  iconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
+    justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.72)",
-  },
-  tagText: { fontSize: 12, fontWeight: "800", color: Brand.cocoa },
-  heroRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 12,
-    alignItems: "flex-start",
-  },
-  title: { flex: 1, fontSize: 28, lineHeight: 34, fontWeight: "900", color: Brand.ink },
-  subtitle: { marginTop: 10, fontSize: 15, lineHeight: 23, color: Brand.muted },
-  stateChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.64)",
-  },
-  stateChipReady: { backgroundColor: "rgba(255,255,255,0.82)" },
-  stateChipText: { fontSize: 12, fontWeight: "800", color: Brand.cocoa },
-  summaryBox: {
-    marginTop: 16,
-    padding: 14,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.66)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
-  summaryTitle: { fontSize: 12, fontWeight: "800", color: Brand.muted, textTransform: "uppercase" },
-  summaryValue: { marginTop: 5, fontSize: 16, fontWeight: "900", color: Brand.ink },
-  summaryMeta: { marginTop: 6, fontSize: 13, lineHeight: 19, color: Brand.muted },
-  warningText: { marginTop: 8, fontSize: 13, lineHeight: 19, color: Brand.danger },
-  sectionTitle: { fontSize: 17, fontWeight: "900", color: Brand.ink },
-  modelRow: {
-    marginTop: 12,
-    flexDirection: "row",
-    gap: 12,
-    padding: 12,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.62)",
+  title: {
+    marginTop: 18,
+    fontSize: 26,
+    lineHeight: 32,
+    fontWeight: "900",
+    color: Brand.ink,
   },
-  modelIcon: { paddingTop: 2 },
-  modelTextWrap: { flex: 1 },
-  modelTitle: { fontSize: 14, fontWeight: "900", color: Brand.ink },
-  modelMeta: { marginTop: 3, fontSize: 12, lineHeight: 17, color: Brand.muted },
-  loadingRow: { marginTop: 14, flexDirection: "row", alignItems: "center", gap: 10 },
-  loadingText: { color: Brand.muted, fontSize: 13 },
-  statusText: { marginTop: 10, fontSize: 14, lineHeight: 21, color: Brand.muted },
-  progressBlock: { marginTop: 16, gap: 8 },
-  progressHeader: { flexDirection: "row", justifyContent: "space-between" },
-  progressLabel: { fontSize: 12, fontWeight: "800", color: Brand.cocoa },
+  subtitle: {
+    marginTop: 10,
+    fontSize: 15,
+    lineHeight: 22,
+    color: Brand.muted,
+  },
+  progressHeader: {
+    marginTop: 24,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  progressLabel: {
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: "800",
+    color: Brand.cocoa,
+  },
   progressTrack: {
-    height: 8,
+    marginTop: 10,
+    height: 10,
     borderRadius: 999,
     overflow: "hidden",
     backgroundColor: "rgba(124,99,80,0.16)",
   },
-  progressFill: { height: "100%", borderRadius: 999, backgroundColor: Brand.bronze },
-  errorText: { marginTop: 12, fontSize: 13, lineHeight: 20, color: Brand.danger },
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: Brand.bronze,
+  },
+  errorText: {
+    marginTop: 16,
+    fontSize: 13,
+    lineHeight: 20,
+    color: Brand.danger,
+  },
+  actions: {
+    marginTop: 20,
+    gap: 10,
+  },
   primaryButton: {
-    marginTop: 18,
-    minHeight: 54,
+    minHeight: 52,
     borderRadius: 18,
     flexDirection: "row",
     gap: 10,
@@ -334,7 +335,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: Brand.bronze,
   },
-  primaryButtonText: { fontSize: 15, fontWeight: "900", color: Brand.ink },
+  primaryButtonText: {
+    fontSize: 15,
+    fontWeight: "900",
+    color: Brand.ink,
+  },
   buttonDisabled: { opacity: 0.56 },
   pressed: { opacity: 0.82, transform: [{ scale: 0.995 }] },
 });

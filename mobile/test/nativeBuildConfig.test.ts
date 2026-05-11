@@ -281,6 +281,25 @@ describe("native llama.cpp production build config", () => {
     expect(verifyScript).toContain("updateNativeImplementationStatusAfterVerification");
   });
 
+  it("sets llama_batch n_tokens before llama_decode in native sources and smoke helper", () => {
+    const androidRuntime = read(
+      "modules/jai-on-device-model/android/src/main/cpp/jai_llama_runtime.cpp",
+    );
+    const iosBridge = read("modules/jai-on-device-model/ios/JaiLlamaCppBridge.mm");
+    const verifyScript = read("scripts/verify-native-llama-runtime.js");
+
+    for (const source of [androidRuntime, iosBridge, verifyScript]) {
+      expect(source).toContain("batch->n_tokens = 0;");
+      expect(source).toContain("const int32_t index = batch->n_tokens++;");
+      expect(source.indexOf("batch->n_tokens = 0;")).toBeLessThan(
+        source.indexOf("llama_decode"),
+      );
+    }
+
+    expect(androidRuntime).toContain("decodeFailureDetail(\"embedding input\"");
+    expect(iosBridge).toContain("decodeFailureDetail(\"embedding input\"");
+  });
+
   it("fails clearly for EEXPO_PUBLIC_ environment variable typos without printing values", () => {
     const result = runReleaseVerifier({
       EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID: "do-not-print-this-value",

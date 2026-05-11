@@ -66,12 +66,28 @@ export type NativeOnDeviceSha256FileInput = {
   fileUri: string;
 };
 
+export type NativeDeviceCapabilitySnapshot = {
+  totalMemoryBytes?: number | null;
+  availableMemoryBytes?: number | null;
+  freeStorageBytes?: number | null;
+  lowMemory?: boolean | null;
+  lowRamDevice?: boolean | null;
+  lowPowerMode?: boolean | null;
+  batteryLevel?: number | null;
+  thermalState?: string | null;
+  cpuCoreCount?: number | null;
+  supportedAbis?: string[] | null;
+};
+
 export type NativeOnDeviceModelBridge = {
   isAvailable?: () => boolean | Promise<boolean>;
   isSpeechToTextAvailable?: () => boolean | Promise<boolean>;
   initialize: (config: NativeOnDeviceBridgeInitConfig) => unknown | Promise<unknown>;
   completeChat: (input: NativeOnDeviceChatInput) => unknown | Promise<unknown>;
   embedTexts: (input: NativeOnDeviceEmbeddingInput) => unknown | Promise<unknown>;
+  getDeviceCapabilities?: () =>
+    | NativeDeviceCapabilitySnapshot
+    | Promise<NativeDeviceCapabilitySnapshot>;
   transcribeAudio?: (input: NativeOnDeviceTranscriptionInput) => unknown | Promise<unknown>;
   sha256File?: (
     input: NativeOnDeviceSha256FileInput,

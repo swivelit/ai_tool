@@ -37,8 +37,12 @@ export type DeviceCapabilitySnapshot = {
   availableMemoryBytes?: number | null;
   freeStorageBytes?: number | null;
   thermalState?: "nominal" | "fair" | "serious" | "critical" | string | null;
+  lowMemory?: boolean | null;
+  lowRamDevice?: boolean | null;
   lowPowerMode?: boolean | null;
   batteryLevel?: number | null;
+  cpuCoreCount?: number | null;
+  supportedAbis?: string[] | null;
   gpuSupported?: boolean | null;
   preferredTier?: ModelTierName | null;
   proOptIn?: boolean | null;
@@ -112,9 +116,12 @@ export type ModelDownloadProgress = {
   modelIndex?: number;
   totalModels?: number;
   bytesWritten?: number;
+  downloadedBytes?: number;
   totalBytes?: number | null;
   modelProgress?: number;
   totalProgress?: number;
+  speedBytesPerSecond?: number | null;
+  etaSeconds?: number | null;
   message: string;
 };
 
@@ -503,9 +510,7 @@ function finitePositiveBytes(value: unknown) {
 function meetsTierFloor(tier: ModelTierConfig, deviceInfo: DeviceCapabilitySnapshot = {}) {
   const minRam = finitePositiveBytes(tier.minRamBytes);
   if (minRam) {
-    const memory =
-      finitePositiveBytes(deviceInfo.totalMemoryBytes) ||
-      finitePositiveBytes(deviceInfo.availableMemoryBytes);
+    const memory = finitePositiveBytes(deviceInfo.totalMemoryBytes);
     if (!memory || memory < minRam) return false;
   }
 
@@ -518,17 +523,45 @@ function meetsTierFloor(tier: ModelTierConfig, deviceInfo: DeviceCapabilitySnaps
   return true;
 }
 
+function normalizedBatteryLevel(value: unknown) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed > 1 ? parsed / 100 : parsed;
+}
+
 function deviceIsConstrained(deviceInfo: DeviceCapabilitySnapshot = {}) {
   const thermal = String(deviceInfo.thermalState || "").trim().toLowerCase();
+  const batteryLevel = normalizedBatteryLevel(deviceInfo.batteryLevel);
+  const availableMemory = finitePositiveBytes(deviceInfo.availableMemoryBytes);
   return (
     thermal === "serious" ||
     thermal === "critical" ||
+    deviceInfo.lowMemory === true ||
+    deviceInfo.lowRamDevice === true ||
     deviceInfo.lowPowerMode === true ||
-    (typeof deviceInfo.batteryLevel === "number" &&
-      Number.isFinite(deviceInfo.batteryLevel) &&
-      deviceInfo.batteryLevel > 0 &&
-      deviceInfo.batteryLevel < 0.15)
+    (batteryLevel != null && batteryLevel < 0.15) ||
+    (availableMemory != null && availableMemory < 1024 * 1024 * 1024)
   );
+}
+
+function inferredTierForDevice(
+  config?: ModelDownloadConfigRoot,
+  deviceInfo: DeviceCapabilitySnapshot = {},
+): ModelTierName {
+  const tiers = configuredTiers(config);
+  const fallbackTier = tiers.lite ? "lite" : configuredDefaultTier(config);
+  const totalMemory = finitePositiveBytes(deviceInfo.totalMemoryBytes);
+  if (!totalMemory || deviceIsConstrained(deviceInfo)) {
+    return fallbackTier;
+  }
+
+  if (tiers.pro && meetsTierFloor(tiers.pro, deviceInfo)) {
+    return "pro";
+  }
+  if (tiers.standard && meetsTierFloor(tiers.standard, deviceInfo)) {
+    return "standard";
+  }
+  return fallbackTier;
 }
 
 export function selectModelTier(
@@ -538,8 +571,11 @@ export function selectModelTier(
 ): ModelTierName {
   const tiers = configuredTiers(config);
   const defaultTier = configuredDefaultTier(config);
-  const requested = normalizeTierName(explicitTier || deviceInfo.preferredTier || defaultTier, defaultTier);
-  const fallbackTier = tiers[defaultTier] ? defaultTier : "lite";
+  const fallbackTier = tiers.lite ? "lite" : tiers[defaultTier] ? defaultTier : "lite";
+  const requested = normalizeTierName(
+    explicitTier || deviceInfo.preferredTier || inferredTierForDevice(config, deviceInfo),
+    fallbackTier,
+  );
 
   if (deviceIsConstrained(deviceInfo)) {
     return fallbackTier;
@@ -555,8 +591,7 @@ export function selectModelTier(
 
   const tier = tiers[requested];
   if (requested === "pro") {
-    const optedIn = deviceInfo.proOptIn === true;
-    return optedIn || meetsTierFloor(tier, deviceInfo)
+    return meetsTierFloor(tier, deviceInfo)
       ? requested
       : tiers.standard && meetsTierFloor(tiers.standard, deviceInfo)
         ? "standard"
@@ -744,6 +779,62 @@ function totalKnownBytes(entries: ModelDownloadConfigEntry[]) {
   return total;
 }
 
+type DownloadProgressTotals = {
+  expectedBytesByIndex: Array<number | null>;
+  writtenBytesByIndex: number[];
+  startedAtMs: number;
+};
+
+function createDownloadProgressTotals(entries: ModelDownloadConfigEntry[]): DownloadProgressTotals {
+  return {
+    expectedBytesByIndex: entries.map((entry) => Number(entry.expectedBytes || 0) || null),
+    writtenBytesByIndex: entries.map(() => 0),
+    startedAtMs: Date.now(),
+  };
+}
+
+function aggregateDownloadProgress(
+  totals: DownloadProgressTotals,
+  targetIndex: number,
+  writtenBytes: number,
+  totalBytesForTarget: number | null,
+  fallbackTotalProgress: number,
+) {
+  const index = Math.max(0, targetIndex - 1);
+  if (totalBytesForTarget && totalBytesForTarget > 0) {
+    totals.expectedBytesByIndex[index] = totalBytesForTarget;
+  }
+  totals.writtenBytesByIndex[index] = Math.max(0, writtenBytes);
+
+  const allBytesKnown = totals.expectedBytesByIndex.every(
+    (value) => Number(value || 0) > 0,
+  );
+  const totalBytes = allBytesKnown
+    ? totals.expectedBytesByIndex.reduce((sum, value) => sum + Number(value || 0), 0)
+    : null;
+  const downloadedBytes = totals.writtenBytesByIndex.reduce((sum, value) => sum + value, 0);
+  const elapsedSeconds = Math.max(0.001, (Date.now() - totals.startedAtMs) / 1000);
+  const speedBytesPerSecond =
+    downloadedBytes > 0
+      ? downloadedBytes / elapsedSeconds
+      : null;
+  const etaSeconds =
+    totalBytes && speedBytesPerSecond
+      ? Math.max(0, (totalBytes - downloadedBytes) / speedBytesPerSecond)
+      : null;
+
+  return {
+    bytesWritten: downloadedBytes,
+    downloadedBytes,
+    totalBytes,
+    speedBytesPerSecond,
+    etaSeconds,
+    totalProgress: totalBytes
+      ? Math.max(0, Math.min(1, downloadedBytes / totalBytes))
+      : Math.max(0, Math.min(1, fallbackTotalProgress)),
+  };
+}
+
 export async function getModelInstallStatus(
   options: EnsureModelsOptions = {},
 ): Promise<ModelInstallStatus> {
@@ -825,6 +916,7 @@ async function downloadOneModel(
   index: number,
   total: number,
   options: EnsureModelsOptions,
+  progressTotals: DownloadProgressTotals,
 ) {
   const fs = options.fileSystem || FileSystem;
   const config = options.config;
@@ -836,17 +928,22 @@ async function downloadOneModel(
   await assertEnoughFreeStorage([entry], options);
 
   await fs.deleteAsync(tempUri, { idempotent: true }).catch(() => undefined);
+  const initialTotals = aggregateDownloadProgress(
+    progressTotals,
+    index,
+    0,
+    expectedBytes,
+    (index - 1) / total,
+  );
   options.onProgress?.({
     phase: "downloading",
     modelId: entry.id,
     fileName: entry.fileName,
     modelIndex: index,
     totalModels: total,
-    bytesWritten: 0,
-    totalBytes: expectedBytes,
+    ...initialTotals,
     modelProgress: 0,
-    totalProgress: (index - 1) / total,
-    message: `Downloading ${entry.fileName}…`,
+    message: "Downloading local AI files...",
   });
 
   if (typeof fs.createDownloadResumable !== "function") {
@@ -863,17 +960,22 @@ async function downloadOneModel(
       const written = Number(progress.totalBytesWritten || 0);
       const totalBytes = Number(progress.totalBytesExpectedToWrite || expectedBytes || 0) || null;
       const modelProgress = totalBytes ? Math.min(1, written / totalBytes) : 0;
+      const aggregate = aggregateDownloadProgress(
+        progressTotals,
+        index,
+        written,
+        totalBytes,
+        (index - 1 + modelProgress) / total,
+      );
       options.onProgress?.({
         phase: "downloading",
         modelId: entry.id,
         fileName: entry.fileName,
         modelIndex: index,
         totalModels: total,
-        bytesWritten: written,
-        totalBytes,
+        ...aggregate,
         modelProgress,
-        totalProgress: Math.min(1, (index - 1 + modelProgress) / total),
-        message: `Downloading ${entry.fileName}…`,
+        message: "Downloading local AI files...",
       });
     },
   );
@@ -883,16 +985,22 @@ async function downloadOneModel(
     throw new ModelInstallError(`Download did not produce a file for ${entry.id}.`);
   }
 
+  const verifyingTotals = aggregateDownloadProgress(
+    progressTotals,
+    index,
+    expectedBytes || progressTotals.writtenBytesByIndex[index - 1] || 0,
+    expectedBytes,
+    index / total,
+  );
   options.onProgress?.({
     phase: "verifying",
     modelId: entry.id,
     fileName: entry.fileName,
     modelIndex: index,
     totalModels: total,
-    totalBytes: expectedBytes,
+    ...verifyingTotals,
     modelProgress: 1,
-    totalProgress: index / total,
-    message: `Verifying ${entry.fileName}…`,
+    message: "Finalizing setup...",
   });
 
   const tempRecord = await validateInstalledFile(entry, tempUri, options);
@@ -914,17 +1022,22 @@ async function downloadOneModel(
     );
   }
 
+  const installedTotals = aggregateDownloadProgress(
+    progressTotals,
+    index,
+    finalRecord.bytesOnDisk,
+    expectedBytes || finalRecord.bytesOnDisk,
+    index / total,
+  );
   options.onProgress?.({
     phase: "installed",
     modelId: entry.id,
     fileName: entry.fileName,
     modelIndex: index,
     totalModels: total,
-    bytesWritten: finalRecord.bytesOnDisk,
-    totalBytes: expectedBytes || finalRecord.bytesOnDisk,
+    ...installedTotals,
     modelProgress: 1,
-    totalProgress: index / total,
-    message: `Installed ${entry.fileName}.`,
+    message: "Finalizing setup...",
   });
 }
 
@@ -958,12 +1071,13 @@ export async function downloadRequiredModels(
     await fs.deleteAsync(target.fileUri, { idempotent: true }).catch(() => undefined);
   }
 
+  const progressTotals = createDownloadProgressTotals(targets);
   for (let index = 0; index < targets.length; index += 1) {
     const entry = targets[index];
     let lastError: unknown;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
-        await downloadOneModel(entry, index + 1, targets.length, options);
+        await downloadOneModel(entry, index + 1, targets.length, options, progressTotals);
         lastError = null;
         break;
       } catch (error) {
@@ -971,13 +1085,21 @@ export async function downloadRequiredModels(
         await fs.deleteAsync(`${entry.fileUri}.download`, { idempotent: true }).catch(() => undefined);
         await fs.deleteAsync(entry.fileUri, { idempotent: true }).catch(() => undefined);
         if (attempt < retries) {
+          const aggregate = aggregateDownloadProgress(
+            progressTotals,
+            index + 1,
+            0,
+            Number(entry.expectedBytes || 0) || null,
+            index / targets.length,
+          );
           options.onProgress?.({
             phase: "failed",
             modelId: entry.id,
             fileName: entry.fileName,
             modelIndex: index + 1,
             totalModels: targets.length,
-            message: `Retrying ${entry.fileName} after download/setup failure…`,
+            ...aggregate,
+            message: "Retrying local AI file download...",
           });
         }
       }
@@ -985,12 +1107,20 @@ export async function downloadRequiredModels(
 
     if (lastError) {
       const message = lastError instanceof Error ? lastError.message : String(lastError);
+      const aggregate = aggregateDownloadProgress(
+        progressTotals,
+        index + 1,
+        progressTotals.writtenBytesByIndex[index] || 0,
+        Number(entry.expectedBytes || 0) || null,
+        index / targets.length,
+      );
       options.onProgress?.({
         phase: "failed",
         modelId: entry.id,
         fileName: entry.fileName,
         modelIndex: index + 1,
         totalModels: targets.length,
+        ...aggregate,
         message,
       });
       throw lastError instanceof ModelInstallError
@@ -999,7 +1129,10 @@ export async function downloadRequiredModels(
     }
   }
 
-  const finalStatus = await getModelInstallStatus(options);
+  const finalStatus = await getModelInstallStatus({
+    ...options,
+    onProgress: undefined,
+  });
   if (!finalStatus.ready) {
     throw new ModelInstallError(
       `Required local GGUF models are still not ready: ${finalStatus.missing

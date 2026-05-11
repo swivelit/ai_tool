@@ -18,6 +18,7 @@ import { AssistantProvider, useAssistant } from "@/components/AssistantProvider"
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
 import { resolveDesiredRoute } from "@/lib/appBoot";
+import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import {
   getModelDeliveryMode,
   getModelInstallStatus,
@@ -290,7 +291,8 @@ function AppShell() {
     }
 
     setModelStatusLoading(true);
-    getModelInstallStatus()
+    getCachedDeviceCapabilities()
+      .then((deviceInfo) => getModelInstallStatus({ deviceInfo }))
       .then((status) => {
         if (cancelled) return;
         setModelStatus(status);

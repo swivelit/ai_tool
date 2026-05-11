@@ -898,12 +898,14 @@ std::vector<llama_token> tokenize(llama_model *model, const std::string &text, b
 
 BatchPtr makeBatch(const std::vector<llama_token> &tokens, bool logitsLastOnly) {
   auto batch = BatchPtr(new llama_batch(llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1)));
+  batch->n_tokens = 0;
   for (size_t i = 0; i < tokens.size(); ++i) {
-    batch->token[i] = tokens[i];
-    batch->pos[i] = static_cast<llama_pos>(i);
-    batch->n_seq_id[i] = 1;
-    batch->seq_id[i][0] = 0;
-    batch->logits[i] = logitsLastOnly && i + 1 == tokens.size() ? 1 : 0;
+    const int32_t index = batch->n_tokens++;
+    batch->token[index] = tokens[i];
+    batch->pos[index] = static_cast<llama_pos>(i);
+    batch->n_seq_id[index] = 1;
+    batch->seq_id[index][0] = 0;
+    batch->logits[index] = logitsLastOnly && i + 1 == tokens.size() ? 1 : 0;
   }
   return batch;
 }

@@ -1,5 +1,6 @@
 import Constants from "expo-constants";
 
+import { getCachedDeviceCapabilities } from "./deviceCapabilities";
 import { auth } from "./firebase";
 import {
   getLocalRuntimeConfigError,
@@ -1285,6 +1286,7 @@ async function handleLocalTranscribeAndAnalyze(
     productDefault: initialReplyLanguage,
   });
   const userProfile = withResolvedReplyLanguage(cachedProfile, replyLanguage);
+  const deviceInfo = await getCachedDeviceCapabilities();
 
   const { runLocalAssistantTurn } = await import("./localAgents");
   const turn = await runLocalAssistantTurn({
@@ -1292,6 +1294,7 @@ async function handleLocalTranscribeAndAnalyze(
     message: normalizedTranscriptText,
     replyLanguage,
     userAllowedCloudFallback,
+    deviceInfo,
     ...(userProfile ? { userProfile } : {}),
   });
   const createdAt = new Date().toISOString();
@@ -1382,6 +1385,7 @@ async function handleLocalChat(
     message,
   });
   const userProfile = withResolvedReplyLanguage(cachedProfile, replyLanguage);
+  const deviceInfo = await getCachedDeviceCapabilities();
 
   const { runLocalAssistantTurn } = await import("./localAgents");
   const turn = await runLocalAssistantTurn({
@@ -1389,6 +1393,7 @@ async function handleLocalChat(
     message,
     replyLanguage,
     userAllowedCloudFallback,
+    deviceInfo,
     ...(userProfile ? { userProfile } : {}),
   });
 

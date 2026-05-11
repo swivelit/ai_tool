@@ -240,7 +240,57 @@ describe("modelDownloadManager", () => {
     expect(status.required.some((entry) => entry.id === "Qwen/Qwen3-14B")).toBe(false);
   });
 
-  it("allows Pro only after explicit opt-in or high device capability", async () => {
+  it("selects tiers from RAM and storage capability", async () => {
+    const { selectModelTier } = await importManager();
+
+    expect(
+      selectModelTier(testConfig(), {
+        totalMemoryBytes: 4 * 1024 * 1024 * 1024,
+        freeStorageBytes: 32 * 1024 * 1024 * 1024,
+      }),
+    ).toBe("lite");
+    expect(
+      selectModelTier(testConfig(), {
+        totalMemoryBytes: 8 * 1024 * 1024 * 1024,
+        freeStorageBytes: 12 * 1024 * 1024 * 1024,
+      }),
+    ).toBe("standard");
+    expect(
+      selectModelTier(testConfig(), {
+        totalMemoryBytes: 12 * 1024 * 1024 * 1024,
+        freeStorageBytes: 12 * 1024 * 1024 * 1024,
+      }),
+    ).toBe("standard");
+    expect(
+      selectModelTier(testConfig(), {
+        totalMemoryBytes: 16 * 1024 * 1024 * 1024,
+        freeStorageBytes: 20 * 1024 * 1024 * 1024,
+      }),
+    ).toBe("pro");
+  });
+
+  it("forces Lite while the device is constrained", async () => {
+    const { selectModelTier } = await importManager();
+    const capable = {
+      totalMemoryBytes: 24 * 1024 * 1024 * 1024,
+      freeStorageBytes: 32 * 1024 * 1024 * 1024,
+    };
+
+    expect(selectModelTier(testConfig(), { ...capable, lowPowerMode: true })).toBe("lite");
+    expect(selectModelTier(testConfig(), { ...capable, thermalState: "serious" })).toBe("lite");
+    expect(selectModelTier(testConfig(), { ...capable, thermalState: "critical" })).toBe("lite");
+    expect(selectModelTier(testConfig(), { ...capable, batteryLevel: 0.1 })).toBe("lite");
+    expect(selectModelTier(testConfig(), { ...capable, lowMemory: true })).toBe("lite");
+    expect(selectModelTier(testConfig(), { ...capable, lowRamDevice: true })).toBe("lite");
+    expect(
+      selectModelTier(testConfig(), {
+        ...capable,
+        freeStorageBytes: 4 * 1024 * 1024 * 1024,
+      }),
+    ).toBe("lite");
+  });
+
+  it("degrades explicit Pro requests when RAM or storage is not enough", async () => {
     const { selectModelTier } = await importManager();
 
     expect(
@@ -250,7 +300,6 @@ describe("modelDownloadManager", () => {
         freeStorageBytes: 32 * 1024 * 1024 * 1024,
       }),
     ).toBe("standard");
-    expect(selectModelTier(testConfig(), { preferredTier: "pro", proOptIn: true })).toBe("pro");
     expect(
       selectModelTier(testConfig(), {
         preferredTier: "pro",
@@ -258,6 +307,63 @@ describe("modelDownloadManager", () => {
         freeStorageBytes: 32 * 1024 * 1024 * 1024,
       }),
     ).toBe("pro");
+  });
+
+  it("downloads only selected tier required IDs and never optional IDs automatically", async () => {
+    state.downloads.push(
+      { url: "https://cdn.example.test/qwen8.gguf", content: "qwen8" },
+      { url: "https://cdn.example.test/embed.gguf", content: "embed" },
+    );
+
+    const { downloadRequiredModels } = await importManager();
+    const status = await downloadRequiredModels({
+      config: testConfig(),
+      deviceInfo: {
+        totalMemoryBytes: 12 * 1024 * 1024 * 1024,
+        freeStorageBytes: 12 * 1024 * 1024 * 1024,
+      },
+    });
+
+    expect(status.selectedTier).toBe("standard");
+    expect(status.required.map((entry) => entry.id).sort()).toEqual([
+      "Qwen/Qwen3-8B",
+      "Qwen/Qwen3-Embedding-0.6B",
+    ].sort());
+    expect(status.optional.map((entry) => entry.id)).toContain("google/gemma-3-4b-it");
+    expect(state.downloadAttempts).toBe(2);
+    expect(state.files.has("file:///mock/models/gemma-3-4b-it-q4_k_m.gguf")).toBe(false);
+    expect(state.files.has("file:///mock/models/qwen3-14b-q4_k_m.gguf")).toBe(false);
+  });
+
+  it("reports byte-weighted progress with speed and ETA when totals are known", async () => {
+    const progressEvents: any[] = [];
+    state.downloads.push(
+      { url: "https://cdn.example.test/gemma.gguf", content: "gemma" },
+      { url: "https://cdn.example.test/embed.gguf", content: "embed" },
+    );
+
+    const { downloadRequiredModels } = await importManager();
+    await downloadRequiredModels({
+      config: testConfig({
+        models: [
+          { ...baseModels[0], expectedBytes: 5 },
+          { ...baseModels[3], expectedBytes: 5 },
+        ],
+      }),
+      onProgress: (progress) => progressEvents.push(progress),
+    });
+
+    const downloading = progressEvents.filter((event) => event.phase === "downloading");
+    expect(downloading.some((event) => event.totalBytes === 10)).toBe(true);
+    expect(downloading.some((event) => event.downloadedBytes > 0)).toBe(true);
+    expect(downloading.some((event) => event.speedBytesPerSecond > 0)).toBe(true);
+    expect(downloading.some((event) => event.etaSeconds !== null)).toBe(true);
+    expect(progressEvents.at(-1)).toMatchObject({
+      phase: "installed",
+      totalProgress: 1,
+      totalBytes: 10,
+      downloadedBytes: 10,
+    });
   });
 
   it("deletes and retries a SHA-256 mismatch", async () => {

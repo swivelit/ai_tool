@@ -287,6 +287,7 @@ type ToolExecutionContext = {
   answers: Record<string, any>;
   profileSummary: string;
   userProfile?: LocalUserProfile;
+  runtimeOptions?: ModelRuntimeTierOptions;
 };
 
 type ToolVerificationResult = {
@@ -2329,7 +2330,10 @@ function isNativeOnDeviceModelConfig(cfg: LocalModelConfig) {
   return String(cfg.runtime?.mode || "native_on_device") === "native_on_device";
 }
 
-async function embedTexts(texts: string[]) {
+async function embedTexts(
+  texts: string[],
+  runtimeOptions: ModelRuntimeTierOptions = {},
+) {
   const cfg = await getModelConfig();
   const baseUrl = normalizeLocalModelBaseUrl(cfg.baseUrl);
   const nativeMode = isNativeOnDeviceModelConfig(cfg);
@@ -2351,6 +2355,9 @@ async function embedTexts(texts: string[]) {
       modelAssets: cfg.native?.models,
       modelDeliveryMode: getModelDeliveryMode(cfg),
       modelDelivery: cfg.modelDelivery,
+      modelTier: runtimeOptions.selectedTier || runtimeOptions.modelTier,
+      deviceInfo: runtimeOptions.deviceInfo,
+      proOptIn: runtimeOptions.proOptIn,
     });
     if (!runtime.isConfigured()) {
       if (nativeMode) {
@@ -3281,13 +3288,18 @@ function decorateRagResult(
   };
 }
 
-export async function searchLocalRag(userId: number, query: string, limit = 6) {
+export async function searchLocalRag(
+  userId: number,
+  query: string,
+  limit = 6,
+  runtimeOptions: ModelRuntimeTierOptions = {},
+) {
   await ensureLocalAgentData();
   const clean = String(query || "").trim();
   if (!clean) return [] as LocalRagSearchResult[];
   const rows = await loadRagChunks(userId);
   if (!rows.length) return [] as LocalRagSearchResult[];
-  const [queryVec] = await embedTexts([clean]);
+  const [queryVec] = await embedTexts([clean], runtimeOptions);
   const timeSensitive = isTimeSensitiveRagQuery(clean);
   const nowMs = Date.now();
   return rows
@@ -4837,7 +4849,7 @@ async function runSearchLocalRagTool(
     });
   }
   try {
-    const hits = await searchLocalRag(context.userId, query, 6);
+    const hits = await searchLocalRag(context.userId, query, 6, context.runtimeOptions);
     if (!hits.length) {
       return toolFail("searchLocalRag", "No matching local knowledge was found.", {
         source: "local_rag",
@@ -5543,7 +5555,11 @@ function isProfileMemoryQuestion(message: string) {
   return PROFILE_MEMORY_PATTERNS.some((pattern) => pattern.test(message));
 }
 
-async function lookupSemanticCache(userId: number, message: string) {
+async function lookupSemanticCache(
+  userId: number,
+  message: string,
+  runtimeOptions: ModelRuntimeTierOptions = {},
+) {
   const rules = await getMemoryRules();
   if (isTimeSensitiveRagQuery(message)) {
     return null;
@@ -5577,7 +5593,7 @@ async function lookupSemanticCache(userId: number, message: string) {
   // Important: compare the actual user message against cached questions.
   // Do not inject aliases here, because aliases can bypass the similarity
   // threshold. The exact check above is a narrow deterministic local cache hit.
-  const queryVectors = await embedTexts([message]);
+  const queryVectors = await embedTexts([message], runtimeOptions);
 
   let best: SemanticCacheEntry | null = null;
   let bestScore = 0;
@@ -5631,11 +5647,12 @@ async function writeSemanticCache(
   route: string,
   intent: LocalAssistantTurnResult["intent"],
   alignmentProfile?: SemanticCacheEntry["alignmentProfile"],
+  runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
   const rules = await getMemoryRules();
   const skipRoutes = rules.cache?.skipRoutes || [];
   if (skipRoutes.includes(route)) return;
-  const [embedding] = await embedTexts([question]);
+  const [embedding] = await embedTexts([question], runtimeOptions);
   const ttlHours = positiveInt(rules.cache?.ttlHours, 168);
   const createdAt = nowIso();
   const expiresAt =
@@ -6195,7 +6212,12 @@ async function buildLocalReasoningWithContext(opts: {
     turns,
     userProfile: opts.userProfile,
   });
-  const ragHits = await searchLocalRag(opts.userId, rewrittenQuery, 6);
+  const ragHits = await searchLocalRag(
+    opts.userId,
+    rewrittenQuery,
+    6,
+    opts.runtimeOptions,
+  );
   const usedSources = ragHits.map((row) => row.sourceMetadata);
   const draft = await localChatText(
     prompts.localReasonerSystem,
@@ -6525,7 +6547,7 @@ export async function runLocalAssistantTurn(opts: {
       replyLanguage,
     }));
 
-  const semantic = await lookupSemanticCache(userId, message);
+  const semantic = await lookupSemanticCache(userId, message, modelRuntimeOptions);
   if (semantic) {
     const needsAlignmentReapply =
       semantic.alignmentProfile?.replyLanguage !== replyLanguage ||
@@ -6699,6 +6721,7 @@ export async function runLocalAssistantTurn(opts: {
       answers,
       profileSummary,
       userProfile: opts.userProfile,
+      runtimeOptions: modelRuntimeOptions,
     });
     draft = composeToolDraft(toolPlan, toolResults, {
       userId,
@@ -7024,6 +7047,7 @@ export async function runLocalAssistantTurn(opts: {
         replyLanguage,
         tone: displayValue(answers.communication_tone),
       },
+      modelRuntimeOptions,
     );
   }
 

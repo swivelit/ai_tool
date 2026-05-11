@@ -46,5 +46,9 @@ class JaiOnDeviceModelModule : Module() {
     AsyncFunction("sha256File") { input: Map<String, Any?> ->
       engine.sha256File(input)
     }
+
+    AsyncFunction("getDeviceCapabilities") {
+      engine.getDeviceCapabilities()
+    }
   }
 }

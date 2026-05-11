@@ -274,7 +274,7 @@ describe("local model runtime architecture", () => {
     );
   });
 
-  it("passes the selected Standard tier into native downloaded asset resolution", async () => {
+  it("passes inferred Standard tier deviceInfo into native downloaded asset resolution", async () => {
     vi.resetModules();
 
     const downloadedFiles = new Set([
@@ -314,7 +314,6 @@ describe("local model runtime architecture", () => {
       nativeBackend: "llama_cpp",
       nativeModuleName: "JaiOnDeviceModel",
       modelRoot: "document://models",
-      modelTier: "standard",
       deviceInfo: {
         totalMemoryBytes: 12 * 1024 * 1024 * 1024,
         freeStorageBytes: 12 * 1024 * 1024 * 1024,
