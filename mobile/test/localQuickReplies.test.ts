@@ -26,4 +26,18 @@ describe("local quick replies", () => {
   ])("does not quick-route task prompt: %s", (message) => {
     expect(tryBuildQuickLocalReply({ message })).toBeNull();
   });
+
+  it("personalizes identity and greeting replies from cheap profile context", () => {
+    const identity = tryBuildQuickLocalReply({
+      message: "who are you?",
+      assistantName: "Kani",
+    });
+    const greeting = tryBuildQuickLocalReply({
+      message: "vanakkam",
+      userName: "Hari",
+    });
+
+    expect(identity?.assistantText).toContain("Kani");
+    expect(greeting?.assistantText).toContain("Hari");
+  });
 });

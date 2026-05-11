@@ -583,6 +583,12 @@ describe("API client contracts", () => {
   });
 
   it("answers identity through apiPost quick replies without backend fetch", async () => {
+    mockCachedProfile({
+      userId: 7,
+      name: "Hari",
+      assistantName: "Kani",
+      replyLanguage: "ta",
+    });
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {
@@ -595,10 +601,14 @@ describe("API client contracts", () => {
     vi.doMock("../lib/firebase", () => ({
       auth: { currentUser: null },
     }));
+    const localAgentsModuleLoaded = vi.fn();
     const runLocalAssistantTurn = vi.fn(async () => {
       throw new Error("localAgents should not be imported for quick replies");
     });
-    vi.doMock("../lib/localAgents", () => ({ runLocalAssistantTurn }));
+    vi.doMock("../lib/localAgents", () => {
+      localAgentsModuleLoaded();
+      return { runLocalAssistantTurn };
+    });
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     const fetchMock = vi.fn(async () =>
       jsonResponse({ ok: true, assistant: { text: "Backend should not run." } }),
@@ -616,8 +626,61 @@ describe("API client contracts", () => {
     expect(payload.meta.source).toBe("local_quick_reply");
     expect(payload.pipeline.route_taken).toBe("identity");
     expect(payload.pipeline.direct_answer_source).toBe("local_rules");
-    expect(payload.assistant.text).toContain("local-first AI assistant");
+    expect(payload.assistant.text).toContain("Kani");
+    expect(payload.meta.responsePath).toBe("quick_reply");
+    expect(payload.meta.stageTimings).toHaveProperty("quick_profile");
+    expect(payload.pipeline.meta.responsePath).toBe("quick_reply");
+    expect(localAgentsModuleLoaded).not.toHaveBeenCalled();
     expect(runLocalAssistantTurn).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("personalizes greeting quick replies from cached profile without importing localAgents", async () => {
+    mockCachedProfile({
+      userId: 7,
+      name: "Hari",
+      assistantName: "Kani",
+      replyLanguage: "ta",
+    });
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: { currentUser: null },
+    }));
+    const localAgentsModuleLoaded = vi.fn();
+    vi.doMock("../lib/localAgents", () => {
+      localAgentsModuleLoaded();
+      return {
+        runLocalAssistantTurn: vi.fn(async () => {
+          throw new Error("localAgents should not be imported");
+        }),
+      };
+    });
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "Backend should not run." } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    const payload = await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "vanakkam",
+    });
+
+    expect(payload.meta.source).toBe("local_quick_reply");
+    expect(payload.assistant.text).toContain("Hari");
+    expect(payload.assistant.tamil).toBe(payload.assistant.text);
+    expect(payload.pipeline.route_taken).toBe("fast_greeting");
+    expect(payload.pipeline.tamil_text).toBe(payload.assistant.text);
+    expect(localAgentsModuleLoaded).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

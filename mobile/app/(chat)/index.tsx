@@ -96,6 +96,7 @@ const RECORDING_STARTUP_SETTLE_MS = Platform.OS === "android" ? 320 : 160;
 const CHAT_SESSIONS_STORAGE_PREFIX = "chat_sessions_v2";
 const HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX = "hidden_chat_session_ids_v2";
 const HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX = "hidden_chat_item_ids_v1";
+const MODEL_SETUP_ALERT_THROTTLE_MS = 5 * 60 * 1000;
 
 function normalizeHandsFreeText(value?: string | null) {
   return String(value || "")
@@ -383,6 +384,7 @@ export default function Home() {
   const handsFreePermissionAlertedRef = useRef(false);
   const handsFreeBlockedRef = useRef(false);
   const activeChatRequestIdRef = useRef<string | null>(null);
+  const modelSetupAlertLastShownAtRef = useRef(0);
   const handsFreeRuntimeRef = useRef({
     busy: false,
     listening: false,
@@ -1392,6 +1394,14 @@ export default function Home() {
 
   function maybePromptModelSetup(response: BackendChatResponse) {
     if (!chatResponseSetupRequired(response)) return;
+    const now = Date.now();
+    if (
+      modelSetupAlertLastShownAtRef.current &&
+      now - modelSetupAlertLastShownAtRef.current < MODEL_SETUP_ALERT_THROTTLE_MS
+    ) {
+      return;
+    }
+    modelSetupAlertLastShownAtRef.current = now;
     const assistantText = String(response?.assistant?.text || "").trim();
     Alert.alert(
       "Local AI setup",

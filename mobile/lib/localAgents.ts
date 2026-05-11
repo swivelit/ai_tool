@@ -38,6 +38,7 @@ import {
   QuickLocalReplyResult,
   tryBuildQuickLocalReply,
 } from "./localQuickReplies";
+import { enqueueLocalIdleJob } from "./localIdleQueue";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -1715,9 +1716,9 @@ function trainingSamplesPath(agent = "general") {
 
 const fileMutationQueues = new Map<string, Promise<unknown>>();
 const lastLocalMemoryConsolidationAttemptAt = new Map<number, number>();
-const LOCAL_MEMORY_CONSOLIDATION_ATTEMPT_COOLDOWN_MINUTES = positiveInt(
-  DEFAULT_MEMORY_RULES.summarization?.minMinutesBetweenSync,
-  15,
+const LOCAL_MEMORY_CONSOLIDATION_ATTEMPT_COOLDOWN_MINUTES = Math.max(
+  60,
+  positiveInt(DEFAULT_MEMORY_RULES.summarization?.minMinutesBetweenSync, 15),
 );
 
 function shouldAttemptLocalMemoryConsolidation(
@@ -5442,6 +5443,8 @@ async function buildSetupRequiredTurn(opts: {
       source: "local_rules",
       route: "setup_required",
       setupRequired: true,
+      fastPath: false,
+      responsePath: "setup_required",
       selectedTier: opts.readiness.selectedTier,
       missingModelIds: opts.readiness.missingModels.map((model) => model.id),
       invalidModelIds: opts.readiness.invalidModels.map((model) => model.id),
@@ -5476,9 +5479,16 @@ function isExplicitProfileOrMemoryUpdate(message: string) {
   const normalized = normalizeText(message);
   return (
     isMemoryUpdateToolIntent(normalized) ||
-    /\b(my name is|call me|i prefer|i work as|i live in|i am living in|my location is|my city is|my place is|i moved to|my goal is|i speak|i use|i study|i am studying|i like|i love|i enjoy|i usually (?:wake|sleep|work|study)|i have (?:diabetes|blood pressure|allergy|asthma|thyroid|kidney)|i am allergic to|i take medicine for)\b/.test(
+    /\b(my name is|call me|i prefer|i work as|i live in|i am living in|my location is|my city is|my place is|i moved to|my goal is|i speak|i use|i study|i am studying|i am allergic to|i take medicine for)\b/.test(
       normalized,
     )
+  );
+}
+
+function hasDurableProfileFactCue(message: string) {
+  const normalized = normalizeText(message);
+  return /\b(my name is|call me|i prefer|i work as|i live in|i am living in|my location is|my city is|my place is|i moved to|my goal is|i speak|i use|i study|i am studying|i like|i love|i enjoy|i usually (?:wake|sleep|work|study)|i have (?:diabetes|blood pressure|allergy|asthma|thyroid|kidney)|i am allergic to|i take medicine for)\b/.test(
+    normalized,
   );
 }
 
@@ -5497,29 +5507,6 @@ function skippedNormalChatProfiler(
     missingSlots: [],
     updates: {},
   } as NormalChatProfilerResult;
-}
-
-function scheduleBestEffortLocalWork(
-  label: string,
-  task: () => Promise<unknown> | unknown,
-) {
-  if (
-    String((globalThis as any)?.process?.env?.NODE_ENV || "").toLowerCase() ===
-    "test"
-  ) {
-    return;
-  }
-  const run = () => {
-    Promise.resolve()
-      .then(task)
-      .catch((error) => {
-        if (Boolean((globalThis as any).__DEV__)) {
-          console.warn(`[localAgents:${label}]`, error);
-        }
-      });
-  };
-  const timer = setTimeout(run, 0);
-  (timer as any)?.unref?.();
 }
 
 function isReasonerModelAvailableForTier(
@@ -7057,6 +7044,7 @@ export async function runLocalAssistantTurn(opts: {
         source: quick.source,
         route: quick.route,
         fastPath: true,
+        responsePath: "quick_reply",
         confidence: quick.confidence,
         classified: decision,
         orchestratorDecision: decision,
@@ -7126,6 +7114,10 @@ export async function runLocalAssistantTurn(opts: {
           ...stageTimings,
           route_classification: 0,
         },
+        source: "local_rules",
+        route: earlyRuleDecision.route,
+        fastPath: true,
+        responsePath: "quick_reply",
         runtime: {
           primary: cfg.runtime?.primary || "phone_local",
           mode: cfg.runtime?.mode || "native_on_device",
@@ -7233,7 +7225,7 @@ export async function runLocalAssistantTurn(opts: {
     const assistantText =
       aligned.final || aligned.english || semantic.canonicalAnswer;
     await appendConversation(userId, "assistant", assistantText);
-    scheduleBestEffortLocalWork("semantic_cache_hit", async () => {
+    enqueueLocalIdleJob("semantic_cache_hit", async () => {
       await recordSemanticCacheHit(userId, {
         userId,
         sourceQuestion: message,
@@ -7257,7 +7249,7 @@ export async function runLocalAssistantTurn(opts: {
           alignmentReapplied: needsAlignmentReapply,
         },
       });
-    });
+    }, { delayMs: 120, staggerMs: 300 });
     return {
       route: "semantic_cache",
       source: "semantic_cache",
@@ -7284,6 +7276,10 @@ export async function runLocalAssistantTurn(opts: {
         })),
         timestamp: nowIso(),
         alignmentReapplied: needsAlignmentReapply,
+        source: "semantic_cache",
+        route: "semantic_cache",
+        fastPath: false,
+        responsePath: "semantic_cache",
         stageTimings,
         profiler: {
           ran: normalChatProfiler.ran,
@@ -7326,7 +7322,7 @@ export async function runLocalAssistantTurn(opts: {
         ),
   );
 
-  scheduleBestEffortLocalWork("orchestrator_training", () => {
+  enqueueLocalIdleJob("orchestrator_training", () => {
     return safeRecordTrainingSample("orchestrator", {
       input: message,
       expectedOutput: JSON.stringify(decision),
@@ -7340,7 +7336,7 @@ export async function runLocalAssistantTurn(opts: {
         selectedModelTier: modelRuntimeOptions.selectedTier,
       },
     });
-  });
+  }, { delayMs: 180, staggerMs: 300 });
 
   let route = decision.route;
   let source: LocalAssistantTurnResult["source"] = fastDecision
@@ -7777,7 +7773,7 @@ export async function runLocalAssistantTurn(opts: {
     route !== "reminder_create" &&
     route !== "clarify"
   ) {
-    scheduleBestEffortLocalWork("semantic_cache_write", () =>
+    enqueueLocalIdleJob("semantic_cache_write", () =>
       writeSemanticCache(
         userId,
         message,
@@ -7791,10 +7787,11 @@ export async function runLocalAssistantTurn(opts: {
         },
         modelRuntimeOptions,
       ),
+      { delayMs: 450, staggerMs: 450 },
     );
   }
 
-  scheduleBestEffortLocalWork("alignment_training", () => {
+  enqueueLocalIdleJob("alignment_training", () => {
     return safeRecordTrainingSample("alignment", {
       input: JSON.stringify({
         route,
@@ -7821,10 +7818,13 @@ export async function runLocalAssistantTurn(opts: {
         ...(ragResponseMetadata ? { rag: ragResponseMetadata } : {}),
       },
     });
-  });
+  }, { delayMs: 260, staggerMs: 300 });
 
-  if (!isExplicitProfileOrMemoryUpdate(message)) {
-    scheduleBestEffortLocalWork("deferred_profile_extraction", () =>
+  if (
+    !isExplicitProfileOrMemoryUpdate(message) &&
+    hasDurableProfileFactCue(message)
+  ) {
+    enqueueLocalIdleJob("deferred_profile_extraction", () =>
       runProfilerExtractionInsideNormalChat({
         userId,
         message,
@@ -7832,16 +7832,31 @@ export async function runLocalAssistantTurn(opts: {
         answers,
         userProfile: opts.userProfile,
       }).then(() => undefined),
+      { delayMs: 900, staggerMs: 500 },
     );
   }
 
   if (shouldAttemptLocalMemoryConsolidation(userId)) {
-    scheduleBestEffortLocalWork("memory_consolidation", () =>
+    enqueueLocalIdleJob("memory_consolidation", () =>
       consolidateLocalMemoryOnIdle(userId, {
         userProfile: { ...opts.userProfile, replyLanguage },
       }).then(() => undefined),
+      { delayMs: 3_000, staggerMs: 1_000 },
     );
   }
+
+  const responsePath =
+    cloudFallback?.kind === "cloud_consent_required"
+      ? "cloud_consent_required"
+      : toolPlan?.steps.length
+        ? "tool_plan"
+        : source === "local_model"
+          ? "local_model"
+          : route === "setup_required"
+            ? "setup_required"
+            : source === "openai_fallback"
+              ? "openai_fallback"
+              : "local_rules";
 
   return {
     kind: cloudFallback?.kind || "assistant_turn",
@@ -7881,6 +7896,10 @@ export async function runLocalAssistantTurn(opts: {
       ragFolder: RAG_DIR,
       promptConfig: PROMPTS_PATH,
       modelConfig: MODELS_PATH,
+      source,
+      route,
+      fastPath: false,
+      responsePath,
       stageTimings,
       runtime: {
         primary: cfg.runtime?.primary || "phone_local",

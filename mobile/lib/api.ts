@@ -1365,10 +1365,38 @@ async function shouldUseLocalChatPipeline() {
   return USE_LOCAL_CHAT_PIPELINE_DEFAULT;
 }
 
+async function loadCachedProfileForQuickReply(userId: number) {
+  const timeoutMs = 25;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      loadCachedLocalAssistantProfile(userId),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(() => resolve(undefined), timeoutMs);
+      }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
 async function handleLocalChat(
   path: string,
   body?: any,
 ): Promise<LocalChatProxyResponse> {
+  const stageTimings: Record<string, number> = {};
+  const timeStage = async <T,>(label: string, fn: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now();
+    try {
+      return await fn();
+    } finally {
+      stageTimings[label] = (stageTimings[label] || 0) + (Date.now() - startedAt);
+    }
+  };
   const userId = Number(body?.user_id ?? body?.userId ?? 0);
   const message = String(body?.message ?? body?.text ?? "").trim();
 
@@ -1381,12 +1409,25 @@ async function handleLocalChat(
   const explicitReplyLanguage = normalizeReplyLanguage(
     body?.reply_language ?? body?.replyLanguage,
   );
-  const quick = tryBuildQuickLocalReply({
+  let quick = tryBuildQuickLocalReply({
     message,
     replyLanguage: explicitReplyLanguage,
   });
 
   if (quick) {
+    const quickProfile = await timeStage("quick_profile", () =>
+      loadCachedProfileForQuickReply(userId),
+    );
+    const quickReplyLanguage =
+      explicitReplyLanguage || quickProfile?.replyLanguage;
+    quick =
+      tryBuildQuickLocalReply({
+        message,
+        replyLanguage: quickReplyLanguage,
+        assistantName: quickProfile?.assistantName,
+        userName: quickProfile?.name,
+      }) || quick;
+    const quickLanguage = quickReplyLanguage || explicitReplyLanguage;
     const createdAt = new Date().toISOString();
 
     return {
@@ -1406,54 +1447,69 @@ async function handleLocalChat(
       assistant: {
         text: quick.assistantText,
         english: quick.englishText,
-        tamil: explicitReplyLanguage === "ta" ? quick.assistantText : undefined,
+        tamil: quickLanguage === "ta" ? quick.assistantText : undefined,
         theni_tamil:
-          explicitReplyLanguage === "ta" ? quick.assistantText : undefined,
+          quickLanguage === "ta" ? quick.assistantText : undefined,
       },
       pipeline: {
         route_taken: quick.route,
         predicted_label: "assistant",
         raw_english: quick.englishText || message,
         remodeled_english: quick.englishText || quick.assistantText,
-        tamil_text: explicitReplyLanguage === "ta" ? quick.assistantText : "",
+        tamil_text: quickLanguage === "ta" ? quick.assistantText : "",
         theni_tamil_text:
-          explicitReplyLanguage === "ta" ? quick.assistantText : "",
+          quickLanguage === "ta" ? quick.assistantText : "",
         direct_answer_source: "local_rules",
         meta: {
           source: quick.source,
           route: quick.route,
           confidence: quick.confidence,
           fastPath: true,
+          responsePath: "quick_reply",
+          stageTimings,
         },
       },
       meta: {
         source: "local_quick_reply",
         route: quick.route,
         fastPath: true,
+        responsePath: "quick_reply",
+        stageTimings,
         created_at: createdAt,
       },
     };
   }
 
-  const cachedProfile = await loadCachedLocalAssistantProfile(userId);
-  const userAllowedCloudFallback = await loadCloudFallbackConsent();
+  const cachedProfile = await timeStage("cached_profile", () =>
+    loadCachedLocalAssistantProfile(userId),
+  );
+  const userAllowedCloudFallback = await timeStage("cloud_fallback_consent", () =>
+    loadCloudFallbackConsent(),
+  );
   const replyLanguage = resolveReplyLanguage({
     explicit: body?.reply_language ?? body?.replyLanguage,
     profile: cachedProfile?.replyLanguage,
     message,
   });
   const userProfile = withResolvedReplyLanguage(cachedProfile, replyLanguage);
-  const deviceInfo = await getCachedDeviceCapabilities();
+  const deviceInfo = await timeStage("device_capabilities", () =>
+    getCachedDeviceCapabilities(),
+  );
 
+  const importStartedAt = Date.now();
   const { runLocalAssistantTurn } = await import("./localAgents");
-  const turn = await runLocalAssistantTurn({
-    userId,
-    message,
-    replyLanguage,
-    userAllowedCloudFallback,
-    deviceInfo,
-    ...(userProfile ? { userProfile } : {}),
-  });
+  stageTimings.local_agents_import =
+    (stageTimings.local_agents_import || 0) + (Date.now() - importStartedAt);
+  const turn = await timeStage("local_turn", () =>
+    runLocalAssistantTurn({
+      userId,
+      message,
+      replyLanguage,
+      userAllowedCloudFallback,
+      deviceInfo,
+      ...(userProfile ? { userProfile } : {}),
+    }),
+  );
 
   const createdAt = new Date().toISOString();
   const normalizedIntent =
@@ -1492,12 +1548,26 @@ async function handleLocalChat(
       theni_tamil_text: replyLanguage === "ta" ? turn.assistantText : "",
       direct_answer_source: turn.source,
       profile_summary: turn.profileSummary || null,
-      meta: turn.meta || {},
+      meta: {
+        ...(turn.meta || {}),
+        stageTimings: {
+          ...stageTimings,
+          ...(turn.meta?.stageTimings || {}),
+        },
+        fastPath: Boolean(turn.meta?.fastPath),
+        responsePath: turn.meta?.responsePath || turn.route,
+      },
     },
     meta: {
       source: "local_chat_proxy",
       cacheHit: Boolean(turn.cacheHit),
       route: turn.route,
+      fastPath: Boolean(turn.meta?.fastPath),
+      responsePath: turn.meta?.responsePath || turn.route,
+      stageTimings: {
+        ...stageTimings,
+        ...(turn.meta?.stageTimings || {}),
+      },
       ...(turn.meta?.setupRequired
         ? {
             setupRequired: true,

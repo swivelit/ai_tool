@@ -34,6 +34,7 @@ const QUICK_PHRASES: Record<QuickLocalRoute, string[]> = {
     "good morning",
     "good evening",
     "good night",
+    "thanks",
   ],
   identity: [
     "who are you",
@@ -301,6 +302,7 @@ function englishReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
 
 function tamilReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
   const userName = displayName(input.userName);
+  const assistantName = displayName(input.assistantName);
 
   switch (route) {
     case "fast_greeting":
@@ -308,7 +310,9 @@ function tamilReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
         ? `வணக்கம் ${userName}. நான் உதவ தயாராக இருக்கிறேன்.`
         : "வணக்கம். நான் உதவ தயாராக இருக்கிறேன்.";
     case "identity":
-      return "நான் இந்த phone-லேயே local-first ஆக இயங்கும் உங்கள் AI assistant.";
+      return assistantName
+        ? `நான் ${assistantName}, இந்த phone-லேயே local-first ஆக இயங்கும் உங்கள் AI assistant.`
+        : "நான் இந்த phone-லேயே local-first ஆக இயங்கும் உங்கள் AI assistant.";
     case "small_talk":
       return "நான் இங்கேதான் இருக்கிறேன். திட்டமிட, நினைவூட்டல்கள் உருவாக்க, local memory-லிருந்து பதில் சொல்ல, அல்லது சும்மா chat செய்ய உதவலாம். என்ன செய்யலாம்?";
     case "wellbeing_support":
@@ -343,10 +347,10 @@ export function tryBuildQuickLocalReply(
     "wellbeing_support",
     "identity",
     "capabilities",
+    "fast_greeting",
     "thanks",
     "goodbye",
     "small_talk",
-    "fast_greeting",
   ];
   const route = routeOrder.find((candidate) => routeMatches(candidate, tokens));
 

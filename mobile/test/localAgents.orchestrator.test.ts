@@ -7,6 +7,7 @@ import models from "../data/config/models.json";
 import orchestratorRoutes from "../data/config/orchestrator_routes.json";
 import profilerSlots from "../data/config/profiler_slots.json";
 import prompts from "../data/config/prompts.json";
+import { __idleQueueTestUtils } from "../lib/localIdleQueue";
 
 const mockedState = vi.hoisted(() => ({
   files: new Map<string, string>(),
@@ -163,6 +164,7 @@ describe("phone-local agent configuration", () => {
 
 describe("local orchestrator and alignment", () => {
   beforeEach(() => {
+    __idleQueueTestUtils.clear();
     mockedState.files.clear();
     mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
     mockedState.fetchQueue.length = 0;
@@ -239,6 +241,7 @@ describe("local orchestrator and alignment", () => {
     expect(global.fetch).not.toHaveBeenCalled();
     expect(apiPostMock).not.toHaveBeenCalled();
     expect(mockedState.fetchQueue).toHaveLength(0);
+    expect(__idleQueueTestUtils.pendingCount()).toBe(0);
     expect(result.meta?.stageTimings || {}).not.toHaveProperty("ensure_models");
     expect(result.meta?.stageTimings || {}).not.toHaveProperty("profiler");
     expect(result.meta?.stageTimings || {}).not.toHaveProperty("semantic_cache");
@@ -261,6 +264,7 @@ describe("local orchestrator and alignment", () => {
     expect(global.fetch).not.toHaveBeenCalled();
     expect(apiPostMock).not.toHaveBeenCalled();
     expect(mockedState.fetchQueue).toHaveLength(0);
+    expect(__idleQueueTestUtils.pendingCount()).toBe(0);
     expect(result.meta?.stageTimings || {}).not.toHaveProperty("model_readiness");
     expect(result.meta?.stageTimings || {}).not.toHaveProperty("local_reasoner");
   });
@@ -318,6 +322,8 @@ describe("local orchestrator and alignment", () => {
     expect(result.assistantText).toContain("Local AI files are still setting up");
     expect(result.meta?.setupRequired).toBe(true);
     expect(result.meta?.source).toBe("local_rules");
+    expect(result.meta?.responsePath).toBe("setup_required");
+    expect(result.meta?.fastPath).toBe(false);
     expect(result.meta?.selectedTier).toBe("lite");
     expect(result.meta?.missingModelIds).toEqual(
       expect.arrayContaining([
@@ -328,6 +334,7 @@ describe("local orchestrator and alignment", () => {
     expect(apiPostMock).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
     expect((FileSystem as any).createDownloadResumable).not.toHaveBeenCalled();
+    expect(__idleQueueTestUtils.pendingCount()).toBe(0);
   });
 
   it("selects reasoner models only from the selected installed tier", async () => {
@@ -744,6 +751,86 @@ describe("local orchestrator and alignment", () => {
     expect(completionPayloads[1].max_tokens).toBe(256);
     expect(completionPayloads[2].max_tokens).toBe(192);
     expect(apiPostMock).not.toHaveBeenCalled();
+
+    const pendingLabels = __idleQueueTestUtils
+      .pendingJobs()
+      .map((job) => job.label);
+    expect(pendingLabels).toEqual(
+      expect.arrayContaining([
+        "orchestrator_training",
+        "semantic_cache_write",
+        "alignment_training",
+      ]),
+    );
+    expect(
+      mockedState.files.get(`${dataRoot}/training/captures/orchestrator.jsonl`),
+    ).toBeUndefined();
+
+    queueJsonResponse({ data: [{ embedding: unitEmbedding() }] });
+    await __idleQueueTestUtils.flush();
+
+    expect(
+      mockedState.files.get(`${dataRoot}/training/captures/orchestrator.jsonl`),
+    ).toContain("general_offline_chat");
+    expect(
+      mockedState.files.get(`${dataRoot}/training/captures/alignment.jsonl`),
+    ).toContain("Compilers");
+  });
+
+  it("defers profile extraction for durable facts in normal chat", async () => {
+    queueJsonResponse({ data: [{ embedding: unitEmbedding() }] });
+    queueCompletion(
+      JSON.stringify({
+        route: "local_answer",
+        reason: "general_offline_chat",
+        confidence: 0.82,
+        needs_clarification: false,
+        clarification_question: "",
+        needs_live_data: false,
+        selected_model: "Qwen/Qwen3-8B",
+        fallback_allowed: false,
+      }),
+    );
+    queueCompletion("Carnatic music is a rich classical music tradition.");
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 249,
+      message: "By the way, I enjoy Carnatic music.",
+      replyLanguage: "en",
+    });
+
+    expect(result.route).toBe("local_answer");
+    expect(result.meta?.profiler?.ran).toBe(false);
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("profiler");
+    expect(
+      mockedState.files.get(`${dataRoot}/profiles/249/answers.json`),
+    ).toBeUndefined();
+    expect(__idleQueueTestUtils.pendingJobs().map((job) => job.label)).toContain(
+      "deferred_profile_extraction",
+    );
+
+    queueJsonResponse({ data: [{ embedding: unitEmbedding() }] });
+    queueCompletion(
+      JSON.stringify({
+        assistant_reply: "Noted.",
+        updates: {
+          hobbies: ["music"],
+        },
+        missing_slots: [],
+        completed: false,
+        confidence_by_slot: {
+          hobbies: 0.86,
+        },
+        optional_profile_notes: [],
+      }),
+    );
+    await __idleQueueTestUtils.flush();
+
+    const answers = JSON.parse(
+      mockedState.files.get(`${dataRoot}/profiles/249/answers.json`) || "{}",
+    );
+    expect(answers.hobbies).toEqual(["music"]);
   });
 
   it("keeps complex Lite chats on the Lite installed model", async () => {
@@ -986,6 +1073,10 @@ describe("local orchestrator and alignment", () => {
     );
     expect(result.route).toBe("fast_greeting");
     expect(result.meta?.profiler?.ran).toBe(true);
+    expect(result.meta?.stageTimings || {}).toHaveProperty("profiler");
+    expect(__idleQueueTestUtils.pendingJobs().map((job) => job.label)).not.toContain(
+      "deferred_profile_extraction",
+    );
     expect(answers.preferred_language).toBe("english");
     expect(answers.occupation).toBe("working_professional");
     expect(answers.industry_or_field).toBe("technology");

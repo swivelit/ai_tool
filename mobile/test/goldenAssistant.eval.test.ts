@@ -8,6 +8,7 @@ import models from "../data/config/models.json";
 import orchestratorRoutes from "../data/config/orchestrator_routes.json";
 import profilerSlots from "../data/config/profiler_slots.json";
 import prompts from "../data/config/prompts.json";
+import { __idleQueueTestUtils } from "../lib/localIdleQueue";
 
 type GoldenCase = {
   id: string;
@@ -187,6 +188,7 @@ function reminderPayload(raw: Record<string, any>) {
 }
 
 function resetCaseState() {
+  __idleQueueTestUtils.clear();
   mockedState.files.clear();
   mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
   mockedState.fetchQueue.length = 0;
@@ -204,6 +206,12 @@ function resetCaseState() {
     baseUrl: "http://192.168.1.23:10000/v1",
     timeoutMs: 1000,
   });
+}
+
+function hasDurableProfileFactCue(value: string) {
+  return /\b(my name is|call me|i prefer|i work as|i live in|i am living in|my location is|my city is|my place is|i moved to|my goal is|i speak|i use|i study|i am studying|i like|i love|i enjoy|i usually (?:wake|sleep|work|study)|i have (?:diabetes|blood pressure|allergy|asthma|thyroid|kidney)|i am allergic to|i take medicine for)\b/i.test(
+    String(value || ""),
+  );
 }
 
 function isoForOffset(days: number) {
@@ -285,7 +293,7 @@ function writeFixtures(testCase: GoldenCase) {
 
 function queueMocks(testCase: GoldenCase) {
   const mocks = testCase.mocks || {};
-  if (mocks.profiler) {
+  if (mocks.profiler && hasDurableProfileFactCue(testCase.prompt)) {
     const preferredLanguage = String(
       mocks.profiler.preferred_language || mocks.profiler.preferredLanguage || "",
     );
