@@ -1,17 +1,26 @@
 import React from "react";
-import { StyleSheet, View, ViewStyle } from "react-native";
+import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 
 export function GlassCard({
   children,
   style,
+  contentStyle,
+  radius,
 }: {
   children: React.ReactNode;
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
+  contentStyle?: StyleProp<ViewStyle>;
+  radius?: number;
 }) {
+  const radiusStyle = radius == null ? null : { borderRadius: radius };
+  const topRadiusStyle =
+    radius == null
+      ? null
+      : { borderTopLeftRadius: radius, borderTopRightRadius: radius };
   return (
-    <View style={[styles.shell, style]}>
+    <View style={[styles.shell, radiusStyle, style]}>
       <BlurView
         intensity={24}
         tint="light"
@@ -30,8 +39,8 @@ export function GlassCard({
         style={StyleSheet.absoluteFillObject}
       />
 
-      <View style={styles.topSheen} />
-      <View style={styles.content}>{children}</View>
+      <View style={[styles.topSheen, topRadiusStyle]} />
+      <View style={[styles.content, contentStyle]}>{children}</View>
     </View>
   );
 }

@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -17,224 +19,256 @@ import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import {
-  downloadRequiredModels,
-  getModelInstallStatus,
-} from "@/lib/modelDownloadManager";
-import type {
-  DeviceCapabilitySnapshot,
-  ModelDownloadProgress,
-  ModelInstallStatus,
-} from "@/lib/modelDownloadManager";
-
-function progressPercent(progress?: number) {
-  if (!Number.isFinite(progress)) return 0;
-  return Math.max(0, Math.min(100, Math.round(Number(progress) * 100)));
-}
-
-function formatEta(progress: ModelDownloadProgress | null, ready: boolean, busy: boolean) {
-  if (ready) return "Ready";
-  if (!busy) return "Estimating...";
-  if (progress?.phase === "verifying" || progress?.phase === "installed") {
-    return "Finalizing setup...";
-  }
-  const etaSeconds = Number(progress?.etaSeconds);
-  if (!Number.isFinite(etaSeconds) || etaSeconds <= 0) {
-    return "Estimating...";
-  }
-  const minutes = Math.max(1, Math.ceil(etaSeconds / 60));
-  return `About ${minutes} min left`;
-}
-
-function statusCopy(
-  status: ModelInstallStatus | null,
-  progress: ModelDownloadProgress | null,
-  busy: boolean,
-  error: string,
-) {
-  if (error) return "Setup could not finish.";
-  if (status?.ready) return "Finalizing setup...";
-  if (progress?.phase === "verifying" || progress?.phase === "installed") {
-    return "Finalizing setup...";
-  }
-  if (busy || progress?.phase === "downloading") {
-    return "Downloading local AI files...";
-  }
-  return "Checking this phone...";
-}
+  modelDownloadSession,
+  type ModelDownloadSessionSnapshot,
+} from "@/lib/modelDownloadSession";
+import {
+  formatProgressPercentLabel,
+  formatSetupEtaText,
+  getModelSetupLayout,
+} from "@/lib/setupProgressCopy";
 
 export default function ModelSetupScreen() {
   const insets = useSafeAreaInsets();
-  const [deviceInfo, setDeviceInfo] = useState<DeviceCapabilitySnapshot | null>(null);
-  const [status, setStatus] = useState<ModelInstallStatus | null>(null);
-  const [progress, setProgress] = useState<ModelDownloadProgress | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const autoStartedRef = useRef(false);
+  const dimensions = useWindowDimensions();
+  const [snapshot, setSnapshot] = useState<ModelDownloadSessionSnapshot>(
+    modelDownloadSession.getSnapshot(),
+  );
   const autoContinuedRef = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
 
-  const percent = progressPercent(
-    progress?.totalProgress ?? (status?.ready ? 1 : 0),
+  const layout = useMemo(
+    () => getModelSetupLayout({ width: dimensions.width, height: dimensions.height }),
+    [dimensions.height, dimensions.width],
   );
+  const progressValue = Math.max(
+    0,
+    Math.min(1, Number(snapshot.progress?.totalProgress ?? (snapshot.ready ? 1 : 0)) || 0),
+  );
+  const progressLabel = formatProgressPercentLabel(progressValue);
   const etaText = useMemo(
-    () => formatEta(progress, Boolean(status?.ready), busy),
-    [busy, progress, status?.ready],
+    () => formatSetupEtaText({
+      status: snapshot.status,
+      progress: snapshot.progress,
+      ready: snapshot.ready,
+    }),
+    [snapshot.progress, snapshot.ready, snapshot.status],
   );
-  const currentStatusText = statusCopy(status, progress, busy, error);
+  const currentStatusText = snapshot.userMessage;
+  const busy =
+    snapshot.status === "checking" ||
+    snapshot.status === "downloading" ||
+    snapshot.status === "reconnecting" ||
+    snapshot.status === "verifying";
+  const showRetry = snapshot.canRetry && !snapshot.ready;
+  const iconName = snapshot.status === "failed"
+    ? "alert-circle-outline"
+    : snapshot.ready
+      ? "checkmark-circle-outline"
+      : "phone-portrait-outline";
 
-  const loadDeviceInfo = useCallback(async () => {
-    if (deviceInfo) return deviceInfo;
-    const next = await getCachedDeviceCapabilities();
-    setDeviceInfo(next);
-    return next;
-  }, [deviceInfo]);
-
-  const refreshStatus = useCallback(
-    async (snapshot?: DeviceCapabilitySnapshot) => {
-      const nextDeviceInfo = snapshot || (await loadDeviceInfo());
-      const next = await getModelInstallStatus({ deviceInfo: nextDeviceInfo });
-      setStatus(next);
-      return next;
-    },
-    [loadDeviceInfo],
-  );
+  useEffect(() => {
+    return modelDownloadSession.subscribe(setSnapshot);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function check() {
-      try {
-        const snapshot = await getCachedDeviceCapabilities();
-        if (cancelled) return;
-        setDeviceInfo(snapshot);
-        const next = await getModelInstallStatus({ deviceInfo: snapshot });
-        if (cancelled) return;
-        setStatus(next);
-        setError("");
-      } catch (nextError) {
-        if (cancelled) return;
-        setError(nextError instanceof Error ? nextError.message : "Could not check setup.");
-      }
+    async function startSetup() {
+      const deviceInfo = await getCachedDeviceCapabilities().catch(() => null);
+      if (cancelled) return;
+      await modelDownloadSession.start(deviceInfo ? { deviceInfo } : {});
     }
 
-    void check();
+    void startSetup();
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const startDownload = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      const snapshot = await loadDeviceInfo();
-      const next = await downloadRequiredModels({
-        deviceInfo: snapshot,
-        onProgress: setProgress,
-      });
-      setStatus(next);
-      setProgress({
-        phase: "installed",
-        totalProgress: 1,
-        modelProgress: 1,
-        etaSeconds: 0,
-        message: "Finalizing setup...",
-      });
-    } catch (nextError) {
-      const message = nextError instanceof Error ? nextError.message : "Model setup failed.";
-      setError(message);
-      await refreshStatus().catch(() => undefined);
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, loadDeviceInfo, refreshStatus]);
-
   useEffect(() => {
-    if (!status || status.ready || busy || autoStartedRef.current) return;
-    const needsInstall = status.missing.length > 0 || status.invalid.length > 0;
-    if (!needsInstall) return;
-    autoStartedRef.current = true;
-    setProgress({
-      phase: "checking",
-      totalModels: status.required.length,
-      totalBytes: status.totalRequiredBytes,
-      totalProgress: 0,
-      modelProgress: 0,
-      message: "Checking this phone...",
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      const previousState = appStateRef.current;
+      appStateRef.current = nextState;
+      if (nextState === "active") {
+        if (previousState !== "active") {
+          void modelDownloadSession.resume();
+        }
+        return;
+      }
+      void modelDownloadSession.pause("background");
     });
-    void startDownload();
-  }, [busy, startDownload, status]);
+    return () => subscription.remove();
+  }, []);
+
+  const retry = useCallback(() => {
+    if (snapshot.status === "paused" || snapshot.status === "reconnecting") {
+      void modelDownloadSession.resume();
+      return;
+    }
+    void modelDownloadSession.retry();
+  }, [snapshot.status]);
+
+  const continueToApp = useCallback(() => {
+    router.replace("/(tabs)" as any);
+  }, []);
 
   useEffect(() => {
-    if (!status?.ready || error || autoContinuedRef.current) return;
+    if (!snapshot.ready || autoContinuedRef.current) return;
     autoContinuedRef.current = true;
-    const timer = setTimeout(() => router.replace("/(tabs)" as any), 700);
+    const timer = setTimeout(continueToApp, 700);
     return () => clearTimeout(timer);
-  }, [error, status?.ready]);
+  }, [continueToApp, snapshot.ready]);
+
+  const backButtonStyle = useMemo(
+    () => [
+      styles.iconButton,
+      {
+        top: insets.top + 10,
+        left: layout.horizontalPadding,
+      },
+    ],
+    [insets.top, layout.horizontalPadding],
+  );
+
+  const progressHeaderStyle = useMemo(
+    () => [
+      styles.progressHeader,
+      {
+        flexDirection: layout.stackProgressLabels ? "column" as const : "row" as const,
+        alignItems: layout.stackProgressLabels ? "flex-start" as const : "center" as const,
+      },
+    ],
+    [layout.stackProgressLabels],
+  );
+
+  const cardStyle = useMemo(
+    () => [
+      styles.card,
+      {
+        width: layout.cardWidth,
+        borderRadius: layout.cardRadius,
+      },
+    ],
+    [layout.cardRadius, layout.cardWidth],
+  );
+
+  const cardContentStyle = useMemo(
+    () => ({ padding: layout.contentPadding }),
+    [layout.contentPadding],
+  );
+
+  const iconColor = snapshot.status === "failed" ? Brand.danger : Brand.bronze;
+  const retryLabel = snapshot.status === "reconnecting" || snapshot.status === "paused"
+    ? "Resume"
+    : "Retry";
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="dark" />
+      <Pressable onPress={() => router.back()} style={backButtonStyle}>
+        <Ionicons name="chevron-back" size={20} color={Brand.cocoa} />
+      </Pressable>
       <ScrollView
         style={styles.page}
         contentContainerStyle={{
-          paddingTop: insets.top + 18,
+          paddingTop: insets.top + 62,
           paddingBottom: Math.max(insets.bottom + 24, 24),
-          paddingHorizontal: 18,
+          paddingHorizontal: layout.horizontalPadding,
           flexGrow: 1,
           justifyContent: "center",
+          alignItems: "center",
         }}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.headerRow}>
-          <Pressable onPress={() => router.back()} style={styles.iconButton}>
-            <Ionicons name="chevron-back" size={20} color={Brand.cocoa} />
-          </Pressable>
-        </View>
-
-        <GlassCard style={styles.card}>
-          <View style={styles.iconWrap}>
+        <GlassCard
+          style={cardStyle}
+          contentStyle={cardContentStyle}
+          radius={layout.cardRadius}
+        >
+          <View
+            style={[
+              styles.iconWrap,
+              {
+                width: layout.iconWrapSize,
+                height: layout.iconWrapSize,
+                borderRadius: layout.iconWrapSize / 2,
+              },
+            ]}
+          >
             <Ionicons
-              name={error ? "alert-circle-outline" : status?.ready ? "checkmark-circle-outline" : "phone-portrait-outline"}
-              size={26}
-              color={error ? Brand.danger : Brand.bronze}
+              name={iconName}
+              size={layout.iconSize}
+              color={iconColor}
             />
           </View>
 
-          <Text style={styles.title}>Preparing Elli for this phone</Text>
-          <Text style={styles.subtitle}>{currentStatusText}</Text>
+          <Text
+            style={[
+              styles.title,
+              {
+                fontSize: layout.titleSize,
+                lineHeight: layout.titleLineHeight,
+              },
+            ]}
+          >
+            Preparing Elli for this phone
+          </Text>
+          <Text
+            style={[
+              styles.subtitle,
+              {
+                fontSize: layout.subtitleSize,
+                lineHeight: layout.subtitleLineHeight,
+              },
+            ]}
+          >
+            {currentStatusText}
+          </Text>
 
-          <View style={styles.progressHeader}>
-            <Text style={styles.progressLabel}>{percent}% complete</Text>
+          <View style={progressHeaderStyle}>
+            <Text style={styles.progressLabel}>{progressLabel}</Text>
             <Text style={styles.progressLabel}>{etaText}</Text>
           </View>
           <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${percent}%` }]} />
+            <View style={[styles.progressFill, { width: `${progressValue * 100}%` }]} />
           </View>
 
-          {!!error && <Text style={styles.errorText}>{error}</Text>}
+          {snapshot.status === "failed" ? (
+            <Text style={styles.errorText}>{snapshot.userMessage}</Text>
+          ) : null}
 
-          <View style={styles.actions}>
-            {error ? (
+          <View style={[styles.actions, layout.compact && styles.actionsCompact]}>
+            {showRetry ? (
               <Pressable
-                onPress={startDownload}
-                disabled={busy}
+                onPress={retry}
+                disabled={busy && snapshot.status !== "reconnecting"}
                 style={({ pressed }) => [
                   styles.primaryButton,
-                  busy && styles.buttonDisabled,
+                  {
+                    minHeight: layout.buttonMinHeight,
+                    borderRadius: layout.buttonRadius,
+                  },
+                  busy && snapshot.status !== "reconnecting" && styles.buttonDisabled,
                   pressed && styles.pressed,
                 ]}
               >
-                {busy ? <ActivityIndicator color={Brand.ink} /> : null}
-                <Text style={styles.primaryButtonText}>Retry</Text>
+                {busy && snapshot.status !== "reconnecting" ? (
+                  <ActivityIndicator color={Brand.ink} />
+                ) : null}
+                <Text style={styles.primaryButtonText}>{retryLabel}</Text>
               </Pressable>
             ) : null}
 
-            {status?.ready ? (
+            {snapshot.ready ? (
               <Pressable
-                onPress={() => router.replace("/(tabs)" as any)}
+                onPress={continueToApp}
                 style={({ pressed }) => [
                   styles.primaryButton,
+                  {
+                    minHeight: layout.buttonMinHeight,
+                    borderRadius: layout.buttonRadius,
+                  },
                   pressed && styles.pressed,
                 ]}
               >
@@ -250,13 +284,9 @@ export default function ModelSetupScreen() {
 
 const styles = StyleSheet.create({
   page: { flex: 1 },
-  headerRow: {
-    position: "absolute",
-    top: 18,
-    left: 18,
-    zIndex: 2,
-  },
   iconButton: {
+    position: "absolute",
+    zIndex: 2,
     width: 40,
     height: 40,
     borderRadius: 20,
@@ -267,12 +297,9 @@ const styles = StyleSheet.create({
     borderColor: Brand.lineStrong,
   },
   card: {
-    paddingVertical: 28,
+    alignSelf: "center",
   },
   iconWrap: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.72)",
@@ -281,22 +308,18 @@ const styles = StyleSheet.create({
   },
   title: {
     marginTop: 18,
-    fontSize: 26,
-    lineHeight: 32,
     fontWeight: "900",
     color: Brand.ink,
   },
   subtitle: {
     marginTop: 10,
-    fontSize: 15,
-    lineHeight: 22,
     color: Brand.muted,
   },
   progressHeader: {
     marginTop: 24,
-    flexDirection: "row",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 8,
+    flexWrap: "wrap",
   },
   progressLabel: {
     flexShrink: 1,
@@ -321,14 +344,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     color: Brand.danger,
+    flexShrink: 1,
   },
   actions: {
     marginTop: 20,
     gap: 10,
   },
+  actionsCompact: {
+    marginTop: 16,
+  },
   primaryButton: {
-    minHeight: 52,
-    borderRadius: 18,
     flexDirection: "row",
     gap: 10,
     alignItems: "center",

@@ -31,6 +31,14 @@ export async function readAsStringAsync(_uri: string) {
 export function createDownloadResumable() {
   return {
     downloadAsync: async () => null,
+    pauseAsync: async () => ({ resumeData: "mock-resume-data" }),
+    resumeAsync: async () => null,
+    savable: () => ({
+      url: "",
+      fileUri: "",
+      options: {},
+      resumeData: "mock-resume-data",
+    }),
   };
 }
 

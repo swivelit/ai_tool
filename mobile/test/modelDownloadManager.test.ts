@@ -7,7 +7,13 @@ type FakeFile = { content: string; size: number };
 type FakeDownload = {
   url: string;
   content: string;
-  fail?: boolean;
+  fail?: boolean | string;
+  size?: number;
+  progressSamples?: Array<{
+    written: number;
+    total?: number;
+    advanceMs?: number;
+  }>;
 };
 
 const state = vi.hoisted(() => ({
@@ -16,6 +22,7 @@ const state = vi.hoisted(() => ({
   downloadAttempts: 0,
   readAsStringCalls: 0,
   freeDiskBytes: 20 * 1024 * 1024 * 1024,
+  nowMs: 1_000,
 }));
 
 function fakeFsModule() {
@@ -43,17 +50,36 @@ function fakeFsModule() {
       return Buffer.from(file.content).toString("base64");
     }),
     getFreeDiskStorageAsync: vi.fn(async () => state.freeDiskBytes),
-    createDownloadResumable: vi.fn((url: string, targetUri: string, _options: any, onProgress: any) => ({
+    createDownloadResumable: vi.fn((url: string, targetUri: string, _options: any, onProgress: any, resumeData?: string) => ({
       downloadAsync: vi.fn(async () => {
         state.downloadAttempts += 1;
         const next = state.downloads.shift();
         if (!next) throw new Error(`Unexpected download ${url}`);
-        if (next.fail) throw new Error("network failed");
-        const size = Buffer.byteLength(next.content);
-        onProgress?.({ totalBytesWritten: size, totalBytesExpectedToWrite: size });
+        if (next.fail) {
+          throw new Error(typeof next.fail === "string" ? next.fail : "network failed");
+        }
+        const samples = next.progressSamples?.length
+          ? next.progressSamples
+          : [{ written: next.size ?? Buffer.byteLength(next.content) }];
+        for (const sample of samples) {
+          state.nowMs += sample.advanceMs ?? 0;
+          onProgress?.({
+            totalBytesWritten: sample.written,
+            totalBytesExpectedToWrite: sample.total ?? next.size ?? Buffer.byteLength(next.content),
+          });
+        }
+        const size = next.size ?? samples.at(-1)?.written ?? Buffer.byteLength(next.content);
         state.files.set(targetUri, { content: next.content, size });
         return { uri: targetUri, status: 200 };
       }),
+      pauseAsync: vi.fn(async () => ({ resumeData: resumeData || "paused-resume-data" })),
+      resumeAsync: vi.fn(async () => ({ uri: targetUri, status: 200 })),
+      savable: vi.fn(() => ({
+        url,
+        fileUri: targetUri,
+        options: {},
+        resumeData: resumeData || "saved-resume-data",
+      })),
     })),
   };
 }
@@ -135,9 +161,11 @@ describe("modelDownloadManager", () => {
     state.downloadAttempts = 0;
     state.readAsStringCalls = 0;
     state.freeDiskBytes = 20 * 1024 * 1024 * 1024;
+    state.nowMs = 1_000;
   });
 
   async function importManager() {
+    vi.spyOn(Date, "now").mockImplementation(() => state.nowMs);
     vi.doMock("expo-constants", () => ({
       default: { expoConfig: { extra: {} } },
     }));
@@ -335,7 +363,7 @@ describe("modelDownloadManager", () => {
     expect(state.files.has("file:///mock/models/qwen3-14b-q4_k_m.gguf")).toBe(false);
   });
 
-  it("reports byte-weighted progress with speed and ETA when totals are known", async () => {
+  it("reports byte-weighted progress and suppresses ETA for tiny startup samples", async () => {
     const progressEvents: any[] = [];
     state.downloads.push(
       { url: "https://cdn.example.test/gemma.gguf", content: "gemma" },
@@ -356,14 +384,155 @@ describe("modelDownloadManager", () => {
     const downloading = progressEvents.filter((event) => event.phase === "downloading");
     expect(downloading.some((event) => event.totalBytes === 10)).toBe(true);
     expect(downloading.some((event) => event.downloadedBytes > 0)).toBe(true);
-    expect(downloading.some((event) => event.speedBytesPerSecond > 0)).toBe(true);
-    expect(downloading.some((event) => event.etaSeconds !== null)).toBe(true);
+    expect(downloading.every((event) => event.etaSeconds == null)).toBe(true);
     expect(progressEvents.at(-1)).toMatchObject({
       phase: "installed",
       totalProgress: 1,
       totalBytes: 10,
       downloadedBytes: 10,
     });
+  });
+
+  it("keeps ETA null for the first tiny progress sample", async () => {
+    const MiB = 1024 * 1024;
+    const progressEvents: any[] = [];
+    state.downloads.push({
+      url: "https://cdn.example.test/gemma.gguf",
+      content: "",
+      size: 100 * MiB,
+      progressSamples: [
+        { written: 512 * 1024, total: 100 * MiB, advanceMs: 1_000 },
+      ],
+    });
+
+    const { downloadRequiredModels } = await importManager();
+    await downloadRequiredModels({
+      config: testConfig({
+        models: [{ ...baseModels[0], expectedBytes: 100 * MiB }],
+      }),
+      onProgress: (progress) => progressEvents.push(progress),
+    });
+
+    const downloading = progressEvents.filter((event) => event.phase === "downloading");
+    expect(downloading.some((event) => event.downloadedBytes > 0)).toBe(true);
+    expect(downloading.every((event) => event.etaSeconds == null)).toBe(true);
+  });
+
+  it("keeps ETA null until enough progress history exists", async () => {
+    const MiB = 1024 * 1024;
+    const progressEvents: any[] = [];
+    state.downloads.push({
+      url: "https://cdn.example.test/gemma.gguf",
+      content: "",
+      size: 100 * MiB,
+      progressSamples: [
+        { written: 4 * MiB, total: 100 * MiB, advanceMs: 3_000 },
+        { written: 8 * MiB, total: 100 * MiB, advanceMs: 3_000 },
+      ],
+    });
+
+    const { downloadRequiredModels } = await importManager();
+    await downloadRequiredModels({
+      config: testConfig({
+        models: [{ ...baseModels[0], expectedBytes: 100 * MiB }],
+      }),
+      onProgress: (progress) => progressEvents.push(progress),
+    });
+
+    const downloading = progressEvents.filter((event) => event.phase === "downloading");
+    expect(downloading.every((event) => event.etaSeconds == null)).toBe(true);
+  });
+
+  it("reports a reasonable ETA after stable recent samples with known totals", async () => {
+    const MiB = 1024 * 1024;
+    const progressEvents: any[] = [];
+    state.downloads.push({
+      url: "https://cdn.example.test/gemma.gguf",
+      content: "",
+      size: 100 * MiB,
+      progressSamples: [
+        { written: 8 * MiB, total: 100 * MiB, advanceMs: 4_000 },
+        { written: 24 * MiB, total: 100 * MiB, advanceMs: 6_000 },
+      ],
+    });
+
+    const { downloadRequiredModels } = await importManager();
+    await downloadRequiredModels({
+      config: testConfig({
+        models: [{ ...baseModels[0], expectedBytes: 100 * MiB }],
+      }),
+      onProgress: (progress) => progressEvents.push(progress),
+    });
+
+    const etaEvent = progressEvents.find(
+      (event) => event.phase === "downloading" && event.etaSeconds != null,
+    );
+    expect(etaEvent?.speedBytesPerSecond).toBeGreaterThan(0);
+    expect(etaEvent?.etaSeconds).toBeGreaterThan(0);
+    expect(etaEvent?.etaSeconds).toBeLessThan(120);
+  });
+
+  it("suppresses very slow absurd startup ETA estimates", async () => {
+    const MiB = 1024 * 1024;
+    const GiB = 1024 * MiB;
+    const progressEvents: any[] = [];
+    state.freeDiskBytes = 140 * GiB;
+    state.downloads.push({
+      url: "https://cdn.example.test/gemma.gguf",
+      content: "",
+      size: 100 * GiB,
+      progressSamples: [
+        { written: 1 * MiB, total: 100 * GiB, advanceMs: 10_000 },
+        { written: 2 * MiB, total: 100 * GiB, advanceMs: 10_000 },
+        { written: 3 * MiB, total: 100 * GiB, advanceMs: 10_000 },
+      ],
+    });
+
+    const { downloadRequiredModels } = await importManager();
+    await downloadRequiredModels({
+      config: testConfig({
+        models: [{ ...baseModels[0], expectedBytes: 100 * GiB }],
+      }),
+      onProgress: (progress) => progressEvents.push(progress),
+    });
+
+    const downloading = progressEvents.filter((event) => event.phase === "downloading");
+    expect(downloading.some((event) => event.speedBytesPerSecond > 0)).toBe(true);
+    expect(downloading.every((event) => event.etaSeconds == null)).toBe(true);
+  });
+
+  it("keeps resumable temp files and state after transient DNS interruptions", async () => {
+    const savedStates: any[] = [];
+    const targetUri = "file:///mock/models/gemma-3-4b-it-q4_k_m.gguf";
+    const tempUri = `${targetUri}.download`;
+    state.files.set(tempUri, { content: "partial", size: 7 });
+    state.downloads.push({
+      url: "https://cdn.example.test/gemma.gguf",
+      content: "",
+      fail: 'Unable to resolve host "huggingface.co": No address associated with hostname',
+    });
+
+    const { downloadRequiredModels, ModelDownloadInterruptedError } = await importManager();
+    await expect(
+      downloadRequiredModels({
+        config: testConfig({
+          models: [{ ...baseModels[0], expectedBytes: 10 }],
+        }),
+        resumableStore: {
+          load: async (expected) => ({
+            ...expected,
+            resumeData: "resume-token",
+            savable: { resumeData: "resume-token" },
+          }),
+          save: async (resumeState) => {
+            savedStates.push(resumeState);
+          },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ModelDownloadInterruptedError);
+
+    expect(state.files.has(tempUri)).toBe(true);
+    expect(savedStates.some((resumeState) => resumeState.resumeData)).toBe(true);
   });
 
   it("deletes and retries a SHA-256 mismatch", async () => {
@@ -387,6 +556,27 @@ describe("modelDownloadManager", () => {
     expect(status.ready).toBe(true);
     expect(state.downloadAttempts).toBe(2);
     expect(state.files.get("file:///mock/models/gemma-3-4b-it-q4_k_m.gguf")?.content).toBe("good");
+  });
+
+  it("deletes temp files and fails clearly for integrity failures", async () => {
+    const tempUri = "file:///mock/models/gemma-3-4b-it-q4_k_m.gguf.download";
+    state.downloads.push({
+      url: "https://cdn.example.test/gemma.gguf",
+      content: "bad",
+    });
+
+    const { downloadRequiredModels, ModelInstallError } = await importManager();
+    await expect(
+      downloadRequiredModels({
+        config: testConfig({
+          models: [{ ...baseModels[0], sha256: "expected-good" }],
+        }),
+        retries: 0,
+        hashFileAsync: async () => "wrong-hash",
+      }),
+    ).rejects.toBeInstanceOf(ModelInstallError);
+
+    expect(state.files.has(tempUri)).toBe(false);
   });
 
   it("fails clearly for placeholder CDN URLs instead of silently falling back", async () => {

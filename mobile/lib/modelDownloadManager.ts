@@ -108,6 +108,8 @@ export type ModelDownloadProgress = {
     | "checking"
     | "skipped"
     | "downloading"
+    | "paused"
+    | "reconnecting"
     | "verifying"
     | "installed"
     | "failed";
@@ -125,6 +127,32 @@ export type ModelDownloadProgress = {
   message: string;
 };
 
+export type ModelDownloadResumeState = {
+  modelId: string;
+  fileName: string;
+  targetUri: string;
+  tempUri: string;
+  downloadUrl: string;
+  expectedBytes: number | null;
+  resumeData?: string | null;
+  savable?: Record<string, unknown> | null;
+  selectedTier?: ModelTierName;
+  updatedAt: number;
+};
+
+export type ModelDownloadHandle = {
+  downloadAsync?: () => Promise<{ uri?: string | null; status?: number } | null>;
+  pauseAsync?: () => Promise<unknown>;
+  resumeAsync?: () => Promise<unknown>;
+  savable?: () => Record<string, unknown> | null | undefined;
+};
+
+export type ModelDownloadResumableStore = {
+  load?: (expected: ModelDownloadResumeState) => Promise<ModelDownloadResumeState | null>;
+  save?: (state: ModelDownloadResumeState) => Promise<void>;
+  remove?: (state: ModelDownloadResumeState) => Promise<void>;
+};
+
 export type EnsureModelsOptions = {
   config?: ModelDownloadConfigRoot;
   onProgress?: (progress: ModelDownloadProgress) => void;
@@ -134,6 +162,10 @@ export type EnsureModelsOptions = {
   modelTier?: ModelTierName;
   deviceInfo?: DeviceCapabilitySnapshot;
   proOptIn?: boolean;
+  resumableStore?: ModelDownloadResumableStore;
+  onDownloadCreated?: (download: ModelDownloadHandle, state: ModelDownloadResumeState) => void;
+  onDownloadSettled?: (download: ModelDownloadHandle, state: ModelDownloadResumeState) => void;
+  isPauseRequested?: () => boolean;
 };
 
 type ModelFileSystem = Pick<
@@ -203,10 +235,73 @@ export class ModelInstallError extends Error {
   }
 }
 
+export class ModelDownloadInterruptedError extends Error {
+  readonly setupCode = "LOCAL_MODEL_SETUP_ERROR";
+  readonly transient = true;
+
+  constructor(
+    message: string,
+    readonly resumeState?: ModelDownloadResumeState | null,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = "ModelDownloadInterruptedError";
+  }
+}
+
 export function isModelInstallError(error: unknown) {
   return (
     error instanceof ModelInstallError ||
+    error instanceof ModelDownloadInterruptedError ||
     (error as any)?.setupCode === "LOCAL_MODEL_SETUP_ERROR"
+  );
+}
+
+const TRANSIENT_DOWNLOAD_ERROR_PATTERNS = [
+  /unable to resolve host/i,
+  /network request failed/i,
+  /\btimeout\b/i,
+  /timed out/i,
+  /ECONNRESET/i,
+  /ENETUNREACH/i,
+  /EAI_AGAIN/i,
+  /connection lost/i,
+  /connection (?:was )?interrupted/i,
+  /network connection/i,
+  /app\/background pause/i,
+  /background/i,
+  /pause/i,
+];
+
+export function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  return String(error ?? "");
+}
+
+export function isTransientModelDownloadError(error: unknown) {
+  if (error instanceof ModelDownloadInterruptedError) return true;
+  const message = errorMessage(error);
+  return TRANSIENT_DOWNLOAD_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function isIntegrityFailureMessage(message: string) {
+  return (
+    /failed verification/i.test(message) ||
+    /failed final verification/i.test(message) ||
+    /size_mismatch/i.test(message) ||
+    /sha256_mismatch/i.test(message) ||
+    /empty_file/i.test(message)
+  );
+}
+
+function isInvalidModelMetadataMessage(message: string) {
+  return (
+    /missing a resolved public\/signed CDN URL/i.test(message) ||
+    /unresolved download metadata/i.test(message) ||
+    /missing expectedBytes/i.test(message) ||
+    /missing sha256/i.test(message) ||
+    /unsupported URL scheme/i.test(message) ||
+    /placeholder YOUR_MODEL_CDN/i.test(message)
   );
 }
 
@@ -769,6 +864,88 @@ async function validateInstalledFile(
   return { ...recordBase, valid: true };
 }
 
+function createResumeState(
+  entry: ModelDownloadConfigEntry,
+  targetUri: string,
+  tempUri: string,
+  selectedTier?: ModelTierName,
+): ModelDownloadResumeState {
+  return {
+    modelId: entry.id,
+    fileName: entry.fileName,
+    targetUri,
+    tempUri,
+    downloadUrl: entry.downloadUrl,
+    expectedBytes: Number(entry.expectedBytes || 0) || null,
+    selectedTier,
+    updatedAt: Date.now(),
+  };
+}
+
+function resumeStateMatches(
+  stored: ModelDownloadResumeState | null | undefined,
+  expected: ModelDownloadResumeState,
+) {
+  return Boolean(
+    stored &&
+      stored.modelId === expected.modelId &&
+      stored.fileName === expected.fileName &&
+      stored.targetUri === expected.targetUri &&
+      stored.tempUri === expected.tempUri &&
+      stored.downloadUrl === expected.downloadUrl &&
+      (!stored.selectedTier || !expected.selectedTier || stored.selectedTier === expected.selectedTier),
+  );
+}
+
+function safeDownloadSavable(download: ModelDownloadHandle | null | undefined) {
+  if (typeof download?.savable !== "function") return null;
+  try {
+    const savable = download.savable();
+    return savable && typeof savable === "object" ? savable : null;
+  } catch {
+    return null;
+  }
+}
+
+function resumeDataFromSavable(savable: Record<string, unknown> | null | undefined) {
+  const resumeData = savable?.resumeData;
+  return typeof resumeData === "string" && resumeData.length > 0 ? resumeData : null;
+}
+
+function mergeResumeState(
+  base: ModelDownloadResumeState,
+  download?: ModelDownloadHandle | null,
+  patch: Partial<ModelDownloadResumeState> = {},
+): ModelDownloadResumeState {
+  const savable = safeDownloadSavable(download);
+  return {
+    ...base,
+    ...patch,
+    resumeData:
+      patch.resumeData ??
+      resumeDataFromSavable(savable) ??
+      resumeDataFromSavable(patch.savable) ??
+      base.resumeData ??
+      null,
+    savable: (savable || patch.savable || base.savable || null) as Record<string, unknown> | null,
+    updatedAt: Date.now(),
+  };
+}
+
+async function persistResumeState(
+  options: EnsureModelsOptions,
+  state: ModelDownloadResumeState,
+) {
+  await options.resumableStore?.save?.(state).catch(() => undefined);
+}
+
+async function removeResumeState(
+  options: EnsureModelsOptions,
+  state: ModelDownloadResumeState,
+) {
+  await options.resumableStore?.remove?.(state).catch(() => undefined);
+}
+
 function totalKnownBytes(entries: ModelDownloadConfigEntry[]) {
   let total = 0;
   for (const entry of entries) {
@@ -783,14 +960,98 @@ type DownloadProgressTotals = {
   expectedBytesByIndex: Array<number | null>;
   writtenBytesByIndex: number[];
   startedAtMs: number;
+  samples: Array<{ timestampMs: number; downloadedBytes: number }>;
 };
+
+const SPEED_SAMPLE_WINDOW_MS = 20_000;
+const MIN_ETA_ELAPSED_MS = 10_000;
+const MIN_ETA_DOWNLOADED_BYTES = 16 * 1024 * 1024;
+const MIN_MEANINGFUL_SPEED_SAMPLES = 3;
+const MIN_RELIABLE_SPEED_BYTES_PER_SECOND = 16 * 1024;
+const MAX_RELIABLE_ETA_SECONDS = 12 * 60 * 60;
 
 function createDownloadProgressTotals(entries: ModelDownloadConfigEntry[]): DownloadProgressTotals {
   return {
     expectedBytesByIndex: entries.map((entry) => Number(entry.expectedBytes || 0) || null),
     writtenBytesByIndex: entries.map(() => 0),
     startedAtMs: Date.now(),
+    samples: [],
   };
+}
+
+function appendDownloadProgressSample(
+  totals: DownloadProgressTotals,
+  timestampMs: number,
+  downloadedBytes: number,
+) {
+  const previous = totals.samples[totals.samples.length - 1];
+  if (
+    previous &&
+    previous.timestampMs === timestampMs &&
+    previous.downloadedBytes === downloadedBytes
+  ) {
+    return;
+  }
+  totals.samples.push({ timestampMs, downloadedBytes });
+  const firstAllowedMs = timestampMs - SPEED_SAMPLE_WINDOW_MS;
+  while (
+    totals.samples.length > 2 &&
+    totals.samples[1].timestampMs < firstAllowedMs
+  ) {
+    totals.samples.shift();
+  }
+}
+
+function meaningfulProgressSampleCount(samples: DownloadProgressTotals["samples"]) {
+  let count = 0;
+  let lastBytes = -1;
+  for (const sample of samples) {
+    if (sample.downloadedBytes > lastBytes) {
+      count += 1;
+      lastBytes = sample.downloadedBytes;
+    }
+  }
+  return count;
+}
+
+function recentSpeedBytesPerSecond(
+  samples: DownloadProgressTotals["samples"],
+  nowMs: number,
+) {
+  const windowStartMs = nowMs - SPEED_SAMPLE_WINDOW_MS;
+  const inWindow = samples.filter((sample) => sample.timestampMs >= windowStartMs);
+  const first = inWindow[0] || samples[0];
+  const last = inWindow[inWindow.length - 1] || samples[samples.length - 1];
+  if (!first || !last || last.downloadedBytes <= first.downloadedBytes) return null;
+  const elapsedSeconds = (last.timestampMs - first.timestampMs) / 1000;
+  if (elapsedSeconds < 0.5) return null;
+  const speed = (last.downloadedBytes - first.downloadedBytes) / elapsedSeconds;
+  return Number.isFinite(speed) && speed > 0 ? speed : null;
+}
+
+function reliableEtaSeconds(
+  totals: DownloadProgressTotals,
+  totalBytes: number | null,
+  downloadedBytes: number,
+  speedBytesPerSecond: number | null,
+  nowMs: number,
+) {
+  if (!totalBytes || totalBytes <= downloadedBytes) return null;
+  if (!speedBytesPerSecond || speedBytesPerSecond < MIN_RELIABLE_SPEED_BYTES_PER_SECOND) {
+    return null;
+  }
+  const elapsedMs = nowMs - totals.startedAtMs;
+  const hasEnoughHistory =
+    elapsedMs >= MIN_ETA_ELAPSED_MS || downloadedBytes >= MIN_ETA_DOWNLOADED_BYTES;
+  if (!hasEnoughHistory) return null;
+  if (meaningfulProgressSampleCount(totals.samples) < MIN_MEANINGFUL_SPEED_SAMPLES) {
+    return null;
+  }
+  const etaSeconds = Math.max(0, (totalBytes - downloadedBytes) / speedBytesPerSecond);
+  if (!Number.isFinite(etaSeconds) || etaSeconds > MAX_RELIABLE_ETA_SECONDS) {
+    return null;
+  }
+  return etaSeconds;
 }
 
 function aggregateDownloadProgress(
@@ -800,6 +1061,7 @@ function aggregateDownloadProgress(
   totalBytesForTarget: number | null,
   fallbackTotalProgress: number,
 ) {
+  const nowMs = Date.now();
   const index = Math.max(0, targetIndex - 1);
   if (totalBytesForTarget && totalBytesForTarget > 0) {
     totals.expectedBytesByIndex[index] = totalBytesForTarget;
@@ -810,18 +1072,21 @@ function aggregateDownloadProgress(
     (value) => Number(value || 0) > 0,
   );
   const totalBytes = allBytesKnown
-    ? totals.expectedBytesByIndex.reduce((sum, value) => sum + Number(value || 0), 0)
+    ? totals.expectedBytesByIndex.reduce<number>(
+        (sum, value) => sum + Number(value || 0),
+        0,
+      )
     : null;
   const downloadedBytes = totals.writtenBytesByIndex.reduce((sum, value) => sum + value, 0);
-  const elapsedSeconds = Math.max(0.001, (Date.now() - totals.startedAtMs) / 1000);
-  const speedBytesPerSecond =
-    downloadedBytes > 0
-      ? downloadedBytes / elapsedSeconds
-      : null;
-  const etaSeconds =
-    totalBytes && speedBytesPerSecond
-      ? Math.max(0, (totalBytes - downloadedBytes) / speedBytesPerSecond)
-      : null;
+  appendDownloadProgressSample(totals, nowMs, downloadedBytes);
+  const speedBytesPerSecond = recentSpeedBytesPerSecond(totals.samples, nowMs);
+  const etaSeconds = reliableEtaSeconds(
+    totals,
+    totalBytes,
+    downloadedBytes,
+    speedBytesPerSecond,
+    nowMs,
+  );
 
   return {
     bytesWritten: downloadedBytes,
@@ -917,21 +1182,54 @@ async function downloadOneModel(
   total: number,
   options: EnsureModelsOptions,
   progressTotals: DownloadProgressTotals,
+  selectedTier?: ModelTierName,
 ) {
   const fs = options.fileSystem || FileSystem;
   const config = options.config;
   const targetUri = modelFileUri(entry, config, fs);
   const tempUri = `${targetUri}.download`;
   const expectedBytes = Number(entry.expectedBytes || 0) || null;
+  const baseResumeState = createResumeState(entry, targetUri, tempUri, selectedTier);
 
   assertDownloadMetadata(entry, config);
   await assertEnoughFreeStorage([entry], options);
 
-  await fs.deleteAsync(tempUri, { idempotent: true }).catch(() => undefined);
+  if (options.isPauseRequested?.()) {
+    await persistResumeState(options, baseResumeState);
+    const pausedTotals = aggregateDownloadProgress(
+      progressTotals,
+      index,
+      0,
+      expectedBytes,
+      (index - 1) / total,
+    );
+    options.onProgress?.({
+      phase: "paused",
+      modelId: entry.id,
+      fileName: entry.fileName,
+      modelIndex: index,
+      totalModels: total,
+      ...pausedTotals,
+      modelProgress: 0,
+      message: "Connection interrupted. Local setup can resume.",
+    });
+    throw new ModelDownloadInterruptedError("app/background pause", baseResumeState);
+  }
+
+  const storedResumeState = await options.resumableStore?.load?.(baseResumeState).catch(() => null);
+  const matchingResumeState = resumeStateMatches(storedResumeState, baseResumeState)
+    ? storedResumeState
+    : null;
+  const resumeData = matchingResumeState?.resumeData || resumeDataFromSavable(matchingResumeState?.savable);
+  const tempInfo = resumeData
+    ? await getBytesOnDisk(tempUri, fs).catch(() => ({ exists: false, size: 0 }))
+    : { exists: false, size: 0 };
+  const resumeBaseBytes = resumeData && tempInfo.exists ? Math.max(0, tempInfo.size) : 0;
+
   const initialTotals = aggregateDownloadProgress(
     progressTotals,
     index,
-    0,
+    resumeBaseBytes,
     expectedBytes,
     (index - 1) / total,
   );
@@ -942,7 +1240,7 @@ async function downloadOneModel(
     modelIndex: index,
     totalModels: total,
     ...initialTotals,
-    modelProgress: 0,
+    modelProgress: expectedBytes ? Math.min(1, resumeBaseBytes / expectedBytes) : 0,
     message: "Downloading local AI files...",
   });
 
@@ -952,13 +1250,18 @@ async function downloadOneModel(
     );
   }
 
-  const download = fs.createDownloadResumable(
+  const download = (fs.createDownloadResumable as any)(
     entry.downloadUrl,
     tempUri,
     {},
-    (progress) => {
-      const written = Number(progress.totalBytesWritten || 0);
+    (progress: { totalBytesWritten?: number; totalBytesExpectedToWrite?: number }) => {
+      const rawWritten = Number(progress.totalBytesWritten || 0);
       const totalBytes = Number(progress.totalBytesExpectedToWrite || expectedBytes || 0) || null;
+      const resumedWritten =
+        resumeBaseBytes > 0 && rawWritten > 0 && rawWritten < resumeBaseBytes
+          ? resumeBaseBytes + rawWritten
+          : rawWritten;
+      const written = Math.max(resumeBaseBytes, resumedWritten);
       const modelProgress = totalBytes ? Math.min(1, written / totalBytes) : 0;
       const aggregate = aggregateDownloadProgress(
         progressTotals,
@@ -978,9 +1281,57 @@ async function downloadOneModel(
         message: "Downloading local AI files...",
       });
     },
+    resumeData || undefined,
   );
 
-  const result = await download.downloadAsync();
+  const initialResumeState = mergeResumeState(baseResumeState, download as ModelDownloadHandle, {
+    resumeData: resumeData || null,
+    savable: matchingResumeState?.savable || null,
+  });
+  await persistResumeState(options, initialResumeState);
+  options.onDownloadCreated?.(download as ModelDownloadHandle, initialResumeState);
+
+  let result: { uri?: string | null; status?: number } | null | undefined;
+  try {
+    result = await (download as ModelDownloadHandle).downloadAsync?.();
+  } catch (error) {
+    const transient = options.isPauseRequested?.() || isTransientModelDownloadError(error);
+    if (transient) {
+      const interruptedState = mergeResumeState(initialResumeState, download as ModelDownloadHandle);
+      await persistResumeState(options, interruptedState);
+      const aggregate = aggregateDownloadProgress(
+        progressTotals,
+        index,
+        Math.max(
+          resumeBaseBytes,
+          progressTotals.writtenBytesByIndex[index - 1] || 0,
+        ),
+        expectedBytes,
+        (index - 1) / total,
+      );
+      options.onProgress?.({
+        phase: options.isPauseRequested?.() ? "paused" : "reconnecting",
+        modelId: entry.id,
+        fileName: entry.fileName,
+        modelIndex: index,
+        totalModels: total,
+        ...aggregate,
+        modelProgress: expectedBytes
+          ? Math.min(1, (progressTotals.writtenBytesByIndex[index - 1] || 0) / expectedBytes)
+          : undefined,
+        message: "Connection interrupted. Local setup can resume.",
+      });
+      throw new ModelDownloadInterruptedError(
+        errorMessage(error) || "Model download interrupted.",
+        interruptedState,
+        error,
+      );
+    }
+    throw error;
+  } finally {
+    options.onDownloadSettled?.(download as ModelDownloadHandle, initialResumeState);
+  }
+
   if (!result?.uri) {
     throw new ModelInstallError(`Download did not produce a file for ${entry.id}.`);
   }
@@ -1006,6 +1357,7 @@ async function downloadOneModel(
   const tempRecord = await validateInstalledFile(entry, tempUri, options);
   if (!tempRecord.valid) {
     await fs.deleteAsync(tempUri, { idempotent: true }).catch(() => undefined);
+    await removeResumeState(options, baseResumeState);
     throw new ModelInstallError(
       `Downloaded ${entry.fileName} failed verification: ${tempRecord.reason || "unknown verification error"}.`,
     );
@@ -1017,10 +1369,13 @@ async function downloadOneModel(
   const finalRecord = await validateInstalledFile(entry, targetUri, options);
   if (!finalRecord.valid) {
     await fs.deleteAsync(targetUri, { idempotent: true }).catch(() => undefined);
+    await removeResumeState(options, baseResumeState);
     throw new ModelInstallError(
       `Installed ${entry.fileName} failed final verification: ${finalRecord.reason || "unknown verification error"}.`,
     );
   }
+
+  await removeResumeState(options, baseResumeState);
 
   const installedTotals = aggregateDownloadProgress(
     progressTotals,
@@ -1069,6 +1424,16 @@ export async function downloadRequiredModels(
 
   for (const target of firstStatus.invalid) {
     await fs.deleteAsync(target.fileUri, { idempotent: true }).catch(() => undefined);
+    await fs.deleteAsync(`${target.fileUri}.download`, { idempotent: true }).catch(() => undefined);
+    await removeResumeState(
+      options,
+      createResumeState(
+        target,
+        target.fileUri,
+        `${target.fileUri}.download`,
+        firstStatus.selectedTier,
+      ),
+    );
   }
 
   const progressTotals = createDownloadProgressTotals(targets);
@@ -1077,12 +1442,34 @@ export async function downloadRequiredModels(
     let lastError: unknown;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
-        await downloadOneModel(entry, index + 1, targets.length, options, progressTotals);
+        await downloadOneModel(
+          entry,
+          index + 1,
+          targets.length,
+          options,
+          progressTotals,
+          firstStatus.selectedTier,
+        );
         lastError = null;
         break;
       } catch (error) {
         lastError = error;
-        await fs.deleteAsync(`${entry.fileUri}.download`, { idempotent: true }).catch(() => undefined);
+        const message = errorMessage(error);
+        if (isTransientModelDownloadError(error) || options.isPauseRequested?.()) {
+          break;
+        }
+        if (isIntegrityFailureMessage(message) || isInvalidModelMetadataMessage(message)) {
+          await fs.deleteAsync(`${entry.fileUri}.download`, { idempotent: true }).catch(() => undefined);
+          await removeResumeState(
+            options,
+            createResumeState(
+              entry,
+              entry.fileUri,
+              `${entry.fileUri}.download`,
+              firstStatus.selectedTier,
+            ),
+          );
+        }
         await fs.deleteAsync(entry.fileUri, { idempotent: true }).catch(() => undefined);
         if (attempt < retries) {
           const aggregate = aggregateDownloadProgress(
@@ -1106,7 +1493,7 @@ export async function downloadRequiredModels(
     }
 
     if (lastError) {
-      const message = lastError instanceof Error ? lastError.message : String(lastError);
+      const message = errorMessage(lastError);
       const aggregate = aggregateDownloadProgress(
         progressTotals,
         index + 1,
@@ -1114,15 +1501,37 @@ export async function downloadRequiredModels(
         Number(entry.expectedBytes || 0) || null,
         index / targets.length,
       );
+      const interrupted =
+        lastError instanceof ModelDownloadInterruptedError
+          ? lastError
+          : isTransientModelDownloadError(lastError) || options.isPauseRequested?.()
+            ? new ModelDownloadInterruptedError(
+                message || "Model download interrupted.",
+                createResumeState(
+                  entry,
+                  entry.fileUri,
+                  `${entry.fileUri}.download`,
+                  firstStatus.selectedTier,
+                ),
+                lastError,
+              )
+            : null;
       options.onProgress?.({
-        phase: "failed",
+        phase: interrupted
+          ? options.isPauseRequested?.()
+            ? "paused"
+            : "reconnecting"
+          : "failed",
         modelId: entry.id,
         fileName: entry.fileName,
         modelIndex: index + 1,
         totalModels: targets.length,
         ...aggregate,
-        message,
+        message: interrupted
+          ? "Connection interrupted. Local setup can resume."
+          : message,
       });
+      if (interrupted) throw interrupted;
       throw lastError instanceof ModelInstallError
         ? lastError
         : new ModelInstallError(`Could not install ${entry.fileName}: ${message}`, lastError);
