@@ -23,6 +23,8 @@ NS_ASSUME_NONNULL_BEGIN
                                                  threads:(NSInteger)threads
                                                    error:(NSError **)error;
 
++ (void)releaseCachedModels;
+
 @end
 
 NS_ASSUME_NONNULL_END

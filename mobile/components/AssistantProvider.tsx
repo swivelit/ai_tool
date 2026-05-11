@@ -69,6 +69,7 @@ function normalizeSettings(value?: Partial<AssistantSettings> | null): Assistant
         : DEFAULTS.settings.languageMode,
     allowCloudFallback: value?.allowCloudFallback === true,
     handsFreeEnabled: Boolean(value?.handsFreeEnabled),
+    autoSpeakReplies: value?.autoSpeakReplies === true,
     wakePhrase: normalizeWakePhrase(value?.wakePhrase),
     wakeTrainingSamples: normalizeWakeTrainingSamples(value?.wakeTrainingSamples),
   };
@@ -121,6 +122,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       resolvedSettings.languageMode !== normalizedStoredSettings.languageMode ||
       resolvedSettings.allowCloudFallback !== normalizedStoredSettings.allowCloudFallback ||
       resolvedSettings.handsFreeEnabled !== normalizedStoredSettings.handsFreeEnabled ||
+      resolvedSettings.autoSpeakReplies !== normalizedStoredSettings.autoSpeakReplies ||
       resolvedSettings.wakePhrase !== normalizedStoredSettings.wakePhrase ||
       JSON.stringify(resolvedSettings.wakeTrainingSamples) !==
         JSON.stringify(normalizedStoredSettings.wakeTrainingSamples);

@@ -5,6 +5,7 @@
 #include <climits>
 #include <cstdint>
 #include <exception>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -120,10 +121,18 @@ using LlamaSamplerPtr = std::unique_ptr<llama_sampler, LlamaSamplerDeleter>;
 
 std::once_flag g_backend_once;
 std::mutex g_model_cache_mutex;
-std::unordered_map<std::string, std::weak_ptr<llama_model>> g_model_cache;
+constexpr size_t kMaxStrongCachedModels = 2;
+std::unordered_map<std::string, LlamaModelPtr> g_model_cache;
+std::deque<std::string> g_model_cache_lru;
 
 void ensureBackendInitialized() {
   std::call_once(g_backend_once, []() { llama_backend_init(); });
+}
+
+void clearModelCache() {
+  std::lock_guard<std::mutex> lock(g_model_cache_mutex);
+  g_model_cache.clear();
+  g_model_cache_lru.clear();
 }
 
 int clampThreads(jint threads) {
@@ -153,10 +162,11 @@ LlamaModelPtr loadOrGetModel(const std::string &model_path) {
     std::lock_guard<std::mutex> lock(g_model_cache_mutex);
     auto it = g_model_cache.find(model_path);
     if (it != g_model_cache.end()) {
-      if (auto cached = it->second.lock()) {
-        return cached;
-      }
-      g_model_cache.erase(it);
+      g_model_cache_lru.erase(
+          std::remove(g_model_cache_lru.begin(), g_model_cache_lru.end(), model_path),
+          g_model_cache_lru.end());
+      g_model_cache_lru.push_back(model_path);
+      return it->second;
     }
   }
 
@@ -178,6 +188,17 @@ LlamaModelPtr loadOrGetModel(const std::string &model_path) {
   {
     std::lock_guard<std::mutex> lock(g_model_cache_mutex);
     g_model_cache[model_path] = model;
+    g_model_cache_lru.erase(
+        std::remove(g_model_cache_lru.begin(), g_model_cache_lru.end(), model_path),
+        g_model_cache_lru.end());
+    g_model_cache_lru.push_back(model_path);
+    while (g_model_cache_lru.size() > kMaxStrongCachedModels) {
+      const std::string evicted = g_model_cache_lru.front();
+      g_model_cache_lru.pop_front();
+      if (evicted != model_path) {
+        g_model_cache.erase(evicted);
+      }
+    }
   }
   return model;
 }
@@ -519,5 +540,20 @@ Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeEmbedText(
   (void)threads;
   throwBackendMissing(env, "nativeEmbedText", model_path_utf8.c_str());
   return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeReleaseCachedModels(
+    JNIEnv *env,
+    jobject /* thiz */) {
+#if JAI_LLAMA_CPP_AVAILABLE
+  try {
+    clearModelCache();
+  } catch (const std::exception &error) {
+    throwJavaException(env, "JAI_LLAMA_CPP_CACHE_RELEASE_FAILED", error.what());
+  }
+#else
+  (void)env;
 #endif
 }

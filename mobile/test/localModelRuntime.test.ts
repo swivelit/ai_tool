@@ -30,6 +30,7 @@ const nativeAssets = {
 
 describe("local model runtime architecture", () => {
   afterEach(() => {
+    vi.useRealTimers();
     setNativeOnDeviceModelBridgeForTests(null);
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
@@ -133,6 +134,7 @@ describe("local model runtime architecture", () => {
     const chat = await runtime.completeChat({
       model: "google/gemma-3-4b-it",
       messages: [{ role: "user", content: "hello" }],
+      maxTokens: 123,
     });
     const embeddings = await runtime.embedTexts({
       model: "Qwen/Qwen3-Embedding-0.6B",
@@ -143,6 +145,7 @@ describe("local model runtime architecture", () => {
     expect(completeChat).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "google/gemma-3-4b-it",
+        maxTokens: 123,
         prompt: expect.stringContaining("<start_of_turn>user"),
         asset: expect.objectContaining({ modelPath: "models/gemma-3-4b-it-q4_k_m.gguf" }),
       }),
@@ -155,6 +158,116 @@ describe("local model runtime architecture", () => {
       }),
     );
     expect(embeddings).toEqual([[0.1, 0.2]]);
+  });
+
+  it("uses timeoutMs for native completeChat and rejects on timeout without backend calls", async () => {
+    vi.useFakeTimers();
+    const cancelRequest = vi.fn();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    setNativeOnDeviceModelBridgeForTests({
+      initialize: vi.fn(async () => ({ ok: true })),
+      completeChat: vi.fn(() => new Promise(() => undefined)),
+      embedTexts: vi.fn(async () => ({ data: [{ embedding: [0.1, 0.2] }] })),
+      cancelRequest,
+    });
+
+    const runtime = createLocalModelRuntime({
+      mode: "native_on_device",
+      timeoutMs: 25,
+      nativeBackend: "llama_cpp",
+      nativeModuleName: "JaiOnDeviceModel",
+      modelDelivery: { mode: "bundled_assets" },
+      modelAssets: nativeAssets,
+    });
+
+    const pending = runtime.completeChat({
+      model: "google/gemma-3-4b-it",
+      messages: [{ role: "user", content: "slow" }],
+      requestId: "chat-timeout-test",
+      maxTokens: 64,
+    });
+    const assertion = expect(pending).rejects.toMatchObject({
+      code: "LOCAL_TURN_TIMEOUT",
+      timeoutMs: 25,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(26);
+
+    await assertion;
+    expect(cancelRequest).toHaveBeenCalledWith("chat-timeout-test");
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("uses timeoutMs for native embedTexts and rejects on timeout", async () => {
+    vi.useFakeTimers();
+    setNativeOnDeviceModelBridgeForTests({
+      initialize: vi.fn(async () => ({ ok: true })),
+      completeChat: vi.fn(async () => ({ text: "ok" })),
+      embedTexts: vi.fn(() => new Promise(() => undefined)),
+    });
+
+    const runtime = createLocalModelRuntime({
+      mode: "native_on_device",
+      timeoutMs: 25,
+      nativeBackend: "llama_cpp",
+      nativeModuleName: "JaiOnDeviceModel",
+      modelDelivery: { mode: "bundled_assets" },
+      modelAssets: nativeAssets,
+    });
+
+    const pending = runtime.embedTexts({
+      model: "Qwen/Qwen3-Embedding-0.6B",
+      texts: ["slow"],
+    });
+    const assertion = expect(pending).rejects.toMatchObject({
+      code: "LOCAL_TURN_TIMEOUT",
+      timeoutMs: 25,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(26);
+
+    await assertion;
+    vi.useRealTimers();
+  });
+
+  it("ignores a late native result after timeout", async () => {
+    vi.useFakeTimers();
+    let resolveNative: (value: unknown) => void = () => undefined;
+    setNativeOnDeviceModelBridgeForTests({
+      initialize: vi.fn(async () => ({ ok: true })),
+      completeChat: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveNative = resolve;
+          }),
+      ),
+      embedTexts: vi.fn(async () => ({ data: [{ embedding: [0.1, 0.2] }] })),
+    });
+
+    const runtime = createLocalModelRuntime({
+      mode: "native_on_device",
+      timeoutMs: 25,
+      nativeBackend: "llama_cpp",
+      nativeModuleName: "JaiOnDeviceModel",
+      modelDelivery: { mode: "bundled_assets" },
+      modelAssets: nativeAssets,
+    });
+
+    const pending = runtime.completeChat({
+      model: "google/gemma-3-4b-it",
+      messages: [{ role: "user", content: "slow" }],
+    });
+    const assertion = expect(pending).rejects.toMatchObject({
+      code: "LOCAL_TURN_TIMEOUT",
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(26);
+    resolveNative({ text: "too late" });
+
+    await assertion;
+    vi.useRealTimers();
   });
 
 

@@ -25,6 +25,10 @@ import {
   normalizeLocalRuntimeBaseUrl,
 } from "./localModelRuntime";
 import {
+  friendlyLocalTimeoutMessage,
+  isLocalTurnTimeoutError,
+} from "./localTurnTimeouts";
+import {
   PRODUCT_DEFAULT_REPLY_LANGUAGE,
   ReplyLanguage,
   resolveReplyLanguage,
@@ -646,6 +650,26 @@ function isLoopbackLocalModelBaseUrl(value: unknown) {
 }
 
 const EMBEDDING_DIMS = 1024;
+
+const LOCAL_TASK_MAX_TOKENS = {
+  classifier: 128,
+  reminderExtraction: 128,
+  profiler: 128,
+  memorySummary: 192,
+  alignment: 192,
+  localAnswerLite: 256,
+  localAnswerStandard: 256,
+  localAnswerPro: 384,
+} as const;
+
+function maxTokensForLocalAnswer(
+  runtimeOptions: ModelRuntimeTierOptions = {},
+) {
+  const tier = String(runtimeOptions.selectedTier || runtimeOptions.modelTier || "lite");
+  if (tier === "pro") return LOCAL_TASK_MAX_TOKENS.localAnswerPro;
+  if (tier === "standard") return LOCAL_TASK_MAX_TOKENS.localAnswerStandard;
+  return LOCAL_TASK_MAX_TOKENS.localAnswerLite;
+}
 
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
   version: 8,
@@ -2272,6 +2296,7 @@ async function localChatRaw(
   model: string,
   temperature = 0.2,
   runtimeOptions: ModelRuntimeTierOptions = {},
+  maxTokens: number = LOCAL_TASK_MAX_TOKENS.localAnswerLite,
 ) {
   const cfg = await getModelConfig();
   const runtime = createLocalModelRuntime({
@@ -2297,6 +2322,7 @@ async function localChatRaw(
   return runtime.completeChat({
     model,
     temperature,
+    maxTokens,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
@@ -2310,8 +2336,9 @@ async function localChatJson(
   model: string,
   temperature = 0.2,
   runtimeOptions: ModelRuntimeTierOptions = {},
+  maxTokens: number = LOCAL_TASK_MAX_TOKENS.classifier,
 ) {
-  const json = await localChatRaw(systemPrompt, userPrompt, model, temperature, runtimeOptions);
+  const json = await localChatRaw(systemPrompt, userPrompt, model, temperature, runtimeOptions, maxTokens);
   return parseJsonLoose<any>(extractCompletionText(json), {});
 }
 
@@ -2321,8 +2348,9 @@ async function localChatText(
   model: string,
   temperature = 0.2,
   runtimeOptions: ModelRuntimeTierOptions = {},
+  maxTokens: number = LOCAL_TASK_MAX_TOKENS.localAnswerLite,
 ) {
-  const json = await localChatRaw(systemPrompt, userPrompt, model, temperature, runtimeOptions);
+  const json = await localChatRaw(systemPrompt, userPrompt, model, temperature, runtimeOptions, maxTokens);
   return extractCompletionText(json);
 }
 
@@ -3862,6 +3890,8 @@ async function runProfilerTurnModel(
       }),
       cfg.models.profiler,
       0.2,
+      {},
+      LOCAL_TASK_MAX_TOKENS.profiler,
     );
     const rawText = extractCompletionText(raw);
     const salvaged = salvageProfilerModelOutput(rawText, slots);
@@ -3991,6 +4021,8 @@ async function buildProfileSummaryLocally(
       }),
       cfg.models.aligner,
       0.1,
+      {},
+      LOCAL_TASK_MAX_TOKENS.alignment,
     );
     summary = summary.trim();
   } catch {
@@ -4044,6 +4076,8 @@ async function buildProfilerOpening(
       }),
       cfg.models.profiler,
       0.2,
+      {},
+      LOCAL_TASK_MAX_TOKENS.profiler,
     );
     if (out.trim()) return out.trim();
   } catch {
@@ -4430,6 +4464,8 @@ async function parseReminderLocally(
       JSON.stringify({ message, reply_language: replyLanguage }),
       cfg.models.orchestratorMedium,
       0.1,
+      {},
+      LOCAL_TASK_MAX_TOKENS.reminderExtraction,
     );
     const title = String(out.title || "Reminder").trim() || "Reminder";
     const details = String(out.details || message).trim() || message;
@@ -5385,6 +5421,13 @@ function ruleBasedOrchestratorDecision(
   return null;
 }
 
+function canReturnImmediateFastGreeting(message: string) {
+  const normalized = normalizeText(message);
+  return !/\b(i prefer|prefer english|prefer tamil|work as|software engineer|developer|engineer|my name|i am|i'm|i live|from)\b/.test(
+    normalized,
+  );
+}
+
 function sanitizeDecision(
   raw: Partial<OrchestratorDecision> & Record<string, any>,
   selectedModel: string,
@@ -5450,6 +5493,7 @@ async function classifyRouteWithModel(
       selectedModel,
       0.05,
       runtimeOptions,
+      LOCAL_TASK_MAX_TOKENS.classifier,
     );
     return sanitizeDecision(out, selectedModel, replyLanguage);
   } catch {
@@ -5494,6 +5538,7 @@ async function alignAnswer(
   answers: Record<string, any>,
   profileSummary: string,
   userProfile?: LocalUserProfile,
+  runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
   const cfg = await getModelConfig();
   const rules = await getAlignmentRules();
@@ -5519,6 +5564,8 @@ async function alignAnswer(
       }),
       cfg.models.aligner,
       0.2,
+      runtimeOptions,
+      LOCAL_TASK_MAX_TOKENS.alignment,
     );
     const english = String(out.english_answer || draft).trim() || draft;
     const final =
@@ -5803,6 +5850,8 @@ async function buildMemoryConsolidation(
       }),
       cfg.models[registry.agents.memory.summarizerModelKey],
       0.1,
+      {},
+      LOCAL_TASK_MAX_TOKENS.memorySummary,
     );
     const parsed = parseJsonLoose<MemoryConsolidationModelOutput>(out, {});
     const normalizedModelUpdates = normalizeMemoryProfileUpdates(
@@ -6250,6 +6299,7 @@ async function buildLocalReasoningWithContext(opts: {
     opts.selectedModel,
     0.25,
     opts.runtimeOptions,
+    maxTokensForLocalAnswer(opts.runtimeOptions),
   );
   return {
     draft: draft.trim(),
@@ -6491,7 +6541,15 @@ export async function runLocalAssistantTurn(opts: {
   deviceInfo?: DeviceCapabilitySnapshot;
   proOptIn?: boolean;
 }): Promise<LocalAssistantTurnResult> {
-  await ensureLocalAgentData();
+  const stageTimings: Record<string, number> = {};
+  const timeStage = async <T,>(label: string, fn: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now();
+    try {
+      return await fn();
+    } finally {
+      stageTimings[label] = (stageTimings[label] || 0) + (Date.now() - startedAt);
+    }
+  };
   const userId = opts.userId;
   const message = String(opts.message || "").trim();
   const replyLanguage = resolveReplyLanguage({
@@ -6502,43 +6560,114 @@ export async function runLocalAssistantTurn(opts: {
   });
   if (!message) throw new Error("Message is required.");
 
-  const installCfg = await getModelConfig();
-  let modelRuntimeOptions: ModelRuntimeTierOptions = {
-    modelTier: opts.modelTier,
-    deviceInfo: opts.deviceInfo,
-    proOptIn: opts.proOptIn,
-    selectedTier: selectedTierForRuntime(installCfg, {
+  let installCfg = DEFAULT_MODEL_CONFIG;
+  let modelRuntimeOptions: ModelRuntimeTierOptions = {};
+  await timeStage("ensure_models", async () => {
+    await ensureLocalAgentData();
+    installCfg = await getModelConfig();
+    modelRuntimeOptions = {
       modelTier: opts.modelTier,
       deviceInfo: opts.deviceInfo,
       proOptIn: opts.proOptIn,
-    }),
-  };
-  if (
-    String(installCfg.runtime?.mode || "native_on_device") === "native_on_device" &&
-    getModelDeliveryMode(installCfg) === "download_on_first_launch"
-  ) {
-    const status = await ensureRequiredModelsInstalled({
-      config: installCfg,
-      modelTier: opts.modelTier,
-      deviceInfo: opts.deviceInfo,
-      proOptIn: opts.proOptIn,
-    });
-    modelRuntimeOptions = modelTierOptionsFromInstallStatus(
-      modelRuntimeOptions,
-      status,
-    );
-  }
+      selectedTier: selectedTierForRuntime(installCfg, {
+        modelTier: opts.modelTier,
+        deviceInfo: opts.deviceInfo,
+        proOptIn: opts.proOptIn,
+      }),
+    };
+    if (
+      String(installCfg.runtime?.mode || "native_on_device") === "native_on_device" &&
+      getModelDeliveryMode(installCfg) === "download_on_first_launch"
+    ) {
+      const status = await ensureRequiredModelsInstalled({
+        config: installCfg,
+        modelTier: opts.modelTier,
+        deviceInfo: opts.deviceInfo,
+        proOptIn: opts.proOptIn,
+      });
+      modelRuntimeOptions = modelTierOptionsFromInstallStatus(
+        modelRuntimeOptions,
+        status,
+      );
+    }
+  });
 
   await appendConversation(userId, "user", message);
 
-  let answers = await loadAnswers(userId);
-  const normalChatProfiler = await runProfilerExtractionInsideNormalChat({
-    userId,
+  const routesConfig = await getOrchestratorConfig();
+  const cfg = await getModelConfig();
+  const registry = await getAgentRegistry();
+  const earlyRuleDecision = ruleBasedOrchestratorDecision(
     message,
     replyLanguage,
-    answers,
-    userProfile: opts.userProfile,
-  });
+    routesConfig,
+    "rules",
+  );
+  if (
+    earlyRuleDecision?.route === "fast_greeting" &&
+    canReturnImmediateFastGreeting(message)
+  ) {
+    const assistantText =
+      replyLanguage === "ta"
+        ? `வணக்கம் ${opts.userProfile?.name || ""}. நான் எப்படி உதவலாம்?`.trim()
+        : `Hi ${opts.userProfile?.name || "there"}, how can I help?`;
+    await appendConversation(userId, "assistant", assistantText);
+    await appendRouteDecisionLog(userId, message, earlyRuleDecision, {
+      routeUsed: "fast_greeting",
+      source: "local_rules",
+      fastPath: true,
+      fallbackPolicy: {
+        backendRole: cfg.runtime?.backendRole || "fallback_only",
+        openAiPolicy: cfg.runtime?.openAiPolicy || "fallback_only",
+        allowedWhen: routesConfig.fallbackPolicy?.openAiAllowedWhen || [],
+      },
+    });
+    return {
+      route: "fast_greeting",
+      source: "local_rules",
+      cacheHit: false,
+      assistantText,
+      englishText: assistantText,
+      intent: "assistant",
+      profileSummary: "",
+      meta: {
+        classified: earlyRuleDecision,
+        orchestratorDecision: earlyRuleDecision,
+        stageTimings: {
+          ...stageTimings,
+          route_classification: 0,
+        },
+        runtime: {
+          primary: cfg.runtime?.primary || "phone_local",
+          mode: cfg.runtime?.mode || "native_on_device",
+          backendRole: cfg.runtime?.backendRole || "fallback_only",
+          openAiPolicy: cfg.runtime?.openAiPolicy || "fallback_only",
+          nativeBackend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
+          nativeModuleName:
+            cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName || "JaiOnDeviceModel",
+          modelRoot: cfg.native?.modelRoot || "document://models",
+          modelDeliveryMode: getModelDeliveryMode(cfg),
+          selectedModelTier: modelRuntimeOptions.selectedTier,
+          adapterLocation: cfg.runtime?.adapterLocation || "external_lan",
+          allowDeviceLoopback: Boolean(cfg.runtime?.allowDeviceLoopback),
+        },
+        fallbackPolicy: {
+          allowedWhen: routesConfig.fallbackPolicy?.openAiAllowedWhen || [],
+        },
+      },
+    } satisfies LocalAssistantTurnResult;
+  }
+
+  let answers = await loadAnswers(userId);
+  const normalChatProfiler = await timeStage("profiler", () =>
+    runProfilerExtractionInsideNormalChat({
+      userId,
+      message,
+      replyLanguage,
+      answers,
+      userProfile: opts.userProfile,
+    }),
+  );
   answers = normalChatProfiler.answers;
   const profileSummary =
     (await loadSummary(userId)) ||
@@ -6547,20 +6676,25 @@ export async function runLocalAssistantTurn(opts: {
       replyLanguage,
     }));
 
-  const semantic = await lookupSemanticCache(userId, message, modelRuntimeOptions);
+  const semantic = await timeStage("semantic_cache", () =>
+    lookupSemanticCache(userId, message, modelRuntimeOptions),
+  );
   if (semantic) {
     const needsAlignmentReapply =
       semantic.alignmentProfile?.replyLanguage !== replyLanguage ||
       normalizeText(semantic.alignmentProfile?.tone || "") !==
         normalizeText(displayValue(answers.communication_tone));
     const aligned = needsAlignmentReapply
-      ? await alignAnswer(
-          semantic.englishAnswer || semantic.canonicalAnswer,
-          replyLanguage,
-          "semantic_cache",
-          answers,
-          profileSummary,
-          opts.userProfile,
+      ? await timeStage("alignment", () =>
+          alignAnswer(
+            semantic.englishAnswer || semantic.canonicalAnswer,
+            replyLanguage,
+            "semantic_cache",
+            answers,
+            profileSummary,
+            opts.userProfile,
+            modelRuntimeOptions,
+          ),
         )
       : {
           english: semantic.englishAnswer || semantic.canonicalAnswer,
@@ -6621,6 +6755,7 @@ export async function runLocalAssistantTurn(opts: {
         })),
         timestamp: nowIso(),
         alignmentReapplied: needsAlignmentReapply,
+        stageTimings,
         profiler: {
           ran: normalChatProfiler.ran,
           source: normalChatProfiler.source,
@@ -6634,9 +6769,6 @@ export async function runLocalAssistantTurn(opts: {
     } satisfies LocalAssistantTurnResult;
   }
 
-  const routesConfig = await getOrchestratorConfig();
-  const cfg = await getModelConfig();
-  const registry = await getAgentRegistry();
   const turns = await recentConversation(userId, 10);
   const preferredSelectedModel = selectedReasonerModel(
     cfg,
@@ -6652,16 +6784,18 @@ export async function runLocalAssistantTurn(opts: {
     routesConfig,
     preferredSelectedModel,
   );
-  let decision = fastDecision
-    ? fastDecision
-    : await classifyRouteWithModel(
-        message,
-        replyLanguage,
-        answers,
-        profileSummary,
-        preferredSelectedModel,
-        modelRuntimeOptions,
-      );
+  let decision = await timeStage("route_classification", async () =>
+    fastDecision
+      ? fastDecision
+      : await classifyRouteWithModel(
+          message,
+          replyLanguage,
+          answers,
+          profileSummary,
+          preferredSelectedModel,
+          modelRuntimeOptions,
+        ),
+  );
 
   await safeRecordTrainingSample("orchestrator", {
     input: message,
@@ -6706,7 +6840,9 @@ export async function runLocalAssistantTurn(opts: {
     route = "fallback_openai";
   }
 
-  toolPlan = planLocalTools({ message, decision });
+  toolPlan = await timeStage("tool_plan", async () =>
+    planLocalTools({ message, decision }),
+  );
   if (
     shouldExecuteToolPlan(toolPlan, route) &&
     toolPlanAvailable(toolPlan, registry)
@@ -6714,15 +6850,17 @@ export async function runLocalAssistantTurn(opts: {
     handledByToolPlan = true;
     route = routeForToolPlan(toolPlan, route);
     source = "local_rules";
-    toolResults = await executeToolPlan(toolPlan, {
-      userId,
-      message,
-      replyLanguage,
-      answers,
-      profileSummary,
-      userProfile: opts.userProfile,
-      runtimeOptions: modelRuntimeOptions,
-    });
+    toolResults = await timeStage("tool_plan", () =>
+      executeToolPlan(toolPlan as ToolPlan, {
+        userId,
+        message,
+        replyLanguage,
+        answers,
+        profileSummary,
+        userProfile: opts.userProfile,
+        runtimeOptions: modelRuntimeOptions,
+      }),
+    );
     draft = composeToolDraft(toolPlan, toolResults, {
       userId,
       message,
@@ -6742,13 +6880,16 @@ export async function runLocalAssistantTurn(opts: {
       details = reminderDraft.data.details;
       datetimeText = reminderDraft.data.datetimeText;
     }
-    const aligned = await alignAnswer(
-      draft,
-      replyLanguage,
-      route,
-      answers,
-      profileSummary,
-      opts.userProfile,
+    const aligned = await timeStage("alignment", () =>
+      alignAnswer(
+        draft,
+        replyLanguage,
+        route,
+        answers,
+        profileSummary,
+        opts.userProfile,
+        modelRuntimeOptions,
+      ),
     );
     english = aligned.english;
     final = aligned.final;
@@ -6789,13 +6930,16 @@ export async function runLocalAssistantTurn(opts: {
         ? "உங்களைப் பற்றிய சில தகவல்கள் என்கிட்ட இருக்கு. இதை கொஞ்சம் நேராக கேளுங்கள்."
         : "I do have some profile information about you. Ask that a little more directly.",
     );
-    const aligned = await alignAnswer(
-      draft,
-      replyLanguage,
-      route,
-      answers,
-      profileSummary,
-      opts.userProfile,
+    const aligned = await timeStage("alignment", () =>
+      alignAnswer(
+        draft,
+        replyLanguage,
+        route,
+        answers,
+        profileSummary,
+        opts.userProfile,
+        modelRuntimeOptions,
+      ),
     );
     english = aligned.english;
     final = aligned.final;
@@ -6806,13 +6950,16 @@ export async function runLocalAssistantTurn(opts: {
     } else {
       source = "local_rules";
       draft = await buildScheduleAnswer(userId, message);
-      const aligned = await alignAnswer(
-        draft,
-        replyLanguage,
-        route,
-        answers,
-        profileSummary,
-        opts.userProfile,
+      const aligned = await timeStage("alignment", () =>
+        alignAnswer(
+          draft,
+          replyLanguage,
+          route,
+          answers,
+          profileSummary,
+          opts.userProfile,
+          modelRuntimeOptions,
+        ),
       );
       english = aligned.english;
       final = aligned.final;
@@ -6824,13 +6971,16 @@ export async function runLocalAssistantTurn(opts: {
     details = parsed.details;
     datetimeText = parsed.datetimeText;
     draft = parsed.assistantReply;
-    const aligned = await alignAnswer(
-      draft,
-      replyLanguage,
-      route,
-      answers,
-      profileSummary,
-      opts.userProfile,
+    const aligned = await timeStage("alignment", () =>
+      alignAnswer(
+        draft,
+        replyLanguage,
+        route,
+        answers,
+        profileSummary,
+        opts.userProfile,
+        modelRuntimeOptions,
+      ),
     );
     english = aligned.english;
     final = aligned.final;
@@ -6841,13 +6991,16 @@ export async function runLocalAssistantTurn(opts: {
     } else {
       try {
         draft = await fetchWeatherSummary(message, opts.userProfile);
-        const aligned = await alignAnswer(
-          draft,
-          replyLanguage,
-          route,
-          answers,
-          profileSummary,
-          opts.userProfile,
+        const aligned = await timeStage("alignment", () =>
+          alignAnswer(
+            draft,
+            replyLanguage,
+            route,
+            answers,
+            profileSummary,
+            opts.userProfile,
+            modelRuntimeOptions,
+          ),
         );
         english = aligned.english;
         final = aligned.final;
@@ -6864,16 +7017,18 @@ export async function runLocalAssistantTurn(opts: {
 
   if (!handledByToolPlan && route === "local_answer") {
     try {
-      const reasoned = await buildLocalReasoningWithContext({
-        userId,
-        message,
-        replyLanguage,
-        answers,
-        profileSummary,
-        userProfile: opts.userProfile,
-        selectedModel: decision.selectedModel,
-        runtimeOptions: modelRuntimeOptions,
-      });
+      const reasoned = await timeStage("local_reasoner", () =>
+        buildLocalReasoningWithContext({
+          userId,
+          message,
+          replyLanguage,
+          answers,
+          profileSummary,
+          userProfile: opts.userProfile,
+          selectedModel: decision.selectedModel,
+          runtimeOptions: modelRuntimeOptions,
+        }),
+      );
       draft = reasoned.draft;
       ragResponseMetadata = {
         rewrittenQuery: reasoned.rewrittenQuery,
@@ -6883,19 +7038,37 @@ export async function runLocalAssistantTurn(opts: {
         localReasonerRequestedFallback = true;
         route = "fallback_openai";
       } else {
-        const aligned = await alignAnswer(
-          draft,
-          replyLanguage,
-          route,
-          answers,
-          profileSummary,
-          opts.userProfile,
+        const aligned = await timeStage("alignment", () =>
+          alignAnswer(
+            draft,
+            replyLanguage,
+            route,
+            answers,
+            profileSummary,
+            opts.userProfile,
+            modelRuntimeOptions,
+          ),
         );
         english = aligned.english;
         final = aligned.final;
       }
     } catch (error) {
-      if (isNativeOnDeviceRuntimeUnavailableError(error) || isModelInstallError(error)) {
+      if (isLocalTurnTimeoutError(error)) {
+        route = "clarify";
+        decision = {
+          ...decision,
+          route: "clarify",
+          reason: "local_on_device_timeout",
+          needsClarification: false,
+          clarificationQuestion: "",
+          fallbackAllowed: false,
+        };
+        source = "local_rules";
+        intent = "clarify";
+        draft = friendlyLocalTimeoutMessage();
+        english = draft;
+        final = draft;
+      } else if (isNativeOnDeviceRuntimeUnavailableError(error) || isModelInstallError(error)) {
         route = "clarify";
         decision = {
           ...decision,
@@ -6951,13 +7124,16 @@ export async function runLocalAssistantTurn(opts: {
             backend?.raw_text ||
             "",
         ).trim() || "I couldn’t generate a response.";
-      const aligned = await alignAnswer(
-        backendText,
-        replyLanguage,
-        route,
-        answers,
-        profileSummary,
-        opts.userProfile,
+      const aligned = await timeStage("alignment", () =>
+        alignAnswer(
+          backendText,
+          replyLanguage,
+          route,
+          answers,
+          profileSummary,
+          opts.userProfile,
+          modelRuntimeOptions,
+        ),
       );
       english = aligned.english;
       final = aligned.final;
@@ -7013,6 +7189,7 @@ export async function runLocalAssistantTurn(opts: {
   await appendRouteDecisionLog(userId, message, decision, {
     routeUsed: route,
     source,
+    stageTimings,
     localReasonerRequestedFallback,
     noSafeLocalPath,
     cloudFallback,
@@ -7036,18 +7213,20 @@ export async function runLocalAssistantTurn(opts: {
     route !== "reminder_create" &&
     route !== "clarify"
   ) {
-    await writeSemanticCache(
-      userId,
-      message,
-      assistantText,
-      english || draft || assistantText,
-      route,
-      intent,
-      {
-        replyLanguage,
-        tone: displayValue(answers.communication_tone),
-      },
-      modelRuntimeOptions,
+    await timeStage("semantic_cache_write", () =>
+      writeSemanticCache(
+        userId,
+        message,
+        assistantText,
+        english || draft || assistantText,
+        route,
+        intent,
+        {
+          replyLanguage,
+          tone: displayValue(answers.communication_tone),
+        },
+        modelRuntimeOptions,
+      ),
     );
   }
 
@@ -7122,6 +7301,7 @@ export async function runLocalAssistantTurn(opts: {
       ragFolder: RAG_DIR,
       promptConfig: PROMPTS_PATH,
       modelConfig: MODELS_PATH,
+      stageTimings,
       runtime: {
         primary: cfg.runtime?.primary || "phone_local",
         mode: cfg.runtime?.mode || "native_on_device",

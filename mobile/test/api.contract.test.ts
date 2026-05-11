@@ -466,12 +466,12 @@ describe("API client contracts", () => {
       model: "whisper",
       language: "en",
     });
-    expect(runLocalAssistantTurn).toHaveBeenCalledWith({
+    expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "please explain local voice",
       replyLanguage: "en",
       userAllowedCloudFallback: false,
-    });
+    }));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(payload.assistant.text).toBe("Native voice answer.");
     expect(payload.meta.stt.endpoint).toBe("JaiOnDeviceModel.transcribeAudio");
@@ -525,12 +525,12 @@ describe("API client contracts", () => {
 
     expect(getClientRoutingDefaults().chat).toBe("local");
     expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
-    expect(runLocalAssistantTurn).toHaveBeenCalledWith({
+    expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "Explain recursion",
       replyLanguage: "en",
       userAllowedCloudFallback: false,
-    });
+    }));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(payload.assistant.text).toBe("Local answer first.");
     expect(payload.meta.source).toBe("local_chat_proxy");
@@ -570,12 +570,12 @@ describe("API client contracts", () => {
       message: "Explain recursion",
     });
 
-    expect(runLocalAssistantTurn).toHaveBeenCalledWith({
+    expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "Explain recursion",
       replyLanguage: "en",
       userAllowedCloudFallback: false,
-    });
+    }));
     expect(payload.assistant.english).toBe("English answer.");
     expect(payload.assistant.tamil).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -614,12 +614,12 @@ describe("API client contracts", () => {
       message: "நாளைக்கு என்ன செய்யலாம்?",
     });
 
-    expect(runLocalAssistantTurn).toHaveBeenCalledWith({
+    expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "நாளைக்கு என்ன செய்யலாம்?",
       replyLanguage: "ta",
       userAllowedCloudFallback: false,
-    });
+    }));
     expect(payload.assistant.tamil).toBe("தமிழ் பதில்.");
   });
 
@@ -664,7 +664,7 @@ describe("API client contracts", () => {
       message: "Explain recursion",
     });
 
-    expect(runLocalAssistantTurn).toHaveBeenCalledWith({
+    expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "Explain recursion",
       replyLanguage: "ta",
@@ -675,7 +675,7 @@ describe("API client contracts", () => {
         assistantName: "Elli",
         replyLanguage: "ta",
       },
-    });
+    }));
   });
 
   it("lets explicit request language override cached profile preference", async () => {
@@ -718,7 +718,7 @@ describe("API client contracts", () => {
       reply_language: "en",
     });
 
-    expect(runLocalAssistantTurn).toHaveBeenCalledWith({
+    expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "Explain recursion",
       replyLanguage: "en",
@@ -729,7 +729,7 @@ describe("API client contracts", () => {
         assistantName: "Elli",
         replyLanguage: "en",
       },
-    });
+    }));
   });
 
   it("passes explicit cloud fallback setting into local chat", async () => {
@@ -765,12 +765,12 @@ describe("API client contracts", () => {
       message: "Explain recursion",
     });
 
-    expect(runLocalAssistantTurn).toHaveBeenCalledWith({
+    expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "Explain recursion",
       replyLanguage: "en",
       userAllowedCloudFallback: true,
-    });
+    }));
   });
 
   it("passes cached profile fields into the local voice assistant turn", async () => {
@@ -840,7 +840,7 @@ describe("API client contracts", () => {
       model: "whisper",
       language: "en",
     });
-    expect(runLocalAssistantTurn).toHaveBeenCalledWith({
+    expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "what is the weather",
       replyLanguage: "en",
@@ -851,7 +851,7 @@ describe("API client contracts", () => {
         assistantName: "Elli",
         replyLanguage: "en",
       },
-    });
+    }));
   });
 
 
@@ -942,6 +942,47 @@ describe("API client contracts", () => {
         reply_language: "en",
       }),
     ).rejects.toThrow("Required local GGUF model download failed");
+    expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not silently call backend or TTS when local chat times out", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: { currentUser: null },
+    }));
+    const runLocalAssistantTurn = vi.fn(async () => {
+      const error = new Error("Local on-device inference timed out after 60000ms.");
+      (error as any).code = "LOCAL_TURN_TIMEOUT";
+      throw error;
+    });
+    vi.doMock("../lib/localAgents", () => ({
+      runLocalAssistantTurn,
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "Backend should not be called." } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await expect(
+      apiPost<any>("/api/chat", {
+        user_id: 7,
+        message: "Hello",
+        reply_language: "en",
+      }),
+    ).rejects.toThrow("timed out");
     expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
     expect(fetchMock).not.toHaveBeenCalled();
   });

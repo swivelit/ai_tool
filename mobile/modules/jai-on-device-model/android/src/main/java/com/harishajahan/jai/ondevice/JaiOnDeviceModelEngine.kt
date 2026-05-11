@@ -44,7 +44,6 @@ class JaiOnDeviceModelEngine(private val context: Context) {
       )
     }
 
-    models.clear()
     val rawModels = config["models"] as? Map<*, *>
       ?: throw CodedException(
         "JAI_NATIVE_MODELS_MISSING",
@@ -52,22 +51,29 @@ class JaiOnDeviceModelEngine(private val context: Context) {
         null,
       )
 
+    val nextModels: MutableMap<String, Map<String, Any?>> = mutableMapOf()
     rawModels.forEach { (key, value) ->
       val modelId = key?.toString()?.trim().orEmpty()
       val asset = value as? Map<*, *> ?: return@forEach
       if (modelId.isNotEmpty()) {
         @Suppress("UNCHECKED_CAST")
-        models[modelId] = asset as Map<String, Any?>
+        nextModels[modelId] = asset as Map<String, Any?>
       }
     }
 
-    if (models.isEmpty()) {
+    if (nextModels.isEmpty()) {
       throw CodedException(
         "JAI_NATIVE_MODELS_MISSING",
         "JaiOnDeviceModel config has no selected local model entries. The JS runtime should pass only installed models for the selected Lite/Standard/Pro tier.",
         null,
       )
     }
+
+    if (models.isNotEmpty() && modelCacheSignature(models) != modelCacheSignature(nextModels)) {
+      JaiLlamaCppBinding.releaseCachedModels()
+    }
+    models.clear()
+    models.putAll(nextModels)
 
     // Verify all configured local model files now, so production failures are clear.
     models.forEach { (modelId, asset) ->
@@ -80,6 +86,13 @@ class JaiOnDeviceModelEngine(private val context: Context) {
       "modelRoot" to modelRoot,
       "models" to models.keys.sorted(),
     )
+  }
+
+  private fun modelCacheSignature(value: Map<String, Map<String, Any?>>): String {
+    return value.entries
+      .map { (modelId, asset) -> modelId + ":" + (asset["modelPath"]?.toString()?.trim().orEmpty()) }
+      .sorted()
+      .joinToString("|")
   }
 
   fun completeChat(input: Map<String, Any?>): Map<String, Any?> {

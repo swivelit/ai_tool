@@ -44,6 +44,7 @@ export type AssistantSettings = {
   languageMode: LanguageMode;
   allowCloudFallback: boolean;
   handsFreeEnabled: boolean;
+  autoSpeakReplies: boolean;
   wakePhrase: string;
   wakeTrainingSamples: string[];
 };
@@ -55,6 +56,7 @@ export const DEFAULTS: { name: string; settings: AssistantSettings } = {
     languageMode: "ta",
     allowCloudFallback: false,
     handsFreeEnabled: false,
+    autoSpeakReplies: false,
     wakePhrase: "Hey Elli",
     wakeTrainingSamples: [],
   },
@@ -109,6 +111,7 @@ export async function getSettings(): Promise<AssistantSettings> {
       languageMode: normalizeLanguageMode(parsed.languageMode),
       allowCloudFallback: parsed.allowCloudFallback === true,
       handsFreeEnabled: Boolean(parsed.handsFreeEnabled),
+      autoSpeakReplies: parsed.autoSpeakReplies === true,
       wakePhrase: normalizeWakePhrase(parsed.wakePhrase),
       wakeTrainingSamples: normalizeWakeTrainingSamples(parsed.wakeTrainingSamples),
     };
@@ -123,6 +126,7 @@ export async function setSettings(s: AssistantSettings): Promise<void> {
     languageMode: normalizeLanguageMode(s.languageMode),
     allowCloudFallback: s.allowCloudFallback === true,
     handsFreeEnabled: Boolean(s.handsFreeEnabled),
+    autoSpeakReplies: s.autoSpeakReplies === true,
     wakePhrase: normalizeWakePhrase(s.wakePhrase),
     wakeTrainingSamples: normalizeWakeTrainingSamples(s.wakeTrainingSamples),
   };

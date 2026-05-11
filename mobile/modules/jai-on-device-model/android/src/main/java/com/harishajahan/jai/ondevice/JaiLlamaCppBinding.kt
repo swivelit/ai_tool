@@ -43,6 +43,11 @@ object JaiLlamaCppBinding {
     return nativeEmbedText(modelPath, text, contextSize, threads)
   }
 
+  fun releaseCachedModels() {
+    if (!nativeLoaded) return
+    nativeReleaseCachedModels()
+  }
+
   private fun ensureNativeLoaded() {
     if (nativeLoaded) return
     throw JaiLlamaCppException(
@@ -67,4 +72,6 @@ object JaiLlamaCppBinding {
     contextSize: Int,
     threads: Int,
   ): FloatArray
+
+  private external fun nativeReleaseCachedModels()
 }

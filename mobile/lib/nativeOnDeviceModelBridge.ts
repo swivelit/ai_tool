@@ -47,12 +47,15 @@ export type NativeOnDeviceChatInput = {
   messages: NativeOnDeviceChatMessage[];
   prompt?: string;
   temperature?: number;
+  maxTokens?: number;
+  requestId?: string;
   asset: NativeOnDeviceModelAsset;
 };
 
 export type NativeOnDeviceEmbeddingInput = {
   model: string;
   texts: string[];
+  requestId?: string;
   asset: NativeOnDeviceModelAsset;
 };
 
@@ -85,6 +88,7 @@ export type NativeOnDeviceModelBridge = {
   initialize: (config: NativeOnDeviceBridgeInitConfig) => unknown | Promise<unknown>;
   completeChat: (input: NativeOnDeviceChatInput) => unknown | Promise<unknown>;
   embedTexts: (input: NativeOnDeviceEmbeddingInput) => unknown | Promise<unknown>;
+  cancelRequest?: (requestId: string) => unknown | Promise<unknown>;
   getDeviceCapabilities?: () =>
     | NativeDeviceCapabilitySnapshot
     | Promise<NativeDeviceCapabilitySnapshot>;

@@ -6,7 +6,9 @@ import {
   Animated,
   AppState,
   Easing,
+  Keyboard,
   KeyboardAvoidingView,
+  LayoutChangeEvent,
   Modal,
   Platform,
   Pressable,
@@ -28,7 +30,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 
 import { GlassCard } from "@/components/Glass";
 import { Orb } from "@/components/Orb";
@@ -37,6 +38,7 @@ import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 import { apiDelete, apiGet, apiPost, apiPostForm } from "@/lib/api";
+import { computeChatScreenLayout } from "@/lib/chatScreenLayout";
 import {
   BackendChatResponse,
   ChatHistoryItem,
@@ -44,6 +46,13 @@ import {
 } from "@/lib/chatResponse";
 import { parseDatetime } from "@/lib/datetime";
 import { saveScheduledTask } from "@/lib/localAgents";
+import {
+  friendlyLocalTimeoutMessage,
+  getLocalTurnTimeoutMs,
+  isLocalTurnTimeoutError,
+  withLocalTimeout,
+} from "@/lib/localTurnTimeouts";
+import { shouldAutoSpeakReply } from "@/lib/replyPlaybackPolicy";
 import { ensureNotificationsReady, scheduleReminder } from "@/lib/reminders";
 
 type ChatSessionRecord = {
@@ -68,6 +77,18 @@ type PendingReminder = {
 };
 
 type RecorderSurface = "quick" | "live";
+
+type ChatRequestSource = "text" | "handsfree" | "voice";
+
+type PendingChatTurn = {
+  requestId: string;
+  sessionId: string | null;
+  source: ChatRequestSource;
+  userMessage: string;
+  assistantText?: string;
+  status: "thinking" | "error";
+  createdAt: string;
+};
 
 const MIN_INPUT_HEIGHT = 24;
 const MAX_INPUT_HEIGHT = 130;
@@ -305,7 +326,6 @@ function reconcileChatSessions(
 
 export default function Home() {
   const insets = useSafeAreaInsets();
-  const tabBarHeight = useBottomTabBarHeight();
   const { width, height } = useWindowDimensions();
   const { name, settings, profile } = useAssistant();
   const { signOutUser } = useAuth();
@@ -313,6 +333,11 @@ export default function Home() {
   const [text, setText] = useState("");
   const [composerInputHeight, setComposerInputHeight] =
     useState(MIN_INPUT_HEIGHT);
+  const [composerHeight, setComposerHeight] = useState(0);
+  const [keyboardState, setKeyboardState] = useState({
+    visible: false,
+    height: 0,
+  });
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordingPreparing, setRecordingPreparing] = useState(false);
@@ -339,6 +364,7 @@ export default function Home() {
   const [handsFreeTranscript, setHandsFreeTranscript] = useState("");
   const [handsFreeStatus, setHandsFreeStatus] = useState("");
   const [appState, setAppState] = useState(AppState.currentState);
+  const [pendingChatTurn, setPendingChatTurn] = useState<PendingChatTurn | null>(null);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const replySoundRef = useRef<Audio.Sound | null>(null);
@@ -356,6 +382,7 @@ export default function Home() {
   const handsFreeRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handsFreePermissionAlertedRef = useRef(false);
   const handsFreeBlockedRef = useRef(false);
+  const activeChatRequestIdRef = useRef<string | null>(null);
   const handsFreeRuntimeRef = useRef({
     busy: false,
     listening: false,
@@ -364,15 +391,21 @@ export default function Home() {
     locale: "en-IN",
   });
 
-  const isSmallPhone = width < 370 || height < 760;
-  const horizontalPadding = isSmallPhone ? 14 : 18;
-  const topPadding = insets.top + (isSmallPhone ? 10 : 16);
-  const bottomPadding = Platform.OS === "ios" ? Math.max(insets.bottom, 8) : 20;
-  const composerBottomOffset =
-    Platform.OS === "ios"
-      ? -Math.max(tabBarHeight - insets.bottom, 0)
-      : -Math.max(tabBarHeight - 12, 0);
-  const contentMaxWidth = Math.min(width - horizontalPadding * 2, 560);
+  const layout = computeChatScreenLayout({
+    screenWidth: width,
+    screenHeight: height,
+    safeAreaTop: insets.top,
+    safeAreaBottom: insets.bottom,
+    composerHeight,
+    keyboardVisible: keyboardState.visible,
+    keyboardHeight: keyboardState.height,
+    platform: Platform.OS,
+  });
+  const isSmallPhone = layout.isSmallPhone;
+  const horizontalPadding = layout.horizontalPadding;
+  const topPadding = layout.topPadding;
+  const bottomPadding = layout.composerBottomPadding;
+  const contentMaxWidth = layout.contentMaxWidth;
   const drawerWidth = Math.min(width * 0.84, 360);
   const orbSize = clamp(width * 0.38, 156, 208);
 
@@ -478,6 +511,10 @@ export default function Home() {
     () => activeChatSession?.items || [],
     [activeChatSession]
   );
+  const activePendingChatTurn = useMemo(() => {
+    if (!pendingChatTurn) return null;
+    return pendingChatTurn.sessionId === activeChatSessionId ? pendingChatTurn : null;
+  }, [activeChatSessionId, pendingChatTurn]);
 
   const filteredHistory = useMemo(() => {
     const query = historySearch.trim().toLowerCase();
@@ -872,6 +909,39 @@ export default function Home() {
   }, [releaseReplySound, shutdownHandsFree]);
 
   useEffect(() => {
+    const handleKeyboardShow = (event: any) => {
+      const keyboardHeight = Math.max(
+        0,
+        Number(event?.endCoordinates?.height || 0),
+      );
+      setKeyboardState({ visible: true, height: keyboardHeight });
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      }, Platform.OS === "android" ? 180 : 80);
+    };
+    const handleKeyboardHide = () => {
+      setKeyboardState({ visible: false, height: 0 });
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      }, 80);
+    };
+
+    const showSubscription = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      handleKeyboardShow,
+    );
+    const hideSubscription = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      handleKeyboardHide,
+    );
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
     return () => {
       if (handsFreeRestartTimerRef.current) {
         clearTimeout(handsFreeRestartTimerRef.current);
@@ -1263,10 +1333,86 @@ export default function Home() {
     setPendingReminder(null);
   }
 
+  function nextChatRequestId(source: ChatRequestSource) {
+    return `${source}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function isActiveChatRequest(requestId: string) {
+    return activeChatRequestIdRef.current === requestId;
+  }
+
+  function showPendingAssistantError(
+    requestId: string,
+    message: string,
+    fallbackUserMessage: string,
+    source: ChatRequestSource,
+  ) {
+    setPendingChatTurn((current) => {
+      if (current?.requestId === requestId) {
+        return {
+          ...current,
+          status: "error",
+          assistantText: message,
+        };
+      }
+
+      return {
+        requestId,
+        sessionId: activeChatSessionId,
+        source,
+        userMessage: fallbackUserMessage,
+        assistantText: message,
+        status: "error",
+        createdAt: new Date().toISOString(),
+      };
+    });
+  }
+
+  function assistantFailureMessage(error: unknown) {
+    if (isLocalTurnTimeoutError(error)) {
+      return friendlyLocalTimeoutMessage();
+    }
+
+    const raw = error instanceof Error ? error.message : String(error || "");
+    if (
+      /timeout|timed out|native|on-device|local model|network request failed/i.test(raw)
+    ) {
+      return "I couldn’t finish that on this phone. Please try again.";
+    }
+
+    return raw || "I couldn’t finish that. Please try again.";
+  }
+
+  function warnChatFailure(error: unknown, requestId: string, source: ChatRequestSource) {
+    if (!__DEV__) return;
+    const message = error instanceof Error ? error.message : String(error || "");
+    console.warn("[chat-turn]", {
+      requestId,
+      source,
+      name: (error as any)?.name || "Error",
+      code: (error as any)?.code || undefined,
+      message: message.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]"),
+    });
+  }
+
+  function clearPendingAssistant(requestId: string) {
+    setPendingChatTurn((current) =>
+      current?.requestId === requestId ? null : current,
+    );
+  }
+
+  function handleComposerLayout(event: LayoutChangeEvent) {
+    const nextHeight = Math.ceil(event.nativeEvent.layout.height || 0);
+    if (nextHeight > 0 && Math.abs(nextHeight - composerHeight) > 1) {
+      setComposerHeight(nextHeight);
+    }
+  }
+
   function startNewChat() {
     setActiveChatSessionId(null);
     setText("");
     setComposerInputHeight(MIN_INPUT_HEIGHT);
+    setPendingChatTurn(null);
     setHistorySearch("");
     closeHistoryItemActions();
     closeDrawer();
@@ -1356,8 +1502,19 @@ export default function Home() {
     const cleaned = stripAssistantTrigger(rawMessage);
     if (!cleaned.trim()) return;
 
+    const requestId = nextChatRequestId(source);
+    activeChatRequestIdRef.current = requestId;
+
     try {
       setBusy(true);
+      setPendingChatTurn({
+        requestId,
+        sessionId: activeChatSessionId,
+        source,
+        userMessage: cleaned,
+        status: "thinking",
+        createdAt: new Date().toISOString(),
+      });
 
       if (source === "text") {
         setText("");
@@ -1366,18 +1523,38 @@ export default function Home() {
         setHandsFreeStatus("Working on it…");
       }
 
-      const response = await apiPost<BackendChatResponse>("/api/chat", {
-        user_id: profile.userId,
-        message: cleaned,
-        reply_language: settings.languageMode,
-      });
+      const timeoutMs = getLocalTurnTimeoutMs({ source });
+      const response = await withLocalTimeout(
+        apiPost<BackendChatResponse>("/api/chat", {
+          user_id: profile.userId,
+          message: cleaned,
+          reply_language: settings.languageMode,
+        }),
+        timeoutMs,
+        {
+          source,
+          message: friendlyLocalTimeoutMessage(),
+        },
+      );
+
+      if (!isActiveChatRequest(requestId)) {
+        return;
+      }
 
       const nextItem = normalizeChatTurnPayload(response, cleaned);
+      clearPendingAssistant(requestId);
       const mergedHistory = await refreshHistoryAndSessions([nextItem]);
       await attachItemToCurrentChat(nextItem, mergedHistory);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-      if (nextItem.details) {
+      if (
+        nextItem.details &&
+        shouldAutoSpeakReply({
+          source,
+          autoSpeakReplies: settings.autoSpeakReplies,
+          handsFreeMode,
+        })
+      ) {
         void playAgentReply(nextItem.details);
       }
 
@@ -1390,11 +1567,16 @@ export default function Home() {
         setConfirmOpen(true);
       }
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : "Failed to process your request.";
-      Alert.alert("Error", message);
+      if (isActiveChatRequest(requestId)) {
+        const message = assistantFailureMessage(error);
+        showPendingAssistantError(requestId, message, cleaned, source);
+        warnChatFailure(error, requestId, source);
+      }
     } finally {
-      setBusy(false);
+      if (isActiveChatRequest(requestId)) {
+        activeChatRequestIdRef.current = null;
+        setBusy(false);
+      }
 
       if (handsFreeForegroundEnabled) {
         setHandsFreeMode("wake");
@@ -1481,10 +1663,21 @@ export default function Home() {
       return;
     }
 
+    const requestId = nextChatRequestId("voice");
+    activeChatRequestIdRef.current = requestId;
+
     try {
       recordingPhaseRef.current = "stopping";
       stopWhenReadyRef.current = false;
       setBusy(true);
+      setPendingChatTurn({
+        requestId,
+        sessionId: activeChatSessionId,
+        source: "voice",
+        userMessage: "Voice message",
+        status: "thinking",
+        createdAt: new Date().toISOString(),
+      });
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
       recordingRef.current = null;
@@ -1508,19 +1701,39 @@ export default function Home() {
         } as any
       );
 
-      const res = await apiPostForm<BackendChatResponse | ChatHistoryItem>(
-        `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
-          settings.languageMode
-        }`,
-        form
+      const timeoutMs = getLocalTurnTimeoutMs({ source: "voice" });
+      const res = await withLocalTimeout(
+        apiPostForm<BackendChatResponse | ChatHistoryItem>(
+          `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
+            settings.languageMode
+          }`,
+          form,
+        ),
+        timeoutMs,
+        {
+          source: "voice",
+          message: friendlyLocalTimeoutMessage(),
+        },
       );
 
+      if (!isActiveChatRequest(requestId)) {
+        return;
+      }
+
       const nextItem = normalizeChatTurnPayload(res);
+      clearPendingAssistant(requestId);
       const mergedHistory = await refreshHistoryAndSessions([nextItem]);
       await attachItemToCurrentChat(nextItem, mergedHistory);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-      if (nextItem.details) {
+      if (
+        nextItem.details &&
+        shouldAutoSpeakReply({
+          source: "voice",
+          autoSpeakReplies: settings.autoSpeakReplies,
+          handsFreeMode,
+        })
+      ) {
         void playAgentReply(nextItem.details);
       }
 
@@ -1533,8 +1746,11 @@ export default function Home() {
         setConfirmOpen(true);
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Voice analysis failed.";
-      Alert.alert("Error", message);
+      if (isActiveChatRequest(requestId)) {
+        const message = assistantFailureMessage(error);
+        showPendingAssistantError(requestId, message, "Voice message", "voice");
+        warnChatFailure(error, requestId, "voice");
+      }
     } finally {
       recordingPhaseRef.current = "idle";
       stopWhenReadyRef.current = false;
@@ -1542,7 +1758,10 @@ export default function Home() {
       setRecording(null);
       setRecordingPreparing(false);
       setListening(false);
-      setBusy(false);
+      if (isActiveChatRequest(requestId)) {
+        activeChatRequestIdRef.current = null;
+        setBusy(false);
+      }
       setActiveSurface(null);
       await resetAudioMode();
     }
@@ -1674,10 +1893,10 @@ export default function Home() {
 
       <KeyboardAvoidingView
         style={styles.screen}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        enabled={Platform.OS === "ios"}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        enabled
       >
-        <View style={styles.screen}>
+        <View style={styles.screenColumn}>
           <View
             style={[
               styles.topBar,
@@ -1708,14 +1927,14 @@ export default function Home() {
               flexGrow: 1,
               paddingHorizontal: horizontalPadding,
               paddingTop: 8,
-              paddingBottom: 210,
+              paddingBottom: layout.scrollBottomPadding,
               alignItems: "center",
             }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
-              {chatTimeline.length > 0 || (busy && !listening) ? (
+              {chatTimeline.length > 0 || activePendingChatTurn ? (
                 <View style={styles.chatThread}>
                   {chatTimeline.map((item) => {
                     const userMessage = String(item.raw_text || "").trim();
@@ -1757,19 +1976,45 @@ export default function Home() {
                     );
                   })}
 
-                  {busy && !listening ? (
-                    <View style={[styles.messageRow, styles.messageRowAssistant]}>
-                      <View style={styles.assistantAvatar}>
-                        <Text style={styles.assistantAvatarText}>
-                          {assistantLabel.slice(0, 1).toUpperCase()}
-                        </Text>
+                  {activePendingChatTurn ? (
+                    <View key={activePendingChatTurn.requestId} style={styles.messagePair}>
+                      <View style={[styles.messageRow, styles.messageRowUser]}>
+                        <View style={[styles.messageBubble, styles.userBubble]}>
+                          <Text style={[styles.messageText, styles.userMessageText]}>
+                            {activePendingChatTurn.userMessage}
+                          </Text>
+                        </View>
                       </View>
 
-                      <View style={styles.assistantMessageBlock}>
-                        <Text style={styles.messageSender}>{assistantLabel}</Text>
-                        <View style={[styles.messageBubble, styles.assistantBubble, styles.typingBubble]}>
-                          <ActivityIndicator size="small" color={Brand.cocoa} />
-                          <Text style={styles.typingText}>Thinking…</Text>
+                      <View style={[styles.messageRow, styles.messageRowAssistant]}>
+                        <View style={styles.assistantAvatar}>
+                          <Text style={styles.assistantAvatarText}>
+                            {assistantLabel.slice(0, 1).toUpperCase()}
+                          </Text>
+                        </View>
+
+                        <View style={styles.assistantMessageBlock}>
+                          <Text style={styles.messageSender}>{assistantLabel}</Text>
+                          <View
+                            style={[
+                              styles.messageBubble,
+                              styles.assistantBubble,
+                              activePendingChatTurn.status === "thinking" && styles.typingBubble,
+                              activePendingChatTurn.status === "error" && styles.errorBubble,
+                            ]}
+                          >
+                            {activePendingChatTurn.status === "thinking" ? (
+                              <>
+                                <ActivityIndicator size="small" color={Brand.cocoa} />
+                                <Text style={styles.typingText}>Thinking…</Text>
+                              </>
+                            ) : (
+                              <Text style={[styles.messageText, styles.assistantMessageText]}>
+                                {activePendingChatTurn.assistantText ||
+                                  friendlyLocalTimeoutMessage()}
+                              </Text>
+                            )}
+                          </View>
                         </View>
                       </View>
                     </View>
@@ -1801,9 +2046,9 @@ export default function Home() {
               {
                 paddingHorizontal: horizontalPadding,
                 paddingBottom: bottomPadding,
-                bottom: composerBottomOffset,
               },
             ]}
+            onLayout={handleComposerLayout}
           >
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
               <View style={styles.composerCard}>
@@ -2216,6 +2461,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  screenColumn: {
+    flex: 1,
+    flexDirection: "column",
+  },
+
   scrollArea: {
     flex: 1,
   },
@@ -2404,6 +2654,11 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
+  errorBubble: {
+    backgroundColor: "rgba(255,255,255,0.9)",
+    borderColor: "rgba(180, 82, 52, 0.32)",
+  },
+
   quickRecorderCard: {
     marginTop: 16,
     padding: 16,
@@ -2447,10 +2702,7 @@ const styles = StyleSheet.create({
   },
 
   composerShell: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
+    flexShrink: 0,
   },
 
   composerCard: {

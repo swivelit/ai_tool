@@ -216,6 +216,7 @@ describe("local orchestrator and alignment", () => {
     expect(result.source).toBe("local_rules");
     expect(result.assistantText).toContain("Hari");
     expect(mockedState.fetchQueue).toHaveLength(0);
+    expect(global.fetch).not.toHaveBeenCalled();
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 
@@ -622,6 +623,12 @@ describe("local orchestrator and alignment", () => {
     expect(result.route).toBe("local_answer");
     expect(result.assistantText).toContain("Compilers");
     expect(result.meta?.tools).toBeUndefined();
+    const completionPayloads = ((global.fetch as any).mock.calls as any[])
+      .map((call) => JSON.parse(String(call[1]?.body || "{}")))
+      .filter((payload) => Array.isArray(payload.messages));
+    expect(completionPayloads[0].max_tokens).toBe(128);
+    expect(completionPayloads[1].max_tokens).toBe(256);
+    expect(completionPayloads[2].max_tokens).toBe(192);
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 

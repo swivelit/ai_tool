@@ -35,6 +35,9 @@ public class JaiOnDeviceModelModule: Module {
       guard let rawModels = config["models"] as? [String: [String: Any]] else {
         throw JaiOnDeviceModelError("JAI_NATIVE_MODELS_MISSING", "JaiOnDeviceModel.initialize(config) requires a models map with local GGUF model assets.")
       }
+      if !self.models.isEmpty && self.modelCacheSignature(self.models) != self.modelCacheSignature(rawModels) {
+        JaiLlamaCppBinding.releaseCachedModels()
+      }
       self.models = rawModels
 
       if self.models.isEmpty {
@@ -190,6 +193,15 @@ public class JaiOnDeviceModelModule: Module {
       throw JaiOnDeviceModelError("JAI_MODEL_NOT_CONFIGURED", "No native GGUF asset is configured for model \(modelId).")
     }
     return configured
+  }
+
+  private func modelCacheSignature(_ value: [String: [String: Any]]) -> String {
+    return value
+      .map { modelId, asset in
+        "\(modelId):\(((asset["modelPath"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines))"
+      }
+      .sorted()
+      .joined(separator: "|")
   }
 
   private func resolveModelFile(modelId: String, asset: [String: Any]) throws -> URL {
@@ -368,6 +380,10 @@ private struct JaiOnDeviceModelError: LocalizedError {
 }
 
 private enum JaiLlamaCppBinding {
+  static func releaseCachedModels() {
+    JaiLlamaCppBridge.releaseCachedModels()
+  }
+
   static func completeChat(
     modelPath: String,
     prompt: String,

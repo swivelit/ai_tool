@@ -6,6 +6,7 @@ import {
   hasUsableNativeOnDeviceModelBridge,
   nativeOnDeviceBridgeMissingMessage,
 } from "./nativeOnDeviceModelBridge";
+import { withLocalTimeout } from "./localTurnTimeouts";
 import {
   DeviceCapabilitySnapshot,
   ModelDeliveryConfig,
@@ -111,8 +112,14 @@ export interface LocalModelRuntime {
     model: string;
     messages: LocalRuntimeChatMessage[];
     temperature?: number;
+    maxTokens?: number;
+    requestId?: string;
   }): Promise<any>;
-  embedTexts(input: { model: string; texts: string[] }): Promise<number[][]>;
+  embedTexts(input: {
+    model: string;
+    texts: string[];
+    requestId?: string;
+  }): Promise<number[][]>;
 }
 
 export class NativeOnDeviceRuntimeUnavailableError extends Error {
@@ -358,6 +365,7 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
 
   private readonly config: LocalRuntimeConfig;
   private readonly bridge: NativeOnDeviceModelBridge | null;
+  private readonly timeoutMs: number;
   private initialized = false;
 
   constructor(config: LocalRuntimeConfig = {}) {
@@ -372,7 +380,9 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
       openAiPolicy: config.openAiPolicy || "fallback_only",
       nativeBackend: config.nativeBackend || "llama_cpp",
       nativeModuleName: moduleName,
+      timeoutMs: Number(config.timeoutMs || 45_000),
     };
+    this.timeoutMs = Number(this.config.timeoutMs || 45_000);
     this.bridge = config.nativeBridge ?? getNativeOnDeviceModelBridge(moduleName);
   }
 
@@ -487,6 +497,8 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
     model: string;
     messages: LocalRuntimeChatMessage[];
     temperature?: number;
+    maxTokens?: number;
+    requestId?: string;
   }): Promise<any> {
     this.requireReady(
       "Native on-device chat",
@@ -498,19 +510,40 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
       input.model,
     );
     await this.ensureInitialized(bridge);
-    const response = await bridge.completeChat({
-      model: input.model,
-      temperature: input.temperature ?? 0.2,
-      messages: input.messages,
-      prompt: renderNativeChatPrompt(input.messages, asset),
-      asset,
-    });
+    const requestId =
+      input.requestId ||
+      `native_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const response = await withLocalTimeout(
+      () => Promise.resolve(
+        bridge.completeChat({
+          model: input.model,
+          temperature: input.temperature ?? 0.2,
+          maxTokens: input.maxTokens,
+          requestId,
+          messages: input.messages,
+          prompt: renderNativeChatPrompt(input.messages, asset),
+          asset,
+        }),
+      ),
+      this.timeoutMs,
+      {
+        source: "native_completeChat",
+        message: `Native on-device chat timed out after ${this.timeoutMs}ms.`,
+        onTimeout: () => {
+          if (typeof bridge.cancelRequest === "function") {
+            void bridge.cancelRequest(requestId);
+          }
+          return undefined;
+        },
+      },
+    );
     return normalizeChatCompletionResponse(response);
   }
 
   async embedTexts(input: {
     model: string;
     texts: string[];
+    requestId?: string;
   }): Promise<number[][]> {
     this.requireReady(
       "Native on-device embeddings",
@@ -522,11 +555,30 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
       input.model,
     );
     await this.ensureInitialized(bridge);
-    const response = await bridge.embedTexts({
-      model: input.model,
-      texts: input.texts,
-      asset,
-    });
+    const requestId =
+      input.requestId ||
+      `native_embed_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const response = await withLocalTimeout(
+      () => Promise.resolve(
+        bridge.embedTexts({
+          model: input.model,
+          texts: input.texts,
+          requestId,
+          asset,
+        }),
+      ),
+      this.timeoutMs,
+      {
+        source: "native_embedTexts",
+        message: `Native on-device embeddings timed out after ${this.timeoutMs}ms.`,
+        onTimeout: () => {
+          if (typeof bridge.cancelRequest === "function") {
+            void bridge.cancelRequest(requestId);
+          }
+          return undefined;
+        },
+      },
+    );
     return extractEmbeddingRows(response);
   }
 }
@@ -622,12 +674,14 @@ export class OpenAiCompatibleLocalAdapterRuntime implements LocalModelRuntime {
     model: string;
     messages: LocalRuntimeChatMessage[];
     temperature?: number;
+    maxTokens?: number;
   }) {
     return this.postJson(
       this.endpoint("/chat/completions", "Local chat/profiler"),
       {
         model: input.model,
         temperature: input.temperature ?? 0.2,
+        max_tokens: input.maxTokens,
         messages: input.messages,
       },
     );

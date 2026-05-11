@@ -5,6 +5,7 @@
 #include <climits>
 #include <cstdint>
 #include <exception>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -132,10 +133,18 @@ using LlamaSamplerPtr = std::unique_ptr<llama_sampler, LlamaSamplerDeleter>;
 
 std::once_flag g_backend_once;
 std::mutex g_model_cache_mutex;
-std::unordered_map<std::string, std::weak_ptr<llama_model>> g_model_cache;
+constexpr size_t kMaxStrongCachedModels = 2;
+std::unordered_map<std::string, LlamaModelPtr> g_model_cache;
+std::deque<std::string> g_model_cache_lru;
 
 void ensureBackendInitialized() {
   std::call_once(g_backend_once, []() { llama_backend_init(); });
+}
+
+void clearModelCache() {
+  std::lock_guard<std::mutex> lock(g_model_cache_mutex);
+  g_model_cache.clear();
+  g_model_cache_lru.clear();
 }
 
 int clampThreads(NSInteger threads) {
@@ -165,10 +174,11 @@ LlamaModelPtr loadOrGetModel(const std::string &modelPath) {
     std::lock_guard<std::mutex> lock(g_model_cache_mutex);
     auto it = g_model_cache.find(modelPath);
     if (it != g_model_cache.end()) {
-      if (auto cached = it->second.lock()) {
-        return cached;
-      }
-      g_model_cache.erase(it);
+      g_model_cache_lru.erase(
+          std::remove(g_model_cache_lru.begin(), g_model_cache_lru.end(), modelPath),
+          g_model_cache_lru.end());
+      g_model_cache_lru.push_back(modelPath);
+      return it->second;
     }
   }
 
@@ -190,6 +200,17 @@ LlamaModelPtr loadOrGetModel(const std::string &modelPath) {
   {
     std::lock_guard<std::mutex> lock(g_model_cache_mutex);
     g_model_cache[modelPath] = model;
+    g_model_cache_lru.erase(
+        std::remove(g_model_cache_lru.begin(), g_model_cache_lru.end(), modelPath),
+        g_model_cache_lru.end());
+    g_model_cache_lru.push_back(modelPath);
+    while (g_model_cache_lru.size() > kMaxStrongCachedModels) {
+      const std::string evicted = g_model_cache_lru.front();
+      g_model_cache_lru.pop_front();
+      if (evicted != modelPath) {
+        g_model_cache.erase(evicted);
+      }
+    }
   }
   return model;
 }
@@ -457,6 +478,12 @@ std::vector<float> embedTextNative(
 } // namespace
 
 @implementation JaiLlamaCppBridge
+
++ (void)releaseCachedModels {
+#if JAI_LLAMA_CPP_AVAILABLE
+  clearModelCache();
+#endif
+}
 
 + (nullable NSString *)completeChatWithModelPath:(NSString *)modelPath
                                           prompt:(NSString *)prompt

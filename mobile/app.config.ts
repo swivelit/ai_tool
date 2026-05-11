@@ -372,6 +372,7 @@ export default {
       package: "com.harishajahan.tamilai",
       googleServicesFile: "./google-services.json",
       edgeToEdgeEnabled: true,
+      softwareKeyboardLayoutMode: "resize",
       predictiveBackGestureEnabled: false,
       adaptiveIcon: {
         foregroundImage: "./assets/images/android-icon-foreground.png",

@@ -300,6 +300,31 @@ describe("native llama.cpp production build config", () => {
     expect(iosBridge).toContain("decodeFailureDetail(\"embedding input\"");
   });
 
+  it("uses bounded strong native model caches instead of weak-only caches", () => {
+    const androidRuntime = read(
+      "modules/jai-on-device-model/android/src/main/cpp/jai_llama_runtime.cpp",
+    );
+    const iosBridge = read("modules/jai-on-device-model/ios/JaiLlamaCppBridge.mm");
+    const androidEngine = read(
+      "modules/jai-on-device-model/android/src/main/java/com/harishajahan/jai/ondevice/JaiOnDeviceModelEngine.kt",
+    );
+    const iosModule = read("modules/jai-on-device-model/ios/JaiOnDeviceModelModule.swift");
+
+    for (const source of [androidRuntime, iosBridge]) {
+      expect(source).not.toContain("std::weak_ptr<llama_model>");
+      expect(source).toContain("std::unordered_map<std::string, LlamaModelPtr> g_model_cache");
+      expect(source).toContain("kMaxStrongCachedModels");
+      expect(source).toContain("g_model_cache_lru");
+      expect(source).toContain("clearModelCache");
+      expect(source).toMatch(/requested_?Max?_?Tokens/i);
+    }
+
+    expect(androidEngine).toContain("maxTokens");
+    expect(androidEngine).toContain("releaseCachedModels");
+    expect(iosModule).toContain("maxTokens");
+    expect(iosModule).toContain("releaseCachedModels");
+  });
+
   it("fails clearly for EEXPO_PUBLIC_ environment variable typos without printing values", () => {
     const result = runReleaseVerifier({
       EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID: "do-not-print-this-value",
