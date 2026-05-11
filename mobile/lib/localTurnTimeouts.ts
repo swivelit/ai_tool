@@ -47,41 +47,47 @@ export function getLocalTurnTimeoutMs(input: {
       "lite",
   ).toLowerCase();
 
-  let timeoutMs =
-    selectedTier === "pro" ? 240_000 : selectedTier === "standard" ? 180_000 : 150_000;
+  const isVoiceLike = source === "voice" || source === "handsfree";
+  let timeoutMs = isVoiceLike
+    ? selectedTier === "pro"
+      ? 120_000
+      : selectedTier === "standard"
+        ? 105_000
+        : 90_000
+    : selectedTier === "pro"
+      ? 60_000
+      : selectedTier === "standard"
+        ? 45_000
+        : 25_000;
 
-  if (source === "voice" || source === "handsfree") {
-    timeoutMs = Math.max(timeoutMs, 180_000);
-  }
-
-  if (deviceInfo.lowRamDevice) timeoutMs += 45_000;
-  if (deviceInfo.lowMemory) timeoutMs += 30_000;
-  if (deviceInfo.lowPowerMode) timeoutMs += 20_000;
+  if (deviceInfo.lowRamDevice) timeoutMs += isVoiceLike ? 15_000 : 10_000;
+  if (deviceInfo.lowMemory) timeoutMs += isVoiceLike ? 15_000 : 10_000;
+  if (deviceInfo.lowPowerMode) timeoutMs += 5_000;
 
   const batteryLevel = Number(deviceInfo.batteryLevel);
   if (Number.isFinite(batteryLevel) && batteryLevel > 0 && batteryLevel <= 0.2) {
-    timeoutMs += 15_000;
+    timeoutMs += 5_000;
   }
 
   const thermalState = String(deviceInfo.thermalState || "").toLowerCase();
   if (/(serious|critical|severe|fair|warning|hot)/.test(thermalState)) {
-    timeoutMs += 30_000;
+    timeoutMs += isVoiceLike ? 15_000 : 10_000;
   }
 
   const availableMemoryBytes = Number(deviceInfo.availableMemoryBytes);
   if (Number.isFinite(availableMemoryBytes) && availableMemoryBytes > 0) {
     if (availableMemoryBytes < 1_000_000_000) {
-      timeoutMs += 45_000;
+      timeoutMs += isVoiceLike ? 15_000 : 10_000;
     } else if (availableMemoryBytes < 2_000_000_000) {
-      timeoutMs += 30_000;
+      timeoutMs += 5_000;
     }
   }
 
-  return Math.min(Math.max(timeoutMs, 90_000), 300_000);
+  return Math.min(Math.max(timeoutMs, isVoiceLike ? 90_000 : 20_000), 150_000);
 }
 
 export function friendlyLocalTimeoutMessage() {
-  return "This is taking longer than expected on this phone. Please try again, or switch to a lighter local model.";
+  return "This is taking longer than expected on this phone. Please try again, or open model setup to check the local AI files.";
 }
 
 export function withLocalTimeout<T>(

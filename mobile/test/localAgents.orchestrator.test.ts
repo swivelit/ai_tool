@@ -70,6 +70,9 @@ vi.mock("expo-file-system/legacy", () => ({
   deleteAsync: vi.fn(async (path: string) => {
     mockedState.files.delete(path);
   }),
+  createDownloadResumable: vi.fn(() => {
+    throw new Error("Model download should not start during normal chat.");
+  }),
 }));
 
 vi.mock("../lib/localAgentBootstrap", () => ({
@@ -243,6 +246,25 @@ describe("local orchestrator and alignment", () => {
     expect(result.meta?.stageTimings || {}).not.toHaveProperty("alignment");
   });
 
+  it("answers identity instantly without touching the model runtime", async () => {
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 212,
+      message: "who are you?",
+      replyLanguage: "en",
+      userProfile: { assistantName: "Elli" },
+    });
+
+    expect(result.route).toBe("identity");
+    expect(result.source).toBe("local_rules");
+    expect(result.assistantText).toContain("Elli");
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(mockedState.fetchQueue).toHaveLength(0);
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("model_readiness");
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("local_reasoner");
+  });
+
   it("returns simple wellbeing support locally with no model or backend call", async () => {
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
     const result = await runLocalAssistantTurn({
@@ -259,6 +281,53 @@ describe("local orchestrator and alignment", () => {
     expect(mockedState.fetchQueue).toHaveLength(0);
     expect(global.fetch).not.toHaveBeenCalled();
     expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("returns setup-required locally when required model files are missing", async () => {
+    mockedState.files.set(
+      `${dataRoot}/config/models.json`,
+      JSON.stringify(
+        {
+          ...models,
+          runtime: {
+            ...models.runtime,
+            mode: "native_on_device",
+          },
+          modelDelivery: {
+            ...models.modelDelivery,
+            mode: "download_on_first_launch",
+          },
+          baseUrl: "",
+          timeoutMs: 1000,
+        },
+        null,
+        2,
+      ),
+    );
+
+    const FileSystem = await import("expo-file-system/legacy");
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 213,
+      message: "Explain recursion in simple local terms please",
+      replyLanguage: "en",
+    });
+
+    expect(result.route).toBe("setup_required");
+    expect(result.source).toBe("local_rules");
+    expect(result.assistantText).toContain("Local AI files are still setting up");
+    expect(result.meta?.setupRequired).toBe(true);
+    expect(result.meta?.source).toBe("local_rules");
+    expect(result.meta?.selectedTier).toBe("lite");
+    expect(result.meta?.missingModelIds).toEqual(
+      expect.arrayContaining([
+        "google/gemma-3-4b-it",
+        "Qwen/Qwen3-Embedding-0.6B",
+      ]),
+    );
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect((FileSystem as any).createDownloadResumable).not.toHaveBeenCalled();
   });
 
   it("selects reasoner models only from the selected installed tier", async () => {
@@ -664,6 +733,10 @@ describe("local orchestrator and alignment", () => {
     expect(result.route).toBe("local_answer");
     expect(result.assistantText).toContain("Compilers");
     expect(result.meta?.tools).toBeUndefined();
+    expect(result.meta?.profiler?.ran).toBe(false);
+    expect(result.meta?.profiler?.source).toBe("skipped");
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("profiler");
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("semantic_cache_write");
     const completionPayloads = ((global.fetch as any).mock.calls as any[])
       .map((call) => JSON.parse(String(call[1]?.body || "{}")))
       .filter((payload) => Array.isArray(payload.messages));
@@ -688,7 +761,6 @@ describe("local orchestrator and alignment", () => {
         fallback_allowed: false,
       }),
     );
-    queueJsonResponse({ data: [{ embedding: unitEmbedding() }] });
     queueCompletion("Lite tier answer for a complex offline prompt.");
 
     const { runLocalAssistantTurn } = await import("../lib/localAgents");

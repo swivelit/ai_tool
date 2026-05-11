@@ -582,6 +582,45 @@ describe("API client contracts", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("answers identity through apiPost quick replies without backend fetch", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: { currentUser: null },
+    }));
+    const runLocalAssistantTurn = vi.fn(async () => {
+      throw new Error("localAgents should not be imported for quick replies");
+    });
+    vi.doMock("../lib/localAgents", () => ({ runLocalAssistantTurn }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "Backend should not run." } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    const payload = await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "who are you?",
+      reply_language: "en",
+    });
+
+    expect(payload.ok).toBe(true);
+    expect(payload.meta.source).toBe("local_quick_reply");
+    expect(payload.pipeline.route_taken).toBe("identity");
+    expect(payload.pipeline.direct_answer_source).toBe("local_rules");
+    expect(payload.assistant.text).toContain("local-first AI assistant");
+    expect(runLocalAssistantTurn).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("keeps guest/no-profile local chat working and uses English for English input", async () => {
     mockCachedProfile(null);
     vi.doMock("expo-constants", () => ({

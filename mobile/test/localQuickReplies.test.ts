@@ -4,6 +4,10 @@ import { tryBuildQuickLocalReply } from "../lib/localQuickReplies";
 
 describe("local quick replies", () => {
   it.each([
+    ["who are you?", "identity"],
+    ["can you help me?", "capabilities"],
+    ["i feel anxious", "wellbeing_support"],
+    ["vanakkam", "fast_greeting"],
     ["What are you up to?", "small_talk"],
     ["what are you doing", "small_talk"],
     ["are you there?", "small_talk"],
@@ -13,11 +17,13 @@ describe("local quick replies", () => {
     expect(tryBuildQuickLocalReply({ message })?.route).toBe(route);
   });
 
-  it("does not turn a task prompt into generic small talk", () => {
-    expect(
-      tryBuildQuickLocalReply({
-        message: "what are you doing with my reminders tomorrow",
-      }),
-    ).toBeNull();
+  it.each([
+    "what are you doing with my reminders tomorrow",
+    "remind me tomorrow",
+    "what is the weather tomorrow",
+    "summarize this",
+    "write code for me",
+  ])("does not quick-route task prompt: %s", (message) => {
+    expect(tryBuildQuickLocalReply({ message })).toBeNull();
   });
 });

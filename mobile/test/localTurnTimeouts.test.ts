@@ -3,19 +3,23 @@ import { describe, expect, it } from "vitest";
 import { getLocalTurnTimeoutMs } from "../lib/localTurnTimeouts";
 
 describe("local turn timeouts", () => {
-  it("uses a text default longer than the previous 60s timeout", () => {
-    expect(getLocalTurnTimeoutMs({ source: "text" })).toBeGreaterThan(60_000);
+  it("keeps normal text well below the old 150s timeout", () => {
+    const timeout = getLocalTurnTimeoutMs({ source: "text", selectedTier: "lite" });
+
+    expect(timeout).toBeLessThan(60_000);
+    expect(timeout).toBeGreaterThanOrEqual(20_000);
   });
 
-  it("keeps voice timeouts greater than or equal to text timeouts", () => {
+  it("keeps voice timeouts longer than text timeouts", () => {
     const text = getLocalTurnTimeoutMs({ source: "text", selectedTier: "lite" });
     const voice = getLocalTurnTimeoutMs({ source: "voice", selectedTier: "lite" });
 
-    expect(voice).toBeGreaterThanOrEqual(text);
-    expect(voice).toBeGreaterThanOrEqual(180_000);
+    expect(voice).toBeGreaterThan(text);
+    expect(voice).toBeGreaterThanOrEqual(90_000);
+    expect(voice).toBeLessThanOrEqual(150_000);
   });
 
-  it("increases or preserves timeout on constrained devices", () => {
+  it("increases or preserves timeout on constrained devices without exceeding the cap", () => {
     const base = getLocalTurnTimeoutMs({ source: "text", selectedTier: "lite" });
     const constrained = getLocalTurnTimeoutMs({
       source: "text",
@@ -31,6 +35,7 @@ describe("local turn timeouts", () => {
     });
 
     expect(constrained).toBeGreaterThanOrEqual(base);
+    expect(constrained).toBeLessThanOrEqual(150_000);
   });
 
   it("gives standard and pro tiers longer text timeouts than lite", () => {

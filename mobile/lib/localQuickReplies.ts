@@ -1,5 +1,6 @@
 export type QuickLocalRoute =
   | "fast_greeting"
+  | "identity"
   | "small_talk"
   | "wellbeing_support"
   | "capabilities"
@@ -28,10 +29,18 @@ const QUICK_PHRASES: Record<QuickLocalRoute, string[]> = {
     "hi",
     "hello",
     "hey",
+    "namaste",
     "vanakkam",
     "good morning",
     "good evening",
     "good night",
+  ],
+  identity: [
+    "who are you",
+    "what are you",
+    "what is your name",
+    "whats your name",
+    "what's your name",
   ],
   small_talk: [
     "what are you up to",
@@ -45,6 +54,19 @@ const QUICK_PHRASES: Record<QuickLocalRoute, string[]> = {
     "are you awake",
   ],
   wellbeing_support: [
+    "i am sad",
+    "im sad",
+    "i'm sad",
+    "i feel sad",
+    "i am anxious",
+    "im anxious",
+    "i'm anxious",
+    "i feel anxious",
+    "i am stressed",
+    "im stressed",
+    "i'm stressed",
+    "i feel stressed",
+    "overwhelmed",
     "tired",
     "so tired",
     "exhausted",
@@ -56,6 +78,9 @@ const QUICK_PHRASES: Record<QuickLocalRoute, string[]> = {
   ],
   capabilities: [
     "what can you do",
+    "what can you help with",
+    "can you help me",
+    "help",
     "help me",
     "how can you help",
     "what are your features",
@@ -66,6 +91,7 @@ const QUICK_PHRASES: Record<QuickLocalRoute, string[]> = {
 
 const ROUTE_TITLES: Record<QuickLocalRoute, string> = {
   fast_greeting: "Greeting",
+  identity: "Identity",
   small_talk: "Chat",
   wellbeing_support: "Wellbeing",
   capabilities: "What I Can Do",
@@ -79,10 +105,13 @@ const TASK_CONTEXT_WORDS = [
   "task",
   "tasks",
   "schedule",
+  "scheduled",
   "calendar",
+  "remind",
   "tomorrow",
   "today",
   "tonight",
+  "later",
   "plan",
   "plans",
   "design",
@@ -97,7 +126,32 @@ const TASK_CONTEXT_WORDS = [
   "search",
   "weather",
   "explain",
+  "explanation",
   "summarize",
+  "summary",
+  "write",
+  "writing",
+  "code",
+  "coding",
+  "program",
+  "payment",
+  "payments",
+  "pay",
+  "upi",
+  "bank",
+  "file",
+  "files",
+  "document",
+  "documents",
+  "doc",
+  "docs",
+  "app",
+  "open",
+  "close",
+  "send",
+  "email",
+  "call",
+  "message",
 ];
 
 function normalizeQuickText(value?: string | null) {
@@ -180,6 +234,12 @@ function routeMatches(route: QuickLocalRoute, tokens: string[]) {
     });
   }
 
+  if (route === "identity") {
+    return phrases.some((phrase) =>
+      isShortPhraseMatch(tokens, phrase),
+    );
+  }
+
   if (route === "small_talk") {
     return phrases.some((phrase) =>
       isShortPhraseMatch(tokens, phrase, {
@@ -195,7 +255,8 @@ function routeMatches(route: QuickLocalRoute, tokens: string[]) {
       isShortPhraseMatch(tokens, phrase, {
         allowContainingPhrase: true,
         blockTaskContext: true,
-        extraTokensAllowed: phrase === "help me" ? 0 : 3,
+        extraTokensAllowed:
+          phrase === "help" || phrase === "help me" ? 0 : 3,
       }),
     );
   }
@@ -217,6 +278,10 @@ function englishReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
       return userName
         ? `Hi ${userName}. I'm here and ready to help.`
         : "Hi. I'm here and ready to help.";
+    case "identity":
+      return assistantName
+        ? `I'm ${assistantName}, your local-first AI assistant on this phone.`
+        : "I'm your local-first AI assistant on this phone.";
     case "small_talk":
       return "I'm right here with you. I can help you plan, remember things, answer from local memory, or just chat. What would you like to do?";
     case "wellbeing_support":
@@ -242,6 +307,8 @@ function tamilReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
       return userName
         ? `வணக்கம் ${userName}. நான் உதவ தயாராக இருக்கிறேன்.`
         : "வணக்கம். நான் உதவ தயாராக இருக்கிறேன்.";
+    case "identity":
+      return "நான் இந்த phone-லேயே local-first ஆக இயங்கும் உங்கள் AI assistant.";
     case "small_talk":
       return "நான் இங்கேதான் இருக்கிறேன். திட்டமிட, நினைவூட்டல்கள் உருவாக்க, local memory-லிருந்து பதில் சொல்ல, அல்லது சும்மா chat செய்ய உதவலாம். என்ன செய்யலாம்?";
     case "wellbeing_support":
@@ -274,6 +341,7 @@ export function tryBuildQuickLocalReply(
   const tokens = normalized.split(/\s+/).filter(Boolean);
   const routeOrder: QuickLocalRoute[] = [
     "wellbeing_support",
+    "identity",
     "capabilities",
     "thanks",
     "goodbye",

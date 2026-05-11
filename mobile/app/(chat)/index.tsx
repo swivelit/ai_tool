@@ -1383,6 +1383,29 @@ export default function Home() {
     return raw || "I couldn’t finish that. Please try again.";
   }
 
+  function chatResponseSetupRequired(response: BackendChatResponse) {
+    return Boolean(
+      (response as any)?.meta?.setupRequired ||
+        (response as any)?.pipeline?.meta?.setupRequired,
+    );
+  }
+
+  function maybePromptModelSetup(response: BackendChatResponse) {
+    if (!chatResponseSetupRequired(response)) return;
+    const assistantText = String(response?.assistant?.text || "").trim();
+    Alert.alert(
+      "Local AI setup",
+      assistantText || friendlyLocalTimeoutMessage(),
+      [
+        { text: "Not now", style: "cancel" },
+        {
+          text: "Open setup",
+          onPress: () => router.push("/model-setup" as any),
+        },
+      ],
+    );
+  }
+
   function warnChatFailure(error: unknown, requestId: string, source: ChatRequestSource) {
     if (!__DEV__) return;
     const message = error instanceof Error ? error.message : String(error || "");
@@ -1559,6 +1582,7 @@ export default function Home() {
       clearPendingAssistant(requestId);
       const mergedHistory = await refreshHistoryAndSessions([nextItem]);
       await attachItemToCurrentChat(nextItem, mergedHistory);
+      maybePromptModelSetup(response);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       if (

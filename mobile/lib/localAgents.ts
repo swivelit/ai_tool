@@ -7,8 +7,8 @@ import {
   ModelDeliveryConfig,
   ModelInstallStatus,
   ModelTierName,
-  ensureRequiredModelsInstalled,
   getModelDeliveryMode,
+  getModelInstallStatus,
   getRequiredModelIdsForTier,
   isModelInstallError,
   selectModelTier,
@@ -19,6 +19,7 @@ import {
 } from "./localAgentBootstrap";
 import {
   OPENAI_FALLBACK_SIGNAL,
+  NativeOnDeviceRuntimeUnavailableError,
   createLocalModelRuntime,
   isNativeOnDeviceRuntimeUnavailableError,
   isLoopbackLocalRuntimeBaseUrl,
@@ -42,6 +43,7 @@ type ChatRole = "system" | "user" | "assistant";
 
 type OrchestratorRoute =
   | "fast_greeting"
+  | "identity"
   | "small_talk"
   | "wellbeing_support"
   | "capabilities"
@@ -53,6 +55,7 @@ type OrchestratorRoute =
   | "reminder_create"
   | "weather"
   | "local_answer"
+  | "setup_required"
   | "fallback_openai";
 
 type LocalUserProfile = {
@@ -443,6 +446,7 @@ type ModelRuntimeTierOptions = {
   proOptIn?: boolean;
   selectedTier?: ModelTierName;
   installedModelIds?: string[];
+  modelsReady?: boolean;
 };
 
 type MemoryRules = {
@@ -2349,6 +2353,15 @@ async function localChatRaw(
   maxTokens: number = LOCAL_TASK_MAX_TOKENS.localAnswerLite,
 ) {
   const cfg = await getModelConfig();
+  if (
+    isNativeOnDeviceModelConfig(cfg) &&
+    getModelDeliveryMode(cfg) === "download_on_first_launch" &&
+    runtimeOptions.modelsReady === false
+  ) {
+    throw new NativeOnDeviceRuntimeUnavailableError(
+      "Required local model files are not ready. Normal chat must not start model downloads.",
+    );
+  }
   const runtime = createLocalModelRuntime({
     primary: cfg.runtime?.primary,
     mode: cfg.runtime?.mode,
@@ -2415,6 +2428,15 @@ async function embedTexts(
   const cfg = await getModelConfig();
   const baseUrl = normalizeLocalModelBaseUrl(cfg.baseUrl);
   const nativeMode = isNativeOnDeviceModelConfig(cfg);
+  if (
+    nativeMode &&
+    getModelDeliveryMode(cfg) === "download_on_first_launch" &&
+    runtimeOptions.modelsReady === false
+  ) {
+    throw new NativeOnDeviceRuntimeUnavailableError(
+      "Required local embedding model files are not ready. Normal chat must not start model downloads.",
+    );
+  }
 
   try {
     const runtime = createLocalModelRuntime({
@@ -5257,7 +5279,247 @@ function modelTierOptionsFromInstallStatus(
     ...options,
     selectedTier: status.selectedTier,
     installedModelIds: installedModelIdsFromStatus(status),
+    modelsReady: status.ready,
   };
+}
+
+function isNativeDownloadRuntime(cfg: LocalModelConfig) {
+  return (
+    String(cfg.runtime?.mode || "native_on_device") === "native_on_device" &&
+    getModelDeliveryMode(cfg) === "download_on_first_launch"
+  );
+}
+
+function modelInstallRecordSummary(record: ModelInstallStatus["required"][number]) {
+  return {
+    id: record.id,
+    name: record.fileName || record.id,
+    fileName: record.fileName,
+    reason: record.reason || (record.exists ? "invalid" : "missing"),
+    bytesOnDisk: record.bytesOnDisk,
+    expectedBytes: record.expectedBytes ?? null,
+  };
+}
+
+async function getNormalChatModelReadiness(
+  cfg: LocalModelConfig,
+  opts: {
+    modelTier?: ModelTierName;
+    deviceInfo?: DeviceCapabilitySnapshot;
+    proOptIn?: boolean;
+  },
+) {
+  if (!isNativeDownloadRuntime(cfg)) {
+    const selectedTier = selectedTierForRuntime(cfg, opts);
+    return {
+      required: false,
+      ready: true,
+      selectedTier,
+      installedModelIds: [] as string[],
+      missingModels: [] as ReturnType<typeof modelInstallRecordSummary>[],
+      invalidModels: [] as ReturnType<typeof modelInstallRecordSummary>[],
+      status: null as ModelInstallStatus | null,
+    };
+  }
+
+  let status: ModelInstallStatus;
+  try {
+    status = await getModelInstallStatus({
+      config: cfg,
+      modelTier: opts.modelTier,
+      deviceInfo: opts.deviceInfo,
+      proOptIn: opts.proOptIn,
+      skipHashVerification: true,
+    });
+  } catch (error) {
+    const selectedTier = selectedTierForRuntime(cfg, opts);
+    return {
+      required: true,
+      ready: false,
+      selectedTier,
+      installedModelIds: [] as string[],
+      missingModels: [] as ReturnType<typeof modelInstallRecordSummary>[],
+      invalidModels: [
+        {
+          id: "local_model_setup",
+          name: "Local model setup",
+          fileName: "Local model setup",
+          reason: error instanceof Error ? error.message : String(error || "setup check failed"),
+          bytesOnDisk: 0,
+          expectedBytes: null,
+        },
+      ],
+      status: null as ModelInstallStatus | null,
+    };
+  }
+
+  return {
+    required: true,
+    ready: status.ready,
+    selectedTier: status.selectedTier,
+    installedModelIds: installedModelIdsFromStatus(status),
+    missingModels: status.missing.map(modelInstallRecordSummary),
+    invalidModels: status.invalid.map(modelInstallRecordSummary),
+    status,
+  };
+}
+
+function canServeWithRulesOrToolsBeforeModelSetup(
+  message: string,
+  earlyDecision: OrchestratorDecision | null,
+) {
+  if (isMemoryUpdateToolIntent(normalizeText(message))) {
+    return true;
+  }
+
+  return Boolean(
+    earlyDecision &&
+      ["calendar_query", "reminder_create", "weather", "profile"].includes(
+        earlyDecision.route,
+      ),
+  );
+}
+
+function setupRequiredAssistantText(replyLanguage: ReplyLanguage) {
+  const english =
+    "Local AI files are still setting up on this phone. Please open the model setup screen and let the download finish. I can still answer simple messages instantly while setup continues.";
+  if (replyLanguage === "ta") {
+    return "இந்த phone-ல local AI files இன்னும் setup ஆகிக்கொண்டிருக்கிறது. Model setup screen-ஐ திறந்து download முடிக்கவும். Setup நடக்கும்போதும் simple messages-க்கு நான் உடனே பதில் சொல்ல முடியும்.";
+  }
+  return english;
+}
+
+async function buildSetupRequiredTurn(opts: {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  cfg: LocalModelConfig;
+  readiness: Awaited<ReturnType<typeof getNormalChatModelReadiness>>;
+  stageTimings: Record<string, number>;
+}): Promise<LocalAssistantTurnResult> {
+  const assistantText = setupRequiredAssistantText(opts.replyLanguage);
+  const englishText = setupRequiredAssistantText("en");
+  const affectedModels = opts.readiness.missingModels.concat(
+    opts.readiness.invalidModels,
+  );
+  const decision: OrchestratorDecision = {
+    route: "setup_required",
+    reason: "local_model_setup_required",
+    confidence: 1,
+    needsClarification: false,
+    clarificationQuestion: "",
+    needsLiveData: false,
+    selectedModel: "rules",
+    fallbackAllowed: false,
+  };
+
+  await appendConversation(opts.userId, "user", opts.message);
+  await appendConversation(opts.userId, "assistant", assistantText);
+  await appendRouteDecisionLog(opts.userId, opts.message, decision, {
+    routeUsed: "setup_required",
+    source: "local_rules",
+    setupRequired: true,
+    selectedTier: opts.readiness.selectedTier,
+    missingModels: opts.readiness.missingModels,
+    invalidModels: opts.readiness.invalidModels,
+    fallbackPolicy: {
+      backendRole: opts.cfg.runtime?.backendRole || "fallback_only",
+      openAiPolicy: opts.cfg.runtime?.openAiPolicy || "fallback_only",
+    },
+  });
+
+  return {
+    route: "setup_required",
+    source: "local_rules",
+    cacheHit: false,
+    assistantText,
+    englishText,
+    intent: "clarify",
+    title: "Model Setup",
+    details: assistantText,
+    profileSummary: "",
+    meta: {
+      source: "local_rules",
+      route: "setup_required",
+      setupRequired: true,
+      selectedTier: opts.readiness.selectedTier,
+      missingModelIds: opts.readiness.missingModels.map((model) => model.id),
+      invalidModelIds: opts.readiness.invalidModels.map((model) => model.id),
+      missingModels: opts.readiness.missingModels,
+      invalidModels: opts.readiness.invalidModels,
+      affectedModels,
+      modelDeliveryMode: getModelDeliveryMode(opts.cfg),
+      storageRoot: opts.readiness.status?.storageRoot,
+      classified: decision,
+      orchestratorDecision: decision,
+      stageTimings: opts.stageTimings,
+      runtime: {
+        primary: opts.cfg.runtime?.primary || "phone_local",
+        mode: opts.cfg.runtime?.mode || "native_on_device",
+        backendRole: opts.cfg.runtime?.backendRole || "fallback_only",
+        openAiPolicy: opts.cfg.runtime?.openAiPolicy || "fallback_only",
+        nativeBackend:
+          opts.cfg.native?.backend || opts.cfg.runtime?.nativeBackend || "llama_cpp",
+        nativeModuleName:
+          opts.cfg.native?.bridgeModuleName ||
+          opts.cfg.runtime?.nativeModuleName ||
+          "JaiOnDeviceModel",
+        modelRoot: opts.cfg.native?.modelRoot || "document://models",
+        modelDeliveryMode: getModelDeliveryMode(opts.cfg),
+        selectedModelTier: opts.readiness.selectedTier,
+      },
+    },
+  };
+}
+
+function isExplicitProfileOrMemoryUpdate(message: string) {
+  const normalized = normalizeText(message);
+  return (
+    isMemoryUpdateToolIntent(normalized) ||
+    /\b(my name is|call me|i prefer|i work as|i live in|i am living in|my location is|my city is|my place is|i moved to|my goal is|i speak|i use|i study|i am studying|i like|i love|i enjoy|i usually (?:wake|sleep|work|study)|i have (?:diabetes|blood pressure|allergy|asthma|thyroid|kidney)|i am allergic to|i take medicine for)\b/.test(
+      normalized,
+    )
+  );
+}
+
+type NormalChatProfilerResult = Awaited<
+  ReturnType<typeof runProfilerExtractionInsideNormalChat>
+>;
+
+function skippedNormalChatProfiler(
+  answers: Record<string, string | string[]>,
+): NormalChatProfilerResult {
+  return {
+    ran: false,
+    answers,
+    state: { status: "idle", history: [] },
+    source: "skipped",
+    missingSlots: [],
+    updates: {},
+  } as NormalChatProfilerResult;
+}
+
+function scheduleBestEffortLocalWork(
+  label: string,
+  task: () => Promise<unknown> | unknown,
+) {
+  if (
+    String((globalThis as any)?.process?.env?.NODE_ENV || "").toLowerCase() ===
+    "test"
+  ) {
+    return;
+  }
+  const run = () => {
+    Promise.resolve()
+      .then(task)
+      .catch((error) => {
+        if (Boolean((globalThis as any).__DEV__)) {
+          console.warn(`[localAgents:${label}]`, error);
+        }
+      });
+  };
+  const timer = setTimeout(run, 0);
+  (timer as any)?.unref?.();
 }
 
 function isReasonerModelAvailableForTier(
@@ -5386,6 +5648,7 @@ function quickLocalDecision(
 
 const QUICK_ROUTE_CANONICAL_MESSAGE: Partial<Record<OrchestratorRoute, string>> = {
   fast_greeting: "hello",
+  identity: "who are you",
   small_talk: "what are you up to",
   wellbeing_support: "tired",
   capabilities: "what can you do",
@@ -5634,6 +5897,7 @@ function sanitizeDecision(
   const route = String(raw.route || "local_answer") as OrchestratorRoute;
   const safeRoute: OrchestratorRoute = [
     "fast_greeting",
+    "identity",
     "small_talk",
     "wellbeing_support",
     "capabilities",
@@ -5645,6 +5909,7 @@ function sanitizeDecision(
     "reminder_create",
     "weather",
     "local_answer",
+    "setup_required",
     "fallback_openai",
   ].includes(route)
     ? route
@@ -5840,6 +6105,9 @@ async function lookupSemanticCache(
   }
 
   const profileMemory = isProfileMemoryQuestion(message);
+  if (runtimeOptions.modelsReady === false) {
+    return null;
+  }
   // Important: compare the actual user message against cached questions.
   // Do not inject aliases here, because aliases can bypass the similarity
   // threshold. The exact check above is a narrow deterministic local cache hit.
@@ -6879,45 +7147,61 @@ export async function runLocalAssistantTurn(opts: {
     } satisfies LocalAssistantTurnResult;
   }
 
-  await timeStage("ensure_models", async () => {
-    if (
-      String(cfg.runtime?.mode || "native_on_device") === "native_on_device" &&
-      getModelDeliveryMode(cfg) === "download_on_first_launch"
-    ) {
-      const status = await ensureRequiredModelsInstalled({
-        config: cfg,
-        modelTier: opts.modelTier,
-        deviceInfo: opts.deviceInfo,
-        proOptIn: opts.proOptIn,
-      });
-      modelRuntimeOptions = modelTierOptionsFromInstallStatus(
-        modelRuntimeOptions,
-        status,
-      );
-    }
-  });
+  const readiness = await timeStage("model_readiness", () =>
+    getNormalChatModelReadiness(cfg, {
+      modelTier: opts.modelTier,
+      deviceInfo: opts.deviceInfo,
+      proOptIn: opts.proOptIn,
+    }),
+  );
+  if (readiness.status) {
+    modelRuntimeOptions = modelTierOptionsFromInstallStatus(
+      modelRuntimeOptions,
+      readiness.status,
+    );
+  } else {
+    modelRuntimeOptions = {
+      ...modelRuntimeOptions,
+      selectedTier: readiness.selectedTier,
+      installedModelIds: readiness.installedModelIds,
+      modelsReady: readiness.ready,
+    };
+  }
+
+  if (
+    readiness.required &&
+    !readiness.ready &&
+    !canServeWithRulesOrToolsBeforeModelSetup(message, earlyRuleDecision)
+  ) {
+    return buildSetupRequiredTurn({
+      userId,
+      message,
+      replyLanguage,
+      cfg,
+      readiness,
+      stageTimings,
+    });
+  }
 
   await appendConversation(userId, "user", message);
 
   const registry = await getAgentRegistry();
 
   let answers = await loadAnswers(userId);
-  const normalChatProfiler = await timeStage("profiler", () =>
-    runProfilerExtractionInsideNormalChat({
-      userId,
-      message,
-      replyLanguage,
-      answers,
-      userProfile: opts.userProfile,
-    }),
-  );
-  answers = normalChatProfiler.answers;
-  const profileSummary =
-    (await loadSummary(userId)) ||
-    (await buildProfileSummaryLocally(userId, {
-      ...opts.userProfile,
-      replyLanguage,
-    }));
+  let normalChatProfiler = skippedNormalChatProfiler(answers);
+  if (isExplicitProfileOrMemoryUpdate(message)) {
+    normalChatProfiler = await timeStage("profiler", () =>
+      runProfilerExtractionInsideNormalChat({
+        userId,
+        message,
+        replyLanguage,
+        answers,
+        userProfile: opts.userProfile,
+      }),
+    );
+    answers = normalChatProfiler.answers;
+  }
+  const profileSummary = await loadSummary(userId);
 
   const semantic = await timeStage("semantic_cache", () =>
     lookupSemanticCache(userId, message, modelRuntimeOptions),
@@ -6949,28 +7233,30 @@ export async function runLocalAssistantTurn(opts: {
     const assistantText =
       aligned.final || aligned.english || semantic.canonicalAnswer;
     await appendConversation(userId, "assistant", assistantText);
-    await recordSemanticCacheHit(userId, {
-      userId,
-      sourceQuestion: message,
-      matchedQuestion: semantic.sourceQuestion,
-      similarity: semantic.score,
-      confidence: semantic.confidence ?? semantic.score,
-      timestamp: nowIso(),
-      alignmentReapplied: needsAlignmentReapply,
-      route: semantic.route,
-    });
-    await safeRecordTrainingSample("memory", {
-      input: message,
-      expectedOutput: assistantText,
-      label: "semantic_cache_hit",
-      metadata: {
+    scheduleBestEffortLocalWork("semantic_cache_hit", async () => {
+      await recordSemanticCacheHit(userId, {
         userId,
-        route: semantic.route,
-        score: semantic.score,
-        confidence: semantic.confidence ?? semantic.score,
+        sourceQuestion: message,
         matchedQuestion: semantic.sourceQuestion,
+        similarity: semantic.score,
+        confidence: semantic.confidence ?? semantic.score,
+        timestamp: nowIso(),
         alignmentReapplied: needsAlignmentReapply,
-      },
+        route: semantic.route,
+      });
+      await safeRecordTrainingSample("memory", {
+        input: message,
+        expectedOutput: assistantText,
+        label: "semantic_cache_hit",
+        metadata: {
+          userId,
+          route: semantic.route,
+          score: semantic.score,
+          confidence: semantic.confidence ?? semantic.score,
+          matchedQuestion: semantic.sourceQuestion,
+          alignmentReapplied: needsAlignmentReapply,
+        },
+      });
     });
     return {
       route: "semantic_cache",
@@ -7040,18 +7326,20 @@ export async function runLocalAssistantTurn(opts: {
         ),
   );
 
-  await safeRecordTrainingSample("orchestrator", {
-    input: message,
-    expectedOutput: JSON.stringify(decision),
-    label: fastDecision ? "fast_rule_route" : "model_route",
-    metadata: {
-      userId,
-      replyLanguage,
-      profileSummary,
-      availableToolAgents: registry.agents.toolAgents,
-      selectedModel: preferredSelectedModel,
-      selectedModelTier: modelRuntimeOptions.selectedTier,
-    },
+  scheduleBestEffortLocalWork("orchestrator_training", () => {
+    return safeRecordTrainingSample("orchestrator", {
+      input: message,
+      expectedOutput: JSON.stringify(decision),
+      label: fastDecision ? "fast_rule_route" : "model_route",
+      metadata: {
+        userId,
+        replyLanguage,
+        profileSummary,
+        availableToolAgents: registry.agents.toolAgents,
+        selectedModel: preferredSelectedModel,
+        selectedModelTier: modelRuntimeOptions.selectedTier,
+      },
+    });
   });
 
   let route = decision.route;
@@ -7155,6 +7443,7 @@ export async function runLocalAssistantTurn(opts: {
     english = quickDraft?.englishText || draft;
     final = draft;
   } else if (
+    route === "identity" ||
     route === "small_talk" ||
     route === "capabilities" ||
     route === "thanks" ||
@@ -7488,7 +7777,7 @@ export async function runLocalAssistantTurn(opts: {
     route !== "reminder_create" &&
     route !== "clarify"
   ) {
-    await timeStage("semantic_cache_write", () =>
+    scheduleBestEffortLocalWork("semantic_cache_write", () =>
       writeSemanticCache(
         userId,
         message,
@@ -7505,37 +7794,53 @@ export async function runLocalAssistantTurn(opts: {
     );
   }
 
-  await safeRecordTrainingSample("alignment", {
-    input: JSON.stringify({
-      route,
-      draft,
-      english,
-      replyLanguage,
-      profileSummary,
-      answers,
-      decision,
-    }),
-    expectedOutput: assistantText,
-    label: route,
-    metadata: {
-      userId,
-      source,
-      decision,
-      ...(toolPlan?.steps.length
-        ? {
-            toolPlan,
-            toolResults,
-            toolVerification,
-          }
-        : {}),
-      ...(ragResponseMetadata ? { rag: ragResponseMetadata } : {}),
-    },
+  scheduleBestEffortLocalWork("alignment_training", () => {
+    return safeRecordTrainingSample("alignment", {
+      input: JSON.stringify({
+        route,
+        draft,
+        english,
+        replyLanguage,
+        profileSummary,
+        answers,
+        decision,
+      }),
+      expectedOutput: assistantText,
+      label: route,
+      metadata: {
+        userId,
+        source,
+        decision,
+        ...(toolPlan?.steps.length
+          ? {
+              toolPlan,
+              toolResults,
+              toolVerification,
+            }
+          : {}),
+        ...(ragResponseMetadata ? { rag: ragResponseMetadata } : {}),
+      },
+    });
   });
 
+  if (!isExplicitProfileOrMemoryUpdate(message)) {
+    scheduleBestEffortLocalWork("deferred_profile_extraction", () =>
+      runProfilerExtractionInsideNormalChat({
+        userId,
+        message,
+        replyLanguage,
+        answers,
+        userProfile: opts.userProfile,
+      }).then(() => undefined),
+    );
+  }
+
   if (shouldAttemptLocalMemoryConsolidation(userId)) {
-    await consolidateLocalMemoryOnIdle(userId, {
-      userProfile: { ...opts.userProfile, replyLanguage },
-    }).catch(() => ({ ok: false }));
+    scheduleBestEffortLocalWork("memory_consolidation", () =>
+      consolidateLocalMemoryOnIdle(userId, {
+        userProfile: { ...opts.userProfile, replyLanguage },
+      }).then(() => undefined),
+    );
   }
 
   return {

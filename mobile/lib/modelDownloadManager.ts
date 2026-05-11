@@ -159,6 +159,7 @@ export type EnsureModelsOptions = {
   retries?: number;
   fileSystem?: ModelFileSystem;
   hashFileAsync?: (fileUri: string) => Promise<string>;
+  skipHashVerification?: boolean;
   modelTier?: ModelTierName;
   deviceInfo?: DeviceCapabilitySnapshot;
   proOptIn?: boolean;
@@ -849,7 +850,7 @@ async function validateInstalledFile(
   }
 
   const expectedSha = normalizeSha(entry.sha256);
-  if (expectedSha) {
+  if (expectedSha && options.skipHashVerification !== true) {
     const hashFileAsync = options.hashFileAsync || defaultHashFileSha256Async;
     const actualSha = normalizeSha(await hashFileAsync(fileUri));
     if (actualSha !== expectedSha) {
@@ -1576,7 +1577,15 @@ export async function resolveInstalledNativeModelAssets(
     return Object.keys(tierAssets).length ? tierAssets : assets;
   }
 
-  const status = await ensureRequiredModelsInstalled(options);
+  const status = await getModelInstallStatus(options);
+  if (!status.ready) {
+    throw new ModelInstallError(
+      `Required local GGUF models are not ready: ${status.missing
+        .concat(status.invalid)
+        .map((entry) => `${entry.id} (${entry.reason || "missing"})`)
+        .join(", ")}`,
+    );
+  }
   const installed = new Map(status.required.concat(status.optional).map((entry) => [entry.id, entry]));
   const resolvedAssets: Record<string, NativeOnDeviceModelAsset> = {};
   for (const [modelId, asset] of Object.entries(assets)) {

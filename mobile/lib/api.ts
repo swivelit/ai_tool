@@ -1498,6 +1498,16 @@ async function handleLocalChat(
       source: "local_chat_proxy",
       cacheHit: Boolean(turn.cacheHit),
       route: turn.route,
+      ...(turn.meta?.setupRequired
+        ? {
+            setupRequired: true,
+            selectedTier: turn.meta.selectedTier,
+            missingModelIds: turn.meta.missingModelIds,
+            invalidModelIds: turn.meta.invalidModelIds,
+            missingModels: turn.meta.missingModels,
+            invalidModels: turn.meta.invalidModels,
+          }
+        : {}),
       ...(turn.cloudFallback ? { cloudFallback: turn.cloudFallback } : {}),
       created_at: createdAt,
     },
