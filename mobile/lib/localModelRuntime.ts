@@ -2,6 +2,7 @@ import {
   DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
   NativeOnDeviceModelAsset,
   NativeOnDeviceModelBridge,
+  NativeRuntimeDiagnostics,
   getNativeOnDeviceModelBridge,
   hasUsableNativeOnDeviceModelBridge,
   nativeOnDeviceBridgeMissingMessage,
@@ -100,6 +101,7 @@ export type LocalRuntimeInfo = {
   modelRoot?: string;
   modelDeliveryMode?: ModelDeliveryMode;
   modelCount?: number;
+  runtimeDiagnostics?: NativeRuntimeDiagnostics;
   developmentOnly?: boolean;
   note: string;
 };
@@ -259,6 +261,55 @@ function getNativeRuntimeConfigError(
   return "";
 }
 
+function nativeRuntimeUnavailableReason(
+  featureName: string,
+  moduleName: string,
+  diagnostics?: NativeRuntimeDiagnostics | null,
+) {
+  const reason = String(diagnostics?.reason || "").trim();
+  if (reason) {
+    return `${featureName} selected runtime.mode=native_on_device, but ${reason}`;
+  }
+
+  if (diagnostics && diagnostics.llamaCppBackendAvailable === false) {
+    return `${featureName} selected runtime.mode=native_on_device, but the llama.cpp backend is not available in "${moduleName}".`;
+  }
+
+  return nativeOnDeviceBridgeMissingMessage(featureName, moduleName);
+}
+
+function isNativeRuntimeSetupError(error: unknown) {
+  const message = String((error as any)?.message || error || "");
+  const code = String((error as any)?.code || (error as any)?.nativeCode || "");
+
+  return (
+    code === "JAI_LLAMA_CPP_BACKEND_MISSING" ||
+    code === "JAI_MODEL_FILE_MISSING" ||
+    code === "JAI_NATIVE_MODELS_MISSING" ||
+    code === "JAI_MODEL_NOT_CONFIGURED" ||
+    code === "JAI_MODEL_PATH_MISSING" ||
+    message.includes("JAI_LLAMA_CPP_BACKEND_MISSING") ||
+    message.includes("JAI_MODEL_FILE_MISSING") ||
+    message.includes("JAI_NATIVE_MODELS_MISSING") ||
+    message.includes("JAI_MODEL_NOT_CONFIGURED") ||
+    message.includes("JAI_MODEL_PATH_MISSING")
+  );
+}
+
+function asNativeRuntimeUnavailable(
+  featureName: string,
+  error: unknown,
+): NativeOnDeviceRuntimeUnavailableError {
+  if (isNativeOnDeviceRuntimeUnavailableError(error)) {
+    return error as NativeOnDeviceRuntimeUnavailableError;
+  }
+
+  const message = error instanceof Error ? error.message : String(error || "");
+  return new NativeOnDeviceRuntimeUnavailableError(
+    `${featureName} is not ready on this phone. ${message}`.trim(),
+  );
+}
+
 export function getLocalRuntimeConfigError(
   config: LocalRuntimeConfig,
   featureName: string,
@@ -367,6 +418,7 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
   private readonly bridge: NativeOnDeviceModelBridge | null;
   private readonly timeoutMs: number;
   private initialized = false;
+  private runtimeDiagnostics: NativeRuntimeDiagnostics | undefined;
 
   constructor(config: LocalRuntimeConfig = {}) {
     const moduleName = String(
@@ -410,9 +462,32 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
       modelRoot: this.config.modelRoot,
       modelDeliveryMode: getModelDeliveryMode(this.modelDeliveryConfig()),
       modelCount: Object.keys(assets).length,
+      runtimeDiagnostics: this.runtimeDiagnostics,
       developmentOnly: false,
       note: "Production path: calls the native on-device model bridge for downloaded Gemma/Qwen GGUF files. It never calls backend/OpenAI directly; missing bindings, failed downloads, or missing llama.cpp bindings fail clearly.",
     };
+  }
+
+  private moduleName() {
+    return String(
+      this.config.nativeModuleName || DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME,
+    );
+  }
+
+  private async readRuntimeDiagnostics(
+    bridge: NativeOnDeviceModelBridge,
+  ): Promise<NativeRuntimeDiagnostics | undefined> {
+    if (typeof bridge.getRuntimeDiagnostics !== "function") {
+      return undefined;
+    }
+
+    try {
+      const diagnostics = await bridge.getRuntimeDiagnostics();
+      this.runtimeDiagnostics = diagnostics;
+      return diagnostics;
+    } catch {
+      return this.runtimeDiagnostics;
+    }
   }
 
   private modelDeliveryConfig(): ModelDownloadConfigRoot {
@@ -473,24 +548,37 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
       return;
     }
 
+    const moduleName = this.moduleName();
+    const diagnostics = await this.readRuntimeDiagnostics(bridge);
+
     if (typeof bridge.isAvailable === "function") {
       const available = await bridge.isAvailable();
       if (!available) {
         throw new NativeOnDeviceRuntimeUnavailableError(
-          nativeOnDeviceBridgeMissingMessage(
+          nativeRuntimeUnavailableReason(
             "Native on-device runtime",
-            String(this.config.nativeModuleName || DEFAULT_NATIVE_ON_DEVICE_MODULE_NAME),
+            moduleName,
+            diagnostics,
           ),
         );
       }
     }
 
-    await bridge.initialize({
-      backend: String(this.config.nativeBackend || "llama_cpp"),
-      modelRoot: this.config.modelRoot,
-      models: normalizeNativeModelAssets(this.config.modelAssets),
-    });
-    this.initialized = true;
+    try {
+      await bridge.initialize({
+        backend: String(this.config.nativeBackend || "llama_cpp"),
+        modelRoot: this.config.modelRoot,
+        models: normalizeNativeModelAssets(this.config.modelAssets),
+      });
+      this.initialized = true;
+      await this.readRuntimeDiagnostics(bridge);
+    } catch (error) {
+      await this.readRuntimeDiagnostics(bridge);
+      if (isNativeRuntimeSetupError(error)) {
+        throw asNativeRuntimeUnavailable("Native on-device runtime", error);
+      }
+      throw error;
+    }
   }
 
   async completeChat(input: {
@@ -513,31 +601,38 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
     const requestId =
       input.requestId ||
       `native_chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const response = await withLocalTimeout(
-      () => Promise.resolve(
-        bridge.completeChat({
-          model: input.model,
-          temperature: input.temperature ?? 0.2,
-          maxTokens: input.maxTokens,
-          requestId,
-          messages: input.messages,
-          prompt: renderNativeChatPrompt(input.messages, asset),
-          asset,
-        }),
-      ),
-      this.timeoutMs,
-      {
-        source: "native_completeChat",
-        message: `Native on-device chat timed out after ${this.timeoutMs}ms.`,
-        onTimeout: () => {
-          if (typeof bridge.cancelRequest === "function") {
-            void bridge.cancelRequest(requestId);
-          }
-          return undefined;
+    try {
+      const response = await withLocalTimeout(
+        () => Promise.resolve(
+          bridge.completeChat({
+            model: input.model,
+            temperature: input.temperature ?? 0.2,
+            maxTokens: input.maxTokens,
+            requestId,
+            messages: input.messages,
+            prompt: renderNativeChatPrompt(input.messages, asset),
+            asset,
+          }),
+        ),
+        this.timeoutMs,
+        {
+          source: "native_completeChat",
+          message: `Native on-device chat timed out after ${this.timeoutMs}ms.`,
+          onTimeout: () => {
+            if (typeof bridge.cancelRequest === "function") {
+              void bridge.cancelRequest(requestId);
+            }
+            return undefined;
+          },
         },
-      },
-    );
-    return normalizeChatCompletionResponse(response);
+      );
+      return normalizeChatCompletionResponse(response);
+    } catch (error) {
+      if (isNativeRuntimeSetupError(error)) {
+        throw asNativeRuntimeUnavailable("Native on-device chat", error);
+      }
+      throw error;
+    }
   }
 
   async embedTexts(input: {
@@ -558,28 +653,35 @@ export class NativeOnDeviceModelRuntime implements LocalModelRuntime {
     const requestId =
       input.requestId ||
       `native_embed_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const response = await withLocalTimeout(
-      () => Promise.resolve(
-        bridge.embedTexts({
-          model: input.model,
-          texts: input.texts,
-          requestId,
-          asset,
-        }),
-      ),
-      this.timeoutMs,
-      {
-        source: "native_embedTexts",
-        message: `Native on-device embeddings timed out after ${this.timeoutMs}ms.`,
-        onTimeout: () => {
-          if (typeof bridge.cancelRequest === "function") {
-            void bridge.cancelRequest(requestId);
-          }
-          return undefined;
+    try {
+      const response = await withLocalTimeout(
+        () => Promise.resolve(
+          bridge.embedTexts({
+            model: input.model,
+            texts: input.texts,
+            requestId,
+            asset,
+          }),
+        ),
+        this.timeoutMs,
+        {
+          source: "native_embedTexts",
+          message: `Native on-device embeddings timed out after ${this.timeoutMs}ms.`,
+          onTimeout: () => {
+            if (typeof bridge.cancelRequest === "function") {
+              void bridge.cancelRequest(requestId);
+            }
+            return undefined;
+          },
         },
-      },
-    );
-    return extractEmbeddingRows(response);
+      );
+      return extractEmbeddingRows(response);
+    } catch (error) {
+      if (isNativeRuntimeSetupError(error)) {
+        throw asNativeRuntimeUnavailable("Native on-device embeddings", error);
+      }
+      throw error;
+    }
   }
 }
 

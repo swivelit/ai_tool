@@ -82,9 +82,29 @@ export type NativeDeviceCapabilitySnapshot = {
   supportedAbis?: string[] | null;
 };
 
+export type NativeRuntimeDiagnostics = {
+  moduleName: string;
+  nativeLibraryLoaded?: boolean;
+  llamaCppBackendAvailable?: boolean;
+  speechToTextAvailable?: boolean;
+  modelRoot?: string | null;
+  configuredModelCount?: number;
+  readyModelCount?: number;
+  modelRootReady?: boolean;
+  reason?: string;
+  models?: Array<{
+    id: string;
+    modelPath?: string | null;
+    ready?: boolean;
+    reason?: string | null;
+    bytesOnDisk?: number | null;
+  }>;
+};
+
 export type NativeOnDeviceModelBridge = {
   isAvailable?: () => boolean | Promise<boolean>;
   isSpeechToTextAvailable?: () => boolean | Promise<boolean>;
+  getRuntimeDiagnostics?: () => NativeRuntimeDiagnostics | Promise<NativeRuntimeDiagnostics>;
   initialize: (config: NativeOnDeviceBridgeInitConfig) => unknown | Promise<unknown>;
   completeChat: (input: NativeOnDeviceChatInput) => unknown | Promise<unknown>;
   embedTexts: (input: NativeOnDeviceEmbeddingInput) => unknown | Promise<unknown>;

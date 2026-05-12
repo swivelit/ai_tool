@@ -219,6 +219,92 @@ class JaiOnDeviceModelEngine(private val context: Context) {
     )
   }
 
+  fun getRuntimeDiagnostics(): Map<String, Any?> {
+    val backendAvailable = JaiLlamaCppBinding.isBackendAvailable()
+    val modelDiagnostics = models.entries
+      .map { (modelId, asset) -> inspectModel(modelId, asset) }
+      .sortedBy { it["id"]?.toString().orEmpty() }
+    val readyModelCount = modelDiagnostics.count { it["ready"] == true }
+    val configuredModelCount = models.size
+    val modelsReady = configuredModelCount > 0 && readyModelCount == configuredModelCount
+    val reason = when {
+      !backendAvailable -> JaiLlamaCppBinding.backendUnavailableReason()
+      configuredModelCount == 0 -> "No native GGUF models have been initialized yet."
+      !modelsReady -> "One or more configured GGUF model files are missing or unreadable."
+      else -> "Native llama.cpp backend and configured model files are ready."
+    }
+
+    return mapOf(
+      "moduleName" to "JaiOnDeviceModel",
+      "backend" to backend,
+      "nativeLibraryLoaded" to JaiLlamaCppBinding.isNativeLibraryLoaded(),
+      "llamaCppBackendAvailable" to backendAvailable,
+      "speechToTextAvailable" to false,
+      "modelRoot" to modelRoot,
+      "configuredModelCount" to configuredModelCount,
+      "readyModelCount" to readyModelCount,
+      "modelRootReady" to modelsReady,
+      "reason" to reason,
+      "models" to modelDiagnostics,
+    )
+  }
+
+  private fun inspectModel(modelId: String, asset: Map<String, Any?>): Map<String, Any?> {
+    val rawPath = asset.stringValue("modelPath") ?: asset.stringValue("fileName")
+    if (rawPath.isNullOrBlank()) {
+      return mapOf(
+        "id" to modelId,
+        "ready" to false,
+        "reason" to "modelPath/fileName is missing",
+        "modelPath" to null,
+        "bytesOnDisk" to null,
+      )
+    }
+
+    if (rawPath.startsWith("/") || rawPath.startsWith("file://")) {
+      val file = File(rawPath.removePrefix("file://"))
+      return mapOf(
+        "id" to modelId,
+        "ready" to (file.exists() && file.length() > 0L),
+        "reason" to if (file.exists() && file.length() > 0L) null else "file missing or empty",
+        "modelPath" to rawPath,
+        "bytesOnDisk" to if (file.exists()) file.length() else 0L,
+      )
+    }
+
+    val assetPath = androidAssetPath(rawPath, asset.stringValue("fileName"))
+    val outFile = File(File(context.noBackupFilesDir, "jai-models"), File(assetPath).name)
+    if (outFile.exists() && outFile.length() > 0L) {
+      return mapOf(
+        "id" to modelId,
+        "ready" to true,
+        "reason" to null,
+        "modelPath" to "asset://$assetPath",
+        "bytesOnDisk" to outFile.length(),
+      )
+    }
+
+    return try {
+      context.assets.open(assetPath).use {
+        mapOf(
+          "id" to modelId,
+          "ready" to true,
+          "reason" to null,
+          "modelPath" to "asset://$assetPath",
+          "bytesOnDisk" to null,
+        )
+      }
+    } catch (_: FileNotFoundException) {
+      mapOf(
+        "id" to modelId,
+        "ready" to false,
+        "reason" to "asset missing",
+        "modelPath" to "asset://$assetPath",
+        "bytesOnDisk" to null,
+      )
+    }
+  }
+
   private fun readFreeStorageBytes(): Long {
     return try {
       StatFs(context.noBackupFilesDir.absolutePath).availableBytes

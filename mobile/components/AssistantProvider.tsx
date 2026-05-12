@@ -16,6 +16,10 @@ import {
   UserProfile,
 } from "@/lib/account";
 import {
+  getE2eMockUserProfile,
+  isE2eMockAuthEnabled,
+} from "@/lib/e2eMode";
+import {
   AssistantSettings,
   DEFAULTS,
   getAssistantName,
@@ -84,6 +88,25 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
+    if (isE2eMockAuthEnabled()) {
+      const mockProfile = getE2eMockUserProfile();
+      const mockSettings: AssistantSettings = {
+        ...DEFAULTS.settings,
+        languageMode: mockProfile.replyLanguage || "en",
+      };
+
+      await Promise.all([
+        saveProfile(mockProfile),
+        setAssistantName(mockProfile.assistantName || DEFAULTS.name),
+        setSettings(mockSettings),
+      ]);
+
+      setNameState(mockProfile.assistantName || DEFAULTS.name);
+      setSettingsState(mockSettings);
+      setProfileState(mockProfile);
+      return mockProfile;
+    }
+
     const [storedName, storedSettings] = await Promise.all([getAssistantName(), getSettings()]);
 
     const normalizedStoredName = normalizeName(storedName);

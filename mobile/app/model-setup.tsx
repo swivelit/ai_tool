@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
+import { isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
 import {
   modelDownloadSession,
   type ModelDownloadSessionSnapshot,
@@ -72,6 +73,11 @@ export default function ModelSetupScreen() {
   }, []);
 
   useEffect(() => {
+    if (isE2eSkipModelSetupEnabled()) {
+      router.replace("/(chat)" as any);
+      return;
+    }
+
     let cancelled = false;
 
     async function startSetup() {
@@ -166,7 +172,12 @@ export default function ModelSetupScreen() {
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="dark" />
-      <Pressable onPress={() => router.back()} style={backButtonStyle}>
+      <Pressable
+        onPress={() => router.back()}
+        style={backButtonStyle}
+        testID="model-setup-back-button"
+        accessibilityLabel="model-setup-back-button"
+      >
         <Ionicons name="chevron-back" size={20} color={Brand.cocoa} />
       </Pressable>
       <ScrollView
@@ -204,6 +215,8 @@ export default function ModelSetupScreen() {
           </View>
 
           <Text
+            testID="model-setup-status"
+            accessibilityLabel="model-setup-status"
             style={[
               styles.title,
               {
@@ -243,6 +256,8 @@ export default function ModelSetupScreen() {
               <Pressable
                 onPress={retry}
                 disabled={busy && snapshot.status !== "reconnecting"}
+                testID="model-setup-retry-button"
+                accessibilityLabel="model-setup-retry-button"
                 style={({ pressed }) => [
                   styles.primaryButton,
                   {
@@ -263,6 +278,8 @@ export default function ModelSetupScreen() {
             {snapshot.ready ? (
               <Pressable
                 onPress={continueToApp}
+                testID="model-setup-continue-button"
+                accessibilityLabel="model-setup-download-button"
                 style={({ pressed }) => [
                   styles.primaryButton,
                   {

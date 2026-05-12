@@ -19,6 +19,7 @@ import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
 import { resolveDesiredRoute } from "@/lib/appBoot";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
+import { isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
 import {
   getModelDeliveryMode,
   getModelInstallStatus,
@@ -46,7 +47,12 @@ type AlertState = {
 
 function BootScreen() {
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.bootPage}>
+    <LinearGradient
+      colors={Brand.gradients.page}
+      style={styles.bootPage}
+      testID="boot-loading-screen"
+      accessibilityLabel="boot-loading-screen"
+    >
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
         <View style={styles.topGlow} />
         <View style={styles.leftGlow} />
@@ -151,6 +157,8 @@ function UnifiedAlertHost({ children }: { children: React.ReactNode }) {
         visible={Boolean(alertState)}
         animationType="fade"
         statusBarTranslucent
+        testID="app-alert-modal"
+        accessibilityLabel="app-alert-modal"
         onRequestClose={() => {
           if (alertState?.cancelable) {
             closeAlert(true);
@@ -185,6 +193,8 @@ function UnifiedAlertHost({ children }: { children: React.ReactNode }) {
                       <Pressable
                         key={`${label}-${index}`}
                         onPress={() => handleButtonPress(button)}
+                        testID={`app-alert-button-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+                        accessibilityLabel={`app-alert-button-${label}`}
                         style={({ pressed }) => [
                           styles.alertButtonBase,
                           styles.alertPrimaryButton,
@@ -200,6 +210,8 @@ function UnifiedAlertHost({ children }: { children: React.ReactNode }) {
                     <Pressable
                       key={`${label}-${index}`}
                       onPress={() => handleButtonPress(button)}
+                      testID={`app-alert-button-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+                      accessibilityLabel={`app-alert-button-${label}`}
                       style={({ pressed }) => [
                         styles.alertButtonBase,
                         styles.alertSecondaryButton,
@@ -275,6 +287,7 @@ function AppShell() {
       user &&
       activeProfile?.userId &&
       activeProfile?.questionnaireCompleted &&
+      !isE2eSkipModelSetupEnabled() &&
       getModelDeliveryMode() === "download_on_first_launch"
   );
 

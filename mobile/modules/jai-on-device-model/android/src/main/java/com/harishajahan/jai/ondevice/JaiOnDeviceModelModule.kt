@@ -20,11 +20,15 @@ class JaiOnDeviceModelModule : Module() {
     Name("JaiOnDeviceModel")
 
     Function("isAvailable") {
-      true
+      JaiLlamaCppBinding.isBackendAvailable()
     }
 
     Function("isSpeechToTextAvailable") {
       false
+    }
+
+    Function("getRuntimeDiagnostics") {
+      engine.getRuntimeDiagnostics()
     }
 
     AsyncFunction("initialize") { config: Map<String, Any?> ->

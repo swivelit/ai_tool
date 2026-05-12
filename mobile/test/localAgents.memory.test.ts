@@ -6,6 +6,7 @@ import memoryRules from "../data/config/memory_rules.json";
 import orchestratorRoutes from "../data/config/orchestrator_routes.json";
 import profilerSlots from "../data/config/profiler_slots.json";
 import prompts from "../data/config/prompts.json";
+import { __idleQueueTestUtils } from "../lib/localIdleQueue";
 
 const mockedState = vi.hoisted(() => ({
   files: new Map<string, string>(),
@@ -156,8 +157,14 @@ function readJsonl(path: string) {
 
 const dataRoot = "file:///mock/data";
 
+async function flushLocalLearningJobs() {
+  const { flushLocalLearningJobsForTests } = await import("../lib/localAgents");
+  await flushLocalLearningJobsForTests();
+}
+
 describe("local memory and semantic cache", () => {
   beforeEach(() => {
+    __idleQueueTestUtils.clear();
     mockedState.files.clear();
     mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
     mockedState.fetchQueue.length = 0;
@@ -195,6 +202,7 @@ describe("local memory and semantic cache", () => {
 
     expect(first.cacheHit).toBe(false);
     expect(first.route).toBe("profile");
+    await flushLocalLearningJobs();
 
     queueEmbeddingResponse([testEmbedding({ 0: 0.99, 1: 0.01 })]);
 
@@ -210,6 +218,7 @@ describe("local memory and semantic cache", () => {
     expect(second.meta?.matchedQuestion).toBe("What do I like?");
     expect(second.meta?.semanticCache?.confidence).toBeGreaterThanOrEqual(0.92);
     expect(apiPostMock).not.toHaveBeenCalled();
+    await flushLocalLearningJobs();
     expect(readJson(`${dataRoot}/cache/semantic_cache.json`).hits).toHaveLength(1);
   });
 
@@ -432,6 +441,7 @@ describe("local memory and semantic cache", () => {
       message: "What do I like?",
       replyLanguage: "en",
     });
+    await flushLocalLearningJobs();
 
     const store = readJson(`${dataRoot}/cache/semantic_cache.json`);
     expect(store.entries[0].embedding).toHaveLength(1024);
@@ -517,6 +527,7 @@ describe("local memory and semantic cache", () => {
       message: "What do I like?",
       replyLanguage: "en",
     });
+    await flushLocalLearningJobs();
 
     queueEmbeddingResponse([testEmbedding({ 1: 1 })]);
     queueAlignmentResponse("Your name is Hari.");
@@ -555,6 +566,7 @@ describe("local memory and semantic cache", () => {
       message: "What do I like?",
       replyLanguage: "en",
     });
+    await flushLocalLearningJobs();
 
     queueEmbeddingResponse([testEmbedding({ 0: 0.93, 1: 0.3675595 })]);
     queueAlignmentResponse("You told me your hobbies include music, travel.");
@@ -1089,11 +1101,17 @@ describe("local memory and semantic cache", () => {
       message: "this",
       replyLanguage: "en",
     });
+    await flushLocalLearningJobs();
+
+    expect(readJsonl(`${dataRoot}/memory/daily_summaries/45.jsonl`)).toHaveLength(1);
+    vi.mocked(FileSystem.readAsStringAsync).mockClear();
+
     await runLocalAssistantTurn({
       userId: 45,
       message: "that",
       replyLanguage: "en",
     });
+    await flushLocalLearningJobs();
 
     expect(readJsonl(`${dataRoot}/memory/daily_summaries/45.jsonl`)).toHaveLength(1);
     const dailySummaryReads = (FileSystem.readAsStringAsync as any).mock.calls.filter(
@@ -1119,6 +1137,7 @@ describe("local memory and semantic cache", () => {
       message: "What do I like?",
       replyLanguage: "en",
     });
+    await flushLocalLearningJobs();
 
     queueEmbeddingResponse([testEmbedding({ 0: 0.99, 1: 0.01 })]);
     const cached = await runLocalAssistantTurn({

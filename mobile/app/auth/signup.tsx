@@ -211,6 +211,8 @@ export default function SignupScreen() {
                   </View>
                   <TextInput
                     value={name}
+                    testID="signup-name-input"
+                    accessibilityLabel="signup-name-input"
                     onChangeText={(value) => {
                       setName(value);
                       if (errorText) setErrorText("");
@@ -236,6 +238,8 @@ export default function SignupScreen() {
                   </View>
                   <TextInput
                     value={email}
+                    testID="signup-email-input"
+                    accessibilityLabel="signup-email-input"
                     onChangeText={(value) => {
                       setEmail(value);
                       if (errorText) setErrorText("");
@@ -272,6 +276,8 @@ export default function SignupScreen() {
                   </View>
                   <TextInput
                     value={password}
+                    testID="signup-password-input"
+                    accessibilityLabel="signup-password-input"
                     onChangeText={(value) => {
                       setPassword(value);
                       if (errorText) setErrorText("");
@@ -316,6 +322,8 @@ export default function SignupScreen() {
                   </View>
                   <TextInput
                     value={confirmPassword}
+                    testID="signup-confirm-password-input"
+                    accessibilityLabel="signup-confirm-password-input"
                     onChangeText={(value) => {
                       setConfirmPassword(value);
                       if (errorText) setErrorText("");
@@ -352,6 +360,8 @@ export default function SignupScreen() {
               <Pressable
                 onPress={handleSignup}
                 disabled={!canSubmit}
+                testID="signup-submit-button"
+                accessibilityLabel="signup-submit-button"
                 style={({ pressed }) => [
                   styles.buttonShell,
                   pressed && styles.pressed,

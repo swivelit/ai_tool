@@ -1950,7 +1950,13 @@ export default function Home() {
             },
           ]}
         >
-          <Pressable onPress={openDrawer} style={styles.iconButton}>
+          <Pressable
+            onPress={openDrawer}
+            style={styles.iconButton}
+            testID="chat-drawer-button"
+            accessibilityLabel="chat-drawer-button"
+            accessibilityRole="button"
+          >
             <Ionicons name="menu" size={20} color={Brand.cocoa} />
           </Pressable>
 
@@ -1958,7 +1964,13 @@ export default function Home() {
             <Text style={styles.topBarTitle}>{assistantLabel}</Text>
           </View>
 
-          <Pressable onPress={() => setVoiceSheetOpen(true)} style={styles.iconButton}>
+          <Pressable
+            onPress={() => setVoiceSheetOpen(true)}
+            style={styles.iconButton}
+            testID="chat-voice-button"
+            accessibilityLabel="chat-voice-button"
+            accessibilityRole="button"
+          >
             <Ionicons name="sparkles-outline" size={18} color={Brand.cocoa} />
           </Pressable>
         </View>
@@ -2008,7 +2020,11 @@ export default function Home() {
                             <View style={styles.assistantMessageBlock}>
                               <Text style={styles.messageSender}>{assistantLabel}</Text>
                               <View style={[styles.messageBubble, styles.assistantBubble]}>
-                                <Text style={[styles.messageText, styles.assistantMessageText]}>
+                                <Text
+                                  style={[styles.messageText, styles.assistantMessageText]}
+                                  testID="chat-assistant-response"
+                                  accessibilityLabel="chat-assistant-response"
+                                >
                                   {assistantMessage}
                                 </Text>
                               </View>
@@ -2046,6 +2062,16 @@ export default function Home() {
                               activePendingChatTurn.status === "thinking" && styles.typingBubble,
                               activePendingChatTurn.status === "error" && styles.errorBubble,
                             ]}
+                            testID={
+                              activePendingChatTurn.status === "thinking"
+                                ? "chat-thinking-indicator"
+                                : "chat-assistant-response"
+                            }
+                            accessibilityLabel={
+                              activePendingChatTurn.status === "thinking"
+                                ? "chat-thinking-indicator"
+                                : "chat-assistant-response"
+                            }
                           >
                             {activePendingChatTurn.status === "thinking" ? (
                               <>
@@ -2099,6 +2125,8 @@ export default function Home() {
                 <View style={styles.composerMainRow}>
                   <TextInput
                     value={text}
+                    testID="chat-input"
+                    accessibilityLabel="chat-input"
                     onChangeText={setText}
                     placeholder={placeholder}
                     placeholderTextColor="rgba(124, 99, 80, 0.58)"
@@ -2126,6 +2154,9 @@ export default function Home() {
                     <Pressable
                       onPress={handleQuickMicPress}
                       disabled={busy && !listening}
+                      testID="chat-mic-button"
+                      accessibilityLabel="chat-mic-button"
+                      accessibilityRole="button"
                       style={[
                         styles.roundAction,
                         (recordingPreparing || listening) && activeSurface === "quick" && styles.roundActionActive,
@@ -2144,6 +2175,9 @@ export default function Home() {
                     <Pressable
                       onPress={handleChatSend}
                       disabled={!text.trim() || busy || listening}
+                      testID="chat-send-button"
+                      accessibilityLabel="chat-send-button"
+                      accessibilityRole="button"
                       style={[
                         styles.sendButton,
                         (!text.trim() || busy || listening) && styles.iconButtonDisabled,

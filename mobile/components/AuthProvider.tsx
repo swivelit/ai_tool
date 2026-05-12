@@ -37,6 +37,11 @@ import {
 } from "@/lib/account";
 import { getApiErrorDetails } from "@/lib/api";
 import {
+  assertE2eModeAllowed,
+  getE2eMockFirebaseUser,
+  isE2eMockAuthEnabled,
+} from "@/lib/e2eMode";
+import {
   syncProfileForAuthenticatedUser as syncBackendProfileForAuthenticatedUser,
   type ProfileSyncResult,
 } from "@/lib/profileSync";
@@ -172,8 +177,12 @@ type AuthContextType = {
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  assertE2eModeAllowed();
+  const e2eMockAuth = isE2eMockAuthEnabled();
+  const e2eUser = e2eMockAuth ? (getE2eMockFirebaseUser() as User) : null;
+
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(e2eUser);
+  const [loading, setLoading] = useState(!e2eMockAuth);
   const [googleReady, setGoogleReady] = useState(false);
   const [locallySignedOut, setLocallySignedOut] = useState(false);
   const [profileSyncIssue, setProfileSyncIssue] = useState<ProfileSyncIssue | null>(null);
@@ -184,6 +193,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const user = locallySignedOut ? null : firebaseUser;
 
   useEffect(() => {
+    if (e2eMockAuth) {
+      setGoogleReady(false);
+      return;
+    }
+
     if (Platform.OS === "web") {
       setGoogleReady(false);
       return;
@@ -200,9 +214,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     setGoogleReady(true);
-  }, []);
+  }, [e2eMockAuth]);
 
   useEffect(() => {
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      lastAuthUserRef.current = e2eUser;
+      setLoading(false);
+      setLocallySignedOut(false);
+      setProfileSyncIssue(null);
+      return;
+    }
+
     if (!auth) {
       setFirebaseUser(null);
       lastAuthUserRef.current = null;
@@ -230,7 +253,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return unsubscribe;
-  }, []);
+  }, [e2eMockAuth]);
 
   async function reloadUser(authUser: User) {
     const configuredAuth = requireConfiguredAuth();
@@ -371,6 +394,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function signInWithPassword(email: string, password: string) {
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      setLocallySignedOut(false);
+      setLoading(false);
+      return;
+    }
+
     const normalizedEmail = email.trim();
 
     try {
@@ -388,6 +418,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function linkPasswordForCurrentUser(password: string, displayName?: string) {
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      setLocallySignedOut(false);
+      setLoading(false);
+      return;
+    }
+
     const configuredAuth = requireConfiguredAuth();
     const currentUser = configuredAuth.currentUser;
 
@@ -430,6 +467,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function signUpWithPassword(name: string, email: string, password: string) {
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      setLocallySignedOut(false);
+      setLoading(false);
+      return;
+    }
+
     const normalizedEmail = email.trim();
 
     try {
@@ -486,6 +530,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function signInWithGoogle() {
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      setLocallySignedOut(false);
+      setLoading(false);
+      return;
+    }
+
     if (Platform.OS === "web") {
       throw new Error("Google sign-in is currently enabled only for Android/iOS builds.");
     }
@@ -612,6 +663,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function clearLocalSession(options?: { revokeGoogleAccess?: boolean }) {
+    if (e2eMockAuth) {
+      await primeLocalSignedOutState();
+      setFirebaseUser(null);
+      lastAuthUserRef.current = null;
+      return;
+    }
+
     const configuredAuth = requireConfiguredAuth();
 
     await primeLocalSignedOutState();
@@ -630,6 +688,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function deleteCurrentAccount(backendUserId?: number) {
+    if (e2eMockAuth) {
+      await primeLocalSignedOutState(backendUserId);
+      setFirebaseUser(null);
+      lastAuthUserRef.current = null;
+      return;
+    }
+
     const configuredAuth = requireConfiguredAuth();
     const currentUser = configuredAuth.currentUser;
 

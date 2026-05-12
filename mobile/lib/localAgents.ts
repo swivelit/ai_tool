@@ -38,7 +38,7 @@ import {
   QuickLocalReplyResult,
   tryBuildQuickLocalReply,
 } from "./localQuickReplies";
-import { enqueueLocalIdleJob } from "./localIdleQueue";
+import { __idleQueueTestUtils, enqueueLocalIdleJob } from "./localIdleQueue";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -1596,6 +1596,17 @@ export async function clearLocalAgentDataForUser(userId: number) {
       hits: retainedHits,
     } satisfies SemanticCacheStore);
   }
+}
+
+export async function flushLocalLearningJobsForTests() {
+  if (
+    String((globalThis as any)?.process?.env?.NODE_ENV || "").toLowerCase() !==
+    "test"
+  ) {
+    throw new Error("flushLocalLearningJobsForTests is available only in tests.");
+  }
+
+  await __idleQueueTestUtils.flush();
 }
 
 async function readJsonl<T>(path: string): Promise<T[]> {
@@ -7629,10 +7640,10 @@ export async function runLocalAssistantTurn(opts: {
         english = draft;
         final = draft;
       } else if (isNativeOnDeviceRuntimeUnavailableError(error) || isModelInstallError(error)) {
-        route = "clarify";
+        route = "setup_required";
         decision = {
           ...decision,
-          route: "clarify",
+          route: "setup_required",
           reason: "native_on_device_runtime_unavailable",
           needsClarification: false,
           clarificationQuestion: "",
@@ -7771,7 +7782,8 @@ export async function runLocalAssistantTurn(opts: {
   if (
     assistantText.trim() &&
     route !== "reminder_create" &&
-    route !== "clarify"
+    route !== "clarify" &&
+    route !== "setup_required"
   ) {
     enqueueLocalIdleJob("semantic_cache_write", () =>
       writeSemanticCache(
@@ -7875,6 +7887,7 @@ export async function runLocalAssistantTurn(opts: {
       classified: decision,
       orchestratorDecision: decision,
       ...(cloudFallback ? { cloudFallback } : {}),
+      ...(route === "setup_required" ? { setupRequired: true } : {}),
       ...(toolPlan?.steps.length
         ? {
             tools: {

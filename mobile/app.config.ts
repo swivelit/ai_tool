@@ -13,6 +13,10 @@ const USE_LOCAL_CHAT_PIPELINE =
 const USE_LOCAL_VOICE_PIPELINE =
   process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ?? "true";
 
+const E2E_MOCK_AUTH = process.env.EXPO_PUBLIC_E2E_MOCK_AUTH || "";
+const E2E_SKIP_MODEL_SETUP =
+  process.env.EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP || "";
+
 const LOCAL_MODEL_RUNTIME_MODE =
   process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE || "native_on_device";
 
@@ -93,6 +97,21 @@ const isProductionNativeDownloadBuild =
   isProductionOrReleaseBuild &&
   isNativeOnDeviceRuntime &&
   normalizedModelDeliveryMode === "download_on_first_launch";
+
+const enabledE2eEnvNames = [
+  ["EXPO_PUBLIC_E2E_MOCK_AUTH", E2E_MOCK_AUTH],
+  ["EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP", E2E_SKIP_MODEL_SETUP],
+]
+  .filter(([, value]) => isTruthyEnv(value))
+  .map(([name]) => name);
+
+if (isProductionOrReleaseBuild && enabledE2eEnvNames.length) {
+  throw new Error(
+    `Release/production builds cannot enable debug E2E flags: ${enabledE2eEnvNames.join(
+      ", ",
+    )}. Disable mock auth/model setup bypass before building a release APK.`,
+  );
+}
 
 const missingFirebaseEnvNames = FIREBASE_PUBLIC_ENV_NAMES.filter(
   (name) => !String(process.env[name] || "").trim(),
@@ -321,6 +340,10 @@ export default {
       // Set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true in release env files/CI;
       // production/release builds fail above if this is explicitly disabled.
       USE_LOCAL_VOICE_PIPELINE,
+      E2E_MOCK_AUTH,
+      E2E_SKIP_MODEL_SETUP,
+      EXPO_PUBLIC_E2E_MOCK_AUTH: E2E_MOCK_AUTH,
+      EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP: E2E_SKIP_MODEL_SETUP,
 
       // Do not bundle a bearer token into the mobile app. EXPO_PUBLIC_* values are public.
       // Use Firebase-authenticated backend proxying or a short-lived pairing token instead.

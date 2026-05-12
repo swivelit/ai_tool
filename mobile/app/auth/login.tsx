@@ -177,6 +177,8 @@ export default function LoginScreen() {
                   </View>
                   <TextInput
                     value={email}
+                    testID="login-email-input"
+                    accessibilityLabel="login-email-input"
                     onChangeText={(value) => {
                       setEmail(value);
                       if (errorText) setErrorText("");
@@ -207,6 +209,8 @@ export default function LoginScreen() {
                   </View>
                   <TextInput
                     value={password}
+                    testID="login-password-input"
+                    accessibilityLabel="login-password-input"
                     onChangeText={(value) => {
                       setPassword(value);
                       if (errorText) setErrorText("");
@@ -243,6 +247,8 @@ export default function LoginScreen() {
               <Pressable
                 onPress={handleLogin}
                 disabled={!canSubmit}
+                testID="login-submit-button"
+                accessibilityLabel="login-submit-button"
                 style={({ pressed }) => [
                   styles.buttonShell,
                   pressed && styles.pressed,

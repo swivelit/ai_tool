@@ -531,6 +531,40 @@ describe("local model runtime architecture", () => {
     }
   });
 
+  it("uses native runtime diagnostics when the llama.cpp backend is unavailable", async () => {
+    const diagnostics = {
+      moduleName: "JaiOnDeviceModel",
+      nativeLibraryLoaded: false,
+      llamaCppBackendAvailable: false,
+      speechToTextAvailable: false,
+      reason: "llama.cpp JNI library libjai_llama_runtime.so is not linked.",
+    };
+    setNativeOnDeviceModelBridgeForTests({
+      isAvailable: vi.fn(async () => false),
+      getRuntimeDiagnostics: vi.fn(async () => diagnostics),
+      initialize: vi.fn(async () => ({ ok: false })),
+      completeChat: vi.fn(async () => ({ text: "should not run" })),
+      embedTexts: vi.fn(async () => ({ data: [{ embedding: [0.1, 0.2] }] })),
+    });
+
+    const runtime = createLocalModelRuntime({
+      mode: "native_on_device",
+      nativeBackend: "llama_cpp",
+      nativeModuleName: "JaiOnDeviceModel",
+      modelDelivery: { mode: "bundled_assets" },
+      modelAssets: nativeAssets,
+    });
+
+    await expect(
+      runtime.completeChat({
+        model: "google/gemma-3-4b-it",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    ).rejects.toThrow(NativeOnDeviceRuntimeUnavailableError);
+
+    expect(runtime.describe().runtimeDiagnostics).toMatchObject(diagnostics);
+  });
+
   it("requires JaiOnDeviceModel to expose initialize/completeChat/embedTexts in native mode", () => {
     setNativeOnDeviceModelBridgeForTests({
       completeChat: vi.fn(),

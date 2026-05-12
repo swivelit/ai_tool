@@ -21,6 +21,23 @@ object JaiLlamaCppBinding {
     false
   }
 
+  fun isNativeLibraryLoaded(): Boolean = nativeLoaded
+
+  fun isBackendAvailable(): Boolean = nativeLoaded
+
+  fun backendUnavailableReason(): String? {
+    if (nativeLoaded) return null
+    return "llama.cpp JNI library libjai_llama_runtime.so is not linked or could not be loaded. Cause: ${loadFailure?.message ?: "unknown"}"
+  }
+
+  fun diagnostics(): Map<String, Any?> {
+    return mapOf(
+      "nativeLibraryLoaded" to nativeLoaded,
+      "llamaCppBackendAvailable" to nativeLoaded,
+      "reason" to backendUnavailableReason(),
+    )
+  }
+
   fun completeChat(
     modelPath: String,
     prompt: String,

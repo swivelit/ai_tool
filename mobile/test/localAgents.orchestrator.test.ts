@@ -8,6 +8,7 @@ import orchestratorRoutes from "../data/config/orchestrator_routes.json";
 import profilerSlots from "../data/config/profiler_slots.json";
 import prompts from "../data/config/prompts.json";
 import { __idleQueueTestUtils } from "../lib/localIdleQueue";
+import { setNativeOnDeviceModelBridgeForTests } from "../lib/nativeOnDeviceModelBridge";
 
 const mockedState = vi.hoisted(() => ({
   files: new Map<string, string>(),
@@ -164,6 +165,7 @@ describe("phone-local agent configuration", () => {
 
 describe("local orchestrator and alignment", () => {
   beforeEach(() => {
+    setNativeOnDeviceModelBridgeForTests(null);
     __idleQueueTestUtils.clear();
     mockedState.files.clear();
     mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
@@ -335,6 +337,59 @@ describe("local orchestrator and alignment", () => {
     expect(global.fetch).not.toHaveBeenCalled();
     expect((FileSystem as any).createDownloadResumable).not.toHaveBeenCalled();
     expect(__idleQueueTestUtils.pendingCount()).toBe(0);
+  });
+
+  it("returns setup-required when native diagnostics report a missing llama.cpp backend", async () => {
+    setNativeOnDeviceModelBridgeForTests({
+      isAvailable: vi.fn(async () => false),
+      getRuntimeDiagnostics: vi.fn(async () => ({
+        moduleName: "JaiOnDeviceModel",
+        nativeLibraryLoaded: false,
+        llamaCppBackendAvailable: false,
+        speechToTextAvailable: false,
+        modelRootReady: false,
+        reason: "llama.cpp JNI library libjai_llama_runtime.so is not linked.",
+      })),
+      initialize: vi.fn(async () => ({ ok: false })),
+      completeChat: vi.fn(async () => ({ text: "should not run" })),
+      embedTexts: vi.fn(async () => ({ data: [{ embedding: unitEmbedding() }] })),
+    });
+    mockedState.files.set(
+      `${dataRoot}/config/models.json`,
+      JSON.stringify(
+        {
+          ...models,
+          runtime: {
+            ...models.runtime,
+            mode: "native_on_device",
+          },
+          modelDelivery: {
+            ...models.modelDelivery,
+            mode: "bundled_assets",
+          },
+          baseUrl: "",
+          timeoutMs: 1000,
+        },
+        null,
+        2,
+      ),
+    );
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 214,
+      message: "Explain recursion in simple local terms please",
+      replyLanguage: "en",
+    });
+
+    expect(result.route).toBe("setup_required");
+    expect(result.source).toBe("local_rules");
+    expect(result.meta?.setupRequired).toBe(true);
+    expect(result.meta?.orchestratorDecision?.reason).toBe(
+      "native_on_device_runtime_unavailable",
+    );
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("selects reasoner models only from the selected installed tier", async () => {

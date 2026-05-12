@@ -7,7 +7,7 @@ DIST_DIR="$ROOT_DIR/dist"
 APK_PATH="$DIST_DIR/tamil-ai-debug.apk"
 PACKAGE_NAME="com.harishajahan.tamilai"
 METRO_PORT="${METRO_PORT:-8081}"
-METRO_LOG="/tmp/tamil-ai-metro-${METRO_PORT}.log"
+METRO_LOG="$DIST_DIR/launch-debug-metro-${METRO_PORT}.log"
 METRO_PID_FILE="/tmp/tamil-ai-metro-${METRO_PORT}.pid"
 
 LOG_CMD="adb logcat | grep --line-buffered -E 'ReactNativeJS|AndroidRuntime|FATAL EXCEPTION|Expo|tamilai|harishajahan|${PACKAGE_NAME}'"
@@ -132,6 +132,7 @@ command -v node >/dev/null 2>&1 || fail "Node.js is required but was not found i
 command -v npm >/dev/null 2>&1 || fail "npm is required but was not found in PATH."
 
 [[ -d "$MOBILE_DIR" ]] || fail "Mobile folder not found at: $MOBILE_DIR"
+mkdir -p "$DIST_DIR"
 
 ANDROID_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 if [[ -z "$ANDROID_SDK" ]]; then
@@ -217,10 +218,16 @@ info "Launching app"
 adb shell monkey -p "$PACKAGE_NAME" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 \
   || warn "APK installed, but automatic launch failed. Open it manually."
 
+if is_truthy "${RUN_APK_TESTS:-}"; then
+  info "Running APK test harness"
+  REUSE_APK=1 SKIP_PRECHECKS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh
+fi
+
 echo ""
 echo "Done."
 echo "Installed: $APK_PATH"
 echo "Metro log: $METRO_LOG"
+echo "Artifacts: $DIST_DIR"
 echo ""
 echo "Keep Metro running while using this debug APK."
 echo "For a standalone APK, run: ./launch-release_apk.sh"
