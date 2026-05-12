@@ -106,6 +106,8 @@ const CHAT_SESSIONS_STORAGE_PREFIX = "chat_sessions_v2";
 const HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX = "hidden_chat_session_ids_v2";
 const HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX = "hidden_chat_item_ids_v1";
 const MODEL_SETUP_ALERT_THROTTLE_MS = 5 * 60 * 1000;
+const VOICE_UNAVAILABLE_MESSAGE =
+  "Voice is unavailable right now. Please try again.";
 
 function normalizeHandsFreeText(value?: string | null) {
   return String(value || "")
@@ -352,6 +354,7 @@ export default function Home() {
   const drawerProgress = useRef(new Animated.Value(0)).current;
   const [drawerMounted, setDrawerMounted] = useState(false);
   const scrollViewRef = useRef<ScrollView | null>(null);
+  const activeChatSessionIdRef = useRef<string | null>(null);
   const historyLongPressTriggeredRef = useRef(false);
   const handsFreeDesiredModeRef = useRef<"off" | "wake" | "command">("off");
   const handsFreeStartingRef = useRef(false);
@@ -456,6 +459,10 @@ export default function Home() {
   useEffect(() => {
     chatSessionsRef.current = chatSessions;
   }, [chatSessions]);
+
+  useEffect(() => {
+    activeChatSessionIdRef.current = activeChatSessionId;
+  }, [activeChatSessionId]);
 
   const latestHistory = useMemo(() => {
     return chatSessions
@@ -1158,7 +1165,9 @@ export default function Home() {
     const reconciled = reconcileChatSessions(visibleItemsFromApi, storedSessions);
     setChatSessions(reconciled);
     chatSessionsRef.current = reconciled;
-    setActiveChatSessionId(null);
+    if (!activeChatSessionIdRef.current && !activeChatRequestIdRef.current) {
+      setActiveChatSessionId(null);
+    }
 
     try {
       await Promise.all([
@@ -1250,9 +1259,11 @@ export default function Home() {
 
     const timestamp = item.created_at || item.datetime || new Date().toISOString();
 
-    if (activeChatSessionId) {
+    const currentSessionId = activeChatSessionIdRef.current;
+
+    if (currentSessionId) {
       const targetIndex = workingSessions.findIndex(
-        (session) => session.id === activeChatSessionId
+        (session) => session.id === currentSessionId
       );
 
       if (targetIndex >= 0) {
@@ -1266,11 +1277,13 @@ export default function Home() {
       } else {
         const nextSession = createChatSessionFromItem(item);
         workingSessions = [nextSession, ...workingSessions];
+        activeChatSessionIdRef.current = nextSession.id;
         setActiveChatSessionId(nextSession.id);
       }
     } else {
       const nextSession = createChatSessionFromItem(item);
       workingSessions = [nextSession, ...workingSessions];
+      activeChatSessionIdRef.current = nextSession.id;
       setActiveChatSessionId(nextSession.id);
     }
 
@@ -1345,6 +1358,7 @@ export default function Home() {
           style: "destructive",
           onPress: async () => {
             if (activeChatSessionId === targetItem.id) {
+              activeChatSessionIdRef.current = null;
               setActiveChatSessionId(null);
             }
 
@@ -1425,7 +1439,7 @@ export default function Home() {
 
       return {
         requestId,
-        sessionId: activeChatSessionId,
+        sessionId: activeChatSessionIdRef.current,
         source,
         userMessage: fallbackUserMessage,
         assistantText: message,
@@ -1521,6 +1535,7 @@ export default function Home() {
   }
 
   function startNewChat() {
+    activeChatSessionIdRef.current = null;
     setActiveChatSessionId(null);
     setText("");
     setComposerInputHeight(MIN_INPUT_HEIGHT);
@@ -1537,6 +1552,7 @@ export default function Home() {
     closeDrawer();
     closeHistoryItemActions();
     setHistorySearch("");
+    activeChatSessionIdRef.current = item.id;
     setActiveChatSessionId(item.id);
     setTimeout(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
@@ -1616,13 +1632,14 @@ export default function Home() {
     if (!cleaned.trim()) return;
 
     const requestId = nextChatRequestId(source);
+    const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
 
     try {
       setBusy(true);
       setPendingChatTurn({
         requestId,
-        sessionId: activeChatSessionId,
+        sessionId: currentSessionId,
         source,
         userMessage: cleaned,
         status: "thinking",
@@ -1778,6 +1795,7 @@ export default function Home() {
     }
 
     const requestId = nextChatRequestId("voice");
+    const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
 
     try {
@@ -1786,7 +1804,7 @@ export default function Home() {
       setBusy(true);
       setPendingChatTurn({
         requestId,
-        sessionId: activeChatSessionId,
+        sessionId: currentSessionId,
         source: "voice",
         userMessage: "Voice message",
         status: "thinking",
@@ -1861,7 +1879,7 @@ export default function Home() {
       }
     } catch (error: unknown) {
       if (isActiveChatRequest(requestId)) {
-        const message = assistantFailureMessage(error);
+        const message = VOICE_UNAVAILABLE_MESSAGE;
         showPendingAssistantError(requestId, message, "Voice message", "voice");
         warnChatFailure(error, requestId, "voice");
       }

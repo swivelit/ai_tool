@@ -187,6 +187,13 @@ if jai_android_abi_list_contains "x86_64" "$SELECTED_ANDROID_ABIS" && ! is_truth
   info "x86_64 emulator detected; enabling JAI_DEBUG_LITE=1. Set JAI_DEBUG_FULL_NATIVE=1 to test the full native runtime."
 fi
 
+export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-false}"
+if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
+  info "Debug APK voice routing: local/native STT (manual development opt-in)"
+else
+  info "Debug APK voice routing: backend Sarvam (default)"
+fi
+
 info "Building debug APK first"
 BUILD_TYPE=debug ./build-apk.sh
 

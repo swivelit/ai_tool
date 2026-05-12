@@ -425,6 +425,15 @@ export const runtime = {
     expect(buildApk).not.toContain("EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false");
   });
 
+  it("defaults APK recorded voice routing to backend Sarvam unless explicitly opted into local STT", () => {
+    const buildApk = readRepo("build-apk.sh");
+
+    expect(buildApk).toContain('export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="false"');
+    expect(buildApk).not.toContain('export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="true"');
+    expect(buildApk).toContain("Voice routing: backend Sarvam (default)");
+    expect(buildApk).toContain("Voice routing: local/native STT (development opt-in)");
+  });
+
   it("validates Expo config before Android prebuild so local release metadata failures stop early", () => {
     const buildApk = readRepo("build-apk.sh");
     const configIndex = buildApk.indexOf("npx expo config --type public");
@@ -495,6 +504,7 @@ export const runtime = {
 
     expect(appConfig.expo.extra.LOCAL_MODEL_RUNTIME_MODE).toBe("native_on_device");
     expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("false");
+    expect(appConfig.expo.extra.USE_LOCAL_VOICE_PIPELINE).toBe("false");
   });
 
   it("allows debug app.config to omit Firebase env", async () => {
@@ -530,6 +540,7 @@ export const runtime = {
 
     expect(appConfig.expo.extra.LOCAL_MODEL_CDN_BASE_URL).toBe("https://models.example.test");
     expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("true");
+    expect(appConfig.expo.extra.USE_LOCAL_VOICE_PIPELINE).toBe("false");
     expect(appConfig.expo.extra.EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B).toBe("a".repeat(64));
   });
 
@@ -585,7 +596,7 @@ export const runtime = {
       JAI_LLAMA_CPP_DIR: path.join(os.tmpdir(), "jai-missing-llama-cpp"),
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
-      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
       ...validReleaseModelMetadata,
       ...validReleaseFirebaseEnv,
     });
@@ -605,7 +616,7 @@ export const runtime = {
       BUILD_TYPE: "release",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
-      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
       ...validReleaseModelMetadata,
       ...firebaseWithoutProjectId,
       EXPO_PUBLIC_FIREBASE_API_KEY: secretLikeValue,
@@ -624,7 +635,7 @@ export const runtime = {
       BUILD_TYPE: "release",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "local_adapter",
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "local_adapter_dev",
-      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
       ...validReleaseModelMetadata,
       ...validReleaseFirebaseEnv,
     });
@@ -641,7 +652,7 @@ export const runtime = {
       BUILD_TYPE: "release",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
-      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
       ...metadataWithoutBase,
       ...validReleaseFirebaseEnv,
       EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B: "https://YOUR_MODEL_CDN/models/gemma.gguf",
@@ -660,7 +671,7 @@ export const runtime = {
       BUILD_TYPE: "release",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
-      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
       ...metadataWithoutBytes,
       ...validReleaseFirebaseEnv,
     });
@@ -675,7 +686,7 @@ export const runtime = {
       BUILD_TYPE: "release",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
-      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
       ...metadataWithoutSha,
       ...validReleaseFirebaseEnv,
     });

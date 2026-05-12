@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  LogBox,
   Modal,
   Pressable,
   StyleSheet,
@@ -19,7 +20,7 @@ import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
 import { resolveDesiredRoute } from "@/lib/appBoot";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
-import { isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
+import { isAnyE2eEnvEnabled, isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
 import {
   getModelDeliveryMode,
   getModelInstallStatus,
@@ -44,6 +45,10 @@ type AlertState = {
   cancelable: boolean;
   onDismiss?: (() => void) | undefined;
 } | null;
+
+if (isAnyE2eEnvEnabled()) {
+  LogBox.ignoreAllLogs(true);
+}
 
 function BootScreen() {
   return (
@@ -421,7 +426,7 @@ function AppShell() {
         <Stack.Screen name="onboarding/questionnaire" />
         <Stack.Screen name="setup" />
         <Stack.Screen name="model-setup" />
-        <Stack.Screen name="(chat)" />
+        <Stack.Screen name="(chat)/index" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="item/[id]" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />

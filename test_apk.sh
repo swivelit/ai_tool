@@ -166,6 +166,19 @@ tap_desc() {
   return 1
 }
 
+tap_desc_offset() {
+  local desc="$1"
+  local dx="${2:-0}"
+  local dy="${3:-0}"
+  local center x y
+  if center="$(find_ui_center desc "$desc" "tap-desc-${desc//[^A-Za-z0-9]/_}")"; then
+    read -r x y <<< "$center"
+    adb shell input tap "$((x + dx))" "$((y + dy))"
+    return 0
+  fi
+  return 1
+}
+
 type_text() {
   local raw="$1"
   local escaped="${raw// /%s}"
@@ -173,6 +186,14 @@ type_text() {
   escaped="${escaped//</\\<}"
   escaped="${escaped//>/\\>}"
   adb shell input text "$escaped"
+}
+
+clear_chat_input() {
+  tap_desc "chat-input" || return 1
+  adb shell input keyevent 123 >/dev/null 2>&1 || true
+  for _ in {1..80}; do
+    adb shell input keyevent 67 >/dev/null 2>&1 || true
+  done
 }
 
 wait_for_text() {
@@ -194,6 +215,99 @@ wait_for_desc() {
   local deadline=$((SECONDS + timeout))
   while [[ "$SECONDS" -lt "$deadline" ]]; do
     if find_ui_center desc "$desc" "wait-desc-${desc//[^A-Za-z0-9]/_}" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+dismiss_expo_warning() {
+  local xml_path center x y
+  xml_path="$(dump_ui "dismiss-expo-warning")"
+  [[ -s "$xml_path" ]] || return 1
+  if center="$(python3 - "$xml_path" <<'PY'
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+
+def bounds_tuple(value):
+    match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", value or "")
+    if not match:
+        return None
+    return tuple(map(int, match.groups()))
+
+def center(bounds):
+    parsed = bounds_tuple(bounds)
+    if not parsed:
+        return None
+    left, top, right, bottom = parsed
+    return (left + right) // 2, (top + bottom) // 2
+
+for node in root.iter():
+    label = f"{node.attrib.get('content-desc') or ''} {node.attrib.get('text') or ''}"
+    if "Open debugger to view warnings" not in label:
+        continue
+
+    warning_bounds = bounds_tuple(node.attrib.get("bounds"))
+    if not warning_bounds:
+        continue
+
+    left, top, right, bottom = warning_bounds
+    fallback = (right - 58, (top + bottom) // 2)
+    for child in node.iter():
+        if child is node:
+            continue
+        if child.attrib.get("clickable") != "true":
+            continue
+        child_center = center(child.attrib.get("bounds"))
+        if child_center and child_center[0] >= right - 120:
+            print(child_center[0], child_center[1])
+            sys.exit(0)
+
+    print(fallback[0], fallback[1])
+    sys.exit(0)
+
+sys.exit(1)
+PY
+)"; then
+    read -r x y <<< "$center"
+    adb shell input tap "$x" "$y" >/dev/null 2>&1 || true
+    sleep 1
+    return 0
+  fi
+  return 1
+}
+
+chat_input_text() {
+  local label="${1:-chat-input-text}"
+  local xml_path
+  xml_path="$(dump_ui "$label")"
+  [[ -s "$xml_path" ]] || return 1
+  python3 - "$xml_path" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+for node in root.iter():
+    if node.attrib.get("resource-id") == "chat-input" or node.attrib.get("content-desc") == "chat-input":
+        print(node.attrib.get("text") or "")
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+wait_for_chat_input_cleared() {
+  local previous_text="$1"
+  local timeout="${2:-8}"
+  local label="${3:-chat-input-cleared}"
+  local deadline=$((SECONDS + timeout))
+  local current_text
+  while [[ "$SECONDS" -lt "$deadline" ]]; do
+    current_text="$(chat_input_text "${label}-${SECONDS}" || true)"
+    if [[ "$current_text" != *"$previous_text"* ]]; then
       return 0
     fi
     sleep 1
@@ -430,6 +544,13 @@ fi
 
 export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
 export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
+export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-false}"
+
+if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
+  info "Debug APK voice routing: local/native STT (manual development opt-in)"
+else
+  info "Debug APK voice routing: backend Sarvam (default)"
+fi
 
 if is_truthy "${STRICT_NATIVE:-}"; then
   unset JAI_DEBUG_LITE
@@ -510,6 +631,7 @@ done
 capture_step "launch"
 
 if wait_for_desc "chat-input" 60; then
+  dismiss_expo_warning || true
   capture_step "chat-ready"
 else
   capture_step "auth-or-setup"
@@ -525,16 +647,25 @@ fi
 
 for message in "hello" "what can you do"; do
   label="$(printf '%s' "$message" | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]')"
-  if ! tap_desc "chat-input"; then
-    mark_failed "tap-chat-input"
+  dismiss_expo_warning || true
+  if ! clear_chat_input; then
+    mark_failed "clear-chat-input"
     continue
   fi
   sleep 1
   type_text "$message"
   sleep 1
+  dismiss_expo_warning || true
   local_start="$(now_ms)"
-  if ! tap_desc "chat-send-button"; then
+  adb shell input keyevent 111 >/dev/null 2>&1 || true
+  sleep 1
+  if ! tap_desc_offset "chat-send-button" 0 35; then
     mark_failed "tap-chat-send-button"
+    continue
+  fi
+  if ! wait_for_chat_input_cleared "$message" 8 "input-cleared-${label}"; then
+    mark_failed "message-not-submitted-${label}"
+    capture_step "submit-failed-${label}"
     continue
   fi
   wait_for_desc "chat-thinking-indicator" 8 || true
@@ -543,6 +674,15 @@ for message in "hello" "what can you do"; do
   local_end="$(now_ms)"
   RESPONSE_TIMINGS+=("${message}: $((local_end - local_start))ms")
 done
+
+if [[ -f "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml" ]]; then
+  if ! grep -q 'text="hello"' "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml"; then
+    mark_failed "first-message-not-visible-after-second"
+  fi
+  if ! grep -q 'text="what can you do"' "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml"; then
+    mark_failed "second-message-not-visible"
+  fi
+fi
 
 if wait_for_desc "app-alert-modal" 2; then
   capture_step "alert-or-setup"

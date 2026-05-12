@@ -821,13 +821,6 @@ function sanitizeVoiceUnavailableReason(error: unknown) {
   return LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE;
 }
 
-function isVoiceUnavailableCause(error: unknown) {
-  return (
-    error instanceof LocalVoiceUnavailableError ||
-    isNativeSttNotImplementedError(error)
-  );
-}
-
 function toVoiceUnavailableError(error: unknown) {
   if (error instanceof LocalVoiceUnavailableError) return error;
   return new LocalVoiceUnavailableError(sanitizeVoiceUnavailableReason(error));
@@ -915,8 +908,8 @@ function isFormDataPayload(value: unknown): value is FormData {
   }
 
   // React Native FormData stores parts in a private _parts array. This keeps
-  // apiPost("/api/transcribe-and-analyze", formData) on the same local-first
-  // path as apiPostForm(...) without making backend the default route.
+  // apiPost("/api/transcribe-and-analyze", formData) on the same voice route
+  // as apiPostForm(...). The route still defaults to the authenticated backend.
   return Array.isArray((value as any)?._parts);
 }
 
@@ -1074,8 +1067,9 @@ async function transcribeAudioWithNativeBridge(
   const transcript = normalizeTranscriptText(extractTranscriptText(payload));
 
   if (!transcript) {
-    throw new Error(
-      `Native on-device STT bridge "${LOCAL_ON_DEVICE_NATIVE_MODULE}.transcribeAudio()" returned an empty transcript for model "${LOCAL_STT_MODEL}". Backend/OpenAI fallback is not automatic.`,
+    throw new LocalVoiceUnavailableError(
+      LOCAL_VOICE_RECOGNITION_UNAVAILABLE_MESSAGE,
+      { suggestedAction: "configure_local_stt" },
     );
   }
 
@@ -1234,10 +1228,6 @@ async function handleLocalTranscribeAndAnalyze(
       resolvedSpeechLanguage,
     );
   } catch (error) {
-    if (!isVoiceUnavailableCause(error)) {
-      throw error;
-    }
-
     const unavailable = toVoiceUnavailableError(error);
     if (userAllowedCloudFallback) {
       return postVoiceFormToBackend(path, form);
@@ -1611,9 +1601,9 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
 
     if (await shouldUseLocalVoicePipeline()) {
       throw new Error(
-        "Local-first recorded voice routing requires FormData with a file part. " +
+        "Local recorded voice routing requires FormData with a file part. " +
           "Use apiPostForm('/api/transcribe-and-analyze', formData) or pass FormData to apiPost; " +
-          "backend/OpenAI fallback is not automatic when audio input is missing.",
+          "backend Sarvam fallback cannot run when audio input is missing.",
       );
     }
   }

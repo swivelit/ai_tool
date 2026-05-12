@@ -1935,6 +1935,24 @@ def _sarvam_api_key() -> str:
     return (os.getenv("SARVAM_API_KEY") or SARVAM_API_KEY or "").strip()
 
 
+def _redact_sarvam_provider_message(message: str) -> str:
+    redacted = str(message or "")
+    api_key = _sarvam_api_key()
+    if api_key:
+        redacted = redacted.replace(api_key, "[REDACTED]")
+    redacted = re.sub(
+        r"(?i)(api[-_ ]?subscription[-_ ]?key\s*[:=]\s*)[^\s,;]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(authorization\s*[:=]\s*bearer\s+)[A-Za-z0-9._~+/=-]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    return redacted
+
+
 def _sarvam_provider_error_detail(response: requests.Response, label: str) -> str:
     message = ""
     try:
@@ -1953,6 +1971,8 @@ def _sarvam_provider_error_detail(response: requests.Response, label: str) -> st
 
     if not message:
         message = str(getattr(response, "text", "") or "").strip()
+
+    message = _redact_sarvam_provider_message(message)
 
     if len(message) > 300:
         message = f"{message[:300]}..."
@@ -2021,7 +2041,8 @@ def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> st
     except requests.Timeout as exc:
         raise HTTPException(504, "STT provider timed out.") from exc
     except requests.RequestException as exc:
-        raise HTTPException(502, f"STT provider error: {exc}") from exc
+        detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
+        raise HTTPException(502, f"STT provider error: {detail}") from exc
 
     if response.status_code != 200:
         raise HTTPException(
@@ -2591,7 +2612,8 @@ def api_tts(
     except requests.Timeout:
         raise HTTPException(status_code=504, detail="TTS provider timed out.")
     except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"TTS provider error: {exc}")
+        detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
+        raise HTTPException(status_code=502, detail=f"TTS provider error: {detail}")
     if response.status_code in [422, 400]:
         legacy_payload = {
             **req_payload,
@@ -2608,7 +2630,8 @@ def api_tts(
         except requests.Timeout:
             raise HTTPException(status_code=504, detail="TTS retry timed out.")
         except requests.RequestException as exc:
-            raise HTTPException(status_code=502, detail=f"TTS retry failed: {exc}")
+            detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
+            raise HTTPException(status_code=502, detail=f"TTS retry failed: {detail}")
 
     if response.status_code == 200:
         try:

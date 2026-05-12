@@ -227,9 +227,9 @@ if [[ "$BUILD_TYPE" == "release" || "$RUNTIME_MODE" == "native_on_device" || "$I
 fi
 
 if [[ -z "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" ]]; then
-  # Recorded voice must enter the same local-first pipeline as text chat.
-  # Release verification below fails if this is explicitly disabled.
-  export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="true"
+  # Recorded voice defaults to authenticated backend Sarvam. Phone-local/native
+  # STT is an explicit development-only opt-in.
+  export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="false"
 fi
 
 command -v node >/dev/null 2>&1 || fail "Node.js is required. Install Node 20+ first."
@@ -293,6 +293,11 @@ info "Build type: $BUILD_TYPE"
 info "Android ABIs: $JAI_ANDROID_ABIS"
 info "Runtime mode: ${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}"
 info "Model delivery mode: ${EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE:-download_on_first_launch}"
+if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
+  info "Voice routing: local/native STT (development opt-in)"
+else
+  info "Voice routing: backend Sarvam (default)"
+fi
 if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" ]]; then
   info "llama.cpp required: yes (production/release native build guard enabled)"
 fi
@@ -331,7 +336,7 @@ if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" || "$IS_PRODUCTION_OR_RELEASE_BUILD" =
   if npm run release:verify-local-first; then
     info "Local-first release configuration verified"
   else
-    fail "Local-first release verification failed. Configure llama.cpp, the native module, GGUF model URLs, exact byte sizes, SHA-256 hashes, and EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true."
+    fail "Local-first release verification failed. Configure llama.cpp, the native module, GGUF model URLs, exact byte sizes, and SHA-256 hashes. Recorded voice uses backend Sarvam by default; set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true only for development local/native STT testing."
   fi
 
   info "Verifying native llama.cpp build/runtime wiring"

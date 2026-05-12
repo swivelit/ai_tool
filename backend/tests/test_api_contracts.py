@@ -193,6 +193,53 @@ def test_sarvam_stt_missing_key_returns_503(client, monkeypatch):
     assert response.json()["detail"] == "SARVAM_API_KEY is not configured."
 
 
+def test_sarvam_stt_timeout_returns_504(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    def fake_post(*args, **kwargs):
+        raise main_module.requests.Timeout("slow provider")
+
+    monkeypatch.setattr(main_module.requests, "post", fake_post)
+
+    response = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
+        headers=headers,
+        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+    )
+
+    assert response.status_code == 504
+    assert response.json()["detail"] == "STT provider timed out."
+
+
+def test_sarvam_stt_provider_error_redacts_backend_key(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    class DummyResponse:
+        status_code = 401
+        text = "api-subscription-key=test-key"
+
+        def json(self):
+            return {"error": {"message": "invalid test-key api-subscription-key=test-key"}}
+
+    monkeypatch.setattr(main_module.requests, "post", lambda *args, **kwargs: DummyResponse())
+
+    response = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
+        headers=headers,
+        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+    )
+
+    assert response.status_code == 401
+    detail = response.json()["detail"]
+    assert "STT provider returned 401" in detail
+    assert "test-key" not in detail
+    assert "[REDACTED]" in detail
+
+
 def test_tts_uses_modern_text_payload_and_returns_audio(client, monkeypatch):
     create_test_user()
     headers = auth_headers("test-uid", "test@example.com")

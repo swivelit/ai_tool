@@ -93,7 +93,7 @@ describe("API client contracts", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { apiPostForm } = await import("../lib/api");
+    const { apiPostForm, getClientRoutingDefaults } = await import("../lib/api");
     const form = {
       _parts: [
         [
@@ -107,6 +107,7 @@ describe("API client contracts", () => {
       ],
     } as unknown as FormData;
 
+    expect(getClientRoutingDefaults().voice).toBe("backend");
     const payload = await apiPostForm<any>(
       "/api/transcribe-and-analyze?user_id=7&reply_language=en",
       form,
@@ -114,6 +115,70 @@ describe("API client contracts", () => {
 
     expect(payload.ok).toBe(true);
     expect(payload.assistant.text).toBe("Hello.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
+    );
+  });
+
+  it("does not activate local recorded voice route unless USE_LOCAL_VOICE_PIPELINE is true", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            LOCAL_MODEL_BASE_URL: "http://192.168.1.23:10000/v1",
+            LOCAL_MODEL_RUNTIME_MODE: "local_adapter",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const fetchMock = vi.fn(async (..._args: any[]) =>
+      jsonResponse({
+        ok: true,
+        item: {
+          id: 10,
+          intent: "assistant",
+          category: "Other",
+          raw_text: "backend transcript",
+          details: "Backend voice answer.",
+          source: "voice",
+        },
+        assistant: {
+          text: "Backend voice answer.",
+          english: "Backend voice answer.",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPostForm, getClientRoutingDefaults } = await import("../lib/api");
+    const form = {
+      _parts: [
+        [
+          "file",
+          {
+            uri: "file:///tmp/audio.m4a",
+            name: "audio.m4a",
+            type: "audio/m4a",
+          },
+        ],
+      ],
+    } as unknown as FormData;
+
+    expect(getClientRoutingDefaults().voice).toBe("backend");
+    await apiPostForm<any>(
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      form,
+    );
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toBe(
       "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
@@ -160,7 +225,7 @@ describe("API client contracts", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { apiPostForm } = await import("../lib/api");
+    const { apiPostForm, getClientRoutingDefaults } = await import("../lib/api");
     const form = {
       _parts: [
         [
@@ -173,6 +238,7 @@ describe("API client contracts", () => {
         ],
       ],
     } as unknown as FormData;
+    expect(getClientRoutingDefaults().voice).toBe("local");
     const payload = await apiPostForm<any>(
       "/api/transcribe-and-analyze?user_id=7&reply_language=en",
       form,

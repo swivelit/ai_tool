@@ -50,6 +50,36 @@ describe("APK test harness", () => {
     expect(source).toContain('" E AndroidRuntime:"');
   });
 
+  it("verifies chat messages are submitted and remain visible", () => {
+    const source = readRepo("test_apk.sh");
+    const chatSource = readMobile("app/(chat)/index.tsx");
+
+    expect(source).toContain("wait_for_chat_input_cleared");
+    expect(source).toContain("message-not-submitted");
+    expect(source).toContain("first-message-not-visible-after-second");
+    expect(source).toContain("second-message-not-visible");
+    expect(source).toContain("input keyevent 111");
+    expect(source).toContain('tap_desc_offset "chat-send-button" 0 35');
+    expect(source).toContain("dismiss_expo_warning");
+    expect(source).toContain("Open debugger to view warnings");
+    expect(chatSource).toContain("activeChatSessionIdRef");
+    expect(chatSource).toContain("!activeChatSessionIdRef.current && !activeChatRequestIdRef.current");
+  });
+
+  it("registers the chat index route without triggering the Expo Router warning overlay", () => {
+    const source = readMobile("app/_layout.tsx");
+
+    expect(source).toContain('<Stack.Screen name="(chat)/index" />');
+    expect(source).not.toContain('<Stack.Screen name="(chat)" />');
+  });
+
+  it("suppresses LogBox only during E2E debug runs so warnings do not block the composer", () => {
+    const source = readMobile("app/_layout.tsx");
+
+    expect(source).toContain("isAnyE2eEnvEnabled");
+    expect(source).toContain("LogBox.ignoreAllLogs(true)");
+  });
+
   it("only skips 16 KB installs when APK validation itself failed", () => {
     const source = readRepo("test_apk.sh");
 
@@ -75,6 +105,20 @@ describe("APK test harness", () => {
     expect(source).toContain("REUSE_APK=1 SKIP_PRECHECKS=1");
     expect(source).toContain("./test_apk.sh");
     expect(source).toContain('METRO_LOG="$DIST_DIR/launch-debug-metro-${METRO_PORT}.log"');
+  });
+
+  it("debug APK scripts default voice tests to backend routing and keep manual local opt-in", () => {
+    const launchDebug = readRepo("launch-debug_apk.sh");
+    const testApk = readRepo("test_apk.sh");
+
+    for (const source of [launchDebug, testApk]) {
+      expect(source).toContain(
+        'export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-false}"',
+      );
+      expect(source).toContain("Debug APK voice routing: backend Sarvam (default)");
+      expect(source).toContain("local/native STT (manual development opt-in)");
+      expect(source).not.toContain('EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-true');
+    }
   });
 
   it("release app config rejects E2E mock auth env", async () => {
