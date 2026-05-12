@@ -43,6 +43,15 @@ import {
   ChatHistoryItem,
   normalizeChatTurnPayload,
 } from "@/lib/chatResponse";
+import {
+  classifyChatHistoryItemsForDeletion,
+  filterHistoryItemsByHiddenItemIds,
+  filterLocalChatHistoryItems,
+  localChatItemsStorageKey,
+  markChatHistoryItemsOrigin,
+  mergeChatHistoryItems,
+  uniqueNumberList,
+} from "@/lib/chatHistory";
 import { parseDatetime } from "@/lib/datetime";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import { saveScheduledTask } from "@/lib/localAgents";
@@ -193,24 +202,6 @@ function getHistoryPreview(item: ChatHistoryItem) {
   return "Assistant response";
 }
 
-function uniqueNumberList(values: number[]) {
-  return Array.from(
-    new Set(values.map((value) => Number(value)).filter((value) => Number.isFinite(value)))
-  );
-}
-
-function filterHistoryItemsByHiddenItemIds(
-  items: ChatHistoryItem[],
-  hiddenItemIdSet: Set<number>
-) {
-  if (!hiddenItemIdSet.size) return items;
-
-  return items.filter((item) => {
-    const itemId = Number(item.id);
-    return !Number.isFinite(itemId) || !hiddenItemIdSet.has(itemId);
-  });
-}
-
 function sessionTimeValue(value?: string | null) {
   if (!value) return 0;
   const parsed = new Date(value).getTime();
@@ -252,22 +243,6 @@ function createChatSessionFromItem(item: ChatHistoryItem): ChatSessionRecord {
     updatedAt: timestamp,
     title: getHistoryTitle(item),
   };
-}
-
-function upsertHistoryItems(existing: ChatHistoryItem[], additions: ChatHistoryItem[]) {
-  const map = new Map<number, ChatHistoryItem>();
-
-  [...existing, ...additions].forEach((item) => {
-    const itemId = Number(item?.id);
-    if (!Number.isFinite(itemId)) return;
-    map.set(itemId, {
-      ...(map.get(itemId) || {}),
-      ...item,
-      id: itemId,
-    } as ChatHistoryItem);
-  });
-
-  return Array.from(map.values()).sort((a, b) => Number(b.id) - Number(a.id));
 }
 
 function reconcileChatSessions(
@@ -385,6 +360,8 @@ export default function Home() {
   const handsFreeBlockedRef = useRef(false);
   const activeChatRequestIdRef = useRef<string | null>(null);
   const modelSetupAlertLastShownAtRef = useRef(0);
+  const historyItemsRef = useRef<ChatHistoryItem[]>([]);
+  const chatSessionsRef = useRef<ChatSessionRecord[]>([]);
   const handsFreeRuntimeRef = useRef({
     busy: false,
     listening: false,
@@ -453,13 +430,13 @@ export default function Home() {
     () => `${HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX}:${profile?.userId || "guest"}`,
     [profile?.userId]
   );
+  const localChatItemStorageKey = useMemo(
+    () => localChatItemsStorageKey(profile?.userId),
+    [profile?.userId]
+  );
   const hiddenChatSessionIdSet = useMemo(
     () => new Set(hiddenChatSessionIds),
     [hiddenChatSessionIds]
-  );
-  const hiddenChatItemIdSet = useMemo(
-    () => new Set(uniqueNumberList(hiddenChatItemIds)),
-    [hiddenChatItemIds]
   );
   const historyItemsById = useMemo(() => {
     const next = new Map<number, ChatHistoryItem>();
@@ -471,6 +448,14 @@ export default function Home() {
     });
     return next;
   }, [historyItems]);
+
+  useEffect(() => {
+    historyItemsRef.current = historyItems;
+  }, [historyItems]);
+
+  useEffect(() => {
+    chatSessionsRef.current = chatSessions;
+  }, [chatSessions]);
 
   const latestHistory = useMemo(() => {
     return chatSessions
@@ -1022,11 +1007,25 @@ export default function Home() {
     try {
       const suffix = profile?.userId ? `?user_id=${profile.userId}` : "";
       const data = await apiGet<ChatHistoryItem[]>(`/items${suffix}`);
-      return Array.isArray(data) ? data : [];
+      return Array.isArray(data) ? markChatHistoryItemsOrigin(data, "backend") : [];
     } catch {
       return [];
     }
   }, [profile?.userId]);
+
+  const readStoredLocalChatItems = useCallback(async (): Promise<ChatHistoryItem[]> => {
+    try {
+      const raw = await AsyncStorage.getItem(localChatItemStorageKey);
+      if (!raw) return [];
+
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+
+      return markChatHistoryItemsOrigin(parsed as ChatHistoryItem[], "local");
+    } catch {
+      return [];
+    }
+  }, [localChatItemStorageKey]);
 
   const readStoredChatSessions = useCallback(async (): Promise<ChatSessionRecord[]> => {
     try {
@@ -1104,10 +1103,36 @@ export default function Home() {
     }
   }
 
+  async function persistLocalChatItems(nextItems: ChatHistoryItem[]) {
+    const localItems = filterLocalChatHistoryItems(nextItems);
+
+    try {
+      await AsyncStorage.setItem(localChatItemStorageKey, JSON.stringify(localItems));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  async function removeStoredLocalChatItemsByIds(itemIds: number[]) {
+    const itemIdSet = new Set(uniqueNumberList(itemIds));
+    if (!itemIdSet.size) return;
+
+    const storedItems = await readStoredLocalChatItems();
+    const nextStoredItems = storedItems.filter((item) => !itemIdSet.has(Number(item.id)));
+    await persistLocalChatItems(nextStoredItems);
+  }
+
   const bootstrapChatState = useCallback(async () => {
-    const [itemsFromApi, storedSessions, storedHiddenSessionIds, storedHiddenItemIds] =
+    const [
+      itemsFromApi,
+      storedLocalItems,
+      storedSessions,
+      storedHiddenSessionIds,
+      storedHiddenItemIds,
+    ] =
       await Promise.all([
         readChatHistoryFromApi(),
+        readStoredLocalChatItems(),
         readStoredChatSessions(),
         readHiddenChatSessionIds(),
         readHiddenChatItemIds(),
@@ -1121,16 +1146,18 @@ export default function Home() {
     ]);
     const migratedHiddenItemIdSet = new Set(migratedHiddenItemIds);
     const visibleItemsFromApi = filterHistoryItemsByHiddenItemIds(
-      itemsFromApi,
+      mergeChatHistoryItems(storedLocalItems, itemsFromApi),
       migratedHiddenItemIdSet
     );
 
     setHistoryItems(visibleItemsFromApi);
+    historyItemsRef.current = visibleItemsFromApi;
     setHiddenChatSessionIds(storedHiddenSessionIds);
     setHiddenChatItemIds(migratedHiddenItemIds);
 
     const reconciled = reconcileChatSessions(visibleItemsFromApi, storedSessions);
     setChatSessions(reconciled);
+    chatSessionsRef.current = reconciled;
     setActiveChatSessionId(null);
 
     try {
@@ -1140,6 +1167,10 @@ export default function Home() {
           hiddenChatItemStorageKey,
           JSON.stringify(migratedHiddenItemIds)
         ),
+        AsyncStorage.setItem(
+          localChatItemStorageKey,
+          JSON.stringify(filterLocalChatHistoryItems(visibleItemsFromApi))
+        ),
       ]);
     } catch {
       // ignore storage failures
@@ -1147,9 +1178,11 @@ export default function Home() {
   }, [
     chatSessionStorageKey,
     hiddenChatItemStorageKey,
+    localChatItemStorageKey,
     readChatHistoryFromApi,
     readHiddenChatItemIds,
     readHiddenChatSessionIds,
+    readStoredLocalChatItems,
     readStoredChatSessions,
   ]);
 
@@ -1157,21 +1190,43 @@ export default function Home() {
     void bootstrapChatState();
   }, [bootstrapChatState]);
 
-  async function refreshHistoryAndSessions(extraItems: ChatHistoryItem[] = []) {
-    const itemsFromApi = await readChatHistoryFromApi();
-    const mergedItems = upsertHistoryItems(itemsFromApi, extraItems);
+  async function refreshHistoryAndSessions(
+    extraItems: ChatHistoryItem[] = [],
+    hiddenItemIdsOverride?: number[],
+  ) {
+    const [itemsFromApi, storedLocalItems] = await Promise.all([
+      readChatHistoryFromApi(),
+      readStoredLocalChatItems(),
+    ]);
+    const mergedItems = mergeChatHistoryItems(
+      historyItemsRef.current,
+      storedLocalItems,
+      itemsFromApi,
+      extraItems,
+    );
+    const effectiveHiddenItemIdSet = new Set(
+      uniqueNumberList(hiddenItemIdsOverride ?? hiddenChatItemIds),
+    );
     const visibleMergedItems = filterHistoryItemsByHiddenItemIds(
       mergedItems,
-      hiddenChatItemIdSet
+      effectiveHiddenItemIdSet
     );
 
     setHistoryItems(visibleMergedItems);
+    historyItemsRef.current = visibleMergedItems;
 
-    const reconciled = reconcileChatSessions(visibleMergedItems, chatSessions);
+    const reconciled = reconcileChatSessions(visibleMergedItems, chatSessionsRef.current);
     setChatSessions(reconciled);
+    chatSessionsRef.current = reconciled;
 
     try {
-      await AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(reconciled));
+      await Promise.all([
+        AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(reconciled)),
+        AsyncStorage.setItem(
+          localChatItemStorageKey,
+          JSON.stringify(filterLocalChatHistoryItems(visibleMergedItems))
+        ),
+      ]);
     } catch {
       // ignore storage failures
     }
@@ -1186,7 +1241,7 @@ export default function Home() {
     const itemId = Number(item.id);
     if (!Number.isFinite(itemId)) return;
 
-    let workingSessions = reconcileChatSessions(latestItems, chatSessions)
+    let workingSessions = reconcileChatSessions(latestItems, chatSessionsRef.current)
       .map((session) => ({
         ...session,
         itemIds: session.itemIds.filter((value) => value !== itemId),
@@ -1221,6 +1276,7 @@ export default function Home() {
 
     workingSessions = workingSessions.sort(sortSessionsByRecent);
     setChatSessions(workingSessions);
+    chatSessionsRef.current = workingSessions;
 
     try {
       await AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(workingSessions));
@@ -1269,7 +1325,8 @@ export default function Home() {
     if (!selectedHistoryItem) return;
 
     const targetItem = selectedHistoryItem;
-    const deletedItemIds = uniqueNumberList(targetItem.items.map((item) => Number(item.id)));
+    const deletionGroups = classifyChatHistoryItemsForDeletion(targetItem.items);
+    const deletedItemIds = deletionGroups.allItemIds;
     const nextHiddenChatSessionIds = Array.from(
       new Set([...hiddenChatSessionIds, targetItem.id])
     );
@@ -1291,39 +1348,47 @@ export default function Home() {
               setActiveChatSessionId(null);
             }
 
-            setHistoryItems((prev) =>
-              filterHistoryItemsByHiddenItemIds(prev, new Set(nextHiddenChatItemIds))
+            const optimisticHistoryItems = filterHistoryItemsByHiddenItemIds(
+              historyItemsRef.current,
+              new Set(nextHiddenChatItemIds)
             );
-            setChatSessions((prev) =>
-              prev.filter((session) => session.id !== targetItem.id)
+            setHistoryItems(optimisticHistoryItems);
+            historyItemsRef.current = optimisticHistoryItems;
+            const optimisticSessions = chatSessionsRef.current.filter(
+              (session) => session.id !== targetItem.id
             );
+            setChatSessions(optimisticSessions);
+            chatSessionsRef.current = optimisticSessions;
 
             await Promise.all([
               persistHiddenChatSessionIds(nextHiddenChatSessionIds),
               persistHiddenChatItemIds(nextHiddenChatItemIds),
+              removeStoredLocalChatItemsByIds(deletionGroups.localItemIds),
             ]);
 
             closeHistoryItemActions();
 
-            try {
-              await Promise.all(
-                deletedItemIds.map((itemId) =>
-                  apiDelete(
-                    `/items/${itemId}${
-                      profile?.userId ? `?user_id=${profile.userId}` : ""
-                    }`
+            if (deletionGroups.backendItemIds.length) {
+              try {
+                await Promise.all(
+                  deletionGroups.backendItemIds.map((itemId) =>
+                    apiDelete(
+                      `/items/${itemId}${
+                        profile?.userId ? `?user_id=${profile.userId}` : ""
+                      }`
+                    )
                   )
-                )
-              );
-
-              await refreshHistoryAndSessions();
-            } catch (error: any) {
-              Alert.alert(
-                "Delete sync failed",
-                error?.message ||
-                  "The chat was hidden on this device, but the server copy could not be deleted."
-              );
+                );
+              } catch (error: any) {
+                Alert.alert(
+                  "Delete sync failed",
+                  error?.message ||
+                    "The chat was hidden on this device, but the server copy could not be deleted."
+                );
+              }
             }
+
+            await refreshHistoryAndSessions([], nextHiddenChatItemIds);
           },
         },
       ]
@@ -1495,6 +1560,7 @@ export default function Home() {
     try {
       const data = await apiPost<{ audio_base64?: string }>("/api/tts", {
         text: textValue,
+        target_language_code: settings.languageMode === "ta" ? "ta-IN" : "en-IN",
       });
 
       if (!data.audio_base64 || replyPlaybackTokenRef.current !== playbackToken) {

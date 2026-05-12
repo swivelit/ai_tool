@@ -54,13 +54,12 @@ describe("API client contracts", () => {
     vi.unstubAllGlobals();
   });
 
-  it("does not make backend primary when the legacy voice pipeline flag is disabled", async () => {
+  it("routes recorded voice to authenticated backend by default", async () => {
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
-            USE_LOCAL_VOICE_PIPELINE: false,
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
           },
         },
@@ -113,13 +112,12 @@ describe("API client contracts", () => {
       form,
     );
 
-    expect(payload.ok).toBe(false);
-    expect(payload.kind).toBe("cloud_consent_required");
-    expect(payload.assistant.text).toContain(
-      "Local voice recognition is not available in this build yet.",
+    expect(payload.ok).toBe(true);
+    expect(payload.assistant.text).toBe("Hello.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
     );
-    expect(JSON.stringify(payload)).not.toContain("JAI_NATIVE_STT_NOT_IMPLEMENTED");
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("returns the same nested voice contract from the local voice proxy", async () => {
@@ -192,14 +190,13 @@ describe("API client contracts", () => {
     expect(payload.pipeline.route_taken).toBe("reminder_create");
   });
 
-  it("defaults recorded voice to native local-first and does not silently call backend when native STT is missing", async () => {
+  it("defaults recorded voice to backend Sarvam route when native STT is missing", async () => {
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
-            USE_LOCAL_VOICE_PIPELINE: true,
           },
         },
       },
@@ -222,10 +219,18 @@ describe("API client contracts", () => {
     }));
     vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (..._args: any[]) =>
       jsonResponse({
         ok: true,
-        assistant: { text: "Backend should not be called." },
+        item: {
+          id: 14,
+          intent: "assistant",
+          category: "Other",
+          raw_text: "backend transcript",
+          details: "Backend voice answer.",
+          source: "voice",
+        },
+        assistant: { text: "Backend voice answer." },
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -244,24 +249,18 @@ describe("API client contracts", () => {
       ],
     } as unknown as FormData;
 
-    expect(getClientRoutingDefaults().voice).toBe("local");
+    expect(getClientRoutingDefaults().voice).toBe("backend");
     const payload = await apiPostForm<any>(
       "/api/transcribe-and-analyze?user_id=7&reply_language=en",
       form,
     );
 
-    expect(payload.ok).toBe(false);
-    expect(payload.kind).toBe("cloud_consent_required");
-    expect(payload.meta.voice).toMatchObject({
-      kind: "cloud_consent_required",
-      suggestedAction: "ask_user_consent",
-      localAnswerAvailable: false,
-    });
-    expect(payload.assistant.text).toContain(
-      "Local voice recognition is not available in this build yet.",
+    expect(payload.ok).toBe(true);
+    expect(payload.assistant.text).toBe("Backend voice answer.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
     );
-    expect(JSON.stringify(payload)).not.toContain("speech-to-text bridge");
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("uses cloud voice fallback only after explicit consent", async () => {
@@ -339,6 +338,7 @@ describe("API client contracts", () => {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
             LOCAL_ON_DEVICE_NATIVE_MODULE: "JaiOnDeviceModel",
+            USE_LOCAL_VOICE_PIPELINE: true,
           },
         },
       },
@@ -402,6 +402,7 @@ describe("API client contracts", () => {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
             LOCAL_ON_DEVICE_NATIVE_MODULE: "JaiOnDeviceModel",
+            USE_LOCAL_VOICE_PIPELINE: true,
           },
         },
       },
@@ -936,6 +937,7 @@ describe("API client contracts", () => {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
             LOCAL_ON_DEVICE_NATIVE_MODULE: "JaiOnDeviceModel",
+            USE_LOCAL_VOICE_PIPELINE: true,
           },
         },
       },

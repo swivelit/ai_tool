@@ -206,6 +206,8 @@ PERSONALITY_QUESTIONS_VERSION = 1
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_JSON_MODEL = os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini")
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
+SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
+SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
 
 client: Optional[openai.OpenAI] = None
 JOB_QUEUE: Optional[DBJobQueue] = None
@@ -1011,6 +1013,8 @@ Return ONLY JSON:
 
 class TTSRequest(BaseModel):
     text: str
+    target_language_code: Optional[str] = None
+    speaker: Optional[str] = None
 
 
 class ParseDatetimeRequest(BaseModel):
@@ -1917,41 +1921,120 @@ def _normalize_audio_language(language: Optional[str]) -> Optional[str]:
         return None
 
     # Let the transcription model auto-detect when requested.
-    if value in {"auto", "detect", "auto-detect", "autodetect"}:
+    if value in {"auto", "detect", "auto-detect", "autodetect", "unknown"}:
         return None
 
     if value.startswith("ta"):
-        return "ta"
+        return "ta-IN"
     if value.startswith("en"):
-        return "en"
+        return "en-IN"
     return None
 
 
+def _sarvam_api_key() -> str:
+    return (os.getenv("SARVAM_API_KEY") or SARVAM_API_KEY or "").strip()
+
+
+def _sarvam_provider_error_detail(response: requests.Response, label: str) -> str:
+    message = ""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        error_payload = payload.get("error") if isinstance(payload.get("error"), dict) else payload
+        message = str(
+            error_payload.get("message")
+            or error_payload.get("detail")
+            or error_payload.get("error")
+            or ""
+        ).strip()
+
+    if not message:
+        message = str(getattr(response, "text", "") or "").strip()
+
+    if len(message) > 300:
+        message = f"{message[:300]}..."
+
+    return f"{label} returned {response.status_code}{f': {message}' if message else ''}"
+
+
+def _extract_sarvam_transcript(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+
+    if not isinstance(payload, dict):
+        return ""
+
+    for key in ("transcript", "text", "transcript_text", "output_text"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    for key in ("results", "transcripts"):
+        values = payload.get(key)
+        if not isinstance(values, list):
+            continue
+        parts: List[str] = []
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+            elif isinstance(value, dict):
+                text = _extract_sarvam_transcript(value)
+                if text:
+                    parts.append(text)
+        if parts:
+            return " ".join(parts).strip()
+
+    return ""
+
+
 def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> str:
+    api_key = _sarvam_api_key()
+    if not api_key:
+        raise HTTPException(503, "SARVAM_API_KEY is not configured.")
+
     normalized_language = _normalize_audio_language(language)
 
     try:
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 0:
             raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
 
-        request_kwargs: Dict[str, Any] = {
-            "model": "whisper-1",
-            "response_format": "json",
+        form_data: Dict[str, str] = {
+            "model": os.getenv("SARVAM_STT_MODEL", "saaras:v3").strip() or "saaras:v3",
+            "mode": os.getenv("SARVAM_STT_MODE", "transcribe").strip() or "transcribe",
         }
         if normalized_language:
-            request_kwargs["language"] = normalized_language
+            form_data["language_code"] = normalized_language
 
         with open(file_path, "rb") as audio_file:
-            transcript_obj = _get_openai_client().audio.transcriptions.create(
-                file=audio_file,
-                **request_kwargs,
+            response = requests.post(
+                SARVAM_STT_URL,
+                headers={"api-subscription-key": api_key},
+                files={"file": (Path(file_path).name, audio_file)},
+                data=form_data,
+                timeout=(5, 60),
             )
-    except openai.BadRequestError as exc:
-        if _is_audio_too_short_error(exc):
-            raise HTTPException(400, "Audio file is too short. Please record for at least a moment and try again.") from exc
-        raise HTTPException(400, _extract_openai_error_message(exc)) from exc
+    except HTTPException:
+        raise
+    except requests.Timeout as exc:
+        raise HTTPException(504, "STT provider timed out.") from exc
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"STT provider error: {exc}") from exc
 
-    text = str(getattr(transcript_obj, "text", "") or "").strip()
+    if response.status_code != 200:
+        raise HTTPException(
+            response.status_code,
+            _sarvam_provider_error_detail(response, "STT provider"),
+        )
+
+    try:
+        response_payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(502, "STT provider returned invalid JSON.") from exc
+
+    text = _extract_sarvam_transcript(response_payload)
     if not text:
         raise HTTPException(400, "Failed to transcribe audio")
     return text
@@ -2474,26 +2557,33 @@ def api_tts(
     payload: TTSRequest,
     auth_user: AuthUser = Depends(get_current_user),
 ):
-    if not SARVAM_API_KEY:
+    api_key = _sarvam_api_key()
+    if not api_key:
         raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
-    
-    url = "https://api.sarvam.ai/text-to-speech"
+
+    text = str(payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required.")
+
     headers = {
-        "api-subscription-key": SARVAM_API_KEY,
-        "Content-Type": "application/json"
+        "api-subscription-key": api_key,
     }
-    
+
     req_payload = {
-        "inputs": [payload.text],
-        "target_language_code": "ta-IN",
-        "speaker": "manisha",
-        "model": "bulbul:v2",
-        "pace": 0.85
+        "text": text,
+        "target_language_code": (
+            payload.target_language_code
+            or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN")
+            or "ta-IN"
+        ),
+        "speaker": payload.speaker or os.getenv("SARVAM_TTS_SPEAKER", "shubh") or "shubh",
+        "model": os.getenv("SARVAM_TTS_MODEL", "bulbul:v3") or "bulbul:v3",
+        "pace": 0.85,
     }
-    
+
     try:
         response = requests.post(
-            url,
+            SARVAM_TTS_URL,
             headers=headers,
             json=req_payload,
             timeout=(5, 30),
@@ -2502,33 +2592,38 @@ def api_tts(
         raise HTTPException(status_code=504, detail="TTS provider timed out.")
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"TTS provider error: {exc}")
-    
-    # Fallback to "text" instead of "inputs" if the API format diverges.
-    # Keep the same timeout and exception handling as the first provider call so
-    # the fallback path cannot hang the worker thread or surface as an unhandled 500.
-    if response.status_code in [422, 400] and "inputs" in req_payload:
-        req_payload["text"] = payload.text
-        del req_payload["inputs"]
+    if response.status_code in [422, 400]:
+        legacy_payload = {
+            **req_payload,
+            "inputs": [text],
+        }
+        legacy_payload.pop("text", None)
         try:
             response = requests.post(
-                url,
+                SARVAM_TTS_URL,
                 headers=headers,
-                json=req_payload,
+                json=legacy_payload,
                 timeout=(5, 30),
             )
         except requests.Timeout:
             raise HTTPException(status_code=504, detail="TTS retry timed out.")
         except requests.RequestException as exc:
             raise HTTPException(status_code=502, detail=f"TTS retry failed: {exc}")
-        
+
     if response.status_code == 200:
-        data = response.json()
-        if "audios" in data and len(data["audios"]) > 0:
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail="TTS provider returned invalid JSON.") from exc
+        if isinstance(data, dict) and isinstance(data.get("audios"), list) and len(data["audios"]) > 0:
             return {"audio_base64": data["audios"][0]}
-        else:
-            raise HTTPException(status_code=500, detail="Response did not contain 'audios' field.")
-    else:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+        raise HTTPException(status_code=502, detail="TTS provider response did not contain audio.")
+
+    raise HTTPException(
+        status_code=response.status_code,
+        detail=_sarvam_provider_error_detail(response, "TTS provider"),
+    )
 
 
 @app.post("/users/{user_id}/questionnaire")
@@ -2848,6 +2943,58 @@ def _get_owned_item(session: Session, item_id: int, user_id: int) -> Item:
     return item
 
 
+def _delete_related_item_memory(session: Session, item: Item, user_id: int) -> None:
+    item_id = str(item.id)
+    raw_text = str(item.raw_text or "")
+
+    qa_rows = list(
+        session.exec(
+            select(QACache).where(
+                QACache.user_id == user_id,
+                QACache.question == raw_text,
+            )
+        ).all()
+    )
+    conversation_query = select(Conversation).where(
+        Conversation.user_id == user_id,
+        Conversation.channel == item.source,
+        Conversation.user_input == raw_text,
+    )
+    if item.transcript is not None:
+        conversation_query = conversation_query.where(Conversation.transcript == item.transcript)
+    conversation_rows = list(session.exec(conversation_query).all())
+
+    session.exec(
+        delete(RagEmbedding).where(
+            RagEmbedding.user_id == user_id,
+            RagEmbedding.source_type == "item",
+            RagEmbedding.source_id == item_id,
+        )
+    )
+
+    for row in qa_rows:
+        if row.id is not None:
+            session.exec(
+                delete(RagEmbedding).where(
+                    RagEmbedding.user_id == user_id,
+                    RagEmbedding.source_type == "qa_cache",
+                    RagEmbedding.source_id == str(row.id),
+                )
+            )
+        session.delete(row)
+
+    for row in conversation_rows:
+        if row.id is not None:
+            session.exec(
+                delete(RagEmbedding).where(
+                    RagEmbedding.user_id == user_id,
+                    RagEmbedding.source_type == "conversation",
+                    RagEmbedding.source_id == str(row.id),
+                )
+            )
+        session.delete(row)
+
+
 @app.get("/items", response_model=List[TextAnalysisResponse])
 def list_items(
     session: Session = Depends(get_session),
@@ -2892,6 +3039,16 @@ def delete_item(
     if user_id is not None:
         assert_owner(int(user_id), user)
     item = _get_owned_item(session, item_id, int(user.id))
+
+    try:
+        _delete_related_item_memory(session, item, int(user.id))
+    except Exception:
+        session.rollback()
+        logger.warning(
+            "Failed to delete item-related memory rows",
+            extra={"user_id": int(user.id), "item_id": item_id},
+            exc_info=True,
+        )
 
     session.delete(item)
     safe_commit(session, "delete_item")

@@ -317,14 +317,8 @@ function verifyStaticLocalFirstConfig() {
   requireContains(
     appConfigFile,
     appConfig,
-    'process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ?? "true"',
-    'Expo config defaults EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE to true',
-  );
-  requireContains(
-    appConfigFile,
-    appConfig,
-    'Production/release builds must keep recorded voice on the local-first pipeline',
-    'Expo config rejects release builds that disable local voice routing',
+    'process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ?? "false"',
+    'Expo config defaults recorded voice to backend routing',
   );
   requireContains(
     appConfigFile,
@@ -493,11 +487,12 @@ function verifyReleaseEnvironment() {
     fail('Release local-first builds must use EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE=download_on_first_launch', deliveryMode());
   }
 
-  const voiceValue = env('EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE') || 'true';
-  if (!isTruthy(voiceValue) || isFalsey(voiceValue)) {
-    fail('Release builds must set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true', voiceValue);
+  const voiceValue = env('EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE') || 'false';
+  if (isTruthy(voiceValue)) {
+    pass('release env explicitly enables development local voice routing');
+  } else {
+    pass('release env keeps recorded voice on authenticated backend routing');
   }
-  pass('release env keeps recorded voice on the local-first pipeline');
 
   const missingFirebaseEnvNames = FIREBASE_ENV_NAMES.filter((name) => !env(name));
   if (missingFirebaseEnvNames.length) {

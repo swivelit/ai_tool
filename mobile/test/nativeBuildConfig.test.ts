@@ -684,7 +684,7 @@ export const runtime = {
     expect(result.stdout + result.stderr).toMatch(/EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED/);
   });
 
-  it("release verification fails when EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false", () => {
+  it("release verification allows backend recorded voice routing", () => {
     const result = runReleaseVerifierWithMockLlama({
       BUILD_TYPE: "release",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
@@ -694,8 +694,8 @@ export const runtime = {
       ...validReleaseFirebaseEnv,
     });
 
-    expect(result.status).not.toBe(0);
-    expect(result.stdout + result.stderr).toMatch(/EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true/);
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/authenticated backend routing/);
   });
 
   it("sets JAI_LLAMA_CPP_AVAILABLE=1 in Android CMake when vendored llama.cpp exists", () => {

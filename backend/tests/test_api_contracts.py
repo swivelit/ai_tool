@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 import app.main as main_module
 from app.database import SessionLocal
-from app.models import Item
+from app.models import Conversation, Item, QACache, RagEmbedding
 from conftest import auth_headers, create_test_user
 
 
@@ -139,7 +139,61 @@ def test_voice_stt_failure_returns_client_error(client, monkeypatch):
     assert response.json()["detail"] == "bad audio"
 
 
-def test_tts_retries_legacy_payload_and_returns_audio(client, monkeypatch):
+def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+    _stub_chat_pipeline(monkeypatch, assistant_text="Voice answer")
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"transcript": "voice hello"}
+
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return DummyResponse()
+
+    monkeypatch.setattr(main_module.requests, "post", fake_post)
+
+    response = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en&speech_language=ta",
+        headers=headers,
+        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["item"]["raw_text"] == "voice hello"
+    assert calls[0][0][0] == "https://api.sarvam.ai/speech-to-text"
+    assert calls[0][1]["headers"]["api-subscription-key"] == "test-key"
+    assert "Content-Type" not in calls[0][1]["headers"]
+    assert "file" in calls[0][1]["files"]
+    assert calls[0][1]["data"]["model"] == "saaras:v3"
+    assert calls[0][1]["data"]["mode"] == "transcribe"
+    assert calls[0][1]["data"]["language_code"] == "ta-IN"
+
+
+def test_sarvam_stt_missing_key_returns_503(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "")
+    monkeypatch.delenv("SARVAM_API_KEY", raising=False)
+
+    response = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
+        headers=headers,
+        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "SARVAM_API_KEY is not configured."
+
+
+def test_tts_uses_modern_text_payload_and_returns_audio(client, monkeypatch):
     create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
     monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
@@ -157,20 +211,24 @@ def test_tts_retries_legacy_payload_and_returns_audio(client, monkeypatch):
 
     def fake_post(*args, **kwargs):
         calls.append({**kwargs, "json": dict(kwargs.get("json") or {})})
-        if len(calls) == 1:
-            return DummyResponse(400, text="bad payload")
         return DummyResponse(200, {"audios": ["base64-audio"]})
 
     monkeypatch.setattr(main_module.requests, "post", fake_post)
 
-    response = client.post("/api/tts", headers=headers, json={"text": "hello"})
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello", "target_language_code": "en-IN"},
+    )
 
     assert response.status_code == 200
     assert response.json()["audio_base64"] == "base64-audio"
-    assert "inputs" in calls[0]["json"]
-    assert "text" in calls[1]["json"]
+    assert calls[0]["json"]["text"] == "hello"
+    assert calls[0]["json"]["target_language_code"] == "en-IN"
+    assert calls[0]["json"]["speaker"] == "shubh"
+    assert calls[0]["json"]["model"] == "bulbul:v3"
+    assert "inputs" not in calls[0]["json"]
     assert calls[0]["timeout"] == (5, 30)
-    assert calls[1]["timeout"] == (5, 30)
 
 
 def test_rag_embedding_failure_is_logged_and_does_not_rollback_saved_item(client, monkeypatch, caplog):
@@ -231,3 +289,84 @@ def test_reminder_item_can_be_created_listed_and_deleted(client, monkeypatch):
 
     fetched = client.get(f"/items/{item_id}?user_id={user.id}", headers=headers)
     assert fetched.status_code == 404
+
+
+def test_delete_item_removes_related_memory_rows(client):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    with SessionLocal() as session:
+        item = Item(
+            user_id=user.id,
+            intent="assistant",
+            category="Other",
+            raw_text="remember my trip",
+            transcript="remember my trip",
+            title="Trip",
+            details="I will remember your trip.",
+            source="voice",
+        )
+        qa_cache = QACache(
+            user_id=user.id,
+            question="remember my trip",
+            answer='{"remodeled_english":"I will remember your trip."}',
+        )
+        conversation = Conversation(
+            user_id=user.id,
+            channel="voice",
+            user_input="remember my trip",
+            transcript="remember my trip",
+            llm_output_json='{"remodeled_english":"I will remember your trip."}',
+        )
+        session.add(item)
+        session.add(qa_cache)
+        session.add(conversation)
+        session.commit()
+        session.refresh(item)
+        session.refresh(qa_cache)
+        session.refresh(conversation)
+
+        rows = [
+            RagEmbedding(
+                user_id=user.id,
+                source_type="item",
+                source_id=str(item.id),
+                content_hash="item-hash",
+                content_text="item memory",
+                embedding_json="[0.1]",
+            ),
+            RagEmbedding(
+                user_id=user.id,
+                source_type="qa_cache",
+                source_id=str(qa_cache.id),
+                content_hash="qa-hash",
+                content_text="qa memory",
+                embedding_json="[0.2]",
+            ),
+            RagEmbedding(
+                user_id=user.id,
+                source_type="conversation",
+                source_id=str(conversation.id),
+                content_hash="conversation-hash",
+                content_text="conversation memory",
+                embedding_json="[0.3]",
+            ),
+        ]
+        for row in rows:
+            session.add(row)
+        session.commit()
+        item_id = item.id
+        qa_id = qa_cache.id
+        conversation_id = conversation.id
+
+    deleted = client.delete(f"/items/{item_id}?user_id={user.id}", headers=headers)
+    assert deleted.status_code == 200
+
+    with SessionLocal() as session:
+        assert session.get(Item, item_id) is None
+        assert session.get(QACache, qa_id) is None
+        assert session.get(Conversation, conversation_id) is None
+        remaining_embeddings = session.exec(
+            main_module.select(RagEmbedding).where(RagEmbedding.user_id == user.id)
+        ).all()
+        assert remaining_embeddings == []

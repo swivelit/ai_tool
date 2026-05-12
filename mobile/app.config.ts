@@ -11,7 +11,7 @@ const USE_LOCAL_CHAT_PIPELINE =
   process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ?? "true";
 
 const USE_LOCAL_VOICE_PIPELINE =
-  process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ?? "true";
+  process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ?? "false";
 
 const E2E_MOCK_AUTH = process.env.EXPO_PUBLIC_E2E_MOCK_AUTH || "";
 const E2E_SKIP_MODEL_SETUP =
@@ -135,13 +135,6 @@ if (isProductionOrReleaseBuild && normalizedRuntimeMode === "local_adapter") {
   throw new Error(
     "Production/release builds cannot use runtime.mode=local_adapter. " +
       "local_adapter is development-only; use EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device.",
-  );
-}
-
-if (isProductionOrReleaseBuild && !isTruthyEnv(USE_LOCAL_VOICE_PIPELINE)) {
-  throw new Error(
-    "Production/release builds must keep recorded voice on the local-first pipeline. " +
-      "Set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true so /api/transcribe-and-analyze enters local STT/agents before backend fallback.",
   );
 }
 
@@ -336,9 +329,8 @@ export default {
       ...modelDeliveryExtra,
       // Kept for diagnostics/legacy config only; api.ts forces normal chat local-first.
       USE_LOCAL_CHAT_PIPELINE,
-      // Recorded voice follows the same local-first policy as text chat by default.
-      // Set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true in release env files/CI;
-      // production/release builds fail above if this is explicitly disabled.
+      // Recorded voice defaults to the authenticated backend; set this true
+      // only for explicit development of phone-local STT.
       USE_LOCAL_VOICE_PIPELINE,
       E2E_MOCK_AUTH,
       E2E_SKIP_MODEL_SETUP,

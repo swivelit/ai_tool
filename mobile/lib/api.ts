@@ -494,13 +494,12 @@ const LOCAL_CHAT_PIPELINE_FLAG = resolveBooleanFlag(
 const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
   extra.USE_LOCAL_VOICE_PIPELINE,
   process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE,
-  true,
+  false,
 );
 
 // Normal chat is local-first by product policy. The legacy flag is kept
 // for diagnostics, but it must not make backend/OpenAI the primary runtime.
 const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = true;
-const USE_LOCAL_VOICE_PIPELINE_DEFAULT: boolean = true;
 const CANONICAL_VOICE_ANALYZE_PATH = "/transcribe-and-analyze";
 
 let localChatInterceptionDepth = 0;
@@ -511,15 +510,13 @@ export function getClientRoutingDefaults() {
     chat: (USE_LOCAL_CHAT_PIPELINE_DEFAULT
       ? "local"
       : "backend") as ClientRoutingMode,
-    voice: (USE_LOCAL_VOICE_PIPELINE_DEFAULT
+    voice: (LOCAL_VOICE_PIPELINE_FLAG.value
       ? "local"
       : "backend") as ClientRoutingMode,
     chatSource: LOCAL_CHAT_PIPELINE_FLAG.value
       ? LOCAL_CHAT_PIPELINE_FLAG.source
       : "forced",
-    voiceSource: LOCAL_VOICE_PIPELINE_FLAG.value
-      ? LOCAL_VOICE_PIPELINE_FLAG.source
-      : "forced",
+    voiceSource: LOCAL_VOICE_PIPELINE_FLAG.source,
     apiBase: API_BASE,
     localModelBaseUrl: LOCAL_MODEL_BASE_URL,
     localRuntimeMode: LOCAL_MODEL_RUNTIME_MODE,
@@ -606,6 +603,7 @@ type LocalChatProxyResponse = {
     details?: string | null;
     created_at?: string | null;
     source?: string | null;
+    __origin?: "backend" | "local";
   };
   assistant: {
     text: string;
@@ -862,6 +860,7 @@ function buildVoiceUnavailableResponse(
       details: userMessage,
       created_at: createdAt,
       source: "voice",
+      __origin: "local",
     },
     assistant: {
       text: userMessage,
@@ -948,10 +947,9 @@ async function getFeatureFlags(forceRefresh = false) {
 async function shouldUseLocalVoicePipeline() {
   logClientRoutingBanner();
 
-  // Recorded voice follows text chat: it must enter the local pipeline first.
-  // The legacy flag is retained for diagnostics/release validation, but it must
-  // not silently make backend/OpenAI the primary speech-to-text path.
-  return USE_LOCAL_VOICE_PIPELINE_DEFAULT;
+  // Recorded voice uses the authenticated backend by default so provider
+  // credentials stay server-side. Phone-local STT remains explicit dev mode.
+  return LOCAL_VOICE_PIPELINE_FLAG.value;
 }
 
 function isTranscribeAndAnalyzePath(path: string) {
@@ -1319,6 +1317,7 @@ async function handleLocalTranscribeAndAnalyze(
       ...item,
       created_at: createdAt,
       source: "voice",
+      __origin: "local",
     },
     assistant: {
       text: turn.assistantText,
@@ -1443,6 +1442,7 @@ async function handleLocalChat(
         details: quick.assistantText,
         created_at: createdAt,
         source: "text",
+        __origin: "local",
       },
       assistant: {
         text: quick.assistantText,
@@ -1532,6 +1532,7 @@ async function handleLocalChat(
       details: turn.assistantText,
       created_at: createdAt,
       source: "text",
+      __origin: "local",
     },
     assistant: {
       text: turn.assistantText,
@@ -1659,14 +1660,11 @@ export async function apiPostBackendOnly<T>(
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
-  const resolvedPath = isTranscribeAndAnalyzePath(path)
-    ? normalizeVoiceAnalyzePath(path)
-    : path;
+  const useLocalVoicePipeline =
+    isTranscribeAndAnalyzePath(path) && (await shouldUseLocalVoicePipeline());
+  const resolvedPath = useLocalVoicePipeline ? normalizeVoiceAnalyzePath(path) : path;
 
-  if (
-    isTranscribeAndAnalyzePath(resolvedPath) &&
-    (await shouldUseLocalVoicePipeline())
-  ) {
+  if (useLocalVoicePipeline) {
     return (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;
   }
 

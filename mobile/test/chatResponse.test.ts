@@ -70,4 +70,25 @@ describe("chat response normalization", () => {
     expect(normalized.raw_text).toBe("hello");
     expect(normalized.details).toBe("Assistant reply");
   });
+
+  it("marks local chat proxy responses as local origin", () => {
+    const normalized = normalizeChatTurnPayload(
+      {
+        ok: true,
+        item: {
+          id: 99,
+          intent: "assistant",
+          category: "Other",
+          raw_text: "hello",
+          details: "Local reply",
+          source: "text",
+        },
+        assistant: { text: "Local reply" },
+        meta: { source: "local_quick_reply" },
+      },
+      "hello",
+    );
+
+    expect(normalized.__origin).toBe("local");
+  });
 });
