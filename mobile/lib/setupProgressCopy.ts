@@ -85,6 +85,56 @@ export function friendlySetupError(error: unknown) {
       transient: true,
     };
   }
+  if (/cdn:\/\/ URL|cdn:\/\/ placeholder|unresolved download metadata/i.test(developerError)) {
+    return {
+      userMessage: "Model download URL is still a cdn:// placeholder. Configure a real public CDN base URL before setup.",
+      developerError,
+      transient: false,
+    };
+  }
+  if (
+    /missing a resolved public\/signed CDN URL|empty downloadUrl|missing model CDN URL/i.test(
+      developerError,
+    )
+  ) {
+    return {
+      userMessage: "Model download URL is not configured. Add the public model CDN URL and try setup again.",
+      developerError,
+      transient: false,
+    };
+  }
+  if (/missing expectedBytes|missing byte size|expected byte size/i.test(developerError)) {
+    return {
+      userMessage: "Model byte-size metadata is missing. Add the expected byte size for this GGUF file and retry.",
+      developerError,
+      transient: false,
+    };
+  }
+  if (/missing sha256|missing SHA-256|SHA-256 metadata/i.test(developerError)) {
+    return {
+      userMessage: "Model SHA-256 metadata is missing. Add the release checksum for this GGUF file and retry.",
+      developerError,
+      transient: false,
+    };
+  }
+  if (
+    /JAI_LLAMA_CPP_BACKEND_MISSING|compiled without llama\.cpp|llama\.cpp backend is not available|native on-device inference module/i.test(
+      developerError,
+    )
+  ) {
+    return {
+      userMessage: "Native AI runtime is unavailable because llama.cpp is not built into this app. Rebuild the app with the native module and GGUF model support.",
+      developerError,
+      transient: false,
+    };
+  }
+  if (/Required local GGUF models are not ready|reason.*missing|model file.*missing|missing required GGUF/i.test(developerError)) {
+    return {
+      userMessage: "A required local AI model file is missing. Keep setup open so Elli can download it, then retry.",
+      developerError,
+      transient: false,
+    };
+  }
   return {
     userMessage: "Setup could not finish. Check storage and try again.",
     developerError,

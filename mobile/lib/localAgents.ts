@@ -4024,6 +4024,9 @@ export const __memoryTestUtils = {
   buildDurableFactsFromHeuristics,
   mergeDurableFacts,
   shouldApplyProfileUpdate,
+  shouldSkipVectorSemanticCache,
+  lookupSemanticCache,
+  writeSemanticCache,
 };
 
 async function saveLocalOnboardingCompletion(
@@ -6068,10 +6071,84 @@ function isProfileMemoryQuestion(message: string) {
   return PROFILE_MEMORY_PATTERNS.some((pattern) => pattern.test(message));
 }
 
+const VECTOR_SEMANTIC_CACHE_SKIP_ROUTES = new Set<OrchestratorRoute>([
+  "fast_greeting",
+  "identity",
+  "small_talk",
+  "wellbeing_support",
+  "capabilities",
+  "thanks",
+  "goodbye",
+  "clarify",
+  "calendar_query",
+  "reminder_create",
+  "weather",
+  "setup_required",
+]);
+
+function tokenCountForMessage(message: string) {
+  const normalized = normalizeText(message);
+  return normalized ? normalized.split(/\s+/).filter(Boolean).length : 0;
+}
+
+function isSimpleTimeOrDateQuery(message: string) {
+  const normalized = normalizeText(message);
+  return /^(what(?:s| is)? (?:the )?(?:time|date)|what day is it|current time|time now|date today|today date|what is today)(?: in [\p{L}\s]+)?$/u.test(
+    normalized,
+  );
+}
+
+function isVeryShortSimpleMessage(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return true;
+  if (isProfileMemoryQuestion(message)) return false;
+  return tokenCountForMessage(message) <= 3 && normalized.length <= 28;
+}
+
+function shouldSkipVectorSemanticCache(
+  message: string,
+  route?: OrchestratorRoute | null,
+) {
+  if (route && VECTOR_SEMANTIC_CACHE_SKIP_ROUTES.has(route)) return true;
+  if (isSimpleTimeOrDateQuery(message)) return true;
+  return isVeryShortSimpleMessage(message);
+}
+
+function isOptionalEmbeddingUnavailable(error: unknown) {
+  const message = String((error as any)?.message || error || "");
+  return (
+    isNativeOnDeviceRuntimeUnavailableError(error) ||
+    /NATIVE_ON_DEVICE_RUNTIME_UNAVAILABLE/.test(message) ||
+    /JAI_LLAMA_CPP_BACKEND_MISSING/.test(message) ||
+    /JAI_MODEL_FILE_MISSING/.test(message) ||
+    /JAI_NATIVE_MODELS_MISSING/.test(message) ||
+    /JAI_MODEL_NOT_CONFIGURED/.test(message) ||
+    /JAI_MODEL_PATH_MISSING/.test(message) ||
+    /native on-device .*not (?:installed|available|ready)/i.test(message) ||
+    /llama\.cpp backend is not available/i.test(message) ||
+    /compiled without llama\.cpp/i.test(message)
+  );
+}
+
+async function optionalEmbedTexts(
+  texts: string[],
+  runtimeOptions: ModelRuntimeTierOptions = {},
+) {
+  if (!texts.length) return [] as number[][];
+  if (runtimeOptions.modelsReady === false) return null;
+  try {
+    return await embedTexts(texts, runtimeOptions);
+  } catch (error) {
+    if (isOptionalEmbeddingUnavailable(error)) return null;
+    throw error;
+  }
+}
+
 async function lookupSemanticCache(
   userId: number,
   message: string,
   runtimeOptions: ModelRuntimeTierOptions = {},
+  opts: { route?: OrchestratorRoute | null } = {},
 ) {
   const rules = await getMemoryRules();
   if (isTimeSensitiveRagQuery(message)) {
@@ -6103,13 +6180,17 @@ async function lookupSemanticCache(
   }
 
   const profileMemory = isProfileMemoryQuestion(message);
-  if (runtimeOptions.modelsReady === false) {
+  if (
+    runtimeOptions.modelsReady === false ||
+    shouldSkipVectorSemanticCache(message, opts.route)
+  ) {
     return null;
   }
   // Important: compare the actual user message against cached questions.
   // Do not inject aliases here, because aliases can bypass the similarity
   // threshold. The exact check above is a narrow deterministic local cache hit.
-  const queryVectors = await embedTexts([message], runtimeOptions);
+  const queryVectors = await optionalEmbedTexts([message], runtimeOptions);
+  if (!queryVectors?.length) return null;
 
   let best: SemanticCacheEntry | null = null;
   let bestScore = 0;
@@ -6168,7 +6249,9 @@ async function writeSemanticCache(
   const rules = await getMemoryRules();
   const skipRoutes = rules.cache?.skipRoutes || [];
   if (skipRoutes.includes(route)) return;
-  const [embedding] = await embedTexts([question], runtimeOptions);
+  const vectors = await optionalEmbedTexts([question], runtimeOptions);
+  const embedding = vectors?.[0];
+  if (!embedding) return;
   const ttlHours = positiveInt(rules.cache?.ttlHours, 168);
   const createdAt = nowIso();
   const expiresAt =
@@ -6207,6 +6290,7 @@ async function buildMemoryConsolidation(
   answers: Record<string, any>,
   state: LocalProfilerState,
   userProfile?: LocalUserProfile,
+  runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
   const rules = await getMemoryRules();
   const cfg = await getModelConfig();
@@ -6319,7 +6403,7 @@ async function buildMemoryConsolidation(
       }),
       cfg.models[registry.agents.memory.summarizerModelKey],
       0.1,
-      {},
+      runtimeOptions,
       LOCAL_TASK_MAX_TOKENS.memorySummary,
     );
     const parsed = parseJsonLoose<MemoryConsolidationModelOutput>(out, {});
@@ -6462,6 +6546,7 @@ async function refreshMemoryRagArtifacts(
   userId: number,
   summaryRow: DailySummaryRecord,
   durableFacts: DurableFactRecord[],
+  runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
   const activeFacts = activeDurableFacts(durableFacts);
   const texts = [
@@ -6472,7 +6557,10 @@ async function refreshMemoryRagArtifacts(
     await saveMemoryChunks(userId, []);
     return [] as LocalRagChunk[];
   }
-  const embeddings = await embedTexts(texts);
+  const embeddings = await optionalEmbedTexts(texts, runtimeOptions);
+  if (!embeddings) {
+    return [] as LocalRagChunk[];
+  }
   const chunks: LocalRagChunk[] = texts.map((text, index) => ({
     id: `memory:${userId}:${index}:${simpleHash(text)}`,
     sourceId: `memory:${userId}:${index}`,
@@ -6491,6 +6579,60 @@ async function refreshMemoryRagArtifacts(
   }));
   await saveMemoryChunks(userId, chunks);
   return chunks;
+}
+
+async function backgroundMemoryRuntimeOptions() {
+  const cfg = await getModelConfig();
+  let runtimeOptions: ModelRuntimeTierOptions = {
+    selectedTier: selectedTierForRuntime(cfg),
+  };
+
+  if (isNativeDownloadRuntime(cfg)) {
+    const readiness = await getNormalChatModelReadiness(cfg, {});
+    runtimeOptions = readiness.status
+      ? modelTierOptionsFromInstallStatus(runtimeOptions, readiness.status)
+      : {
+          ...runtimeOptions,
+          selectedTier: readiness.selectedTier,
+          installedModelIds: readiness.installedModelIds,
+          modelsReady: readiness.ready,
+        };
+    if (!readiness.ready) return runtimeOptions;
+  }
+
+  if (isNativeOnDeviceModelConfig(cfg)) {
+    const runtime = createLocalModelRuntime({
+      primary: cfg.runtime?.primary,
+      mode: cfg.runtime?.mode,
+      backendRole: cfg.runtime?.backendRole,
+      openAiPolicy: cfg.runtime?.openAiPolicy,
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey,
+      timeoutMs: cfg.timeoutMs,
+      allowDeviceLoopback: cfg.runtime?.allowDeviceLoopback,
+      adapterLocation: cfg.runtime?.adapterLocation,
+      nativeBackend: cfg.native?.backend || cfg.runtime?.nativeBackend,
+      nativeModuleName: cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName,
+      modelRoot: cfg.native?.modelRoot,
+      modelAssets: cfg.native?.models,
+      modelDeliveryMode: getModelDeliveryMode(cfg),
+      modelDelivery: cfg.modelDelivery,
+      modelTier: runtimeOptions.selectedTier || runtimeOptions.modelTier,
+      deviceInfo: runtimeOptions.deviceInfo,
+      proOptIn: runtimeOptions.proOptIn,
+    });
+    if (!runtime.isConfigured()) {
+      return {
+        ...runtimeOptions,
+        modelsReady: false,
+      };
+    }
+  }
+
+  return {
+    ...runtimeOptions,
+    modelsReady: runtimeOptions.modelsReady ?? true,
+  };
 }
 
 export async function consolidateLocalMemoryOnIdle(
@@ -6528,6 +6670,7 @@ export async function consolidateLocalMemoryOnIdle(
   const answers = await loadAnswers(userId);
   const state = await loadProfilerState(userId);
   const routeLogs = await loadRouteLogs(userId, 18);
+  const runtimeOptions = await backgroundMemoryRuntimeOptions();
   const built = await buildMemoryConsolidation(
     userId,
     turns,
@@ -6535,6 +6678,7 @@ export async function consolidateLocalMemoryOnIdle(
     answers,
     state,
     opts?.userProfile,
+    runtimeOptions,
   );
   const existingFacts = await loadDurableFacts(userId);
   const mergedFacts = mergeDurableFacts(existingFacts, built.durableFacts);
@@ -6569,6 +6713,7 @@ export async function consolidateLocalMemoryOnIdle(
     userId,
     summaryRow,
     mergedFacts,
+    runtimeOptions,
   );
   await safeRecordTrainingSample("memory", {
     input: JSON.stringify({
@@ -6626,6 +6771,9 @@ async function updateMemoryFactStatus(
   });
   if (changed) {
     await saveDurableFacts(userId, updated);
+    const runtimeOptions = await backgroundMemoryRuntimeOptions().catch(() => ({
+      modelsReady: false,
+    }));
     await refreshMemoryRagArtifacts(
       userId,
       {
@@ -6639,6 +6787,7 @@ async function updateMemoryFactStatus(
         routeLogCount: 0,
       },
       updated,
+      runtimeOptions,
     ).catch(() => []);
   }
   return {
@@ -7207,7 +7356,9 @@ export async function runLocalAssistantTurn(opts: {
   const profileSummary = await loadSummary(userId);
 
   const semantic = await timeStage("semantic_cache", () =>
-    lookupSemanticCache(userId, message, modelRuntimeOptions),
+    lookupSemanticCache(userId, message, modelRuntimeOptions, {
+      route: earlyRuleDecision?.route,
+    }),
   );
   if (semantic) {
     const needsAlignmentReapply =

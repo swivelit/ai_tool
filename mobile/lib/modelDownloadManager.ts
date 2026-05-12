@@ -865,6 +865,13 @@ async function validateInstalledFile(
   return { ...recordBase, valid: true };
 }
 
+function installRecordDiagnostic(entry: Pick<ModelInstallRecord, "id" | "fileName" | "fileUri" | "exists" | "reason">) {
+  if (!entry.exists) {
+    return `${entry.id} missing model file ${entry.fileName} at ${entry.fileUri}`;
+  }
+  return `${entry.id} invalid model file ${entry.fileName}: ${entry.reason || "verification failed"}`;
+}
+
 function createResumeState(
   entry: ModelDownloadConfigEntry,
   targetUri: string,
@@ -1547,7 +1554,7 @@ export async function downloadRequiredModels(
     throw new ModelInstallError(
       `Required local GGUF models are still not ready: ${finalStatus.missing
         .concat(finalStatus.invalid)
-        .map((entry) => `${entry.id} (${entry.reason || "missing"})`)
+        .map(installRecordDiagnostic)
         .join(", ")}`,
     );
   }
@@ -1582,7 +1589,7 @@ export async function resolveInstalledNativeModelAssets(
     throw new ModelInstallError(
       `Required local GGUF models are not ready: ${status.missing
         .concat(status.invalid)
-        .map((entry) => `${entry.id} (${entry.reason || "missing"})`)
+        .map(installRecordDiagnostic)
         .join(", ")}`,
     );
   }

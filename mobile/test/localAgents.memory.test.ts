@@ -168,6 +168,7 @@ describe("local memory and semantic cache", () => {
     mockedState.files.clear();
     mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
     mockedState.fetchQueue.length = 0;
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
     writeJson(`${dataRoot}/config/memory_rules.json`, memoryRules);
     writeJson(`${dataRoot}/config/orchestrator_routes.json`, orchestratorRoutes);
@@ -668,6 +669,161 @@ describe("local memory and semantic cache", () => {
     expect(result.cacheHit).toBe(false);
     expect(result.assistantText).not.toContain("Cached stale news");
     expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps exact semantic cache hits but skips vector lookup when models are not ready", async () => {
+    writeJson(`${dataRoot}/cache/semantic_cache.json`, {
+      version: 2,
+      entries: [
+        {
+          id: "exact_ready_guard",
+          userId: 346,
+          sourceQuestion: "What do I like?",
+          normalizedQuestion: "what do i like",
+          canonicalAnswer: "You like music.",
+          englishAnswer: "You like music.",
+          route: "profile",
+          intent: "assistant",
+          embedding: testEmbedding({ 0: 1 }),
+          confidence: 1,
+          createdAt: "2026-04-26T00:00:00Z",
+          updatedAt: "2026-04-26T00:00:00Z",
+          expiresAt: null,
+        },
+      ],
+      hits: [],
+    });
+
+    const { __memoryTestUtils } = await import("../lib/localAgents");
+    const exact = await __memoryTestUtils.lookupSemanticCache(
+      346,
+      "What do I like?",
+      { modelsReady: false },
+      { route: "profile" },
+    );
+    const paraphrase = await __memoryTestUtils.lookupSemanticCache(
+      346,
+      "Which hobbies do I have?",
+      { modelsReady: false },
+      { route: "profile" },
+    );
+
+    expect(exact?.sourceQuestion).toBe("What do I like?");
+    expect(paraphrase).toBeNull();
+    expect(global.fetch as any).not.toHaveBeenCalled();
+  });
+
+  it("skips vector semantic cache lookup for obvious fast tool routes", async () => {
+    writeJson(`${dataRoot}/cache/semantic_cache.json`, {
+      version: 2,
+      entries: [
+        {
+          id: "weather_cache",
+          userId: 347,
+          sourceQuestion: "Will it rain tomorrow?",
+          normalizedQuestion: "will it rain tomorrow",
+          canonicalAnswer: "Cached weather answer.",
+          englishAnswer: "Cached weather answer.",
+          route: "weather",
+          intent: "assistant",
+          embedding: testEmbedding({ 0: 1 }),
+          confidence: 1,
+          createdAt: "2026-04-26T00:00:00Z",
+          updatedAt: "2026-04-26T00:00:00Z",
+          expiresAt: null,
+        },
+      ],
+      hits: [],
+    });
+
+    const { __memoryTestUtils } = await import("../lib/localAgents");
+    const weather = await __memoryTestUtils.lookupSemanticCache(
+      347,
+      "weather in Chennai",
+      { modelsReady: true },
+      { route: "weather" },
+    );
+    const shortMessage = await __memoryTestUtils.lookupSemanticCache(
+      347,
+      "ok thanks",
+      { modelsReady: true },
+      { route: "thanks" },
+    );
+
+    expect(weather).toBeNull();
+    expect(shortMessage).toBeNull();
+    expect(global.fetch as any).not.toHaveBeenCalled();
+  });
+
+  it("treats native unavailable embedding errors as non-fatal for semantic cache work", async () => {
+    writeJson(`${dataRoot}/config/models.json`, {
+      ...models,
+      runtime: { ...models.runtime, mode: "native_on_device" },
+      modelDelivery: { ...models.modelDelivery, mode: "bundled_assets" },
+      baseUrl: "",
+      timeoutMs: 1000,
+    });
+    writeJson(`${dataRoot}/cache/semantic_cache.json`, {
+      version: 2,
+      entries: [
+        {
+          id: "native_unavailable",
+          userId: 348,
+          sourceQuestion: "What do I like?",
+          normalizedQuestion: "what do i like",
+          canonicalAnswer: "You like music.",
+          englishAnswer: "You like music.",
+          route: "profile",
+          intent: "assistant",
+          embedding: testEmbedding({ 0: 1 }),
+          confidence: 1,
+          createdAt: "2026-04-26T00:00:00Z",
+          updatedAt: "2026-04-26T00:00:00Z",
+          expiresAt: null,
+        },
+      ],
+      hits: [],
+    });
+    const embedTexts = vi.fn(async () => {
+      const error = new Error("JAI_LLAMA_CPP_BACKEND_MISSING: compiled without llama.cpp") as Error & { code?: string };
+      error.code = "JAI_LLAMA_CPP_BACKEND_MISSING";
+      throw error;
+    });
+    vi.stubGlobal("__JAI_NATIVE_ON_DEVICE_MODEL_RUNTIME__", {
+      isAvailable: vi.fn(async () => true),
+      initialize: vi.fn(async () => undefined),
+      completeChat: vi.fn(async () => ({ choices: [{ message: { content: "unused" } }] })),
+      embedTexts,
+    });
+
+    const { __memoryTestUtils } = await import("../lib/localAgents");
+
+    await expect(
+      __memoryTestUtils.lookupSemanticCache(
+        348,
+        "Which hobbies do I have?",
+        { modelsReady: true },
+        { route: "profile" },
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      __memoryTestUtils.writeSemanticCache(
+        348,
+        "Tell me my hobbies",
+        "You like music.",
+        "You like music.",
+        "profile",
+        "assistant",
+        undefined,
+        { modelsReady: true },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(embedTexts).toHaveBeenCalled();
+    const store = readJson(`${dataRoot}/cache/semantic_cache.json`);
+    expect(store.entries.map((entry: any) => entry.id)).toEqual([
+      "native_unavailable",
+    ]);
   });
 
   it("extracts durable facts from recent conversation logs", async () => {

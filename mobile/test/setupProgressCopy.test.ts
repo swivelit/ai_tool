@@ -37,6 +37,39 @@ describe("setupProgressCopy", () => {
     expect(safe.developerError).toMatch(/qwen3-8b/);
   });
 
+  it("surfaces actionable model setup diagnostics without leaking secrets", () => {
+    expect(
+      friendlySetupError(
+        new Error("Required local GGUF models are not ready: Qwen/Qwen3-Embedding-0.6B missing model file qwen.gguf at file:///mock/models/qwen.gguf"),
+      ).userMessage,
+    ).toMatch(/model file is missing/i);
+    expect(
+      friendlySetupError(
+        new Error("Model google/gemma is missing a resolved public/signed CDN URL (empty downloadUrl). Set EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B."),
+      ).userMessage,
+    ).toMatch(/download URL is not configured/i);
+    expect(
+      friendlySetupError(
+        new Error("Production model google/gemma has unresolved download metadata: cdn:// URL without a configured EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL."),
+      ).userMessage,
+    ).toMatch(/cdn:\/\/ placeholder/i);
+    expect(
+      friendlySetupError(
+        new Error("Production model Qwen/Qwen3-8B is missing expectedBytes integrity metadata."),
+      ).userMessage,
+    ).toMatch(/byte-size metadata is missing/i);
+    expect(
+      friendlySetupError(
+        new Error("Production model Qwen/Qwen3-Embedding-0.6B is missing sha256 integrity metadata."),
+      ).userMessage,
+    ).toMatch(/SHA-256 metadata is missing/i);
+    expect(
+      friendlySetupError(
+        new Error("JAI_LLAMA_CPP_BACKEND_MISSING: this build was compiled without llama.cpp"),
+      ).userMessage,
+    ).toMatch(/llama\.cpp is not built/i);
+  });
+
   it("selects compact responsive layout and caps card width", () => {
     const narrow = getModelSetupLayout({ width: 320, height: 640 });
     expect(narrow.compact).toBe(true);

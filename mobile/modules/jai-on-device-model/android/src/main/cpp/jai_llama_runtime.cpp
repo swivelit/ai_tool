@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <exception>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -71,6 +72,93 @@ std::string jstringToUtf8(JNIEnv *env, jstring value) {
   return out;
 }
 
+jstring emptyJavaString(JNIEnv *env) {
+  const jchar empty[] = {0};
+  return env->NewString(empty, 0);
+}
+
+jstring utf8BytesToJavaString(JNIEnv *env, const std::string &value) {
+  if (value.empty()) {
+    return emptyJavaString(env);
+  }
+
+  if (value.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+    throwJavaException(
+        env,
+        "JAI_LLAMA_CPP_JNI_STRING_TOO_LARGE",
+        "Generated model output is too large to marshal into a Java String.");
+    return nullptr;
+  }
+
+  jbyteArray bytes = env->NewByteArray(static_cast<jsize>(value.size()));
+  if (bytes == nullptr) {
+    return nullptr;
+  }
+  env->SetByteArrayRegion(
+      bytes,
+      0,
+      static_cast<jsize>(value.size()),
+      reinterpret_cast<const jbyte *>(value.data()));
+  if (env->ExceptionCheck()) {
+    env->DeleteLocalRef(bytes);
+    return nullptr;
+  }
+
+  jclass standard_charsets_class = env->FindClass("java/nio/charset/StandardCharsets");
+  if (standard_charsets_class == nullptr) {
+    env->DeleteLocalRef(bytes);
+    return nullptr;
+  }
+
+  jfieldID utf8_field = env->GetStaticFieldID(
+      standard_charsets_class,
+      "UTF_8",
+      "Ljava/nio/charset/Charset;");
+  if (utf8_field == nullptr) {
+    env->DeleteLocalRef(standard_charsets_class);
+    env->DeleteLocalRef(bytes);
+    return nullptr;
+  }
+
+  jobject utf8_charset = env->GetStaticObjectField(standard_charsets_class, utf8_field);
+  if (utf8_charset == nullptr) {
+    env->DeleteLocalRef(standard_charsets_class);
+    env->DeleteLocalRef(bytes);
+    return nullptr;
+  }
+
+  jclass string_class = env->FindClass("java/lang/String");
+  if (string_class == nullptr) {
+    env->DeleteLocalRef(utf8_charset);
+    env->DeleteLocalRef(standard_charsets_class);
+    env->DeleteLocalRef(bytes);
+    return nullptr;
+  }
+
+  jmethodID string_ctor = env->GetMethodID(
+      string_class,
+      "<init>",
+      "([BLjava/nio/charset/Charset;)V");
+  if (string_ctor == nullptr) {
+    env->DeleteLocalRef(string_class);
+    env->DeleteLocalRef(utf8_charset);
+    env->DeleteLocalRef(standard_charsets_class);
+    env->DeleteLocalRef(bytes);
+    return nullptr;
+  }
+
+  jobject result = env->NewObject(string_class, string_ctor, bytes, utf8_charset);
+  env->DeleteLocalRef(string_class);
+  env->DeleteLocalRef(utf8_charset);
+  env->DeleteLocalRef(standard_charsets_class);
+  env->DeleteLocalRef(bytes);
+
+  if (result == nullptr) {
+    return nullptr;
+  }
+  return static_cast<jstring>(result);
+}
+
 std::string normalizeModelPath(std::string path) {
   constexpr const char *prefix = "file://";
   if (path.rfind(prefix, 0) == 0) {
@@ -121,7 +209,7 @@ using LlamaSamplerPtr = std::unique_ptr<llama_sampler, LlamaSamplerDeleter>;
 
 std::once_flag g_backend_once;
 std::mutex g_model_cache_mutex;
-constexpr size_t kMaxStrongCachedModels = 2;
+constexpr size_t kMaxStrongCachedModels = 1;
 std::unordered_map<std::string, LlamaModelPtr> g_model_cache;
 std::deque<std::string> g_model_cache_lru;
 
@@ -487,7 +575,7 @@ Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeCompleteChat(
         threads,
         temperature,
         max_tokens);
-    return env->NewStringUTF(generated.c_str());
+    return utf8BytesToJavaString(env, generated);
   } catch (const JaiNativeError &error) {
     throwJavaException(env, error.code(), error.what());
     return nullptr;
