@@ -47,8 +47,14 @@ record_skip() {
 mark_failed() {
   RESULT=1
   FAILED_STEPS+=("$1")
-}
 
+  local safe_label
+  safe_label="$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '_')"
+
+  capture_step "failure-${safe_label}" 1
+
+  printf "[FAILURE] %s\n" "$1" >> "$ARTIFACT_DIR/failure-summary.log"
+}
 run_step() {
   local name="$1"
   shift
@@ -322,10 +328,18 @@ capture_screen() {
 
 capture_step() {
   local label="$1"
+  local include_log_slice="${2:-0}"
+
   capture_screen "$label"
   dump_ui "$label" >/dev/null || true
+
   collect_cmd "dumpsys-activity-${label}" adb shell dumpsys activity
   collect_cmd "dumpsys-window-${label}" adb shell dumpsys window
+
+  if [[ "$include_log_slice" == "1" ]]; then
+    tail -n 120 "$ARTIFACT_DIR/logcat-full.log" \
+      > "$ARTIFACT_DIR/${label}-failure-context.log" 2>/dev/null || true
+  fi
 }
 
 scan_crashes() {
@@ -334,23 +348,34 @@ scan_crashes() {
   : > "$markers_file"
 
   CRASH_MARKERS=(
-    "FATAL EXCEPTION"
-    " E AndroidRuntime:"
-    "ANR in"
-    "SIGSEGV"
-    "SIGABRT"
-    "ReactNativeJS.*Error"
-    "Unable to load script"
-    "ReferenceError"
-    "TypeError"
-    "JAI_LLAMA_CPP_BACKEND_MISSING"
-    "JAI_NATIVE_STT_NOT_IMPLEMENTED"
-  )
+  "FATAL EXCEPTION"
+  " E AndroidRuntime:"
+  "ANR in"
+  "SIGSEGV"
+  "SIGABRT"
+  "ReactNativeJS.*Error"
+  "Unhandled promise rejection"
+  "Unhandled Promise Rejection"
+  "Invariant Violation"
+  "Unable to load script"
+  "ReferenceError"
+  "TypeError"
+  "JNI DETECTED ERROR"
+  "llama.*error"
+  "JAI_LLAMA_CPP_BACKEND_MISSING"
+  "JAI_NATIVE_STT_NOT_IMPLEMENTED"
+  "HTTP 500"
+  "HTTP 502"
+  "HTTP 503"
+  "Sarvam"
+)
 
   if [[ -f "$log_file" ]]; then
     for marker in "${CRASH_MARKERS[@]}"; do
       if grep -E -n "$marker" "$log_file" >> "$markers_file" 2>/dev/null; then
         CRASH_MARKERS_FOUND=1
+        printf "[SCANNER] Detected marker: %s\n" "$marker" \
+          >> "$ARTIFACT_DIR/failure-summary.log"
       fi
     done
   fi

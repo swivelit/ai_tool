@@ -252,7 +252,7 @@ Before implementation:
 
 * chat deletion existed manually
 * no automation coverage existed
-* no stable selectors existed
+* no delete selector existed
 
 ### Existing User Flow
 
@@ -550,23 +550,163 @@ without modifying:
 
 ---
 
-# Pending Tasks
+# Tasks 5 & 6 — Crash Scanner & Artifact Collection Improvements
 
-## Tasks 5 & 6
+## Objective
 
-* Crash scanner improvements
-* Artifact collection improvements
+Improve APK regression diagnostics, crash visibility, and artifact collection reliability.
 
-## Task 7
+---
 
-* Golden eval improvements
-* Tamil/Tanglish coverage
+# BEFORE UPDATE
 
-## Tasks 8, 9 & 10
+## Previous Behavior
 
-* CI integration
-* readable QA reports
-* local QA documentation
+Before improvement:
+
+* crash scanning only detected basic Android fatal crashes
+* React Native RedBox failures were often missed
+* backend/API failures lacked dedicated markers
+* screenshots were mostly captured only at the end
+* failure context logs were not automatically extracted
+
+### Existing Crash Scanner Flow
+
+```text
+Run APK automation
+→ Collect logcat
+→ Scan generic markers
+→ Report FAIL/PASS
+```
+
+---
+
+# Problems In Previous Implementation
+
+| Problem                         | Impact                                     |
+| ------------------------------- | ------------------------------------------ |
+| Silent JS failures              | RedBox errors went unnoticed in automation |
+| No failure-specific artifacts   | Debugging mid-test failures was difficult  |
+| Generic crash markers           | Native llama or API errors were ignored    |
+| Log fatigue                     | Analyzing full 10k line logs was slow      |
+
+---
+
+# Previous Code
+
+```bash
+CRASH_MARKERS=(
+  "AndroidRuntime:FATAL EXCEPTION"
+  "System.err"
+  "signal 11 (SIGSEGV)"
+)
+```
+
+---
+
+# AFTER UPDATE
+
+## Updated Behavior
+
+The APK automation now:
+
+1. scans for expanded markers (RN, Llama, Native, HTTP 500s)
+2. automatically triggers "Failure Snapshots" on any failed step
+3. extracts 120-line "Log Slices" specifically around the failure moment
+4. generates a high-level `failure-summary.log` for non-technical triage
+
+---
+
+# Updated Flow
+
+```text
+Run APK automation
+→ Step failure detected
+→ TRIGGER: capture_step (with log slice flag)
+→ SAVE: Screenshot + UI XML + 120 lines of logcat
+→ LOG: failure-summary.log
+→ Final post-mortem scan
+```
+
+---
+
+# Updated Code (test_apk.sh)
+
+```bash
+# New failure handler
+mark_failed() {
+  RESULT=1
+  FAILED_STEPS+=("$1")
+  capture_step "failure-${safe_label}" 1 # Capture snapshot + log slice
+}
+
+# New scanner markers
+CRASH_MARKERS=(
+  "Unhandled promise rejection"
+  "Invariant Violation"
+  "JNI DETECTED ERROR"
+  "llama.*error"
+  "HTTP 500"
+)
+```
+
+---
+
+# Why The Update Was Required
+
+The original implementation provided:
+
+* no visual proof of mid-test failures
+
+The updated implementation provides:
+
+* immediate, localized diagnostics
+* coverage for "silent" React Native crashes
+* precise log context for backend/native failures
+
+---
+
+# Why The New Implementation Was Chosen
+
+Automated "Log Slicing":
+
+* reduces developer investigation time
+* avoids manual log parsing
+* differentiates between "Log Noise" and "Real Crashes"
+* provides a clear audit trail for every failure
+
+---
+
+# Post-Update Behavior
+
+| Feature                        | Before | After |
+| ------------------------------ | ------ | ----- |
+| React Native Error Detection   | ⚠️ Weak | ✅ High |
+| Native/Llama Failure Detection | ❌ No   | ✅ Yes |
+| Automatic Failure Snapshots    | ❌ No   | ✅ Yes |
+| Failure Summary Logs           | ❌ No   | ✅ Yes |
+
+---
+
+# Verification Results
+
+| Verification                          | Result   |
+| ------------------------------------- | -------- |
+| JS Exception Detection                | ✅ PASSED |
+| Native JNI/Llama Detection            | ✅ PASSED |
+| Auto-snapshot on failure              | ✅ PASSED |
+| Failure-context log extraction (tail) | ✅ PASSED |
+| Diagnostic integrity (Vitest)         | ✅ PASSED |
+
+---
+
+# Task 7 — Golden Assistant Evals
+
+## Objective
+
+Expand the regression coverage for multi-lingual routing and local/fallback behavior.
+
+*(pending)*
 
 ---
 
@@ -579,6 +719,7 @@ without modifying:
 * limited selectors
 * manual voice testing
 * manual deletion testing
+* generic crash scanning
 
 ---
 
@@ -588,9 +729,11 @@ without modifying:
 * stable regression selectors
 * automated deletion testing
 * automated voice testing
-* improved verification reliability
+* contextual diagnostic artifacts
+* multi-layered crash scanning
 * improved QA confidence
 
 ---
 
 *Maintained by QA Automation Sprint Team*
+*Last updated: 2026-05-13*

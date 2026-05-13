@@ -33,11 +33,20 @@ describe("APK test harness", () => {
       "SIGSEGV",
       "SIGABRT",
       "ReactNativeJS.*Error",
+      "Unhandled promise rejection",
+      "Unhandled Promise Rejection",
+      "Invariant Violation",
       "Unable to load script",
       "ReferenceError",
       "TypeError",
+      "JNI DETECTED ERROR",
+      "llama.*error",
       "JAI_LLAMA_CPP_BACKEND_MISSING",
       "JAI_NATIVE_STT_NOT_IMPLEMENTED",
+      "HTTP 500",
+      "HTTP 502",
+      "HTTP 503",
+      "Sarvam",
     ].forEach((marker) => {
       expect(source).toContain(marker);
     });
@@ -212,6 +221,15 @@ it("verifies voice automation exists in APK harness", () => {
   expect(source).toContain("voice-orb-not-found");
   expect(source).toContain("voice-response-not-visible");
   expect(source).toContain("voice-modal-closed");
+});
+
+it("captures failure context artifacts for QA diagnostics", () => {
+  const source = readRepo("test_apk.sh");
+
+  expect(source).toContain("failure-summary.log");
+  expect(source).toContain("failure-context.log");
+  expect(source).toContain("capture_step");
+  expect(source).toContain("tail -n 120");
 });
 
 });
