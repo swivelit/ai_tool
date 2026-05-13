@@ -735,5 +735,603 @@ Expand the regression coverage for multi-lingual routing and local/fallback beha
 
 ---
 
+````md
+# Task 7 — Golden Assistant Evals
+
+## Objective
+
+Expand the Golden Assistant regression evaluation system to provide stronger deterministic validation for:
+
+* Tamil language assistant responses
+* Tanglish (Tamil written using English alphabets) prompts
+* local-first routing behavior
+* memory/profile recall
+* clarification handling for vague prompts
+* backend/cloud fallback safety
+* multilingual orchestration stability
+* offline-safe assistant behavior
+
+This task improves the QA infrastructure by ensuring that multilingual assistant flows, memory retrieval, clarification routing, and cloud failure handling are continuously verified through automated regression tests.
+
+The goal was to strengthen confidence in the assistant’s orchestration layer without modifying production business logic or redesigning the assistant runtime.
+
+---
+
+# Before Update
+
+## Existing Problems
+
+Before the update, the Golden Assistant evaluation system had several important coverage gaps.
+
+### Limited Language Coverage
+
+The eval dataset was primarily English-focused.
+
+Problems:
+* no native Tamil regression tests
+* no Tanglish regression tests
+* no multilingual routing validation
+* no Tamil output verification
+
+This meant multilingual regressions could silently break without being detected during QA validation.
+
+---
+
+## No Tanglish Validation
+
+The assistant supports users who type Tamil conversational phrases using English alphabets, for example:
+
+```text
+enna panra
+saptiya
+work tasks pathi sollu
+````
+
+However, no regression tests existed for:
+
+* transliterated Tamil prompts
+* mixed-language routing
+* Tanglish tool selection
+* Tanglish reminder queries
+
+This created risk in:
+
+* local routing logic
+* intent recognition
+* reminder/task retrieval
+
+---
+
+## No Memory Recall Verification
+
+The previous eval runner only tested mostly single-turn assistant responses.
+
+There was no automated validation for:
+
+* stored profile recall
+* user memory retrieval
+* assistant fact lookup
+* profile-answer injection
+
+As a result:
+
+* memory regressions could go undetected
+* profile retrieval logic was not continuously validated
+
+---
+
+## No Clarification Safety Validation
+
+Before the update:
+
+* vague prompts were not tested
+* destructive ambiguity handling was not verified
+* clarification routing was not protected by regression tests
+
+Example unsafe prompt:
+
+```text
+Delete it
+```
+
+There was no deterministic verification ensuring the assistant safely asks:
+
+* “Which item?”
+  instead of incorrectly guessing a destructive action.
+
+---
+
+## No Backend Failure / Fallback Testing
+
+The mock API infrastructure always returned success:
+
+```ts
+return { ok: true };
+```
+
+Because of this:
+
+* cloud failure behavior was never tested
+* local fallback responses were unverified
+* offline-safe orchestration had no regression coverage
+* backend 500-error handling was not validated
+
+This was one of the largest QA gaps in the eval system.
+
+---
+
+## Fragile Matcher Logic
+
+The eval runner used strict case-sensitive matching:
+
+```ts
+text.includes(needle)
+```
+
+Problems:
+
+* false negatives from capitalization changes
+* unstable LLM response matching
+* Tanglish matching inconsistencies
+* unnecessary regression failures
+
+Example:
+
+* `"Review PR"` could fail against `"review pr"`
+
+even though the meaning was correct.
+
+---
+
+## Existing Eval Runner Behavior
+
+The original eval system mainly verified:
+
+* basic route matching
+* simple tool assertions
+* direct substring checks
+* English-focused responses
+
+The system lacked:
+
+* multilingual awareness
+* fallback simulation
+* clarification verification
+* memory injection
+* offline-safe orchestration testing
+
+---
+
+# After Update
+
+## Overview
+
+The Golden Assistant regression framework was expanded to support deterministic multilingual and orchestration validation while preserving backward compatibility with the existing eval infrastructure.
+
+The implementation remained:
+
+* lightweight
+* deterministic
+* QA-focused
+* regression-safe
+* orchestration-compatible
+
+No production assistant logic was modified.
+
+---
+
+# New Regression Eval Cases Added
+
+Five new high-value regression scenarios were added.
+
+---
+
+## 1. Tanglish Routing Validation
+
+### Eval ID
+
+```text
+tanglish_mixed_061
+```
+
+### Purpose
+
+Verify that transliterated Tamil prompts written in English alphabets correctly trigger local-first routing and reminder retrieval logic.
+
+### Example Prompt
+
+```text
+enna panra upcoming work tasks pathi?
+```
+
+### Verified Behavior
+
+The assistant must:
+
+* understand Tanglish phrasing
+* route correctly to reminder retrieval
+* call the correct local tool
+* avoid unnecessary backend calls
+
+### Expected Verification
+
+```json
+{
+  "route": "calendar_query",
+  "tools": ["listReminders"],
+  "noBackendCall": true
+}
+```
+
+### Why This Matters
+
+This protects:
+
+* local routing stability
+* multilingual intent recognition
+* transliterated Tamil handling
+* offline assistant behavior
+
+---
+
+## 2. Native Tamil Response Validation
+
+### Eval ID
+
+```text
+tamil_native_062
+```
+
+### Purpose
+
+Ensure Tamil prompts generate Tamil-script responses and correctly retrieve reminders/tasks.
+
+### Example Prompt
+
+```text
+நாளைக்கு என்ன மீட்டிங் இருக்கு?
+```
+
+### Verified Behavior
+
+The assistant must:
+
+* recognize Tamil input
+* route to reminder retrieval
+* return Tamil-script output
+* avoid backend calls
+
+### Language Verification
+
+```json
+{
+  "language": "ta"
+}
+```
+
+### Additional Validation
+
+The eval runner verifies Tamil Unicode script using:
+
+```ts
+TAMIL_RE
+```
+
+### Why This Matters
+
+This protects:
+
+* Tamil assistant support
+* multilingual orchestration
+* local-language response generation
+* Unicode-safe evaluation behavior
+
+---
+
+## 3. Memory Recall Validation
+
+### Eval ID
+
+```text
+memory_recall_063
+```
+
+### Purpose
+
+Validate assistant retrieval of stored user profile information without requiring a real multi-turn conversation.
+
+### Injected Fixture
+
+```json
+{
+  "project_code_name": "JAI-ORION"
+}
+```
+
+### Expected Response
+
+The assistant response must contain:
+
+```text
+JAI-ORION
+```
+
+### Verified Behavior
+
+The assistant correctly:
+
+* retrieves stored memory/profile facts
+* accesses profile fixtures
+* performs deterministic recall
+
+### Why This Matters
+
+This protects:
+
+* profile memory logic
+* memory recall orchestration
+* assistant personalization stability
+
+---
+
+## 4. Clarification Safety Validation
+
+### Eval ID
+
+```text
+clarify_vague_064
+```
+
+### Purpose
+
+Ensure vague prompts trigger clarification behavior instead of unsafe destructive assumptions.
+
+### Example Prompt
+
+```text
+Delete it
+```
+
+### Expected Behavior
+
+The assistant must:
+
+* avoid destructive guessing
+* enter clarification mode
+* request more information
+
+### Route Verification
+
+```json
+{
+  "route": "clarify",
+  "isClarification": true
+}
+```
+
+### Added Eval Logic
+
+```ts
+if (expected.isClarification && result.route !== "clarify")
+```
+
+### Why This Matters
+
+This protects:
+
+* destructive action safety
+* ambiguity handling
+* orchestration confidence logic
+* user safety flows
+
+---
+
+## 5. Backend Fallback Validation
+
+### Eval ID
+
+```text
+fallback_cloud_fail_065
+```
+
+### Purpose
+
+Validate safe assistant fallback behavior when cloud/backend requests fail.
+
+### New Mock Capability Added
+
+```ts
+simulateErrorFlag = true;
+```
+
+### Mocked Backend Failure
+
+```ts
+return {
+  ok: false,
+  status: 500
+};
+```
+
+### Verified Behavior
+
+The assistant must:
+
+* avoid crashing
+* provide a safe fallback response
+* continue functioning locally
+* surface user-friendly messaging
+
+### New Eval Assertion
+
+```ts
+if (expected.isFallback)
+```
+
+### Why This Matters
+
+This protects:
+
+* offline-safe orchestration
+* backend failure handling
+* cloud degradation behavior
+* local-first assistant resilience
+
+---
+
+# Eval Runner Improvements
+
+## Case-Insensitive Matching
+
+### Old Logic
+
+```ts
+text.includes(needle)
+```
+
+### New Logic
+
+```ts
+text.toLowerCase().includes(needle.toLowerCase())
+```
+
+### Benefits
+
+* reduces false negatives
+* stabilizes LLM verification
+* improves Tanglish matching
+* improves multilingual consistency
+
+---
+
+## Simulated Cloud Failure Support
+
+Added deterministic failure injection:
+
+```ts
+simulateErrorFlag = true;
+```
+
+This enables:
+
+* backend 500-error simulation
+* local fallback validation
+* offline orchestration testing
+
+---
+
+## Clarification Matcher Support
+
+Added explicit clarification verification:
+
+```ts
+if (expected.isClarification && result.route !== "clarify")
+```
+
+This ensures vague prompts safely enter clarification mode.
+
+---
+
+## Fallback Matcher Support
+
+Added explicit fallback verification:
+
+```ts
+if (expected.isFallback)
+```
+
+This validates local-safe fallback messaging during backend failure conditions.
+
+---
+
+## Memory Injection Support
+
+Added support for fixture-based profile recall:
+
+```ts
+userProfile:
+  (testCase.fixtures as any)?.profileAnswers
+  || testCase.userProfile
+```
+
+This allows deterministic memory testing without requiring real multi-turn chat orchestration.
+
+---
+
+# Files Updated
+
+## `mobile/data/evals/golden_assistant.json`
+
+Added:
+
+* Tanglish regression evals
+* Tamil regression evals
+* memory recall evals
+* clarification evals
+* backend fallback evals
+
+---
+
+## `mobile/test/goldenAssistant.eval.test.ts`
+
+Added:
+
+* clarification matcher
+* fallback matcher
+* simulated backend failure support
+* case-insensitive matching
+* profile memory injection support
+
+---
+
+# Verification Results
+
+## Eval Verification
+
+Executed:
+
+```bash
+npx vitest test/goldenAssistant.eval.test.ts
+```
+
+### Result
+
+```text
+46/46 mobile_local_agent eval cases passing
+```
+
+---
+
+# Before vs After Impact
+
+## Before
+
+* mostly English-only eval coverage
+* no Tanglish validation
+* no fallback testing
+* no clarification protection
+* no memory recall validation
+* fragile case-sensitive matching
+* no backend failure simulation
+* weak multilingual regression protection
+
+---
+
+## After
+
+* deterministic multilingual eval coverage
+* Tamil + Tanglish regression protection
+* stronger local-first routing validation
+* memory recall verification
+* clarification-route protection
+* backend/cloud fallback validation
+* offline-safe orchestration testing
+* safer assistant behavior validation
+* more stable regression matching
+* stronger QA confidence for multilingual AI flows
+
+```
+```
+
 *Maintained by QA Automation Sprint Team*
 *Last updated: 2026-05-13*

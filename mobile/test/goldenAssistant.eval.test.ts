@@ -40,10 +40,14 @@ const mockedState = vi.hoisted(() => ({
   fetchQueue: [] as Array<() => Promise<any>>,
 }));
 
+let simulateErrorFlag = false;
 const apiPostMock = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(async () => ({
-    ok: true,
-  })),
+  vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(async () => {
+    if (simulateErrorFlag) {
+      return { ok: false, status: 500, statusText: "Internal Server Error" };
+    }
+    return { ok: true };
+  }),
 );
 
 vi.mock("expo-constants", () => ({
@@ -188,6 +192,7 @@ function reminderPayload(raw: Record<string, any>) {
 }
 
 function resetCaseState() {
+  simulateErrorFlag = false;
   __idleQueueTestUtils.clear();
   mockedState.files.clear();
   mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
@@ -221,6 +226,12 @@ function isoForOffset(days: number) {
 function writeFixtures(testCase: GoldenCase) {
   const userId = testCase.userId || 1;
   const fixtures = testCase.fixtures || {};
+
+  // Mock global alignment rules to allow localized alignment mocks
+  writeJson(`${dataRoot}/config/alignment_rules.json`, {
+    fallbackToDraftOnFactDrift: false,
+    toneByPreference: {},
+  });
   if (fixtures.profileAnswers) {
     writeJson(`${dataRoot}/profiles/${userId}/answers.json`, fixtures.profileAnswers);
   }
@@ -293,6 +304,9 @@ function writeFixtures(testCase: GoldenCase) {
 
 function queueMocks(testCase: GoldenCase) {
   const mocks = testCase.mocks || {};
+  if (mocks.simulateError) {
+    simulateErrorFlag = true;
+  }
   if (mocks.profiler && hasDurableProfileFactCue(testCase.prompt)) {
     const preferredLanguage = String(
       mocks.profiler.preferred_language || mocks.profiler.preferredLanguage || "",
@@ -381,11 +395,11 @@ function evaluateResult(testCase: GoldenCase, result: any, backendCalls: number)
       appendFailure(failures, testCase.id, `missing tool ${tool}`);
     }
   }
-  for (const needle of expected.answerIncludes || []) {
-    if (!text.includes(needle)) {
-      appendFailure(failures, testCase.id, `answer missing "${needle}"`);
+    for (const needle of expected.answerIncludes || []) {
+      if (!text.toLowerCase().includes(needle.toLowerCase())) {
+        appendFailure(failures, testCase.id, `answer missing "${needle}"`);
+      }
     }
-  }
   for (const needle of expected.answerExcludes || []) {
     if (JSON.stringify(result).includes(needle)) {
       appendFailure(failures, testCase.id, `answer/result leaked "${needle}"`);
@@ -431,6 +445,19 @@ function evaluateResult(testCase: GoldenCase, result: any, backendCalls: number)
     );
     if (!facts.some((row: any) => String(row.fact || "").includes(expected.memoryFactIncludes))) {
       appendFailure(failures, testCase.id, `memory fact missing "${expected.memoryFactIncludes}"`);
+    }
+  }
+  if (expected.isClarification && result.route !== "clarify") {
+    appendFailure(failures, testCase.id, "clarification route not triggered for vague prompt");
+  }
+  if (expected.isFallback) {
+    const hasFallbackMsg =
+      text.toLowerCase().includes("connecting") ||
+      text.toLowerCase().includes("trouble") ||
+      text.toLowerCase().includes("couldn’t generate") ||
+      text.includes("தொடர்பு"); // Tamil fallback partial
+    if (!hasFallbackMsg) {
+      appendFailure(failures, testCase.id, "expected local fallback message after backend failure");
     }
   }
   return failures;
@@ -488,7 +515,9 @@ describe("golden assistant eval", () => {
         userId: testCase.userId || 1,
         message: testCase.prompt,
         replyLanguage: testCase.replyLanguage,
-        userProfile: testCase.userProfile as any,
+        userProfile: (testCase.fixtures as any)?.profileAnswers || testCase.userProfile,
+        userAllowedCloudFallback: testCase.mocks?.simulateError ? true : false,
+        modelTier: "lite",
       });
       const caseFailures = evaluateResult(
         testCase,

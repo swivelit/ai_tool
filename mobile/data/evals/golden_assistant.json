@@ -515,6 +515,68 @@
       "surface": "backend_emergency",
       "prompt": "பாம்பு கடித்தது, என்ன செய்ய வேண்டும்?",
       "expected": { "emergency": true, "matchedKeyword": "urgent tamil safety" }
+    },
+    {
+      "id": "tanglish_mixed_061",
+      "surface": "mobile_local_agent",
+      "prompt": "enna panra upcoming work tasks pathi?",
+      "userId": 9061,
+      "fixtures": { "reminders": [{ "title": "Review PR", "dateOffsetDays": 0 }] },
+      "mocks": { 
+        "routeDecision": { "route": "calendar_query", "tools": ["listReminders"] },
+        "alignment": { "final": "You have a task to Review PR today." }
+      },
+      "expected": { "route": "calendar_query", "tools": ["listReminders"], "answerIncludes": ["Review PR"], "noBackendCall": true }
+    },
+    {
+      "id": "tamil_native_062",
+      "surface": "mobile_local_agent",
+      "prompt": "நாளைக்கு என்ன மீட்டிங் இருக்கு?",
+      "userId": 9062,
+      "fixtures": { "reminders": [{ "title": "Standup", "dateOffsetDays": 1 }] },
+      "mocks": { 
+        "routeDecision": { "route": "calendar_query", "tools": ["listReminders"] }, 
+        "alignment": { 
+          "english": "Here are your reminders: Standup",
+          "final": "நாளைக்கு உங்களுக்கு Standup மீட்டிங் உள்ளது." 
+        }
+      },
+      "expected": { "route": "calendar_query", "tools": ["listReminders"], "language": "ta", "answerIncludes": ["Standup"], "noBackendCall": true }
+    },
+    {
+      "id": "memory_recall_063",
+      "surface": "mobile_local_agent",
+      "prompt": "What was that project code name I mentioned?",
+      "userId": 9063,
+      "fixtures": { 
+        "profileAnswers": { "project_code_name": "JAI-ORION" }
+      },
+      "mocks": { 
+        "routeDecision": { "route": "profile", "tools": ["getProfile"] },
+        "alignment": { 
+          "english": "The project code name is JAI-ORION.",
+          "final": "The project code name is JAI-ORION." 
+        }
+      },
+      "expected": { "route": "profile", "tools": ["getProfile"], "answerIncludes": ["JAI-ORION"], "noBackendCall": true }
+    },
+    {
+      "id": "clarify_vague_064",
+      "surface": "mobile_local_agent",
+      "prompt": "Delete it",
+      "userId": 9064,
+      "expected": { "route": "clarify", "isClarification": true, "answerIncludes": ["?"], "noBackendCall": true }
+    },
+    {
+      "id": "fallback_cloud_fail_065",
+      "surface": "mobile_local_agent",
+      "prompt": "Search cloud news for EVs",
+      "userId": 9065,
+      "mocks": { 
+        "routeDecision": { "route": "cloud_answer", "needsLiveData": true }, 
+        "simulateError": true
+      },
+      "expected": { "isFallback": true, "answerIncludes": ["generate a response"], "noBackendCall": false }
     }
   ]
 }
