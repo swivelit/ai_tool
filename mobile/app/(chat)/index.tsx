@@ -2364,6 +2364,8 @@ export default function Home() {
                         }}
                         onLongPress={() => openHistoryItemActions(item)}
                         delayLongPress={220}
+                        testID="chat-history-item"
+                        accessibilityLabel="chat-history-item"
                         style={[
                           styles.chatListItem,
                           item.id === activeChatSessionId && styles.chatListItemActive,
@@ -2430,14 +2432,14 @@ export default function Home() {
               <Text numberOfLines={1} style={styles.actionSheetTitle}>
                 {selectedHistoryItem ? selectedHistoryItem.title : "Chat"}
               </Text>
-              <Pressable onPress={deleteSelectedHistoryItem} style={styles.actionSheetRow}>
+              <Pressable onPress={deleteSelectedHistoryItem} style={styles.actionSheetRow} testID="chat-delete-button" accessibilityLabel="chat-delete-button">
                 <View style={[styles.actionSheetIconWrap, styles.actionSheetDeleteIconWrap]}>
                   <Ionicons name="trash-outline" size={18} color="#fff5ef" />
                 </View>
                 <Text style={styles.actionSheetDeleteText}>Delete</Text>
               </Pressable>
 
-              <Pressable onPress={closeHistoryItemActions} style={styles.actionSheetCancelButton}>
+              <Pressable onPress={closeHistoryItemActions} style={styles.actionSheetCancelButton} testID="chat-actions-cancel-button" accessibilityLabel="chat-actions-cancel-button">
                 <Text style={styles.actionSheetCancelText}>Cancel</Text>
               </Pressable>
             </LinearGradient>

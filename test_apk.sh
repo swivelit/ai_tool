@@ -689,6 +689,101 @@ if wait_for_desc "app-alert-modal" 2; then
   tap_text "Not now" || tap_text "OK" || true
 fi
 
+# ── Chat deletion automation ──────────────────────────────────────────
+
+info "Running chat deletion test"
+
+# Step 1: Dismiss keyboard and open drawer
+adb shell input keyevent 111 >/dev/null 2>&1 || true
+sleep 1
+
+DELETE_TARGET_CENTER=""
+DELETE_TEST_STARTED=0
+
+if tap_desc "chat-drawer-button"; then
+  if wait_for_text "Chats" 10; then
+    capture_step "delete-drawer-opened"
+    DELETE_TEST_STARTED=1
+  else
+    mark_failed "delete-drawer-chats-not-found"
+  fi
+else
+  mark_failed "delete-tap-drawer-button"
+fi
+
+# Step 2: Find and long-press the first chat history item
+if [[ "$DELETE_TEST_STARTED" == "1" ]]; then
+  if DELETE_TARGET_CENTER="$(find_ui_center desc "chat-history-item" "delete-find-history-item")"; then
+    read -r DTX DTY <<< "$DELETE_TARGET_CENTER"
+    # Long-press simulation: swipe to same coordinates with 350ms hold
+    adb shell input swipe "$DTX" "$DTY" "$DTX" "$DTY" 350
+    sleep 2
+    capture_step "delete-long-press"
+  else
+    mark_failed "delete-no-chat-history-item"
+    DELETE_TARGET_CENTER=""
+  fi
+fi
+
+# Step 3: Tap "Delete" in the action sheet
+if [[ -n "$DELETE_TARGET_CENTER" ]]; then
+  if wait_for_desc "chat-delete-button" 5; then
+    tap_desc "chat-delete-button"
+    sleep 1
+    capture_step "delete-action-sheet-tapped"
+  else
+    # Fallback: try finding by text
+    if tap_text "Delete"; then
+      sleep 1
+      capture_step "delete-action-sheet-tapped-by-text"
+    else
+      mark_failed "delete-action-sheet-button-not-found"
+    fi
+  fi
+fi
+
+# Step 4: Confirm deletion in the native Alert
+if [[ -n "$DELETE_TARGET_CENTER" ]]; then
+  if wait_for_text "Delete chat" 5; then
+    capture_step "delete-native-alert-visible"
+    # The native Alert has "Cancel" and "Delete" buttons.
+    sleep 1
+    if ! tap_text "Delete"; then
+      # Some Android versions render button text in uppercase
+      tap_text "DELETE" || mark_failed "delete-native-alert-confirm-not-found"
+    fi
+    sleep 3
+    capture_step "delete-confirmed"
+  else
+    mark_failed "delete-native-alert-not-shown"
+  fi
+fi
+
+# Step 5: Verify chat is removed from the drawer
+if [[ -n "$DELETE_TARGET_CENTER" ]]; then
+  # Re-open drawer if it was closed by the deletion
+  if ! find_ui_center text "Chats" "delete-verify-drawer-open" >/dev/null 2>&1; then
+    tap_desc "chat-drawer-button" || true
+    wait_for_text "Chats" 8 || true
+  fi
+
+  capture_step "delete-verify-drawer"
+
+  # Check remaining chat-history-items in the drawer
+  DELETE_VERIFY_XML="$ARTIFACT_DIR/ui-delete-verify-drawer.xml"
+  if [[ -f "$DELETE_VERIFY_XML" ]]; then
+    REMAINING_ITEMS="$(grep -c 'content-desc="chat-history-item"' "$DELETE_VERIFY_XML" 2>/dev/null || echo "0")"
+    printf "Remaining chat-history-items after delete: %s\n" "$REMAINING_ITEMS" >> "$ARTIFACT_DIR/steps.log"
+  fi
+
+  # Close the drawer
+  adb shell input keyevent 4 >/dev/null 2>&1 || true
+  sleep 1
+  capture_step "delete-complete"
+fi
+
+# ── End chat deletion automation ──────────────────────────────────────
+
 collect_cmd "dumpsys-package" adb shell dumpsys package "$PACKAGE_NAME"
 collect_cmd "dumpsys-meminfo-package" adb shell dumpsys meminfo "$PACKAGE_NAME"
 

@@ -171,4 +171,29 @@ describe("APK test harness", () => {
       expect(combined).toContain(label);
     });
   });
+
+  it("chat drawer history items and action sheet expose automation labels", () => {
+    const source = readMobile("app/(chat)/index.tsx");
+
+    [
+      "chat-history-item",
+      "chat-delete-button",
+      "chat-actions-cancel-button",
+    ].forEach((label) => {
+      expect(source).toContain(label);
+    });
+  });
+
+  it("verifies chat deletion automation is present in the APK test harness", () => {
+    const source = readRepo("test_apk.sh");
+
+    expect(source).toContain("chat deletion test");
+    expect(source).toContain("delete-drawer-opened");
+    expect(source).toContain("delete-no-chat-history-item");
+    expect(source).toContain("delete-action-sheet-button-not-found");
+    expect(source).toContain("delete-native-alert-not-shown");
+    expect(source).toContain("delete-native-alert-confirm-not-found");
+    expect(source).toContain("delete-verify-drawer");
+    expect(source).toContain("delete-complete");
+  });
 });
