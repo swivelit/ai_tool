@@ -1845,6 +1845,20 @@ export default function Home() {
     await submitChatMessage(text, "text");
   }
 
+  async function cleanupVoiceRecordingState(options?: { cancelStartup?: boolean }) {
+    if (options?.cancelStartup) {
+      recordingStartCancelledRef.current = true;
+    }
+    recordingPhaseRef.current = "idle";
+    stopWhenReadyRef.current = false;
+    recordingRef.current = null;
+    setRecording(null);
+    setRecordingPreparing(false);
+    setListening(false);
+    setActiveSurface(null);
+    await resetAudioMode();
+  }
+
   async function startRecording(surface: RecorderSurface) {
     if (busy || recordingPhaseRef.current !== "idle") return;
     let nextRecording: Audio.Recording | null = null;
@@ -1884,10 +1898,7 @@ export default function Home() {
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
-        recordingPhaseRef.current = "idle";
-        setRecordingPreparing(false);
-        setListening(false);
-        setActiveSurface(null);
+        await cleanupVoiceRecordingState();
         Alert.alert("Mic permission needed", "Please allow microphone access.");
         return;
       }
@@ -1929,14 +1940,7 @@ export default function Home() {
     } catch (error: unknown) {
       recordingStartCancelledRef.current = true;
       await cleanupLateRecording();
-      recordingPhaseRef.current = "idle";
-      stopWhenReadyRef.current = false;
-      recordingRef.current = null;
-      setRecording(null);
-      setRecordingPreparing(false);
-      setListening(false);
-      setActiveSurface(null);
-      await resetAudioMode();
+      await cleanupVoiceRecordingState();
       if (error instanceof RecordingStartCancelledError) {
         return;
       }
@@ -1952,20 +1956,15 @@ export default function Home() {
 
   async function stopAndAnalyze() {
     if (recordingPhaseRef.current === "starting") {
-      recordingStartCancelledRef.current = true;
-      stopWhenReadyRef.current = false;
-      recordingPhaseRef.current = "idle";
-      recordingRef.current = null;
-      setRecording(null);
-      setRecordingPreparing(false);
-      setListening(false);
-      setActiveSurface(null);
-      await resetAudioMode();
+      await cleanupVoiceRecordingState({ cancelStartup: true });
       return;
     }
 
     const activeRecording = recordingRef.current;
     if (!activeRecording || recordingPhaseRef.current !== "recording") {
+      if (recordingPhaseRef.current !== "idle") {
+        await cleanupVoiceRecordingState();
+      }
       return;
     }
 
@@ -2065,12 +2064,7 @@ export default function Home() {
         warnChatFailure(error, requestId, "voice");
       }
     } finally {
-      recordingPhaseRef.current = "idle";
-      stopWhenReadyRef.current = false;
-      recordingRef.current = null;
-      setRecording(null);
-      setRecordingPreparing(false);
-      setListening(false);
+      await cleanupVoiceRecordingState();
       if (isActiveChatRequest(requestId)) {
         activeChatRequestIdRef.current = null;
         if (voiceBusyRequestIdRef.current === requestId) {
@@ -2080,9 +2074,15 @@ export default function Home() {
       if (voiceBusyRequestIdRef.current === requestId) {
         voiceBusyRequestIdRef.current = null;
       }
-      setActiveSurface(null);
-      await resetAudioMode();
     }
+  }
+
+  async function closeVoiceSheetSafely() {
+    const phase = recordingPhaseRef.current;
+    if (phase === "starting" || phase === "recording") {
+      await stopAndAnalyze();
+    }
+    setVoiceSheetOpen(false);
   }
 
   async function handleQuickMicPress() {
@@ -2634,7 +2634,9 @@ export default function Home() {
         transparent
         visible={voiceSheetOpen}
         animationType="slide"
-        onRequestClose={() => setVoiceSheetOpen(false)}
+        onRequestClose={() => {
+          void closeVoiceSheetSafely();
+        }}
       >
         <LinearGradient colors={Brand.gradients.page} style={styles.voiceScreen}>
           <StatusBar style="dark" />
@@ -2654,11 +2656,8 @@ export default function Home() {
             </View>
 
             <Pressable
-              onPress={async () => {
-                if (recordingPhaseRef.current === "starting") {
-                  await stopAndAnalyze();
-                }
-                setVoiceSheetOpen(false);
+              onPress={() => {
+                void closeVoiceSheetSafely();
               }}
               style={styles.voiceCloseButton}
             >
@@ -2722,11 +2721,8 @@ export default function Home() {
           >
             <View style={styles.voiceBottomRow}>
               <Pressable
-                onPress={async () => {
-                  if (recordingPhaseRef.current === "starting") {
-                    await stopAndAnalyze();
-                  }
-                  setVoiceSheetOpen(false);
+                onPress={() => {
+                  void closeVoiceSheetSafely();
                 }}
                 style={styles.voiceDockButton}
               >
@@ -2740,15 +2736,8 @@ export default function Home() {
               </View>
 
               <Pressable
-                onPress={async () => {
-                  if (
-                    recordingPhaseRef.current === "starting" ||
-                    recordingPhaseRef.current === "recording"
-                  ) {
-                    await stopAndAnalyze();
-                  } else {
-                    setVoiceSheetOpen(false);
-                  }
+                onPress={() => {
+                  void closeVoiceSheetSafely();
                 }}
                 style={styles.voiceDockButtonDanger}
               >
