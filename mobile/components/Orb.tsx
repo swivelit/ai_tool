@@ -212,11 +212,14 @@ export function Orb({
   return (
     <Pressable
       accessible
+      testID="voice-orb"
+      accessibilityLabel="voice-orb"
       accessibilityRole="button"
-      accessibilityLabel={
-        listening ? "Recording, release to stop" : "Hold the orb to record"
+      accessibilityHint={
+        listening
+          ? "Recording, release to stop"
+          : "Press and hold the orb to record. Release to stop and send."
       }
-      accessibilityHint="Press and hold the orb to record. Release to stop and send."
       style={styles.pressable}
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}

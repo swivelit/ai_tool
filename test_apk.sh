@@ -784,6 +784,72 @@ fi
 
 # ── End chat deletion automation ──────────────────────────────────────
 
+# ── Voice automation ──────────────────────────────────────────
+
+info "Running voice automation test"
+
+adb shell input keyevent 111 >/dev/null 2>&1 || true
+sleep 1
+
+VOICE_ORB_CENTER=""
+VOICE_TEST_STARTED=0
+
+# Step 1: Open voice modal
+if tap_desc "chat-voice-button"; then
+  sleep 2
+  capture_step "voice-modal-opened"
+  VOICE_TEST_STARTED=1
+else
+  mark_failed "voice-open-button-not-found"
+fi
+
+# Step 2: Handle Android microphone permission dialog
+if [[ "$VOICE_TEST_STARTED" == "1" ]]; then
+  tap_text "While using the app" || \
+  tap_text "Allow" || \
+  tap_text "ALLOW" || true
+
+  sleep 2
+fi
+
+# Step 3: Find voice orb
+if [[ "$VOICE_TEST_STARTED" == "1" ]]; then
+  if VOICE_ORB_CENTER="$(find_ui_center desc "voice-orb" "voice-find-orb")"; then
+    read -r VOICE_X VOICE_Y <<< "$VOICE_ORB_CENTER"
+
+    capture_step "voice-orb-found"
+  else
+    mark_failed "voice-orb-not-found"
+  fi
+fi
+
+# Step 4: Hold orb to simulate recording
+if [[ -n "$VOICE_ORB_CENTER" ]]; then
+  adb shell input swipe "$VOICE_X" "$VOICE_Y" "$VOICE_X" "$VOICE_Y" 2000
+
+  sleep 4
+
+  capture_step "voice-recording-finished"
+fi
+
+# Step 5: Wait for assistant response
+if [[ -n "$VOICE_ORB_CENTER" ]]; then
+  if wait_for_desc "chat-assistant-response" 40; then
+    capture_step "voice-response-success"
+  else
+    mark_failed "voice-response-not-visible"
+  fi
+fi
+
+# Step 6: Close voice modal
+if wait_for_desc "voice-modal-close-button" 10; then
+  tap_desc "voice-modal-close-button"
+  sleep 1
+  capture_step "voice-modal-closed"
+fi
+
+# ── End voice automation ──────────────────────────────────────
+
 collect_cmd "dumpsys-package" adb shell dumpsys package "$PACKAGE_NAME"
 collect_cmd "dumpsys-meminfo-package" adb shell dumpsys meminfo "$PACKAGE_NAME"
 

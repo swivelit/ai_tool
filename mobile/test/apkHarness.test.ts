@@ -196,4 +196,22 @@ describe("APK test harness", () => {
     expect(source).toContain("delete-verify-drawer");
     expect(source).toContain("delete-complete");
   });
+
+  it("voice orb and modal expose automation labels", () => {
+  const orbSource = readMobile("components/Orb.tsx");
+  const chatSource = readMobile("app/(chat)/index.tsx");
+
+  expect(orbSource).toContain("voice-orb");
+  expect(chatSource).toContain("voice-modal-close-button");
+});
+
+it("verifies voice automation exists in APK harness", () => {
+  const source = readRepo("test_apk.sh");
+
+  expect(source).toContain("voice automation test");
+  expect(source).toContain("voice-orb-not-found");
+  expect(source).toContain("voice-response-not-visible");
+  expect(source).toContain("voice-modal-closed");
+});
+
 });

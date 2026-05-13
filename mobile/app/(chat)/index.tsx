@@ -2470,7 +2470,7 @@ export default function Home() {
               <Text style={styles.voiceLiveBadgeText}>Live</Text>
             </View>
 
-            <Pressable onPress={() => setVoiceSheetOpen(false)} style={styles.voiceCloseButton}>
+            <Pressable onPress={() => setVoiceSheetOpen(false)} style={styles.voiceCloseButton} testID="voice-modal-close-button" accessibilityLabel="voice-modal-close-button">
               <Ionicons name="close" size={18} color={Brand.cream} />
             </Pressable>
           </View>
