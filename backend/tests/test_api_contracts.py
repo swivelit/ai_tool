@@ -6,6 +6,7 @@ from unittest.mock import Mock
 from fastapi import HTTPException
 
 import app.main as main_module
+import app.observability as observability
 from app.database import SessionLocal
 from app.models import Conversation, Item, QACache, RagEmbedding
 from conftest import auth_headers, create_test_user
@@ -43,6 +44,11 @@ def _stub_chat_pipeline(
             "review_meta": "{}",
             "translation_meta": "{}",
             "timings_ms": "{}",
+            "route_taken": "agentic",
+            "predicted_label": intent,
+            "direct_answer_source": "backend_pipeline",
+            "direct_answer_confidence": "1.0000",
+            "cache_hit": "false",
         },
     )
     monkeypatch.setattr(
@@ -69,6 +75,83 @@ def test_chat_requires_message_or_text(client):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "message or text is required"
+
+
+def test_chat_logs_turn_started_and_completed_safely(client, monkeypatch, caplog):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    _stub_chat_pipeline(monkeypatch, assistant_text="Safe backend answer")
+    monkeypatch.setattr(observability, "LOG_CHAT_CONTENT", False)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "private cricket question", "reply_language": "en"},
+        )
+
+    assert response.status_code == 200
+    started = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_started"]
+    completed = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_completed"]
+    assert started
+    assert completed
+    assert getattr(started[-1], "question_hash")
+    assert getattr(started[-1], "question_length") == len("private cricket question")
+    assert not hasattr(started[-1], "question_preview")
+    assert getattr(completed[-1], "route_taken") == "agentic"
+    assert getattr(completed[-1], "agent_source") in {"backend_pipeline", "backend_openai", "backend_cache"}
+    assert getattr(completed[-1], "answer_hash")
+    assert "private cricket question" not in caplog.text
+    assert "Safe backend answer" not in caplog.text
+    assert user.id is not None
+
+
+def test_chat_logs_truncated_previews_when_enabled(client, monkeypatch, caplog):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    _stub_chat_pipeline(monkeypatch, assistant_text="answer preview text")
+    monkeypatch.setattr(observability, "LOG_CHAT_CONTENT", True)
+    monkeypatch.setattr(observability, "LOG_CHAT_CONTENT_MAX_CHARS", 8)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "question preview text", "reply_language": "en"},
+        )
+
+    assert response.status_code == 200
+    started = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_started"][-1]
+    completed = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_completed"][-1]
+    assert getattr(started, "question_preview") == "question..."
+    assert getattr(completed, "answer_preview") == "answer p..."
+
+
+def test_client_turn_log_accepts_local_telemetry_safely(client, caplog):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/client/turn-log",
+            headers=headers,
+            json={
+                "event": "client_local_turn_completed",
+                "user_id": user.id,
+                "channel": "text",
+                "question": "hello bearer secret-token",
+                "answer": "local answer",
+                "agent_source": "local_rules",
+                "route_taken": "fast_greeting",
+            },
+        )
+
+    assert response.status_code == 200
+    record = [r for r in caplog.records if getattr(r, "event", "") == "client_local_turn_completed"][-1]
+    assert getattr(record, "question_hash")
+    assert getattr(record, "answer_hash")
+    assert getattr(record, "agent_source") == "local_rules"
+    assert "secret-token" not in caplog.text
 
 
 def test_voice_upload_rejects_missing_auth_missing_file_bad_type_and_large_file(client, monkeypatch):
@@ -101,6 +184,14 @@ def test_voice_upload_rejects_missing_auth_missing_file_bad_type_and_large_file(
         files={"file": ("audio.m4a", b"123456789", "audio/m4a")},
     )
     assert too_large.status_code == 413
+
+    empty = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}",
+        headers=headers,
+        files={"file": ("audio.m4a", b"", "audio/m4a")},
+    )
+    assert empty.status_code == 400
+    assert "Audio file is empty" in empty.json()["detail"]
 
 
 def test_voice_rejects_cross_user_query_before_transcription(client, monkeypatch):
@@ -139,7 +230,7 @@ def test_voice_stt_failure_returns_client_error(client, monkeypatch):
     assert response.json()["detail"] == "bad audio"
 
 
-def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatch):
+def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatch, caplog):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
     monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
@@ -160,11 +251,12 @@ def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatc
 
     monkeypatch.setattr(main_module.requests, "post", fake_post)
 
-    response = client.post(
-        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en&speech_language=ta",
-        headers=headers,
-        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
-    )
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en&speech_language=ta",
+            headers=headers,
+            files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+        )
 
     assert response.status_code == 200
     assert response.json()["item"]["raw_text"] == "voice hello"
@@ -175,6 +267,14 @@ def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatc
     assert calls[0][1]["data"]["model"] == "saaras:v3"
     assert calls[0][1]["data"]["mode"] == "transcribe"
     assert calls[0][1]["data"]["language_code"] == "ta-IN"
+    upload_record = [r for r in caplog.records if getattr(r, "event", "") == "voice_upload_received"][-1]
+    assert getattr(upload_record, "upload_filename") == "audio.m4a"
+    assert getattr(upload_record, "content_type") == "audio/m4a"
+    assert getattr(upload_record, "size_bytes") > 0
+    stt_record = [r for r in caplog.records if getattr(r, "event", "") == "sarvam_stt_completed"][-1]
+    assert getattr(stt_record, "status_code") == 200
+    assert getattr(stt_record, "transcript_hash")
+    assert getattr(stt_record, "transcript_length") == len("voice hello")
 
 
 def test_sarvam_stt_missing_key_returns_503(client, monkeypatch):
@@ -193,7 +293,7 @@ def test_sarvam_stt_missing_key_returns_503(client, monkeypatch):
     assert response.json()["detail"] == "SARVAM_API_KEY is not configured."
 
 
-def test_sarvam_stt_timeout_returns_504(client, monkeypatch):
+def test_sarvam_stt_timeout_returns_504(client, monkeypatch, caplog):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
     monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
@@ -203,17 +303,21 @@ def test_sarvam_stt_timeout_returns_504(client, monkeypatch):
 
     monkeypatch.setattr(main_module.requests, "post", fake_post)
 
-    response = client.post(
-        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
-        headers=headers,
-        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
-    )
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
+            headers=headers,
+            files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+        )
 
     assert response.status_code == 504
     assert response.json()["detail"] == "STT provider timed out."
+    failed = [r for r in caplog.records if getattr(r, "event", "") == "sarvam_stt_failed"][-1]
+    assert getattr(failed, "status_code") == 504
+    assert getattr(failed, "safe_provider_error") == "timeout"
 
 
-def test_sarvam_stt_provider_error_redacts_backend_key(client, monkeypatch):
+def test_sarvam_stt_provider_error_redacts_backend_key(client, monkeypatch, caplog):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
     monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
@@ -227,17 +331,19 @@ def test_sarvam_stt_provider_error_redacts_backend_key(client, monkeypatch):
 
     monkeypatch.setattr(main_module.requests, "post", lambda *args, **kwargs: DummyResponse())
 
-    response = client.post(
-        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
-        headers=headers,
-        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
-    )
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
+            headers=headers,
+            files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+        )
 
     assert response.status_code == 401
     detail = response.json()["detail"]
     assert "STT provider returned 401" in detail
     assert "test-key" not in detail
     assert "[REDACTED]" in detail
+    assert "test-key" not in caplog.text
 
 
 def test_tts_uses_modern_text_payload_and_returns_audio(client, monkeypatch):

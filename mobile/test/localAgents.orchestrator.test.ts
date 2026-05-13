@@ -86,8 +86,12 @@ vi.mock("../lib/localAgentBootstrap", () => ({
 }));
 
 vi.mock("../lib/api", () => ({
+  CLOUD_FALLBACK_CONSENT_MESSAGE:
+    "This needs backend/OpenAI help. Enable cloud fallback to answer this.",
+  annotateBackendOpenAiFallbackResponse: (payload: any) => payload,
   apiPost: apiPostMock,
   apiPostBackendOnly: apiPostMock,
+  sendClientTurnLog: vi.fn(),
 }));
 
 global.fetch = vi.fn(async () => {
@@ -319,20 +323,15 @@ describe("local orchestrator and alignment", () => {
       replyLanguage: "en",
     });
 
-    expect(result.route).toBe("setup_required");
+    expect(result.kind).toBe("cloud_consent_required");
+    expect(result.route).toBe("fallback_openai");
     expect(result.source).toBe("local_rules");
-    expect(result.assistantText).toContain("Local AI files are still setting up");
-    expect(result.meta?.setupRequired).toBe(true);
-    expect(result.meta?.source).toBe("local_rules");
-    expect(result.meta?.responsePath).toBe("setup_required");
-    expect(result.meta?.fastPath).toBe(false);
-    expect(result.meta?.selectedTier).toBe("lite");
-    expect(result.meta?.missingModelIds).toEqual(
-      expect.arrayContaining([
-        "google/gemma-3-4b-it",
-        "Qwen/Qwen3-Embedding-0.6B",
-      ]),
+    expect(result.assistantText).toBe(
+      "This needs backend/OpenAI help. Enable cloud fallback to answer this.",
     );
+    expect(result.meta?.source).toBe("cloud_consent_required");
+    expect(result.meta?.responsePath).toBe("cloud_consent_required");
+    expect(result.meta?.fallback_reason).toBe("local_model_unavailable");
     expect(apiPostMock).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
     expect((FileSystem as any).createDownloadResumable).not.toHaveBeenCalled();
@@ -382,11 +381,15 @@ describe("local orchestrator and alignment", () => {
       replyLanguage: "en",
     });
 
-    expect(result.route).toBe("setup_required");
+    expect(result.kind).toBe("cloud_consent_required");
+    expect(result.route).toBe("clarify");
     expect(result.source).toBe("local_rules");
-    expect(result.meta?.setupRequired).toBe(true);
+    expect(result.assistantText).toBe(
+      "This needs backend/OpenAI help. Enable cloud fallback to answer this.",
+    );
+    expect(result.meta?.fallback_reason).toBe("local_model_unavailable");
     expect(result.meta?.orchestratorDecision?.reason).toBe(
-      "native_on_device_runtime_unavailable",
+      "local_model_unavailable",
     );
     expect(apiPostMock).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
@@ -995,7 +998,7 @@ describe("local orchestrator and alignment", () => {
     expect(result.source).toBe("local_rules");
     expect(result.cloudFallback).toEqual({
       kind: "cloud_consent_required",
-      reason: "current_or_live_data_requires_cloud_fallback",
+      reason: "live_data_needed",
       localAnswerAvailable: false,
       suggestedAction: "ask_user_consent",
     });

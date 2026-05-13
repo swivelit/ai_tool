@@ -7,7 +7,7 @@ import {
   markChatHistoryItemsOrigin,
   mergeChatHistoryItems,
 } from "@/lib/chatHistory";
-import { ChatHistoryItem } from "@/lib/chatResponse";
+import { ChatHistoryItem, normalizeChatTurnPayload } from "@/lib/chatResponse";
 
 function item(
   id: number,
@@ -51,6 +51,34 @@ describe("chat history merge", () => {
 
     expect(backendItem.__origin).toBe("backend");
   });
+
+  it("keeps backend OpenAI fallback answers visible as backend history", () => {
+    const fallbackItem = normalizeChatTurnPayload(
+      {
+        ok: true,
+        item: {
+          id: 8801,
+          intent: "assistant",
+          category: "Other",
+          raw_text: "Do you know about ipl ?",
+          details: "Backend IPL answer.",
+          source: "text",
+          __origin: "backend",
+        } as any,
+        assistant: { text: "Backend IPL answer." },
+        meta: {
+          source: "backend_openai_fallback",
+          fallback_reason: "local_timeout",
+        },
+      },
+      "Do you know about ipl ?",
+    );
+    const merged = mergeChatHistoryItems([], [], [fallbackItem]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].details).toBe("Backend IPL answer.");
+    expect(merged[0].__origin).toBe("backend");
+  });
 });
 
 describe("chat deletion classification", () => {
@@ -92,4 +120,3 @@ describe("chat deletion classification", () => {
     expect(visible.map((entry) => entry.id)).toEqual([4002]);
   });
 });
-

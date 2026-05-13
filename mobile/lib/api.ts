@@ -19,6 +19,7 @@ import {
 } from "./localAssistantProfile";
 import { tryBuildQuickLocalReply } from "./localQuickReplies";
 import { loadCloudFallbackConsent } from "./localAssistantSettings";
+import { isLocalTurnTimeoutError } from "./localTurnTimeouts";
 import {
   PRODUCT_DEFAULT_REPLY_LANGUAGE,
   ReplyLanguage,
@@ -61,6 +62,14 @@ export class ApiError extends Error {
 }
 
 const DEFAULT_API_TIMEOUT_MS = 30_000;
+export const CLOUD_FALLBACK_CONSENT_MESSAGE =
+  "This needs backend/OpenAI help. Enable cloud fallback to answer this.";
+
+export type BackendFallbackReason =
+  | "local_timeout"
+  | "local_model_unavailable"
+  | "no_safe_local_answer"
+  | "live_data_needed";
 
 function isAbortError(error: unknown) {
   return (
@@ -500,7 +509,7 @@ const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
 // Normal chat is local-first by product policy. The legacy flag is kept
 // for diagnostics, but it must not make backend/OpenAI the primary runtime.
 const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = true;
-const CANONICAL_VOICE_ANALYZE_PATH = "/transcribe-and-analyze";
+const CANONICAL_VOICE_ANALYZE_PATH = "/api/transcribe-and-analyze";
 
 let localChatInterceptionDepth = 0;
 let routingBannerLogged = false;
@@ -613,6 +622,23 @@ type LocalChatProxyResponse = {
   };
   pipeline?: Record<string, any>;
   meta?: Record<string, any>;
+};
+
+export type ClientTurnLogPayload = {
+  event: string;
+  user_id?: number | string | null;
+  request_id?: string | null;
+  channel?: "text" | "voice" | "handsfree" | string;
+  question?: string | null;
+  answer?: string | null;
+  question_length?: number;
+  answer_length?: number;
+  agent_source?: string | null;
+  route_taken?: string | null;
+  fallback_reason?: string | null;
+  duration_ms?: number;
+  stage_timings?: Record<string, any> | null;
+  error_type?: string | null;
 };
 
 type VoiceUnavailableAction =
@@ -801,6 +827,247 @@ function extractErrorCode(error: unknown) {
   return typeof direct === "string" ? direct : "";
 }
 
+function isLocalModelUnavailableError(error: unknown) {
+  const code = extractErrorCode(error);
+  const setupCode = String((error as any)?.setupCode || "");
+  const message = String((error as any)?.message || error || "");
+  return (
+    code === "NATIVE_ON_DEVICE_RUNTIME_UNAVAILABLE" ||
+    setupCode === "LOCAL_MODEL_SETUP_ERROR" ||
+    /native on-device|local model|model file|gguf|llama\.cpp|runtime .*not (?:linked|available|ready)|model download|model setup/i.test(
+      message,
+    )
+  );
+}
+
+function safeAnswerText(payload: any) {
+  return String(
+    payload?.assistant?.text ||
+      payload?.assistant?.english ||
+      payload?.item?.details ||
+      payload?.details ||
+      payload?.raw_text ||
+      "",
+  ).trim();
+}
+
+function textLength(value: unknown) {
+  return String(value || "").length;
+}
+
+function safeSendClientTurnLog(payload: ClientTurnLogPayload) {
+  void apiPostBackendOnly("/api/client/turn-log", payload).catch(() => {
+    // Client telemetry is best-effort and must never block chat UX.
+  });
+}
+
+export function sendClientTurnLog(payload: ClientTurnLogPayload) {
+  safeSendClientTurnLog(payload);
+}
+
+function logClientLocalTurnCompleted(input: {
+  userId: number;
+  message: string;
+  answer: string;
+  source: string;
+  route: string;
+  stageTimings?: Record<string, any> | null;
+}) {
+  safeSendClientTurnLog({
+    event: "client_local_turn_completed",
+    user_id: input.userId,
+    channel: "text",
+    question: input.message,
+    answer: input.answer,
+    question_length: textLength(input.message),
+    answer_length: textLength(input.answer),
+    agent_source: input.source === "local_model" ? "local_model" : "local_rules",
+    route_taken: input.route,
+    stage_timings: input.stageTimings || null,
+  });
+}
+
+function logClientLocalTurnFailed(input: {
+  userId: number;
+  message: string;
+  errorType: string;
+  route?: string | null;
+  stageTimings?: Record<string, any> | null;
+}) {
+  safeSendClientTurnLog({
+    event: "client_local_turn_failed",
+    user_id: input.userId,
+    channel: "text",
+    question: input.message,
+    question_length: textLength(input.message),
+    agent_source: "local_model",
+    route_taken: input.route || "local_answer",
+    stage_timings: input.stageTimings || null,
+    error_type: input.errorType,
+    fallback_reason: input.errorType,
+  });
+}
+
+export function annotateBackendOpenAiFallbackResponse<T extends Record<string, any>>(
+  payload: T,
+  options: {
+    fallbackReason: BackendFallbackReason;
+    originalRoute?: string | null;
+    stageTimings?: Record<string, any> | null;
+  },
+): T {
+  const source = "backend_openai_fallback";
+  const pipeline = {
+    ...(payload?.pipeline || {}),
+    direct_answer_source:
+      payload?.pipeline?.direct_answer_source || "backend_openai",
+    meta: {
+      ...(payload?.pipeline?.meta || {}),
+      source,
+      fallback_reason: options.fallbackReason,
+      original_route: options.originalRoute || undefined,
+      ...(options.stageTimings ? { stageTimings: options.stageTimings } : {}),
+    },
+  };
+  return {
+    ...payload,
+    item: payload?.item
+      ? {
+          ...payload.item,
+          __origin: "backend",
+        }
+      : payload?.item,
+    pipeline,
+    meta: {
+      ...(payload?.meta || {}),
+      source,
+      fallback_reason: options.fallbackReason,
+      original_route: options.originalRoute || undefined,
+      agent_source: "backend_openai",
+      ...(options.stageTimings ? { stageTimings: options.stageTimings } : {}),
+    },
+  };
+}
+
+function buildCloudFallbackConsentResponse(input: {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  fallbackReason: BackendFallbackReason;
+  originalRoute?: string | null;
+  stageTimings?: Record<string, any> | null;
+}): LocalChatProxyResponse {
+  const createdAt = new Date().toISOString();
+  return {
+    ok: false,
+    kind: "cloud_consent_required",
+    item: {
+      id: Date.now(),
+      intent: "assistant",
+      category: "Other",
+      raw_text: input.message,
+      transcript: null,
+      datetime: null,
+      title: "Cloud fallback",
+      details: CLOUD_FALLBACK_CONSENT_MESSAGE,
+      created_at: createdAt,
+      source: "text",
+      __origin: "local",
+    },
+    assistant: {
+      text: CLOUD_FALLBACK_CONSENT_MESSAGE,
+      english: CLOUD_FALLBACK_CONSENT_MESSAGE,
+      tamil:
+        input.replyLanguage === "ta"
+          ? CLOUD_FALLBACK_CONSENT_MESSAGE
+          : undefined,
+      theni_tamil:
+        input.replyLanguage === "ta"
+          ? CLOUD_FALLBACK_CONSENT_MESSAGE
+          : undefined,
+    },
+    pipeline: {
+      route_taken: "cloud_consent_required",
+      predicted_label: "assistant",
+      raw_english: input.message,
+      remodeled_english: CLOUD_FALLBACK_CONSENT_MESSAGE,
+      tamil_text:
+        input.replyLanguage === "ta" ? CLOUD_FALLBACK_CONSENT_MESSAGE : "",
+      theni_tamil_text:
+        input.replyLanguage === "ta" ? CLOUD_FALLBACK_CONSENT_MESSAGE : "",
+      direct_answer_source: "local_rules",
+      meta: {
+        source: "cloud_consent_required",
+        fallback_reason: input.fallbackReason,
+        original_route: input.originalRoute || undefined,
+        stageTimings: input.stageTimings || {},
+      },
+    },
+    meta: {
+      source: "cloud_consent_required",
+      route: "cloud_consent_required",
+      fallback_reason: input.fallbackReason,
+      original_route: input.originalRoute || undefined,
+      cloudFallback: {
+        kind: "cloud_consent_required",
+        reason: input.fallbackReason,
+        localAnswerAvailable: false,
+        suggestedAction: "ask_user_consent",
+      },
+      userId: input.userId,
+      stageTimings: input.stageTimings || {},
+      created_at: createdAt,
+    },
+  };
+}
+
+async function postChatFallbackToBackend(input: {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  fallbackReason: BackendFallbackReason;
+  originalRoute?: string | null;
+  stageTimings?: Record<string, any> | null;
+}) {
+  safeSendClientTurnLog({
+    event: "client_backend_fallback_started",
+    user_id: input.userId,
+    channel: "text",
+    question: input.message,
+    question_length: textLength(input.message),
+    agent_source: "backend_openai",
+    route_taken: "fallback_openai",
+    fallback_reason: input.fallbackReason,
+    stage_timings: input.stageTimings || null,
+  });
+
+  const backend = await apiPostBackendOnly<LocalChatProxyResponse>("/api/chat", {
+    user_id: input.userId,
+    message: input.message,
+    reply_language: input.replyLanguage,
+  });
+  const annotated = annotateBackendOpenAiFallbackResponse(backend, {
+    fallbackReason: input.fallbackReason,
+    originalRoute: input.originalRoute,
+    stageTimings: input.stageTimings,
+  });
+  const answer = safeAnswerText(annotated);
+  safeSendClientTurnLog({
+    event: "client_backend_fallback_completed",
+    user_id: input.userId,
+    channel: "text",
+    question: input.message,
+    answer,
+    question_length: textLength(input.message),
+    answer_length: textLength(answer),
+    agent_source: "backend_openai",
+    route_taken: "fallback_openai",
+    fallback_reason: input.fallbackReason,
+    stage_timings: input.stageTimings || null,
+  });
+  return annotated;
+}
+
 function isNativeSttNotImplementedError(error: unknown) {
   const code = extractErrorCode(error);
   const message = String((error as any)?.message || error || "");
@@ -965,7 +1232,10 @@ function normalizeVoiceAnalyzePath(path: string) {
   }
 
   if (normalized.startsWith("/transcribe-and-analyze")) {
-    return normalized;
+    return normalized.replace(
+      "/transcribe-and-analyze",
+      CANONICAL_VOICE_ANALYZE_PATH,
+    );
   }
 
   return normalized;
@@ -1419,7 +1689,7 @@ async function handleLocalChat(
     const quickLanguage = quickReplyLanguage || explicitReplyLanguage;
     const createdAt = new Date().toISOString();
 
-    return {
+    const response: LocalChatProxyResponse = {
       ok: true,
       item: {
         id: Date.now(),
@@ -1468,6 +1738,15 @@ async function handleLocalChat(
         created_at: createdAt,
       },
     };
+    logClientLocalTurnCompleted({
+      userId,
+      message,
+      answer: quick.assistantText,
+      source: "local_rules",
+      route: quick.route,
+      stageTimings,
+    });
+    return response;
   }
 
   const cachedProfile = await timeStage("cached_profile", () =>
@@ -1490,16 +1769,92 @@ async function handleLocalChat(
   const { runLocalAssistantTurn } = await import("./localAgents");
   stageTimings.local_agents_import =
     (stageTimings.local_agents_import || 0) + (Date.now() - importStartedAt);
-  const turn = await timeStage("local_turn", () =>
-    runLocalAssistantTurn({
+  let turn;
+  try {
+    turn = await timeStage("local_turn", () =>
+      runLocalAssistantTurn({
+        userId,
+        message,
+        replyLanguage,
+        userAllowedCloudFallback,
+        deviceInfo,
+        ...(userProfile ? { userProfile } : {}),
+      }),
+    );
+  } catch (error) {
+    const fallbackReason: BackendFallbackReason = isLocalTurnTimeoutError(error)
+      ? "local_timeout"
+      : isLocalModelUnavailableError(error)
+        ? "local_model_unavailable"
+        : "no_safe_local_answer";
+    logClientLocalTurnFailed({
+      userId,
+      message,
+      errorType: fallbackReason,
+      route: "local_answer",
+      stageTimings,
+    });
+    if (userAllowedCloudFallback) {
+      return postChatFallbackToBackend({
+        userId,
+        message,
+        replyLanguage,
+        fallbackReason,
+        originalRoute: "local_answer",
+        stageTimings,
+      });
+    }
+    return buildCloudFallbackConsentResponse({
       userId,
       message,
       replyLanguage,
-      userAllowedCloudFallback,
-      deviceInfo,
-      ...(userProfile ? { userProfile } : {}),
-    }),
-  );
+      fallbackReason,
+      originalRoute: "local_answer",
+      stageTimings,
+    });
+  }
+
+  if ((turn.meta as any)?.backendResponse) {
+    return (turn.meta as any).backendResponse as LocalChatProxyResponse;
+  }
+
+  if (!String(turn.assistantText || "").trim()) {
+    const fallbackReason: BackendFallbackReason = "no_safe_local_answer";
+    logClientLocalTurnFailed({
+      userId,
+      message,
+      errorType: fallbackReason,
+      route: turn.route,
+      stageTimings: {
+        ...stageTimings,
+        ...(turn.meta?.stageTimings || {}),
+      },
+    });
+    if (userAllowedCloudFallback) {
+      return postChatFallbackToBackend({
+        userId,
+        message,
+        replyLanguage,
+        fallbackReason,
+        originalRoute: turn.route,
+        stageTimings: {
+          ...stageTimings,
+          ...(turn.meta?.stageTimings || {}),
+        },
+      });
+    }
+    return buildCloudFallbackConsentResponse({
+      userId,
+      message,
+      replyLanguage,
+      fallbackReason,
+      originalRoute: turn.route,
+      stageTimings: {
+        ...stageTimings,
+        ...(turn.meta?.stageTimings || {}),
+      },
+    });
+  }
 
   const createdAt = new Date().toISOString();
   const normalizedIntent =
@@ -1509,7 +1864,7 @@ async function handleLocalChat(
       ? turn.title || "Reminder"
       : formatIntentLabel(turn.route);
 
-  return {
+  const response: LocalChatProxyResponse = {
     ok: true,
     item: {
       id: Date.now(),
@@ -1573,6 +1928,33 @@ async function handleLocalChat(
       created_at: createdAt,
     },
   };
+
+  if (turn.source === "openai_fallback") {
+    safeSendClientTurnLog({
+      event: "client_backend_fallback_completed",
+      user_id: userId,
+      channel: "text",
+      question: message,
+      answer: turn.assistantText,
+      question_length: textLength(message),
+      answer_length: textLength(turn.assistantText),
+      agent_source: "backend_openai",
+      route_taken: "fallback_openai",
+      fallback_reason: String(turn.meta?.fallback_reason || ""),
+      stage_timings: response.meta?.stageTimings || null,
+    });
+  } else {
+    logClientLocalTurnCompleted({
+      userId,
+      message,
+      answer: turn.assistantText,
+      source: turn.source,
+      route: turn.route,
+      stageTimings: response.meta?.stageTimings || null,
+    });
+  }
+
+  return response;
 }
 
 export async function apiGet<T>(path: string): Promise<T> {

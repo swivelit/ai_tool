@@ -15,6 +15,7 @@ import { Brand } from "@/constants/theme";
 
 type OrbProps = {
   listening: boolean;
+  onPress?: () => void;
   onPressIn?: () => void;
   onPressOut?: () => void;
   size?: number;
@@ -30,6 +31,7 @@ type OrbProps = {
  */
 export function Orb({
   listening,
+  onPress,
   onPressIn,
   onPressOut,
   size = 168,
@@ -214,10 +216,21 @@ export function Orb({
       accessible
       accessibilityRole="button"
       accessibilityLabel={
-        listening ? "Recording, release to stop" : "Hold the orb to record"
+        onPress
+          ? listening
+            ? "Recording, tap to stop"
+            : "Tap the orb to record"
+          : listening
+            ? "Recording, release to stop"
+            : "Hold the orb to record"
       }
-      accessibilityHint="Press and hold the orb to record. Release to stop and send."
+      accessibilityHint={
+        onPress
+          ? "Tap the orb to start recording. Tap again to stop and send."
+          : "Press and hold the orb to record. Release to stop and send."
+      }
       style={styles.pressable}
+      onPress={onPress}
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
       hitSlop={24}

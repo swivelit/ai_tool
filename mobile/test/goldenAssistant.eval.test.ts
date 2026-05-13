@@ -94,8 +94,12 @@ vi.mock("../lib/localAgentBootstrap", () => ({
 }));
 
 vi.mock("../lib/api", () => ({
+  CLOUD_FALLBACK_CONSENT_MESSAGE:
+    "This needs backend/OpenAI help. Enable cloud fallback to answer this.",
+  annotateBackendOpenAiFallbackResponse: (payload: any) => payload,
   apiPost: apiPostMock,
   apiPostBackendOnly: apiPostMock,
+  sendClientTurnLog: vi.fn(),
 }));
 
 global.fetch = vi.fn(async () => {

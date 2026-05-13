@@ -36,7 +36,15 @@ import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
-import { apiDelete, apiGet, apiPost, apiPostForm } from "@/lib/api";
+import {
+  annotateBackendOpenAiFallbackResponse,
+  apiDelete,
+  apiGet,
+  apiPost,
+  apiPostBackendOnly,
+  apiPostForm,
+  sendClientTurnLog,
+} from "@/lib/api";
 import { computeChatScreenLayout } from "@/lib/chatScreenLayout";
 import {
   BackendChatResponse,
@@ -63,6 +71,14 @@ import {
 } from "@/lib/localTurnTimeouts";
 import { shouldAutoSpeakReply } from "@/lib/replyPlaybackPolicy";
 import { ensureNotificationsReady, scheduleReminder } from "@/lib/reminders";
+import {
+  EMPTY_AUDIO_MESSAGE,
+  MIC_START_TIMEOUT_MESSAGE,
+  RecordingStartCancelledError,
+  RecordingStartTimeoutError,
+  assertUsableAudioFile,
+  withRecordingStartTimeout,
+} from "@/lib/voiceRecording";
 
 type ChatSessionRecord = {
   id: string;
@@ -108,6 +124,8 @@ const HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX = "hidden_chat_item_ids_v1";
 const MODEL_SETUP_ALERT_THROTTLE_MS = 5 * 60 * 1000;
 const VOICE_UNAVAILABLE_MESSAGE =
   "Voice is unavailable right now. Please try again.";
+const CHAT_CLOUD_FALLBACK_DISABLED_MESSAGE =
+  "I need backend/OpenAI help for this. Turn on cloud fallback in settings to answer it.";
 
 function normalizeHandsFreeText(value?: string | null) {
   return String(value || "")
@@ -351,6 +369,8 @@ export default function Home() {
     "idle"
   );
   const stopWhenReadyRef = useRef(false);
+  const recordingStartCancelledRef = useRef(false);
+  const voiceBusyRequestIdRef = useRef<string | null>(null);
   const drawerProgress = useRef(new Animated.Value(0)).current;
   const [drawerMounted, setDrawerMounted] = useState(false);
   const scrollViewRef = useRef<ScrollView | null>(null);
@@ -534,13 +554,14 @@ export default function Home() {
       : `Ask ${assistantLabel}`;
 
   const handsFreeSummaryText = recordingPreparing && activeSurface === "live"
-    ? "Keep holding the orb. Start speaking when the orb begins pulsing."
-    :
-    handsFreeMode === "command"
+    ? "Tap stop if you need to cancel."
+    : listening && activeSurface === "live"
+      ? "Tap stop when done."
+      : handsFreeMode === "command"
       ? "Listening for your request…"
       : settings.handsFreeEnabled
-        ? `Say "${handsFreeWakePhrase}" or hold the orb.`
-        : "Press and hold the orb to record. Release to stop and send.";
+        ? `Say "${handsFreeWakePhrase}" or tap the orb.`
+        : "Tap the orb to start. Tap stop when done.";
 
   const drawerTranslateX = drawerProgress.interpolate({
     inputRange: [0, 1],
@@ -1507,6 +1528,10 @@ export default function Home() {
     });
   }
 
+  function logClientTurn(payload: Parameters<typeof sendClientTurnLog>[0]) {
+    sendClientTurnLog(payload);
+  }
+
   function clearPendingAssistant(requestId: string) {
     setPendingChatTurn((current) =>
       current?.requestId === requestId ? null : current,
@@ -1699,6 +1724,105 @@ export default function Home() {
       }
     } catch (error: unknown) {
       if (isActiveChatRequest(requestId)) {
+        if (isLocalTurnTimeoutError(error)) {
+          logClientTurn({
+            event: "client_local_turn_failed",
+            user_id: profile.userId,
+            request_id: requestId,
+            channel: source,
+            question: cleaned,
+            question_length: cleaned.length,
+            agent_source: "local_model",
+            route_taken: "local_answer",
+            fallback_reason: "local_timeout",
+            error_type: "local_timeout",
+          });
+
+          if (settings.allowCloudFallback) {
+            try {
+              logClientTurn({
+                event: "client_backend_fallback_started",
+                user_id: profile.userId,
+                request_id: requestId,
+                channel: source,
+                question: cleaned,
+                question_length: cleaned.length,
+                agent_source: "backend_openai",
+                route_taken: "fallback_openai",
+                fallback_reason: "local_timeout",
+              });
+              const backendResponse = await apiPostBackendOnly<BackendChatResponse>(
+                "/api/chat",
+                {
+                  user_id: profile.userId,
+                  message: cleaned,
+                  reply_language: settings.languageMode,
+                },
+              );
+              const response = annotateBackendOpenAiFallbackResponse(
+                backendResponse,
+                {
+                  fallbackReason: "local_timeout",
+                  originalRoute: "local_answer",
+                },
+              );
+
+              if (!isActiveChatRequest(requestId)) {
+                return;
+              }
+
+              const nextItem = normalizeChatTurnPayload(response, cleaned);
+              clearPendingAssistant(requestId);
+              const mergedHistory = await refreshHistoryAndSessions([nextItem]);
+              await attachItemToCurrentChat(nextItem, mergedHistory);
+              logClientTurn({
+                event: "client_backend_fallback_completed",
+                user_id: profile.userId,
+                request_id: requestId,
+                channel: source,
+                question: cleaned,
+                answer: nextItem.details || "",
+                question_length: cleaned.length,
+                answer_length: String(nextItem.details || "").length,
+                agent_source: "backend_openai",
+                route_taken: "fallback_openai",
+                fallback_reason: "local_timeout",
+              });
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+              if (
+                nextItem.details &&
+                shouldAutoSpeakReply({
+                  source,
+                  autoSpeakReplies: settings.autoSpeakReplies,
+                  handsFreeMode,
+                })
+              ) {
+                void playAgentReply(nextItem.details);
+              }
+
+              if (nextItem.intent === "reminder" && nextItem.datetime) {
+                setPendingReminder({
+                  title: nextItem.title || "Reminder",
+                  details: nextItem.details || nextItem.raw_text,
+                  datetimeText: nextItem.datetime,
+                });
+                setConfirmOpen(true);
+              }
+              return;
+            } catch (fallbackError) {
+              warnChatFailure(fallbackError, requestId, source);
+            }
+          }
+
+          showPendingAssistantError(
+            requestId,
+            CHAT_CLOUD_FALLBACK_DISABLED_MESSAGE,
+            cleaned,
+            source,
+          );
+          return;
+        }
         const message = assistantFailureMessage(error);
         showPendingAssistantError(requestId, message, cleaned, source);
         warnChatFailure(error, requestId, source);
@@ -1723,12 +1847,35 @@ export default function Home() {
 
   async function startRecording(surface: RecorderSurface) {
     if (busy || recordingPhaseRef.current !== "idle") return;
+    let nextRecording: Audio.Recording | null = null;
+
+    async function cleanupLateRecording() {
+      const target = nextRecording;
+      nextRecording = null;
+      if (!target) return;
+      try {
+        await target.stopAndUnloadAsync();
+      } catch {
+        try {
+          await (target as any).unloadAsync?.();
+        } catch {
+          // ignore late startup cleanup failures
+        }
+      }
+    }
+
+    async function assertStartupActive() {
+      if (!recordingStartCancelledRef.current) return;
+      await cleanupLateRecording();
+      throw new RecordingStartCancelledError();
+    }
 
     try {
       await abortHandsFreeRecognizer(false);
       await releaseReplySound();
       recordingPhaseRef.current = "starting";
       stopWhenReadyRef.current = false;
+      recordingStartCancelledRef.current = false;
       setActiveSurface(surface);
       setRecordingPreparing(true);
       setListening(false);
@@ -1745,17 +1892,28 @@ export default function Home() {
         return;
       }
 
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
+      nextRecording = await withRecordingStartTimeout(
+        (async () => {
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: true,
+            playsInSilentModeIOS: true,
+          });
+          await assertStartupActive();
 
-      const nextRecording = new Audio.Recording();
-      await nextRecording.prepareToRecordAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
+          const createdRecording = new Audio.Recording();
+          nextRecording = createdRecording;
+          await createdRecording.prepareToRecordAsync(
+            Audio.RecordingOptionsPresets.HIGH_QUALITY
+          );
+          await assertStartupActive();
+
+          await createdRecording.startAsync();
+          await assertStartupActive();
+          return createdRecording;
+        })(),
       );
-      await nextRecording.startAsync();
       await wait(RECORDING_STARTUP_SETTLE_MS);
+      await assertStartupActive();
 
       recordingRef.current = nextRecording;
       setRecording(nextRecording);
@@ -1769,6 +1927,8 @@ export default function Home() {
         await stopAndAnalyze();
       }
     } catch (error: unknown) {
+      recordingStartCancelledRef.current = true;
+      await cleanupLateRecording();
       recordingPhaseRef.current = "idle";
       stopWhenReadyRef.current = false;
       recordingRef.current = null;
@@ -1777,15 +1937,30 @@ export default function Home() {
       setListening(false);
       setActiveSurface(null);
       await resetAudioMode();
+      if (error instanceof RecordingStartCancelledError) {
+        return;
+      }
       const message =
-        error instanceof Error ? error.message : "Could not start recording.";
+        error instanceof RecordingStartTimeoutError
+          ? MIC_START_TIMEOUT_MESSAGE
+          : error instanceof Error
+            ? error.message
+            : "Could not start recording.";
       Alert.alert("Error", message);
     }
   }
 
   async function stopAndAnalyze() {
     if (recordingPhaseRef.current === "starting") {
-      stopWhenReadyRef.current = true;
+      recordingStartCancelledRef.current = true;
+      stopWhenReadyRef.current = false;
+      recordingPhaseRef.current = "idle";
+      recordingRef.current = null;
+      setRecording(null);
+      setRecordingPreparing(false);
+      setListening(false);
+      setActiveSurface(null);
+      await resetAudioMode();
       return;
     }
 
@@ -1797,6 +1972,7 @@ export default function Home() {
     const requestId = nextChatRequestId("voice");
     const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
+    voiceBusyRequestIdRef.current = requestId;
 
     try {
       recordingPhaseRef.current = "stopping";
@@ -1822,6 +1998,7 @@ export default function Home() {
 
       const uri = activeRecording.getURI();
       if (!uri) throw new Error("No audio file URI");
+      await assertUsableAudioFile(uri);
 
       const form = new FormData();
       form.append(
@@ -1879,7 +2056,11 @@ export default function Home() {
       }
     } catch (error: unknown) {
       if (isActiveChatRequest(requestId)) {
-        const message = VOICE_UNAVAILABLE_MESSAGE;
+        const rawMessage = error instanceof Error ? error.message : "";
+        const message =
+          rawMessage === EMPTY_AUDIO_MESSAGE
+            ? EMPTY_AUDIO_MESSAGE
+            : VOICE_UNAVAILABLE_MESSAGE;
         showPendingAssistantError(requestId, message, "Voice message", "voice");
         warnChatFailure(error, requestId, "voice");
       }
@@ -1892,7 +2073,12 @@ export default function Home() {
       setListening(false);
       if (isActiveChatRequest(requestId)) {
         activeChatRequestIdRef.current = null;
-        setBusy(false);
+        if (voiceBusyRequestIdRef.current === requestId) {
+          setBusy(false);
+        }
+      }
+      if (voiceBusyRequestIdRef.current === requestId) {
+        voiceBusyRequestIdRef.current = null;
       }
       setActiveSurface(null);
       await resetAudioMode();
@@ -1913,18 +2099,17 @@ export default function Home() {
     await startRecording("quick");
   }
 
-  async function handleLiveOrbPressIn() {
-    if (busy || recordingPhaseRef.current !== "idle") return;
-    await startRecording("live");
-  }
-
-  async function handleLiveOrbPressOut() {
+  async function handleLiveOrbPress() {
+    if (busy && recordingPhaseRef.current === "idle") return;
     if (
       recordingPhaseRef.current === "starting" ||
       recordingPhaseRef.current === "recording"
     ) {
       await stopAndAnalyze();
+      return;
     }
+
+    await startRecording("live");
   }
 
   async function confirmScheduleReminder() {
@@ -2278,11 +2463,11 @@ export default function Home() {
 
                 {recordingPreparing ? (
                   <Text style={styles.composerHintText}>
-                    Preparing microphone... keep holding and start speaking when recording begins
+                    Preparing microphone... tap stop to cancel
                   </Text>
                 ) : listening ? (
                   <Text style={styles.composerHintText}>
-                    Recording in progress... tap stop or release the orb
+                    Recording in progress... tap stop when done
                   </Text>
                 ) : null}
               </View>
@@ -2468,7 +2653,15 @@ export default function Home() {
               <Text style={styles.voiceLiveBadgeText}>Live</Text>
             </View>
 
-            <Pressable onPress={() => setVoiceSheetOpen(false)} style={styles.voiceCloseButton}>
+            <Pressable
+              onPress={async () => {
+                if (recordingPhaseRef.current === "starting") {
+                  await stopAndAnalyze();
+                }
+                setVoiceSheetOpen(false);
+              }}
+              style={styles.voiceCloseButton}
+            >
               <Ionicons name="close" size={18} color={Brand.cream} />
             </Pressable>
           </View>
@@ -2477,8 +2670,7 @@ export default function Home() {
             <View pointerEvents="none" style={styles.voiceOrbGlow} />
             <Orb
               listening={listening && activeSurface === "live"}
-              onPressIn={handleLiveOrbPressIn}
-              onPressOut={handleLiveOrbPressOut}
+              onPress={handleLiveOrbPress}
               size={orbSize}
             />
 
@@ -2530,7 +2722,10 @@ export default function Home() {
           >
             <View style={styles.voiceBottomRow}>
               <Pressable
-                onPress={() => {
+                onPress={async () => {
+                  if (recordingPhaseRef.current === "starting") {
+                    await stopAndAnalyze();
+                  }
                   setVoiceSheetOpen(false);
                 }}
                 style={styles.voiceDockButton}

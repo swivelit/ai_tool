@@ -1,7 +1,14 @@
 import Constants from "expo-constants";
 import * as FileSystem from "expo-file-system/legacy";
 
-import { apiPost, apiPostBackendOnly } from "./api";
+import {
+  CLOUD_FALLBACK_CONSENT_MESSAGE,
+  annotateBackendOpenAiFallbackResponse,
+  apiPost,
+  apiPostBackendOnly,
+  sendClientTurnLog,
+  type BackendFallbackReason,
+} from "./api";
 import {
   DeviceCapabilitySnapshot,
   ModelDeliveryConfig,
@@ -26,7 +33,6 @@ import {
   normalizeLocalRuntimeBaseUrl,
 } from "./localModelRuntime";
 import {
-  friendlyLocalTimeoutMessage,
   isLocalTurnTimeoutError,
 } from "./localTurnTimeouts";
 import {
@@ -6987,6 +6993,202 @@ function canUseOpenAiFallback(opts: {
   );
 }
 
+function answerTextFromBackendPayload(payload: any) {
+  return String(
+    payload?.assistant?.text ||
+      payload?.assistant?.english ||
+      payload?.item?.details ||
+      payload?.details ||
+      payload?.raw_text ||
+      "",
+  ).trim();
+}
+
+function textLength(value: unknown) {
+  return String(value || "").length;
+}
+
+function logClientBackendFallbackEvent(input: {
+  event: "client_backend_fallback_started" | "client_backend_fallback_completed";
+  userId: number;
+  message: string;
+  answer?: string;
+  fallbackReason: BackendFallbackReason;
+  originalRoute?: string | null;
+  stageTimings?: Record<string, any>;
+}) {
+  sendClientTurnLog({
+    event: input.event,
+    user_id: input.userId,
+    channel: "text",
+    question: input.message,
+    answer: input.answer,
+    question_length: textLength(input.message),
+    answer_length: input.answer ? textLength(input.answer) : undefined,
+    agent_source: "backend_openai",
+    route_taken: "fallback_openai",
+    fallback_reason: input.fallbackReason,
+    stage_timings: input.stageTimings || null,
+  });
+}
+
+async function callBackendOpenAiFallback(opts: {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  fallbackReason: BackendFallbackReason;
+  originalRoute?: string | null;
+  stageTimings?: Record<string, any>;
+}) {
+  logClientBackendFallbackEvent({
+    event: "client_backend_fallback_started",
+    userId: opts.userId,
+    message: opts.message,
+    fallbackReason: opts.fallbackReason,
+    originalRoute: opts.originalRoute,
+    stageTimings: opts.stageTimings,
+  });
+  const backend = await apiPostBackendOnly<any>("/api/chat", {
+    user_id: opts.userId,
+    message: opts.message,
+    reply_language: opts.replyLanguage,
+  });
+  const annotated = annotateBackendOpenAiFallbackResponse(backend, {
+    fallbackReason: opts.fallbackReason,
+    originalRoute: opts.originalRoute,
+    stageTimings: opts.stageTimings,
+  });
+  logClientBackendFallbackEvent({
+    event: "client_backend_fallback_completed",
+    userId: opts.userId,
+    message: opts.message,
+    answer: answerTextFromBackendPayload(annotated),
+    fallbackReason: opts.fallbackReason,
+    originalRoute: opts.originalRoute,
+    stageTimings: opts.stageTimings,
+  });
+  return annotated;
+}
+
+async function buildBackendFallbackTurn(opts: {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  fallbackReason: BackendFallbackReason;
+  originalRoute?: string | null;
+  decision: OrchestratorDecision;
+  stageTimings: Record<string, number>;
+  appendUserTurn?: boolean;
+}): Promise<LocalAssistantTurnResult> {
+  if (opts.appendUserTurn) {
+    await appendConversation(opts.userId, "user", opts.message);
+  }
+  const backendResponse = await callBackendOpenAiFallback({
+    userId: opts.userId,
+    message: opts.message,
+    replyLanguage: opts.replyLanguage,
+    fallbackReason: opts.fallbackReason,
+    originalRoute: opts.originalRoute,
+    stageTimings: opts.stageTimings,
+  });
+  const assistantText =
+    answerTextFromBackendPayload(backendResponse) ||
+    "I couldn’t generate a response.";
+  await appendConversation(opts.userId, "assistant", assistantText);
+  await appendRouteDecisionLog(opts.userId, opts.message, opts.decision, {
+    routeUsed: "fallback_openai",
+    source: "openai_fallback",
+    fallbackReason: opts.fallbackReason,
+    originalRoute: opts.originalRoute,
+    stageTimings: opts.stageTimings,
+  });
+  return {
+    route: "fallback_openai",
+    source: "openai_fallback",
+    cacheHit: false,
+    assistantText,
+    englishText:
+      String(backendResponse?.assistant?.english || "").trim() || assistantText,
+    intent: "assistant",
+    title: "Assistant",
+    details: assistantText,
+    profileSummary: "",
+    meta: {
+      source: "backend_openai_fallback",
+      fallback_reason: opts.fallbackReason,
+      original_route: opts.originalRoute || undefined,
+      backendResponse,
+      classified: opts.decision,
+      orchestratorDecision: opts.decision,
+      route: "fallback_openai",
+      responsePath: "backend_openai_fallback",
+      stageTimings: opts.stageTimings,
+    },
+  };
+}
+
+async function buildCloudFallbackConsentTurn(opts: {
+  userId: number;
+  message: string;
+  replyLanguage: ReplyLanguage;
+  fallbackReason: BackendFallbackReason;
+  originalRoute?: string | null;
+  decision: OrchestratorDecision;
+  stageTimings: Record<string, number>;
+  appendUserTurn?: boolean;
+}): Promise<LocalAssistantTurnResult> {
+  if (opts.appendUserTurn) {
+    await appendConversation(opts.userId, "user", opts.message);
+  }
+  await appendConversation(opts.userId, "assistant", CLOUD_FALLBACK_CONSENT_MESSAGE);
+  const cloudFallback: CloudConsentRequiredState = {
+    kind: "cloud_consent_required",
+    reason: opts.fallbackReason,
+    localAnswerAvailable: false,
+    suggestedAction: "ask_user_consent",
+  };
+  const decision: OrchestratorDecision = {
+    ...opts.decision,
+    route: "fallback_openai",
+    reason: opts.fallbackReason,
+    needsClarification: false,
+    clarificationQuestion: "",
+    fallbackAllowed: false,
+  };
+  await appendRouteDecisionLog(opts.userId, opts.message, decision, {
+    routeUsed: "cloud_consent_required",
+    source: "local_rules",
+    cloudFallback,
+    fallbackReason: opts.fallbackReason,
+    originalRoute: opts.originalRoute,
+    stageTimings: opts.stageTimings,
+  });
+  return {
+    kind: "cloud_consent_required",
+    route: "fallback_openai",
+    source: "local_rules",
+    cacheHit: false,
+    assistantText: CLOUD_FALLBACK_CONSENT_MESSAGE,
+    englishText: CLOUD_FALLBACK_CONSENT_MESSAGE,
+    intent: "clarify",
+    title: "Cloud fallback",
+    details: CLOUD_FALLBACK_CONSENT_MESSAGE,
+    profileSummary: "",
+    cloudFallback,
+    meta: {
+      source: "cloud_consent_required",
+      fallback_reason: opts.fallbackReason,
+      original_route: opts.originalRoute || undefined,
+      cloudFallback,
+      classified: decision,
+      orchestratorDecision: decision,
+      route: "cloud_consent_required",
+      responsePath: "cloud_consent_required",
+      stageTimings: opts.stageTimings,
+    },
+  };
+}
+
 async function appendRouteDecisionLog(
   userId: number,
   message: string,
@@ -7325,13 +7527,37 @@ export async function runLocalAssistantTurn(opts: {
     !readiness.ready &&
     !canServeWithRulesOrToolsBeforeModelSetup(message, earlyRuleDecision)
   ) {
-    return buildSetupRequiredTurn({
+    const decision: OrchestratorDecision = {
+      route: "fallback_openai",
+      reason: "local_model_unavailable",
+      confidence: 1,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel: "rules",
+      fallbackAllowed: opts.userAllowedCloudFallback === true,
+    };
+    if (opts.userAllowedCloudFallback === true) {
+      return buildBackendFallbackTurn({
+        userId,
+        message,
+        replyLanguage,
+        fallbackReason: "local_model_unavailable",
+        originalRoute: "setup_required",
+        decision,
+        stageTimings,
+        appendUserTurn: true,
+      });
+    }
+    return buildCloudFallbackConsentTurn({
       userId,
       message,
       replyLanguage,
-      cfg,
-      readiness,
+      fallbackReason: "local_model_unavailable",
+      originalRoute: "setup_required",
+      decision,
       stageTimings,
+      appendUserTurn: true,
     });
   }
 
@@ -7524,9 +7750,12 @@ export async function runLocalAssistantTurn(opts: {
         usedSources: LocalRagSourceMetadata[];
       }
     | undefined;
+  let fallbackReason: BackendFallbackReason | undefined;
+  let backendFallbackResponse: any | undefined;
 
   if (decision.needsLiveData && route !== "weather") {
     route = "fallback_openai";
+    fallbackReason = "live_data_needed";
   }
 
   toolPlan = await timeStage("tool_plan", async () =>
@@ -7669,6 +7898,7 @@ export async function runLocalAssistantTurn(opts: {
     if (!registry.agents.toolAgents.calendar) {
       noSafeLocalPath = true;
       route = "fallback_openai";
+      fallbackReason = "no_safe_local_answer";
     } else {
       source = "local_rules";
       draft = await buildScheduleAnswer(userId, message);
@@ -7710,6 +7940,7 @@ export async function runLocalAssistantTurn(opts: {
     if (!registry.agents.toolAgents.weather) {
       noSafeLocalPath = true;
       route = "fallback_openai";
+      fallbackReason = "live_data_needed";
     } else {
       try {
         draft = await fetchWeatherSummary(message, opts.userProfile);
@@ -7729,6 +7960,7 @@ export async function runLocalAssistantTurn(opts: {
       } catch {
         noSafeLocalPath = true;
         route = "fallback_openai";
+        fallbackReason = "live_data_needed";
       }
     }
   } else if (route === "fallback_openai") {
@@ -7759,6 +7991,7 @@ export async function runLocalAssistantTurn(opts: {
       if (draft === OPENAI_FALLBACK_SIGNAL) {
         localReasonerRequestedFallback = true;
         route = "fallback_openai";
+        fallbackReason = "live_data_needed";
       } else {
         const aligned = await timeStage("alignment", () =>
           alignAnswer(
@@ -7776,48 +8009,46 @@ export async function runLocalAssistantTurn(opts: {
       }
     } catch (error) {
       if (isLocalTurnTimeoutError(error)) {
-        route = "clarify";
+        route = "fallback_openai";
         decision = {
           ...decision,
-          route: "clarify",
-          reason: "local_on_device_timeout",
+          route: "fallback_openai",
+          reason: "local_timeout",
           needsClarification: false,
           clarificationQuestion: "",
-          fallbackAllowed: false,
+          fallbackAllowed: opts.userAllowedCloudFallback === true,
         };
-        source = "local_rules";
-        intent = "clarify";
-        draft = friendlyLocalTimeoutMessage();
-        english = draft;
-        final = draft;
+        noSafeLocalPath = true;
+        fallbackReason = "local_timeout";
       } else if (isNativeOnDeviceRuntimeUnavailableError(error) || isModelInstallError(error)) {
-        route = "setup_required";
+        route = "fallback_openai";
         decision = {
           ...decision,
-          route: "setup_required",
-          reason: "native_on_device_runtime_unavailable",
+          route: "fallback_openai",
+          reason: "local_model_unavailable",
           needsClarification: false,
           clarificationQuestion: "",
-          fallbackAllowed: false,
+          fallbackAllowed: opts.userAllowedCloudFallback === true,
         };
-        source = "local_rules";
-        intent = "clarify";
-        draft =
-          replyLanguage === "ta"
-            ? "Native on-device model setup இன்னும் தயாராகவில்லை. நான் backend/OpenAI-க்கு அமைதியாக fallback செய்ய மாட்டேன்; model download, dev client/prebuild native bridge, மற்றும் llama.cpp backend தேவை."
-            : "Native on-device model setup is not ready. I will not silently fall back to backend/OpenAI; complete model download, dev-client/prebuild native bridge, and llama.cpp backend setup first.";
-        english =
-          "Native on-device model setup is not ready. I will not silently fall back to backend/OpenAI; complete model download, dev-client/prebuild native bridge, and llama.cpp backend setup first.";
-        final = draft;
+        noSafeLocalPath = true;
+        fallbackReason = "local_model_unavailable";
       } else {
         noSafeLocalPath = true;
         route = "fallback_openai";
+        fallbackReason = "no_safe_local_answer";
       }
     }
   }
 
   if (route === "fallback_openai") {
     const userAllowedCloudFallback = opts.userAllowedCloudFallback === true;
+    fallbackReason =
+      fallbackReason ||
+      (decision.needsLiveData
+        ? "live_data_needed"
+        : noSafeLocalPath
+          ? "no_safe_local_answer"
+          : "no_safe_local_answer");
     const fallbackAllowedWithConsent = canUseOpenAiFallback({
       decision,
       localReasonerRequestedFallback,
@@ -7833,11 +8064,15 @@ export async function runLocalAssistantTurn(opts: {
     };
     if (decision.fallbackAllowed) {
       source = "openai_fallback";
-      const backend = await apiPostBackendOnly<any>("/api/chat", {
-        user_id: userId,
+      const backend = await callBackendOpenAiFallback({
+        userId,
         message,
-        reply_language: replyLanguage,
+        replyLanguage,
+        fallbackReason,
+        originalRoute: decision.reason === fallbackReason ? "local_answer" : decision.route,
+        stageTimings,
       });
+      backendFallbackResponse = backend;
       const backendText =
         String(
           backend?.assistant?.text ||
@@ -7846,26 +8081,13 @@ export async function runLocalAssistantTurn(opts: {
             backend?.raw_text ||
             "",
         ).trim() || "I couldn’t generate a response.";
-      const aligned = await timeStage("alignment", () =>
-        alignAnswer(
-          backendText,
-          replyLanguage,
-          route,
-          answers,
-          profileSummary,
-          opts.userProfile,
-          modelRuntimeOptions,
-        ),
-      );
-      english = aligned.english;
-      final = aligned.final;
+      english = String(backend?.assistant?.english || "").trim() || backendText;
+      final = backendText;
     } else if (!userAllowedCloudFallback && fallbackAllowedWithConsent) {
       route = "clarify";
       cloudFallback = {
         kind: "cloud_consent_required",
-        reason: decision.needsLiveData
-          ? "current_or_live_data_requires_cloud_fallback"
-          : "local_model_could_not_safely_complete_without_cloud_fallback",
+        reason: fallbackReason,
         localAnswerAvailable: Boolean(draft || english || final),
         suggestedAction: "ask_user_consent",
       };
@@ -7878,12 +8100,8 @@ export async function runLocalAssistantTurn(opts: {
       };
       source = "local_rules";
       intent = "clarify";
-      draft =
-        replyLanguage === "ta"
-          ? "இதற்கு backend/cloud உதவி தேவை. உங்கள் அனுமதி இல்லாமல் நான் அதை அனுப்ப மாட்டேன்."
-          : "This needs backend/cloud help. I will not send it without your permission.";
-      english =
-        "This needs backend/cloud help. I will not send it without your permission.";
+      draft = CLOUD_FALLBACK_CONSENT_MESSAGE;
+      english = CLOUD_FALLBACK_CONSENT_MESSAGE;
       final = draft;
     } else {
       route = "clarify";
@@ -7896,10 +8114,7 @@ export async function runLocalAssistantTurn(opts: {
       };
       source = "local_rules";
       intent = "clarify";
-      draft =
-        replyLanguage === "ta"
-          ? "இதற்கு cloud/backend உதவி தேவை, ஆனால் cloud fallback முடக்கப்பட்டுள்ளது."
-          : "I need cloud/backend help for this, but cloud fallback is disabled.";
+      draft = CLOUD_FALLBACK_CONSENT_MESSAGE;
       english = draft;
       final = draft;
     }
@@ -7915,6 +8130,7 @@ export async function runLocalAssistantTurn(opts: {
     localReasonerRequestedFallback,
     noSafeLocalPath,
     cloudFallback,
+    fallbackReason,
     ...(toolPlan?.steps.length
       ? {
           toolPlan,
@@ -8018,7 +8234,7 @@ export async function runLocalAssistantTurn(opts: {
           : route === "setup_required"
             ? "setup_required"
             : source === "openai_fallback"
-              ? "openai_fallback"
+              ? "backend_openai_fallback"
               : "local_rules";
 
   return {
@@ -8038,6 +8254,15 @@ export async function runLocalAssistantTurn(opts: {
       classified: decision,
       orchestratorDecision: decision,
       ...(cloudFallback ? { cloudFallback } : {}),
+      ...(backendFallbackResponse ? { backendResponse: backendFallbackResponse } : {}),
+      ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
+      ...(source === "openai_fallback"
+        ? {
+            original_route:
+              backendFallbackResponse?.meta?.original_route ||
+              (decision.reason === fallbackReason ? "local_answer" : decision.route),
+          }
+        : {}),
       ...(route === "setup_required" ? { setupRequired: true } : {}),
       ...(toolPlan?.steps.length
         ? {
@@ -8060,7 +8285,8 @@ export async function runLocalAssistantTurn(opts: {
       ragFolder: RAG_DIR,
       promptConfig: PROMPTS_PATH,
       modelConfig: MODELS_PATH,
-      source,
+      source:
+        source === "openai_fallback" ? "backend_openai_fallback" : source,
       route,
       fastPath: false,
       responsePath,

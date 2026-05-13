@@ -53,7 +53,16 @@ from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
 from .models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
 from .time_utils import utc_now as _utc_now
-from .observability import bootstrap_observability, clear_request_context, new_request_id, set_request_context
+from .observability import (
+    CLIENT_TURN_LOGS_ENABLED,
+    bootstrap_observability,
+    chat_log_payload,
+    clear_request_context,
+    get_request_id,
+    new_request_id,
+    sanitize_log_text,
+    set_request_context,
+)
 from .vector_store import VectorStore
 from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
@@ -1081,6 +1090,23 @@ class ChatAPIRequest(BaseModel):
     reply_language: Optional[str] = None
 
 
+class ClientTurnLogRequest(BaseModel):
+    event: str
+    user_id: Optional[int] = None
+    request_id: Optional[str] = None
+    channel: Optional[str] = None
+    question: Optional[str] = None
+    answer: Optional[str] = None
+    question_length: Optional[int] = None
+    answer_length: Optional[int] = None
+    agent_source: Optional[str] = None
+    route_taken: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    duration_ms: Optional[float] = None
+    stage_timings: Optional[Dict[str, Any]] = None
+    error_type: Optional[str] = None
+
+
 class PipelineChatRequest(BaseModel):
     user_id: int
     message: str
@@ -1872,6 +1898,42 @@ def _resolve_chat_text(payload: ChatAPIRequest) -> str:
     return text
 
 
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _rag_snippet_count(pipeline: Dict[str, Any]) -> Optional[int]:
+    for container_key in ("core_meta", "review_meta"):
+        container = pipeline.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        rag_context = container.get("rag_context") or container.get("rag_context_used")
+        if isinstance(rag_context, dict) and "snippet_count" in rag_context:
+            try:
+                return int(rag_context.get("snippet_count") or 0)
+            except Exception:
+                return None
+    return None
+
+
+def _backend_agent_source(pipeline: Dict[str, Any]) -> str:
+    if _boolish(pipeline.get("cache_hit")):
+        return "backend_cache"
+    direct_source = str(pipeline.get("direct_answer_source") or "").lower()
+    route_taken = str(pipeline.get("route_taken") or "").lower()
+    if "openai" in direct_source or route_taken in {"full_pipeline", "full_rewrite"}:
+        return "backend_openai"
+    return "backend_pipeline"
+
+
+def _safe_error_type(exc: BaseException) -> str:
+    if isinstance(exc, HTTPException):
+        return f"http_{exc.status_code}"
+    return exc.__class__.__name__
+
+
 def _run_agentic_or_pipeline(
     session: Session,
     user_id: Optional[int],
@@ -2016,18 +2078,30 @@ def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> st
         raise HTTPException(503, "SARVAM_API_KEY is not configured.")
 
     normalized_language = _normalize_audio_language(language)
+    model = os.getenv("SARVAM_STT_MODEL", "saaras:v3").strip() or "saaras:v3"
+    mode = os.getenv("SARVAM_STT_MODE", "transcribe").strip() or "transcribe"
+    started = time.perf_counter()
 
     try:
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 0:
             raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
 
         form_data: Dict[str, str] = {
-            "model": os.getenv("SARVAM_STT_MODEL", "saaras:v3").strip() or "saaras:v3",
-            "mode": os.getenv("SARVAM_STT_MODE", "transcribe").strip() or "transcribe",
+            "model": model,
+            "mode": mode,
         }
         if normalized_language:
             form_data["language_code"] = normalized_language
 
+        logger.info(
+            "sarvam_stt_started",
+            extra=chat_log_payload(
+                event="sarvam_stt_started",
+                model=model,
+                mode=mode,
+                language_code=normalized_language,
+            ),
+        )
         with open(file_path, "rb") as audio_file:
             response = requests.post(
                 SARVAM_STT_URL,
@@ -2039,25 +2113,80 @@ def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> st
     except HTTPException:
         raise
     except requests.Timeout as exc:
+        logger.info(
+            "sarvam_stt_failed",
+            extra=chat_log_payload(
+                event="sarvam_stt_failed",
+                status_code=504,
+                safe_provider_error="timeout",
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            ),
+        )
         raise HTTPException(504, "STT provider timed out.") from exc
     except requests.RequestException as exc:
         detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
+        logger.info(
+            "sarvam_stt_failed",
+            extra=chat_log_payload(
+                event="sarvam_stt_failed",
+                status_code=502,
+                safe_provider_error=detail,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            ),
+        )
         raise HTTPException(502, f"STT provider error: {detail}") from exc
 
     if response.status_code != 200:
+        safe_detail = _sarvam_provider_error_detail(response, "STT provider")
+        logger.info(
+            "sarvam_stt_failed",
+            extra=chat_log_payload(
+                event="sarvam_stt_failed",
+                status_code=response.status_code,
+                safe_provider_error=safe_detail,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            ),
+        )
         raise HTTPException(
             response.status_code,
-            _sarvam_provider_error_detail(response, "STT provider"),
+            safe_detail,
         )
 
     try:
         response_payload = response.json()
     except ValueError as exc:
+        logger.info(
+            "sarvam_stt_failed",
+            extra=chat_log_payload(
+                event="sarvam_stt_failed",
+                status_code=502,
+                safe_provider_error="invalid_json",
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            ),
+        )
         raise HTTPException(502, "STT provider returned invalid JSON.") from exc
 
     text = _extract_sarvam_transcript(response_payload)
     if not text:
+        logger.info(
+            "sarvam_stt_failed",
+            extra=chat_log_payload(
+                event="sarvam_stt_failed",
+                status_code=400,
+                safe_provider_error="empty_transcript",
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            ),
+        )
         raise HTTPException(400, "Failed to transcribe audio")
+    logger.info(
+        "sarvam_stt_completed",
+        extra=chat_log_payload(
+            event="sarvam_stt_completed",
+            status_code=response.status_code,
+            transcript=text,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+        ),
+    )
     return text
 
 
@@ -2466,6 +2595,47 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
     return _build_chat_response(item, meta, normalized_pipeline)
 
 
+@app.post("/api/client/turn-log")
+def api_client_turn_log(
+    payload: ClientTurnLogRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    if payload.user_id is not None:
+        assert_owner(int(payload.user_id), user)
+
+    if not CLIENT_TURN_LOGS_ENABLED:
+        return {"ok": True, "skipped": True}
+
+    event = sanitize_log_text(payload.event, 80) or "client_turn_log"
+    set_request_context(
+        request_id=payload.request_id or get_request_id() or new_request_id(),
+        route="/api/client/turn-log",
+        user_id=str(user.id),
+    )
+    logger.info(
+        event,
+        extra=chat_log_payload(
+            event=event,
+            user_id=int(user.id),
+            request_id=payload.request_id,
+            channel=payload.channel or "text",
+            question=payload.question,
+            answer=payload.answer,
+            question_length=payload.question_length,
+            answer_length=payload.answer_length,
+            agent_source=payload.agent_source,
+            route_taken=payload.route_taken,
+            fallback_reason=payload.fallback_reason,
+            duration_ms=payload.duration_ms,
+            stage_timings=payload.stage_timings,
+            error_type=payload.error_type,
+        ),
+    )
+    return {"ok": True}
+
+
 @app.post("/api/chat")
 def api_chat(
     payload: ChatAPIRequest,
@@ -2474,7 +2644,72 @@ def api_chat(
 ):
     user = get_owned_user(session, auth_user)
     payload = payload.model_copy(update={"user_id": int(user.id)})
-    return _run_chat_request(session, payload)
+    text = _resolve_chat_text(payload)
+    started = time.perf_counter()
+    set_request_context(user_id=str(user.id))
+    logger.info(
+        "chat_turn_started",
+        extra=chat_log_payload(
+            event="chat_turn_started",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            channel="text",
+            question=text,
+        ),
+    )
+    try:
+        response = _run_chat_request(
+            session,
+            payload.model_copy(update={"message": text, "text": None}),
+        )
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        status_code = exc.status_code if isinstance(exc, HTTPException) else 500
+        logger.info(
+            "chat_turn_failed",
+            extra=chat_log_payload(
+                event="chat_turn_failed",
+                user_id=int(user.id),
+                request_id=get_request_id(),
+                channel="text",
+                question=text,
+                safe_error_type=_safe_error_type(exc),
+                status_code=status_code,
+                duration_ms=duration_ms,
+            ),
+        )
+        raise
+
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    pipeline = response.get("pipeline") if isinstance(response, dict) else {}
+    pipeline = pipeline if isinstance(pipeline, dict) else {}
+    answer = ""
+    if isinstance(response, dict):
+        assistant = response.get("assistant")
+        if isinstance(assistant, dict):
+            answer = str(assistant.get("text") or assistant.get("english") or "")
+        item = response.get("item")
+        if not answer and isinstance(item, dict):
+            answer = str(item.get("details") or "")
+    logger.info(
+        "chat_turn_completed",
+        extra=chat_log_payload(
+            event="chat_turn_completed",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            channel="text",
+            route_taken=pipeline.get("route_taken"),
+            predicted_label=pipeline.get("predicted_label"),
+            direct_answer_source=pipeline.get("direct_answer_source"),
+            direct_answer_confidence=pipeline.get("direct_answer_confidence"),
+            cache_hit=pipeline.get("cache_hit"),
+            rag_snippet_count=_rag_snippet_count(pipeline),
+            agent_source=_backend_agent_source(pipeline),
+            answer=answer,
+            duration_ms=duration_ms,
+        ),
+    )
+    return response
 
 
 def _run_chat_payload(payload: ChatAPIRequest) -> Dict[str, Any]:
@@ -2590,6 +2825,7 @@ def api_tts(
         "api-subscription-key": api_key,
     }
 
+    started = time.perf_counter()
     req_payload = {
         "text": text,
         "target_language_code": (
@@ -2601,6 +2837,16 @@ def api_tts(
         "model": os.getenv("SARVAM_TTS_MODEL", "bulbul:v3") or "bulbul:v3",
         "pace": 0.85,
     }
+    logger.info(
+        "tts_started",
+        extra=chat_log_payload(
+            event="tts_started",
+            target_language_code=req_payload["target_language_code"],
+            speaker=req_payload["speaker"],
+            model=req_payload["model"],
+            text=text,
+        ),
+    )
 
     try:
         response = requests.post(
@@ -2610,9 +2856,27 @@ def api_tts(
             timeout=(5, 30),
         )
     except requests.Timeout:
+        logger.info(
+            "tts_failed",
+            extra=chat_log_payload(
+                event="tts_failed",
+                status_code=504,
+                safe_provider_error="timeout",
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            ),
+        )
         raise HTTPException(status_code=504, detail="TTS provider timed out.")
     except requests.RequestException as exc:
         detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
+        logger.info(
+            "tts_failed",
+            extra=chat_log_payload(
+                event="tts_failed",
+                status_code=502,
+                safe_provider_error=detail,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            ),
+        )
         raise HTTPException(status_code=502, detail=f"TTS provider error: {detail}")
     if response.status_code in [422, 400]:
         legacy_payload = {
@@ -2628,9 +2892,27 @@ def api_tts(
                 timeout=(5, 30),
             )
         except requests.Timeout:
+            logger.info(
+                "tts_failed",
+                extra=chat_log_payload(
+                    event="tts_failed",
+                    status_code=504,
+                    safe_provider_error="retry_timeout",
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                ),
+            )
             raise HTTPException(status_code=504, detail="TTS retry timed out.")
         except requests.RequestException as exc:
             detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
+            logger.info(
+                "tts_failed",
+                extra=chat_log_payload(
+                    event="tts_failed",
+                    status_code=502,
+                    safe_provider_error=detail,
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                ),
+            )
             raise HTTPException(status_code=502, detail=f"TTS retry failed: {detail}")
 
     if response.status_code == 200:
@@ -2639,13 +2921,31 @@ def api_tts(
         except ValueError as exc:
             raise HTTPException(status_code=502, detail="TTS provider returned invalid JSON.") from exc
         if isinstance(data, dict) and isinstance(data.get("audios"), list) and len(data["audios"]) > 0:
+            logger.info(
+                "tts_completed",
+                extra=chat_log_payload(
+                    event="tts_completed",
+                    audio_count=len(data["audios"]),
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                ),
+            )
             return {"audio_base64": data["audios"][0]}
 
         raise HTTPException(status_code=502, detail="TTS provider response did not contain audio.")
 
+    safe_detail = _sarvam_provider_error_detail(response, "TTS provider")
+    logger.info(
+        "tts_failed",
+        extra=chat_log_payload(
+            event="tts_failed",
+            status_code=response.status_code,
+            safe_provider_error=safe_detail,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+        ),
+    )
     raise HTTPException(
         status_code=response.status_code,
-        detail=_sarvam_provider_error_detail(response, "TTS provider"),
+        detail=safe_detail,
     )
 
 
@@ -2856,10 +3156,29 @@ async def _transcribe_and_analyze_upload(
     user = get_owned_user(session, auth_user)
     if user_id is not None:
         assert_owner(int(user_id), user)
+    set_request_context(user_id=str(user.id))
 
+    content_type = str(file.content_type or "").split(";")[0].strip().lower()
+    filename = file.filename or "audio.m4a"
+    upload_bytes = await read_limited_upload(file)
+    logger.info(
+        "voice_upload_received",
+        extra=chat_log_payload(
+            event="voice_upload_received",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            filename=filename,
+            content_type=content_type,
+            size_bytes=len(upload_bytes),
+            reply_language=reply_language,
+            speech_language=speech_language,
+        ),
+    )
+    if len(upload_bytes) <= 0:
+        raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
     suffix = os.path.splitext(file.filename or "")[-1] or ".m4a"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await read_limited_upload(file))
+        tmp.write(upload_bytes)
         tmp_path = tmp.name
 
     try:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import hashlib
 import sys
 import time
 import uuid
@@ -22,6 +24,68 @@ except Exception:  # pragma: no cover
 APP_NAME = os.getenv("APP_NAME", "j-ai-backend").strip() or "j-ai-backend"
 APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).strip() or "development"
 APP_RELEASE = os.getenv("APP_RELEASE", os.getenv("RENDER_GIT_COMMIT", "dev")).strip() or "dev"
+
+LOG_CHAT_CONTENT = (
+    os.getenv("LOG_CHAT_CONTENT", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+LOG_CHAT_CONTENT_MAX_CHARS = max(
+    1,
+    int(os.getenv("LOG_CHAT_CONTENT_MAX_CHARS", "240") or 240),
+)
+CLIENT_TURN_LOGS_ENABLED = (
+    os.getenv("CLIENT_TURN_LOGS_ENABLED", "true").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
+
+_REDACT_PATTERNS = [
+    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"(?i)((?:openai|sarvam|firebase|api)[-_ ]?(?:api[-_ ]?)?key\s*[:=]\s*)[^\s,;\"']+"),
+    re.compile(r"(?i)((?:id[_-]?token|firebase[_-]?token|access[_-]?token|refresh[_-]?token|token)\s*[:=]\s*)[^\s,;\"']+"),
+    re.compile(r"(?i)(api-subscription-key\s*[:=]\s*)[^\s,;\"']+"),
+]
+
+_SAFE_EXTRA_KEYS = {
+    "event",
+    "channel",
+    "question_hash",
+    "question_length",
+    "question_preview",
+    "answer_hash",
+    "answer_length",
+    "answer_preview",
+    "route_taken",
+    "predicted_label",
+    "direct_answer_source",
+    "direct_answer_confidence",
+    "cache_hit",
+    "rag_snippet_count",
+    "agent_source",
+    "fallback_reason",
+    "original_route",
+    "safe_error_type",
+    "safe_provider_error",
+    "upload_filename",
+    "content_type",
+    "size_bytes",
+    "reply_language",
+    "speech_language",
+    "model",
+    "mode",
+    "language_code",
+    "transcript_hash",
+    "transcript_length",
+    "transcript_preview",
+    "target_language_code",
+    "speaker",
+    "text_length",
+    "text_preview",
+    "audio_count",
+    "stage_timings",
+    "error_type",
+    "skipped",
+}
 
 _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")
 _route_ctx: ContextVar[str] = ContextVar("route", default="")
@@ -61,6 +125,11 @@ class JsonFormatter(logging.Formatter):
             value = getattr(record, key, None)
             if value not in (None, ""):
                 payload[key] = value
+
+        for key in _SAFE_EXTRA_KEYS:
+            value = getattr(record, key, None)
+            if value not in (None, ""):
+                payload["filename" if key == "upload_filename" else key] = redact_log_value(value)
 
         return json.dumps(payload, ensure_ascii=False)
 
@@ -152,6 +221,77 @@ def get_request_context() -> Dict[str, str]:
         "route": _route_ctx.get(""),
         "user_id": _user_ctx.get(""),
     }
+
+
+def redact_log_text(value: Any) -> str:
+    text = str(value or "")
+    for pattern in _REDACT_PATTERNS:
+        text = pattern.sub(r"\1[REDACTED]", text)
+    return text
+
+
+def redact_log_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_log_text(value)
+    if isinstance(value, dict):
+        return {str(key): redact_log_value(entry) for key, entry in value.items()}
+    if isinstance(value, list):
+        return [redact_log_value(entry) for entry in value]
+    return value
+
+
+def sanitize_log_text(text: Any, max_chars: Optional[int] = None) -> str:
+    normalized = re.sub(r"\s+", " ", redact_log_text(text)).strip()
+    limit = max(1, int(max_chars or LOG_CHAT_CONTENT_MAX_CHARS))
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit]}..."
+
+
+def hash_log_text(text: Any) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def chat_log_payload(**kwargs: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    question = kwargs.pop("question", None)
+    answer = kwargs.pop("answer", None)
+    transcript = kwargs.pop("transcript", None)
+    tts_text = kwargs.pop("text", None)
+
+    for key, value in kwargs.items():
+        if value not in (None, ""):
+            payload["upload_filename" if key == "filename" else key] = redact_log_value(value)
+
+    if question is not None:
+        question_text = str(question or "")
+        payload["question_hash"] = hash_log_text(question_text)
+        payload["question_length"] = len(question_text)
+        if LOG_CHAT_CONTENT:
+            payload["question_preview"] = sanitize_log_text(question_text)
+
+    if answer is not None:
+        answer_text = str(answer or "")
+        payload["answer_hash"] = hash_log_text(answer_text)
+        payload["answer_length"] = len(answer_text)
+        if LOG_CHAT_CONTENT:
+            payload["answer_preview"] = sanitize_log_text(answer_text)
+
+    if transcript is not None:
+        transcript_text = str(transcript or "")
+        payload["transcript_hash"] = hash_log_text(transcript_text)
+        payload["transcript_length"] = len(transcript_text)
+        if LOG_CHAT_CONTENT:
+            payload["transcript_preview"] = sanitize_log_text(transcript_text)
+
+    if tts_text is not None:
+        text_value = str(tts_text or "")
+        payload["text_length"] = len(text_value)
+        if LOG_CHAT_CONTENT:
+            payload["text_preview"] = sanitize_log_text(text_value)
+
+    return payload
 
 
 def set_request_context(*, request_id: Optional[str] = None, route: Optional[str] = None, user_id: Optional[str] = None) -> None:
