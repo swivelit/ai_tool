@@ -61,6 +61,8 @@ export default function ModelSetupScreen() {
     snapshot.status === "downloading" ||
     snapshot.status === "reconnecting" ||
     snapshot.status === "verifying";
+  const reconnecting = snapshot.status === "reconnecting";
+  const manualRetryBusy = busy && !reconnecting;
   const showRetry = snapshot.canRetry && !snapshot.ready;
   const iconName = snapshot.status === "failed"
     ? "alert-circle-outline"
@@ -108,12 +110,13 @@ export default function ModelSetupScreen() {
   }, []);
 
   const retry = useCallback(() => {
+    if (manualRetryBusy) return;
     if (snapshot.status === "paused" || snapshot.status === "reconnecting") {
       void modelDownloadSession.resume();
       return;
     }
     void modelDownloadSession.retry();
-  }, [snapshot.status]);
+  }, [manualRetryBusy, snapshot.status]);
 
   const continueToApp = useCallback(() => {
     router.replace("/(chat)" as any);
@@ -227,17 +230,26 @@ export default function ModelSetupScreen() {
           >
             Preparing Elli for this phone
           </Text>
-          <Text
-            style={[
-              styles.subtitle,
-              {
-                fontSize: layout.subtitleSize,
-                lineHeight: layout.subtitleLineHeight,
-              },
-            ]}
-          >
-            {currentStatusText}
-          </Text>
+          <View style={styles.subtitleRow}>
+            {reconnecting ? (
+              <ActivityIndicator
+                size="small"
+                color={Brand.bronze}
+                testID="model-setup-reconnect-spinner"
+              />
+            ) : null}
+            <Text
+              style={[
+                styles.subtitle,
+                {
+                  fontSize: layout.subtitleSize,
+                  lineHeight: layout.subtitleLineHeight,
+                },
+              ]}
+            >
+              {currentStatusText}
+            </Text>
+          </View>
 
           <View style={progressHeaderStyle}>
             <Text style={styles.progressLabel}>{progressLabel}</Text>
@@ -255,7 +267,7 @@ export default function ModelSetupScreen() {
             {showRetry ? (
               <Pressable
                 onPress={retry}
-                disabled={busy && snapshot.status !== "reconnecting"}
+                disabled={manualRetryBusy}
                 testID="model-setup-retry-button"
                 accessibilityLabel="model-setup-retry-button"
                 style={({ pressed }) => [
@@ -264,11 +276,11 @@ export default function ModelSetupScreen() {
                     minHeight: layout.buttonMinHeight,
                     borderRadius: layout.buttonRadius,
                   },
-                  busy && snapshot.status !== "reconnecting" && styles.buttonDisabled,
+                  manualRetryBusy && styles.buttonDisabled,
                   pressed && styles.pressed,
                 ]}
               >
-                {busy && snapshot.status !== "reconnecting" ? (
+                {manualRetryBusy ? (
                   <ActivityIndicator color={Brand.ink} />
                 ) : null}
                 <Text style={styles.primaryButtonText}>{retryLabel}</Text>
@@ -328,9 +340,16 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: Brand.ink,
   },
-  subtitle: {
+  subtitleRow: {
     marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  subtitle: {
     color: Brand.muted,
+    flex: 1,
+    flexShrink: 1,
   },
   progressHeader: {
     marginTop: 24,

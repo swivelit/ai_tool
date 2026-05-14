@@ -32,7 +32,9 @@ export function formatSetupEtaText(options: {
     return "Finalizing setup...";
   }
   if (options.status === "paused") return "Paused";
-  if (options.status === "reconnecting") return "Waiting for connection...";
+  if (options.status === "reconnecting") {
+    return "Waiting for connection. Retrying soon...";
+  }
 
   const etaSeconds = Number(options.progress?.etaSeconds);
   if (!Number.isFinite(etaSeconds) || etaSeconds <= 0 || etaSeconds > 12 * 60 * 60) {
@@ -54,17 +56,22 @@ export function setupUserMessageForStatus(status: SetupProgressStatus, ready = f
     return "Finalizing setup...";
   }
   if (status === "paused") return "Paused";
-  if (status === "reconnecting") return "Waiting for connection...";
+  if (status === "reconnecting") return "Connection interrupted. Retrying automatically...";
   if (status === "downloading") return "Downloading local AI files...";
   if (status === "failed") return "Setup could not finish.";
   return "Checking this phone...";
 }
 
 export function isTransientSetupError(error: unknown) {
+  if ((error as any)?.transient === true || (error as any)?.name === "ModelDownloadInterruptedError") {
+    return true;
+  }
   const message = error instanceof Error ? error.message : String(error ?? "");
   return [
     /unable to resolve host/i,
     /network request failed/i,
+    /HTTP (?:408|429|5\d\d)\b/i,
+    /status (?:408|429|5\d\d)\b/i,
     /\btimeout\b/i,
     /timed out/i,
     /ECONNRESET/i,
@@ -80,9 +87,16 @@ export function friendlySetupError(error: unknown) {
   const developerError = error instanceof Error ? error.message : String(error ?? "");
   if (isTransientSetupError(error)) {
     return {
-      userMessage: "Connection interrupted. Elli will resume when the network is back.",
+      userMessage: "Connection interrupted. Elli will retry automatically. You can also tap Resume.",
       developerError,
       transient: true,
+    };
+  }
+  if (/HTTP (?:401|403|404)\b|signed URL.*expired|forbidden CDN|missing CDN file/i.test(developerError)) {
+    return {
+      userMessage: "Model download link is unavailable or expired. Check the model CDN setup and try again.",
+      developerError,
+      transient: false,
     };
   }
   if (/cdn:\/\/ URL|cdn:\/\/ placeholder|unresolved download metadata/i.test(developerError)) {

@@ -19,7 +19,7 @@ describe("setupProgressCopy", () => {
     expect(formatSetupEtaText({ status: "verifying" })).toBe("Finalizing setup...");
     expect(formatSetupEtaText({ status: "installed" })).toBe("Finalizing setup...");
     expect(formatSetupEtaText({ status: "paused" })).toBe("Paused");
-    expect(formatSetupEtaText({ status: "reconnecting" })).toBe("Waiting for connection...");
+    expect(formatSetupEtaText({ status: "reconnecting" })).toBe("Waiting for connection. Retrying soon...");
     expect(formatSetupEtaText({ status: "downloading", progress: { phase: "downloading", etaSeconds: null } })).toBe("Estimating...");
     expect(formatSetupEtaText({ status: "downloading", progress: { phase: "downloading", etaSeconds: 25 * 60 } })).toBe("About 25 min left");
     expect(formatSetupEtaText({ status: "downloading", progress: { phase: "downloading", etaSeconds: 75 * 60 } })).toBe("About 1 hr 15 min left");
@@ -33,6 +33,7 @@ describe("setupProgressCopy", () => {
 
     expect(safe.userMessage).not.toMatch(/huggingface|qwen3-8b|\.gguf/i);
     expect(safe.userMessage).toMatch(/resume/i);
+    expect(safe.userMessage).toMatch(/retry automatically/i);
     expect(safe.developerError).toMatch(/huggingface\.co/);
     expect(safe.developerError).toMatch(/qwen3-8b/);
   });

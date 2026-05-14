@@ -261,6 +261,8 @@ export function isModelInstallError(error: unknown) {
 const TRANSIENT_DOWNLOAD_ERROR_PATTERNS = [
   /unable to resolve host/i,
   /network request failed/i,
+  /HTTP (?:408|429|5\d\d)\b/i,
+  /status (?:408|429|5\d\d)\b/i,
   /\btimeout\b/i,
   /timed out/i,
   /ECONNRESET/i,
@@ -302,8 +304,55 @@ function isInvalidModelMetadataMessage(message: string) {
     /missing expectedBytes/i.test(message) ||
     /missing sha256/i.test(message) ||
     /unsupported URL scheme/i.test(message) ||
-    /placeholder YOUR_MODEL_CDN/i.test(message)
+    /placeholder YOUR_MODEL_CDN/i.test(message) ||
+    /HTTP (?:401|403|404)\b/i.test(message) ||
+    /signed URL.*expired|forbidden CDN|missing CDN file/i.test(message)
   );
+}
+
+function isNonRetryableDownloadStatusMessage(message: string) {
+  return (
+    /HTTP (?:401|403|404)\b/i.test(message) ||
+    /signed URL.*expired|forbidden CDN|missing CDN file/i.test(message)
+  );
+}
+
+function normalizedHttpStatus(value: unknown) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+
+function isSuccessfulHttpStatus(status: number) {
+  return status >= 200 && status < 300;
+}
+
+function isTransientHttpStatus(status: number) {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function downloadHttpStatusErrorMessage(
+  entry: Pick<ModelDownloadConfigEntry, "id" | "fileName">,
+  status: number,
+) {
+  if (status === 401) {
+    return `Download for model ${entry.id} (${entry.fileName}) returned HTTP 401 Unauthorized. The signed URL may be expired or missing CDN authorization.`;
+  }
+  if (status === 403) {
+    return `Download for model ${entry.id} (${entry.fileName}) returned HTTP 403 Forbidden. The signed URL may be expired or the CDN denied access.`;
+  }
+  if (status === 404) {
+    return `Download for model ${entry.id} (${entry.fileName}) returned HTTP 404 Not Found. The configured CDN path is missing this GGUF file.`;
+  }
+  if (status === 408) {
+    return `Download for model ${entry.id} (${entry.fileName}) returned HTTP 408 Request Timeout.`;
+  }
+  if (status === 429) {
+    return `Download for model ${entry.id} (${entry.fileName}) returned HTTP 429 Too Many Requests.`;
+  }
+  if (status >= 500) {
+    return `Download for model ${entry.id} (${entry.fileName}) returned HTTP ${status}. The CDN or origin server is temporarily unavailable.`;
+  }
+  return `Download for model ${entry.id} (${entry.fileName}) returned unexpected HTTP ${status}.`;
 }
 
 function configuredRoot(config?: ModelDownloadConfigRoot) {
@@ -1340,6 +1389,39 @@ async function downloadOneModel(
     options.onDownloadSettled?.(download as ModelDownloadHandle, initialResumeState);
   }
 
+  const httpStatus = normalizedHttpStatus(result?.status);
+  if (httpStatus != null && !isSuccessfulHttpStatus(httpStatus)) {
+    const statusMessage = downloadHttpStatusErrorMessage(entry, httpStatus);
+    if (isTransientHttpStatus(httpStatus) || options.isPauseRequested?.()) {
+      const interruptedState = mergeResumeState(initialResumeState, download as ModelDownloadHandle);
+      await persistResumeState(options, interruptedState);
+      const aggregate = aggregateDownloadProgress(
+        progressTotals,
+        index,
+        Math.max(
+          resumeBaseBytes,
+          progressTotals.writtenBytesByIndex[index - 1] || 0,
+        ),
+        expectedBytes,
+        (index - 1) / total,
+      );
+      options.onProgress?.({
+        phase: options.isPauseRequested?.() ? "paused" : "reconnecting",
+        modelId: entry.id,
+        fileName: entry.fileName,
+        modelIndex: index,
+        totalModels: total,
+        ...aggregate,
+        modelProgress: expectedBytes
+          ? Math.min(1, (progressTotals.writtenBytesByIndex[index - 1] || 0) / expectedBytes)
+          : undefined,
+        message: "Connection interrupted. Local setup can resume.",
+      });
+      throw new ModelDownloadInterruptedError(statusMessage, interruptedState);
+    }
+    throw new ModelInstallError(statusMessage);
+  }
+
   if (!result?.uri) {
     throw new ModelInstallError(`Download did not produce a file for ${entry.id}.`);
   }
@@ -1466,6 +1548,7 @@ export async function downloadRequiredModels(
         if (isTransientModelDownloadError(error) || options.isPauseRequested?.()) {
           break;
         }
+        const nonRetryable = isNonRetryableDownloadStatusMessage(message);
         if (isIntegrityFailureMessage(message) || isInvalidModelMetadataMessage(message)) {
           await fs.deleteAsync(`${entry.fileUri}.download`, { idempotent: true }).catch(() => undefined);
           await removeResumeState(
@@ -1479,6 +1562,9 @@ export async function downloadRequiredModels(
           );
         }
         await fs.deleteAsync(entry.fileUri, { idempotent: true }).catch(() => undefined);
+        if (nonRetryable) {
+          break;
+        }
         if (attempt < retries) {
           const aggregate = aggregateDownloadProgress(
             progressTotals,

@@ -155,8 +155,14 @@ async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+async function flushMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe("modelDownloadSession", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     vi.restoreAllMocks();
     state.files.clear();
@@ -193,6 +199,71 @@ describe("modelDownloadSession", () => {
     await session.resume();
     expect(session.getSnapshot().ready).toBe(true);
     expect(state.createCalls[1].resumeData).toBe("resume-token");
+  });
+
+  it("automatically retries a transient DNS interruption with saved resumeData", async () => {
+    vi.useFakeTimers();
+    state.plans.push(
+      {
+        type: "transient",
+        partialSize: 8,
+        message: 'Unable to resolve host "huggingface.co": No address associated with hostname',
+      },
+      { type: "success", size: model.expectedBytes },
+    );
+
+    const { createModelDownloadSession } = await importSession();
+    const session = createModelDownloadSession({ storage: storageMock() });
+
+    await session.start({ config: testConfig() });
+    const interrupted = session.getSnapshot();
+    expect(interrupted.status).toBe("reconnecting");
+    expect(interrupted.canRetry).toBe(true);
+    expect(interrupted.reconnectAttempt).toBe(1);
+    expect(interrupted.nextRetryAtMs).toBe(state.nowMs + 5_000);
+    expect(state.createCalls).toHaveLength(1);
+    expect([...state.storage.values()].some((value) => value.includes("resume-token"))).toBe(true);
+
+    state.nowMs += 5_000;
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flushMicrotasks();
+
+    expect(state.createCalls).toHaveLength(2);
+    expect(state.createCalls[1].resumeData).toBe("resume-token");
+    expect(session.getSnapshot().ready).toBe(true);
+    expect(session.getSnapshot().status).toBe("installed");
+    expect(session.getSnapshot().nextRetryAtMs).toBeNull();
+  });
+
+  it("cancels pending automatic reconnect when paused for background", async () => {
+    vi.useFakeTimers();
+    state.plans.push(
+      {
+        type: "transient",
+        partialSize: 8,
+        message: "Network request failed",
+      },
+      { type: "success", size: model.expectedBytes },
+    );
+
+    const { createModelDownloadSession } = await importSession();
+    const session = createModelDownloadSession({ storage: storageMock() });
+
+    await session.start({ config: testConfig() });
+    expect(session.getSnapshot().status).toBe("reconnecting");
+    expect(session.getSnapshot().nextRetryAtMs).toBe(state.nowMs + 5_000);
+
+    await session.pause("background");
+    expect(session.getSnapshot().status).toBe("paused");
+    expect(session.getSnapshot().nextRetryAtMs).toBeNull();
+
+    state.nowMs += 60_000;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flushMicrotasks();
+
+    expect(state.createCalls).toHaveLength(1);
+    expect(session.getSnapshot().status).toBe("paused");
+    expect(session.getSnapshot().ready).toBe(false);
   });
 
   it("pauses on background, stores savable state, and resumes the same active target", async () => {

@@ -33,6 +33,8 @@ export type ModelDownloadSessionSnapshot = {
   canRetry: boolean;
   ready: boolean;
   installStatus: ModelInstallStatus | null;
+  reconnectAttempt: number;
+  nextRetryAtMs: number | null;
 };
 
 export type ModelDownloadSessionListener = (
@@ -44,6 +46,7 @@ type SessionDeps = {
 };
 
 const STORAGE_KEY_PREFIX = "elli:model-download-session:v1:";
+const RECONNECT_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000] as const;
 
 function storageKey(state: ModelDownloadResumeState) {
   return `${STORAGE_KEY_PREFIX}${encodeURIComponent(
@@ -112,6 +115,8 @@ function initialSnapshot(): ModelDownloadSessionSnapshot {
     canRetry: false,
     ready: false,
     installStatus: null,
+    reconnectAttempt: 0,
+    nextRetryAtMs: null,
   };
 }
 
@@ -125,6 +130,9 @@ export class ModelDownloadSession {
   private lastOptions: EnsureModelsOptions = {};
   private pauseRequested = false;
   private pauseReason: string | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempt = 0;
+  private nextRetryAtMs: number | null = null;
 
   constructor(deps: SessionDeps = {}) {
     this.storage = deps.storage || AsyncStorage;
@@ -146,18 +154,12 @@ export class ModelDownloadSession {
     if (this.activePromise) return this.activePromise;
     if (this.snapshot.ready) return Promise.resolve(this.snapshot);
 
+    this.clearReconnectTimer({ resetAttempt: true });
     this.lastOptions = { ...options };
     this.pauseRequested = false;
     this.pauseReason = null;
 
-    const run = this.run(this.lastOptions);
-    this.activePromise = run;
-    run.finally(() => {
-      if (this.activePromise === run) {
-        this.activePromise = null;
-      }
-    });
-    return run;
+    return this.startRun(this.lastOptions);
   }
 
   retry() {
@@ -170,14 +172,16 @@ export class ModelDownloadSession {
   resume() {
     if (this.activePromise) return this.activePromise;
     if (this.snapshot.ready) return Promise.resolve(this.snapshot);
+    this.clearReconnectTimer({ resetAttempt: true });
     this.pauseRequested = false;
     this.pauseReason = null;
-    return this.start(this.lastOptions);
+    return this.startRun(this.lastOptions);
   }
 
   async pause(reason = "manual") {
     this.pauseRequested = true;
     this.pauseReason = reason;
+    this.clearReconnectTimer({ resetAttempt: true });
     await this.persistActiveState();
 
     const download = this.activeDownload;
@@ -197,7 +201,20 @@ export class ModelDownloadSession {
       developerError: this.snapshot.developerError,
       canRetry: true,
       ready: false,
+      reconnectAttempt: 0,
+      nextRetryAtMs: null,
     });
+  }
+
+  private startRun(options: EnsureModelsOptions) {
+    const run = this.run(options);
+    this.activePromise = run;
+    run.finally(() => {
+      if (this.activePromise === run) {
+        this.activePromise = null;
+      }
+    });
+    return run;
   }
 
   private async run(options: EnsureModelsOptions) {
@@ -207,6 +224,7 @@ export class ModelDownloadSession {
       developerError: null,
       canRetry: false,
       ready: false,
+      nextRetryAtMs: null,
     });
 
     try {
@@ -254,6 +272,8 @@ export class ModelDownloadSession {
         canRetry: false,
         ready: status.ready,
         installStatus: status,
+        reconnectAttempt: 0,
+        nextRetryAtMs: null,
       });
     } catch (error) {
       const interrupted = error instanceof ModelDownloadInterruptedError;
@@ -322,10 +342,91 @@ export class ModelDownloadSession {
     await this.storage.setItem(storageKey(nextState), JSON.stringify(nextState)).catch(() => undefined);
   }
 
+  private reconnectDelayMsForAttempt(attempt: number) {
+    const index = Math.max(0, Math.min(RECONNECT_BACKOFF_MS.length - 1, attempt - 1));
+    return RECONNECT_BACKOFF_MS[index];
+  }
+
+  private ensureReconnectRetryScheduled() {
+    if (this.reconnectTimer) {
+      return {
+        reconnectAttempt: this.reconnectAttempt,
+        nextRetryAtMs: this.nextRetryAtMs,
+      };
+    }
+
+    this.reconnectAttempt += 1;
+    const delayMs = this.reconnectDelayMsForAttempt(this.reconnectAttempt);
+    this.nextRetryAtMs = Date.now() + delayMs;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.nextRetryAtMs = null;
+      void this.runScheduledReconnectRetry();
+    }, delayMs);
+
+    return {
+      reconnectAttempt: this.reconnectAttempt,
+      nextRetryAtMs: this.nextRetryAtMs,
+    };
+  }
+
+  private clearReconnectTimer(options: { resetAttempt?: boolean } = {}) {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+    this.reconnectTimer = null;
+    this.nextRetryAtMs = null;
+    if (options.resetAttempt) {
+      this.reconnectAttempt = 0;
+    }
+  }
+
+  private runScheduledReconnectRetry() {
+    if (
+      this.activePromise ||
+      this.snapshot.ready ||
+      this.snapshot.status !== "reconnecting" ||
+      this.pauseRequested ||
+      this.pauseReason
+    ) {
+      this.setSnapshot({
+        nextRetryAtMs: null,
+        canRetry: this.snapshot.status === "reconnecting" && !this.snapshot.ready,
+      });
+      return this.activePromise || Promise.resolve(this.snapshot);
+    }
+
+    this.pauseRequested = false;
+    this.pauseReason = null;
+    this.setSnapshot({
+      canRetry: false,
+      nextRetryAtMs: null,
+    });
+    return this.startRun(this.lastOptions);
+  }
+
   private setSnapshot(patch: Partial<ModelDownloadSessionSnapshot>) {
+    const nextPatch: Partial<ModelDownloadSessionSnapshot> = { ...patch };
+
+    if (nextPatch.status === "reconnecting") {
+      const scheduled = this.ensureReconnectRetryScheduled();
+      nextPatch.reconnectAttempt = scheduled.reconnectAttempt;
+      nextPatch.nextRetryAtMs = scheduled.nextRetryAtMs;
+      nextPatch.canRetry = true;
+    } else if (nextPatch.status) {
+      const shouldResetAttempt =
+        nextPatch.status === "paused" ||
+        nextPatch.status === "installed" ||
+        nextPatch.status === "failed" ||
+        nextPatch.status === "idle";
+      this.clearReconnectTimer({ resetAttempt: shouldResetAttempt });
+      nextPatch.nextRetryAtMs = null;
+      nextPatch.reconnectAttempt = this.reconnectAttempt;
+    }
+
     this.snapshot = {
       ...this.snapshot,
-      ...patch,
+      ...nextPatch,
     };
     for (const listener of this.listeners) {
       listener(this.snapshot);

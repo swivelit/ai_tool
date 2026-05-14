@@ -8,6 +8,7 @@ type FakeDownload = {
   url: string;
   content: string;
   fail?: boolean | string;
+  status?: number;
   size?: number;
   progressSamples?: Array<{
     written: number;
@@ -70,7 +71,7 @@ function fakeFsModule() {
         }
         const size = next.size ?? samples.at(-1)?.written ?? Buffer.byteLength(next.content);
         state.files.set(targetUri, { content: next.content, size });
-        return { uri: targetUri, status: 200 };
+        return { uri: targetUri, status: next.status ?? 200 };
       }),
       pauseAsync: vi.fn(async () => ({ resumeData: resumeData || "paused-resume-data" })),
       resumeAsync: vi.fn(async () => ({ uri: targetUri, status: 200 })),
@@ -533,6 +534,70 @@ describe("modelDownloadManager", () => {
 
     expect(state.files.has(tempUri)).toBe(true);
     expect(savedStates.some((resumeState) => resumeState.resumeData)).toBe(true);
+  });
+
+  it.each([403, 404])("treats HTTP %i as a non-transient setup error", async (statusCode) => {
+    state.downloads.push({
+      url: "https://cdn.example.test/gemma.gguf",
+      content: "cdn-error",
+      status: statusCode,
+    });
+
+    const {
+      downloadRequiredModels,
+      isTransientModelDownloadError,
+      ModelDownloadInterruptedError,
+      ModelInstallError,
+    } = await importManager();
+
+    let caught: unknown;
+    try {
+      await downloadRequiredModels({
+        config: testConfig({
+          models: [{ ...baseModels[0], expectedBytes: 9 }],
+        }),
+        retries: 1,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ModelInstallError);
+    expect(caught).not.toBeInstanceOf(ModelDownloadInterruptedError);
+    expect(isTransientModelDownloadError(caught)).toBe(false);
+    expect((caught as Error).message).toMatch(new RegExp(`HTTP ${statusCode}`));
+    expect(state.downloadAttempts).toBe(1);
+  });
+
+  it.each([429, 500])("treats HTTP %i as a transient download interruption", async (statusCode) => {
+    state.downloads.push({
+      url: "https://cdn.example.test/gemma.gguf",
+      content: "retry-later",
+      status: statusCode,
+    });
+
+    const {
+      downloadRequiredModels,
+      isTransientModelDownloadError,
+      ModelDownloadInterruptedError,
+    } = await importManager();
+
+    let caught: unknown;
+    try {
+      await downloadRequiredModels({
+        config: testConfig({
+          models: [{ ...baseModels[0], expectedBytes: 11 }],
+        }),
+        retries: 1,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ModelDownloadInterruptedError);
+    expect(isTransientModelDownloadError(caught)).toBe(true);
+    expect((caught as Error).message).toMatch(new RegExp(`HTTP ${statusCode}`));
+    expect(state.downloadAttempts).toBe(1);
   });
 
   it("deletes and retries a SHA-256 mismatch", async () => {
