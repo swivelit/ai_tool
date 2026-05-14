@@ -276,7 +276,43 @@
         "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B",
         "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B",
         "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED"
-      ]
-    }
+        ]
+      }
+    },
+
+    "downloadModels": [
+      {
+        "id": "lite",
+        "name": "Lite",
+        "required": true,
+        "optional": false,
+        "description": "Required lightweight model for first launch.",
+        "cdnUrl": "https://cdn.example.com/models/lite-model.gguf",
+        "byteSize": 524288000,
+        "sha256": "lite_sha256_placeholder",
+        "recommendedWifi": true
+      },
+      {
+        "id": "standard",
+        "name": "Standard",
+        "required": false,
+        "optional": true,
+        "description": "Balanced model for regular usage.",
+        "cdnUrl": "https://cdn.example.com/models/standard-model.gguf",
+        "byteSize": 1073741824,
+        "sha256": "standard_sha256_placeholder",
+        "recommendedWifi": true
+      },
+      {
+        "id": "pro",
+        "name": "Pro",
+        "required": false,
+        "optional": true,
+        "description": "High-quality model with larger download size.",
+        "cdnUrl": "https://cdn.example.com/models/pro-model.gguf",
+        "byteSize": 2147483648,
+        "sha256": "pro_sha256_placeholder",
+        "recommendedWifi": true
+      }
+    ]
   }
-}

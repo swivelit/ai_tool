@@ -38,6 +38,11 @@ export default function ModelSetupScreen() {
   const autoContinuedRef = useRef(false);
   const appStateRef = useRef(AppState.currentState);
 
+  const [selectedTier, setSelectedTier] = useState<
+  "lite" | "standard" | "pro"
+>("lite");
+
+const [setupStarted, setSetupStarted] = useState(false);
   const layout = useMemo(
     () => getModelSetupLayout({ width: dimensions.width, height: dimensions.height }),
     [dimensions.height, dimensions.width],
@@ -88,11 +93,14 @@ export default function ModelSetupScreen() {
       await modelDownloadSession.start(deviceInfo ? { deviceInfo } : {});
     }
 
-    void startSetup();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (setupStarted) {
+  void startSetup();
+}
+
+return () => {
+  cancelled = true;
+};
+}, [setupStarted]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
@@ -108,6 +116,13 @@ export default function ModelSetupScreen() {
     });
     return () => subscription.remove();
   }, []);
+const startSelectedSetup = useCallback(() => {
+  setSetupStarted(true);
+
+  void modelDownloadSession.start({
+    selectedTier,
+  } as any);
+}, [selectedTier]);
 
   const retry = useCallback(() => {
     if (manualRetryBusy) return;
@@ -251,6 +266,68 @@ export default function ModelSetupScreen() {
             </Text>
           </View>
 
+<View style={{ marginTop: 20, gap: 12 }}>
+  <Text
+    style={{
+      fontSize: 15,
+      fontWeight: "800",
+      color: Brand.cocoa,
+    }}
+  >
+    Select model tier
+  </Text>
+
+  {[
+    {
+      id: "lite",
+      label: "Lite (Required)",
+      desc: "Fast setup with lower storage usage.",
+    },
+    {
+      id: "standard",
+      label: "Standard",
+      desc: "Balanced quality and performance.",
+    },
+    {
+      id: "pro",
+      label: "Pro",
+      desc: "Highest quality with larger download.",
+    },
+  ].map((tier) => (
+    <Pressable
+      key={tier.id}
+      onPress={() => setSelectedTier(tier.id as any)}
+      style={{
+        padding: 14,
+        borderRadius: 16,
+        borderWidth: 2,
+        borderColor:
+          selectedTier === tier.id
+            ? Brand.bronze
+            : "rgba(0,0,0,0.08)",
+        backgroundColor: "rgba(255,255,255,0.55)",
+      }}
+    >
+      <Text
+        style={{
+          fontWeight: "900",
+          color: Brand.ink,
+        }}
+      >
+        {tier.label}
+      </Text>
+
+      <Text
+        style={{
+          marginTop: 4,
+          color: Brand.muted,
+        }}
+      >
+        {tier.desc}
+      </Text>
+    </Pressable>
+  ))}
+</View>
           <View style={progressHeaderStyle}>
             <Text style={styles.progressLabel}>{progressLabel}</Text>
             <Text style={styles.progressLabel}>{etaText}</Text>
@@ -264,6 +341,19 @@ export default function ModelSetupScreen() {
           ) : null}
 
           <View style={[styles.actions, layout.compact && styles.actionsCompact]}>
+          {!setupStarted && !snapshot.ready ? (
+  <Pressable
+    onPress={startSelectedSetup}
+    style={({ pressed }) => [
+      styles.primaryButton,
+      pressed && styles.pressed,
+    ]}
+  >
+    <Text style={styles.primaryButtonText}>
+      Start Download
+    </Text>
+  </Pressable>
+) : null}
             {showRetry ? (
               <Pressable
                 onPress={retry}

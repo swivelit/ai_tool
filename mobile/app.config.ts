@@ -1,3 +1,4 @@
+import modelsConfig from "./data/config/models.json";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -287,6 +288,28 @@ const modelDeliveryExtra = {
   EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B: LOCAL_MODEL_SHA256_QWEN_14B,
   EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED: LOCAL_MODEL_SHA256_QWEN_EMBED,
 };
+
+function validateDownloadModels() {
+  const models = modelsConfig.downloadModels || [];
+
+  for (const model of models) {
+    if (!model.cdnUrl) {
+      throw new Error(`Missing CDN URL for model: ${model.id}`);
+    }
+
+    if (!model.byteSize) {
+      throw new Error(`Missing byte size for model: ${model.id}`);
+    }
+
+    if (!model.sha256) {
+      throw new Error(`Missing SHA-256 for model: ${model.id}`);
+    }
+  }
+}
+
+if (process.env.NODE_ENV === "production") {
+  validateDownloadModels();
+}
 
 export default {
   expo: {

@@ -156,6 +156,26 @@ export function friendlySetupError(error: unknown) {
   };
 }
 
+export function getWifiWarningMessage(modelSizeBytes?: number) {
+  const sizeGb =
+    typeof modelSizeBytes === "number"
+      ? modelSizeBytes / (1024 * 1024 * 1024)
+      : 0;
+
+  if (sizeGb >= 2) {
+    return "Large AI model download detected. Wi-Fi is strongly recommended to avoid mobile data charges.";
+  }
+
+  if (sizeGb >= 1) {
+    return "This setup may use significant mobile data. Wi-Fi is recommended.";
+  }
+
+  return "Download ready.";
+}
+
+export function getRepairMessage() {
+  return "A damaged or incomplete model file was detected and safely removed. Elli will repair it automatically.";
+}
 export function getModelSetupLayout(dimensions: { width: number; height: number }) {
   const width = Math.max(0, Number(dimensions.width || 0));
   const height = Math.max(0, Number(dimensions.height || 0));
