@@ -98,6 +98,50 @@ def test_observability_config_endpoint(client):
     assert "Bearer" not in response.text
 
 
+def test_global_qa_cache_debug_endpoint_is_admin_only(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
+    monkeypatch.setenv("DEBUG_ADMIN_TOKEN", "debug-secret")
+    create_test_user("normal-uid", "normal@example.com")
+    create_test_user("admin-uid", "admin@example.com")
+
+    normal = client.get(
+        "/api/debug/global-qa-cache",
+        headers=auth_headers("normal-uid", "normal@example.com"),
+    )
+    assert normal.status_code == 403
+
+    admin = client.get(
+        "/api/debug/global-qa-cache",
+        headers=auth_headers("admin-uid", "admin@example.com"),
+    )
+    assert admin.status_code == 200
+
+    token = client.get(
+        "/api/debug/global-qa-cache",
+        headers={"x-admin-token": "debug-secret"},
+    )
+    assert token.status_code == 200
+
+    invalid = client.get(
+        "/api/debug/global-qa-cache",
+        headers={"x-admin-token": "wrong"},
+    )
+    assert invalid.status_code == 403
+
+
+def test_global_qa_cache_debug_endpoint_denies_when_admin_unconfigured(client, monkeypatch):
+    monkeypatch.delenv("ADMIN_EMAILS", raising=False)
+    monkeypatch.delenv("DEBUG_ADMIN_TOKEN", raising=False)
+    create_test_user("admin-uid", "admin@example.com")
+
+    response = client.get(
+        "/api/debug/global-qa-cache",
+        headers=auth_headers("admin-uid", "admin@example.com"),
+    )
+
+    assert response.status_code == 403
+
+
 def test_chat_logs_turn_started_and_completed_safely(client, monkeypatch, caplog):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")

@@ -11,8 +11,9 @@ from app.global_qa_cache import (
     lookup_approved_global_cache,
     normalize_question,
     record_backend_openai_answer,
+    record_global_qa_tombstone,
 )
-from app.models import GlobalQACache, GlobalQAObservation
+from app.models import GlobalQACache, GlobalQAObservation, GlobalQATombstone
 from conftest import auth_headers, create_test_user
 from sqlmodel import select
 
@@ -154,6 +155,59 @@ def test_live_current_question_is_not_cached_or_served(monkeypatch):
         assert lookup_approved_global_cache(session, "latest IPL score today", "en") is None
 
 
+def test_expanded_live_market_weather_recommendation_questions_bypass_cache():
+    blocked_questions = [
+        "weather tomorrow",
+        "gold rate today",
+        "petrol price nearby",
+        "USD INR exchange rate",
+        "best phone deal near me",
+        "yesterday match result",
+        "stock price forecast",
+    ]
+    with SessionLocal() as session:
+        for question in blocked_questions:
+            result = record_backend_openai_answer(
+                session,
+                user_id=1,
+                question=question,
+                answer="This answer should not be globally cached.",
+                model_used="cheap-test-model",
+            )
+            assert result["skipped"] is True
+
+        educational = record_backend_openai_answer(
+            session,
+            user_id=1,
+            question="What is photosynthesis?",
+            answer="Photosynthesis is how plants make food from light, water, and carbon dioxide.",
+            model_used="cheap-test-model",
+        )
+        assert educational["ok"] is True
+
+        session.add(
+            GlobalQACache(
+                canonical_question="weather tomorrow",
+                normalized_question="weather tomorrow",
+                answer="Stale weather.",
+                answer_language="en",
+                topic="weather",
+                status="approved",
+                hit_count=2,
+                distinct_user_count=2,
+                observed_question_count=2,
+                source_question_hashes_json=json.dumps([]),
+                answer_hash="weather-hash",
+                embedding_json="[]",
+                embedding_norm=0,
+                confidence=1,
+                safety_label="general",
+            )
+        )
+        session.commit()
+        assert lookup_approved_global_cache(session, "weather tomorrow", "en") is None
+
+
 def test_private_and_personalized_advice_questions_are_not_cached():
     with SessionLocal() as session:
         private = record_backend_openai_answer(
@@ -248,6 +302,46 @@ def test_approved_global_cache_hit_skips_openai_orchestrator(client, monkeypatch
     assert orchestrator_calls == []
 
 
+def test_approved_global_cache_hit_does_not_change_updated_at():
+    question = "What is a compiler?"
+    embedding, norm = embed_question_for_global_cache(normalize_question(question))
+    created = datetime(2026, 5, 1, 12, 0, 0)
+    with SessionLocal() as session:
+        row = GlobalQACache(
+            canonical_question=question,
+            normalized_question=normalize_question(question),
+            answer="A compiler translates source code.",
+            answer_language="en",
+            topic="compiler",
+            status="approved",
+            hit_count=2,
+            distinct_user_count=2,
+            observed_question_count=2,
+            source_question_hashes_json=json.dumps([]),
+            answer_hash="compiler-hash",
+            embedding_json=json.dumps(embedding),
+            embedding_norm=norm,
+            confidence=0.95,
+            safety_label="general",
+            created_at=created,
+            updated_at=created,
+            last_seen_at=created,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+
+        hit = lookup_approved_global_cache(session, "Explain compiler", "en")
+        assert hit is not None
+
+        refreshed = session.get(GlobalQACache, row.id)
+        assert refreshed is not None
+        assert refreshed.hit_count == 3
+        assert refreshed.last_seen_at != created
+        assert refreshed.updated_at == created
+
+
 def test_global_knowledge_sync_paginates_without_missing_rows():
     base = datetime(2026, 5, 14, 0, 0, tzinfo=timezone.utc)
     expires_at = datetime.now(timezone.utc) + timedelta(days=30)
@@ -339,6 +433,49 @@ def test_global_knowledge_sync_revokes_rejected_rows():
         assert second["revokedIds"] == [row.id]
 
 
+def test_global_knowledge_sync_revokes_tombstoned_deleted_rows():
+    expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    with SessionLocal() as session:
+        row = GlobalQACache(
+            canonical_question="What is a heap?",
+            normalized_question="what is heap",
+            answer="A heap is a tree-based data structure.",
+            answer_language="en",
+            topic="heap",
+            status="approved",
+            hit_count=2,
+            distinct_user_count=2,
+            observed_question_count=2,
+            source_question_hashes_json=json.dumps([]),
+            answer_hash="heap-hash",
+            embedding_json="[]",
+            embedding_norm=0,
+            confidence=0.95,
+            safety_label="general",
+            expires_at=expires_at,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+
+        first = build_global_knowledge_sync_payload(session, limit=250)
+        assert [entry["id"] for entry in first["entries"]] == [row.id]
+
+        deleted_id = int(row.id)
+        record_global_qa_tombstone(session, deleted_id, reason="admin_deleted")
+        session.delete(row)
+        session.commit()
+
+        second = build_global_knowledge_sync_payload(
+            session,
+            since=first["nextSince"],
+            after_id=first["nextAfterId"],
+            limit=250,
+        )
+        assert second["entries"] == []
+        assert second["revokedIds"] == [deleted_id]
+
+
 def test_global_knowledge_sync_skips_corrupt_embedding_rows(caplog):
     with SessionLocal() as session:
         row = GlobalQACache(
@@ -389,6 +526,75 @@ def test_similar_questions_with_similar_answers_promote():
         assert second["promoted"] is True
         candidate = session.exec(select(GlobalQACache)).one()
         assert candidate.status == "approved"
+
+
+def test_alias_lookup_matches_safe_abbreviation_variants():
+    with SessionLocal() as session:
+        record_backend_openai_answer(
+            session,
+            user_id=1,
+            question="What is IPL?",
+            answer="The Indian Premier League is a professional Twenty20 cricket league in India.",
+            model_used="cheap-test-model",
+        )
+        record_backend_openai_answer(
+            session,
+            user_id=2,
+            question="Explain IPL",
+            answer="The Indian Premier League is a professional Twenty20 cricket league in India.",
+            model_used="cheap-test-model",
+        )
+        approved = session.exec(select(GlobalQACache)).one()
+        assert approved.status == "approved"
+
+        hit = lookup_approved_global_cache(session, "Tell me about Indian Premier League", "en")
+        assert hit is not None
+        assert hit["id"] == approved.id
+
+        assert lookup_approved_global_cache(session, "latest Indian Premier League score", "en") is None
+
+
+def test_private_variants_are_not_stored_or_synced():
+    with SessionLocal() as session:
+        private = record_backend_openai_answer(
+            session,
+            user_id=1,
+            question="My email is person@example.com, what is AI?",
+            answer="AI means artificial intelligence.",
+            model_used="cheap-test-model",
+        )
+        assert private["skipped"] is True
+        assert list(session.exec(select(GlobalQACache)).all()) == []
+
+        row = GlobalQACache(
+            canonical_question="What is AI?",
+            normalized_question="what is ai",
+            answer="AI means artificial intelligence.",
+            answer_language="en",
+            topic="ai",
+            status="approved",
+            hit_count=2,
+            distinct_user_count=2,
+            observed_question_count=2,
+            source_question_hashes_json=json.dumps([]),
+            observed_safe_questions_json=json.dumps(["what is ai", "my email is person@example.com"]),
+            aliases_json=json.dumps(["what is artificial intelligence", "person@example.com artificial intelligence"]),
+            answer_hash="ai-hash",
+            embedding_json="[]",
+            embedding_norm=0,
+            confidence=0.95,
+            safety_label="general",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+        session.add(row)
+        session.commit()
+
+        payload = build_global_knowledge_sync_payload(session)
+        entry = payload["entries"][0]
+        serialized = json.dumps(entry)
+        assert "person@example.com" not in serialized
+        assert "what is ai" in entry["observedSafeQuestions"]
+        assert "what is artificial intelligence" in entry["aliases"]
 
 
 def test_similar_questions_with_conflicting_answers_do_not_promote():

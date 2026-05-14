@@ -252,6 +252,47 @@ describe("global knowledge sync", () => {
     expect(await lookupSyncedGlobalKnowledge("latest IPL score today")).toBeNull();
   });
 
+  it("bypasses expanded live, price, weather, and recommendation queries", async () => {
+    const { isLiveOrCurrentGlobalKnowledgeQuestion } = await import("../lib/globalKnowledgeSync");
+
+    expect(isLiveOrCurrentGlobalKnowledgeQuestion("weather tomorrow")).toBe(true);
+    expect(isLiveOrCurrentGlobalKnowledgeQuestion("USD INR exchange rate")).toBe(true);
+    expect(isLiveOrCurrentGlobalKnowledgeQuestion("best phone deal near me")).toBe(true);
+    expect(isLiveOrCurrentGlobalKnowledgeQuestion("What is IPL?")).toBe(false);
+    expect(isLiveOrCurrentGlobalKnowledgeQuestion("What is photosynthesis?")).toBe(false);
+  });
+
+  it("matches synced aliases and still bypasses live alias queries", async () => {
+    const { GLOBAL_KNOWLEDGE_CACHE_KEY, lookupSyncedGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    storage.set(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "ipl",
+            canonicalQuestion: "What is IPL?",
+            normalizedQuestion: "what is ipl",
+            aliases: ["what is indian premier league"],
+            observedSafeQuestions: ["explain ipl"],
+            answer: "The Indian Premier League is a professional Twenty20 cricket league in India.",
+            answerLanguage: "en",
+            embedding: [],
+            embeddingNorm: 0,
+            confidence: 0.93,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+        ],
+      }),
+    );
+
+    const hit = await lookupSyncedGlobalKnowledge("Tell me about Indian Premier League");
+
+    expect(hit?.entry.answer).toContain("Twenty20");
+    expect(await lookupSyncedGlobalKnowledge("latest Indian Premier League score")).toBeNull();
+  });
+
   it("uses local token-hash embeddings for synced global knowledge", async () => {
     const { GLOBAL_KNOWLEDGE_CACHE_KEY, lookupSyncedGlobalKnowledge, tokenHashEmbedding } = await import("../lib/globalKnowledgeSync");
     const embedding = tokenHashEmbedding("what is a compiler");

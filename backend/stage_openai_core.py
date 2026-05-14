@@ -41,9 +41,10 @@ from config import (
 
 try:
     from app.openai_model_router import OpenAIModelRouter
-    from app.openai_tracked import tracked_chat_completion
+    from app.openai_tracked import get_tracked_chat_completion_metadata, tracked_chat_completion
 except Exception:  # pragma: no cover
     OpenAIModelRouter = None  # type: ignore
+    get_tracked_chat_completion_metadata = None  # type: ignore
     tracked_chat_completion = None  # type: ignore
 
 
@@ -201,6 +202,8 @@ class OpenAICore:
         self.model = model
         self.client = OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT)
         self._cache: "OrderedDict[str, str]" = OrderedDict()
+        self._last_request_metadata: Dict[str, Any] = {}
+        self._last_json_metadata: Dict[str, Any] = {}
 
     @staticmethod
     def _build_input(system_prompt: str, user_prompt: str) -> List[Dict[str, str]]:
@@ -362,9 +365,11 @@ class OpenAICore:
         max_output_tokens: int,
         response_format: Optional[Dict[str, Any]] = None,
         model_override: Optional[str] = None,
+        forced_model_selection: Optional[Any] = None,
     ) -> str:
         model = str(model_override or self.model).strip() or self.model
         last_error: Optional[Exception] = None
+        self._last_request_metadata = {}
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
                 request_messages = [
@@ -381,6 +386,13 @@ class OpenAICore:
                     temperature=temperature,
                     max_tokens=max_output_tokens,
                     response_format=self._normalize_response_format(response_format),
+                    forced_model_selection=forced_model_selection,
+                    model=model if forced_model_selection is None and model_override else None,
+                )
+                self._last_request_metadata = (
+                    get_tracked_chat_completion_metadata(response)
+                    if get_tracked_chat_completion_metadata is not None
+                    else {}
                 )
                 text = self._extract_response_text(response)
                 if not text:
@@ -465,6 +477,7 @@ class OpenAICore:
         temperature: float = 0.2,
         max_output_tokens: int = 1200,
         model_override: Optional[str] = None,
+        forced_model_selection: Optional[Any] = None,
     ) -> Dict[str, Any]:
         model = str(model_override or self.model).strip() or self.model
         key = self._cache_key(
@@ -488,8 +501,11 @@ class OpenAICore:
             max_output_tokens=max_output_tokens,
             response_format={"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
             model_override=model,
+            forced_model_selection=forced_model_selection,
         )
+        request_metadata = dict(self._last_request_metadata)
         parsed = self._repair_json(raw_json, schema_name, schema)
+        self._last_json_metadata = request_metadata
         serialized = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
         self._cache_set(key, serialized)
         return parsed
@@ -547,19 +563,24 @@ Task:
             temperature=RAW_TEMPERATURE,
             max_output_tokens=min(1000, selection.max_output_tokens) if selection is not None else 1000,
             model_override=selection.model if selection is not None else None,
+            forced_model_selection=selection,
         )
+        tracked_metadata = dict(getattr(self, "_last_json_metadata", {}) or {})
         answer = str(data.get("answer", "")).strip() or self.answer_user_query(user_query, profile_context)
         return {
             "answer": answer,
             "answer_style": str(data.get("answer_style", "practical")).strip() or "practical",
             "risk_level": str(data.get("risk_level", "low")).strip() or "low",
             "safety_notes": str(data.get("safety_notes", "")).strip() or safety_block,
-            "model_used": selection.model if selection is not None else self.model,
-            "model_tier": selection.tier if selection is not None else "standard",
-            "model_reason": selection.reason if selection is not None else "legacy_default",
-            "estimated_input_tokens": selection.estimated_input_tokens if selection is not None else 0,
-            "estimated_output_tokens": selection.estimated_output_tokens if selection is not None else 0,
-            "estimated_cost_usd": selection.estimated_cost_usd if selection is not None else 0.0,
+            "model_used": tracked_metadata.get("model_used") or (selection.model if selection is not None else self.model),
+            "model_tier": tracked_metadata.get("model_tier") or (selection.tier if selection is not None else "standard"),
+            "model_reason": tracked_metadata.get("reason") or (selection.reason if selection is not None else "legacy_default"),
+            "estimated_input_tokens": tracked_metadata.get("estimated_input_tokens") or (selection.estimated_input_tokens if selection is not None else 0),
+            "estimated_output_tokens": tracked_metadata.get("estimated_output_tokens") or (selection.estimated_output_tokens if selection is not None else 0),
+            "estimated_cost_usd": tracked_metadata.get("estimated_cost_usd") or (selection.estimated_cost_usd if selection is not None else 0.0),
+            "actual_input_tokens": tracked_metadata.get("actual_input_tokens"),
+            "actual_output_tokens": tracked_metadata.get("actual_output_tokens"),
+            "actual_cost_usd": tracked_metadata.get("actual_cost_usd"),
             "openai_usage_tracked": tracked_chat_completion is not None,
         }
 
@@ -627,18 +648,23 @@ Task:
             temperature=REVIEW_TEMPERATURE,
             max_output_tokens=min(900, selection.max_output_tokens) if selection is not None else 900,
             model_override=selection.model if selection is not None else None,
+            forced_model_selection=selection,
         )
+        tracked_metadata = dict(getattr(self, "_last_json_metadata", {}) or {})
         keep_original = str(data.get("keep_original", "true")).strip().lower()
         final_answer = answer if keep_original == "true" else (str(data.get("final_answer", "")).strip() or answer)
         return {
             "final_answer": final_answer,
             "keep_original": keep_original,
             "review_note": str(data.get("review_note", "")).strip(),
-            "model_used": selection.model if selection is not None else self.model,
-            "model_tier": selection.tier if selection is not None else "standard",
-            "model_reason": selection.reason if selection is not None else "legacy_default",
-            "estimated_input_tokens": selection.estimated_input_tokens if selection is not None else 0,
-            "estimated_output_tokens": selection.estimated_output_tokens if selection is not None else 0,
-            "estimated_cost_usd": selection.estimated_cost_usd if selection is not None else 0.0,
+            "model_used": tracked_metadata.get("model_used") or (selection.model if selection is not None else self.model),
+            "model_tier": tracked_metadata.get("model_tier") or (selection.tier if selection is not None else "standard"),
+            "model_reason": tracked_metadata.get("reason") or (selection.reason if selection is not None else "legacy_default"),
+            "estimated_input_tokens": tracked_metadata.get("estimated_input_tokens") or (selection.estimated_input_tokens if selection is not None else 0),
+            "estimated_output_tokens": tracked_metadata.get("estimated_output_tokens") or (selection.estimated_output_tokens if selection is not None else 0),
+            "estimated_cost_usd": tracked_metadata.get("estimated_cost_usd") or (selection.estimated_cost_usd if selection is not None else 0.0),
+            "actual_input_tokens": tracked_metadata.get("actual_input_tokens"),
+            "actual_output_tokens": tracked_metadata.get("actual_output_tokens"),
+            "actual_cost_usd": tracked_metadata.get("actual_cost_usd"),
             "openai_usage_tracked": tracked_chat_completion is not None,
         }

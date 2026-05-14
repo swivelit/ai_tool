@@ -116,6 +116,8 @@ class GlobalQACache(SQLModel, table=True):
     distinct_user_count: int = Field(default=1, index=True)
     observed_question_count: int = Field(default=1)
     source_question_hashes_json: str = Field(default="[]")
+    observed_safe_questions_json: str = Field(default="[]")
+    aliases_json: str = Field(default="[]")
     answer_hash: str = Field(index=True)
 
     embedding_json: Optional[str] = None
@@ -132,6 +134,15 @@ class GlobalQACache(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, index=True)
     reviewed_at: Optional[datetime] = None
     review_notes: Optional[str] = None
+
+
+class GlobalQATombstone(SQLModel, table=True):
+    __tablename__ = "global_qa_tombstone"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    global_cache_id: int = Field(index=True)
+    deleted_at: datetime = Field(default_factory=utc_now, index=True)
+    reason: Optional[str] = None
 
 
 class GlobalQAObservation(SQLModel, table=True):
@@ -163,6 +174,9 @@ class OpenAIUsageLog(SQLModel, table=True):
     estimated_input_tokens: int = Field(default=0)
     estimated_output_tokens: int = Field(default=0)
     estimated_cost_usd: float = Field(default=0.0)
+    actual_input_tokens: Optional[int] = Field(default=None)
+    actual_output_tokens: Optional[int] = Field(default=None)
+    actual_cost_usd: Optional[float] = Field(default=None)
     cache_hit: bool = Field(default=False, index=True)
     created_at: datetime = Field(default_factory=utc_now, index=True)
 

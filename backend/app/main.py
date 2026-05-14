@@ -46,6 +46,7 @@ from .auth import (
     get_owned_user,
     is_production_environment,
     normalize_app_env,
+    verify_firebase_id_token,
     validate_auth_configuration,
 )
 from .database import SessionLocal, engine, get_session
@@ -164,6 +165,50 @@ def safe_commit(session: Session, context: str) -> None:
         session.rollback()
         logger.exception("DB commit failed", extra={"context": context})
         raise
+
+
+def _admin_emails() -> set[str]:
+    return {
+        item.strip().lower()
+        for item in str(os.getenv("ADMIN_EMAILS", "")).split(",")
+        if item.strip()
+    }
+
+
+def _debug_admin_token() -> str:
+    return os.getenv("DEBUG_ADMIN_TOKEN", "").strip()
+
+
+async def require_debug_admin(request: Request) -> Optional[AuthUser]:
+    configured_admin_emails = _admin_emails()
+    configured_debug_token = _debug_admin_token()
+    if not configured_admin_emails and not configured_debug_token:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supplied_debug_token = request.headers.get("x-admin-token", "").strip()
+    if (
+        configured_debug_token
+        and supplied_debug_token
+        and hmac.compare_digest(supplied_debug_token, configured_debug_token)
+    ):
+        return None
+
+    authorization = request.headers.get("authorization", "")
+    if authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+        if token:
+            try:
+                decoded = verify_firebase_id_token(token)
+            except AuthConfigurationError as exc:
+                logger.exception("Firebase auth is not configured for debug admin check")
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except Exception:
+                decoded = {}
+            email = str(decoded.get("email") or "").strip().lower() if isinstance(decoded, dict) else ""
+            if email and email in configured_admin_emails:
+                return AuthUser(firebase_uid=str(decoded.get("uid") or ""), email=email)
+
+    raise HTTPException(status_code=403, detail="Admin access required")
 
 
 def _load_json_object(raw: Optional[str]) -> Dict[str, Any]:
@@ -2906,7 +2951,7 @@ def api_debug_global_qa_cache(
     status: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
-    auth_user: AuthUser = Depends(get_current_user),
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
 ):
     normalized_status = str(status or "").strip().lower()
     if normalized_status and normalized_status not in {"candidate", "approved", "rejected"}:

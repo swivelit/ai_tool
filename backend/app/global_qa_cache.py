@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import and_, inspect, or_, text
 from sqlmodel import Session, select
 
-from .models import GlobalQACache, GlobalQAObservation
+from .models import GlobalQACache, GlobalQAObservation, GlobalQATombstone
 from .openai_model_router import stable_user_hash
 from .time_utils import utc_now
 
@@ -23,8 +23,55 @@ _SCHEMA_COMPAT_LOCK = threading.Lock()
 _SCHEMA_COMPAT_READY = False
 
 _TOKEN_RE = re.compile(r"[\w\u0B80-\u0BFF]+", re.UNICODE)
-_LIVE_TERMS = {"latest", "today", "current", "live", "score", "scores", "news", "breaking", "now"}
+_LIVE_TERMS = {
+    "latest",
+    "today",
+    "current",
+    "live",
+    "score",
+    "scores",
+    "news",
+    "breaking",
+    "now",
+    "weather",
+    "forecast",
+    "tomorrow",
+    "yesterday",
+    "result",
+    "results",
+    "match",
+    "fixture",
+    "fixtures",
+    "schedule",
+    "price",
+    "prices",
+    "rate",
+    "rates",
+    "stock",
+    "stocks",
+    "crypto",
+    "nearby",
+    "best",
+    "cheapest",
+    "deal",
+    "deals",
+    "offer",
+    "offers",
+    "discount",
+    "discounts",
+}
+_LIVE_PHRASES = {
+    "exchange rate",
+    "gold rate",
+    "petrol price",
+    "near me",
+}
 GLOBAL_QA_EMBEDDING_KIND = "token_hash_v1"
+_ALIAS_MAP = {
+    "ipl": "indian premier league",
+    "ai": "artificial intelligence",
+    "bp": "blood pressure",
+}
 _STOPWORDS = {
     "a",
     "an",
@@ -134,6 +181,12 @@ def _ensure_schema_compat(session: Session) -> None:
             cache_columns = {column["name"] for column in inspector.get_columns("global_qa_cache")}
             if "embedding_kind" not in cache_columns:
                 session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN embedding_kind VARCHAR NOT NULL DEFAULT 'token_hash_v1'"))
+            if "observed_safe_questions_json" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN observed_safe_questions_json VARCHAR NOT NULL DEFAULT '[]'"))
+            if "aliases_json" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN aliases_json VARCHAR NOT NULL DEFAULT '[]'"))
+        if not inspector.has_table("global_qa_tombstone"):
+            GlobalQATombstone.__table__.create(bind, checkfirst=True)
         if inspector.has_table("global_qa_observation"):
             observation_columns = {column["name"] for column in inspector.get_columns("global_qa_observation")}
             if "answer_similarity_score" not in observation_columns:
@@ -166,6 +219,44 @@ def normalize_question(text: str) -> str:
     return re.sub(r"\s+", " ", lowered).strip()
 
 
+def _load_json_list(raw: Optional[str]) -> List[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: List[str] = []
+    seen = set()
+    for item in parsed:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        key = normalize_question(value)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
+def _dump_json_list(values: List[str], *, max_items: int = 50) -> str:
+    out: List[str] = []
+    seen = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = normalize_question(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return json.dumps(out[-max_items:], ensure_ascii=False)
+
+
 def _semantic_tokens(text: str) -> List[str]:
     tokens: List[str] = []
     seen = set()
@@ -188,6 +279,63 @@ def question_hash(text: str) -> str:
 def answer_hash(text: str) -> str:
     normalized = re.sub(r"\s+", " ", str(text or "")).strip()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _alias_variants(text: str) -> List[str]:
+    normalized = normalize_question(text)
+    if not normalized:
+        return []
+    variants: List[str] = []
+    for short, expanded in _ALIAS_MAP.items():
+        if re.search(rf"\b{re.escape(short)}\b", normalized):
+            variants.append(re.sub(rf"\b{re.escape(short)}\b", expanded, normalized))
+        if re.search(rf"\b{re.escape(expanded)}\b", normalized):
+            variants.append(re.sub(rf"\b{re.escape(expanded)}\b", short, normalized))
+    return [variant for variant in variants if variant and variant != normalized]
+
+
+def _safe_question_variant(text: str) -> Optional[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    redacted = redact_sensitive_text(raw)
+    if _redaction_changed_meaning(raw, redacted):
+        return None
+    normalized = normalize_question(redacted)
+    if not normalized:
+        return None
+    if is_live_or_current_question(normalized) or is_private_or_personal_question(normalized):
+        return None
+    return normalized
+
+
+def _safe_aliases_for_question(text: str) -> List[str]:
+    aliases: List[str] = []
+    for variant in _alias_variants(text):
+        safe = _safe_question_variant(variant)
+        if safe:
+            aliases.append(safe)
+    return aliases
+
+
+def _row_question_variants(row: GlobalQACache) -> List[str]:
+    values = [
+        str(row.canonical_question or ""),
+        str(row.normalized_question or ""),
+        *_load_json_list(getattr(row, "observed_safe_questions_json", "[]")),
+        *_load_json_list(getattr(row, "aliases_json", "[]")),
+    ]
+    values.extend(_alias_variants(row.canonical_question))
+    values.extend(_alias_variants(row.normalized_question))
+    safe_values: List[str] = []
+    seen = set()
+    for value in values:
+        safe = _safe_question_variant(value)
+        if not safe or safe in seen:
+            continue
+        seen.add(safe)
+        safe_values.append(safe)
+    return safe_values
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -214,7 +362,12 @@ def _redaction_changed_meaning(original: str, redacted: str) -> bool:
 
 
 def is_live_or_current_question(text: str) -> bool:
-    tokens = set(_TOKEN_RE.findall(normalize_question(text)))
+    normalized = normalize_question(text)
+    if not normalized:
+        return False
+    if any(re.search(rf"\b{re.escape(phrase)}\b", normalized) for phrase in _LIVE_PHRASES):
+        return True
+    tokens = set(_TOKEN_RE.findall(normalized))
     return bool(tokens & _LIVE_TERMS)
 
 
@@ -399,7 +552,14 @@ def lookup_approved_global_cache(session: Session, question: str, reply_language
             continue
         if language and row.answer_language not in {language, "en"}:
             continue
-        score = _question_similarity(question, row.normalized_question, query_embedding, _load_embedding(row))
+        row_embedding = _load_embedding(row)
+        score = max(
+            (
+                _question_similarity(question, variant, query_embedding, row_embedding)
+                for variant in _row_question_variants(row)
+            ),
+            default=0.0,
+        )
         if score > best_score:
             best = row
             best_score = score
@@ -408,7 +568,6 @@ def lookup_approved_global_cache(session: Session, question: str, reply_language
 
     best.hit_count = int(best.hit_count or 0) + 1
     best.last_seen_at = now
-    best.updated_at = now
     session.add(best)
     session.commit()
     logger.info(
@@ -466,7 +625,14 @@ def _find_candidate(session: Session, normalized_question: str, embedding: Tuple
     for row in rows:
         if not _not_expired(row):
             continue
-        score = _question_similarity(normalized_question, row.normalized_question, embedding, _load_embedding(row))
+        row_embedding = _load_embedding(row)
+        score = max(
+            (
+                _question_similarity(normalized_question, variant, embedding, row_embedding)
+                for variant in _row_question_variants(row)
+            ),
+            default=0.0,
+        )
         if score > best_score:
             best = row
             best_score = score
@@ -510,6 +676,8 @@ def record_backend_openai_answer(
             extra={"event": "global_cache_rejected", "reason": "unsafe_normalized_question"},
         )
         return {"ok": False, "skipped": True, "reason": "unsafe_normalized_question"}
+    safe_variant = _safe_question_variant(canonical_question)
+    safe_aliases = _safe_aliases_for_question(canonical_question)
 
     q_hash = question_hash(question)
     a_hash = answer_hash(answer)
@@ -531,6 +699,8 @@ def record_backend_openai_answer(
             distinct_user_count=1,
             observed_question_count=1,
             source_question_hashes_json=json.dumps([q_hash], ensure_ascii=False),
+            observed_safe_questions_json=_dump_json_list([safe_variant] if safe_variant else []),
+            aliases_json=_dump_json_list(safe_aliases),
             answer_hash=a_hash,
             embedding_json=embedding_json,
             embedding_kind=GLOBAL_QA_EMBEDDING_KIND,
@@ -554,9 +724,16 @@ def record_backend_openai_answer(
         hashes = _source_hashes(candidate)
         if q_hash not in hashes:
             hashes.append(q_hash)
+        observed_safe_questions = _load_json_list(getattr(candidate, "observed_safe_questions_json", "[]"))
+        if safe_variant:
+            observed_safe_questions.append(safe_variant)
+        aliases = _load_json_list(getattr(candidate, "aliases_json", "[]"))
+        aliases.extend(safe_aliases)
         candidate.hit_count = int(candidate.hit_count or 0) + 1
         candidate.observed_question_count = int(candidate.observed_question_count or 0) + 1
         candidate.source_question_hashes_json = json.dumps(hashes[-100:], ensure_ascii=False)
+        candidate.observed_safe_questions_json = _dump_json_list(observed_safe_questions)
+        candidate.aliases_json = _dump_json_list(aliases)
         candidate.last_seen_at = now
         candidate.updated_at = now
         candidate.expires_at = expires_at
@@ -728,7 +905,21 @@ def _sync_safe_row(row: GlobalQACache, now: datetime) -> bool:
         return False
     if is_private_or_personal_question(row.canonical_question) or is_private_or_personal_question(row.normalized_question):
         return False
+    if is_live_or_current_question(row.canonical_question) or is_live_or_current_question(row.normalized_question):
+        return False
     return True
+
+
+def _sync_safe_variants(values: List[str]) -> List[str]:
+    safe_values: List[str] = []
+    seen = set()
+    for value in values:
+        safe = _safe_question_variant(value)
+        if not safe or safe in seen:
+            continue
+        seen.add(safe)
+        safe_values.append(safe)
+    return safe_values
 
 
 def _row_cursor(row: GlobalQACache) -> Tuple[Optional[str], Optional[int]]:
@@ -736,6 +927,19 @@ def _row_cursor(row: GlobalQACache) -> Tuple[Optional[str], Optional[int]]:
         row.updated_at.isoformat() if row.updated_at else None,
         int(row.id) if row.id is not None else None,
     )
+
+
+def record_global_qa_tombstone(session: Session, global_cache_id: int, reason: str = "deleted") -> GlobalQATombstone:
+    _ensure_schema_compat(session)
+    row = GlobalQATombstone(
+        global_cache_id=int(global_cache_id),
+        deleted_at=utc_now(),
+        reason=str(reason or "deleted"),
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
 
 
 def build_global_knowledge_sync_payload(
@@ -768,7 +972,14 @@ def build_global_knowledge_sync_payload(
     page_rows = rows[:safe_limit]
     has_more = len(rows) > safe_limit
     entries: List[Dict[str, Any]] = []
-    revoked_ids: List[int] = []
+    tombstone_query = select(GlobalQATombstone)
+    if since_dt is not None:
+        tombstone_query = tombstone_query.where(GlobalQATombstone.deleted_at > since_dt)
+    revoked_ids: List[int] = [
+        int(row.global_cache_id)
+        for row in session.exec(tombstone_query).all()
+        if int(row.global_cache_id or 0) > 0
+    ]
     last_processed: Optional[GlobalQACache] = None
     for row in page_rows:
         last_processed = row
@@ -780,6 +991,8 @@ def build_global_knowledge_sync_payload(
                 safety_label in {"private", "personal_high_risk", "unsafe"}
                 or is_private_or_personal_question(row.canonical_question)
                 or is_private_or_personal_question(row.normalized_question)
+                or is_live_or_current_question(row.canonical_question)
+                or is_live_or_current_question(row.normalized_question)
             ):
                 logger.warning(
                     "global_knowledge_sync_skipped_private_entry",
@@ -803,11 +1016,19 @@ def build_global_knowledge_sync_payload(
                     extra={"event": "global_knowledge_sync_skipped_corrupt_entry", "global_cache_id": row.id},
                 )
                 continue
+        aliases = _sync_safe_variants(
+            _load_json_list(getattr(row, "aliases_json", "[]")) + _alias_variants(row.canonical_question)
+        )
+        observed_safe_questions = _sync_safe_variants(
+            _load_json_list(getattr(row, "observed_safe_questions_json", "[]"))
+        )
         entries.append(
             {
                 "id": row.id,
                 "canonicalQuestion": row.canonical_question,
                 "normalizedQuestion": row.normalized_question,
+                "aliases": aliases,
+                "observedSafeQuestions": observed_safe_questions,
                 "answer": row.answer,
                 "answerLanguage": row.answer_language,
                 "topic": row.topic,

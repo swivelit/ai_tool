@@ -16,6 +16,8 @@ type SyncEntryPayload = {
   answer?: string;
   answerLanguage?: string;
   topic?: string | null;
+  aliases?: string[];
+  observedSafeQuestions?: string[];
   answerHash?: string;
   embedding?: number[];
   embeddingNorm?: number;
@@ -44,6 +46,8 @@ export type GlobalKnowledgeEntry = {
   answer: string;
   answerLanguage: "en" | "ta" | string;
   topic?: string | null;
+  aliases: string[];
+  observedSafeQuestions: string[];
   answerHash?: string;
   embedding: number[];
   embeddingNorm: number;
@@ -83,7 +87,41 @@ const LIVE_TERMS = new Set([
   "news",
   "breaking",
   "now",
+  "weather",
+  "forecast",
+  "tomorrow",
+  "yesterday",
+  "result",
+  "results",
+  "match",
+  "fixture",
+  "fixtures",
+  "schedule",
+  "price",
+  "prices",
+  "rate",
+  "rates",
+  "stock",
+  "stocks",
+  "crypto",
+  "nearby",
+  "best",
+  "cheapest",
+  "deal",
+  "deals",
+  "offer",
+  "offers",
+  "discount",
+  "discounts",
 ]);
+
+const LIVE_PHRASES = ["exchange rate", "gold rate", "petrol price", "near me"];
+
+const ALIAS_MAP: Record<string, string> = {
+  ipl: "indian premier league",
+  ai: "artificial intelligence",
+  bp: "blood pressure",
+};
 
 const STOPWORDS = new Set([
   "a",
@@ -144,8 +182,47 @@ function semanticTokens(value: unknown) {
 }
 
 export function isLiveOrCurrentGlobalKnowledgeQuestion(value: unknown) {
+  const normalized = normalizeGlobalKnowledgeQuestion(value);
+  if (LIVE_PHRASES.some((phrase) => new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(normalized))) {
+    return true;
+  }
   const tokens = semanticTokens(value);
   return tokens.some((token) => LIVE_TERMS.has(token));
+}
+
+function aliasVariants(value: unknown) {
+  const normalized = normalizeGlobalKnowledgeQuestion(value);
+  if (!normalized) return [];
+  const out: string[] = [];
+  Object.entries(ALIAS_MAP).forEach(([short, expanded]) => {
+    const shortRe = new RegExp(`\\b${short.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
+    const expandedRe = new RegExp(`\\b${expanded.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
+    if (shortRe.test(normalized)) {
+      out.push(normalized.replace(shortRe, expanded));
+    }
+    if (expandedRe.test(normalized)) {
+      out.push(normalized.replace(expandedRe, short));
+    }
+  });
+  return out.filter((item) => item && item !== normalized);
+}
+
+function safeVariant(value: unknown) {
+  const normalized = normalizeGlobalKnowledgeQuestion(value);
+  if (!normalized || isLiveOrCurrentGlobalKnowledgeQuestion(normalized)) return "";
+  return normalized;
+}
+
+function safeVariantList(values: unknown[]) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  values.forEach((value) => {
+    const normalized = safeVariant(value);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    out.push(normalized);
+  });
+  return out;
 }
 
 function parseJson<T>(raw: string | null, fallback: T): T {
@@ -327,6 +404,13 @@ function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
     embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND && embedding.length
       ? Number(raw.embeddingNorm || 0)
       : 0;
+  const aliases = safeVariantList([
+    ...(Array.isArray(raw.aliases) ? raw.aliases : []),
+    ...aliasVariants(raw.canonicalQuestion || raw.normalizedQuestion),
+  ]);
+  const observedSafeQuestions = safeVariantList(
+    Array.isArray(raw.observedSafeQuestions) ? raw.observedSafeQuestions : [],
+  );
   return {
     id,
     canonicalQuestion:
@@ -336,6 +420,8 @@ function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
     answer,
     answerLanguage: String(raw.answerLanguage || "en"),
     topic: raw.topic ?? null,
+    aliases,
+    observedSafeQuestions,
     answerHash: String(raw.answerHash || ""),
     embedding: effectiveEmbedding,
     embeddingNorm:
@@ -550,7 +636,18 @@ export async function lookupSyncedGlobalKnowledge(
   let bestScore = 0;
   let bestSource: "embedding" | "lexical" = "lexical";
   entries.forEach((entry) => {
-    const lexical = lexicalSimilarity(normalizedQuestion, entry.normalizedQuestion);
+    const variants = safeVariantList([
+      entry.normalizedQuestion,
+      entry.canonicalQuestion,
+      ...(entry.aliases || []),
+      ...(entry.observedSafeQuestions || []),
+      ...aliasVariants(entry.normalizedQuestion),
+      ...aliasVariants(entry.canonicalQuestion),
+    ]);
+    const lexical = Math.max(
+      ...variants.map((variant) => lexicalSimilarity(normalizedQuestion, variant)),
+      0,
+    );
     const embeddingScore =
       entry.embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND && entry.embedding.length
         ? cosine(queryEmbedding, queryEmbeddingNorm, entry.embedding, entry.embeddingNorm)

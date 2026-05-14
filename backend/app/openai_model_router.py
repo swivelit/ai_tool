@@ -4,16 +4,20 @@ import hashlib
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
 from datetime import date, timezone
 from typing import Any, Optional
 
+from sqlalchemy import inspect, text
 from sqlmodel import Session, select
 
 from .models import OpenAIUsageLog
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
+_USAGE_SCHEMA_COMPAT_LOCK = threading.Lock()
+_USAGE_SCHEMA_COMPAT_READY = False
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,27 @@ def stable_user_hash(user_id: Any) -> str:
         or "dev-global-qa-user-hash"
     )
     return hashlib.sha256(f"{secret}:{raw}".encode("utf-8")).hexdigest()
+
+
+def _ensure_usage_schema_compat(session: Optional[Session]) -> None:
+    global _USAGE_SCHEMA_COMPAT_READY
+    if session is None or _USAGE_SCHEMA_COMPAT_READY:
+        return
+    with _USAGE_SCHEMA_COMPAT_LOCK:
+        if _USAGE_SCHEMA_COMPAT_READY:
+            return
+        bind = session.get_bind()
+        inspector = inspect(bind)
+        if inspector.has_table("openai_usage_log"):
+            columns = {column["name"] for column in inspector.get_columns("openai_usage_log")}
+            if "actual_input_tokens" not in columns:
+                session.exec(text("ALTER TABLE openai_usage_log ADD COLUMN actual_input_tokens INTEGER"))
+            if "actual_output_tokens" not in columns:
+                session.exec(text("ALTER TABLE openai_usage_log ADD COLUMN actual_output_tokens INTEGER"))
+            if "actual_cost_usd" not in columns:
+                session.exec(text("ALTER TABLE openai_usage_log ADD COLUMN actual_cost_usd FLOAT"))
+            session.commit()
+        _USAGE_SCHEMA_COMPAT_READY = True
 
 
 class OpenAIModelRouter:
@@ -239,12 +264,16 @@ def record_openai_usage(
     estimated_input_tokens: int = 0,
     estimated_output_tokens: int = 0,
     estimated_cost_usd: float = 0.0,
+    actual_input_tokens: Optional[int] = None,
+    actual_output_tokens: Optional[int] = None,
+    actual_cost_usd: Optional[float] = None,
     cache_hit: bool = False,
 ) -> Optional[OpenAIUsageLog]:
     model = str(model_used or (selection.model if selection is not None else "") or "").strip()
     tier = str(model_tier or (selection.tier if selection is not None else "") or "").strip()
     if not session or not model or not tier:
         return None
+    _ensure_usage_schema_compat(session)
     row = OpenAIUsageLog(
         request_id=request_id,
         user_id_hash=stable_user_hash(user_id) if user_id is not None else None,
@@ -255,6 +284,9 @@ def record_openai_usage(
         estimated_input_tokens=int(estimated_input_tokens or (selection.estimated_input_tokens if selection is not None else 0) or 0),
         estimated_output_tokens=int(estimated_output_tokens or (selection.estimated_output_tokens if selection is not None else 0) or 0),
         estimated_cost_usd=float(estimated_cost_usd or (selection.estimated_cost_usd if selection is not None else 0.0) or 0.0),
+        actual_input_tokens=int(actual_input_tokens) if actual_input_tokens is not None else None,
+        actual_output_tokens=int(actual_output_tokens) if actual_output_tokens is not None else None,
+        actual_cost_usd=float(actual_cost_usd) if actual_cost_usd is not None else None,
         cache_hit=bool(cache_hit),
         created_at=utc_now(),
     )
@@ -270,6 +302,7 @@ def record_openai_usage(
 
 
 def get_today_estimated_openai_spend(session: Session) -> float:
+    _ensure_usage_schema_compat(session)
     now = utc_now()
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -283,7 +316,12 @@ def get_today_estimated_openai_spend(session: Session) -> float:
             OpenAIUsageLog.created_at <= end,
         )
     ).all()
-    return float(sum(float(row.estimated_cost_usd or 0.0) for row in rows))
+    return float(
+        sum(
+            float(row.actual_cost_usd if row.actual_cost_usd is not None else row.estimated_cost_usd or 0.0)
+            for row in rows
+        )
+    )
 
 
 def today_budget_key() -> str:

@@ -5,7 +5,7 @@ from sqlmodel import select
 from app.database import SessionLocal
 from app.models import OpenAIUsageLog
 from app.openai_model_router import OpenAIModelRouter, get_today_estimated_openai_spend, record_openai_usage
-from app.openai_tracked import OpenAIBudgetExceededError, tracked_chat_completion, tracked_embedding
+from app.openai_tracked import OpenAIBudgetExceededError, get_tracked_chat_completion_metadata, tracked_chat_completion, tracked_embedding
 
 
 def test_model_router_uses_cheap_for_classification(monkeypatch):
@@ -92,20 +92,33 @@ class _FakeChoice:
 
 class _FakeResponse:
     choices = [_FakeChoice()]
+    usage = None
+
+
+class _FakeUsage:
+    prompt_tokens = 11
+    completion_tokens = 7
+    total_tokens = 18
+
+
+class _FakeUsageResponse:
+    choices = [_FakeChoice()]
+    usage = _FakeUsage()
 
 
 class _FakeCompletions:
-    def __init__(self):
+    def __init__(self, response=None):
         self.calls = []
+        self.response = response or _FakeResponse()
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        return _FakeResponse()
+        return self.response
 
 
 class _FakeClient:
-    def __init__(self):
-        self.completions = _FakeCompletions()
+    def __init__(self, response=None):
+        self.completions = _FakeCompletions(response=response)
         self.chat = type("Chat", (), {"completions": self.completions})()
         self.embeddings = _FakeEmbeddings()
 
@@ -152,6 +165,39 @@ def test_tracked_chat_completion_uses_router_and_writes_usage(monkeypatch):
         assert stored.model_used == "cheap-tracked"
         assert stored.model_tier == "cheap"
         assert stored.estimated_output_tokens <= 50
+
+
+def test_tracked_chat_completion_exposes_actual_model_metadata_and_usage(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-actual")
+    monkeypatch.setenv("OPENAI_PRICE_CHEAP_ACTUAL_INPUT_PER_1M", "1")
+    monkeypatch.setenv("OPENAI_PRICE_CHEAP_ACTUAL_OUTPUT_PER_1M", "2")
+    client = _FakeClient(response=_FakeUsageResponse())
+
+    with SessionLocal() as session:
+        response = tracked_chat_completion(
+            client,
+            session=session,
+            user_id=123,
+            request_id="tracked-actual",
+            task="json",
+            route="unit_test_route",
+            messages=[{"role": "user", "content": "classify this"}],
+            max_tokens=100,
+        )
+
+        metadata = get_tracked_chat_completion_metadata(response)
+        assert client.completions.calls[0]["model"] == "cheap-actual"
+        assert metadata["model_used"] == "cheap-actual"
+        assert metadata["model_tier"] == "cheap"
+        assert metadata["actual_input_tokens"] == 11
+        assert metadata["actual_output_tokens"] == 7
+        assert metadata["actual_cost_usd"] == (11 / 1_000_000) + (7 / 1_000_000) * 2
+
+        stored = session.exec(select(OpenAIUsageLog)).one()
+        assert stored.actual_input_tokens == 11
+        assert stored.actual_output_tokens == 7
+        assert stored.actual_cost_usd == metadata["actual_cost_usd"]
+        assert get_today_estimated_openai_spend(session) == metadata["actual_cost_usd"]
 
 
 def test_daily_budget_blocks_tracked_openai_call(monkeypatch):
@@ -210,6 +256,30 @@ def test_daily_budget_blocks_call_that_would_cross_budget(monkeypatch):
         assert raised is True
         assert client.completions.calls == []
         assert session.exec(select(OpenAIUsageLog)).all() == []
+
+
+def test_daily_budget_safety_margin_blocks_near_limit_call(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-budget")
+    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "0.00055")
+    monkeypatch.setenv("OPENAI_BUDGET_SAFETY_MARGIN_RATIO", "0.10")
+    client = _FakeClient()
+
+    with SessionLocal() as session:
+        try:
+            tracked_chat_completion(
+                client,
+                session=session,
+                user_id=123,
+                task="normal_qa",
+                route="budget_margin_route",
+                messages=[{"role": "user", "content": "What is a compiler?"}],
+            )
+            raised = False
+        except OpenAIBudgetExceededError:
+            raised = True
+
+        assert raised is True
+        assert client.completions.calls == []
 
 
 def test_tracked_chat_completion_forwards_route_to_high_model_allowlist(monkeypatch):
