@@ -18,7 +18,7 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
-import { resolveDesiredRoute } from "@/lib/appBoot";
+import { resolveDesiredRoute, runGlobalKnowledgeSyncBootStep, runPendingCrashTelemetryBootStep } from "@/lib/appBoot";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import { isAnyE2eEnvEnabled, isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
 import {
@@ -276,6 +276,7 @@ function AppShell() {
   const { profile, loading: profileLoading, refresh: refreshAssistant } = useAssistant();
 
   const lastRedirectRef = useRef<string | null>(null);
+  const globalKnowledgeSyncStartedRef = useRef(false);
   const [modelStatus, setModelStatus] = useState<ModelInstallStatus | null>(null);
   const [modelStatusLoading, setModelStatusLoading] = useState(false);
   const [modelStatusError, setModelStatusError] = useState<unknown>(null);
@@ -329,6 +330,15 @@ function AppShell() {
       cancelled = true;
     };
   }, [shouldCheckModelSetup, pathname]);
+
+  useEffect(() => {
+    if (!activeProfile?.userId || globalKnowledgeSyncStartedRef.current) {
+      return;
+    }
+    globalKnowledgeSyncStartedRef.current = true;
+    void runPendingCrashTelemetryBootStep().catch(() => undefined);
+    void runGlobalKnowledgeSyncBootStep().catch(() => undefined);
+  }, [activeProfile?.userId]);
 
   const modelSetupRequired =
     shouldCheckModelSetup && !modelStatusLoading && (Boolean(modelStatusError) || modelStatus?.requiredReady === false);

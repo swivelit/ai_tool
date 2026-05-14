@@ -777,6 +777,7 @@ export class OpenAiCompatibleLocalAdapterRuntime implements LocalModelRuntime {
     messages: LocalRuntimeChatMessage[];
     temperature?: number;
     maxTokens?: number;
+    requestId?: string;
   }) {
     return this.postJson(
       this.endpoint("/chat/completions", "Local chat/profiler"),
@@ -784,17 +785,19 @@ export class OpenAiCompatibleLocalAdapterRuntime implements LocalModelRuntime {
         model: input.model,
         temperature: input.temperature ?? 0.2,
         max_tokens: input.maxTokens,
+        request_id: input.requestId,
         messages: input.messages,
       },
     );
   }
 
-  async embedTexts(input: { model: string; texts: string[] }) {
+  async embedTexts(input: { model: string; texts: string[]; requestId?: string }) {
     const json = await this.postJson(
       this.endpoint("/embeddings", "Local embeddings"),
       {
         model: input.model,
         input: input.texts,
+        request_id: input.requestId,
       },
     );
     return extractEmbeddingRows(json);

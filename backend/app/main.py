@@ -51,7 +51,7 @@ from .auth import (
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
-from .models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
+from .models import Conversation, DailyRoutine, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
 from .time_utils import utc_now as _utc_now
 from .observability import (
     APP_RELEASE,
@@ -72,6 +72,12 @@ from .vector_store import VectorStore
 from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
 from .orchestrator_task import run_orchestrator
+from .global_qa_cache import (
+    build_global_knowledge_sync_payload,
+    lookup_approved_global_cache,
+    record_backend_openai_answer,
+)
+from .openai_model_router import OpenAIModelRouter, record_openai_usage
 
 
 bootstrap_observability()
@@ -1122,6 +1128,7 @@ class ChatAPIRequest(BaseModel):
     text: Optional[str] = None
     include_pipeline: bool = True
     reply_language: Optional[str] = None
+    request_id: Optional[str] = None
 
 
 class ClientTurnLogRequest(BaseModel):
@@ -1178,8 +1185,9 @@ def _extract_response_text(response: Any) -> str:
 
 
 def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
+    selection = OpenAIModelRouter().select_model("json", user_content)
     response = _get_openai_client().chat.completions.create(
-        model=OPENAI_JSON_MODEL,
+        model=selection.model,
         messages=[
             {"role": "system", "content": system_prompt.strip()},
             {"role": "user", "content": user_content.strip()},
@@ -1211,8 +1219,9 @@ def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) ->
 
 
 def llm_text(system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
+    selection = OpenAIModelRouter().select_model("simple_fallback", user_content)
     response = _get_openai_client().chat.completions.create(
-        model=OPENAI_JSON_MODEL,
+        model=selection.model,
         messages=[
             {"role": "system", "content": system_prompt.strip()},
             {"role": "user", "content": user_content.strip()},
@@ -1779,6 +1788,11 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         "translation_meta": _safe_json(translation_meta),
         "timings_ms": json.dumps({**timings, "total_ms": total_ms}, ensure_ascii=False),
     }
+    model_used = str(core_meta.get("model_used") or review_meta.get("model_used") or "").strip()
+    if model_used:
+        result["model_used"] = model_used
+        result["model_tier"] = str(core_meta.get("model_tier") or review_meta.get("model_tier") or "")
+        result["model_reason"] = str(core_meta.get("model_reason") or review_meta.get("model_reason") or "")
 
     _log_stage_history(user_id, profile, message, result)
     STAGE_CACHE.set(cache_key, result)
@@ -1839,6 +1853,9 @@ def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "review_meta": _maybe(result.get("review_meta"), {}),
         "translation_meta": _maybe(result.get("translation_meta"), {}),
         "timings_ms": _maybe(result.get("timings_ms"), {}),
+        "model_used": result.get("model_used"),
+        "model_tier": result.get("model_tier"),
+        "model_reason": result.get("model_reason"),
     }
 
 
@@ -1968,6 +1985,8 @@ def _rag_snippet_count(pipeline: Dict[str, Any]) -> Optional[int]:
 
 
 def _backend_agent_source(pipeline: Dict[str, Any]) -> str:
+    if str(pipeline.get("route_taken") or "").lower() == "global_knowledge_cache":
+        return "global_rag"
     if _boolish(pipeline.get("cache_hit")):
         return "backend_cache"
     direct_source = str(pipeline.get("direct_answer_source") or "").lower()
@@ -2596,6 +2615,96 @@ def _build_direct_answer_pipeline_result(
     )
 
 
+def _build_global_cache_pipeline_result(hit: Dict[str, Any]) -> Dict[str, Any]:
+    answer = str(hit.get("answer") or "").strip()
+    language = _normalize_reply_language(hit.get("answer_language") or "en")
+    result = _build_pipeline_result(
+        raw_english=answer,
+        remodeled_english=answer,
+        tamil_text=answer if language == "ta" else "",
+        theni_tamil_text=answer if language == "ta" else "",
+        route_taken="global_knowledge_cache",
+        direct_answer_source="global_qa_cache",
+        direct_answer_confidence=f"{float(hit.get('similarity_score') or hit.get('confidence') or 0.0):.4f}",
+        predicted_label="global_knowledge",
+        risk_level="low",
+        stage_notes=["Answered from approved global repeated-question knowledge."],
+        core_meta={
+            "source": "global_qa_cache",
+            "global_cache_id": hit.get("id"),
+            "answer_hash": hit.get("answer_hash"),
+            "topic": hit.get("topic"),
+        },
+        timings_ms={"total_ms": 0.0},
+        cache_hit="true",
+    )
+    result["model_used"] = None
+    result["model_tier"] = None
+    result["model_reason"] = "global_cache_hit"
+    return result
+
+
+def _is_backend_openai_pipeline(pipeline: Dict[str, Any]) -> bool:
+    route_taken = str(pipeline.get("route_taken") or "").lower()
+    direct_source = str(pipeline.get("direct_answer_source") or "").lower()
+    return (
+        route_taken in {"full_pipeline", "full_rewrite"}
+        or "openai" in direct_source
+        or str(pipeline.get("model_used") or "").strip() != ""
+    )
+
+
+def _record_backend_openai_side_effects(
+    session: Session,
+    *,
+    user_id: Optional[int],
+    question: str,
+    pipeline_result: Dict[str, Any],
+    answer: str,
+    request_id: Optional[str],
+) -> None:
+    if not _is_backend_openai_pipeline(pipeline_result):
+        return
+    model_used = str(pipeline_result.get("model_used") or "").strip()
+    model_tier = str(pipeline_result.get("model_tier") or "").strip()
+    model_reason = str(pipeline_result.get("model_reason") or "").strip()
+    if not model_used:
+        selection = OpenAIModelRouter().select_model("normal_qa", question)
+        model_used = selection.model
+        model_tier = selection.tier
+        model_reason = selection.reason
+        estimated_input_tokens = selection.estimated_input_tokens
+        estimated_output_tokens = selection.estimated_output_tokens
+        estimated_cost_usd = selection.estimated_cost_usd
+    else:
+        router = OpenAIModelRouter()
+        estimated_input_tokens = router.estimate_tokens(question)
+        estimated_output_tokens = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS_DEFAULT", "900") or 900)
+        estimated_cost_usd = router.estimate_cost(model_used, estimated_input_tokens, estimated_output_tokens)
+
+    record_openai_usage(
+        session,
+        user_id=user_id,
+        request_id=request_id,
+        route=str(pipeline_result.get("route_taken") or "api_chat"),
+        model_used=model_used,
+        model_tier=model_tier or "standard",
+        reason=model_reason or "backend_openai_pipeline",
+        estimated_input_tokens=estimated_input_tokens,
+        estimated_output_tokens=estimated_output_tokens,
+        estimated_cost_usd=estimated_cost_usd,
+        cache_hit=False,
+    )
+    record_backend_openai_answer(
+        session,
+        user_id,
+        question,
+        answer,
+        model_used,
+        request_id=request_id,
+    )
+
+
 def _run_chat_logic(session: Session, payload: ChatAPIRequest, text: str) -> Dict[str, Any]:
     routing = run_orchestrator(_get_openai_client(required=False), text)
 
@@ -2626,6 +2735,10 @@ def _run_chat_logic(session: Session, payload: ChatAPIRequest, text: str) -> Dic
         if tl_fast_res:
             return tl_fast_res
 
+    global_hit = lookup_approved_global_cache(session, text, payload.reply_language)
+    if global_hit is not None:
+        return _build_global_cache_pipeline_result(global_hit)
+
     return _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
 
 
@@ -2640,6 +2753,14 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
         transcript=None,
         pipeline_result=pipeline_result,
         reply_language=payload.reply_language,
+    )
+    _record_backend_openai_side_effects(
+        session,
+        user_id=payload.user_id,
+        question=text,
+        pipeline_result=normalized_pipeline,
+        answer=str(normalized_pipeline.get("remodeled_english") or item.details or ""),
+        request_id=payload.request_id or get_request_id(),
     )
     return _build_chat_response(item, meta, normalized_pipeline)
 
@@ -2743,6 +2864,16 @@ def api_debug_observability(
     return _observability_config_payload()
 
 
+@app.get("/api/global-knowledge/sync")
+def api_global_knowledge_sync(
+    since: Optional[str] = Query(default=None),
+    limit: int = Query(default=250, ge=1, le=500),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    return build_global_knowledge_sync_payload(session, since=since, limit=limit)
+
+
 @app.post("/api/chat")
 def api_chat(
     payload: ChatAPIRequest,
@@ -2753,7 +2884,7 @@ def api_chat(
     payload = payload.model_copy(update={"user_id": int(user.id)})
     text = _resolve_chat_text(payload)
     started = time.perf_counter()
-    set_request_context(user_id=str(user.id))
+    set_request_context(request_id=payload.request_id or get_request_id() or new_request_id(), user_id=str(user.id))
     logger.info(
         "chat_turn_started",
         extra=chat_log_payload(

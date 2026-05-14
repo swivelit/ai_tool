@@ -1,6 +1,7 @@
 export const APP_BOOT_TIMEOUT_MS = 10000;
 export const LOCAL_AGENT_SEED_TIMEOUT_MS = 4000;
 export const PROFILE_BOOT_TIMEOUT_MS = 5000;
+export const GLOBAL_KNOWLEDGE_SYNC_TIMEOUT_MS = 5000;
 
 const SIGNED_OUT_ENTRY_ROUTE = "/auth/login";
 const SIGNED_IN_HOME_ROUTE = "/(chat)";
@@ -78,6 +79,42 @@ export async function runBootStep<T>(
   }
 
   return result;
+}
+
+export async function runGlobalKnowledgeSyncBootStep(options: {
+  force?: boolean;
+  limit?: number;
+  logger?: BootLogger;
+} = {}) {
+  return runBootStep(
+    "global knowledge sync",
+    async () => {
+      const { syncGlobalKnowledge } = await import("./globalKnowledgeSync");
+      return syncGlobalKnowledge({ force: options.force, limit: options.limit });
+    },
+    {
+      timeoutMs: GLOBAL_KNOWLEDGE_SYNC_TIMEOUT_MS,
+      optional: true,
+      logger: options.logger,
+    },
+  );
+}
+
+export async function runPendingCrashTelemetryBootStep(options: {
+  logger?: BootLogger;
+} = {}) {
+  return runBootStep(
+    "pending local turn crash telemetry",
+    async () => {
+      const { sendPendingCrashMarkerIfPresent } = await import("./chatTelemetry");
+      return sendPendingCrashMarkerIfPresent();
+    },
+    {
+      timeoutMs: 3000,
+      optional: true,
+      logger: options.logger,
+    },
+  );
 }
 
 export function getPendingBootSteps(flags: {

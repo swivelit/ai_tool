@@ -39,6 +39,11 @@ from config import (
     REVIEW_TEMPERATURE,
 )
 
+try:
+    from app.openai_model_router import OpenAIModelRouter
+except Exception:  # pragma: no cover
+    OpenAIModelRouter = None  # type: ignore
+
 
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _RETRYABLE_EXCEPTIONS = (
@@ -313,6 +318,7 @@ class OpenAICore:
         self,
         *,
         mode: str,
+        model: str,
         system_prompt: str,
         user_prompt: str,
         temperature: float,
@@ -322,7 +328,7 @@ class OpenAICore:
     ) -> str:
         payload = {
             "mode": mode,
-            "model": self.model,
+            "model": model,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
             "temperature": temperature,
@@ -353,12 +359,14 @@ class OpenAICore:
         temperature: float,
         max_output_tokens: int,
         response_format: Optional[Dict[str, Any]] = None,
+        model_override: Optional[str] = None,
     ) -> str:
+        model = str(model_override or self.model).strip() or self.model
         last_error: Optional[Exception] = None
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
                 response = self.client.chat.completions.create(
-                    model=self.model,
+                    model=model,
                     messages=[
                         {"role": "system", "content": system_prompt.strip()},
                         {"role": "user", "content": user_prompt.strip()},
@@ -393,9 +401,12 @@ class OpenAICore:
         *,
         temperature: float = RAW_TEMPERATURE,
         max_output_tokens: int = 800,
+        model_override: Optional[str] = None,
     ) -> str:
+        model = str(model_override or self.model).strip() or self.model
         key = self._cache_key(
             mode="text",
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
@@ -409,6 +420,7 @@ class OpenAICore:
             user_prompt,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            model_override=model,
         )
         self._cache_set(key, text)
         return text
@@ -445,9 +457,12 @@ class OpenAICore:
         *,
         temperature: float = 0.2,
         max_output_tokens: int = 1200,
+        model_override: Optional[str] = None,
     ) -> Dict[str, Any]:
+        model = str(model_override or self.model).strip() or self.model
         key = self._cache_key(
             mode="json",
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
@@ -465,6 +480,7 @@ class OpenAICore:
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             response_format={"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
+            model_override=model,
         )
         parsed = self._repair_json(raw_json, schema_name, schema)
         serialized = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
@@ -472,6 +488,12 @@ class OpenAICore:
         return parsed
 
     def answer_user_query_structured(self, user_query: str, profile_context: str) -> Dict[str, str]:
+        router = OpenAIModelRouter() if OpenAIModelRouter is not None else None
+        selection = router.select_model(
+            "normal_qa",
+            user_query,
+            risk_level="high" if self._contains_health_risk(user_query) else "low",
+        ) if router is not None else None
         query_health_sensitive = self._contains_health_risk(user_query)
         profile_health_relevant = self._contains_health_risk(profile_context) and self._is_health_adjacent_query(user_query)
         health_sensitive = query_health_sensitive or profile_health_relevant
@@ -516,7 +538,8 @@ Task:
             "core_answer_result",
             schema,
             temperature=RAW_TEMPERATURE,
-            max_output_tokens=1000,
+            max_output_tokens=min(1000, selection.max_output_tokens) if selection is not None else 1000,
+            model_override=selection.model if selection is not None else None,
         )
         answer = str(data.get("answer", "")).strip() or self.answer_user_query(user_query, profile_context)
         return {
@@ -524,6 +547,12 @@ Task:
             "answer_style": str(data.get("answer_style", "practical")).strip() or "practical",
             "risk_level": str(data.get("risk_level", "low")).strip() or "low",
             "safety_notes": str(data.get("safety_notes", "")).strip() or safety_block,
+            "model_used": selection.model if selection is not None else self.model,
+            "model_tier": selection.tier if selection is not None else "standard",
+            "model_reason": selection.reason if selection is not None else "legacy_default",
+            "estimated_input_tokens": selection.estimated_input_tokens if selection is not None else 0,
+            "estimated_output_tokens": selection.estimated_output_tokens if selection is not None else 0,
+            "estimated_cost_usd": selection.estimated_cost_usd if selection is not None else 0.0,
         }
 
     def answer_user_query(self, user_query: str, profile_context: str) -> str:
@@ -549,6 +578,8 @@ Task:
     def review_answer(self, user_query: str, answer: str, profile_context: str) -> Dict[str, str]:
         if not ENABLE_ANSWER_REVIEW:
             return {"final_answer": answer, "keep_original": "true", "review_note": "review disabled"}
+        router = OpenAIModelRouter() if OpenAIModelRouter is not None else None
+        selection = router.select_model("review", user_query) if router is not None else None
 
         schema = {
             "type": "object",
@@ -586,7 +617,8 @@ Task:
             "answer_review",
             schema,
             temperature=REVIEW_TEMPERATURE,
-            max_output_tokens=900,
+            max_output_tokens=min(900, selection.max_output_tokens) if selection is not None else 900,
+            model_override=selection.model if selection is not None else None,
         )
         keep_original = str(data.get("keep_original", "true")).strip().lower()
         final_answer = answer if keep_original == "true" else (str(data.get("final_answer", "")).strip() or answer)
@@ -594,4 +626,10 @@ Task:
             "final_answer": final_answer,
             "keep_original": keep_original,
             "review_note": str(data.get("review_note", "")).strip(),
+            "model_used": selection.model if selection is not None else self.model,
+            "model_tier": selection.tier if selection is not None else "standard",
+            "model_reason": selection.reason if selection is not None else "legacy_default",
+            "estimated_input_tokens": selection.estimated_input_tokens if selection is not None else 0,
+            "estimated_output_tokens": selection.estimated_output_tokens if selection is not None else 0,
+            "estimated_cost_usd": selection.estimated_cost_usd if selection is not None else 0.0,
         }

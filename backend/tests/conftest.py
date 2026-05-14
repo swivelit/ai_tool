@@ -16,6 +16,10 @@ os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["JOB_WORKER_ENABLED"] = "false"
 os.environ["RAG_ENABLE_FAST_RAG_SEMANTIC"] = "false"
 os.environ["OPENAI_API_KEY"] = ""
+os.environ["GLOBAL_QA_CACHE_ENABLED"] = "true"
+os.environ["GLOBAL_QA_PROMOTE_HITS"] = "2"
+os.environ["GLOBAL_QA_MIN_SIMILARITY"] = "0.90"
+os.environ["GLOBAL_QA_REQUIRE_DISTINCT_USERS"] = "true"
 os.environ["SARVAM_API_KEY"] = ""
 os.environ["SENTRY_DSN"] = ""
 os.environ["AUTH_ALLOW_DEV_TOKENS"] = "true"
@@ -36,7 +40,7 @@ from sqlmodel import SQLModel, delete
 
 from app.database import SessionLocal, engine
 from app.main import app, _get_job_queue
-from app.models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
+from app.models import Conversation, DailyRoutine, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
 
 
 def auth_headers(uid: str, email: str | None = None) -> dict[str, str]:
@@ -66,13 +70,13 @@ def clean_db():
     queue = _get_job_queue()
     queue.stop()
     with SessionLocal() as session:
-        for model in [Job, RagEmbedding, Conversation, QACache, Item, DailyRoutine, UserProfile, User]:
+        for model in [OpenAIUsageLog, GlobalQAObservation, GlobalQACache, Job, RagEmbedding, Conversation, QACache, Item, DailyRoutine, UserProfile, User]:
             session.exec(delete(model))
         session.commit()
     yield
     queue.stop()
     with SessionLocal() as session:
-        for model in [Job, RagEmbedding, Conversation, QACache, Item, DailyRoutine, UserProfile, User]:
+        for model in [OpenAIUsageLog, GlobalQAObservation, GlobalQACache, Job, RagEmbedding, Conversation, QACache, Item, DailyRoutine, UserProfile, User]:
             session.exec(delete(model))
         session.commit()
 

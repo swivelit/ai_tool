@@ -15,6 +15,7 @@ import requests
 from sqlmodel import Session, select
 
 from .models import Conversation, DailyRoutine, Item, User, UserProfile
+from .openai_model_router import OpenAIModelRouter
 
 try:
     from config import (
@@ -135,6 +136,7 @@ class AgenticService:
         self.client = openai_client
         self.local_rag_service = local_rag_service
         self.model = os.getenv("OPENAI_AGENT_MODEL", os.getenv("OPENAI_JSON_MODEL", OPENAI_MODEL))
+        self.model_router = OpenAIModelRouter()
         self.enabled = bool(AGENTIC_MODE_ENABLED)
         self._stage_translator = None
         self._ensure_dirs()
@@ -203,8 +205,9 @@ class AgenticService:
             return ""
 
     def _llm_json(self, system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
+        selection = self.model_router.select_model("json", user_content)
         response = self.client.chat.completions.create(
-            model=self.model,
+            model=selection.model,
             messages=[
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": user_content.strip()},
@@ -222,8 +225,9 @@ class AgenticService:
         return parsed if isinstance(parsed, dict) else {}
 
     def _llm_text(self, system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
+        selection = self.model_router.select_model("simple_fallback", user_content)
         response = self.client.chat.completions.create(
-            model=self.model,
+            model=selection.model,
             messages=[
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": user_content.strip()},
@@ -307,8 +311,9 @@ class AgenticService:
                 temperature: float = 0.2,
                 max_output_tokens: int = 900,
             ) -> str:
+                selection = self.outer.model_router.select_model("translation", user_prompt)
                 response = self.outer.client.chat.completions.create(
-                    model=self.outer.model,
+                    model=selection.model,
                     messages=[
                         {"role": "system", "content": system_prompt.strip()},
                         {"role": "user", "content": user_prompt.strip()},

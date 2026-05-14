@@ -14,6 +14,8 @@ import re
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
+from .openai_model_router import OpenAIModelRouter
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
@@ -302,8 +304,9 @@ Intents: GREETING, SMALLTALK, PROFILE, IDENTITY, TOOL, EMERGENCY, AMBIGUOUS, GEN
 - If it requires external data (weather, calendar, web search), use TOOL.
 Return JSON ONLY: {"intent": "...", "priority": "low|medium|high", "tool": "weather|calendar|web_search|none", "clarification_question": "optional text"}"""
         
+        selection = OpenAIModelRouter().select_model("routing", message)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=selection.model,
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": message}

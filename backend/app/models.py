@@ -98,6 +98,73 @@ class QACache(SQLModel, table=True):
 
 
 # --------------------
+# Global QA Cache (cross-user approved repeated knowledge)
+# --------------------
+class GlobalQACache(SQLModel, table=True):
+    __tablename__ = "global_qa_cache"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    canonical_question: str
+    normalized_question: str = Field(index=True)
+    answer: str
+    answer_language: str = Field(default="en", index=True)
+    topic: Optional[str] = Field(default=None, index=True)
+
+    status: str = Field(default="candidate", index=True)  # candidate | approved | rejected
+    hit_count: int = Field(default=1, index=True)
+    distinct_user_count: int = Field(default=1, index=True)
+    observed_question_count: int = Field(default=1)
+    source_question_hashes_json: str = Field(default="[]")
+    answer_hash: str = Field(index=True)
+
+    embedding_json: Optional[str] = None
+    embedding_norm: float = Field(default=0.0)
+    confidence: float = Field(default=0.0)
+    safety_label: str = Field(default="general", index=True)
+    model_used: Optional[str] = Field(default=None, index=True)
+
+    first_seen_at: datetime = Field(default_factory=utc_now, index=True)
+    last_seen_at: datetime = Field(default_factory=utc_now, index=True)
+    expires_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+    reviewed_at: Optional[datetime] = None
+    review_notes: Optional[str] = None
+
+
+class GlobalQAObservation(SQLModel, table=True):
+    __tablename__ = "global_qa_observation"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    global_cache_id: int = Field(index=True, foreign_key="global_qa_cache.id")
+    user_id_hash: str = Field(index=True)
+    question_hash: str = Field(index=True)
+    normalized_question: str
+    similarity_score: float = Field(default=0.0, index=True)
+    backend_answer_hash: str = Field(index=True)
+    model_used: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class OpenAIUsageLog(SQLModel, table=True):
+    __tablename__ = "openai_usage_log"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    request_id: Optional[str] = Field(default=None, index=True)
+    user_id_hash: Optional[str] = Field(default=None, index=True)
+    route: str = Field(index=True)
+    model_used: str = Field(index=True)
+    model_tier: str = Field(index=True)
+    reason: Optional[str] = None
+    estimated_input_tokens: int = Field(default=0)
+    estimated_output_tokens: int = Field(default=0)
+    estimated_cost_usd: float = Field(default=0.0)
+    cache_hit: bool = Field(default=False, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+# --------------------
 # Daily Routine (editable)
 # --------------------
 class DailyRoutine(SQLModel, table=True):

@@ -9,6 +9,7 @@ import profilerSlots from "../data/config/profiler_slots.json";
 import prompts from "../data/config/prompts.json";
 import { __idleQueueTestUtils } from "../lib/localIdleQueue";
 import { setNativeOnDeviceModelBridgeForTests } from "../lib/nativeOnDeviceModelBridge";
+import AsyncStorage, { __resetAsyncStorageMock } from "./mocks/async-storage";
 
 const mockedState = vi.hoisted(() => ({
   files: new Map<string, string>(),
@@ -171,6 +172,7 @@ describe("local orchestrator and alignment", () => {
   beforeEach(() => {
     setNativeOnDeviceModelBridgeForTests(null);
     __idleQueueTestUtils.clear();
+    __resetAsyncStorageMock();
     mockedState.files.clear();
     mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
     mockedState.fetchQueue.length = 0;
@@ -540,6 +542,86 @@ describe("local orchestrator and alignment", () => {
     expect(result.assistantText).toBe("Cached local answer.");
     expect(apiPostMock).not.toHaveBeenCalled();
     expect(mockedState.fetchQueue).toHaveLength(0);
+  });
+
+  it("answers from synced global knowledge before full local model inference", async () => {
+    await AsyncStorage.setItem(
+      "global_knowledge_cache_v1",
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "global_1",
+            canonicalQuestion: "Explain local first routing",
+            normalizedQuestion: "explain local first routing",
+            answer: "Global synced answer.",
+            answerLanguage: "en",
+            topic: "local_agents",
+            embedding: [],
+            embeddingNorm: 0,
+            confidence: 0.95,
+            safetyLabel: "general",
+            updatedAt: new Date().toISOString(),
+            expiresAt: null,
+          },
+        ],
+      }),
+    );
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 281,
+      message: "Explain local first routing",
+      replyLanguage: "en",
+      requestId: "global-cache-test",
+    });
+
+    expect(result.route).toBe("global_knowledge_cache");
+    expect(result.source).toBe("global_rag");
+    expect(result.cacheHit).toBe(true);
+    expect(result.assistantText).toBe("Global synced answer.");
+    expect(result.meta?.responsePath).toBe("global_knowledge_cache");
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns a safe local error when unknown-question inference fails", async () => {
+    queueCompletion(
+      JSON.stringify({
+        route: "local_answer",
+        reason: "general_offline_chat",
+        confidence: 0.82,
+        needs_clarification: false,
+        clarification_question: "",
+        needs_live_data: false,
+        selected_model: "Qwen/Qwen3-8B",
+        fallback_allowed: false,
+      }),
+    );
+    mockedState.fetchQueue.push(async () => {
+      throw new Error("local runtime failed");
+    });
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 282,
+      message: "Tell me something unusual about compilers",
+      replyLanguage: "en",
+      requestId: "unknown-safe-error",
+    });
+
+    expect(result.route).toBe("local_answer");
+    expect(result.source).toBe("local_rules");
+    expect(result.assistantText).toBe(
+      "I hit a local processing error. Please try again.",
+    );
+    expect(result.meta?.orchestratorDecision?.reason).toBe(
+      "local_processing_error",
+    );
+    expect(apiPostMock).not.toHaveBeenCalled();
+    await expect(
+      AsyncStorage.getItem("pending_local_turn_marker_v1"),
+    ).resolves.toBeNull();
   });
 
   it("routes weather through the live-data tool path", async () => {

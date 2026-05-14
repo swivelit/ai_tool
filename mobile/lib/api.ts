@@ -1573,6 +1573,7 @@ async function handleLocalTranscribeAndAnalyze(
     replyLanguage,
     userAllowedCloudFallback,
     deviceInfo,
+    requestId: `voice_${Date.now()}`,
     ...(userProfile ? { userProfile } : {}),
   });
   const createdAt = new Date().toISOString();
@@ -1801,6 +1802,7 @@ async function handleLocalChat(
         replyLanguage,
         userAllowedCloudFallback,
         deviceInfo,
+        requestId,
         ...(userProfile ? { userProfile } : {}),
       }),
     );

@@ -172,4 +172,33 @@ describe("chat telemetry queue", () => {
     expect(bodies[0].voice_routing).toBe("backend");
     expect(bodies[1].voice_phase).toBe("startup_timeout");
   });
+
+  it("sends pending local turn crash marker on next boot", async () => {
+    const storage = setupTelemetryMocks();
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const {
+      markPendingLocalTurn,
+      sendPendingCrashMarkerIfPresent,
+      PENDING_LOCAL_TURN_MARKER_KEY,
+    } = await import("../lib/chatTelemetry");
+
+    await markPendingLocalTurn({
+      requestId: "turn-crash-1",
+      userId: 42,
+      question: "An unknown question that crashed",
+    });
+
+    const marker = await sendPendingCrashMarkerIfPresent();
+
+    expect(marker?.request_id).toBe("turn-crash-1");
+    expect(marker?.question_hash).toBeTruthy();
+    expect(storage.get(PENDING_LOCAL_TURN_MARKER_KEY)).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as any[])[1].body));
+    expect(body.event).toBe("client_turn_crash_suspected");
+    expect(body.request_id).toBe("turn-crash-1");
+    expect(body.error_type).toBe("pending_local_turn_marker_found");
+  });
 });

@@ -79,6 +79,58 @@ describe("API client contracts", () => {
     vi.unstubAllGlobals();
   });
 
+  it("fetches global knowledge sync from the authenticated backend", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        entries: [
+          {
+            id: 1,
+            canonicalQuestion: "Explain local first routing",
+            normalizedQuestion: "explain local first routing",
+            answer: "Cached global answer.",
+            answerLanguage: "en",
+            updatedAt: "2026-05-14T00:00:00",
+          },
+        ],
+        serverTime: "2026-05-14T00:01:00",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiGet } = await import("../lib/api");
+    const payload = await apiGet<any>("/api/global-knowledge/sync?limit=250");
+
+    expect(payload.entries).toHaveLength(1);
+    const syncCalls = (fetchMock.mock.calls as any[][]).filter((call) =>
+      String(call[0]).endsWith("/api/global-knowledge/sync?limit=250"),
+    );
+    expect(syncCalls).toHaveLength(1);
+    expect(String(syncCalls[0][0])).toBe(
+      "https://api.example.test/api/global-knowledge/sync?limit=250",
+    );
+    expect((syncCalls[0][1] as any).headers.Authorization).toBe(
+      "Bearer test-token",
+    );
+  });
+
   it("routes recorded voice to authenticated backend by default", async () => {
     vi.doMock("expo-constants", () => ({
       default: {

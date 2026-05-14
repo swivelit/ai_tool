@@ -61,6 +61,7 @@ import {
 import { parseDatetime } from "@/lib/datetime";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import { saveScheduledTask } from "@/lib/localAgents";
+import { getNativeOnDeviceModelBridge } from "@/lib/nativeOnDeviceModelBridge";
 import {
   friendlyLocalTimeoutMessage,
   getLocalTurnSoftNoticeMs,
@@ -916,6 +917,12 @@ export default function Home() {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState !== "active" && activeChatRequestIdRef.current) {
+        const bridge = getNativeOnDeviceModelBridge();
+        if (typeof bridge?.cancelRequest === "function") {
+          void Promise.resolve(bridge.cancelRequest(activeChatRequestIdRef.current)).catch(() => undefined);
+        }
+      }
       setAppState(nextState);
     });
 
@@ -978,6 +985,12 @@ export default function Home() {
     return () => {
       void shutdownHandsFree(true);
       void releaseReplySound();
+      if (activeChatRequestIdRef.current) {
+        const bridge = getNativeOnDeviceModelBridge();
+        if (typeof bridge?.cancelRequest === "function") {
+          void Promise.resolve(bridge.cancelRequest(activeChatRequestIdRef.current)).catch(() => undefined);
+        }
+      }
 
       const activeRecording = recordingRef.current;
       if (activeRecording) {
@@ -1483,7 +1496,7 @@ export default function Home() {
       return "I couldn’t finish that on this phone. Please try again.";
     }
 
-    return raw || "I couldn’t finish that. Please try again.";
+    return "I hit a local processing error. Please try again.";
   }
 
   function chatResponseSetupRequired(response: BackendChatResponse) {
@@ -1793,7 +1806,10 @@ export default function Home() {
       clearSoftNoticeTimer();
       if (isActiveChatRequest(requestId)) {
         if (isLocalTurnTimeoutError(error)) {
-          // TODO(native): call JaiOnDeviceModel.cancelRequest(requestId) once Android exposes it.
+          const bridge = getNativeOnDeviceModelBridge();
+          if (typeof bridge?.cancelRequest === "function") {
+            void Promise.resolve(bridge.cancelRequest(requestId)).catch(() => undefined);
+          }
           logClientTurn({
             event: "client_local_turn_failed",
             user_id: profile.userId,

@@ -44,7 +44,15 @@ import {
   QuickLocalReplyResult,
   tryBuildQuickLocalReply,
 } from "./localQuickReplies";
+import {
+  isLiveOrCurrentGlobalKnowledgeQuestion,
+  lookupSyncedGlobalKnowledge,
+} from "./globalKnowledgeSync";
 import { __idleQueueTestUtils, enqueueLocalIdleJob } from "./localIdleQueue";
+import {
+  clearPendingLocalTurn,
+  markPendingLocalTurn,
+} from "./chatTelemetry";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -63,6 +71,7 @@ type OrchestratorRoute =
   | "reminder_create"
   | "weather"
   | "local_answer"
+  | "global_knowledge_cache"
   | "setup_required"
   | "fallback_openai";
 
@@ -210,7 +219,7 @@ export type LocalTrainingSample = {
 export type LocalAssistantTurnResult = {
   kind?: "assistant_turn" | "cloud_consent_required";
   route: OrchestratorRoute | "semantic_cache";
-  source: "local_model" | "local_rules" | "semantic_cache" | "openai_fallback";
+  source: "local_model" | "local_rules" | "semantic_cache" | "global_rag" | "openai_fallback";
   cacheHit: boolean;
   assistantText: string;
   englishText: string;
@@ -455,6 +464,7 @@ type ModelRuntimeTierOptions = {
   selectedTier?: ModelTierName;
   installedModelIds?: string[];
   modelsReady?: boolean;
+  requestId?: string;
 };
 
 type MemoryRules = {
@@ -2405,6 +2415,7 @@ async function localChatRaw(
     model,
     temperature,
     maxTokens,
+    requestId: runtimeOptions.requestId,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
@@ -2489,6 +2500,7 @@ async function embedTexts(
     const vectors = await runtime.embedTexts({
       model: cfg.models.embedding,
       texts,
+      requestId: runtimeOptions.requestId,
     });
     return vectors.map((embedding, index) =>
       normalizeEmbeddingVector(embedding, texts[index] || "", {
@@ -7390,6 +7402,7 @@ export async function runLocalAssistantTurn(opts: {
   modelTier?: ModelTierName;
   deviceInfo?: DeviceCapabilitySnapshot;
   proOptIn?: boolean;
+  requestId?: string | null;
 }): Promise<LocalAssistantTurnResult> {
   const stageTimings: Record<string, number> = {};
   const timeStage = async <T,>(label: string, fn: () => Promise<T>): Promise<T> => {
@@ -7452,6 +7465,7 @@ export async function runLocalAssistantTurn(opts: {
     modelTier: opts.modelTier,
     deviceInfo: opts.deviceInfo,
     proOptIn: opts.proOptIn,
+    requestId: opts.requestId || undefined,
     selectedTier: selectedTierForRuntime(cfg, {
       modelTier: opts.modelTier,
       deviceInfo: opts.deviceInfo,
@@ -7550,6 +7564,76 @@ export async function runLocalAssistantTurn(opts: {
       installedModelIds: readiness.installedModelIds,
       modelsReady: readiness.ready,
     };
+  }
+
+  const globalKnowledgeHit = await timeStage("global_knowledge_cache", () =>
+    lookupSyncedGlobalKnowledge(message, {
+      embedTexts:
+        modelRuntimeOptions.modelsReady === false ||
+        isLiveOrCurrentGlobalKnowledgeQuestion(message)
+          ? undefined
+          : (texts) => embedTexts(texts, modelRuntimeOptions),
+    }),
+  );
+  if (globalKnowledgeHit) {
+    const assistantText = globalKnowledgeHit.entry.answer;
+    await appendConversation(userId, "user", message);
+    await appendConversation(userId, "assistant", assistantText);
+    const decision: OrchestratorDecision = {
+      route: "global_knowledge_cache",
+      reason: "synced_global_knowledge_hit",
+      confidence: globalKnowledgeHit.score,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel: "global_knowledge_cache",
+      fallbackAllowed: false,
+    };
+    await appendRouteDecisionLog(userId, message, decision, {
+      routeUsed: "global_knowledge_cache",
+      source: "global_rag",
+      fastPath: true,
+      responsePath: "global_knowledge_cache",
+      globalKnowledge: {
+        id: globalKnowledgeHit.entry.id,
+        score: globalKnowledgeHit.score,
+        matchSource: globalKnowledgeHit.source,
+        topic: globalKnowledgeHit.entry.topic,
+      },
+      stageTimings,
+      fallbackPolicy: {
+        backendRole: cfg.runtime?.backendRole || "fallback_only",
+        openAiPolicy: cfg.runtime?.openAiPolicy || "fallback_only",
+        allowedWhen: routesConfig.fallbackPolicy?.openAiAllowedWhen || [],
+      },
+    });
+    return {
+      route: "global_knowledge_cache",
+      source: "global_rag",
+      cacheHit: true,
+      assistantText,
+      englishText: assistantText,
+      intent: "assistant",
+      details: assistantText,
+      profileSummary: "",
+      meta: {
+        source: "global_rag",
+        route: "global_knowledge_cache",
+        fastPath: true,
+        responsePath: "global_knowledge_cache",
+        cacheHit: true,
+        globalKnowledge: {
+          id: globalKnowledgeHit.entry.id,
+          score: globalKnowledgeHit.score,
+          matchSource: globalKnowledgeHit.source,
+          confidence: globalKnowledgeHit.entry.confidence,
+          topic: globalKnowledgeHit.entry.topic,
+        },
+        classified: decision,
+        orchestratorDecision: decision,
+        stageTimings,
+      },
+    } satisfies LocalAssistantTurnResult;
   }
 
   if (
@@ -7727,18 +7811,48 @@ export async function runLocalAssistantTurn(opts: {
     routesConfig,
     preferredSelectedModel,
   );
-  let decision = await timeStage("route_classification", async () =>
-    fastDecision
-      ? fastDecision
-      : await classifyRouteWithModel(
-          message,
-          replyLanguage,
-          answers,
-          profileSummary,
-          preferredSelectedModel,
-          modelRuntimeOptions,
-        ),
-  );
+  const fullLocalRequestId =
+    opts.requestId || `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  let pendingFullLocalMarkerSet = false;
+  const markFullLocalTurn = async () => {
+    if (pendingFullLocalMarkerSet) return;
+    pendingFullLocalMarkerSet = true;
+    await markPendingLocalTurn({
+      requestId: fullLocalRequestId,
+      userId,
+      question: message,
+    }).catch(() => undefined);
+  };
+  const clearFullLocalTurn = async () => {
+    if (!pendingFullLocalMarkerSet) return;
+    await clearPendingLocalTurn(fullLocalRequestId).catch(() => undefined);
+    pendingFullLocalMarkerSet = false;
+  };
+  let decision = await timeStage("route_classification", async () => {
+    if (fastDecision) return fastDecision;
+    await markFullLocalTurn();
+    try {
+      return await classifyRouteWithModel(
+        message,
+        replyLanguage,
+        answers,
+        profileSummary,
+        preferredSelectedModel,
+        modelRuntimeOptions,
+      );
+    } catch {
+      return {
+        route: "local_answer",
+        reason: "route_classification_failed",
+        confidence: 0.1,
+        needsClarification: false,
+        clarificationQuestion: "",
+        needsLiveData: false,
+        selectedModel: preferredSelectedModel,
+        fallbackAllowed: false,
+      } satisfies OrchestratorDecision;
+    }
+  });
 
   enqueueLocalIdleJob("orchestrator_training", () => {
     return safeRecordTrainingSample("orchestrator", {
@@ -8064,9 +8178,21 @@ export async function runLocalAssistantTurn(opts: {
         noSafeLocalPath = true;
         fallbackReason = "local_model_unavailable";
       } else {
-        noSafeLocalPath = true;
-        route = "fallback_openai";
-        fallbackReason = "no_safe_local_answer";
+        route = "local_answer";
+        source = "local_rules";
+        noSafeLocalPath = false;
+        fallbackReason = undefined;
+        draft = "I hit a local processing error. Please try again.";
+        english = draft;
+        final = draft;
+        decision = {
+          ...decision,
+          route: "local_answer",
+          reason: "local_processing_error",
+          needsClarification: false,
+          clarificationQuestion: "",
+          fallbackAllowed: false,
+        };
       }
     }
   }
@@ -8254,6 +8380,8 @@ export async function runLocalAssistantTurn(opts: {
       { delayMs: 3_000, staggerMs: 1_000 },
     );
   }
+
+  await clearFullLocalTurn();
 
   const responsePath =
     cloudFallback?.kind === "cloud_consent_required"

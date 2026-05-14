@@ -6,6 +6,7 @@ import { auth } from "./firebase";
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
 export const CLIENT_TURN_LOG_QUEUE_KEY = "client_turn_logs_queue_v1";
+export const PENDING_LOCAL_TURN_MARKER_KEY = "pending_local_turn_marker_v1";
 const MAX_QUEUE_SIZE = 100;
 const TELEMETRY_TIMEOUT_MS = 10_000;
 
@@ -39,6 +40,14 @@ export type ClientTurnLogPayload = {
   mime_type?: string | null;
   chat_routing?: string | null;
   voice_routing?: string | null;
+};
+
+export type PendingLocalTurnMarker = {
+  request_id: string;
+  user_id?: number | string | null;
+  question_hash: string;
+  question?: string | null;
+  createdAt: string;
 };
 
 const API_BASE =
@@ -91,6 +100,16 @@ function textLength(value: unknown) {
 
 function newTurnId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function simpleHash(text: unknown) {
+  let h = 2166136261;
+  const value = String(text || "");
+  for (let i = 0; i < value.length; i += 1) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h >>> 0).toString(16);
 }
 
 function enrichPayload(payload: ClientTurnLogPayload): ClientTurnLogPayload {
@@ -221,4 +240,68 @@ export async function enqueueClientTurnLog(payload: ClientTurnLogPayload) {
     warnTelemetryFailure(error);
     await appendQueue(enriched);
   }
+}
+
+export async function markPendingLocalTurn(input: {
+  requestId: string;
+  userId?: number | string | null;
+  question: string;
+}) {
+  const marker: PendingLocalTurnMarker = {
+    request_id: input.requestId,
+    user_id: input.userId ?? null,
+    question_hash: simpleHash(input.question),
+    question: input.question,
+    createdAt: new Date().toISOString(),
+  };
+  await AsyncStorage.setItem(PENDING_LOCAL_TURN_MARKER_KEY, JSON.stringify(marker));
+  return marker;
+}
+
+export async function clearPendingLocalTurn(requestId?: string | null) {
+  if (!requestId) {
+    await AsyncStorage.removeItem(PENDING_LOCAL_TURN_MARKER_KEY);
+    return;
+  }
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_LOCAL_TURN_MARKER_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as PendingLocalTurnMarker;
+    if (parsed?.request_id === requestId) {
+      await AsyncStorage.removeItem(PENDING_LOCAL_TURN_MARKER_KEY);
+    }
+  } catch {
+    await AsyncStorage.removeItem(PENDING_LOCAL_TURN_MARKER_KEY);
+  }
+}
+
+export async function sendPendingCrashMarkerIfPresent() {
+  let marker: PendingLocalTurnMarker | null = null;
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_LOCAL_TURN_MARKER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.request_id) {
+      await AsyncStorage.removeItem(PENDING_LOCAL_TURN_MARKER_KEY);
+      return null;
+    }
+    marker = parsed as PendingLocalTurnMarker;
+  } catch {
+    await AsyncStorage.removeItem(PENDING_LOCAL_TURN_MARKER_KEY);
+    return null;
+  }
+
+  await enqueueClientTurnLog({
+    event: "client_turn_crash_suspected",
+    user_id: marker.user_id,
+    request_id: marker.request_id,
+    channel: "text",
+    question: marker.question || null,
+    agent_source: "local_model",
+    route_taken: "local_answer",
+    error_type: "pending_local_turn_marker_found",
+    created_at: new Date().toISOString(),
+  });
+  await AsyncStorage.removeItem(PENDING_LOCAL_TURN_MARKER_KEY);
+  return marker;
 }
