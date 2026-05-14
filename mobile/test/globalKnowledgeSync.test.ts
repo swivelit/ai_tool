@@ -264,8 +264,54 @@ describe("global knowledge sync", () => {
     expect(isLiveOrCurrentGlobalKnowledgeQuestion("weather tomorrow")).toBe(true);
     expect(isLiveOrCurrentGlobalKnowledgeQuestion("USD INR exchange rate")).toBe(true);
     expect(isLiveOrCurrentGlobalKnowledgeQuestion("best phone deal near me")).toBe(true);
+    expect(isLiveOrCurrentGlobalKnowledgeQuestion("new election details")).toBe(true);
+    expect(isLiveOrCurrentGlobalKnowledgeQuestion("election results")).toBe(true);
+    expect(isLiveOrCurrentGlobalKnowledgeQuestion("latest government update")).toBe(true);
+    expect(isLiveOrCurrentGlobalKnowledgeQuestion("prime minister news")).toBe(true);
     expect(isLiveOrCurrentGlobalKnowledgeQuestion("What is IPL?")).toBe(false);
     expect(isLiveOrCurrentGlobalKnowledgeQuestion("What is photosynthesis?")).toBe(false);
+  });
+
+  it("bypasses political/current synced entries but still serves stable IPL knowledge", async () => {
+    const { GLOBAL_KNOWLEDGE_CACHE_KEY, lookupSyncedGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    storage.set(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "election",
+            canonicalQuestion: "election results",
+            normalizedQuestion: "election results",
+            answer: "Stale election answer.",
+            answerLanguage: "en",
+            embedding: [],
+            embeddingNorm: 0,
+            confidence: 1,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+          {
+            id: "ipl",
+            canonicalQuestion: "What is IPL?",
+            normalizedQuestion: "what is ipl",
+            aliases: ["what is indian premier league"],
+            answer: "The Indian Premier League is a professional Twenty20 cricket league in India.",
+            answerLanguage: "en",
+            embedding: [],
+            embeddingNorm: 0,
+            confidence: 0.93,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+        ],
+      }),
+    );
+
+    expect(await lookupSyncedGlobalKnowledge("new election details")).toBeNull();
+    expect(await lookupSyncedGlobalKnowledge("election results")).toBeNull();
+    expect((await lookupSyncedGlobalKnowledge("What is IPL?"))?.entry.answer).toContain("Twenty20");
+    expect((await lookupSyncedGlobalKnowledge("Tell me about Indian Premier League"))?.entry.answer).toContain("Twenty20");
   });
 
   it("matches synced aliases and still bypasses live alias queries", async () => {

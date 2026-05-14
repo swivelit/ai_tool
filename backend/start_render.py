@@ -6,9 +6,12 @@ import os
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
 import uvicorn
+
+BACKEND_ROOT = Path(__file__).resolve().parent
 
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format=LOG_FORMAT)
@@ -83,12 +86,21 @@ def _start_migrations_with_grace_period() -> None:
         logger.info("RUN_MIGRATIONS_ON_STARTUP is disabled; skipping Alembic migrations")
         return
 
-    command = [sys.executable, "-m", "alembic", "upgrade", "head"]
-    grace_seconds = _env_int("MIGRATION_STARTUP_GRACE_SECONDS", 15)
+    production = _is_production_environment()
+    command = [
+        sys.executable,
+        "-m",
+        "alembic",
+        "-c",
+        str(BACKEND_ROOT / "alembic.ini"),
+        "upgrade",
+        "head",
+    ]
+    grace_seconds = _env_int("MIGRATION_STARTUP_GRACE_SECONDS", 120 if production else 15)
     require_before_startup = _require_migrations_before_startup()
     timeout_seconds = _env_int(
         "MIGRATION_STARTUP_TIMEOUT_SECONDS",
-        grace_seconds if grace_seconds > 0 else 120,
+        120 if production else (grace_seconds if grace_seconds > 0 else 120),
     )
 
     logger.info(
@@ -102,7 +114,7 @@ def _start_migrations_with_grace_period() -> None:
     )
 
     try:
-        process = subprocess.Popen(command)
+        process = subprocess.Popen(command, cwd=BACKEND_ROOT)
     except BaseException:
         logger.exception("migration_failed Could not start Alembic migrations", extra={"event": "migration_failed"})
         sys.exit(1)

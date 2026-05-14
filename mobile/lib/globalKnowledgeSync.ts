@@ -91,6 +91,16 @@ const LIVE_TERMS = new Set([
   "news",
   "breaking",
   "now",
+  "new",
+  "recent",
+  "update",
+  "updates",
+  "election",
+  "elections",
+  "vote",
+  "voting",
+  "poll",
+  "polls",
   "weather",
   "forecast",
   "tomorrow",
@@ -117,9 +127,20 @@ const LIVE_TERMS = new Set([
   "offers",
   "discount",
   "discounts",
+  "winner",
+  "candidate",
+  "candidates",
+  "government",
+  "president",
+  "prime",
+  "minister",
+  "pm",
+  "cm",
+  "mla",
+  "mp",
 ]);
 
-const LIVE_PHRASES = ["exchange rate", "gold rate", "petrol price", "near me"];
+const LIVE_PHRASES = ["exchange rate", "gold rate", "petrol price", "near me", "prime minister"];
 
 const ALIAS_MAP: Record<string, string> = {
   ipl: "indian premier league",

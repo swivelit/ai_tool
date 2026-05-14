@@ -79,12 +79,24 @@ def _production_migration_env(monkeypatch):
 def test_start_render_blocks_production_startup_when_migrations_fail(monkeypatch, caplog):
     _production_migration_env(monkeypatch)
     process = _FailingMigrationProcess(return_code=7)
-    monkeypatch.setattr(start_render.subprocess, "Popen", lambda command: process)
+    popen_calls = []
+
+    def fake_popen(command, cwd=None):
+        popen_calls.append({"command": command, "cwd": cwd})
+        return process
+
+    monkeypatch.setattr(start_render.subprocess, "Popen", fake_popen)
 
     with caplog.at_level("ERROR"), pytest.raises(SystemExit) as exc:
         start_render._start_migrations_with_grace_period()
 
     assert exc.value.code == 7
+    assert popen_calls
+    assert popen_calls[0]["cwd"] == start_render.BACKEND_ROOT
+    assert popen_calls[0]["command"][0] == sys.executable
+    assert popen_calls[0]["command"][1:4] == ["-m", "alembic", "-c"]
+    assert popen_calls[0]["command"][4] == str(start_render.BACKEND_ROOT / "alembic.ini")
+    assert popen_calls[0]["command"][5:] == ["upgrade", "head"]
     assert "migration_failed" in caplog.text
     assert "server_start_blocked_schema_not_ready" in caplog.text
 
@@ -92,7 +104,7 @@ def test_start_render_blocks_production_startup_when_migrations_fail(monkeypatch
 def test_start_render_blocks_production_startup_when_migrations_timeout(monkeypatch, caplog):
     _production_migration_env(monkeypatch)
     process = _TimeoutMigrationProcess()
-    monkeypatch.setattr(start_render.subprocess, "Popen", lambda command: process)
+    monkeypatch.setattr(start_render.subprocess, "Popen", lambda command, cwd=None: process)
 
     with caplog.at_level("ERROR"), pytest.raises(SystemExit) as exc:
         start_render._start_migrations_with_grace_period()
@@ -101,3 +113,25 @@ def test_start_render_blocks_production_startup_when_migrations_timeout(monkeypa
     assert process.terminated is True
     assert "migration_timeout" in caplog.text
     assert "server_start_blocked_schema_not_ready" in caplog.text
+
+
+def test_start_render_production_migration_defaults_are_120_seconds(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("RUN_MIGRATIONS_ON_STARTUP", "true")
+    monkeypatch.setenv("REQUIRE_MIGRATIONS_BEFORE_STARTUP", "true")
+    monkeypatch.delenv("MIGRATION_STARTUP_GRACE_SECONDS", raising=False)
+    monkeypatch.delenv("MIGRATION_STARTUP_TIMEOUT_SECONDS", raising=False)
+
+    process = _FailingMigrationProcess(return_code=0)
+    waits = []
+
+    def wait_with_capture(timeout=None):
+        waits.append(timeout)
+        return 0
+
+    process.wait = wait_with_capture
+    monkeypatch.setattr(start_render.subprocess, "Popen", lambda command, cwd=None: process)
+
+    start_render._start_migrations_with_grace_period()
+
+    assert waits == [120]

@@ -166,6 +166,11 @@ def test_expanded_live_market_weather_recommendation_questions_bypass_cache():
         "best phone deal near me",
         "yesterday match result",
         "stock price forecast",
+        "Do you know about the new election details?",
+        "election results",
+        "who won the election?",
+        "latest government update",
+        "prime minister news",
     ]
     with SessionLocal() as session:
         for question in blocked_questions:
@@ -208,6 +213,62 @@ def test_expanded_live_market_weather_recommendation_questions_bypass_cache():
         )
         session.commit()
         assert lookup_approved_global_cache(session, "weather tomorrow", "en") is None
+
+
+def test_static_educational_questions_remain_cacheable():
+    stable_questions = [
+        (
+            "What is IPL?",
+            "The Indian Premier League is a professional T20 cricket league in India.",
+        ),
+        (
+            "What is photosynthesis?",
+            "Photosynthesis is how plants make food from light, water, and carbon dioxide.",
+        ),
+        (
+            "What is a compiler?",
+            "A compiler translates source code into another form before execution.",
+        ),
+    ]
+    with SessionLocal() as session:
+        for index, (question, answer) in enumerate(stable_questions, start=1):
+            result = record_backend_openai_answer(
+                session,
+                user_id=index,
+                question=question,
+                answer=answer,
+                model_used="cheap-test-model",
+            )
+            assert result["ok"] is True
+            assert result.get("skipped") is not True
+
+
+def test_political_current_questions_are_not_served_from_stale_global_cache():
+    with SessionLocal() as session:
+        session.add(
+            GlobalQACache(
+                canonical_question="election results",
+                normalized_question="election results",
+                answer="Stale election answer.",
+                answer_language="en",
+                topic="election",
+                status="approved",
+                hit_count=2,
+                distinct_user_count=2,
+                observed_question_count=2,
+                source_question_hashes_json=json.dumps([]),
+                answer_hash="election-hash",
+                embedding_json="[]",
+                embedding_norm=0,
+                confidence=1,
+                safety_label="general",
+            )
+        )
+        session.commit()
+
+        assert lookup_approved_global_cache(session, "new election details", "en") is None
+        assert lookup_approved_global_cache(session, "election results", "en") is None
+        assert lookup_approved_global_cache(session, "who won the election?", "en") is None
 
 
 def test_private_and_personalized_advice_questions_are_not_cached():
