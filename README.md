@@ -254,3 +254,52 @@ uvicorn theni_tamil_api:app --host 127.0.0.1 --port 9009
 - Password visibility:
   verify the login password eye toggle works, and both signup password fields independently toggle visibility with accessible labels.
 ```
+# New Developer Setup
+
+## Install Requirements
+
+- Node.js LTS
+- npm
+- Python 3.11+
+- Android Studio
+- Git
+
+## Clone Repository
+
+```bash
+git clone <repo-url>
+cd ai_tool
+```
+
+## Mobile Setup
+
+```bash
+cd mobile
+npm install
+npx expo start
+```
+
+## Backend Setup
+
+```bash
+cd backend
+
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+## Debug APK
+
+```bash
+./launch-debug_apk.sh
+```
+
+## Release APK
+
+```bash
+BUILD_TYPE=release ./build-apk.sh
+```
