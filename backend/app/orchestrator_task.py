@@ -346,3 +346,11 @@ def run_orchestrator(client: Any, message: str) -> Dict[str, Any]:
 
     # 🧠 Semantic AI (Online check)
     return _call_llm(client, message)
+
+
+def run_rule_orchestrator(message: str) -> Dict[str, Any]:
+    """Deterministic routing only; never calls OpenAI."""
+    result = _rule_classify(message)
+    if result:
+        return result
+    return _make_result(intent="GENERAL", next_action="General Agent", priority="low", confidence=0.0, fast_path=True)

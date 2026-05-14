@@ -71,7 +71,7 @@ from .observability import (
 from .vector_store import VectorStore
 from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
-from .orchestrator_task import run_orchestrator
+from .orchestrator_task import run_orchestrator, run_rule_orchestrator
 from .global_qa_cache import (
     build_global_knowledge_sync_payload,
     lookup_approved_global_cache,
@@ -2720,39 +2720,61 @@ def _record_backend_openai_side_effects(
     )
 
 
-def _run_chat_logic(session: Session, payload: ChatAPIRequest, text: str) -> Dict[str, Any]:
-    routing = run_orchestrator(_get_openai_client(required=False), text)
+def _handle_routing_fast_exit(
+    session: Session,
+    payload: ChatAPIRequest,
+    text: str,
+    routing: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    intent = str(routing.get("intent") or "GENERAL").upper()
+    priority = str(routing.get("priority") or "low")
+    confidence = float(routing.get("confidence") or 0.0)
+    matched_keyword = str(routing.get("matched_keyword") or "")
 
-    if routing["intent"] == "EMERGENCY":
+    if intent == "EMERGENCY":
         res = "🚨 EMERGENCY DETECTED: Please stay safe and contact emergency services (112) immediately."
         return _build_direct_answer_pipeline_result(
             res,
             "EMERGENCY",
             "orchestrator_emergency",
-            routing["priority"],
-            routing["confidence"],
-            routing.get("matched_keyword", ""),
+            priority,
+            confidence,
+            matched_keyword,
         )
 
-    if routing["intent"] == "AMBIGUOUS":
+    if intent == "AMBIGUOUS":
         res = routing.get("clarification_question") or "Could you share a bit more so I can assist you better?"
         return _build_direct_answer_pipeline_result(
             res,
             "AMBIGUOUS",
             "orchestrator_clarification",
-            routing["priority"],
-            routing["confidence"],
-            routing.get("matched_keyword", ""),
+            priority,
+            confidence,
+            matched_keyword,
         )
 
-    if routing["intent"] in {"GREETING", "SMALLTALK", "PROFILE", "IDENTITY"}:
+    if intent in {"GREETING", "SMALLTALK", "PROFILE", "IDENTITY"}:
         tl_fast_res = _try_local_fast_path(session, payload.user_id, text)
         if tl_fast_res:
             return tl_fast_res
 
+    return None
+
+
+def _run_chat_logic(session: Session, payload: ChatAPIRequest, text: str) -> Dict[str, Any]:
+    routing = run_rule_orchestrator(text)
+    fast_result = _handle_routing_fast_exit(session, payload, text, routing)
+    if fast_result is not None:
+        return fast_result
+
     global_hit = lookup_approved_global_cache(session, text, payload.reply_language)
     if global_hit is not None:
         return _build_global_cache_pipeline_result(global_hit)
+
+    routing = run_orchestrator(_get_openai_client(required=False), text)
+    fast_result = _handle_routing_fast_exit(session, payload, text, routing)
+    if fast_result is not None:
+        return fast_result
 
     return _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
 
@@ -2879,14 +2901,54 @@ def api_debug_observability(
     return _observability_config_payload()
 
 
+@app.get("/api/debug/global-qa-cache")
+def api_debug_global_qa_cache(
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status and normalized_status not in {"candidate", "approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="status must be candidate, approved, or rejected")
+    query = select(GlobalQACache).order_by(GlobalQACache.updated_at.desc()).limit(limit)
+    if normalized_status:
+        query = query.where(GlobalQACache.status == normalized_status)
+    rows = list(session.exec(query).all())
+    safe_rows = [
+        row
+        for row in rows
+        if str(row.safety_label or "").strip().lower() not in {"private", "personal_high_risk"}
+    ]
+    return {
+        "ok": True,
+        "count": len(safe_rows),
+        "entries": [
+            {
+                "id": row.id,
+                "canonical_question": row.canonical_question,
+                "status": row.status,
+                "hit_count": row.hit_count,
+                "distinct_user_count": row.distinct_user_count,
+                "observed_question_count": row.observed_question_count,
+                "confidence": row.confidence,
+                "review_notes": row.review_notes,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in safe_rows
+        ],
+    }
+
+
 @app.get("/api/global-knowledge/sync")
 def api_global_knowledge_sync(
     since: Optional[str] = Query(default=None),
+    afterId: Optional[int] = Query(default=None, ge=1),
     limit: int = Query(default=250, ge=1, le=500),
     session: Session = Depends(get_session),
     auth_user: AuthUser = Depends(get_current_user),
 ):
-    return build_global_knowledge_sync_payload(session, since=since, limit=limit)
+    return build_global_knowledge_sync_payload(session, since=since, limit=limit, after_id=afterId)
 
 
 @app.post("/api/chat")

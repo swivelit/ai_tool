@@ -50,6 +50,37 @@ def _session_context(session: Optional[Session]):
     return created, created
 
 
+def _check_budget_or_raise(
+    usage_session: Session,
+    *,
+    route: str,
+    model_used: str,
+    model_tier: str,
+    estimated_cost: float,
+) -> None:
+    budget = _budget_usd()
+    if budget <= 0:
+        return
+    today_spend = get_today_estimated_openai_spend(usage_session)
+    if today_spend + estimated_cost > budget:
+        logger.warning(
+            "openai_budget_exceeded",
+            extra={
+                "event": "openai_budget_exceeded",
+                "route": route,
+                "model_used": model_used,
+                "model_tier": model_tier,
+                "estimated_cost_usd": round(estimated_cost, 8),
+                "today_estimated_spend_usd": round(today_spend, 8),
+                "daily_budget_usd": budget,
+                "today_spend": round(today_spend, 8),
+                "estimated_cost": round(estimated_cost, 8),
+                "budget": budget,
+            },
+        )
+        raise OpenAIBudgetExceededError("OpenAI daily budget exceeded; cache-only response unavailable.")
+
+
 def tracked_chat_completion(
     client: Any,
     *,
@@ -75,7 +106,7 @@ def tracked_chat_completion(
         prompt_text,
         risk_level=risk_level,
         needs_live_data=needs_live_data,
-        route=task,
+        route=route,
     )
     output_tokens = min(
         int(max_tokens or selection.max_output_tokens),
@@ -87,23 +118,13 @@ def tracked_chat_completion(
 
     owned_session, usage_session = _session_context(session)
     try:
-        budget = _budget_usd()
-        if budget > 0:
-            today_spend = get_today_estimated_openai_spend(usage_session)
-            if today_spend >= budget:
-                logger.warning(
-                    "openai_budget_exceeded",
-                    extra={
-                        "event": "openai_budget_exceeded",
-                        "route": route,
-                        "model_used": selection.model,
-                        "model_tier": selection.tier,
-                        "estimated_cost_usd": round(estimated_cost, 8),
-                        "today_estimated_spend_usd": round(today_spend, 8),
-                        "daily_budget_usd": budget,
-                    },
-                )
-                raise OpenAIBudgetExceededError("OpenAI daily budget exceeded; cache-only response unavailable.")
+        _check_budget_or_raise(
+            usage_session,
+            route=route,
+            model_used=selection.model,
+            model_tier=selection.tier,
+            estimated_cost=estimated_cost,
+        )
 
         request_kwargs: dict[str, Any] = {
             "model": selection.model,
@@ -138,6 +159,71 @@ def tracked_chat_completion(
                 "reason": selection.reason,
                 "estimated_input_tokens": input_tokens,
                 "estimated_output_tokens": output_tokens,
+                "estimated_cost_usd": round(estimated_cost, 8),
+            },
+        )
+        return response
+    finally:
+        if owned_session is not None:
+            owned_session.close()
+
+
+def tracked_embedding(
+    client: Any,
+    *,
+    input: list[str] | str,
+    route: str,
+    session: Optional[Session] = None,
+    user_id: Any = None,
+    request_id: Optional[str] = None,
+    model: Optional[str] = None,
+    **extra: Any,
+) -> Any:
+    """Budget-check, call, and log an OpenAI Embeddings request."""
+
+    router = OpenAIModelRouter()
+    embedding_model = (
+        str(model or os.getenv("RAG_EMBEDDING_MODEL") or os.getenv("OPENAI_EMBEDDING_MODEL") or "").strip()
+        or "text-embedding-3-small"
+    )
+    texts = input if isinstance(input, list) else [str(input or "")]
+    prompt_text = "\n".join(str(text or "") for text in texts)
+    input_tokens = router.estimate_tokens(prompt_text)
+    estimated_cost = router.estimate_cost(embedding_model, input_tokens, 0)
+
+    owned_session, usage_session = _session_context(session)
+    try:
+        _check_budget_or_raise(
+            usage_session,
+            route=route,
+            model_used=embedding_model,
+            model_tier="embedding",
+            estimated_cost=estimated_cost,
+        )
+        response = client.embeddings.create(model=embedding_model, input=input, **extra)
+        record_openai_usage(
+            usage_session,
+            user_id=user_id,
+            request_id=request_id,
+            route=route,
+            model_used=embedding_model,
+            model_tier="embedding",
+            reason="embedding",
+            estimated_input_tokens=input_tokens,
+            estimated_output_tokens=0,
+            estimated_cost_usd=estimated_cost,
+            cache_hit=False,
+        )
+        logger.info(
+            "openai_usage_tracked",
+            extra={
+                "event": "openai_usage_tracked",
+                "route": route,
+                "model_used": embedding_model,
+                "model_tier": "embedding",
+                "reason": "embedding",
+                "estimated_input_tokens": input_tokens,
+                "estimated_output_tokens": 0,
                 "estimated_cost_usd": round(estimated_cost, 8),
             },
         )

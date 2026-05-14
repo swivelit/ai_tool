@@ -7,6 +7,7 @@ export const GLOBAL_KNOWLEDGE_SYNC_META_KEY = "global_knowledge_sync_meta_v1";
 export const GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND = "token_hash_v1";
 export const GLOBAL_KNOWLEDGE_SYNC_THROTTLE_MS = 5 * 60 * 1000;
 export const GLOBAL_KNOWLEDGE_FOREGROUND_STALE_MS = 6 * 60 * 60 * 1000;
+export const GLOBAL_KNOWLEDGE_SYNC_PAGE_CAP = 10;
 
 type SyncEntryPayload = {
   id?: number | string;
@@ -29,6 +30,10 @@ type SyncPayload = {
   ok?: boolean;
   entries?: SyncEntryPayload[];
   serverTime?: string;
+  nextSince?: string | null;
+  nextAfterId?: number | string | null;
+  hasMore?: boolean;
+  revokedIds?: Array<number | string>;
   count?: number;
 };
 
@@ -57,6 +62,7 @@ export type GlobalKnowledgeStore = {
 
 export type GlobalKnowledgeSyncMeta = {
   since?: string | null;
+  afterId?: string | null;
   updatedAt?: string | null;
   lastAttemptAt?: string | null;
 };
@@ -414,29 +420,69 @@ export async function syncGlobalKnowledge(
   const attemptAt = nowIso();
   await saveSyncMeta({ ...meta, lastAttemptAt: attemptAt });
 
-  const limit = Math.max(1, Math.min(Number(options.limit || 250), 500));
-  const since = options.force ? "" : String(meta.since || "");
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (since) params.set("since", since);
   inFlightSync = (async () => {
-    const payload = await apiGet<SyncPayload>(`/api/global-knowledge/sync?${params.toString()}`);
-    const incoming = Array.isArray(payload.entries)
-      ? payload.entries.map(normalizeEntry).filter(Boolean) as GlobalKnowledgeEntry[]
-      : [];
     const current = await loadGlobalKnowledgeStore();
     const byId = new Map(current.entries.map((entry) => [entry.id, entry]));
-    incoming.forEach((entry) => {
-      byId.set(entry.id, entry);
-    });
-    const updatedAt = payload.serverTime || nowIso();
+    const limit = Math.max(1, Math.min(Number(options.limit || 250), 500));
+    let cursorSince = options.force ? "" : String(meta.since || "");
+    let cursorAfterId = options.force ? "" : String(meta.afterId || "");
+    let updatedAt = meta.updatedAt || nowIso();
+    let totalSynced = 0;
+    let page = 0;
+    let hasMore = true;
+    while (hasMore && page < GLOBAL_KNOWLEDGE_SYNC_PAGE_CAP) {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (cursorSince) params.set("since", cursorSince);
+      if (cursorSince && cursorAfterId) params.set("afterId", cursorAfterId);
+      const payload = await apiGet<SyncPayload>(`/api/global-knowledge/sync?${params.toString()}`);
+      const revokedIds = Array.isArray(payload.revokedIds)
+        ? payload.revokedIds.map((id) => String(id)).filter(Boolean)
+        : [];
+      revokedIds.forEach((id) => {
+        byId.delete(id);
+      });
+      const incoming = Array.isArray(payload.entries)
+        ? payload.entries.map(normalizeEntry).filter(Boolean) as GlobalKnowledgeEntry[]
+        : [];
+      incoming.forEach((entry) => {
+        byId.set(entry.id, entry);
+      });
+      totalSynced += incoming.length;
+      updatedAt = payload.serverTime || updatedAt || nowIso();
+      const nextSince = String(payload.nextSince || "").trim();
+      const nextAfterId =
+        payload.nextAfterId === null || payload.nextAfterId === undefined
+          ? ""
+          : String(payload.nextAfterId).trim();
+      hasMore = payload.hasMore === true;
+      if (nextSince) {
+        cursorSince = nextSince;
+        cursorAfterId = nextAfterId;
+      } else {
+        hasMore = false;
+      }
+      page += 1;
+    }
     const next = {
       version: 1,
       entries: Array.from(byId.values()).filter((entry) => !isExpired(entry)),
       updatedAt,
     };
     await saveGlobalKnowledgeStore(next);
-    await saveSyncMeta({ since: updatedAt, updatedAt, lastAttemptAt: attemptAt });
-    return { ok: true, synced: incoming.length, total: next.entries.length, updatedAt };
+    await saveSyncMeta({
+      since: cursorSince || null,
+      afterId: cursorSince && cursorAfterId ? cursorAfterId : null,
+      updatedAt,
+      lastAttemptAt: attemptAt,
+    });
+    return {
+      ok: true,
+      synced: totalSynced,
+      total: next.entries.length,
+      updatedAt,
+      pages: page,
+      hasMore,
+    };
   })();
   try {
     return await inFlightSync;

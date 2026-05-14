@@ -1056,6 +1056,7 @@ describe("local orchestrator and alignment", () => {
       message: "Help with something the local model cannot safely finish.",
       replyLanguage: "en",
       userAllowedCloudFallback: true,
+      requestId: "chat-screen-request-25",
     });
 
     expect(result.source).toBe("openai_fallback");
@@ -1067,6 +1068,7 @@ describe("local orchestrator and alignment", () => {
         user_id: 25,
         message: "Help with something the local model cannot safely finish.",
         reply_language: "en",
+        request_id: "chat-screen-request-25",
       }),
     );
     expect(result.meta?.orchestratorDecision?.fallbackAllowed).toBe(true);

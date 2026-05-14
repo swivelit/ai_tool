@@ -7056,6 +7056,7 @@ function logClientBackendFallbackEvent(input: {
   userId: number;
   message: string;
   answer?: string;
+  requestId?: string | null;
   fallbackReason: BackendFallbackReason;
   originalRoute?: string | null;
   stageTimings?: Record<string, any>;
@@ -7063,6 +7064,7 @@ function logClientBackendFallbackEvent(input: {
   sendClientTurnLog({
     event: input.event,
     user_id: input.userId,
+    request_id: input.requestId || undefined,
     channel: "text",
     question: input.message,
     answer: input.answer,
@@ -7079,6 +7081,7 @@ async function callBackendOpenAiFallback(opts: {
   userId: number;
   message: string;
   replyLanguage: ReplyLanguage;
+  requestId?: string | null;
   fallbackReason: BackendFallbackReason;
   originalRoute?: string | null;
   stageTimings?: Record<string, any>;
@@ -7087,6 +7090,7 @@ async function callBackendOpenAiFallback(opts: {
     event: "client_backend_fallback_started",
     userId: opts.userId,
     message: opts.message,
+    requestId: opts.requestId,
     fallbackReason: opts.fallbackReason,
     originalRoute: opts.originalRoute,
     stageTimings: opts.stageTimings,
@@ -7095,6 +7099,7 @@ async function callBackendOpenAiFallback(opts: {
     user_id: opts.userId,
     message: opts.message,
     reply_language: opts.replyLanguage,
+    request_id: opts.requestId || undefined,
   });
   const annotated = annotateBackendOpenAiFallbackResponse(backend, {
     fallbackReason: opts.fallbackReason,
@@ -7106,6 +7111,7 @@ async function callBackendOpenAiFallback(opts: {
     userId: opts.userId,
     message: opts.message,
     answer: answerTextFromBackendPayload(annotated),
+    requestId: opts.requestId,
     fallbackReason: opts.fallbackReason,
     originalRoute: opts.originalRoute,
     stageTimings: opts.stageTimings,
@@ -7122,6 +7128,7 @@ async function buildBackendFallbackTurn(opts: {
   originalRoute?: string | null;
   decision: OrchestratorDecision;
   stageTimings: Record<string, number>;
+  requestId?: string | null;
   appendUserTurn?: boolean;
 }): Promise<LocalAssistantTurnResult> {
   if (opts.appendUserTurn) {
@@ -7131,6 +7138,7 @@ async function buildBackendFallbackTurn(opts: {
     userId: opts.userId,
     message: opts.message,
     replyLanguage: opts.replyLanguage,
+    requestId: opts.requestId,
     fallbackReason: opts.fallbackReason,
     originalRoute: opts.originalRoute,
     stageTimings: opts.stageTimings,
@@ -7658,6 +7666,7 @@ export async function runLocalAssistantTurn(opts: {
         userId,
         message,
         replyLanguage,
+        requestId: opts.requestId,
         fallbackReason: "local_model_unavailable",
         originalRoute: "setup_required",
         decision,
@@ -8227,6 +8236,7 @@ export async function runLocalAssistantTurn(opts: {
         userId,
         message,
         replyLanguage,
+        requestId: opts.requestId,
         fallbackReason,
         originalRoute: decision.reason === fallbackReason ? "local_answer" : decision.route,
         stageTimings,

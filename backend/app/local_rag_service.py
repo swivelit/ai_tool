@@ -20,6 +20,7 @@ from sqlmodel import Session, select
 
 from .database import engine
 from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User, UserProfile
+from .openai_tracked import OpenAIBudgetExceededError, tracked_embedding
 from .vector_store import VectorStore
 
 try:
@@ -532,13 +533,26 @@ class LocalRAGService:
         while len(self._embed_cache) > int(RAG_EMBED_CACHE_SIZE or 4096):
             self._embed_cache.popitem(last=False)
 
-    def _openai_embed(self, texts: List[str]) -> List[List[float]]:
+    def _openai_embed(
+        self,
+        texts: List[str],
+        *,
+        session: Optional[Session] = None,
+        user_id: Optional[int] = None,
+    ) -> List[List[float]]:
         if not self._semantic_enabled or self._openai is None or not texts:
             return []
         
         client = self._openai
         try:
-            resp = client.embeddings.create(model=self._embedding_model, input=texts)
+            resp = tracked_embedding(
+                client,
+                input=texts,
+                model=self._embedding_model,
+                route="rag_embedding",
+                session=session,
+                user_id=user_id,
+            )
             data = getattr(resp, "data", None)
             if data is None and isinstance(resp, dict):
                 data = resp.get("data")
@@ -549,10 +563,18 @@ class LocalRAGService:
                     emb = item.get("embedding")
                 vectors.append([float(x) for x in (emb or [])])
             return vectors
+        except OpenAIBudgetExceededError:
+            return []
         except Exception:
             return []
 
-    def _embed_query(self, text: str) -> Optional[Tuple[List[float], float]]:
+    def _embed_query(
+        self,
+        text: str,
+        *,
+        session: Optional[Session] = None,
+        user_id: Optional[int] = None,
+    ) -> Optional[Tuple[List[float], float]]:
         clean = str(text or "").strip()
         if not clean:
             return None
@@ -560,7 +582,7 @@ class LocalRAGService:
         cached = self._lru_get(key)
         if cached is not None:
             return cached
-        vectors = self._openai_embed([clean])
+        vectors = self._openai_embed([clean], session=session, user_id=user_id)
         if not vectors:
             return None
         vec = vectors[0]
@@ -608,7 +630,7 @@ class LocalRAGService:
                 self._lru_set(content_hash, vec, norm)
                 return vec, norm, content_hash
 
-        vectors = self._openai_embed([content_text])
+        vectors = self._openai_embed([content_text], session=session, user_id=user_id)
         if not vectors:
             return None
         vec = vectors[0]
@@ -1102,7 +1124,7 @@ class LocalRAGService:
 
         q_tokens = set(self._tokens(normalized_query))
         exp_q = self._expand_tokens(q_tokens)
-        query_embedding = self._embed_query(normalized_query) if self._semantic_enabled else None
+        query_embedding = self._embed_query(normalized_query, session=session, user_id=int(user_id)) if self._semantic_enabled else None
 
         t_fetch = time.perf_counter()
         candidates: List[RagSnippet] = []

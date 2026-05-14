@@ -5,7 +5,7 @@ from sqlmodel import select
 from app.database import SessionLocal
 from app.models import OpenAIUsageLog
 from app.openai_model_router import OpenAIModelRouter, get_today_estimated_openai_spend, record_openai_usage
-from app.openai_tracked import OpenAIBudgetExceededError, tracked_chat_completion
+from app.openai_tracked import OpenAIBudgetExceededError, tracked_chat_completion, tracked_embedding
 
 
 def test_model_router_uses_cheap_for_classification(monkeypatch):
@@ -107,6 +107,24 @@ class _FakeClient:
     def __init__(self):
         self.completions = _FakeCompletions()
         self.chat = type("Chat", (), {"completions": self.completions})()
+        self.embeddings = _FakeEmbeddings()
+
+
+class _FakeEmbeddingItem:
+    embedding = [0.1, 0.2, 0.3]
+
+
+class _FakeEmbeddingResponse:
+    data = [_FakeEmbeddingItem()]
+
+
+class _FakeEmbeddings:
+    def __init__(self):
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return _FakeEmbeddingResponse()
 
 
 def test_tracked_chat_completion_uses_router_and_writes_usage(monkeypatch):
@@ -168,3 +186,93 @@ def test_daily_budget_blocks_tracked_openai_call(monkeypatch):
 
         assert raised is True
         assert client.completions.calls == []
+
+
+def test_daily_budget_blocks_call_that_would_cross_budget(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-budget")
+    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "0.000001")
+    client = _FakeClient()
+
+    with SessionLocal() as session:
+        try:
+            tracked_chat_completion(
+                client,
+                session=session,
+                user_id=123,
+                task="normal_qa",
+                route="budget_crossing_route",
+                messages=[{"role": "user", "content": "What is a compiler?"}],
+            )
+            raised = False
+        except OpenAIBudgetExceededError:
+            raised = True
+
+        assert raised is True
+        assert client.completions.calls == []
+        assert session.exec(select(OpenAIUsageLog)).all() == []
+
+
+def test_tracked_chat_completion_forwards_route_to_high_model_allowlist(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-model")
+    monkeypatch.setenv("OPENAI_MODEL_STANDARD", "standard-model")
+    monkeypatch.setenv("OPENAI_MODEL_REASONING", "reasoning-model")
+    monkeypatch.setenv("OPENAI_MODEL_HIGH", "high-model")
+    monkeypatch.setenv("OPENAI_DISABLE_HIGHEST_MODEL", "false")
+    monkeypatch.setenv("OPENAI_HIGH_MODEL_ALLOWLIST", "review_route")
+    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "10")
+    client = _FakeClient()
+
+    with SessionLocal() as session:
+        tracked_chat_completion(
+            client,
+            session=session,
+            user_id=123,
+            task="high",
+            route="review_route",
+            messages=[{"role": "user", "content": "Use the high model for this review."}],
+            max_tokens=20,
+        )
+
+        assert client.completions.calls[0]["model"] == "high-model"
+        stored = session.exec(select(OpenAIUsageLog)).one()
+        assert stored.route == "review_route"
+        assert stored.model_tier == "high"
+
+
+def test_tracked_embedding_writes_usage_and_respects_budget(monkeypatch):
+    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding-model")
+    monkeypatch.delenv("OPENAI_DAILY_BUDGET_USD", raising=False)
+    client = _FakeClient()
+
+    with SessionLocal() as session:
+        response = tracked_embedding(
+            client,
+            session=session,
+            user_id=123,
+            route="rag_embedding",
+            input=["hello world"],
+        )
+
+        assert response.data[0].embedding == [0.1, 0.2, 0.3]
+        assert client.embeddings.calls[0]["model"] == "embedding-model"
+        stored = session.exec(select(OpenAIUsageLog)).one()
+        assert stored.route == "rag_embedding"
+        assert stored.model_tier == "embedding"
+
+    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "0.0000001")
+    blocked_client = _FakeClient()
+    with SessionLocal() as session:
+        try:
+            tracked_embedding(
+                blocked_client,
+                session=session,
+                user_id=123,
+                route="rag_embedding",
+                input=["hello world"],
+            )
+            raised = False
+        except OpenAIBudgetExceededError:
+            raised = True
+
+        assert raised is True
+        assert blocked_client.embeddings.calls == []

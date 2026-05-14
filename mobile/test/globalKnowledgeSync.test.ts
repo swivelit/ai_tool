@@ -62,6 +62,101 @@ describe("global knowledge sync", () => {
     expect(apiGetMock).toHaveBeenCalledWith("/api/global-knowledge/sync?limit=250");
   });
 
+  it("syncs multiple cursor pages without missing entries", async () => {
+    const entries = Array.from({ length: 600 }, (_, index) => ({
+      id: index + 1,
+      canonicalQuestion: `What is paged concept ${index + 1}?`,
+      normalizedQuestion: `what is paged concept ${index + 1}`,
+      answer: `Paged answer ${index + 1}.`,
+      answerLanguage: "en",
+      embedding: [],
+      embeddingKind: "token_hash_v1",
+      embeddingNorm: 0,
+      confidence: 0.95,
+      safetyLabel: "general",
+      updatedAt: `2026-05-14T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}Z`,
+    }));
+    apiGetMock
+      .mockResolvedValueOnce({
+        ok: true,
+        serverTime: "2026-05-14T00:10:00Z",
+        entries: entries.slice(0, 250),
+        nextSince: entries[249].updatedAt,
+        nextAfterId: 250,
+        hasMore: true,
+        revokedIds: [],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        serverTime: "2026-05-14T00:10:01Z",
+        entries: entries.slice(250, 500),
+        nextSince: entries[499].updatedAt,
+        nextAfterId: 500,
+        hasMore: true,
+        revokedIds: [],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        serverTime: "2026-05-14T00:10:02Z",
+        entries: entries.slice(500),
+        nextSince: entries[599].updatedAt,
+        nextAfterId: 600,
+        hasMore: false,
+        revokedIds: [],
+      });
+
+    const { loadGlobalKnowledgeStore, syncGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    const result = await syncGlobalKnowledge();
+    const store = await loadGlobalKnowledgeStore();
+
+    expect(result.synced).toBe(600);
+    expect(result.pages).toBe(3);
+    expect(store.entries).toHaveLength(600);
+    expect(new Set(store.entries.map((entry) => entry.id)).size).toBe(600);
+    expect(apiGetMock).toHaveBeenCalledTimes(3);
+    expect(String(apiGetMock.mock.calls[1][0])).toContain("since=");
+    expect(String(apiGetMock.mock.calls[1][0])).toContain("afterId=250");
+    expect(String(apiGetMock.mock.calls[2][0])).toContain("afterId=500");
+  });
+
+  it("removes locally cached entries when sync returns revoked ids", async () => {
+    const { GLOBAL_KNOWLEDGE_CACHE_KEY, loadGlobalKnowledgeStore, syncGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    storage.set(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "7",
+            canonicalQuestion: "What is a compiler?",
+            normalizedQuestion: "what is compiler",
+            answer: "Old approved answer.",
+            answerLanguage: "en",
+            embedding: [],
+            embeddingNorm: 0,
+            confidence: 0.93,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    apiGetMock.mockResolvedValueOnce({
+      ok: true,
+      serverTime: "2026-05-14T00:05:00Z",
+      entries: [],
+      revokedIds: [7],
+      nextSince: "2026-05-14T00:05:00Z",
+      nextAfterId: 7,
+      hasMore: false,
+    });
+
+    await syncGlobalKnowledge({ force: true });
+    const store = await loadGlobalKnowledgeStore();
+
+    expect(store.entries).toHaveLength(0);
+  });
+
   it("finds a similar question from synced knowledge without embeddings", async () => {
     const { GLOBAL_KNOWLEDGE_CACHE_KEY, lookupSyncedGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
     storage.set(

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import app.main as main_module
 from app.database import SessionLocal
 from app.global_qa_cache import (
     build_global_knowledge_sync_payload,
+    embed_question_for_global_cache,
     lookup_approved_global_cache,
+    normalize_question,
     record_backend_openai_answer,
 )
 from app.models import GlobalQACache, GlobalQAObservation
@@ -188,6 +191,182 @@ def test_global_knowledge_sync_returns_only_approved_safe_entries(client):
     assert payload["count"] == 1
     assert payload["entries"][0]["answer"] == "Photosynthesis is how plants make food."
     assert payload["entries"][0]["embeddingKind"] == "token_hash_v1"
+    assert payload["hasMore"] is False
+    assert payload["revokedIds"] == []
+
+
+def test_approved_global_cache_hit_skips_openai_orchestrator(client, monkeypatch):
+    create_test_user("hit-uid", "hit@example.com")
+    question = "What is a compiler?"
+    embedding, norm = embed_question_for_global_cache(normalize_question(question))
+    with SessionLocal() as session:
+        session.add(
+            GlobalQACache(
+                canonical_question=question,
+                normalized_question=normalize_question(question),
+                answer="A compiler translates source code.",
+                answer_language="en",
+                topic="compiler",
+                status="approved",
+                hit_count=2,
+                distinct_user_count=2,
+                observed_question_count=2,
+                source_question_hashes_json=json.dumps([]),
+                answer_hash="compiler-hash",
+                embedding_json=json.dumps(embedding),
+                embedding_norm=norm,
+                confidence=0.95,
+                safety_label="general",
+                expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+            )
+        )
+        session.commit()
+
+    orchestrator_calls: list[str] = []
+
+    def fail_orchestrator(client_arg, text):
+        orchestrator_calls.append(text)
+        raise AssertionError("full OpenAI orchestrator must not run for global cache hits")
+
+    monkeypatch.setattr(main_module, "run_orchestrator", fail_orchestrator)
+    monkeypatch.setattr(
+        main_module,
+        "_run_agentic_or_pipeline",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("pipeline must not run")),
+    )
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("hit-uid", "hit@example.com"),
+        json={"message": "Explain compiler", "reply_language": "en", "request_id": "hit-1"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pipeline"]["route_taken"] == "global_knowledge_cache"
+    assert payload["pipeline"]["direct_answer_source"] == "global_qa_cache"
+    assert orchestrator_calls == []
+
+
+def test_global_knowledge_sync_paginates_without_missing_rows():
+    base = datetime(2026, 5, 14, 0, 0, tzinfo=timezone.utc)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    with SessionLocal() as session:
+        for index in range(600):
+            session.add(
+                GlobalQACache(
+                    canonical_question=f"What is sync concept {index}?",
+                    normalized_question=normalize_question(f"What is sync concept {index}?"),
+                    answer=f"Sync concept {index} answer.",
+                    answer_language="en",
+                    topic="sync",
+                    status="approved",
+                    hit_count=2,
+                    distinct_user_count=2,
+                    observed_question_count=2,
+                    source_question_hashes_json=json.dumps([]),
+                    answer_hash=f"hash-{index}",
+                    embedding_json="[]",
+                    embedding_norm=0,
+                    confidence=0.95,
+                    safety_label="general",
+                    updated_at=base + timedelta(seconds=index),
+                    expires_at=expires_at,
+                )
+            )
+        session.commit()
+
+        seen: list[int] = []
+        since = None
+        after_id = None
+        pages = 0
+        while True:
+            payload = build_global_knowledge_sync_payload(session, since=since, after_id=after_id, limit=250)
+            pages += 1
+            seen.extend(int(entry["id"]) for entry in payload["entries"])
+            since = payload["nextSince"]
+            after_id = payload["nextAfterId"]
+            if not payload["hasMore"]:
+                break
+
+        assert pages == 3
+        assert len(seen) == 600
+        assert len(set(seen)) == 600
+
+
+def test_global_knowledge_sync_revokes_rejected_rows():
+    base = datetime(2026, 5, 14, 0, 0, tzinfo=timezone.utc)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    with SessionLocal() as session:
+        row = GlobalQACache(
+            canonical_question="What is a queue?",
+            normalized_question="what is queue",
+            answer="A queue is a first-in, first-out data structure.",
+            answer_language="en",
+            topic="queue",
+            status="approved",
+            hit_count=2,
+            distinct_user_count=2,
+            observed_question_count=2,
+            source_question_hashes_json=json.dumps([]),
+            answer_hash="queue-hash",
+            embedding_json="[]",
+            embedding_norm=0,
+            confidence=0.95,
+            safety_label="general",
+            updated_at=base,
+            expires_at=expires_at,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+
+        first = build_global_knowledge_sync_payload(session, limit=250)
+        assert [entry["id"] for entry in first["entries"]] == [row.id]
+
+        row.status = "rejected"
+        row.updated_at = base + timedelta(seconds=1)
+        session.add(row)
+        session.commit()
+
+        second = build_global_knowledge_sync_payload(
+            session,
+            since=first["nextSince"],
+            after_id=first["nextAfterId"],
+            limit=250,
+        )
+        assert second["entries"] == []
+        assert second["revokedIds"] == [row.id]
+
+
+def test_global_knowledge_sync_skips_corrupt_embedding_rows(caplog):
+    with SessionLocal() as session:
+        row = GlobalQACache(
+            canonical_question="What is a stack?",
+            normalized_question="what is stack",
+            answer="A stack is a last-in, first-out data structure.",
+            answer_language="en",
+            topic="stack",
+            status="approved",
+            hit_count=2,
+            distinct_user_count=2,
+            observed_question_count=2,
+            source_question_hashes_json=json.dumps([]),
+            answer_hash="stack-hash",
+            embedding_json="{not-json",
+            embedding_norm=0,
+            confidence=0.95,
+            safety_label="general",
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+
+        payload = build_global_knowledge_sync_payload(session, limit=250)
+
+        assert payload["entries"] == []
+        assert payload["revokedIds"] == [row.id]
+        assert "global_knowledge_sync_skipped_corrupt_entry" in caplog.text
 
 
 def test_similar_questions_with_similar_answers_promote():

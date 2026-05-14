@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import inspect, text
+from sqlalchemy import and_, inspect, or_, text
 from sqlmodel import Session, select
 
 from .models import GlobalQACache, GlobalQAObservation
@@ -708,40 +708,101 @@ def _parse_since(value: Any) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
-def build_global_knowledge_sync_payload(session: Session, since: Any = None, limit: int = 250) -> dict:
+def _parse_after_id(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _sync_safe_row(row: GlobalQACache, now: datetime) -> bool:
+    if row.status != "approved":
+        return False
+    if not _not_expired(row, now):
+        return False
+    safety_label = str(row.safety_label or "").strip().lower()
+    if safety_label in {"private", "personal_high_risk", "unsafe"}:
+        return False
+    if is_private_or_personal_question(row.canonical_question) or is_private_or_personal_question(row.normalized_question):
+        return False
+    return True
+
+
+def _row_cursor(row: GlobalQACache) -> Tuple[Optional[str], Optional[int]]:
+    return (
+        row.updated_at.isoformat() if row.updated_at else None,
+        int(row.id) if row.id is not None else None,
+    )
+
+
+def build_global_knowledge_sync_payload(
+    session: Session,
+    since: Any = None,
+    limit: int = 250,
+    after_id: Any = None,
+) -> dict:
     _ensure_schema_compat(session)
     since_dt = _parse_since(since)
+    after_id_int = _parse_after_id(after_id)
     now = utc_now()
     safe_limit = max(1, min(int(limit or 250), 500))
     query = (
         select(GlobalQACache)
-        .where(GlobalQACache.status == "approved")
-        .order_by(GlobalQACache.updated_at.asc())
+        .order_by(GlobalQACache.updated_at.asc(), GlobalQACache.id.asc())
+        .limit(safe_limit + 1)
     )
     if since_dt is not None:
-        query = query.where(GlobalQACache.updated_at > since_dt)
-    rows = list(session.exec(query).all())
-    entries: List[Dict[str, Any]] = []
-    for row in rows:
-        if len(entries) >= safe_limit:
-            break
-        if not _not_expired(row, now):
-            continue
-        if row.safety_label in {"private", "personal_high_risk", "unsafe"}:
-            continue
-        if is_private_or_personal_question(row.canonical_question) or is_private_or_personal_question(row.normalized_question):
-            logger.warning(
-                "global_knowledge_sync_skipped_private_entry",
-                extra={"event": "global_knowledge_sync_skipped_private_entry", "global_cache_id": row.id},
+        if after_id_int is not None:
+            query = query.where(
+                or_(
+                    GlobalQACache.updated_at > since_dt,
+                    and_(GlobalQACache.updated_at == since_dt, GlobalQACache.id > after_id_int),
+                )
             )
+        else:
+            query = query.where(GlobalQACache.updated_at > since_dt)
+    rows = list(session.exec(query).all())
+    page_rows = rows[:safe_limit]
+    has_more = len(rows) > safe_limit
+    entries: List[Dict[str, Any]] = []
+    revoked_ids: List[int] = []
+    last_processed: Optional[GlobalQACache] = None
+    for row in page_rows:
+        last_processed = row
+        if not _sync_safe_row(row, now):
+            if row.id is not None:
+                revoked_ids.append(int(row.id))
+            safety_label = str(row.safety_label or "").strip().lower()
+            if (
+                safety_label in {"private", "personal_high_risk", "unsafe"}
+                or is_private_or_personal_question(row.canonical_question)
+                or is_private_or_personal_question(row.normalized_question)
+            ):
+                logger.warning(
+                    "global_knowledge_sync_skipped_private_entry",
+                    extra={"event": "global_knowledge_sync_skipped_private_entry", "global_cache_id": row.id},
+                )
             continue
         embedding_kind = str(getattr(row, "embedding_kind", "") or GLOBAL_QA_EMBEDDING_KIND)
         if embedding_kind != GLOBAL_QA_EMBEDDING_KIND:
             embedding = []
             embedding_norm = 0.0
         else:
-            embedding = json.loads(row.embedding_json or "[]") if row.embedding_json else []
-            embedding_norm = row.embedding_norm
+            try:
+                parsed_embedding = json.loads(row.embedding_json or "[]") if row.embedding_json else []
+                embedding = [float(value) for value in parsed_embedding] if isinstance(parsed_embedding, list) else []
+                embedding_norm = float(row.embedding_norm or _vector_norm(embedding))
+            except Exception:
+                if row.id is not None:
+                    revoked_ids.append(int(row.id))
+                logger.warning(
+                    "global_knowledge_sync_skipped_corrupt_entry",
+                    extra={"event": "global_knowledge_sync_skipped_corrupt_entry", "global_cache_id": row.id},
+                )
+                continue
         entries.append(
             {
                 "id": row.id,
@@ -760,8 +821,28 @@ def build_global_knowledge_sync_payload(session: Session, since: Any = None, lim
                 "expiresAt": row.expires_at.isoformat() if row.expires_at else None,
             }
         )
+    next_since, next_after_id = _row_cursor(last_processed) if last_processed is not None else (
+        since_dt.isoformat() if since_dt else None,
+        after_id_int,
+    )
     logger.info(
         "global_knowledge_sync_completed",
-        extra={"event": "global_knowledge_sync_completed", "cache_hit": False, "question_length": len(entries)},
+        extra={
+            "event": "global_knowledge_sync_completed",
+            "cache_hit": False,
+            "question_length": len(entries),
+            "revoked_count": len(set(revoked_ids)),
+            "has_more": has_more,
+        },
     )
-    return {"ok": True, "entries": entries, "count": len(entries), "serverTime": now.isoformat(), "since": since_dt.isoformat() if since_dt else None}
+    return {
+        "ok": True,
+        "entries": entries,
+        "count": len(entries),
+        "nextSince": next_since,
+        "nextAfterId": next_after_id,
+        "hasMore": has_more,
+        "serverTime": now.isoformat(),
+        "revokedIds": sorted(set(revoked_ids)),
+        "since": since_dt.isoformat() if since_dt else None,
+    }

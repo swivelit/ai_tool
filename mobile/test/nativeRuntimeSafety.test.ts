@@ -80,7 +80,11 @@ describe("Android native runtime safety", () => {
     expect(iosModule).toContain('AsyncFunction("cancelRequest")');
     expect(androidRuntime).toContain("nativeCancelRequest");
     expect(androidRuntime).toContain("isRequestCancelled(request_id)");
+    expect(androidRuntime).toContain("decodeTokens(ctx.get(), prompt_tokens, true, request_id)");
+    expect(androidRuntime).toContain("decodeSingleToken(ctx.get(), token, next_pos, request_id)");
     expect(iosBridge).toContain("cancelRequest:");
     expect(iosBridge).toContain("isRequestCancelled(requestId)");
+    expect(iosBridge).toContain("decodeTokens(ctx.get(), promptTokens, true, requestId)");
+    expect(iosBridge).toContain("decodeSingleToken(ctx.get(), token, nextPos, requestId)");
   });
 });

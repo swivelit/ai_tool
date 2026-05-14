@@ -419,7 +419,11 @@ std::string decodeFailureDetail(
       ", n_batch=" + std::to_string(llama_n_batch(ctx)) + ".";
 }
 
-void decodeTokens(llama_context *ctx, const std::vector<llama_token> &tokens, bool logits_on_last_token) {
+bool decodeTokens(
+    llama_context *ctx,
+    const std::vector<llama_token> &tokens,
+    bool logits_on_last_token,
+    const std::string &request_id) {
   if (tokens.empty()) {
     throw JaiNativeError("JAI_LLAMA_CPP_EMPTY_PROMPT", "Cannot run llama.cpp decode with an empty token list.");
   }
@@ -428,6 +432,9 @@ void decodeTokens(llama_context *ctx, const std::vector<llama_token> &tokens, bo
   llama_pos pos = 0;
   size_t offset = 0;
   while (offset < tokens.size()) {
+    if (isRequestCancelled(request_id)) {
+      return false;
+    }
     const size_t count = std::min<size_t>(tokens.size() - offset, n_batch);
     const bool is_last = offset + count >= tokens.size();
     auto batch = makeBatch(tokens, offset, count, pos, logits_on_last_token && is_last);
@@ -437,12 +444,19 @@ void decodeTokens(llama_context *ctx, const std::vector<llama_token> &tokens, bo
           "JAI_LLAMA_CPP_DECODE_FAILED",
           decodeFailureDetail("prompt/input tokens", status, ctx, *batch, tokens.size()));
     }
+    if (isRequestCancelled(request_id)) {
+      return false;
+    }
     pos += static_cast<llama_pos>(count);
     offset += count;
   }
+  return true;
 }
 
-void decodeSingleToken(llama_context *ctx, llama_token token, llama_pos pos) {
+bool decodeSingleToken(llama_context *ctx, llama_token token, llama_pos pos, const std::string &request_id) {
+  if (isRequestCancelled(request_id)) {
+    return false;
+  }
   std::vector<llama_token> one = {token};
   auto batch = makeBatch(one, 0, 1, pos, true);
   const int32_t status = llama_decode(ctx, *batch);
@@ -451,6 +465,7 @@ void decodeSingleToken(llama_context *ctx, llama_token token, llama_pos pos) {
         "JAI_LLAMA_CPP_DECODE_FAILED",
         decodeFailureDetail("a generated token", status, ctx, *batch, 1));
   }
+  return !isRequestCancelled(request_id);
 }
 
 LlamaSamplerPtr createSampler(double temperature) {
@@ -498,7 +513,10 @@ std::string completeChatNative(
     prompt_tokens.erase(prompt_tokens.begin(), prompt_tokens.end() - static_cast<std::ptrdiff_t>(max_prompt_tokens));
   }
 
-  decodeTokens(ctx.get(), prompt_tokens, true);
+  if (!decodeTokens(ctx.get(), prompt_tokens, true, request_id)) {
+    clearCancelledRequestId(request_id);
+    return "";
+  }
 
   const llama_vocab *vocab = llama_model_get_vocab(model.get());
   auto sampler = createSampler(static_cast<double>(temperature));
@@ -522,7 +540,10 @@ std::string completeChatNative(
       clearCancelledRequestId(request_id);
       break;
     }
-    decodeSingleToken(ctx.get(), token, next_pos);
+    if (!decodeSingleToken(ctx.get(), token, next_pos, request_id)) {
+      clearCancelledRequestId(request_id);
+      break;
+    }
     ++next_pos;
   }
 

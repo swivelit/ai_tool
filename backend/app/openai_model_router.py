@@ -170,12 +170,16 @@ class OpenAIModelRouter:
         needs_live_data: bool = False,
         route: Optional[str] = None,
     ) -> ModelSelection:
-        task_key = self.classify_task(
-            message,
-            route=route or task,
-            risk_level=risk_level,
-            needs_live_data=needs_live_data,
-        )
+        explicit_task = str(task or "").strip().lower()
+        if explicit_task in {"highest", "high"}:
+            task_key = explicit_task
+        else:
+            task_key = self.classify_task(
+                message,
+                route=route or task,
+                risk_level=risk_level,
+                needs_live_data=needs_live_data,
+            )
         tier, reason = self._tier_for_task(task_key)
 
         if tier == self.high_tier and not self._highest_allowed(task_key, route):
