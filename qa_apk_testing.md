@@ -1450,7 +1450,154 @@ APK Name: tamil-ai-debug.apk
 ### Rationale (Why):
 This change makes **"regressions obvious before release"** (the main ownership of the task). By surfacing the "Verdict" and "Stability" at the top, the QA pipeline transitions from a "log collection tool" to a "release decision tool."
 
+# Local QA Release Checklist
+
+## Objective
+To standardize the pre-release verification process, ensuring that no developer builds or deploys an APK with known regressions in core logic, safety, or UI stability.
+
+---
+
+## Why Local QA Must Run Before APK Builds
+*   **Prevent "Broken" Releases:** Catching a regression on a local machine takes 5 minutes; catching it after a release takes days of hotfixing.
+*   **Safety Assurance:** Verifies that critical medical safety and emergency routing intents are still functional.
+*   **Multilingual Integrity:** Ensures that recent changes haven't degraded Tamil or Tanglish response quality.
+
+---
+
+
+
+# Task 10 — Local QA Release Checklist
+
+
+
+# Recommended Local QA Workflow
+
+## Step 1 — Run Golden Regression Evals
+
+Run all assistant regression validations:
+
+```bash
+./scripts/run_golden_eval.sh
+```
+
+This validates:
+
+* assistant routing
+* Tamil responses
+* Tanglish prompts
+* memory recall
+* clarification handling
+* backend fallback behavior
+
+---
+
+## Step 2 — Run Targeted Regression Evals (Optional)
+
+### Mobile-only evals
+
+```bash
+./scripts/run_golden_eval.sh mobile
+```
+
+### Backend-only evals
+
+```bash
+./scripts/run_golden_eval.sh backend
+```
+
+Use targeted commands when fixing:
+
+* assistant logic
+* backend orchestration
+* specific regression failures
+
+---
+
+# Step 3 — Run APK UI Automation
+
+Run the APK automation harness:
+
+```bash
+./test_apk.sh
+```
+
+This validates:
+
+* APK launch flow
+* onboarding flow
+* chat interaction
+* voice interaction
+* deletion automation
+* UI stability
+* crash diagnostics
+* artifact generation
+
+---
+
+# Step 4 — Review QA Summary
+
+After execution, review:
+
+```text
+/dist/apk-test-<ID>/summary.txt
+```
+
+The summary now includes:
+
+* PASS/FAIL verdict
+* stability report
+* failed steps
+* skipped steps
+* performance timings
+* crash snippets
+
+---
+
+# PASS vs FAIL Decision Guide
+
+| Status             | Meaning                   | Action                     |
+| ------------------ | ------------------------- | -------------------------- |
+| ✅ PASS             | Release is stable         | Safe to build APK          |
+| ❌ FAIL             | Regression/crash detected | Do NOT build APK           |
+| ⚠️ Stability Issue | Crash markers found       | Review logs before release |
+
+---
+
+# Artifact Review Guide
+
+Artifacts are generated inside:
+
+```text
+/dist/apk-test-<ID>/
+```
+
+
+# Recommended Release Checklist
+
+Before building or sharing APKs:
+
+* [ ] Golden evals completed successfully
+* [ ] APK automation completed successfully
+* [ ] Summary shows `PASS (READY FOR RELEASE)`
+* [ ] No stability warnings detected
+* [ ] No failed regression steps remain
+* [ ] Crash markers reviewed
+* [ ] Required screenshots/artifacts generated
+
+
+# Final Recommendation
+
+Always complete:
+
+1. Golden assistant evals
+2. APK automation
+3. Summary review
+4. Artifact verification
+
+before generating or distributing APK builds.
+
+This workflow significantly reduces regression risk and improves release stability.
+
 ---
 
 *Maintained by QA Automation Sprint Team*
-*Last updated: 2026-05-14*
