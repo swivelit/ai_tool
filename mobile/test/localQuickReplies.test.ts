@@ -13,6 +13,8 @@ describe("local quick replies", () => {
     ["are you there?", "small_talk"],
     ["what can you do?", "capabilities"],
     ["I’m feeling so tired!", "wellbeing_support"],
+    ["Do you know about ipl?", "knowledge_ack"],
+    ["have you heard about IPL?", "knowledge_ack"],
   ])("routes %s to %s", (message, route) => {
     expect(tryBuildQuickLocalReply({ message })?.route).toBe(route);
   });
@@ -23,8 +25,30 @@ describe("local quick replies", () => {
     "what is the weather tomorrow",
     "summarize this",
     "write code for me",
+    "latest IPL score today",
+    "do you know about latest IPL score today",
   ])("does not quick-route task prompt: %s", (message) => {
     expect(tryBuildQuickLocalReply({ message })).toBeNull();
+  });
+
+  it("answers IPL knowledge acknowledgement locally", () => {
+    const reply = tryBuildQuickLocalReply({ message: "Do you know about IPL?" });
+
+    expect(reply?.source).toBe("local_rules");
+    expect(reply?.route).toBe("knowledge_ack");
+    expect(reply?.assistantText).toContain("Indian Premier League");
+    expect(reply?.assistantText).toContain("T20 cricket");
+  });
+
+  it("returns a Tamil IPL acknowledgement when requested", () => {
+    const reply = tryBuildQuickLocalReply({
+      message: "Do you know about IPL?",
+      replyLanguage: "ta",
+    });
+
+    expect(reply?.route).toBe("knowledge_ack");
+    expect(reply?.assistantText).toContain("Indian Premier League");
+    expect(reply?.assistantText).toContain("Live scores");
   });
 
   it("personalizes identity and greeting replies from cheap profile context", () => {

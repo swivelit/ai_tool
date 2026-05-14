@@ -37,11 +37,9 @@ import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 import {
-  annotateBackendOpenAiFallbackResponse,
   apiDelete,
   apiGet,
   apiPost,
-  apiPostBackendOnly,
   apiPostForm,
   sendClientTurnLog,
 } from "@/lib/api";
@@ -65,6 +63,7 @@ import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import { saveScheduledTask } from "@/lib/localAgents";
 import {
   friendlyLocalTimeoutMessage,
+  getLocalTurnSoftNoticeMs,
   getLocalTurnTimeoutMs,
   isLocalTurnTimeoutError,
   withLocalTimeout,
@@ -124,8 +123,8 @@ const HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX = "hidden_chat_item_ids_v1";
 const MODEL_SETUP_ALERT_THROTTLE_MS = 5 * 60 * 1000;
 const VOICE_UNAVAILABLE_MESSAGE =
   "Voice is unavailable right now. Please try again.";
-const CHAT_CLOUD_FALLBACK_DISABLED_MESSAGE =
-  "I need backend/OpenAI help for this. Turn on cloud fallback in settings to answer it.";
+const CHAT_LOCAL_SOFT_NOTICE_MESSAGE =
+  "Still working locally on this phone...";
 
 function normalizeHandsFreeText(value?: string | null) {
   return String(value || "")
@@ -1581,6 +1580,20 @@ export default function Home() {
     }
   }
 
+  async function getChatTurnSoftNoticeMs(source: ChatRequestSource) {
+    try {
+      const deviceInfo = await getCachedDeviceCapabilities();
+      return getLocalTurnSoftNoticeMs({
+        source,
+        deviceInfo,
+        selectedTier: deviceInfo.preferredTier,
+        preferredTier: deviceInfo.preferredTier,
+      });
+    } catch {
+      return getLocalTurnSoftNoticeMs({ source });
+    }
+  }
+
   function handleComposerLayout(event: LayoutChangeEvent) {
     const nextHeight = Math.ceil(event.nativeEvent.layout.height || 0);
     if (nextHeight > 0 && Math.abs(nextHeight - composerHeight) > 1) {
@@ -1688,6 +1701,13 @@ export default function Home() {
     const requestId = nextChatRequestId(source);
     const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
+    let softNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearSoftNoticeTimer = () => {
+      if (softNoticeTimer) {
+        clearTimeout(softNoticeTimer);
+        softNoticeTimer = null;
+      }
+    };
 
     try {
       setBusy(true);
@@ -1707,12 +1727,29 @@ export default function Home() {
         setHandsFreeStatus("Working on it…");
       }
 
-      const timeoutMs = await getChatTurnTimeoutMs(source);
+      const [timeoutMs, softNoticeMs] = await Promise.all([
+        getChatTurnTimeoutMs(source),
+        getChatTurnSoftNoticeMs(source),
+      ]);
+      softNoticeTimer = setTimeout(() => {
+        setPendingChatTurn((current) =>
+          current?.requestId === requestId && current.status === "thinking"
+            ? {
+                ...current,
+                assistantText: CHAT_LOCAL_SOFT_NOTICE_MESSAGE,
+              }
+            : current,
+        );
+        if (source === "handsfree") {
+          setHandsFreeStatus(CHAT_LOCAL_SOFT_NOTICE_MESSAGE);
+        }
+      }, softNoticeMs);
       const response = await withLocalTimeout(
         apiPost<BackendChatResponse>("/api/chat", {
           user_id: profile.userId,
           message: cleaned,
           reply_language: settings.languageMode,
+          request_id: requestId,
         }),
         timeoutMs,
         {
@@ -1720,6 +1757,7 @@ export default function Home() {
           message: friendlyLocalTimeoutMessage(),
         },
       );
+      clearSoftNoticeTimer();
 
       if (!isActiveChatRequest(requestId)) {
         return;
@@ -1752,8 +1790,10 @@ export default function Home() {
         setConfirmOpen(true);
       }
     } catch (error: unknown) {
+      clearSoftNoticeTimer();
       if (isActiveChatRequest(requestId)) {
         if (isLocalTurnTimeoutError(error)) {
+          // TODO(native): call JaiOnDeviceModel.cancelRequest(requestId) once Android exposes it.
           logClientTurn({
             event: "client_local_turn_failed",
             user_id: profile.userId,
@@ -1766,87 +1806,9 @@ export default function Home() {
             fallback_reason: "local_timeout",
             error_type: "local_timeout",
           });
-
-          if (settings.allowCloudFallback) {
-            try {
-              logClientTurn({
-                event: "client_backend_fallback_started",
-                user_id: profile.userId,
-                request_id: requestId,
-                channel: source,
-                question: cleaned,
-                question_length: cleaned.length,
-                agent_source: "backend_openai",
-                route_taken: "fallback_openai",
-                fallback_reason: "local_timeout",
-              });
-              const backendResponse = await apiPostBackendOnly<BackendChatResponse>(
-                "/api/chat",
-                {
-                  user_id: profile.userId,
-                  message: cleaned,
-                  reply_language: settings.languageMode,
-                },
-              );
-              const response = annotateBackendOpenAiFallbackResponse(
-                backendResponse,
-                {
-                  fallbackReason: "local_timeout",
-                  originalRoute: "local_answer",
-                },
-              );
-
-              if (!isActiveChatRequest(requestId)) {
-                return;
-              }
-
-              const nextItem = normalizeChatTurnPayload(response, cleaned);
-              clearPendingAssistant(requestId);
-              const mergedHistory = await refreshHistoryAndSessions([nextItem]);
-              await attachItemToCurrentChat(nextItem, mergedHistory);
-              logClientTurn({
-                event: "client_backend_fallback_completed",
-                user_id: profile.userId,
-                request_id: requestId,
-                channel: source,
-                question: cleaned,
-                answer: nextItem.details || "",
-                question_length: cleaned.length,
-                answer_length: String(nextItem.details || "").length,
-                agent_source: "backend_openai",
-                route_taken: "fallback_openai",
-                fallback_reason: "local_timeout",
-              });
-              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-              if (
-                nextItem.details &&
-                shouldAutoSpeakReply({
-                  source,
-                  autoSpeakReplies: settings.autoSpeakReplies,
-                  handsFreeMode,
-                })
-              ) {
-                void playAgentReply(nextItem.details);
-              }
-
-              if (nextItem.intent === "reminder" && nextItem.datetime) {
-                setPendingReminder({
-                  title: nextItem.title || "Reminder",
-                  details: nextItem.details || nextItem.raw_text,
-                  datetimeText: nextItem.datetime,
-                });
-                setConfirmOpen(true);
-              }
-              return;
-            } catch (fallbackError) {
-              warnChatFailure(fallbackError, requestId, source);
-            }
-          }
-
           showPendingAssistantError(
             requestId,
-            CHAT_CLOUD_FALLBACK_DISABLED_MESSAGE,
+            friendlyLocalTimeoutMessage(),
             cleaned,
             source,
           );
@@ -1857,6 +1819,7 @@ export default function Home() {
         warnChatFailure(error, requestId, source);
       }
     } finally {
+      clearSoftNoticeTimer();
       if (isActiveChatRequest(requestId)) {
         activeChatRequestIdRef.current = null;
         setBusy(false);
@@ -2456,7 +2419,9 @@ export default function Home() {
                             {activePendingChatTurn.status === "thinking" ? (
                               <>
                                 <ActivityIndicator size="small" color={Brand.cocoa} />
-                                <Text style={styles.typingText}>Thinking…</Text>
+                                <Text style={styles.typingText}>
+                                  {activePendingChatTurn.assistantText || "Thinking…"}
+                                </Text>
                               </>
                             ) : (
                               <Text style={[styles.messageText, styles.assistantMessageText]}>

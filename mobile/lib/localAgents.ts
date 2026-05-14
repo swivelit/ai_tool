@@ -54,6 +54,7 @@ type OrchestratorRoute =
   | "small_talk"
   | "wellbeing_support"
   | "capabilities"
+  | "knowledge_ack"
   | "thanks"
   | "goodbye"
   | "clarify"
@@ -5659,6 +5660,7 @@ const QUICK_ROUTE_CANONICAL_MESSAGE: Partial<Record<OrchestratorRoute, string>> 
   small_talk: "what are you up to",
   wellbeing_support: "tired",
   capabilities: "what can you do",
+  knowledge_ack: "do you know about IPL",
   thanks: "thanks",
   goodbye: "bye",
 };
@@ -5738,6 +5740,20 @@ function generateClarifyingQuestion(
   return replyLanguage === "ta"
     ? "கொஞ்சம் மேலும் குறிப்பாக சொல்ல முடியுமா?"
     : "Could you be a bit more specific?";
+}
+
+function isLikelyLiveCurrentDataRequest(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized || isSimpleTimeOrDateQuery(message)) return false;
+  if (/\b(without live data|no live data|offline)\b/.test(normalized)) {
+    return false;
+  }
+  const hasLiveMarker = /\b(latest|current|live|news|breaking|score|scores)\b/.test(
+    normalized,
+  );
+  const hasTodayScore =
+    /\btoday\b/.test(normalized) && /\b(score|scores)\b/.test(normalized);
+  return hasLiveMarker || hasTodayScore;
 }
 
 function ruleBasedOrchestratorDecision(
@@ -5860,6 +5876,19 @@ function ruleBasedOrchestratorDecision(
     };
   }
 
+  if (isLikelyLiveCurrentDataRequest(message)) {
+    return {
+      route: "fallback_openai",
+      reason: "matched_live_current_data_rule",
+      confidence: 0.94,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: true,
+      selectedModel: "rules",
+      fallbackAllowed: false,
+    };
+  }
+
   if (isSimpleWellbeingSupportMessage(message, routesConfig, tokenCount)) {
     return {
       route: "wellbeing_support",
@@ -5908,6 +5937,7 @@ function sanitizeDecision(
     "small_talk",
     "wellbeing_support",
     "capabilities",
+    "knowledge_ack",
     "thanks",
     "goodbye",
     "clarify",
@@ -7833,6 +7863,7 @@ export async function runLocalAssistantTurn(opts: {
     route === "identity" ||
     route === "small_talk" ||
     route === "capabilities" ||
+    route === "knowledge_ack" ||
     route === "thanks" ||
     route === "goodbye"
   ) {

@@ -72,6 +72,7 @@ function mockCachedProfile(
 
 describe("API client contracts", () => {
   afterEach(() => {
+    vi.useRealTimers();
     delete (globalThis as any).__JAI_NATIVE_ON_DEVICE_MODEL_RUNTIME__;
     vi.restoreAllMocks();
     vi.resetModules();
@@ -1340,7 +1341,7 @@ describe("API client contracts", () => {
     expect(payload.meta.fallback_reason).toBe("local_model_unavailable");
   });
 
-  it("falls back to backend chat when local chat times out and cloud fallback is enabled", async () => {
+  it("falls back to backend chat when local chat truly times out and cloud fallback is enabled", async () => {
     mockCachedProfile(null, { allowCloudFallback: true });
     vi.doMock("expo-constants", () => ({
       default: {
@@ -1372,11 +1373,11 @@ describe("API client contracts", () => {
           id: 503,
           intent: "assistant",
           category: "Other",
-          raw_text: "Do you know about ipl ?",
-          details: "IPL is a professional Twenty20 cricket league in India.",
+          raw_text: "Explain a hard local-only topic",
+          details: "Backend fallback answer after local timeout.",
           source: "text",
         },
-        assistant: { text: "IPL is a professional Twenty20 cricket league in India." },
+        assistant: { text: "Backend fallback answer after local timeout." },
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -1384,12 +1385,12 @@ describe("API client contracts", () => {
     const { apiPost } = await import("../lib/api");
     const payload = await apiPost<any>("/api/chat", {
       user_id: 7,
-      message: "Do you know about ipl ?",
+      message: "Explain a hard local-only topic",
       reply_language: "en",
     });
     expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
     expect(backendChatCalls(fetchMock)).toHaveLength(1);
-    expect(payload.assistant.text).toContain("IPL");
+    expect(payload.assistant.text).toContain("Backend fallback answer");
     expect(payload.assistant.text).not.toContain("check the local AI files");
     expect(payload.meta.source).toBe("backend_openai_fallback");
     expect(payload.meta.fallback_reason).toBe("local_timeout");
@@ -1435,11 +1436,11 @@ describe("API client contracts", () => {
           id: 504,
           intent: "assistant",
           category: "Other",
-          raw_text: "Do you know about ipl ?",
-          details: "IPL is a professional Twenty20 cricket league in India.",
+          raw_text: "Explain a hard local-only topic",
+          details: "Backend fallback answer after local timeout.",
           source: "text",
         },
-        assistant: { text: "IPL is a professional Twenty20 cricket league in India." },
+        assistant: { text: "Backend fallback answer after local timeout." },
       });
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1447,8 +1448,9 @@ describe("API client contracts", () => {
     const { apiPost } = await import("../lib/api");
     await apiPost<any>("/api/chat", {
       user_id: 7,
-      message: "Do you know about ipl ?",
+      message: "Explain a hard local-only topic",
       reply_language: "en",
+      request_id: "text_test_timeout_123",
     });
     await settleTelemetry();
 
@@ -1459,7 +1461,12 @@ describe("API client contracts", () => {
     expect(completed.agent_source).toBe("backend_openai");
     expect(completed.route_taken).toBe("fallback_openai");
     expect(completed.fallback_reason).toBe("local_timeout");
-    expect(completed.answer).toContain("IPL");
+    expect(completed.request_id).toBe("text_test_timeout_123");
+    expect(completed.answer).toContain("Backend fallback answer");
+    const failed = events.find((body) => body.event === "client_local_turn_failed");
+    const started = events.find((body) => body.event === "client_backend_fallback_started");
+    expect(failed?.request_id).toBe("text_test_timeout_123");
+    expect(started?.request_id).toBe("text_test_timeout_123");
   });
 
   it("shows cloud fallback consent when local chat times out and cloud fallback is disabled", async () => {
@@ -1493,8 +1500,9 @@ describe("API client contracts", () => {
     const { CLOUD_FALLBACK_CONSENT_MESSAGE, apiPost } = await import("../lib/api");
     const payload = await apiPost<any>("/api/chat", {
       user_id: 7,
-      message: "Do you know about ipl ?",
+      message: "Explain a hard local-only topic",
       reply_language: "en",
+      requestId: "text_test_timeout_disabled_123",
     });
 
     expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
@@ -1502,6 +1510,75 @@ describe("API client contracts", () => {
     expect(payload.assistant.text).toBe(CLOUD_FALLBACK_CONSENT_MESSAGE);
     expect(payload.assistant.text).not.toContain("check the local AI files");
     expect(payload.meta.fallback_reason).toBe("local_timeout");
+    expect(payload.meta.request_id).toBe("text_test_timeout_disabled_123");
+  });
+
+  it("keeps waiting for a local response that resolves after the old 45s UI threshold", async () => {
+    vi.useFakeTimers();
+    mockCachedProfile(null, { allowCloudFallback: false });
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: { currentUser: null },
+    }));
+    vi.doMock("../lib/deviceCapabilities", () => ({
+      getCachedDeviceCapabilities: vi.fn(async () => ({
+        preferredTier: "lite",
+      })),
+    }));
+    const runLocalAssistantTurn = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({
+              route: "local_answer",
+              source: "local_model",
+              cacheHit: false,
+              intent: "assistant",
+              assistantText: "Local answer after CPU inference.",
+              englishText: "Local answer after CPU inference.",
+              meta: { runtime: "phone_local" },
+            });
+          }, 46_000);
+        }),
+    );
+    vi.doMock("../lib/localAgents", () => ({
+      runLocalAssistantTurn,
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    const pending = apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "Explain a local topic slowly",
+      reply_language: "en",
+      request_id: "text_slow_local_123",
+    });
+
+    for (let index = 0; index < 100 && runLocalAssistantTurn.mock.calls.length === 0; index += 1) {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(46_000);
+    const payload = await pending;
+
+    expect(payload.assistant.text).toBe("Local answer after CPU inference.");
+    expect(payload.assistant.text).not.toContain("backend/OpenAI");
+    expect(payload.kind).not.toBe("cloud_consent_required");
+    expect(backendChatCalls(fetchMock)).toHaveLength(0);
   });
 
   it("lets explicit backend fallback bypass the local chat interceptor", async () => {

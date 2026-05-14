@@ -875,6 +875,7 @@ export const flushClientTurnLogs = flushQueuedClientTurnLogs;
 
 function logClientLocalTurnCompleted(input: {
   userId: number;
+  requestId?: string | null;
   message: string;
   answer: string;
   source: string;
@@ -884,6 +885,7 @@ function logClientLocalTurnCompleted(input: {
   sendClientTurnLog({
     event: "client_local_turn_completed",
     user_id: input.userId,
+    request_id: input.requestId || null,
     channel: "text",
     question: input.message,
     answer: input.answer,
@@ -897,6 +899,7 @@ function logClientLocalTurnCompleted(input: {
 
 function logClientLocalTurnFailed(input: {
   userId: number;
+  requestId?: string | null;
   message: string;
   errorType: string;
   route?: string | null;
@@ -905,6 +908,7 @@ function logClientLocalTurnFailed(input: {
   sendClientTurnLog({
     event: "client_local_turn_failed",
     user_id: input.userId,
+    request_id: input.requestId || null,
     channel: "text",
     question: input.message,
     question_length: textLength(input.message),
@@ -959,6 +963,7 @@ export function annotateBackendOpenAiFallbackResponse<T extends Record<string, a
 
 function buildCloudFallbackConsentResponse(input: {
   userId: number;
+  requestId?: string | null;
   message: string;
   replyLanguage: ReplyLanguage;
   fallbackReason: BackendFallbackReason;
@@ -1008,6 +1013,7 @@ function buildCloudFallbackConsentResponse(input: {
         source: "cloud_consent_required",
         fallback_reason: input.fallbackReason,
         original_route: input.originalRoute || undefined,
+        request_id: input.requestId || null,
         stageTimings: input.stageTimings || {},
       },
     },
@@ -1023,6 +1029,7 @@ function buildCloudFallbackConsentResponse(input: {
         suggestedAction: "ask_user_consent",
       },
       userId: input.userId,
+      request_id: input.requestId || null,
       stageTimings: input.stageTimings || {},
       created_at: createdAt,
     },
@@ -1031,6 +1038,7 @@ function buildCloudFallbackConsentResponse(input: {
 
 async function postChatFallbackToBackend(input: {
   userId: number;
+  requestId?: string | null;
   message: string;
   replyLanguage: ReplyLanguage;
   fallbackReason: BackendFallbackReason;
@@ -1040,6 +1048,7 @@ async function postChatFallbackToBackend(input: {
   sendClientTurnLog({
     event: "client_backend_fallback_started",
     user_id: input.userId,
+    request_id: input.requestId || null,
     channel: "text",
     question: input.message,
     question_length: textLength(input.message),
@@ -1053,6 +1062,7 @@ async function postChatFallbackToBackend(input: {
     user_id: input.userId,
     message: input.message,
     reply_language: input.replyLanguage,
+    request_id: input.requestId || undefined,
   });
   const annotated = annotateBackendOpenAiFallbackResponse(backend, {
     fallbackReason: input.fallbackReason,
@@ -1063,6 +1073,7 @@ async function postChatFallbackToBackend(input: {
   sendClientTurnLog({
     event: "client_backend_fallback_completed",
     user_id: input.userId,
+    request_id: input.requestId || null,
     channel: "text",
     question: input.message,
     answer,
@@ -1666,6 +1677,7 @@ async function handleLocalChat(
   };
   const userId = Number(body?.user_id ?? body?.userId ?? 0);
   const message = String(body?.message ?? body?.text ?? "").trim();
+  const requestId = String(body?.request_id ?? body?.requestId ?? "").trim() || null;
 
   if (!Number.isFinite(userId) || userId <= 0 || !message) {
     throw new Error(
@@ -1731,6 +1743,7 @@ async function handleLocalChat(
         meta: {
           source: quick.source,
           route: quick.route,
+          request_id: requestId,
           confidence: quick.confidence,
           fastPath: true,
           responsePath: "quick_reply",
@@ -1740,6 +1753,7 @@ async function handleLocalChat(
       meta: {
         source: "local_quick_reply",
         route: quick.route,
+        request_id: requestId,
         fastPath: true,
         responsePath: "quick_reply",
         stageTimings,
@@ -1748,6 +1762,7 @@ async function handleLocalChat(
     };
     logClientLocalTurnCompleted({
       userId,
+      requestId,
       message,
       answer: quick.assistantText,
       source: "local_rules",
@@ -1797,6 +1812,7 @@ async function handleLocalChat(
         : "no_safe_local_answer";
     logClientLocalTurnFailed({
       userId,
+      requestId,
       message,
       errorType: fallbackReason,
       route: "local_answer",
@@ -1805,6 +1821,7 @@ async function handleLocalChat(
     if (userAllowedCloudFallback) {
       return postChatFallbackToBackend({
         userId,
+        requestId,
         message,
         replyLanguage,
         fallbackReason,
@@ -1814,6 +1831,7 @@ async function handleLocalChat(
     }
     return buildCloudFallbackConsentResponse({
       userId,
+      requestId,
       message,
       replyLanguage,
       fallbackReason,
@@ -1830,6 +1848,7 @@ async function handleLocalChat(
     const fallbackReason: BackendFallbackReason = "no_safe_local_answer";
     logClientLocalTurnFailed({
       userId,
+      requestId,
       message,
       errorType: fallbackReason,
       route: turn.route,
@@ -1841,6 +1860,7 @@ async function handleLocalChat(
     if (userAllowedCloudFallback) {
       return postChatFallbackToBackend({
         userId,
+        requestId,
         message,
         replyLanguage,
         fallbackReason,
@@ -1853,6 +1873,7 @@ async function handleLocalChat(
     }
     return buildCloudFallbackConsentResponse({
       userId,
+      requestId,
       message,
       replyLanguage,
       fallbackReason,
@@ -1904,6 +1925,7 @@ async function handleLocalChat(
       profile_summary: turn.profileSummary || null,
       meta: {
         ...(turn.meta || {}),
+        request_id: requestId,
         stageTimings: {
           ...stageTimings,
           ...(turn.meta?.stageTimings || {}),
@@ -1914,6 +1936,7 @@ async function handleLocalChat(
     },
     meta: {
       source: "local_chat_proxy",
+      request_id: requestId,
       cacheHit: Boolean(turn.cacheHit),
       route: turn.route,
       fastPath: Boolean(turn.meta?.fastPath),
@@ -1941,6 +1964,7 @@ async function handleLocalChat(
     sendClientTurnLog({
       event: "client_backend_fallback_completed",
       user_id: userId,
+      request_id: requestId,
       channel: "text",
       question: message,
       answer: turn.assistantText,
@@ -1954,6 +1978,7 @@ async function handleLocalChat(
   } else {
     logClientLocalTurnCompleted({
       userId,
+      requestId,
       message,
       answer: turn.assistantText,
       source: turn.source,

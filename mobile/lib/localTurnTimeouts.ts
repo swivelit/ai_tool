@@ -55,10 +55,10 @@ export function getLocalTurnTimeoutMs(input: {
         ? 105_000
         : 90_000
     : selectedTier === "pro"
-      ? 60_000
+      ? 150_000
       : selectedTier === "standard"
-        ? 45_000
-        : 25_000;
+        ? 120_000
+        : 90_000;
 
   if (deviceInfo.lowRamDevice) timeoutMs += isVoiceLike ? 15_000 : 10_000;
   if (deviceInfo.lowMemory) timeoutMs += isVoiceLike ? 15_000 : 10_000;
@@ -83,7 +83,25 @@ export function getLocalTurnTimeoutMs(input: {
     }
   }
 
-  return Math.min(Math.max(timeoutMs, isVoiceLike ? 90_000 : 20_000), 150_000);
+  return Math.min(Math.max(timeoutMs, 90_000), 150_000);
+}
+
+export function getLocalTurnSoftNoticeMs(input: {
+  source?: LocalTurnSource | null;
+  selectedTier?: "lite" | "standard" | "pro" | string | null;
+  preferredTier?: "lite" | "standard" | "pro" | string | null;
+  deviceInfo?: LocalTurnTimeoutDeviceInfo | null;
+} = {}) {
+  const source = String(input.source || "text").toLowerCase();
+  const isVoiceLike = source === "voice" || source === "handsfree";
+  const deviceInfo = input.deviceInfo || {};
+  let noticeMs = isVoiceLike ? 20_000 : 18_000;
+
+  if (deviceInfo.lowRamDevice || deviceInfo.lowMemory) {
+    noticeMs = Math.min(noticeMs, 16_000);
+  }
+
+  return Math.min(Math.max(noticeMs, 15_000), 20_000);
 }
 
 export function friendlyLocalTimeoutMessage() {

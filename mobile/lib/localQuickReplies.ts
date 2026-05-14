@@ -4,6 +4,7 @@ export type QuickLocalRoute =
   | "small_talk"
   | "wellbeing_support"
   | "capabilities"
+  | "knowledge_ack"
   | "thanks"
   | "goodbye";
 
@@ -86,6 +87,7 @@ const QUICK_PHRASES: Record<QuickLocalRoute, string[]> = {
     "how can you help",
     "what are your features",
   ],
+  knowledge_ack: [],
   thanks: ["thanks", "thank you", "okay thanks"],
   goodbye: ["bye", "good bye", "see you"],
 };
@@ -96,9 +98,21 @@ const ROUTE_TITLES: Record<QuickLocalRoute, string> = {
   small_talk: "Chat",
   wellbeing_support: "Wellbeing",
   capabilities: "What I Can Do",
+  knowledge_ack: "Knowledge",
   thanks: "Thanks",
   goodbye: "Goodbye",
 };
+
+const LIVE_CURRENT_TERMS = [
+  "latest",
+  "today",
+  "current",
+  "live",
+  "score",
+  "scores",
+  "news",
+  "breaking",
+];
 
 const TASK_CONTEXT_WORDS = [
   "reminder",
@@ -195,6 +209,39 @@ function hasTaskContext(tokens: string[]) {
   return TASK_CONTEXT_WORDS.some((word) => containsToken(tokens, word));
 }
 
+function hasLiveCurrentTerms(tokens: string[]) {
+  return LIVE_CURRENT_TERMS.some((word) => containsToken(tokens, word));
+}
+
+function phraseStartIndex(tokens: string[], phraseTokens: string[]) {
+  for (let index = 0; index <= tokens.length - phraseTokens.length; index += 1) {
+    if (phraseTokens.every((token, offset) => tokens[index + offset] === token)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function topicFromKnowledgeAck(tokens: string[]) {
+  const patterns = [
+    ["do", "you", "know", "about"],
+    ["do", "you", "know"],
+    ["have", "you", "heard", "about"],
+    ["have", "you", "heard", "of"],
+  ];
+
+  for (const pattern of patterns) {
+    const start = phraseStartIndex(tokens, pattern);
+    if (start < 0) continue;
+    const topicTokens = tokens.slice(start + pattern.length);
+    if (!topicTokens.length || topicTokens.length > 8) return null;
+    if (hasLiveCurrentTerms(topicTokens) || hasTaskContext(topicTokens)) return null;
+    return topicTokens.join(" ");
+  }
+
+  return null;
+}
+
 function isShortPhraseMatch(tokens: string[], phrase: string, options?: {
   allowContainingPhrase?: boolean;
   blockTaskContext?: boolean;
@@ -227,6 +274,10 @@ function isShortPhraseMatch(tokens: string[], phrase: string, options?: {
 
 function routeMatches(route: QuickLocalRoute, tokens: string[]) {
   const phrases = QUICK_PHRASES[route];
+
+  if (route === "knowledge_ack") {
+    return Boolean(topicFromKnowledgeAck(tokens));
+  }
 
   if (route === "wellbeing_support") {
     return phrases.some((phrase) => {
@@ -270,6 +321,12 @@ function displayName(value?: string | null) {
   return clean || null;
 }
 
+function formatKnowledgeTopic(topic: string) {
+  const normalized = topic.trim();
+  if (normalized.toLowerCase() === "ipl") return "IPL";
+  return normalized;
+}
+
 function englishReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
   const userName = displayName(input.userName);
   const assistantName = displayName(input.assistantName);
@@ -289,6 +346,15 @@ function englishReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
       return "That sounds exhausting. Take a short rest, drink some water, and don't push yourself too hard. If this feels unusual, severe, or keeps happening, please consider checking with a medical professional.";
     case "capabilities":
       return "I can chat with you, help plan your day, create reminders, remember useful details locally, and answer from local knowledge. What should we start with?";
+    case "knowledge_ack": {
+      const topic = formatKnowledgeTopic(
+        topicFromKnowledgeAck(tokensFor(input.message)) || "that",
+      );
+      if (topic.toLowerCase() === "ipl") {
+        return "Yes - IPL usually means the Indian Premier League, a professional T20 cricket league in India. I can explain the teams, format, rules, or history. For live scores or latest updates, I may need current-data access.";
+      }
+      return `Yes, I can help with that. Ask me what you want to know about ${topic}.`;
+    }
     case "thanks":
       return "You're welcome. I'm here when you need me.";
     case "goodbye":
@@ -319,6 +385,15 @@ function tamilReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
       return "அது ரொம்ப சோர்வாக இருக்கலாம். கொஞ்சம் ஓய்வு எடுத்துக்கோங்க, தண்ணீர் குடிங்க, உங்களை அதிகம் அழுத்த வேண்டாம். இது வழக்கத்துக்கு மாறாக, கடுமையாக, அல்லது தொடர்ந்து இருந்தால் மருத்துவரிடம் பேசுங்கள்.";
     case "capabilities":
       return "நான் உங்களுடன் chat செய்ய, நாள் திட்டமிட, reminders உருவாக்க, பயனுள்ள விஷயங்களை local-ஆக நினைவில் வைத்துக்கொள்ள, local knowledge-லிருந்து பதில் சொல்ல உதவலாம். எதிலிருந்து தொடங்கலாம்?";
+    case "knowledge_ack": {
+      const topic = formatKnowledgeTopic(
+        topicFromKnowledgeAck(tokensFor(input.message)) || "அது",
+      );
+      if (topic.toLowerCase() === "ipl") {
+        return "ஆம். IPL என்றால் பொதுவாக Indian Premier League - இந்தியாவில் நடக்கும் professional T20 cricket league. Teams, format, rules, history பற்றி சொல்ல முடியும். Live scores அல்லது latest updates வேண்டுமெனில் current-data access தேவைப்படலாம்.";
+      }
+      return `ஆம், அதைப் பற்றி உதவ முடியும். ${topic} பற்றி என்ன தெரிந்து கொள்ள விரும்புகிறீர்கள்?`;
+    }
     case "thanks":
       return "பரவாயில்லை. தேவைப்பட்டால் நான் இங்கே இருக்கிறேன்.";
     case "goodbye":
@@ -347,6 +422,7 @@ export function tryBuildQuickLocalReply(
     "wellbeing_support",
     "identity",
     "capabilities",
+    "knowledge_ack",
     "fast_greeting",
     "thanks",
     "goodbye",

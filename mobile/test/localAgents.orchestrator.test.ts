@@ -275,6 +275,24 @@ describe("local orchestrator and alignment", () => {
     expect(result.meta?.stageTimings || {}).not.toHaveProperty("local_reasoner");
   });
 
+  it("answers IPL knowledge acknowledgement without touching the model runtime", async () => {
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 214,
+      message: "Do you know about IPL?",
+      replyLanguage: "en",
+    });
+
+    expect(result.route).toBe("knowledge_ack");
+    expect(result.source).toBe("local_rules");
+    expect(result.assistantText).toContain("Indian Premier League");
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(mockedState.fetchQueue).toHaveLength(0);
+    expect(__idleQueueTestUtils.pendingCount()).toBe(0);
+    expect(result.meta?.stageTimings || {}).not.toHaveProperty("local_reasoner");
+  });
+
   it("returns simple wellbeing support locally with no model or backend call", async () => {
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
     const result = await runLocalAssistantTurn({
@@ -1004,6 +1022,22 @@ describe("local orchestrator and alignment", () => {
     });
     expect(result.meta?.cloudFallback).toEqual(result.cloudFallback);
     expect(result.meta?.orchestratorDecision?.fallbackAllowed).toBe(false);
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("routes live IPL score requests to the live-data fallback policy", async () => {
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 252,
+      message: "latest IPL score today",
+      replyLanguage: "en",
+    });
+
+    expect(result.kind).toBe("cloud_consent_required");
+    expect(result.route).toBe("clarify");
+    expect(result.source).toBe("local_rules");
+    expect(result.cloudFallback?.reason).toBe("live_data_needed");
+    expect(result.meta?.orchestratorDecision?.reason).toBe("live_data_needed");
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 
