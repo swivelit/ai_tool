@@ -37,6 +37,10 @@ CLIENT_TURN_LOGS_ENABLED = (
     os.getenv("CLIENT_TURN_LOGS_ENABLED", "true").strip().lower()
     not in {"0", "false", "no", "off"}
 )
+CHAT_TURN_SUMMARY_LOGS_ENABLED = (
+    os.getenv("CHAT_TURN_SUMMARY_LOGS_ENABLED", "true").strip().lower()
+    not in {"0", "false", "no", "off"}
+)
 
 _REDACT_PATTERNS = [
     re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[A-Za-z0-9._~+/=-]+"),
@@ -48,7 +52,16 @@ _REDACT_PATTERNS = [
 
 _SAFE_EXTRA_KEYS = {
     "event",
+    "client_event",
     "channel",
+    "turn_id",
+    "app_version",
+    "api_base",
+    "build_number",
+    "log_chat_content",
+    "log_chat_content_max_chars",
+    "client_turn_logs_enabled",
+    "chat_turn_summary_logs_enabled",
     "question_hash",
     "question_length",
     "question_preview",
@@ -64,11 +77,19 @@ _SAFE_EXTRA_KEYS = {
     "agent_source",
     "fallback_reason",
     "original_route",
+    "local_duration_ms",
+    "backend_duration_ms",
+    "total_duration_ms",
     "safe_error_type",
     "safe_provider_error",
+    "provider",
+    "voice_phase",
+    "telemetry_delivery",
     "upload_filename",
     "content_type",
+    "mime_type",
     "size_bytes",
+    "file_size",
     "reply_language",
     "speech_language",
     "model",
@@ -85,6 +106,9 @@ _SAFE_EXTRA_KEYS = {
     "stage_timings",
     "error_type",
     "skipped",
+    "created_at",
+    "chat_routing",
+    "voice_routing",
 }
 
 _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")
@@ -291,6 +315,13 @@ def chat_log_payload(**kwargs: Any) -> Dict[str, Any]:
         if LOG_CHAT_CONTENT:
             payload["text_preview"] = sanitize_log_text(text_value)
 
+    return payload
+
+
+def build_turn_summary_payload(**kwargs: Any) -> Dict[str, Any]:
+    payload = chat_log_payload(**kwargs)
+    event = str(payload.get("event") or kwargs.get("event") or "turn_summary")
+    payload["event"] = sanitize_log_text(event, 80)
     return payload
 
 

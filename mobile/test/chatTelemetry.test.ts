@@ -1,0 +1,175 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+function jsonResponse(payload: any, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => payload,
+    text: async () => JSON.stringify(payload),
+  } as Response;
+}
+
+function setupTelemetryMocks(options: { token?: string | null } = {}) {
+  const storage = new Map<string, string>();
+  vi.resetModules();
+  vi.doMock("expo-constants", () => ({
+    default: {
+      expoConfig: {
+        version: "1.2.3",
+        android: { versionCode: 42 },
+        extra: { API_BASE: "https://api.example.test" },
+      },
+    },
+  }));
+  vi.doMock("@react-native-async-storage/async-storage", () => ({
+    default: {
+      getItem: vi.fn(async (key: string) => storage.get(key) ?? null),
+      setItem: vi.fn(async (key: string, value: string) => {
+        storage.set(key, value);
+      }),
+      removeItem: vi.fn(async (key: string) => {
+        storage.delete(key);
+      }),
+    },
+  }));
+  vi.doMock("../lib/firebase", () => ({
+    auth: {
+      currentUser:
+        options.token === null
+          ? null
+          : {
+              getIdToken: vi.fn(async () => options.token || "test-token"),
+            },
+    },
+  }));
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  return storage;
+}
+
+describe("chat telemetry queue", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    vi.unstubAllGlobals();
+  });
+
+  it("enqueues and flushes client turn logs to /api/client/turn-log", async () => {
+    const storage = setupTelemetryMocks();
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { enqueueClientTurnLog, CLIENT_TURN_LOG_QUEUE_KEY } = await import(
+      "../lib/chatTelemetry"
+    );
+
+    await enqueueClientTurnLog({
+      event: "client_local_turn_completed",
+      channel: "text",
+      question: "hello",
+      answer: "hi",
+      agent_source: "local_rules",
+      route_taken: "fast_greeting",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const firstCall = fetchMock.mock.calls[0] as any[];
+    expect(String(firstCall[0])).toBe(
+      "https://api.example.test/api/client/turn-log",
+    );
+    const body = JSON.parse(String((firstCall[1] as any).body));
+    expect(body.event).toBe("client_local_turn_completed");
+    expect(body.api_base).toBe("https://api.example.test");
+    expect(body.app_version).toBe("1.2.3");
+    expect(body.telemetry_delivery).toBe("realtime");
+    expect(body.request_id).toBeTruthy();
+    expect(storage.get(CLIENT_TURN_LOG_QUEUE_KEY)).toBeUndefined();
+  });
+
+  it("keeps failed telemetry queued for retry", async () => {
+    const storage = setupTelemetryMocks();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ ok: false }, 503)));
+
+    const { enqueueClientTurnLog, CLIENT_TURN_LOG_QUEUE_KEY } = await import(
+      "../lib/chatTelemetry"
+    );
+
+    await enqueueClientTurnLog({
+      event: "client_local_turn_completed",
+      channel: "text",
+      question: "hello",
+      answer: "hi",
+      agent_source: "local_rules",
+      route_taken: "fast_greeting",
+    });
+
+    const queued = JSON.parse(storage.get(CLIENT_TURN_LOG_QUEUE_KEY) || "[]");
+    expect(queued).toHaveLength(1);
+    expect(queued[0].event).toBe("client_local_turn_completed");
+  });
+
+  it("removes queued logs after a successful flush", async () => {
+    const storage = setupTelemetryMocks();
+    storage.set(
+      "client_turn_logs_queue_v1",
+      JSON.stringify([
+        {
+          event: "client_backend_fallback_started",
+          channel: "text",
+          question: "Do you know about IPL?",
+          agent_source: "backend_openai",
+          route_taken: "fallback_openai",
+          fallback_reason: "local_timeout",
+        },
+      ]),
+    );
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { flushClientTurnLogs, CLIENT_TURN_LOG_QUEUE_KEY } = await import(
+      "../lib/chatTelemetry"
+    );
+
+    await flushClientTurnLogs();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(storage.get(CLIENT_TURN_LOG_QUEUE_KEY)).toBe("[]");
+  });
+
+  it("can send startup and voice failure telemetry", async () => {
+    setupTelemetryMocks();
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { enqueueClientTurnLog } = await import("../lib/chatTelemetry");
+
+    await enqueueClientTurnLog({
+      event: "client_app_started",
+      channel: "app",
+      agent_source: "mobile",
+      route_taken: "startup",
+      chat_routing: "local",
+      voice_routing: "backend",
+    });
+    await enqueueClientTurnLog({
+      event: "client_voice_prepare_failed",
+      channel: "voice",
+      agent_source: "mobile",
+      route_taken: "voice_prepare",
+      voice_phase: "startup_timeout",
+      duration_ms: 10_000,
+      error_type: "local_timeout",
+    });
+
+    const bodies = (fetchMock.mock.calls as any[][]).map((call) =>
+      JSON.parse(String((call[1] as any).body)),
+    );
+    expect(bodies.map((body) => body.event)).toEqual([
+      "client_app_started",
+      "client_voice_prepare_failed",
+    ]);
+    expect(bodies[0].api_base).toBe("https://api.example.test");
+    expect(bodies[0].chat_routing).toBe("local");
+    expect(bodies[0].voice_routing).toBe("backend");
+    expect(bodies[1].voice_phase).toBe("startup_timeout");
+  });
+});

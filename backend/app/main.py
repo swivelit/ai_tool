@@ -54,7 +54,12 @@ from .model_runtime import patch_openai_client
 from .models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
 from .time_utils import utc_now as _utc_now
 from .observability import (
+    APP_RELEASE,
+    CHAT_TURN_SUMMARY_LOGS_ENABLED,
     CLIENT_TURN_LOGS_ENABLED,
+    LOG_CHAT_CONTENT,
+    LOG_CHAT_CONTENT_MAX_CHARS,
+    build_turn_summary_payload,
     bootstrap_observability,
     chat_log_payload,
     clear_request_context,
@@ -754,8 +759,37 @@ def _record_runtime_service(name: str, *, ok: bool, required: bool, detail: str 
         RUNTIME_STATUS["errors"].append({"service": name, "detail": detail, "required": required})
 
 
+def _observability_config_payload() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "environment": APP_ENV,
+        "release": APP_RELEASE,
+        "log_chat_content": bool(LOG_CHAT_CONTENT),
+        "log_chat_content_max_chars": int(LOG_CHAT_CONTENT_MAX_CHARS),
+        "client_turn_logs_enabled": bool(CLIENT_TURN_LOGS_ENABLED),
+        "chat_turn_summary_logs_enabled": bool(CHAT_TURN_SUMMARY_LOGS_ENABLED),
+    }
+
+
+def emit_observability_config_log() -> None:
+    payload = _observability_config_payload()
+    logger.info(
+        "observability_config",
+        extra=chat_log_payload(
+            event="observability_config",
+            environment=payload["environment"],
+            release=payload["release"],
+            log_chat_content=payload["log_chat_content"],
+            log_chat_content_max_chars=payload["log_chat_content_max_chars"],
+            client_turn_logs_enabled=payload["client_turn_logs_enabled"],
+            chat_turn_summary_logs_enabled=payload["chat_turn_summary_logs_enabled"],
+        ),
+    )
+
+
 @app.on_event("startup")
 def startup_runtime_services() -> None:
+    emit_observability_config_log()
     RUNTIME_STATUS["status"] = "starting"
     RUNTIME_STATUS["services"] = {}
     RUNTIME_STATUS["errors"] = []
@@ -1094,6 +1128,7 @@ class ClientTurnLogRequest(BaseModel):
     event: str
     user_id: Optional[int] = None
     request_id: Optional[str] = None
+    turn_id: Optional[str] = None
     channel: Optional[str] = None
     question: Optional[str] = None
     answer: Optional[str] = None
@@ -1103,8 +1138,22 @@ class ClientTurnLogRequest(BaseModel):
     route_taken: Optional[str] = None
     fallback_reason: Optional[str] = None
     duration_ms: Optional[float] = None
+    local_duration_ms: Optional[float] = None
+    backend_duration_ms: Optional[float] = None
+    total_duration_ms: Optional[float] = None
     stage_timings: Optional[Dict[str, Any]] = None
     error_type: Optional[str] = None
+    app_version: Optional[str] = None
+    api_base: Optional[str] = None
+    build_number: Optional[str] = None
+    created_at: Optional[str] = None
+    provider: Optional[str] = None
+    voice_phase: Optional[str] = None
+    telemetry_delivery: Optional[str] = None
+    file_size: Optional[int] = None
+    mime_type: Optional[str] = None
+    chat_routing: Optional[str] = None
+    voice_routing: Optional[str] = None
 
 
 class PipelineChatRequest(BaseModel):
@@ -2620,6 +2669,7 @@ def api_client_turn_log(
             event=event,
             user_id=int(user.id),
             request_id=payload.request_id,
+            turn_id=payload.turn_id,
             channel=payload.channel or "text",
             question=payload.question,
             answer=payload.answer,
@@ -2629,11 +2679,68 @@ def api_client_turn_log(
             route_taken=payload.route_taken,
             fallback_reason=payload.fallback_reason,
             duration_ms=payload.duration_ms,
+            local_duration_ms=payload.local_duration_ms,
+            backend_duration_ms=payload.backend_duration_ms,
+            total_duration_ms=payload.total_duration_ms,
             stage_timings=payload.stage_timings,
             error_type=payload.error_type,
+            app_version=payload.app_version,
+            api_base=payload.api_base,
+            build_number=payload.build_number,
+            created_at=payload.created_at,
+            provider=payload.provider,
+            voice_phase=payload.voice_phase,
+            telemetry_delivery=payload.telemetry_delivery,
+            file_size=payload.file_size,
+            mime_type=payload.mime_type,
+            chat_routing=payload.chat_routing,
+            voice_routing=payload.voice_routing,
         ),
     )
+    if CHAT_TURN_SUMMARY_LOGS_ENABLED:
+        logger.info(
+            "client_turn_summary",
+            extra=build_turn_summary_payload(
+                event="client_turn_summary",
+                client_event=event,
+                user_id=int(user.id),
+                request_id=payload.request_id,
+                turn_id=payload.turn_id,
+                channel=payload.channel or "text",
+                question=payload.question,
+                answer=payload.answer,
+                question_length=payload.question_length,
+                answer_length=payload.answer_length,
+                agent_source=payload.agent_source,
+                route_taken=payload.route_taken,
+                fallback_reason=payload.fallback_reason,
+                duration_ms=payload.duration_ms,
+                local_duration_ms=payload.local_duration_ms,
+                backend_duration_ms=payload.backend_duration_ms,
+                total_duration_ms=payload.total_duration_ms,
+                stage_timings=payload.stage_timings,
+                error_type=payload.error_type,
+                app_version=payload.app_version,
+                api_base=payload.api_base,
+                build_number=payload.build_number,
+                created_at=payload.created_at,
+                provider=payload.provider,
+                voice_phase=payload.voice_phase,
+                telemetry_delivery="received",
+                file_size=payload.file_size,
+                mime_type=payload.mime_type,
+                chat_routing=payload.chat_routing,
+                voice_routing=payload.voice_routing,
+            ),
+        )
     return {"ok": True}
+
+
+@app.get("/api/debug/observability")
+def api_debug_observability(
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    return _observability_config_payload()
 
 
 @app.post("/api/chat")
@@ -2678,6 +2785,22 @@ def api_chat(
                 duration_ms=duration_ms,
             ),
         )
+        if CHAT_TURN_SUMMARY_LOGS_ENABLED:
+            logger.info(
+                "chat_turn_summary",
+                extra=build_turn_summary_payload(
+                    event="chat_turn_summary",
+                    user_id=int(user.id),
+                    request_id=get_request_id(),
+                    channel="text",
+                    question=text,
+                    route_taken="failed",
+                    agent_source="backend_pipeline",
+                    safe_error_type=_safe_error_type(exc),
+                    status_code=status_code,
+                    duration_ms=duration_ms,
+                ),
+            )
         raise
 
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -2709,6 +2832,33 @@ def api_chat(
             duration_ms=duration_ms,
         ),
     )
+    if CHAT_TURN_SUMMARY_LOGS_ENABLED:
+        meta = response.get("meta") if isinstance(response, dict) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        logger.info(
+            "chat_turn_summary",
+            extra=build_turn_summary_payload(
+                event="chat_turn_summary",
+                user_id=int(user.id),
+                request_id=get_request_id(),
+                channel="text",
+                question=text,
+                answer=answer,
+                route_taken=pipeline.get("route_taken"),
+                predicted_label=pipeline.get("predicted_label"),
+                direct_answer_source=pipeline.get("direct_answer_source"),
+                direct_answer_confidence=pipeline.get("direct_answer_confidence"),
+                cache_hit=pipeline.get("cache_hit"),
+                fallback_reason=(
+                    pipeline.get("fallback_reason")
+                    or meta.get("fallback_reason")
+                    or meta.get("fallbackReason")
+                ),
+                rag_snippet_count=_rag_snippet_count(pipeline),
+                agent_source=_backend_agent_source(pipeline),
+                duration_ms=duration_ms,
+            ),
+        )
     return response
 
 
@@ -3153,6 +3303,7 @@ async def _transcribe_and_analyze_upload(
     session: Session,
     auth_user: AuthUser,
 ) -> Dict[str, Any]:
+    started = time.perf_counter()
     user = get_owned_user(session, auth_user)
     if user_id is not None:
         assert_owner(int(user_id), user)
@@ -3200,7 +3351,35 @@ async def _transcribe_and_analyze_upload(
             pipeline_result=pipeline_result,
             reply_language=reply_language,
         )
-        return _build_chat_response(item, meta, normalized_pipeline)
+        response = _build_chat_response(item, meta, normalized_pipeline)
+        if CHAT_TURN_SUMMARY_LOGS_ENABLED:
+            assistant = response.get("assistant") if isinstance(response, dict) else {}
+            answer = ""
+            if isinstance(assistant, dict):
+                answer = str(assistant.get("text") or assistant.get("english") or "")
+            pipeline = response.get("pipeline") if isinstance(response, dict) else {}
+            pipeline = pipeline if isinstance(pipeline, dict) else {}
+            logger.info(
+                "voice_turn_summary",
+                extra=build_turn_summary_payload(
+                    event="voice_turn_summary",
+                    user_id=int(user.id),
+                    request_id=get_request_id(),
+                    channel="voice",
+                    question=transcript_text,
+                    answer=answer,
+                    route_taken=pipeline.get("route_taken"),
+                    predicted_label=pipeline.get("predicted_label"),
+                    direct_answer_source=pipeline.get("direct_answer_source"),
+                    cache_hit=pipeline.get("cache_hit"),
+                    fallback_reason=pipeline.get("fallback_reason"),
+                    rag_snippet_count=_rag_snippet_count(pipeline),
+                    agent_source=_backend_agent_source(pipeline),
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    voice_phase="completed",
+                ),
+            )
+        return response
     finally:
         try:
             os.remove(tmp_path)

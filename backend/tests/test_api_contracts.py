@@ -77,6 +77,27 @@ def test_chat_requires_message_or_text(client):
     assert response.json()["detail"] == "message or text is required"
 
 
+def test_observability_config_endpoint(client):
+    create_test_user()
+    response = client.get(
+        "/api/debug/observability",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert "environment" in payload
+    assert "release" in payload
+    assert "log_chat_content" in payload
+    assert "log_chat_content_max_chars" in payload
+    assert "client_turn_logs_enabled" in payload
+    assert "chat_turn_summary_logs_enabled" in payload
+    assert "OPENAI_API_KEY" not in response.text
+    assert "SARVAM_API_KEY" not in response.text
+    assert "Bearer" not in response.text
+
+
 def test_chat_logs_turn_started_and_completed_safely(client, monkeypatch, caplog):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
@@ -106,6 +127,35 @@ def test_chat_logs_turn_started_and_completed_safely(client, monkeypatch, caplog
     assert user.id is not None
 
 
+def test_chat_turn_summary_without_content(client, monkeypatch, caplog):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    _stub_chat_pipeline(monkeypatch, assistant_text="Summary backend answer")
+    monkeypatch.setattr(observability, "LOG_CHAT_CONTENT", False)
+    monkeypatch.setattr(main_module, "CHAT_TURN_SUMMARY_LOGS_ENABLED", True)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "private IPL question", "reply_language": "en"},
+        )
+
+    assert response.status_code == 200
+    summary = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_summary"][-1]
+    assert getattr(summary, "question_hash")
+    assert getattr(summary, "answer_hash")
+    assert getattr(summary, "question_length") == len("private IPL question")
+    assert getattr(summary, "answer_length") == len("Summary backend answer")
+    assert not hasattr(summary, "question_preview")
+    assert not hasattr(summary, "answer_preview")
+    assert getattr(summary, "agent_source") in {"backend_pipeline", "backend_openai", "backend_cache"}
+    assert getattr(summary, "route_taken") == "agentic"
+    assert getattr(summary, "duration_ms") >= 0
+    assert "private IPL question" not in caplog.text
+    assert "Summary backend answer" not in caplog.text
+
+
 def test_chat_logs_truncated_previews_when_enabled(client, monkeypatch, caplog):
     create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
@@ -125,6 +175,29 @@ def test_chat_logs_truncated_previews_when_enabled(client, monkeypatch, caplog):
     completed = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_completed"][-1]
     assert getattr(started, "question_preview") == "question..."
     assert getattr(completed, "answer_preview") == "answer p..."
+
+
+def test_chat_turn_summary_with_content(client, monkeypatch, caplog):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    _stub_chat_pipeline(monkeypatch, assistant_text="answer preview text")
+    monkeypatch.setattr(observability, "LOG_CHAT_CONTENT", True)
+    monkeypatch.setattr(observability, "LOG_CHAT_CONTENT_MAX_CHARS", 12)
+    monkeypatch.setattr(main_module, "CHAT_TURN_SUMMARY_LOGS_ENABLED", True)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "question preview text", "reply_language": "en"},
+        )
+
+    assert response.status_code == 200
+    summary = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_summary"][-1]
+    assert getattr(summary, "question_preview") == "question pre..."
+    assert getattr(summary, "answer_preview") == "answer previ..."
+    assert getattr(summary, "route_taken") == "agentic"
+    assert getattr(summary, "duration_ms") >= 0
 
 
 def test_client_turn_log_accepts_local_telemetry_safely(client, caplog):
@@ -152,6 +225,53 @@ def test_client_turn_log_accepts_local_telemetry_safely(client, caplog):
     assert getattr(record, "answer_hash")
     assert getattr(record, "agent_source") == "local_rules"
     assert "secret-token" not in caplog.text
+
+
+def test_client_turn_log_emits_client_turn_summary(client, caplog):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/client/turn-log",
+            headers=headers,
+            json={
+                "event": "client_local_turn_completed",
+                "user_id": user.id,
+                "request_id": "turn-123",
+                "turn_id": "turn-123",
+                "channel": "text",
+                "question": "hello",
+                "answer": "hi",
+                "agent_source": "local_rules",
+                "route_taken": "fast_greeting",
+                "duration_ms": 12.5,
+            },
+        )
+
+    assert response.status_code == 200
+    summary = [r for r in caplog.records if getattr(r, "event", "") == "client_turn_summary"][-1]
+    assert getattr(summary, "client_event") == "client_local_turn_completed"
+    assert getattr(summary, "agent_source") == "local_rules"
+    assert getattr(summary, "route_taken") == "fast_greeting"
+    assert getattr(summary, "telemetry_delivery") == "received"
+    assert getattr(summary, "duration_ms") == 12.5
+    assert getattr(summary, "question_hash")
+    assert getattr(summary, "answer_hash")
+
+
+def test_observability_startup_log(caplog):
+    with caplog.at_level(logging.INFO):
+        main_module.emit_observability_config_log()
+
+    record = [r for r in caplog.records if getattr(r, "event", "") == "observability_config"][-1]
+    assert getattr(record, "log_chat_content") in {True, False}
+    assert isinstance(getattr(record, "log_chat_content_max_chars"), int)
+    assert getattr(record, "client_turn_logs_enabled") in {True, False}
+    assert getattr(record, "chat_turn_summary_logs_enabled") in {True, False}
+    assert "OPENAI_API_KEY" not in caplog.text
+    assert "SARVAM_API_KEY" not in caplog.text
+    assert "Bearer" not in caplog.text
 
 
 def test_voice_upload_rejects_missing_auth_missing_file_bad_type_and_large_file(client, monkeypatch):

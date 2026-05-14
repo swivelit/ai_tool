@@ -15,6 +15,24 @@ function backendChatCalls(fetchMock: ReturnType<typeof vi.fn>) {
   );
 }
 
+function fetchCallsEndingWith(fetchMock: ReturnType<typeof vi.fn>, suffix: string) {
+  return (fetchMock.mock.calls as any[][]).filter((call) =>
+    String(call[0]).endsWith(suffix),
+  );
+}
+
+async function settleTelemetry() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function clientTurnLogBodies(fetchMock: ReturnType<typeof vi.fn>) {
+  return fetchCallsEndingWith(fetchMock, "/api/client/turn-log").map((call) =>
+    JSON.parse(String((call[1] as any)?.body || "{}")),
+  );
+}
+
 function mockCachedProfile(
   profile: Record<string, any> | null,
   settings?: Record<string, any> | null,
@@ -121,8 +139,12 @@ describe("API client contracts", () => {
 
     expect(payload.ok).toBe(true);
     expect(payload.assistant.text).toBe("Hello.");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe(
+    const voiceCalls = fetchCallsEndingWith(
+      fetchMock,
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+    );
+    expect(voiceCalls).toHaveLength(1);
+    expect(String(voiceCalls[0][0])).toBe(
       "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
     );
   });
@@ -185,8 +207,12 @@ describe("API client contracts", () => {
       form,
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe(
+    const voiceCalls = fetchCallsEndingWith(
+      fetchMock,
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+    );
+    expect(voiceCalls).toHaveLength(1);
+    expect(String(voiceCalls[0][0])).toBe(
       "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
     );
   });
@@ -250,8 +276,12 @@ describe("API client contracts", () => {
       form,
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe(
+    const localVoiceCalls = fetchCallsEndingWith(
+      fetchMock,
+      "/v1/audio/transcriptions",
+    );
+    expect(localVoiceCalls).toHaveLength(1);
+    expect(String(localVoiceCalls[0][0])).toBe(
       "http://192.168.1.23:10000/v1/audio/transcriptions",
     );
     expect(payload.ok).toBe(true);
@@ -329,8 +359,12 @@ describe("API client contracts", () => {
 
     expect(payload.ok).toBe(true);
     expect(payload.assistant.text).toBe("Backend voice answer.");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe(
+    const voiceCalls = fetchCallsEndingWith(
+      fetchMock,
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+    );
+    expect(voiceCalls).toHaveLength(1);
+    expect(String(voiceCalls[0][0])).toBe(
       "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
     );
   });
@@ -393,8 +427,12 @@ describe("API client contracts", () => {
       form,
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String((fetchMock.mock.calls[0] as any[])[0])).toBe(
+    const voiceCalls = fetchCallsEndingWith(
+      fetchMock,
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+    );
+    expect(voiceCalls).toHaveLength(1);
+    expect(String((voiceCalls[0] as any[])[0])).toBe(
       "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
     );
     expect(payload.assistant.text).toBe("Cloud voice answer.");
@@ -652,6 +690,87 @@ describe("API client contracts", () => {
     expect(payload.pipeline.direct_answer_source).toBe("local_rules");
     expect(payload.assistant.text).toContain("right here with you");
     expect(runLocalAssistantTurn).not.toHaveBeenCalled();
+    expect(backendChatCalls(fetchMock)).toHaveLength(0);
+  });
+
+  it("emits startup telemetry with API base and routing mode", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          version: "9.8.7",
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await import("../lib/api");
+    await settleTelemetry();
+
+    const startup = clientTurnLogBodies(fetchMock).reverse().find(
+      (body) => body.event === "client_app_started",
+    );
+    expect(startup).toBeTruthy();
+    expect(startup.api_base).toBe("https://api.example.test");
+    expect(startup.app_version).toBe("9.8.7");
+    expect(startup.chat_routing).toBe("local");
+    expect(startup.voice_routing).toBe("backend");
+  });
+
+  it("emits local quick reply telemetry", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    vi.doMock("../lib/localAgents", () => ({
+      runLocalAssistantTurn: vi.fn(async () => {
+        throw new Error("localAgents should not run for quick replies");
+      }),
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "What are you up to ?",
+      reply_language: "en",
+    });
+    await settleTelemetry();
+
+    const localTurn = clientTurnLogBodies(fetchMock).find(
+      (body) => body.event === "client_local_turn_completed",
+    );
+    expect(localTurn).toBeTruthy();
+    expect(localTurn.agent_source).toBe("local_rules");
+    expect(localTurn.route_taken).toBe("small_talk");
+    expect(localTurn.question).toBe("What are you up to ?");
     expect(backendChatCalls(fetchMock)).toHaveLength(0);
   });
 
@@ -1276,6 +1395,73 @@ describe("API client contracts", () => {
     expect(payload.meta.fallback_reason).toBe("local_timeout");
   });
 
+  it("emits backend fallback started and completed telemetry", async () => {
+    mockCachedProfile(null, { allowCloudFallback: true });
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    const runLocalAssistantTurn = vi.fn(async () => {
+      const error = new Error("Local on-device inference timed out after 60000ms.");
+      (error as any).code = "LOCAL_TURN_TIMEOUT";
+      throw error;
+    });
+    vi.doMock("../lib/localAgents", () => ({
+      runLocalAssistantTurn,
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/api/client/turn-log")) {
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse({
+        ok: true,
+        item: {
+          id: 504,
+          intent: "assistant",
+          category: "Other",
+          raw_text: "Do you know about ipl ?",
+          details: "IPL is a professional Twenty20 cricket league in India.",
+          source: "text",
+        },
+        assistant: { text: "IPL is a professional Twenty20 cricket league in India." },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "Do you know about ipl ?",
+      reply_language: "en",
+    });
+    await settleTelemetry();
+
+    const events = clientTurnLogBodies(fetchMock);
+    expect(events.some((body) => body.event === "client_backend_fallback_started")).toBe(true);
+    const completed = events.find((body) => body.event === "client_backend_fallback_completed");
+    expect(completed).toBeTruthy();
+    expect(completed.agent_source).toBe("backend_openai");
+    expect(completed.route_taken).toBe("fallback_openai");
+    expect(completed.fallback_reason).toBe("local_timeout");
+    expect(completed.answer).toContain("IPL");
+  });
+
   it("shows cloud fallback consent when local chat times out and cloud fallback is disabled", async () => {
     mockCachedProfile(null, { allowCloudFallback: false });
     vi.doMock("expo-constants", () => ({
@@ -1367,10 +1553,9 @@ describe("API client contracts", () => {
 
     expect(getClientRoutingDefaults().chat).toBe("local");
     expect(runLocalAssistantTurn).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe(
-      "https://api.example.test/api/chat",
-    );
+    const chatCalls = backendChatCalls(fetchMock);
+    expect(chatCalls).toHaveLength(1);
+    expect(String(chatCalls[0][0])).toBe("https://api.example.test/api/chat");
     expect(payload.assistant.text).toBe("Backend fallback answer.");
   });
 });

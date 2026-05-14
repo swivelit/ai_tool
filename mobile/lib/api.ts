@@ -1,5 +1,10 @@
 import Constants from "expo-constants";
 
+import {
+  enqueueClientTurnLog,
+  flushClientTurnLogs as flushQueuedClientTurnLogs,
+  type ClientTurnLogPayload,
+} from "./chatTelemetry";
 import { getCachedDeviceCapabilities } from "./deviceCapabilities";
 import { auth } from "./firebase";
 import {
@@ -28,6 +33,8 @@ import {
 } from "./replyLanguage";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
+
+export type { ClientTurnLogPayload } from "./chatTelemetry";
 
 export class ApiError extends Error {
   status: number;
@@ -316,6 +323,9 @@ async function fetchBackend(
 
   const currentUser = auth?.currentUser ?? null;
   if (res.status !== 401 || !shouldAttachAuth || !currentUser) {
+    if (res.ok) {
+      void flushQueuedClientTurnLogs();
+    }
     return res;
   }
 
@@ -323,7 +333,7 @@ async function fetchBackend(
   // token can still produce a backend 401. Force refresh once, then retry the
   // same request before surfacing the error to the caller.
   try {
-    return await fetchWithTimeout(
+    const retryResponse = await fetchWithTimeout(
       buildUrl(path),
       {
         ...options,
@@ -334,6 +344,10 @@ async function fetchBackend(
       },
       config?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
     );
+    if (retryResponse.ok) {
+      void flushQueuedClientTurnLogs();
+    }
+    return retryResponse;
   } catch (error) {
     throw normalizeFetchFailure(error, method, path);
   }
@@ -540,6 +554,21 @@ export function getClientRoutingDefaults() {
   };
 }
 
+function emitClientStartupTelemetry() {
+  const routing = getClientRoutingDefaults();
+  sendClientTurnLog({
+    event: "client_app_started",
+    channel: "app",
+    agent_source: "mobile",
+    route_taken: "startup",
+    api_base: API_BASE,
+    chat_routing: routing.chat,
+    voice_routing: routing.voice,
+  });
+}
+
+void Promise.resolve().then(emitClientStartupTelemetry);
+
 export function logClientRoutingBanner(
   logger: Pick<Console, "info"> = console,
 ) {
@@ -622,23 +651,6 @@ type LocalChatProxyResponse = {
   };
   pipeline?: Record<string, any>;
   meta?: Record<string, any>;
-};
-
-export type ClientTurnLogPayload = {
-  event: string;
-  user_id?: number | string | null;
-  request_id?: string | null;
-  channel?: "text" | "voice" | "handsfree" | string;
-  question?: string | null;
-  answer?: string | null;
-  question_length?: number;
-  answer_length?: number;
-  agent_source?: string | null;
-  route_taken?: string | null;
-  fallback_reason?: string | null;
-  duration_ms?: number;
-  stage_timings?: Record<string, any> | null;
-  error_type?: string | null;
 };
 
 type VoiceUnavailableAction =
@@ -855,15 +867,11 @@ function textLength(value: unknown) {
   return String(value || "").length;
 }
 
-function safeSendClientTurnLog(payload: ClientTurnLogPayload) {
-  void apiPostBackendOnly("/api/client/turn-log", payload).catch(() => {
-    // Client telemetry is best-effort and must never block chat UX.
-  });
+export function sendClientTurnLog(payload: ClientTurnLogPayload) {
+  void enqueueClientTurnLog(payload);
 }
 
-export function sendClientTurnLog(payload: ClientTurnLogPayload) {
-  safeSendClientTurnLog(payload);
-}
+export const flushClientTurnLogs = flushQueuedClientTurnLogs;
 
 function logClientLocalTurnCompleted(input: {
   userId: number;
@@ -873,7 +881,7 @@ function logClientLocalTurnCompleted(input: {
   route: string;
   stageTimings?: Record<string, any> | null;
 }) {
-  safeSendClientTurnLog({
+  sendClientTurnLog({
     event: "client_local_turn_completed",
     user_id: input.userId,
     channel: "text",
@@ -894,7 +902,7 @@ function logClientLocalTurnFailed(input: {
   route?: string | null;
   stageTimings?: Record<string, any> | null;
 }) {
-  safeSendClientTurnLog({
+  sendClientTurnLog({
     event: "client_local_turn_failed",
     user_id: input.userId,
     channel: "text",
@@ -1029,7 +1037,7 @@ async function postChatFallbackToBackend(input: {
   originalRoute?: string | null;
   stageTimings?: Record<string, any> | null;
 }) {
-  safeSendClientTurnLog({
+  sendClientTurnLog({
     event: "client_backend_fallback_started",
     user_id: input.userId,
     channel: "text",
@@ -1052,7 +1060,7 @@ async function postChatFallbackToBackend(input: {
     stageTimings: input.stageTimings,
   });
   const answer = safeAnswerText(annotated);
-  safeSendClientTurnLog({
+  sendClientTurnLog({
     event: "client_backend_fallback_completed",
     user_id: input.userId,
     channel: "text",
@@ -1930,7 +1938,7 @@ async function handleLocalChat(
   };
 
   if (turn.source === "openai_fallback") {
-    safeSendClientTurnLog({
+    sendClientTurnLog({
       event: "client_backend_fallback_completed",
       user_id: userId,
       channel: "text",

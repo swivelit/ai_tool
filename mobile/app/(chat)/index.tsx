@@ -370,6 +370,8 @@ export default function Home() {
   );
   const stopWhenReadyRef = useRef(false);
   const recordingStartCancelledRef = useRef(false);
+  const voicePrepareStartedAtRef = useRef<number | null>(null);
+  const voiceRecordingStartedAtRef = useRef<number | null>(null);
   const voiceBusyRequestIdRef = useRef<string | null>(null);
   const drawerProgress = useRef(new Animated.Value(0)).current;
   const [drawerMounted, setDrawerMounted] = useState(false);
@@ -1532,6 +1534,33 @@ export default function Home() {
     sendClientTurnLog(payload);
   }
 
+  function safeVoiceErrorType(error: unknown, fallback = "voice_error") {
+    const code =
+      typeof (error as any)?.code === "string"
+        ? (error as any).code
+        : typeof (error as any)?.name === "string"
+          ? (error as any).name
+          : "";
+    if (code) {
+      return code.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 80);
+    }
+    return fallback;
+  }
+
+  function logVoiceTelemetry(
+    event: string,
+    details: Partial<Parameters<typeof sendClientTurnLog>[0]> = {},
+  ) {
+    logClientTurn({
+      event,
+      user_id: profile?.userId,
+      channel: "voice",
+      agent_source: "mobile",
+      route_taken: "voice",
+      ...details,
+    });
+  }
+
   function clearPendingAssistant(requestId: string) {
     setPendingChatTurn((current) =>
       current?.requestId === requestId ? null : current,
@@ -1852,6 +1881,8 @@ export default function Home() {
     recordingPhaseRef.current = "idle";
     stopWhenReadyRef.current = false;
     recordingRef.current = null;
+    voicePrepareStartedAtRef.current = null;
+    voiceRecordingStartedAtRef.current = null;
     setRecording(null);
     setRecordingPreparing(false);
     setListening(false);
@@ -1888,16 +1919,29 @@ export default function Home() {
       await abortHandsFreeRecognizer(false);
       await releaseReplySound();
       recordingPhaseRef.current = "starting";
+      voicePrepareStartedAtRef.current = Date.now();
       stopWhenReadyRef.current = false;
       recordingStartCancelledRef.current = false;
       setActiveSurface(surface);
       setRecordingPreparing(true);
       setListening(false);
+      logVoiceTelemetry("client_voice_prepare_started", {
+        route_taken: "voice_prepare",
+        voice_phase: "preparing",
+      });
 
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
+        logVoiceTelemetry("client_voice_prepare_failed", {
+          route_taken: "voice_prepare",
+          voice_phase: "permission_denied",
+          duration_ms: voicePrepareStartedAtRef.current
+            ? Date.now() - voicePrepareStartedAtRef.current
+            : undefined,
+          error_type: "microphone_permission_denied",
+        });
         await cleanupVoiceRecordingState();
         Alert.alert("Mic permission needed", "Please allow microphone access.");
         return;
@@ -1931,6 +1975,19 @@ export default function Home() {
       recordingPhaseRef.current = "recording";
       setRecordingPreparing(false);
       setListening(true);
+      const prepareDurationMs = voicePrepareStartedAtRef.current
+        ? Date.now() - voicePrepareStartedAtRef.current
+        : undefined;
+      voiceRecordingStartedAtRef.current = Date.now();
+      logVoiceTelemetry("client_voice_prepare_completed", {
+        route_taken: "voice_prepare",
+        voice_phase: "ready",
+        duration_ms: prepareDurationMs,
+      });
+      logVoiceTelemetry("client_voice_recording_started", {
+        route_taken: "voice_recording",
+        voice_phase: "recording",
+      });
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       if (stopWhenReadyRef.current) {
@@ -1940,10 +1997,23 @@ export default function Home() {
     } catch (error: unknown) {
       recordingStartCancelledRef.current = true;
       await cleanupLateRecording();
-      await cleanupVoiceRecordingState();
       if (error instanceof RecordingStartCancelledError) {
+        await cleanupVoiceRecordingState();
         return;
       }
+      logVoiceTelemetry("client_voice_prepare_failed", {
+        route_taken: "voice_prepare",
+        voice_phase:
+          error instanceof RecordingStartTimeoutError ? "startup_timeout" : "prepare_failed",
+        duration_ms: voicePrepareStartedAtRef.current
+          ? Date.now() - voicePrepareStartedAtRef.current
+          : undefined,
+        error_type:
+          error instanceof RecordingStartTimeoutError
+            ? "local_timeout"
+            : safeVoiceErrorType(error, "voice_prepare_failed"),
+      });
+      await cleanupVoiceRecordingState();
       const message =
         error instanceof RecordingStartTimeoutError
           ? MIC_START_TIMEOUT_MESSAGE
@@ -1956,6 +2026,14 @@ export default function Home() {
 
   async function stopAndAnalyze() {
     if (recordingPhaseRef.current === "starting") {
+      logVoiceTelemetry("client_voice_prepare_failed", {
+        route_taken: "voice_prepare",
+        voice_phase: "startup_cancelled",
+        duration_ms: voicePrepareStartedAtRef.current
+          ? Date.now() - voicePrepareStartedAtRef.current
+          : undefined,
+        error_type: "startup_cancelled",
+      });
       await cleanupVoiceRecordingState({ cancelStartup: true });
       return;
     }
@@ -1972,6 +2050,11 @@ export default function Home() {
     const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
     voiceBusyRequestIdRef.current = requestId;
+    let uploadStarted = false;
+    let audioFileSize: number | undefined;
+    const recordingDurationMs = voiceRecordingStartedAtRef.current
+      ? Date.now() - voiceRecordingStartedAtRef.current
+      : undefined;
 
     try {
       recordingPhaseRef.current = "stopping";
@@ -1997,7 +2080,16 @@ export default function Home() {
 
       const uri = activeRecording.getURI();
       if (!uri) throw new Error("No audio file URI");
-      await assertUsableAudioFile(uri);
+      const audioInfo = await assertUsableAudioFile(uri);
+      audioFileSize = Number((audioInfo as any).size || 0) || undefined;
+      logVoiceTelemetry("client_voice_recording_stopped", {
+        request_id: requestId,
+        route_taken: "voice_recording",
+        voice_phase: "stopped",
+        duration_ms: recordingDurationMs,
+        file_size: audioFileSize,
+        mime_type: "audio/m4a",
+      });
 
       const form = new FormData();
       form.append(
@@ -2010,6 +2102,14 @@ export default function Home() {
       );
 
       const timeoutMs = await getChatTurnTimeoutMs("voice");
+      uploadStarted = true;
+      logVoiceTelemetry("client_voice_upload_started", {
+        request_id: requestId,
+        route_taken: "voice_upload",
+        voice_phase: "uploading",
+        file_size: audioFileSize,
+        mime_type: "audio/m4a",
+      });
       const res = await withLocalTimeout(
         apiPostForm<BackendChatResponse | ChatHistoryItem>(
           `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
@@ -2054,6 +2154,17 @@ export default function Home() {
         setConfirmOpen(true);
       }
     } catch (error: unknown) {
+      logVoiceTelemetry("client_voice_upload_failed", {
+        request_id: requestId,
+        route_taken: uploadStarted ? "voice_upload" : "voice_file_validation",
+        voice_phase: uploadStarted ? "upload_failed" : "file_validation_failed",
+        file_size: audioFileSize,
+        mime_type: "audio/m4a",
+        error_type:
+          error instanceof Error && error.message === EMPTY_AUDIO_MESSAGE
+            ? "empty_audio"
+            : safeVoiceErrorType(error, uploadStarted ? "voice_upload_failed" : "voice_file_validation_failed"),
+      });
       if (isActiveChatRequest(requestId)) {
         const rawMessage = error instanceof Error ? error.message : "";
         const message =
