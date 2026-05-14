@@ -16,6 +16,34 @@ const androidRuntimePath = path.join(
   "cpp",
   "jai_llama_runtime.cpp",
 );
+const androidModulePath = path.join(
+  mobileRoot,
+  "modules",
+  "jai-on-device-model",
+  "android",
+  "src",
+  "main",
+  "java",
+  "com",
+  "harishajahan",
+  "jai",
+  "ondevice",
+  "JaiOnDeviceModelModule.kt",
+);
+const iosModulePath = path.join(
+  mobileRoot,
+  "modules",
+  "jai-on-device-model",
+  "ios",
+  "JaiOnDeviceModelModule.swift",
+);
+const iosBridgePath = path.join(
+  mobileRoot,
+  "modules",
+  "jai-on-device-model",
+  "ios",
+  "JaiLlamaCppBridge.mm",
+);
 
 function readAndroidRuntime() {
   return fs.readFileSync(androidRuntimePath, "utf8");
@@ -40,5 +68,19 @@ describe("Android native runtime safety", () => {
     expect(source).toMatch(/kMaxStrongCachedModels\s*=\s*1\b/);
     expect(source).toContain("g_model_cache_lru");
     expect(source).toContain("clearModelCache");
+  });
+
+  it("exposes cancellation and checks it in native generation loops", () => {
+    const androidRuntime = readAndroidRuntime();
+    const androidModule = fs.readFileSync(androidModulePath, "utf8");
+    const iosModule = fs.readFileSync(iosModulePath, "utf8");
+    const iosBridge = fs.readFileSync(iosBridgePath, "utf8");
+
+    expect(androidModule).toContain('AsyncFunction("cancelRequest")');
+    expect(iosModule).toContain('AsyncFunction("cancelRequest")');
+    expect(androidRuntime).toContain("nativeCancelRequest");
+    expect(androidRuntime).toContain("isRequestCancelled(request_id)");
+    expect(iosBridge).toContain("cancelRequest:");
+    expect(iosBridge).toContain("isRequestCancelled(requestId)");
   });
 });

@@ -43,6 +43,10 @@ class JaiOnDeviceModelModule : Module() {
       engine.embedTexts(input)
     }
 
+    AsyncFunction("cancelRequest") { requestId: String ->
+      engine.cancelRequest(requestId)
+    }
+
     AsyncFunction("transcribeAudio") { input: Map<String, Any?> ->
       engine.transcribeAudio(input)
     }

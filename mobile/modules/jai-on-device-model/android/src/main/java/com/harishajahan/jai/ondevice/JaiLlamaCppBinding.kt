@@ -45,9 +45,10 @@ object JaiLlamaCppBinding {
     threads: Int,
     temperature: Double,
     maxTokens: Int,
+    requestId: String,
   ): String {
     ensureNativeLoaded()
-    return nativeCompleteChat(modelPath, prompt, contextSize, threads, temperature, maxTokens)
+    return nativeCompleteChat(modelPath, prompt, contextSize, threads, temperature, maxTokens, requestId)
   }
 
   fun embedText(
@@ -63,6 +64,11 @@ object JaiLlamaCppBinding {
   fun releaseCachedModels() {
     if (!nativeLoaded) return
     nativeReleaseCachedModels()
+  }
+
+  fun cancelRequest(requestId: String) {
+    if (!nativeLoaded) return
+    nativeCancelRequest(requestId)
   }
 
   private fun ensureNativeLoaded() {
@@ -81,6 +87,7 @@ object JaiLlamaCppBinding {
     threads: Int,
     temperature: Double,
     maxTokens: Int,
+    requestId: String,
   ): String
 
   private external fun nativeEmbedText(
@@ -91,4 +98,6 @@ object JaiLlamaCppBinding {
   ): FloatArray
 
   private external fun nativeReleaseCachedModels()
+
+  private external fun nativeCancelRequest(requestId: String)
 }

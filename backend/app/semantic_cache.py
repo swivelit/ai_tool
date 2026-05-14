@@ -20,6 +20,8 @@ import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from .openai_tracked import tracked_chat_completion
+
 # ==============================
 # CONFIG & INIT
 # ==============================
@@ -238,8 +240,10 @@ def chat_with_cache(user_query):
 
     # Step 4: Cache MISS → Call OpenAI
     client = get_openai_client()
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
+    response = tracked_chat_completion(
+        client,
+        task="normal_qa",
+        route="semantic_cache_miss",
         messages=[
             {"role": "system", "content": "You are a helpful AI assistant."},
             {"role": "user", "content": user_query},

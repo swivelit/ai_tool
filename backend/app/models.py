@@ -119,6 +119,7 @@ class GlobalQACache(SQLModel, table=True):
     answer_hash: str = Field(index=True)
 
     embedding_json: Optional[str] = None
+    embedding_kind: str = Field(default="token_hash_v1", index=True)
     embedding_norm: float = Field(default=0.0)
     confidence: float = Field(default=0.0)
     safety_label: str = Field(default="general", index=True)
@@ -142,7 +143,9 @@ class GlobalQAObservation(SQLModel, table=True):
     question_hash: str = Field(index=True)
     normalized_question: str
     similarity_score: float = Field(default=0.0, index=True)
+    answer_similarity_score: float = Field(default=1.0, index=True)
     backend_answer_hash: str = Field(index=True)
+    conflicting_answer_hashes_json: str = Field(default="[]")
     model_used: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now, index=True)
 

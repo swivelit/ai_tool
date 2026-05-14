@@ -5,6 +5,7 @@ import json
 import app.main as main_module
 from app.database import SessionLocal
 from app.global_qa_cache import (
+    build_global_knowledge_sync_payload,
     lookup_approved_global_cache,
     record_backend_openai_answer,
 )
@@ -186,3 +187,130 @@ def test_global_knowledge_sync_returns_only_approved_safe_entries(client):
     assert payload["ok"] is True
     assert payload["count"] == 1
     assert payload["entries"][0]["answer"] == "Photosynthesis is how plants make food."
+    assert payload["entries"][0]["embeddingKind"] == "token_hash_v1"
+
+
+def test_similar_questions_with_similar_answers_promote():
+    with SessionLocal() as session:
+        first = record_backend_openai_answer(
+            session,
+            user_id=1,
+            question="What is a binary tree?",
+            answer="A binary tree is a tree data structure where each node has at most two children.",
+            model_used="cheap-test-model",
+        )
+        second = record_backend_openai_answer(
+            session,
+            user_id=2,
+            question="Explain binary trees",
+            answer="A binary tree is a data structure whose nodes have no more than two children.",
+            model_used="cheap-test-model",
+        )
+        assert first["status"] == "candidate"
+        assert second["promoted"] is True
+        candidate = session.exec(select(GlobalQACache)).one()
+        assert candidate.status == "approved"
+
+
+def test_similar_questions_with_conflicting_answers_do_not_promote():
+    with SessionLocal() as session:
+        record_backend_openai_answer(
+            session,
+            user_id=1,
+            question="What is a compiler?",
+            answer="A compiler translates source code into another form before execution.",
+            model_used="cheap-test-model",
+        )
+        second = record_backend_openai_answer(
+            session,
+            user_id=2,
+            question="Explain compiler",
+            answer="A compiler is a hardware device used to cool a computer.",
+            model_used="cheap-test-model",
+        )
+        assert second["promoted"] is False
+        candidate = session.exec(select(GlobalQACache)).one()
+        assert candidate.status == "candidate"
+        observations = list(session.exec(select(GlobalQAObservation)).all())
+        assert len(observations) == 2
+        assert any(json.loads(row.conflicting_answer_hashes_json or "[]") for row in observations)
+
+
+def test_approved_answer_is_not_overwritten_by_later_different_answer():
+    with SessionLocal() as session:
+        record_backend_openai_answer(
+            session,
+            user_id=1,
+            question="What is photosynthesis?",
+            answer="Photosynthesis is how plants make food from light, water, and carbon dioxide.",
+            model_used="cheap-test-model",
+        )
+        record_backend_openai_answer(
+            session,
+            user_id=2,
+            question="Explain photosynthesis",
+            answer="Photosynthesis is how plants make food from light, water, and carbon dioxide.",
+            model_used="cheap-test-model",
+        )
+        approved = session.exec(select(GlobalQACache)).one()
+        assert approved.status == "approved"
+        original_answer = approved.answer
+        original_hash = approved.answer_hash
+
+        record_backend_openai_answer(
+            session,
+            user_id=3,
+            question="Tell me about photosynthesis",
+            answer="Photosynthesis is a sports tournament played indoors.",
+            model_used="cheap-test-model",
+        )
+        refreshed = session.get(GlobalQACache, approved.id)
+        assert refreshed is not None
+        assert refreshed.status == "approved"
+        assert refreshed.answer == original_answer
+        assert refreshed.answer_hash == original_hash
+
+
+def test_private_data_bypass_and_sync_safety():
+    with SessionLocal() as session:
+        private = record_backend_openai_answer(
+            session,
+            user_id=1,
+            question="My email is person@example.com and my phone is 9876543210, what should I do?",
+            answer="Avoid sharing private contact details.",
+            model_used="cheap-test-model",
+        )
+        salary = record_backend_openai_answer(
+            session,
+            user_id=2,
+            question="My salary is 20 LPA, should I take this loan?",
+            answer="Consider talking to a financial advisor.",
+            model_used="cheap-test-model",
+        )
+        assert private["skipped"] is True
+        assert salary["skipped"] is True
+
+        session.add(
+            GlobalQACache(
+                canonical_question="My phone is [REDACTED_PHONE]",
+                normalized_question="my phone is 9876543210",
+                answer="Unsafe stale answer",
+                answer_language="en",
+                topic="phone",
+                status="approved",
+                hit_count=2,
+                distinct_user_count=2,
+                observed_question_count=2,
+                source_question_hashes_json=json.dumps([]),
+                answer_hash="unsafe",
+                embedding_json="[]",
+                embedding_norm=0,
+                confidence=1,
+                safety_label="general",
+            )
+        )
+        session.commit()
+
+        payload = build_global_knowledge_sync_payload(session)
+        assert payload["count"] == 0
+        assert payload["entries"] == []

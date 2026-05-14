@@ -43,6 +43,7 @@ describe("global knowledge sync", () => {
           answer: "A compiler translates source code.",
           answerLanguage: "en",
           embedding: unitEmbedding(),
+          embeddingKind: "token_hash_v1",
           embeddingNorm: 1,
           confidence: 0.95,
           safetyLabel: "general",
@@ -120,14 +121,14 @@ describe("global knowledge sync", () => {
       }),
     );
 
-    const hit = await lookupSyncedGlobalKnowledge("Explain fistula", {
-      embedTexts: async () => {
+    const embedTexts = vi.fn(async () => {
         throw new Error("embedding unavailable");
-      },
     });
+    const hit = await lookupSyncedGlobalKnowledge("Explain fistula", { embedTexts });
 
     expect(hit?.entry.answer).toContain("abnormal connection");
     expect(hit?.source).toBe("lexical");
+    expect(embedTexts).not.toHaveBeenCalled();
   });
 
   it("bypasses live/current queries", async () => {
@@ -154,5 +155,88 @@ describe("global knowledge sync", () => {
     );
 
     expect(await lookupSyncedGlobalKnowledge("latest IPL score today")).toBeNull();
+  });
+
+  it("uses local token-hash embeddings for synced global knowledge", async () => {
+    const { GLOBAL_KNOWLEDGE_CACHE_KEY, lookupSyncedGlobalKnowledge, tokenHashEmbedding } = await import("../lib/globalKnowledgeSync");
+    const embedding = tokenHashEmbedding("what is a compiler");
+    storage.set(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "compiler",
+            canonicalQuestion: "What is a compiler?",
+            normalizedQuestion: "what is a compiler",
+            answer: "A compiler translates source code.",
+            answerLanguage: "en",
+            embedding,
+            embeddingKind: "token_hash_v1",
+            embeddingNorm: Math.sqrt(embedding.reduce((sum, value) => sum + value ** 2, 0)),
+            confidence: 0.95,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const embedTexts = vi.fn(async () => [unitEmbedding()]);
+
+    const hit = await lookupSyncedGlobalKnowledge("compiler", {
+      embedTexts,
+      minSimilarity: 0.2,
+    });
+
+    expect(hit?.entry.answer).toContain("translates");
+    expect(hit?.source).toBe("embedding");
+    expect(embedTexts).not.toHaveBeenCalled();
+  });
+
+  it("ignores incompatible synced embedding vectors and rebuilds token-hash embeddings from safe text", async () => {
+    const { loadGlobalKnowledgeStore, syncGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    apiGetMock.mockResolvedValueOnce({
+      ok: true,
+      serverTime: "2026-05-14T00:00:00Z",
+      entries: [
+        {
+          id: "native-vector",
+          canonicalQuestion: "What is a compiler?",
+          normalizedQuestion: "what is a compiler",
+          answer: "A compiler translates source code.",
+          answerLanguage: "en",
+          embedding: [1, 0, 0],
+          embeddingKind: "native_qwen_embedding_v1",
+          embeddingNorm: 1,
+          confidence: 0.95,
+          safetyLabel: "general",
+          updatedAt: "2026-05-14T00:00:00Z",
+        },
+      ],
+    });
+
+    await syncGlobalKnowledge();
+    const store = await loadGlobalKnowledgeStore();
+
+    expect(store.entries[0].embeddingKind).toBe("token_hash_v1");
+    expect(store.entries[0].embedding).toHaveLength(96);
+    expect(store.entries[0].embedding).not.toEqual([1, 0, 0]);
+  });
+
+  it("throttles repeated sync calls", async () => {
+    const { syncGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    apiGetMock.mockResolvedValueOnce({
+      ok: true,
+      serverTime: "2026-05-14T00:00:00Z",
+      entries: [],
+    });
+
+    const first = await syncGlobalKnowledge();
+    const second = await syncGlobalKnowledge();
+
+    expect(first.ok).toBe(true);
+    expect(second.skipped).toBe(true);
+    expect(second.reason).toBe("throttled");
+    expect(apiGetMock).toHaveBeenCalledTimes(1);
   });
 });

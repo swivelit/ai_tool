@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
                                          threads:(NSInteger)threads
                                      temperature:(double)temperature
                                        maxTokens:(NSInteger)maxTokens
+                                       requestId:(NSString *)requestId
                                            error:(NSError **)error;
 
 + (nullable NSArray<NSNumber *> *)embedTextWithModelPath:(NSString *)modelPath
@@ -24,6 +25,8 @@ NS_ASSUME_NONNULL_BEGIN
                                                    error:(NSError **)error;
 
 + (void)releaseCachedModels;
+
++ (void)cancelRequest:(NSString *)requestId;
 
 @end
 

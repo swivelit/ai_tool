@@ -100,6 +100,24 @@ export async function runGlobalKnowledgeSyncBootStep(options: {
   );
 }
 
+export async function runGlobalKnowledgeForegroundSyncStep(options: {
+  limit?: number;
+  logger?: BootLogger;
+} = {}) {
+  return runBootStep(
+    "foreground global knowledge sync",
+    async () => {
+      const { syncGlobalKnowledgeIfStale } = await import("./globalKnowledgeSync");
+      return syncGlobalKnowledgeIfStale({ limit: options.limit });
+    },
+    {
+      timeoutMs: GLOBAL_KNOWLEDGE_SYNC_TIMEOUT_MS,
+      optional: true,
+      logger: options.logger,
+    },
+  );
+}
+
 export async function runPendingCrashTelemetryBootStep(options: {
   logger?: BootLogger;
 } = {}) {

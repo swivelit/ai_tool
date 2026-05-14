@@ -41,8 +41,10 @@ from config import (
 
 try:
     from app.openai_model_router import OpenAIModelRouter
+    from app.openai_tracked import tracked_chat_completion
 except Exception:  # pragma: no cover
     OpenAIModelRouter = None  # type: ignore
+    tracked_chat_completion = None  # type: ignore
 
 
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -365,12 +367,17 @@ class OpenAICore:
         last_error: Optional[Exception] = None
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
-                response = self.client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt.strip()},
-                        {"role": "user", "content": user_prompt.strip()},
-                    ],
+                request_messages = [
+                    {"role": "system", "content": system_prompt.strip()},
+                    {"role": "user", "content": user_prompt.strip()},
+                ]
+                if tracked_chat_completion is None:
+                    raise RuntimeError("Tracked OpenAI helper is unavailable.")
+                response = tracked_chat_completion(
+                    self.client,
+                    task="json" if response_format else "normal_qa",
+                    route="stage_openai_core",
+                    messages=request_messages,
                     temperature=temperature,
                     max_tokens=max_output_tokens,
                     response_format=self._normalize_response_format(response_format),
@@ -553,6 +560,7 @@ Task:
             "estimated_input_tokens": selection.estimated_input_tokens if selection is not None else 0,
             "estimated_output_tokens": selection.estimated_output_tokens if selection is not None else 0,
             "estimated_cost_usd": selection.estimated_cost_usd if selection is not None else 0.0,
+            "openai_usage_tracked": tracked_chat_completion is not None,
         }
 
     def answer_user_query(self, user_query: str, profile_context: str) -> str:
@@ -632,4 +640,5 @@ Task:
             "estimated_input_tokens": selection.estimated_input_tokens if selection is not None else 0,
             "estimated_output_tokens": selection.estimated_output_tokens if selection is not None else 0,
             "estimated_cost_usd": selection.estimated_cost_usd if selection is not None else 0.0,
+            "openai_usage_tracked": tracked_chat_completion is not None,
         }

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   LogBox,
   Modal,
   Pressable,
@@ -18,7 +19,7 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
-import { resolveDesiredRoute, runGlobalKnowledgeSyncBootStep, runPendingCrashTelemetryBootStep } from "@/lib/appBoot";
+import { resolveDesiredRoute, runGlobalKnowledgeForegroundSyncStep, runGlobalKnowledgeSyncBootStep, runPendingCrashTelemetryBootStep } from "@/lib/appBoot";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import { isAnyE2eEnvEnabled, isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
 import {
@@ -338,6 +339,20 @@ function AppShell() {
     globalKnowledgeSyncStartedRef.current = true;
     void runPendingCrashTelemetryBootStep().catch(() => undefined);
     void runGlobalKnowledgeSyncBootStep().catch(() => undefined);
+  }, [activeProfile?.userId]);
+
+  useEffect(() => {
+    if (!activeProfile?.userId) {
+      return undefined;
+    }
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        void runGlobalKnowledgeForegroundSyncStep().catch(() => undefined);
+      }
+    });
+    return () => {
+      subscription.remove();
+    };
   }, [activeProfile?.userId]);
 
   const modelSetupRequired =

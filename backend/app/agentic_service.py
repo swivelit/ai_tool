@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 
 from .models import Conversation, DailyRoutine, Item, User, UserProfile
 from .openai_model_router import OpenAIModelRouter
+from .openai_tracked import tracked_chat_completion
 
 try:
     from config import (
@@ -205,9 +206,10 @@ class AgenticService:
             return ""
 
     def _llm_json(self, system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
-        selection = self.model_router.select_model("json", user_content)
-        response = self.client.chat.completions.create(
-            model=selection.model,
+        response = tracked_chat_completion(
+            self.client,
+            task="json",
+            route="agentic_json",
             messages=[
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": user_content.strip()},
@@ -225,9 +227,10 @@ class AgenticService:
         return parsed if isinstance(parsed, dict) else {}
 
     def _llm_text(self, system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
-        selection = self.model_router.select_model("simple_fallback", user_content)
-        response = self.client.chat.completions.create(
-            model=selection.model,
+        response = tracked_chat_completion(
+            self.client,
+            task="simple_fallback",
+            route="agentic_text",
             messages=[
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": user_content.strip()},
@@ -311,9 +314,10 @@ class AgenticService:
                 temperature: float = 0.2,
                 max_output_tokens: int = 900,
             ) -> str:
-                selection = self.outer.model_router.select_model("translation", user_prompt)
-                response = self.outer.client.chat.completions.create(
-                    model=selection.model,
+                response = tracked_chat_completion(
+                    self.outer.client,
+                    task="translation",
+                    route="agentic_stage_translation",
                     messages=[
                         {"role": "system", "content": system_prompt.strip()},
                         {"role": "user", "content": user_prompt.strip()},

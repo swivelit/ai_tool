@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,6 +26,33 @@
 static NSString *const JaiLlamaCppBridgeErrorDomain = @"JaiOnDeviceModel";
 
 namespace {
+
+std::mutex gCancelledRequestsMutex;
+std::unordered_set<std::string> gCancelledRequests;
+
+bool isRequestCancelled(const std::string &requestId) {
+  if (requestId.empty()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(gCancelledRequestsMutex);
+  return gCancelledRequests.find(requestId) != gCancelledRequests.end();
+}
+
+void cancelRequestId(const std::string &requestId) {
+  if (requestId.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(gCancelledRequestsMutex);
+  gCancelledRequests.insert(requestId);
+}
+
+void clearCancelledRequestId(const std::string &requestId) {
+  if (requestId.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(gCancelledRequestsMutex);
+  gCancelledRequests.erase(requestId);
+}
 
 class JaiNativeError : public std::runtime_error {
  public:
@@ -376,7 +404,8 @@ std::string completeChatNative(
     NSInteger contextSize,
     NSInteger threads,
     double temperature,
-    NSInteger maxTokens) {
+    NSInteger maxTokens,
+    const std::string &requestId) {
   const std::string modelPath = normalizeModelPath(rawModelPath);
   auto model = loadOrGetModel(modelPath);
   const uint32_t nCtx = clampContextSize(contextSize);
@@ -402,6 +431,10 @@ std::string completeChatNative(
 
   llama_pos nextPos = static_cast<llama_pos>(promptTokens.size());
   for (int i = 0; i < requestedMaxTokens && static_cast<uint32_t>(nextPos) + 1 < nCtx; ++i) {
+    if (isRequestCancelled(requestId)) {
+      clearCancelledRequestId(requestId);
+      break;
+    }
     llama_token token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
     if (token == LLAMA_TOKEN_NULL || llama_vocab_is_eog(vocab, token)) {
       break;
@@ -409,10 +442,15 @@ std::string completeChatNative(
 
     llama_sampler_accept(sampler.get(), token);
     generated += tokenToPiece(model.get(), token);
+    if (isRequestCancelled(requestId)) {
+      clearCancelledRequestId(requestId);
+      break;
+    }
     decodeSingleToken(ctx.get(), token, nextPos);
     ++nextPos;
   }
 
+  clearCancelledRequestId(requestId);
   return generated;
 }
 
@@ -485,12 +523,17 @@ std::vector<float> embedTextNative(
 #endif
 }
 
++ (void)cancelRequest:(NSString *)requestId {
+  cancelRequestId(stringFromNSString(requestId));
+}
+
 + (nullable NSString *)completeChatWithModelPath:(NSString *)modelPath
                                           prompt:(NSString *)prompt
                                      contextSize:(NSInteger)contextSize
                                          threads:(NSInteger)threads
                                      temperature:(double)temperature
                                        maxTokens:(NSInteger)maxTokens
+                                       requestId:(NSString *)requestId
                                            error:(NSError **)error {
 #if JAI_LLAMA_CPP_AVAILABLE
   try {
@@ -500,7 +543,8 @@ std::vector<float> embedTextNative(
         contextSize,
         threads,
         temperature,
-        maxTokens);
+        maxTokens,
+        stringFromNSString(requestId));
     return stringFromUtf8(generated);
   } catch (const JaiNativeError &nativeError) {
     assignError(error, makeNSError(nativeError.code(), nativeError.what()));
@@ -515,6 +559,7 @@ std::vector<float> embedTextNative(
   (void)threads;
   (void)temperature;
   (void)maxTokens;
+  (void)requestId;
   assignError(error, missingBackendError(@"completeChat", modelPath));
   return nil;
 #endif

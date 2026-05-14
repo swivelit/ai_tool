@@ -5,10 +5,10 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timezone
 from typing import Any, Optional
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from .models import OpenAIUsageLog
 from .time_utils import utc_now
@@ -263,6 +263,23 @@ def record_openai_usage(
         logger.exception("Failed to record OpenAI usage")
         return None
     return row
+
+
+def get_today_estimated_openai_spend(session: Session) -> float:
+    now = utc_now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+    rows = session.exec(
+        select(OpenAIUsageLog).where(
+            OpenAIUsageLog.created_at >= start,
+            OpenAIUsageLog.created_at <= end,
+        )
+    ).all()
+    return float(sum(float(row.estimated_cost_usd or 0.0) for row in rows))
 
 
 def today_budget_key() -> str:

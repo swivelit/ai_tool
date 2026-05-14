@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,33 @@
 #endif
 
 namespace {
+
+std::mutex g_cancelled_requests_mutex;
+std::unordered_set<std::string> g_cancelled_requests;
+
+bool isRequestCancelled(const std::string &request_id) {
+  if (request_id.empty()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_cancelled_requests_mutex);
+  return g_cancelled_requests.find(request_id) != g_cancelled_requests.end();
+}
+
+void cancelRequestId(const std::string &request_id) {
+  if (request_id.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_cancelled_requests_mutex);
+  g_cancelled_requests.insert(request_id);
+}
+
+void clearCancelledRequestId(const std::string &request_id) {
+  if (request_id.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_cancelled_requests_mutex);
+  g_cancelled_requests.erase(request_id);
+}
 
 class JaiNativeError : public std::runtime_error {
  public:
@@ -452,7 +480,8 @@ std::string completeChatNative(
     jint context_size,
     jint threads,
     jdouble temperature,
-    jint max_tokens) {
+    jint max_tokens,
+    const std::string &request_id) {
   const std::string model_path = normalizeModelPath(raw_model_path);
   auto model = loadOrGetModel(model_path);
   const uint32_t n_ctx = clampContextSize(context_size);
@@ -478,6 +507,10 @@ std::string completeChatNative(
 
   llama_pos next_pos = static_cast<llama_pos>(prompt_tokens.size());
   for (int i = 0; i < requested_max_tokens && static_cast<uint32_t>(next_pos) + 1 < n_ctx; ++i) {
+    if (isRequestCancelled(request_id)) {
+      clearCancelledRequestId(request_id);
+      break;
+    }
     llama_token token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
     if (token == LLAMA_TOKEN_NULL || llama_vocab_is_eog(vocab, token)) {
       break;
@@ -485,10 +518,15 @@ std::string completeChatNative(
 
     llama_sampler_accept(sampler.get(), token);
     generated += tokenToPiece(model.get(), token);
+    if (isRequestCancelled(request_id)) {
+      clearCancelledRequestId(request_id);
+      break;
+    }
     decodeSingleToken(ctx.get(), token, next_pos);
     ++next_pos;
   }
 
+  clearCancelledRequestId(request_id);
   return generated;
 }
 
@@ -562,9 +600,11 @@ Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeCompleteChat(
     jint context_size,
     jint threads,
     jdouble temperature,
-    jint max_tokens) {
+    jint max_tokens,
+    jstring request_id) {
   const std::string model_path_utf8 = jstringToUtf8(env, model_path);
   const std::string prompt_utf8 = jstringToUtf8(env, prompt);
+  const std::string request_id_utf8 = jstringToUtf8(env, request_id);
 
 #if JAI_LLAMA_CPP_AVAILABLE
   try {
@@ -574,7 +614,8 @@ Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeCompleteChat(
         context_size,
         threads,
         temperature,
-        max_tokens);
+        max_tokens,
+        request_id_utf8);
     return utf8BytesToJavaString(env, generated);
   } catch (const JaiNativeError &error) {
     throwJavaException(env, error.code(), error.what());
@@ -589,6 +630,7 @@ Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeCompleteChat(
   (void)threads;
   (void)temperature;
   (void)max_tokens;
+  (void)request_id_utf8;
   throwBackendMissing(env, "nativeCompleteChat", model_path_utf8.c_str());
   return nullptr;
 #endif
@@ -644,4 +686,13 @@ Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeReleaseCachedModels(
 #else
   (void)env;
 #endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_harishajahan_jai_ondevice_JaiLlamaCppBinding_nativeCancelRequest(
+    JNIEnv *env,
+    jobject /* thiz */,
+    jstring request_id) {
+  const std::string request_id_utf8 = jstringToUtf8(env, request_id);
+  cancelRequestId(request_id_utf8);
 }

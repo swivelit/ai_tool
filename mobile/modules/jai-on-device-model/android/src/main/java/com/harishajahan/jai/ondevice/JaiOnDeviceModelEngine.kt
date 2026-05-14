@@ -104,6 +104,7 @@ class JaiOnDeviceModelEngine(private val context: Context) {
     val prompt = input.stringValue("prompt") ?: buildChatPrompt(messages, asset)
     val temperature = input.doubleValue("temperature") ?: 0.2
     val maxTokens = input.intValue("maxTokens") ?: input.intValue("max_tokens") ?: 768
+    val requestId = input.stringValue("requestId") ?: input.stringValue("request_id") ?: ""
 
     val text = JaiLlamaCppBinding.completeChat(
       modelPath = modelFile.absolutePath,
@@ -112,6 +113,7 @@ class JaiOnDeviceModelEngine(private val context: Context) {
       threads = asset.intValue("threads") ?: Runtime.getRuntime().availableProcessors().coerceAtMost(6),
       temperature = temperature,
       maxTokens = maxTokens,
+      requestId = requestId,
     )
 
     return mapOf(
@@ -149,6 +151,18 @@ class JaiOnDeviceModelEngine(private val context: Context) {
       "model" to modelId,
       "runtime" to "native_on_device",
       "backend" to backend,
+    )
+  }
+
+  fun cancelRequest(requestId: String): Map<String, Any?> {
+    val normalized = requestId.trim()
+    if (normalized.isNotEmpty()) {
+      JaiLlamaCppBinding.cancelRequest(normalized)
+    }
+    return mapOf(
+      "ok" to true,
+      "requestId" to normalized,
+      "cancelled" to normalized.isNotEmpty(),
     )
   }
 

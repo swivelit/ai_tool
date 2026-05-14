@@ -66,6 +66,7 @@ public class JaiOnDeviceModelModule: Module {
       let prompt = (input["prompt"] as? String) ?? self.buildPrompt(messages: messages, asset: asset)
       let temperature = (input["temperature"] as? Double) ?? 0.2
       let maxTokens = (input["maxTokens"] as? Int) ?? (input["max_tokens"] as? Int) ?? 768
+      let requestId = ((input["requestId"] as? String) ?? (input["request_id"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
       let contextSize = (asset["contextSize"] as? Int) ?? 4096
       let threads = (asset["threads"] as? Int) ?? min(ProcessInfo.processInfo.processorCount, 6)
 
@@ -75,7 +76,8 @@ public class JaiOnDeviceModelModule: Module {
         contextSize: contextSize,
         threads: threads,
         temperature: temperature,
-        maxTokens: maxTokens
+        maxTokens: maxTokens,
+        requestId: requestId
       )
 
       return [
@@ -83,6 +85,18 @@ public class JaiOnDeviceModelModule: Module {
         "model": modelId,
         "runtime": "native_on_device",
         "backend": self.backend,
+      ]
+    }
+
+    AsyncFunction("cancelRequest") { (requestId: String) -> [String: Any] in
+      let normalized = requestId.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !normalized.isEmpty {
+        JaiLlamaCppBinding.cancelRequest(normalized)
+      }
+      return [
+        "ok": true,
+        "requestId": normalized,
+        "cancelled": !normalized.isEmpty,
       ]
     }
 
@@ -390,7 +404,8 @@ private enum JaiLlamaCppBinding {
     contextSize: Int,
     threads: Int,
     temperature: Double,
-    maxTokens: Int
+    maxTokens: Int,
+    requestId: String
   ) throws -> String {
     var error: NSError?
     if let text = JaiLlamaCppBridge.completeChat(
@@ -400,6 +415,7 @@ private enum JaiLlamaCppBinding {
       threads: threads,
       temperature: temperature,
       maxTokens: maxTokens,
+      requestId: requestId,
       error: &error
     ) {
       return text
@@ -430,5 +446,9 @@ private enum JaiLlamaCppBinding {
       "JAI_LLAMA_CPP_BACKEND_MISSING",
       "JaiOnDeviceModel found the Swift bridge and local model path \(modelPath), but the llama.cpp iOS embedding binding returned no vector and no NSError."
     )
+  }
+
+  static func cancelRequest(_ requestId: String) {
+    JaiLlamaCppBridge.cancelRequest(requestId)
   }
 }

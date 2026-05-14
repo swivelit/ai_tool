@@ -16,6 +16,7 @@ from sqlalchemy import text
 from .database import SessionLocal, engine
 from .model_runtime import patch_openai_client
 from .observability import bootstrap_observability
+from .openai_tracked import tracked_chat_completion
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -231,8 +232,10 @@ def summarize_chat(chat_list: List[str]) -> str:
         return ""
 
     client = get_openai_client()
-    response = client.chat.completions.create(
-        model=OPENAI_CHAT_MODEL,
+    response = tracked_chat_completion(
+        client,
+        task="simple_transform",
+        route="continuous_learning_summarize",
         messages=[
             {
                 "role": "system",
@@ -262,8 +265,10 @@ Conversation:
 """.strip()
 
     client = get_openai_client()
-    response = client.chat.completions.create(
-        model=OPENAI_CHAT_MODEL,
+    response = tracked_chat_completion(
+        client,
+        task="json",
+        route="continuous_learning_extract_facts",
         messages=[{"role": "user", "content": prompt}],
     )
     return (response.choices[0].message.content or "{}").strip()
@@ -346,8 +351,11 @@ def chat_with_ai(user_input: str, user_id: Optional[int] = None) -> str:
         )
 
     client = get_openai_client()
-    response = client.chat.completions.create(
-        model=OPENAI_CHAT_MODEL,
+    response = tracked_chat_completion(
+        client,
+        task="normal_qa",
+        route="continuous_learning_chat",
+        user_id=user_id,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_input},

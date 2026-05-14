@@ -1084,6 +1084,9 @@ async function postChatFallbackToBackend(input: {
     fallback_reason: input.fallbackReason,
     stage_timings: input.stageTimings || null,
   });
+  void import("./globalKnowledgeSync")
+    .then(({ syncGlobalKnowledge }) => syncGlobalKnowledge())
+    .catch(() => undefined);
   return annotated;
 }
 

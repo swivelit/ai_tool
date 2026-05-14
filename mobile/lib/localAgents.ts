@@ -47,6 +47,7 @@ import {
 import {
   isLiveOrCurrentGlobalKnowledgeQuestion,
   lookupSyncedGlobalKnowledge,
+  syncGlobalKnowledge,
 } from "./globalKnowledgeSync";
 import { __idleQueueTestUtils, enqueueLocalIdleJob } from "./localIdleQueue";
 import {
@@ -7109,6 +7110,7 @@ async function callBackendOpenAiFallback(opts: {
     originalRoute: opts.originalRoute,
     stageTimings: opts.stageTimings,
   });
+  void syncGlobalKnowledge().catch(() => undefined);
   return annotated;
 }
 

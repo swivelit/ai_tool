@@ -78,6 +78,7 @@ from .global_qa_cache import (
     record_backend_openai_answer,
 )
 from .openai_model_router import OpenAIModelRouter, record_openai_usage
+from .openai_tracked import OpenAIBudgetExceededError, tracked_chat_completion
 
 
 bootstrap_observability()
@@ -1185,16 +1186,21 @@ def _extract_response_text(response: Any) -> str:
 
 
 def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
-    selection = OpenAIModelRouter().select_model("json", user_content)
-    response = _get_openai_client().chat.completions.create(
-        model=selection.model,
-        messages=[
-            {"role": "system", "content": system_prompt.strip()},
-            {"role": "user", "content": user_content.strip()},
-        ],
-        temperature=temperature,
-        response_format={"type": "json_object"},
-    )
+    try:
+        response = tracked_chat_completion(
+            _get_openai_client(),
+            task="json",
+            route="main_llm_json",
+            request_id=get_request_id(),
+            messages=[
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_content.strip()},
+            ],
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+    except OpenAIBudgetExceededError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     raw = _extract_response_text(response)
 
     try:
@@ -1219,15 +1225,20 @@ def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) ->
 
 
 def llm_text(system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
-    selection = OpenAIModelRouter().select_model("simple_fallback", user_content)
-    response = _get_openai_client().chat.completions.create(
-        model=selection.model,
-        messages=[
-            {"role": "system", "content": system_prompt.strip()},
-            {"role": "user", "content": user_content.strip()},
-        ],
-        temperature=temperature,
-    )
+    try:
+        response = tracked_chat_completion(
+            _get_openai_client(),
+            task="simple_fallback",
+            route="main_llm_text",
+            request_id=get_request_id(),
+            messages=[
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_content.strip()},
+            ],
+            temperature=temperature,
+        )
+    except OpenAIBudgetExceededError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _extract_response_text(response)
 
 
@@ -1793,6 +1804,8 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         result["model_used"] = model_used
         result["model_tier"] = str(core_meta.get("model_tier") or review_meta.get("model_tier") or "")
         result["model_reason"] = str(core_meta.get("model_reason") or review_meta.get("model_reason") or "")
+    if bool(core_meta.get("openai_usage_tracked") or review_meta.get("openai_usage_tracked")):
+        result["openai_usage_tracked"] = True
 
     _log_stage_history(user_id, profile, message, result)
     STAGE_CACHE.set(cache_key, result)
@@ -1856,6 +1869,7 @@ def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "model_used": result.get("model_used"),
         "model_tier": result.get("model_tier"),
         "model_reason": result.get("model_reason"),
+        "openai_usage_tracked": bool(result.get("openai_usage_tracked")),
     }
 
 
@@ -2682,19 +2696,20 @@ def _record_backend_openai_side_effects(
         estimated_output_tokens = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS_DEFAULT", "900") or 900)
         estimated_cost_usd = router.estimate_cost(model_used, estimated_input_tokens, estimated_output_tokens)
 
-    record_openai_usage(
-        session,
-        user_id=user_id,
-        request_id=request_id,
-        route=str(pipeline_result.get("route_taken") or "api_chat"),
-        model_used=model_used,
-        model_tier=model_tier or "standard",
-        reason=model_reason or "backend_openai_pipeline",
-        estimated_input_tokens=estimated_input_tokens,
-        estimated_output_tokens=estimated_output_tokens,
-        estimated_cost_usd=estimated_cost_usd,
-        cache_hit=False,
-    )
+    if not bool(pipeline_result.get("openai_usage_tracked")):
+        record_openai_usage(
+            session,
+            user_id=user_id,
+            request_id=request_id,
+            route=str(pipeline_result.get("route_taken") or "api_chat"),
+            model_used=model_used,
+            model_tier=model_tier or "standard",
+            reason=model_reason or "backend_openai_pipeline",
+            estimated_input_tokens=estimated_input_tokens,
+            estimated_output_tokens=estimated_output_tokens,
+            estimated_cost_usd=estimated_cost_usd,
+            cache_hit=False,
+        )
     record_backend_openai_answer(
         session,
         user_id,
@@ -2902,7 +2917,7 @@ def api_chat(
         )
     except Exception as exc:
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
-        status_code = exc.status_code if isinstance(exc, HTTPException) else 500
+        status_code = exc.status_code if isinstance(exc, HTTPException) else getattr(exc, "status_code", 500)
         logger.info(
             "chat_turn_failed",
             extra=chat_log_payload(
@@ -2932,6 +2947,8 @@ def api_chat(
                     duration_ms=duration_ms,
                 ),
             )
+        if isinstance(exc, OpenAIBudgetExceededError):
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         raise
 
     duration_ms = round((time.perf_counter() - started) * 1000, 2)

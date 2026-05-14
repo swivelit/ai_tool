@@ -6,10 +6,12 @@ import logging
 import math
 import os
 import re
+import threading
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import inspect, text
 from sqlmodel import Session, select
 
 from .models import GlobalQACache, GlobalQAObservation
@@ -17,9 +19,12 @@ from .openai_model_router import stable_user_hash
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
+_SCHEMA_COMPAT_LOCK = threading.Lock()
+_SCHEMA_COMPAT_READY = False
 
 _TOKEN_RE = re.compile(r"[\w\u0B80-\u0BFF]+", re.UNICODE)
 _LIVE_TERMS = {"latest", "today", "current", "live", "score", "scores", "news", "breaking", "now"}
+GLOBAL_QA_EMBEDDING_KIND = "token_hash_v1"
 _STOPWORDS = {
     "a",
     "an",
@@ -49,10 +54,16 @@ _STOPWORDS = {
     "you",
 }
 _PRIVATE_PATTERNS = [
-    re.compile(r"(?i)\bmy\s+(?:email|phone|mobile|address|password|otp|account|bank|card|upi|aadhaar|ssn)\b"),
-    re.compile(r"(?i)\b(?:\+?\d[\d\s().-]{7,}\d)\b"),
     re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
-    re.compile(r"(?i)\b(?:my\s+name\s+is|i\s+am\s+from|i\s+live\s+at|remember\s+that)\b"),
+    re.compile(r"(?i)(?<!\d)(?:\+?91[\s.-]?)?[6-9]\d{4}[\s.-]?\d{5}(?!\d)"),
+    re.compile(r"(?i)\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"),  # Aadhaar-like 12 digit ID
+    re.compile(r"(?i)\b(?:\d[ -]*?){13,19}\b"),  # bank/card-like long number
+    re.compile(r"(?i)\b[a-z0-9._-]{2,}@[a-z]{2,}\b"),  # UPI-like IDs such as name@okicici
+    re.compile(r"(?i)\b(?:otp|one[-\s]?time\s+password|password|passcode|pin)\b"),
+    re.compile(r"(?i)\b(?:account\s+number|ifsc|credit\s+card|debit\s+card|upi\s+id|aadhaar|ssn)\b"),
+    re.compile(r"(?i)\b(?:my|our)\s+(?:email|phone|mobile|address|password|otp|account|bank|card|upi|aadhaar|ssn|salary|income|ctc|pay)\b"),
+    re.compile(r"(?i)\b(?:my\s+name\s+is|i\s+am\s+from|i\s+live\s+at|my\s+address\s+is|remember\s+that)\b"),
+    re.compile(r"(?i)\b\d{1,5}\s+[A-Za-z0-9 .'-]{2,}\s+(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|nagar|colony|layout)\b"),
 ]
 _PERSONAL_PRONOUN_RE = re.compile(r"(?i)\b(i|me|my|mine|we|our|ours)\b")
 _MEDICAL_TERMS = {
@@ -79,6 +90,7 @@ _MEDICAL_TERMS = {
 }
 _LEGAL_TERMS = {"legal", "law", "lawyer", "court", "case", "contract", "sue", "lawsuit"}
 _FINANCIAL_TERMS = {"finance", "financial", "invest", "investment", "stock", "loan", "tax", "insurance", "money"}
+_SALARY_TERMS = {"salary", "income", "ctc", "pay", "bonus", "compensation", "earn", "earning"}
 _ADVICE_TERMS = {"should", "can", "take", "choose", "recommend", "advice", "best", "plan", "treat", "diagnose"}
 
 
@@ -107,6 +119,29 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
 
 def _enabled() -> bool:
     return _env_bool("GLOBAL_QA_CACHE_ENABLED", False)
+
+
+def _ensure_schema_compat(session: Session) -> None:
+    global _SCHEMA_COMPAT_READY
+    if _SCHEMA_COMPAT_READY:
+        return
+    with _SCHEMA_COMPAT_LOCK:
+        if _SCHEMA_COMPAT_READY:
+            return
+        bind = session.get_bind()
+        inspector = inspect(bind)
+        if inspector.has_table("global_qa_cache"):
+            cache_columns = {column["name"] for column in inspector.get_columns("global_qa_cache")}
+            if "embedding_kind" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN embedding_kind VARCHAR NOT NULL DEFAULT 'token_hash_v1'"))
+        if inspector.has_table("global_qa_observation"):
+            observation_columns = {column["name"] for column in inspector.get_columns("global_qa_observation")}
+            if "answer_similarity_score" not in observation_columns:
+                session.exec(text("ALTER TABLE global_qa_observation ADD COLUMN answer_similarity_score FLOAT NOT NULL DEFAULT 1.0"))
+            if "conflicting_answer_hashes_json" not in observation_columns:
+                session.exec(text("ALTER TABLE global_qa_observation ADD COLUMN conflicting_answer_hashes_json VARCHAR NOT NULL DEFAULT '[]'"))
+        session.commit()
+        _SCHEMA_COMPAT_READY = True
 
 
 def _min_similarity() -> float:
@@ -158,9 +193,24 @@ def answer_hash(text: str) -> str:
 def redact_sensitive_text(text: str) -> str:
     redacted = str(text or "")
     redacted = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[REDACTED_EMAIL]", redacted)
-    redacted = re.sub(r"\b(?:\+?\d[\d\s().-]{7,}\d)\b", "[REDACTED_PHONE]", redacted)
-    redacted = re.sub(r"(?i)\b(?:bearer|token|password|otp)\s*[:=]?\s+[A-Za-z0-9._~+/=-]+", "[REDACTED_SECRET]", redacted)
+    redacted = re.sub(r"(?i)(?<!\d)(?:\+?91[\s.-]?)?[6-9]\d{4}[\s.-]?\d{5}(?!\d)", "[REDACTED_PHONE]", redacted)
+    redacted = re.sub(r"(?i)\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b", "[REDACTED_ID]", redacted)
+    redacted = re.sub(r"(?i)\b(?:\d[ -]*?){13,19}\b", "[REDACTED_CARD]", redacted)
+    redacted = re.sub(r"(?i)\b[a-z0-9._-]{2,}@[a-z]{2,}\b", "[REDACTED_UPI]", redacted)
+    redacted = re.sub(r"(?i)\b(?:bearer|token|password|otp|passcode|pin)\s*[:=]?\s+[A-Za-z0-9._~+/=-]+", "[REDACTED_SECRET]", redacted)
+    redacted = re.sub(r"(?i)\b\d{1,5}\s+[A-Za-z0-9 .'-]{2,}\s+(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|nagar|colony|layout)\b", "[REDACTED_ADDRESS]", redacted)
     return redacted.strip()
+
+
+def _redaction_changed_meaning(original: str, redacted: str) -> bool:
+    if str(original or "").strip() == str(redacted or "").strip():
+        return False
+    original_tokens = {token for token in _semantic_tokens(original) if not token.startswith("redacted")}
+    redacted_tokens = {token for token in _semantic_tokens(redacted) if not token.startswith("redacted")}
+    if not original_tokens:
+        return True
+    retained = len(original_tokens & redacted_tokens) / max(1, len(original_tokens))
+    return retained < 0.75
 
 
 def is_live_or_current_question(text: str) -> bool:
@@ -173,7 +223,21 @@ def is_private_or_personal_question(text: str) -> bool:
     if any(pattern.search(raw) for pattern in _PRIVATE_PATTERNS):
         return True
     normalized = normalize_question(raw)
-    if re.search(r"\b(my|our)\s+(?:health|body|symptoms|medical|legal|money|bank|tax|salary|income)\b", normalized):
+    tokens = set(_semantic_tokens(normalized))
+    personal = bool(_PERSONAL_PRONOUN_RE.search(normalized))
+    if re.search(r"\b(my|our)\s+(?:health|body|symptoms|medical|legal|money|bank|tax|salary|income|ctc|pay|case|loan|investment)\b", normalized):
+        return True
+    if personal and tokens & _SALARY_TERMS:
+        return True
+    if personal and tokens & _MEDICAL_TERMS and (
+        tokens & _ADVICE_TERMS
+        or re.search(r"\b(?:i\s+(?:have|feel|am|was|got|suffer|suffering)|my\s+(?:pain|symptoms?|body|health))\b", normalized)
+    ):
+        return True
+    if personal and tokens & (_LEGAL_TERMS | _FINANCIAL_TERMS) and (
+        tokens & _ADVICE_TERMS
+        or re.search(r"\b(?:my\s+(?:case|contract|loan|tax|investment)|should\s+i|can\s+i)\b", normalized)
+    ):
         return True
     return False
 
@@ -247,6 +311,20 @@ def _token_similarity(left: str, right: str) -> float:
     return len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
 
 
+def _answer_similarity(left: str, right: str) -> float:
+    left_norm = normalize_question(left)
+    right_norm = normalize_question(right)
+    if left_norm == right_norm and left_norm:
+        return 1.0
+    token_score = _token_similarity(left_norm, right_norm)
+    seq_score = SequenceMatcher(None, left_norm, right_norm).ratio() if left_norm and right_norm else 0.0
+    return max(token_score, (token_score * 0.55) + (seq_score * 0.45), seq_score * 0.85)
+
+
+def _min_answer_similarity() -> float:
+    return min(1.0, _env_float("GLOBAL_QA_MIN_ANSWER_SIMILARITY", 0.62, minimum=0.0))
+
+
 def _question_similarity(
     left: str,
     right: str,
@@ -266,6 +344,8 @@ def _question_similarity(
 
 
 def _load_embedding(row: GlobalQACache) -> Optional[Tuple[List[float], float]]:
+    if str(getattr(row, "embedding_kind", "") or GLOBAL_QA_EMBEDDING_KIND) != GLOBAL_QA_EMBEDDING_KIND:
+        return None
     try:
         vec = [float(x) for x in json.loads(row.embedding_json or "[]")]
     except Exception:
@@ -296,6 +376,7 @@ def _answer_language(reply_language: Optional[str]) -> Optional[str]:
 def lookup_approved_global_cache(session: Session, question: str, reply_language: Optional[str] = None) -> Optional[dict]:
     if not _enabled() or not str(question or "").strip():
         return None
+    _ensure_schema_compat(session)
     if is_live_or_current_question(question) or is_private_or_personal_question(question):
         return None
 
@@ -404,6 +485,7 @@ def record_backend_openai_answer(
 ) -> dict:
     if not _enabled():
         return {"ok": False, "skipped": True, "reason": "disabled"}
+    _ensure_schema_compat(session)
 
     if not is_cacheable_global_question(question, answer):
         logger.info(
@@ -413,7 +495,22 @@ def record_backend_openai_answer(
         return {"ok": False, "skipped": True, "reason": "not_cacheable"}
 
     now = utc_now()
-    normalized = normalize_question(question)
+    canonical_question = redact_sensitive_text(question)
+    if _redaction_changed_meaning(question, canonical_question):
+        logger.info(
+            "global_cache_rejected",
+            extra={"event": "global_cache_rejected", "reason": "redaction_changed_meaning"},
+        )
+        return {"ok": False, "skipped": True, "reason": "redaction_changed_meaning"}
+
+    normalized = normalize_question(canonical_question)
+    if not normalized or is_private_or_personal_question(normalized):
+        logger.info(
+            "global_cache_rejected",
+            extra={"event": "global_cache_rejected", "reason": "unsafe_normalized_question"},
+        )
+        return {"ok": False, "skipped": True, "reason": "unsafe_normalized_question"}
+
     q_hash = question_hash(question)
     a_hash = answer_hash(answer)
     user_hash = stable_user_hash(user_id)
@@ -424,7 +521,7 @@ def record_backend_openai_answer(
     candidate, similarity = _find_candidate(session, normalized, embedding)
     if candidate is None:
         candidate = GlobalQACache(
-            canonical_question=redact_sensitive_text(question),
+            canonical_question=canonical_question,
             normalized_question=normalized,
             answer=redact_sensitive_text(answer),
             answer_language=_infer_answer_language(answer),
@@ -436,6 +533,7 @@ def record_backend_openai_answer(
             source_question_hashes_json=json.dumps([q_hash], ensure_ascii=False),
             answer_hash=a_hash,
             embedding_json=embedding_json,
+            embedding_kind=GLOBAL_QA_EMBEDDING_KIND,
             embedding_norm=embedding[1],
             confidence=0.0,
             safety_label="general",
@@ -451,6 +549,8 @@ def record_backend_openai_answer(
         session.refresh(candidate)
         similarity = 1.0
     else:
+        answer_similarity = _answer_similarity(candidate.answer, answer)
+        answer_conflict = bool(candidate.answer_hash and a_hash != candidate.answer_hash and answer_similarity < _min_answer_similarity())
         hashes = _source_hashes(candidate)
         if q_hash not in hashes:
             hashes.append(q_hash)
@@ -460,14 +560,45 @@ def record_backend_openai_answer(
         candidate.last_seen_at = now
         candidate.updated_at = now
         candidate.expires_at = expires_at
-        if not candidate.answer or candidate.status == "candidate":
+        if not candidate.embedding_kind:
+            candidate.embedding_kind = GLOBAL_QA_EMBEDDING_KIND
+        if not answer_conflict and (not candidate.answer or candidate.status == "candidate"):
             candidate.answer = redact_sensitive_text(answer)
             candidate.answer_hash = a_hash
             candidate.answer_language = _infer_answer_language(answer)
             candidate.model_used = model_used or candidate.model_used
+        if answer_conflict:
+            existing_notes = str(candidate.review_notes or "").strip()
+            conflict_hashes = sorted({str(candidate.answer_hash or ""), a_hash})
+            candidate.review_notes = (
+                f"{existing_notes}\n" if existing_notes else ""
+            ) + f"conflicting_answer_hashes={json.dumps(conflict_hashes, ensure_ascii=False)}"
         session.add(candidate)
         session.commit()
         session.refresh(candidate)
+        if answer_conflict:
+            logger.info(
+                "global_cache_needs_review",
+                extra={
+                    "event": "global_cache_needs_review",
+                    "answer_hash": candidate.answer_hash,
+                    "conflicting_answer_hashes": conflict_hashes,
+                    "answer_similarity_score": round(answer_similarity, 4),
+                },
+            )
+    if candidate is not None and candidate.answer_hash == a_hash:
+        observation_answer_similarity = 1.0
+        conflicting_answer_hashes: List[str] = []
+    else:
+        observation_answer_similarity = _answer_similarity(candidate.answer if candidate is not None else "", answer)
+        conflicting_answer_hashes = (
+            sorted({str(candidate.answer_hash or ""), a_hash})
+            if candidate is not None
+            and candidate.answer_hash
+            and a_hash != candidate.answer_hash
+            and observation_answer_similarity < _min_answer_similarity()
+            else []
+        )
 
     observation = GlobalQAObservation(
         global_cache_id=int(candidate.id),
@@ -475,7 +606,9 @@ def record_backend_openai_answer(
         question_hash=q_hash,
         normalized_question=normalized,
         similarity_score=float(similarity),
+        answer_similarity_score=float(observation_answer_similarity),
         backend_answer_hash=a_hash,
+        conflicting_answer_hashes_json=json.dumps(conflicting_answer_hashes, ensure_ascii=False),
         model_used=model_used,
         created_at=now,
     )
@@ -504,7 +637,7 @@ def record_backend_openai_answer(
             "model_used": model_used,
         },
     )
-    promoted = promote_candidate_if_threshold_met(session, int(candidate.id))
+    promoted = False if conflicting_answer_hashes else promote_candidate_if_threshold_met(session, int(candidate.id))
     return {
         "ok": True,
         "candidate_id": candidate.id,
@@ -515,6 +648,7 @@ def record_backend_openai_answer(
 
 
 def promote_candidate_if_threshold_met(session: Session, candidate_id: int) -> bool:
+    _ensure_schema_compat(session)
     candidate = session.get(GlobalQACache, candidate_id)
     if not candidate or candidate.status != "candidate":
         return False
@@ -522,9 +656,32 @@ def promote_candidate_if_threshold_met(session: Session, candidate_id: int) -> b
         return False
     if _require_distinct_users() and int(candidate.distinct_user_count or 0) < _promote_hits():
         return False
+    observations = list(
+        session.exec(
+            select(GlobalQAObservation).where(GlobalQAObservation.global_cache_id == int(candidate.id))
+        ).all()
+    )
+    if len(observations) < _promote_hits():
+        return False
+    min_answer_similarity = _min_answer_similarity()
+    conflicting = [
+        row
+        for row in observations
+        if str(row.conflicting_answer_hashes_json or "[]").strip() not in {"", "[]"}
+        or float(row.answer_similarity_score or 0.0) < min_answer_similarity
+    ]
+    if conflicting:
+        logger.info(
+            "global_cache_needs_review",
+            extra={
+                "event": "global_cache_needs_review",
+                "answer_hash": candidate.answer_hash,
+                "conflicting_observation_count": len(conflicting),
+            },
+        )
+        return False
     candidate.status = "approved"
     candidate.confidence = max(float(candidate.confidence or 0.0), 0.90)
-    candidate.reviewed_at = candidate.reviewed_at
     candidate.updated_at = utc_now()
     session.add(candidate)
     session.commit()
@@ -552,6 +709,7 @@ def _parse_since(value: Any) -> Optional[datetime]:
 
 
 def build_global_knowledge_sync_payload(session: Session, since: Any = None, limit: int = 250) -> dict:
+    _ensure_schema_compat(session)
     since_dt = _parse_since(since)
     now = utc_now()
     safe_limit = max(1, min(int(limit or 250), 500))
@@ -571,6 +729,19 @@ def build_global_knowledge_sync_payload(session: Session, since: Any = None, lim
             continue
         if row.safety_label in {"private", "personal_high_risk", "unsafe"}:
             continue
+        if is_private_or_personal_question(row.canonical_question) or is_private_or_personal_question(row.normalized_question):
+            logger.warning(
+                "global_knowledge_sync_skipped_private_entry",
+                extra={"event": "global_knowledge_sync_skipped_private_entry", "global_cache_id": row.id},
+            )
+            continue
+        embedding_kind = str(getattr(row, "embedding_kind", "") or GLOBAL_QA_EMBEDDING_KIND)
+        if embedding_kind != GLOBAL_QA_EMBEDDING_KIND:
+            embedding = []
+            embedding_norm = 0.0
+        else:
+            embedding = json.loads(row.embedding_json or "[]") if row.embedding_json else []
+            embedding_norm = row.embedding_norm
         entries.append(
             {
                 "id": row.id,
@@ -580,8 +751,9 @@ def build_global_knowledge_sync_payload(session: Session, since: Any = None, lim
                 "answerLanguage": row.answer_language,
                 "topic": row.topic,
                 "answerHash": row.answer_hash,
-                "embedding": json.loads(row.embedding_json or "[]") if row.embedding_json else [],
-                "embeddingNorm": row.embedding_norm,
+                "embedding": embedding,
+                "embeddingNorm": embedding_norm,
+                "embeddingKind": embedding_kind,
                 "confidence": row.confidence,
                 "safetyLabel": row.safety_label,
                 "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
@@ -593,4 +765,3 @@ def build_global_knowledge_sync_payload(session: Session, since: Any = None, lim
         extra={"event": "global_knowledge_sync_completed", "cache_hit": False, "question_length": len(entries)},
     )
     return {"ok": True, "entries": entries, "count": len(entries), "serverTime": now.isoformat(), "since": since_dt.isoformat() if since_dt else None}
-
