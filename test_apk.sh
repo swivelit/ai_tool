@@ -408,36 +408,48 @@ stop_background_jobs() {
 write_summary() {
   local summary="$ARTIFACT_DIR/summary.txt"
   {
-    printf "APK path: %s\n" "$APK_PATH"
-    printf "Artifact path: %s\n" "$ARTIFACT_DIR"
+    printf "========================================\n"
+    printf "   QA REGRESSION REPORT: $(date '+%Y-%m-%d')\n"
+    printf "========================================\n\n"
+
     if [[ "$RESULT" == "0" ]]; then
-      printf "Test result: PASS\n"
+      printf "✅ VERDICT: PASS (READY FOR RELEASE)\n"
     else
-      printf "Test result: FAIL\n"
+      printf "❌ VERDICT: FAIL (BLOCKED)\n"
     fi
-    printf "Crash markers found: %s\n" "$CRASH_MARKERS_FOUND"
-    if [[ -s "$ARTIFACT_DIR/crash-markers.log" ]]; then
-      printf "\nCrash marker matches:\n"
-      sed -n '1,80p' "$ARTIFACT_DIR/crash-markers.log"
+
+    printf "\n--- EXECUTION DETAILS ---\n"
+    printf "APK Name: %s\n" "$(basename "$APK_PATH")"
+    printf "Artifacts Folder: %s\n" "$ARTIFACT_DIR"
+    
+    if [[ "$CRASH_MARKERS_FOUND" == "1" ]]; then
+      printf "⚠️  Stability Issue: App crashes or fatal errors were detected.\n"
+      if [[ -s "$ARTIFACT_DIR/crash-markers.log" ]]; then
+        printf "\nDetected Crash Markers (Log Snippet):\n"
+        sed -n '1,15p' "$ARTIFACT_DIR/crash-markers.log"
+      fi
+    else
+      printf "🛡️  Stability: No app crashes detected.\n"
     fi
-    printf "\nResponse timings:\n"
+
+    if [[ "${#FAILED_STEPS[@]}" -gt 0 ]]; then
+      printf "\n🚫 FAILED STEPS (%d):\n" "${#FAILED_STEPS[@]}"
+      printf " - %s\n" "${FAILED_STEPS[@]}"
+    fi
+
+    if [[ "${#SKIPPED_STEPS[@]}" -gt 0 ]]; then
+      printf "\n⏭️  SKIPPED STEPS (%d):\n" "${#SKIPPED_STEPS[@]}"
+      printf " - %s\n" "${SKIPPED_STEPS[@]}"
+    fi
+
+    printf "\n⏱️  PERFORMANCE (Response Timings):\n"
     if [[ "${#RESPONSE_TIMINGS[@]}" -eq 0 ]]; then
-      printf "none\n"
+      printf " - No timings collected\n"
     else
-      printf '%s\n' "${RESPONSE_TIMINGS[@]}"
+      printf " - %s\n" "${RESPONSE_TIMINGS[@]}"
     fi
-    printf "\nSkipped steps:\n"
-    if [[ "${#SKIPPED_STEPS[@]}" -eq 0 ]]; then
-      printf "none\n"
-    else
-      printf '%s\n' "${SKIPPED_STEPS[@]}"
-    fi
-    printf "\nFailed steps:\n"
-    if [[ "${#FAILED_STEPS[@]}" -eq 0 ]]; then
-      printf "none\n"
-    else
-      printf '%s\n' "${FAILED_STEPS[@]}"
-    fi
+
+    printf "\n========================================\n"
   } > "$summary"
   cat "$summary"
 }

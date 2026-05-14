@@ -1330,8 +1330,127 @@ npx vitest test/goldenAssistant.eval.test.ts
 * more stable regression matching
 * stronger QA confidence for multilingual AI flows
 
-```
+---
+
+# Task 8 — CI-Friendly Targeted Test Commands
+
+## Objective
+To decouple the evaluation suites (Mobile vs. Backend) allowing for isolated, faster verification cycles in both local development and CI/CD pipelines.
+
+---
+
+## Before Update (The Problem)
+The `scripts/run_golden_eval.sh` script was a static wrapper. Whenever it was executed, it **always** ran:
+1.  All Mobile Assistant/Voice Vitest evaluations.
+2.  All Backend Agentic/Health/Emergency Pytest evaluations.
+
+**Issues:**
+*   **Time Inefficiency:** Developers working only on Mobile logic had to wait for the Backend tests to finish (and vice versa).
+*   **CI Bottlenecks:** CI pipelines could not run targeted checks (e.g., "only run mobile evals if the mobile folder changed").
+*   **Noise:** A failure in a backend module would block a mobile release even if they were unrelated.
+
+---
+
+## After Update (The Solution)
+The script was modernized to handle a `TARGET` argument while preserving the default behavior.
+
+### How the Targeted Commands Work:
+1.  **Parameter Capture:** The script uses `TARGET="${1:-all}"` to capture the first command-line argument. If no argument is provided, it intelligently defaults to `all`.
+2.  **Execution Branching:** It uses standard Bash conditional blocks (`if [[ "$TARGET" == "all" || "$TARGET" == "mobile" ]]`) to decide which sub-system to trigger.
+3.  **Context Isolation:** When `mobile` is passed, the script bypasses the Python/Pytest environment entirely, saving time and resources. When `backend` is passed, it skips the Node/Vitest overhead.
+4.  **Directory Awareness:** Each branch manages its own directory context (`cd "$repo_root/mobile"`), ensuring that relative paths for configuration and data remain deterministic regardless of which target is run.
+
+### Exact Code Change (in `run_golden_eval.sh`):
+**Old Code:**
+```bash
+(cd "$repo_root/mobile" && npm run eval:golden)
+(cd "$repo_root/backend" && pytest tests/test_golden_eval.py)
 ```
 
+**New Updated Code:**
+```bash
+TARGET="${1:-all}"
+if [[ "$TARGET" == "all" || "$TARGET" == "mobile" ]]; then
+  # [Runs Mobile Vitest]
+fi
+if [[ "$TARGET" == "all" || "$TARGET" == "backend" ]]; then
+  # [Runs Backend Pytest]
+fi
+```
+
+### New Usage:
+*   `./scripts/run_golden_eval.sh mobile`: Isolates Verifications to the local-agent logic.
+*   `./scripts/run_golden_eval.sh backend`: Isolates Verifications to the cloud-agent logic.
+*   `./scripts/run_golden_eval.sh`: Runs both (Backward Compatible).
+
+### Rationale (Why):
+As the **Golden Dataset (Task 7)** grew to 65+ cases, the execution time increased. Targeted commands allow for "surgical" QA runs, ensuring regressions are caught early in the specific area being modified without wasting CI resources.
+
+---
+
+# Task 9 — Human-Readable QA Summary
+
+## Objective
+To bridge the gap between technical shell logs and release-readiness decision-making by providing an "Executive Dashboard" summary of test results.
+
+---
+
+## Before Update (The Problem)
+The `test_apk.sh` script generated a technical `summary.txt` file that was difficult for non-technical stakeholders (PMs, QA Leads) to interpret.
+
+**Issues:**
+*   **Technical Fog:** Users had to look for `exit=0` or `PASS` hidden among thousands of lines of logcat system noise.
+*   **No Release Verdict:** There was no single line stating "This build is safe" or "This build is blocked."
+*   **Missing Context:** Failures were listed as step names (e.g., `voice-response:1`) rather than functional issues.
+*   **Obscure Stability:** Crash markers were buried in a raw log file (`crash-markers.log`) instead of being highlighted in the summary.
+
+---
+
+## After Update (The Solution)
+The `write_summary()` function was completely redesigned to produce a high-fidelity, emoji-enhanced status report.
+
+### How the Updated Report Works:
+1.  **Automated Verdict Generation:** The script checks the overall `$RESULT` variable. If `0`, it automatically prints the **Green PASS** verdict; otherwise, it prints the **Red FAIL** verdict.
+2.  **Visual App Health (Shields):** It scans the `$CRASH_MARKERS_FOUND` flag. If any critical errors (like `FATAL EXCEPTION`) were detected, it switches from a **🛡️ Stability Shield** to a **⚠️ Critical Warning**.
+3.  **Functional Failure Mapping:** It iterates through the `${FAILED_STEPS[@]}` array and lists each failed UI interaction (e.g., "Voice Recording") using a **🚫 Failure Marker** for immediate visibility.
+4.  **Log Integration:** If crashes occurred, it automatically `sed` extracts the first 15 lines of the crash log and embeds them directly into the summary so developers don't have to open a second file.
+
+### Key Improvements:
+1.  **Executive Verdict:** The top of the report now explicitly states:
+    *   ✅ `VERDICT: PASS (READY FOR RELEASE)`
+    *   ❌ `VERDICT: FAIL (BLOCKED)`
+2.  **Stability Shield:** Uses 🛡️ (Safe) or ⚠️ (Crashes) to immediately flag app health without requiring a deep log dive.
+3.  **Failure Dashboard:** Uses 🚫 to list exactly which functional steps failed, making regressions obvious.
+4.  **Log Snippets:** Automatically embeds the most critical crash markers (e.g., `FATAL EXCEPTION`) directly into the summary if a failure occurs.
+
+### Example Comparison:
+**Old Summary.txt:**
+```text
+Test result: PASS
+Crash markers found: 0
+Response timings: hello: 1240ms
+```
+
+**New Updated Summary.txt:**
+```text
+========================================
+   QA REGRESSION REPORT: 2026-05-14
+========================================
+✅ VERDICT: PASS (READY FOR RELEASE)
+
+--- EXECUTION DETAILS ---
+APK Name: tamil-ai-debug.apk
+🛡️  Stability: No app crashes detected.
+
+⏱️  PERFORMANCE (Response Timings):
+ - hello: 1240ms
+========================================
+```
+
+### Rationale (Why):
+This change makes **"regressions obvious before release"** (the main ownership of the task). By surfacing the "Verdict" and "Stability" at the top, the QA pipeline transitions from a "log collection tool" to a "release decision tool."
+
+---
+
 *Maintained by QA Automation Sprint Team*
-*Last updated: 2026-05-13*
+*Last updated: 2026-05-14*
