@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { apiGet } from "./api";
+import { enqueueClientTurnLog, type ClientTurnLogPayload } from "./chatTelemetry";
 
 export const GLOBAL_KNOWLEDGE_CACHE_KEY = "global_knowledge_cache_v1";
 export const GLOBAL_KNOWLEDGE_SYNC_META_KEY = "global_knowledge_sync_meta_v1";
@@ -30,6 +31,7 @@ type SyncEntryPayload = {
 
 type SyncPayload = {
   ok?: boolean;
+  schemaReady?: boolean;
   entries?: SyncEntryPayload[];
   serverTime?: string;
   nextSince?: string | null;
@@ -37,6 +39,8 @@ type SyncPayload = {
   hasMore?: boolean;
   revokedIds?: Array<number | string>;
   count?: number;
+  error?: string;
+  missingTables?: string[];
 };
 
 export type GlobalKnowledgeEntry = {
@@ -154,6 +158,30 @@ const STOPWORDS = new Set([
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function newSyncId() {
+  return `gks_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function sanitizedErrorMessage(error: unknown) {
+  return String((error as any)?.message || error || "Unknown error")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .slice(0, 240);
+}
+
+function errorStatus(error: unknown) {
+  const status = Number((error as any)?.status || 0);
+  return Number.isFinite(status) && status > 0 ? status : undefined;
+}
+
+function emitSyncTelemetry(payload: ClientTurnLogPayload) {
+  void enqueueClientTurnLog({
+    channel: "app",
+    agent_source: "mobile",
+    route_taken: "global_knowledge_sync",
+    ...payload,
+  }).catch(() => undefined);
 }
 
 export function normalizeGlobalKnowledgeQuestion(value: unknown) {
@@ -507,6 +535,8 @@ export async function syncGlobalKnowledge(
   await saveSyncMeta({ ...meta, lastAttemptAt: attemptAt });
 
   inFlightSync = (async () => {
+    const syncId = newSyncId();
+    const startedAt = Date.now();
     const current = await loadGlobalKnowledgeStore();
     const byId = new Map(current.entries.map((entry) => [entry.id, entry]));
     const limit = Math.max(1, Math.min(Number(options.limit || 250), 500));
@@ -516,11 +546,94 @@ export async function syncGlobalKnowledge(
     let totalSynced = 0;
     let page = 0;
     let hasMore = true;
+    emitSyncTelemetry({
+      event: "client_global_knowledge_sync_started",
+      request_id: syncId,
+      sync_id: syncId,
+      workflow_step: "global_knowledge_sync",
+      workflow_phase: "started",
+      page,
+      limit,
+      since: cursorSince || null,
+      after_id: cursorAfterId || null,
+    });
     while (hasMore && page < GLOBAL_KNOWLEDGE_SYNC_PAGE_CAP) {
       const params = new URLSearchParams({ limit: String(limit) });
       if (cursorSince) params.set("since", cursorSince);
       if (cursorSince && cursorAfterId) params.set("afterId", cursorAfterId);
-      const payload = await apiGet<SyncPayload>(`/api/global-knowledge/sync?${params.toString()}`);
+      let payload: SyncPayload;
+      try {
+        payload = await apiGet<SyncPayload>(`/api/global-knowledge/sync?${params.toString()}`);
+      } catch (error) {
+        const durationMs = Date.now() - startedAt;
+        emitSyncTelemetry({
+          event: "client_global_knowledge_sync_failed",
+          request_id: syncId,
+          sync_id: syncId,
+          workflow_step: "global_knowledge_sync",
+          workflow_phase: "failed",
+          global_sync_status: "sync_failed",
+          page,
+          limit,
+          since: cursorSince || null,
+          after_id: cursorAfterId || null,
+          http_status: errorStatus(error),
+          error_type: (error as any)?.name || "sync_failed",
+          error_name: (error as any)?.name || "Error",
+          error_message: sanitizedErrorMessage(error),
+          duration_ms: durationMs,
+        });
+        await saveSyncMeta({
+          ...meta,
+          lastAttemptAt: attemptAt,
+        });
+        return {
+          ok: false,
+          skipped: true,
+          reason: "sync_failed",
+          synced: 0,
+          total: current.entries.length,
+          updatedAt: current.updatedAt || meta.updatedAt || null,
+          pages: page,
+          hasMore: false,
+        };
+      }
+      if (payload.schemaReady === false || payload.error === "global_qa_schema_not_ready") {
+        const durationMs = Date.now() - startedAt;
+        const missingTables = Array.isArray(payload.missingTables) ? payload.missingTables : [];
+        emitSyncTelemetry({
+          event: "client_global_knowledge_sync_failed",
+          request_id: syncId,
+          sync_id: syncId,
+          workflow_step: "global_knowledge_sync",
+          workflow_phase: "failed",
+          global_sync_status: "schema_not_ready",
+          page,
+          limit,
+          since: cursorSince || null,
+          after_id: cursorAfterId || null,
+          error_type: "schema_not_ready",
+          error_message: "global_qa_schema_not_ready",
+          db_schema_ready: false,
+          missing_tables: missingTables,
+          duration_ms: durationMs,
+        });
+        await saveSyncMeta({
+          ...meta,
+          lastAttemptAt: attemptAt,
+        });
+        return {
+          ok: false,
+          skipped: true,
+          reason: "schema_not_ready",
+          synced: 0,
+          total: current.entries.length,
+          updatedAt: current.updatedAt || meta.updatedAt || null,
+          pages: page,
+          hasMore: false,
+          missingTables,
+        };
+      }
       const revokedIds = Array.isArray(payload.revokedIds)
         ? payload.revokedIds.map((id) => String(id)).filter(Boolean)
         : [];
@@ -560,6 +673,19 @@ export async function syncGlobalKnowledge(
       afterId: cursorSince && cursorAfterId ? cursorAfterId : null,
       updatedAt,
       lastAttemptAt: attemptAt,
+    });
+    emitSyncTelemetry({
+      event: "client_global_knowledge_sync_completed",
+      request_id: syncId,
+      sync_id: syncId,
+      workflow_step: "global_knowledge_sync",
+      workflow_phase: "completed",
+      global_sync_status: "ok",
+      page,
+      limit,
+      since: cursorSince || null,
+      after_id: cursorAfterId || null,
+      duration_ms: Date.now() - startedAt,
     });
     return {
       ok: true,

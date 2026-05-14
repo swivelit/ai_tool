@@ -201,4 +201,49 @@ describe("chat telemetry queue", () => {
     expect(body.request_id).toBe("turn-crash-1");
     expect(body.error_type).toBe("pending_local_turn_marker_found");
   });
+
+  it("sets, updates, clears, and reports active workflow crash markers", async () => {
+    const storage = setupTelemetryMocks();
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const {
+      ACTIVE_WORKFLOW_MARKER_KEY,
+      clearActiveWorkflow,
+      markActiveWorkflow,
+      sendPendingCrashMarkerIfPresent,
+      updateActiveWorkflowStep,
+    } = await import("../lib/chatTelemetry");
+
+    await markActiveWorkflow({
+      requestId: "workflow-1",
+      userId: 42,
+      question: "Do you know about the new election details?",
+      lastStep: "client_chat_turn_started",
+    });
+    await updateActiveWorkflowStep("workflow-1", "client_local_model_started");
+
+    let marker = JSON.parse(storage.get(ACTIVE_WORKFLOW_MARKER_KEY) || "{}");
+    expect(marker.request_id).toBe("workflow-1");
+    expect(marker.lastStep).toBe("client_local_model_started");
+
+    await clearActiveWorkflow("workflow-1");
+    expect(storage.get(ACTIVE_WORKFLOW_MARKER_KEY)).toBeUndefined();
+
+    await markActiveWorkflow({
+      requestId: "workflow-crash-1",
+      userId: 42,
+      question: "Question that died mid-workflow",
+      lastStep: "client_backend_fallback_started",
+    });
+    marker = await sendPendingCrashMarkerIfPresent();
+
+    expect(marker?.request_id).toBe("workflow-crash-1");
+    expect(storage.get(ACTIVE_WORKFLOW_MARKER_KEY)).toBeUndefined();
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as any[])[1].body));
+    expect(body.event).toBe("client_workflow_crash_suspected");
+    expect(body.request_id).toBe("workflow-crash-1");
+    expect(body.workflow_step).toBe("client_backend_fallback_started");
+    expect(body.error_type).toBe("active_workflow_marker_found");
+  });
 });

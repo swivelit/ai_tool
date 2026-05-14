@@ -27,6 +27,9 @@ describe("local quick replies", () => {
     "write code for me",
     "latest IPL score today",
     "do you know about latest IPL score today",
+    "Do you know about the new election details?",
+    "Do you know about latest IPL score?",
+    "Do you know about election results?",
   ])("does not quick-route task prompt: %s", (message) => {
     expect(tryBuildQuickLocalReply({ message })).toBeNull();
   });
@@ -38,6 +41,11 @@ describe("local quick replies", () => {
     expect(reply?.route).toBe("knowledge_ack");
     expect(reply?.assistantText).toContain("Indian Premier League");
     expect(reply?.assistantText).toContain("T20 cricket");
+  });
+
+  it("answers stable general knowledge acknowledgements locally", () => {
+    expect(tryBuildQuickLocalReply({ message: "Do you know about IPL?" })?.route).toBe("knowledge_ack");
+    expect(tryBuildQuickLocalReply({ message: "Do you know about photosynthesis?" })?.route).toBe("knowledge_ack");
   });
 
   it("returns a Tamil IPL acknowledgement when requested", () => {

@@ -7,6 +7,7 @@ const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
 export const CLIENT_TURN_LOG_QUEUE_KEY = "client_turn_logs_queue_v1";
 export const PENDING_LOCAL_TURN_MARKER_KEY = "pending_local_turn_marker_v1";
+export const ACTIVE_WORKFLOW_MARKER_KEY = "active_workflow_marker_v1";
 const MAX_QUEUE_SIZE = 100;
 const TELEMETRY_TIMEOUT_MS = 10_000;
 
@@ -16,6 +17,7 @@ export type ClientTurnLogPayload = {
   request_id?: string | null;
   turn_id?: string | null;
   channel?: "text" | "voice" | "handsfree" | "app" | string;
+  question_hash?: string | null;
   question?: string | null;
   answer?: string | null;
   question_length?: number;
@@ -28,6 +30,31 @@ export type ClientTurnLogPayload = {
   backend_duration_ms?: number;
   total_duration_ms?: number;
   stage_timings?: Record<string, any> | null;
+  workflow_step?: string | null;
+  workflow_phase?: string | null;
+  step_index?: number | null;
+  decision?: string | null;
+  cache_hit?: boolean | null;
+  cache_source?: string | null;
+  global_sync_status?: string | null;
+  http_status?: number | null;
+  error_name?: string | null;
+  error_message?: string | null;
+  model_used?: string | null;
+  model_tier?: string | null;
+  native_backend?: string | null;
+  local_runtime_mode?: string | null;
+  db_schema_ready?: boolean | null;
+  screen?: string | null;
+  app_state?: string | null;
+  sync_id?: string | null;
+  page?: number | null;
+  limit?: number | null;
+  since?: string | null;
+  after_id?: string | null;
+  missing_tables?: string[] | null;
+  last_step?: string | null;
+  started_at?: string | null;
   error_type?: string | null;
   app_version?: string | null;
   api_base?: string | null;
@@ -48,6 +75,15 @@ export type PendingLocalTurnMarker = {
   question_hash: string;
   question?: string | null;
   createdAt: string;
+};
+
+export type ActiveWorkflowMarker = {
+  request_id: string;
+  user_id?: number | string | null;
+  question_hash: string;
+  question?: string | null;
+  startedAt: string;
+  lastStep: string;
 };
 
 const API_BASE =
@@ -110,6 +146,10 @@ function simpleHash(text: unknown) {
     h = Math.imul(h, 16777619);
   }
   return Math.abs(h >>> 0).toString(16);
+}
+
+function sanitizeQuestionPreview(value: unknown) {
+  return redactSensitiveText(value).replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
 function enrichPayload(payload: ClientTurnLogPayload): ClientTurnLogPayload {
@@ -279,16 +319,16 @@ export async function sendPendingCrashMarkerIfPresent() {
   let marker: PendingLocalTurnMarker | null = null;
   try {
     const raw = await AsyncStorage.getItem(PENDING_LOCAL_TURN_MARKER_KEY);
-    if (!raw) return null;
+    if (!raw) return sendActiveWorkflowCrashMarkerIfPresent();
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || !parsed.request_id) {
       await AsyncStorage.removeItem(PENDING_LOCAL_TURN_MARKER_KEY);
-      return null;
+      return sendActiveWorkflowCrashMarkerIfPresent();
     }
     marker = parsed as PendingLocalTurnMarker;
   } catch {
     await AsyncStorage.removeItem(PENDING_LOCAL_TURN_MARKER_KEY);
-    return null;
+    return sendActiveWorkflowCrashMarkerIfPresent();
   }
 
   await enqueueClientTurnLog({
@@ -303,5 +343,97 @@ export async function sendPendingCrashMarkerIfPresent() {
     created_at: new Date().toISOString(),
   });
   await AsyncStorage.removeItem(PENDING_LOCAL_TURN_MARKER_KEY);
+  await sendActiveWorkflowCrashMarkerIfPresent();
+  return marker;
+}
+
+export async function markActiveWorkflow(input: {
+  requestId: string;
+  userId?: number | string | null;
+  question: string;
+  lastStep?: string | null;
+}) {
+  const marker: ActiveWorkflowMarker = {
+    request_id: input.requestId,
+    user_id: input.userId ?? null,
+    question_hash: simpleHash(input.question),
+    question: sanitizeQuestionPreview(input.question),
+    startedAt: new Date().toISOString(),
+    lastStep: input.lastStep || "client_chat_turn_started",
+  };
+  await AsyncStorage.setItem(ACTIVE_WORKFLOW_MARKER_KEY, JSON.stringify(marker));
+  return marker;
+}
+
+export async function updateActiveWorkflowStep(
+  requestId: string | null | undefined,
+  lastStep: string,
+) {
+  if (!requestId || !lastStep) return null;
+  try {
+    const raw = await AsyncStorage.getItem(ACTIVE_WORKFLOW_MARKER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ActiveWorkflowMarker;
+    if (parsed?.request_id !== requestId) return parsed;
+    const next = { ...parsed, lastStep };
+    await AsyncStorage.setItem(ACTIVE_WORKFLOW_MARKER_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearActiveWorkflow(requestId?: string | null) {
+  if (!requestId) {
+    await AsyncStorage.removeItem(ACTIVE_WORKFLOW_MARKER_KEY);
+    return;
+  }
+  try {
+    const raw = await AsyncStorage.getItem(ACTIVE_WORKFLOW_MARKER_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as ActiveWorkflowMarker;
+    if (parsed?.request_id === requestId) {
+      await AsyncStorage.removeItem(ACTIVE_WORKFLOW_MARKER_KEY);
+    }
+  } catch {
+    await AsyncStorage.removeItem(ACTIVE_WORKFLOW_MARKER_KEY);
+  }
+}
+
+export async function sendActiveWorkflowCrashMarkerIfPresent() {
+  let marker: ActiveWorkflowMarker | null = null;
+  try {
+    const raw = await AsyncStorage.getItem(ACTIVE_WORKFLOW_MARKER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.request_id) {
+      await AsyncStorage.removeItem(ACTIVE_WORKFLOW_MARKER_KEY);
+      return null;
+    }
+    marker = parsed as ActiveWorkflowMarker;
+  } catch {
+    await AsyncStorage.removeItem(ACTIVE_WORKFLOW_MARKER_KEY);
+    return null;
+  }
+
+  const startupTime = new Date().toISOString();
+  await enqueueClientTurnLog({
+    event: "client_workflow_crash_suspected",
+    user_id: marker.user_id,
+    request_id: marker.request_id,
+    channel: "text",
+    question_hash: marker.question_hash,
+    question: marker.question || null,
+    question_length: marker.question?.length,
+    agent_source: "mobile",
+    route_taken: "active_workflow",
+    workflow_step: marker.lastStep,
+    workflow_phase: "crash_suspected",
+    last_step: marker.lastStep,
+    started_at: marker.startedAt,
+    created_at: startupTime,
+    error_type: "active_workflow_marker_found",
+  });
+  await AsyncStorage.removeItem(ACTIVE_WORKFLOW_MARKER_KEY);
   return marker;
 }

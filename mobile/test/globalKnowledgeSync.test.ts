@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const storage = vi.hoisted(() => new Map<string, string>());
 const apiGetMock = vi.hoisted(() => vi.fn());
+const enqueueClientTurnLogMock = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("@react-native-async-storage/async-storage", () => ({
   default: {
@@ -19,6 +20,10 @@ vi.mock("../lib/api", () => ({
   apiGet: apiGetMock,
 }));
 
+vi.mock("../lib/chatTelemetry", () => ({
+  enqueueClientTurnLog: enqueueClientTurnLogMock,
+}));
+
 function unitEmbedding() {
   const out = new Array(96).fill(0);
   out[0] = 1;
@@ -29,6 +34,7 @@ describe("global knowledge sync", () => {
   beforeEach(() => {
     storage.clear();
     apiGetMock.mockReset();
+    enqueueClientTurnLogMock.mockClear();
   });
 
   it("stores sync endpoint responses locally", async () => {
@@ -374,5 +380,80 @@ describe("global knowledge sync", () => {
     expect(second.skipped).toBe(true);
     expect(second.reason).toBe("throttled");
     expect(apiGetMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not throw or clear cache when backend schema is not ready", async () => {
+    const { GLOBAL_KNOWLEDGE_CACHE_KEY, GLOBAL_KNOWLEDGE_SYNC_META_KEY, loadGlobalKnowledgeStore, syncGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    storage.set(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "existing",
+            canonicalQuestion: "What is cached?",
+            normalizedQuestion: "what is cached",
+            answer: "Keep me.",
+            answerLanguage: "en",
+            embedding: [],
+            embeddingNorm: 0,
+            confidence: 0.9,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    apiGetMock.mockResolvedValueOnce({
+      ok: false,
+      schemaReady: false,
+      entries: [],
+      revokedIds: [],
+      hasMore: false,
+      count: 0,
+      error: "global_qa_schema_not_ready",
+      missingTables: ["global_qa_cache"],
+    });
+
+    const result = await syncGlobalKnowledge({ force: true });
+    const store = await loadGlobalKnowledgeStore();
+    const meta = JSON.parse(storage.get(GLOBAL_KNOWLEDGE_SYNC_META_KEY) || "{}");
+
+    expect(result.ok).toBe(false);
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe("schema_not_ready");
+    expect(store.entries).toHaveLength(1);
+    expect(store.entries[0].answer).toBe("Keep me.");
+    expect(meta.lastAttemptAt).toBeTruthy();
+    expect(enqueueClientTurnLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "client_global_knowledge_sync_failed",
+        global_sync_status: "schema_not_ready",
+        db_schema_ready: false,
+      }),
+    );
+  });
+
+  it("does not throw on 500/503/network sync failures and emits failure telemetry", async () => {
+    const { GLOBAL_KNOWLEDGE_SYNC_META_KEY, syncGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    const error = new Error("GET failed: 503");
+    (error as any).name = "ApiError";
+    (error as any).status = 503;
+    apiGetMock.mockRejectedValueOnce(error);
+
+    const result = await syncGlobalKnowledge({ force: true });
+    const meta = JSON.parse(storage.get(GLOBAL_KNOWLEDGE_SYNC_META_KEY) || "{}");
+
+    expect(result.ok).toBe(false);
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe("sync_failed");
+    expect(meta.lastAttemptAt).toBeTruthy();
+    expect(enqueueClientTurnLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "client_global_knowledge_sync_failed",
+        http_status: 503,
+        error_type: "ApiError",
+      }),
+    );
   });
 });

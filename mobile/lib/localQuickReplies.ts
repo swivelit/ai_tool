@@ -112,6 +112,47 @@ const LIVE_CURRENT_TERMS = [
   "scores",
   "news",
   "breaking",
+  "now",
+  "new",
+  "recent",
+  "update",
+  "updates",
+  "election",
+  "elections",
+  "vote",
+  "voting",
+  "poll",
+  "polls",
+  "result",
+  "results",
+  "winner",
+  "candidate",
+  "candidates",
+  "government",
+  "president",
+  "prime",
+  "minister",
+  "pm",
+  "cm",
+  "mla",
+  "mp",
+  "weather",
+  "forecast",
+  "tomorrow",
+  "yesterday",
+  "price",
+  "rate",
+  "stock",
+  "crypto",
+  "best",
+  "cheapest",
+  "deal",
+  "offer",
+];
+
+const LIVE_CURRENT_PHRASES = [
+  ["near", "me"],
+  ["prime", "minister"],
 ];
 
 const TASK_CONTEXT_WORDS = [
@@ -210,7 +251,10 @@ function hasTaskContext(tokens: string[]) {
 }
 
 function hasLiveCurrentTerms(tokens: string[]) {
-  return LIVE_CURRENT_TERMS.some((word) => containsToken(tokens, word));
+  return (
+    LIVE_CURRENT_TERMS.some((word) => containsToken(tokens, word)) ||
+    LIVE_CURRENT_PHRASES.some((phraseTokens) => containsPhraseTokens(tokens, phraseTokens))
+  );
 }
 
 function phraseStartIndex(tokens: string[], phraseTokens: string[]) {

@@ -53,6 +53,7 @@ import { __idleQueueTestUtils, enqueueLocalIdleJob } from "./localIdleQueue";
 import {
   clearPendingLocalTurn,
   markPendingLocalTurn,
+  updateActiveWorkflowStep,
 } from "./chatTelemetry";
 
 type ChatRole = "system" | "user" | "assistant";
@@ -7051,6 +7052,13 @@ function textLength(value: unknown) {
   return String(value || "").length;
 }
 
+function logClientWorkflowStep(payload: Parameters<typeof sendClientTurnLog>[0]) {
+  sendClientTurnLog(payload);
+  if (payload.request_id && payload.event) {
+    void updateActiveWorkflowStep(String(payload.request_id), payload.event).catch(() => undefined);
+  }
+}
+
 function logClientBackendFallbackEvent(input: {
   event: "client_backend_fallback_started" | "client_backend_fallback_completed";
   userId: number;
@@ -7060,8 +7068,9 @@ function logClientBackendFallbackEvent(input: {
   fallbackReason: BackendFallbackReason;
   originalRoute?: string | null;
   stageTimings?: Record<string, any>;
+  durationMs?: number;
 }) {
-  sendClientTurnLog({
+  logClientWorkflowStep({
     event: input.event,
     user_id: input.userId,
     request_id: input.requestId || undefined,
@@ -7073,6 +7082,9 @@ function logClientBackendFallbackEvent(input: {
     agent_source: "backend_openai",
     route_taken: "fallback_openai",
     fallback_reason: input.fallbackReason,
+    workflow_step: "backend_fallback",
+    workflow_phase: input.event.endsWith("_started") ? "started" : "completed",
+    duration_ms: input.durationMs,
     stage_timings: input.stageTimings || null,
   });
 }
@@ -7086,6 +7098,7 @@ async function callBackendOpenAiFallback(opts: {
   originalRoute?: string | null;
   stageTimings?: Record<string, any>;
 }) {
+  const startedAt = Date.now();
   logClientBackendFallbackEvent({
     event: "client_backend_fallback_started",
     userId: opts.userId,
@@ -7095,17 +7108,42 @@ async function callBackendOpenAiFallback(opts: {
     originalRoute: opts.originalRoute,
     stageTimings: opts.stageTimings,
   });
-  const backend = await apiPostBackendOnly<any>("/api/chat", {
-    user_id: opts.userId,
-    message: opts.message,
-    reply_language: opts.replyLanguage,
-    request_id: opts.requestId || undefined,
-  });
+  let backend: any;
+  try {
+    backend = await apiPostBackendOnly<any>("/api/chat", {
+      user_id: opts.userId,
+      message: opts.message,
+      reply_language: opts.replyLanguage,
+      request_id: opts.requestId || undefined,
+    });
+  } catch (error) {
+    logClientWorkflowStep({
+      event: "client_backend_fallback_completed",
+      user_id: opts.userId,
+      request_id: opts.requestId || undefined,
+      channel: "text",
+      question: opts.message,
+      question_length: textLength(opts.message),
+      agent_source: "backend_openai",
+      route_taken: "fallback_openai",
+      fallback_reason: opts.fallbackReason,
+      workflow_step: "backend_fallback",
+      workflow_phase: "failed",
+      error_type: (error as any)?.name || "backend_fallback_failed",
+      error_name: (error as any)?.name || "Error",
+      error_message: String((error as any)?.message || error || "Unknown error").slice(0, 240),
+      http_status: Number((error as any)?.status || 0) || undefined,
+      duration_ms: Date.now() - startedAt,
+      stage_timings: opts.stageTimings || null,
+    });
+    throw error;
+  }
   const annotated = annotateBackendOpenAiFallbackResponse(backend, {
     fallbackReason: opts.fallbackReason,
     originalRoute: opts.originalRoute,
     stageTimings: opts.stageTimings,
   });
+  const durationMs = Date.now() - startedAt;
   logClientBackendFallbackEvent({
     event: "client_backend_fallback_completed",
     userId: opts.userId,
@@ -7114,7 +7152,11 @@ async function callBackendOpenAiFallback(opts: {
     requestId: opts.requestId,
     fallbackReason: opts.fallbackReason,
     originalRoute: opts.originalRoute,
-    stageTimings: opts.stageTimings,
+    durationMs,
+    stageTimings: {
+      ...(opts.stageTimings || {}),
+      backend_fallback: durationMs,
+    },
   });
   void syncGlobalKnowledge().catch(() => undefined);
   return annotated;
@@ -7577,15 +7619,47 @@ export async function runLocalAssistantTurn(opts: {
   }
 
   const globalKnowledgeHit = await timeStage("global_knowledge_cache", () =>
-    lookupSyncedGlobalKnowledge(message, {
-      embedTexts:
-        modelRuntimeOptions.modelsReady === false ||
-        isLiveOrCurrentGlobalKnowledgeQuestion(message)
-          ? undefined
-          : (texts) => embedTexts(texts, modelRuntimeOptions),
-    }),
+    (async () => {
+      logClientWorkflowStep({
+        event: "client_global_knowledge_lookup_started",
+        user_id: userId,
+        request_id: opts.requestId || undefined,
+        channel: "text",
+        question: message,
+        question_length: textLength(message),
+        agent_source: "global_rag",
+        route_taken: "global_knowledge_cache",
+        workflow_step: "global_knowledge_lookup",
+        workflow_phase: "started",
+        cache_source: "global_knowledge_sync",
+        stage_timings: stageTimings,
+      });
+      return lookupSyncedGlobalKnowledge(message, {
+        embedTexts:
+          modelRuntimeOptions.modelsReady === false ||
+          isLiveOrCurrentGlobalKnowledgeQuestion(message)
+            ? undefined
+            : (texts) => embedTexts(texts, modelRuntimeOptions),
+      });
+    })(),
   );
   if (globalKnowledgeHit) {
+    logClientWorkflowStep({
+      event: "client_global_knowledge_lookup_hit",
+      user_id: userId,
+      request_id: opts.requestId || undefined,
+      channel: "text",
+      question: message,
+      question_length: textLength(message),
+      agent_source: "global_rag",
+      route_taken: "global_knowledge_cache",
+      workflow_step: "global_knowledge_lookup",
+      workflow_phase: "completed",
+      cache_hit: true,
+      cache_source: globalKnowledgeHit.source,
+      duration_ms: stageTimings.global_knowledge_cache,
+      stage_timings: stageTimings,
+    });
     const assistantText = globalKnowledgeHit.entry.answer;
     await appendConversation(userId, "user", message);
     await appendConversation(userId, "assistant", assistantText);
@@ -7645,6 +7719,23 @@ export async function runLocalAssistantTurn(opts: {
       },
     } satisfies LocalAssistantTurnResult;
   }
+
+  logClientWorkflowStep({
+    event: "client_global_knowledge_lookup_miss",
+    user_id: userId,
+    request_id: opts.requestId || undefined,
+    channel: "text",
+    question: message,
+    question_length: textLength(message),
+    agent_source: "global_rag",
+    route_taken: "global_knowledge_cache",
+    workflow_step: "global_knowledge_lookup",
+    workflow_phase: "completed",
+    cache_hit: false,
+    cache_source: "global_knowledge_sync",
+    duration_ms: stageTimings.global_knowledge_cache,
+    stage_timings: stageTimings,
+  });
 
   if (
     readiness.required &&
@@ -7842,8 +7933,24 @@ export async function runLocalAssistantTurn(opts: {
   let decision = await timeStage("route_classification", async () => {
     if (fastDecision) return fastDecision;
     await markFullLocalTurn();
+    logClientWorkflowStep({
+      event: "client_local_model_started",
+      user_id: userId,
+      request_id: fullLocalRequestId,
+      channel: "text",
+      question: message,
+      question_length: textLength(message),
+      agent_source: "local_model",
+      route_taken: "route_classification",
+      workflow_step: "local_model_route_classification",
+      workflow_phase: "started",
+      model_tier: modelRuntimeOptions.selectedTier,
+      native_backend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
+      local_runtime_mode: cfg.runtime?.mode || "native_on_device",
+      stage_timings: stageTimings,
+    });
     try {
-      return await classifyRouteWithModel(
+      const classified = await classifyRouteWithModel(
         message,
         replyLanguage,
         answers,
@@ -7851,7 +7958,44 @@ export async function runLocalAssistantTurn(opts: {
         preferredSelectedModel,
         modelRuntimeOptions,
       );
+      logClientWorkflowStep({
+        event: "client_local_model_completed",
+        user_id: userId,
+        request_id: fullLocalRequestId,
+        channel: "text",
+        question: message,
+        question_length: textLength(message),
+        agent_source: "local_model",
+        route_taken: classified.route,
+        workflow_step: "local_model_route_classification",
+        workflow_phase: "completed",
+        decision: classified.route,
+        model_used: preferredSelectedModel,
+        model_tier: modelRuntimeOptions.selectedTier,
+        native_backend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
+        local_runtime_mode: cfg.runtime?.mode || "native_on_device",
+        stage_timings: stageTimings,
+      });
+      return classified;
     } catch {
+      logClientWorkflowStep({
+        event: "client_local_model_failed",
+        user_id: userId,
+        request_id: fullLocalRequestId,
+        channel: "text",
+        question: message,
+        question_length: textLength(message),
+        agent_source: "local_model",
+        route_taken: "route_classification",
+        workflow_step: "local_model_route_classification",
+        workflow_phase: "failed",
+        error_type: "route_classification_failed",
+        model_used: preferredSelectedModel,
+        model_tier: modelRuntimeOptions.selectedTier,
+        native_backend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
+        local_runtime_mode: cfg.runtime?.mode || "native_on_device",
+        stage_timings: stageTimings,
+      });
       return {
         route: "local_answer",
         reason: "route_classification_failed",
@@ -8127,6 +8271,24 @@ export async function runLocalAssistantTurn(opts: {
 
   if (!handledByToolPlan && route === "local_answer") {
     try {
+      await markFullLocalTurn();
+      logClientWorkflowStep({
+        event: "client_local_model_started",
+        user_id: userId,
+        request_id: fullLocalRequestId,
+        channel: "text",
+        question: message,
+        question_length: textLength(message),
+        agent_source: "local_model",
+        route_taken: "local_answer",
+        workflow_step: "local_model_answer",
+        workflow_phase: "started",
+        model_used: decision.selectedModel,
+        model_tier: modelRuntimeOptions.selectedTier,
+        native_backend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
+        local_runtime_mode: cfg.runtime?.mode || "native_on_device",
+        stage_timings: stageTimings,
+      });
       const reasoned = await timeStage("local_reasoner", () =>
         buildLocalReasoningWithContext({
           userId,
@@ -8148,6 +8310,25 @@ export async function runLocalAssistantTurn(opts: {
         localReasonerRequestedFallback = true;
         route = "fallback_openai";
         fallbackReason = "live_data_needed";
+        logClientWorkflowStep({
+          event: "client_local_model_completed",
+          user_id: userId,
+          request_id: fullLocalRequestId,
+          channel: "text",
+          question: message,
+          question_length: textLength(message),
+          agent_source: "local_model",
+          route_taken: "fallback_openai",
+          workflow_step: "local_model_answer",
+          workflow_phase: "completed",
+          decision: "fallback_openai",
+          model_used: decision.selectedModel,
+          model_tier: modelRuntimeOptions.selectedTier,
+          native_backend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
+          local_runtime_mode: cfg.runtime?.mode || "native_on_device",
+          duration_ms: stageTimings.local_reasoner,
+          stage_timings: stageTimings,
+        });
       } else {
         const aligned = await timeStage("alignment", () =>
           alignAnswer(
@@ -8162,8 +8343,53 @@ export async function runLocalAssistantTurn(opts: {
         );
         english = aligned.english;
         final = aligned.final;
+        logClientWorkflowStep({
+          event: "client_local_model_completed",
+          user_id: userId,
+          request_id: fullLocalRequestId,
+          channel: "text",
+          question: message,
+          answer: final,
+          question_length: textLength(message),
+          answer_length: textLength(final),
+          agent_source: "local_model",
+          route_taken: "local_answer",
+          workflow_step: "local_model_answer",
+          workflow_phase: "completed",
+          model_used: decision.selectedModel,
+          model_tier: modelRuntimeOptions.selectedTier,
+          native_backend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
+          local_runtime_mode: cfg.runtime?.mode || "native_on_device",
+          duration_ms: stageTimings.local_reasoner,
+          stage_timings: stageTimings,
+        });
       }
     } catch (error) {
+      logClientWorkflowStep({
+        event: "client_local_model_failed",
+        user_id: userId,
+        request_id: fullLocalRequestId,
+        channel: "text",
+        question: message,
+        question_length: textLength(message),
+        agent_source: "local_model",
+        route_taken: "local_answer",
+        workflow_step: "local_model_answer",
+        workflow_phase: "failed",
+        error_type: isLocalTurnTimeoutError(error)
+          ? "local_timeout"
+          : isNativeOnDeviceRuntimeUnavailableError(error) || isModelInstallError(error)
+            ? "local_model_unavailable"
+            : "local_processing_error",
+        error_name: (error as any)?.name || "Error",
+        error_message: String((error as any)?.message || error || "Unknown error").slice(0, 240),
+        model_used: decision.selectedModel,
+        model_tier: modelRuntimeOptions.selectedTier,
+        native_backend: cfg.native?.backend || cfg.runtime?.nativeBackend || "llama_cpp",
+        local_runtime_mode: cfg.runtime?.mode || "native_on_device",
+        duration_ms: stageTimings.local_reasoner,
+        stage_timings: stageTimings,
+      });
       if (isLocalTurnTimeoutError(error)) {
         route = "fallback_openai";
         decision = {

@@ -27,7 +27,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlmodel import SQLModel, Session, delete, select
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -75,6 +75,7 @@ from .agentic_service import AgenticService
 from .orchestrator_task import run_orchestrator, run_rule_orchestrator
 from .global_qa_cache import (
     build_global_knowledge_sync_payload,
+    global_qa_schema_ready,
     lookup_approved_global_cache,
     record_backend_openai_answer,
 )
@@ -922,10 +923,18 @@ async def log_requests(request: Request, call_next):
     set_request_context(request_id=request_id, route=request.url.path)
     try:
         response = await call_next(request)
-    except Exception:
-        logger.exception(
-            "request failed",
-            extra={"method": request.method, "path": request.url.path},
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        logger.error(
+            "request_failed_exception",
+            extra={
+                "event": "request_failed_exception",
+                "method": request.method,
+                "path": request.url.path,
+                "exception_class": exc.__class__.__name__,
+                "exception_message": sanitize_log_text(str(exc), 240),
+                "duration_ms": duration_ms,
+            },
         )
         clear_request_context()
         raise
@@ -1183,6 +1192,7 @@ class ClientTurnLogRequest(BaseModel):
     request_id: Optional[str] = None
     turn_id: Optional[str] = None
     channel: Optional[str] = None
+    question_hash: Optional[str] = None
     question: Optional[str] = None
     answer: Optional[str] = None
     question_length: Optional[int] = None
@@ -1195,6 +1205,31 @@ class ClientTurnLogRequest(BaseModel):
     backend_duration_ms: Optional[float] = None
     total_duration_ms: Optional[float] = None
     stage_timings: Optional[Dict[str, Any]] = None
+    workflow_step: Optional[str] = None
+    workflow_phase: Optional[str] = None
+    step_index: Optional[int] = None
+    decision: Optional[str] = None
+    cache_hit: Optional[bool] = None
+    cache_source: Optional[str] = None
+    global_sync_status: Optional[str] = None
+    http_status: Optional[int] = None
+    error_name: Optional[str] = None
+    error_message: Optional[str] = None
+    model_used: Optional[str] = None
+    model_tier: Optional[str] = None
+    native_backend: Optional[str] = None
+    local_runtime_mode: Optional[str] = None
+    db_schema_ready: Optional[bool] = None
+    screen: Optional[str] = None
+    app_state: Optional[str] = None
+    sync_id: Optional[str] = None
+    page: Optional[int] = None
+    limit: Optional[int] = None
+    since: Optional[str] = None
+    after_id: Optional[str] = None
+    missing_tables: Optional[List[str]] = None
+    last_step: Optional[str] = None
+    started_at: Optional[str] = None
     error_type: Optional[str] = None
     app_version: Optional[str] = None
     api_base: Optional[str] = None
@@ -2765,6 +2800,31 @@ def _record_backend_openai_side_effects(
     )
 
 
+def _record_stage_timing(stage_timings: Dict[str, Any], label: str, started_at: float) -> None:
+    stage_timings[label] = round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def _log_backend_workflow_step(
+    event: str,
+    *,
+    user_id: Optional[int],
+    question: Optional[str] = None,
+    stage_timings: Optional[Dict[str, Any]] = None,
+    **extra_fields: Any,
+) -> None:
+    logger.info(
+        event,
+        extra=chat_log_payload(
+            event=event,
+            user_id=user_id,
+            request_id=get_request_id(),
+            question=question,
+            stage_timings=stage_timings or None,
+            **extra_fields,
+        ),
+    )
+
+
 def _handle_routing_fast_exit(
     session: Session,
     payload: ChatAPIRequest,
@@ -2806,27 +2866,148 @@ def _handle_routing_fast_exit(
     return None
 
 
-def _run_chat_logic(session: Session, payload: ChatAPIRequest, text: str) -> Dict[str, Any]:
+def _run_chat_logic(
+    session: Session,
+    payload: ChatAPIRequest,
+    text: str,
+    stage_timings: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    stage_timings = stage_timings if stage_timings is not None else {}
+    _log_backend_workflow_step(
+        "backend_rule_orchestrator_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="rule_orchestrator",
+        workflow_phase="started",
+        stage_timings=stage_timings,
+    )
+    started = time.perf_counter()
     routing = run_rule_orchestrator(text)
+    _record_stage_timing(stage_timings, "rule_orchestrator", started)
+    _log_backend_workflow_step(
+        "backend_rule_orchestrator_completed",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="rule_orchestrator",
+        workflow_phase="completed",
+        decision=str(routing.get("intent") or ""),
+        route_taken=str(routing.get("intent") or ""),
+        duration_ms=stage_timings.get("rule_orchestrator"),
+        stage_timings=stage_timings,
+    )
     fast_result = _handle_routing_fast_exit(session, payload, text, routing)
     if fast_result is not None:
         return fast_result
 
-    global_hit = lookup_approved_global_cache(session, text, payload.reply_language)
+    _log_backend_workflow_step(
+        "backend_global_cache_lookup_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="global_cache_lookup",
+        workflow_phase="started",
+        stage_timings=stage_timings,
+    )
+    started = time.perf_counter()
+    try:
+        global_hit = lookup_approved_global_cache(session, text, payload.reply_language)
+    except (ProgrammingError, OperationalError) as exc:
+        session.rollback()
+        _record_stage_timing(stage_timings, "global_cache_lookup", started)
+        _log_backend_workflow_step(
+            "backend_global_cache_error",
+            user_id=payload.user_id,
+            question=text,
+            workflow_step="global_cache_lookup",
+            workflow_phase="failed",
+            error_type=exc.__class__.__name__,
+            error_message=sanitize_log_text(str(exc), 240),
+            db_schema_ready=False,
+            duration_ms=stage_timings.get("global_cache_lookup"),
+            stage_timings=stage_timings,
+        )
+        global_hit = None
+    else:
+        _record_stage_timing(stage_timings, "global_cache_lookup", started)
     if global_hit is not None:
+        _log_backend_workflow_step(
+            "backend_global_cache_hit",
+            user_id=payload.user_id,
+            question=text,
+            workflow_step="global_cache_lookup",
+            workflow_phase="completed",
+            cache_hit=True,
+            cache_source="global_qa_cache",
+            duration_ms=stage_timings.get("global_cache_lookup"),
+            stage_timings=stage_timings,
+        )
         return _build_global_cache_pipeline_result(global_hit)
+    _log_backend_workflow_step(
+        "backend_global_cache_miss",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="global_cache_lookup",
+        workflow_phase="completed",
+        cache_hit=False,
+        cache_source="global_qa_cache",
+        duration_ms=stage_timings.get("global_cache_lookup"),
+        stage_timings=stage_timings,
+    )
 
+    _log_backend_workflow_step(
+        "backend_full_orchestrator_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="full_orchestrator",
+        workflow_phase="started",
+        stage_timings=stage_timings,
+    )
+    started = time.perf_counter()
     routing = run_orchestrator(_get_openai_client(required=False), text)
+    _record_stage_timing(stage_timings, "full_orchestrator", started)
+    _log_backend_workflow_step(
+        "backend_full_orchestrator_completed",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="full_orchestrator",
+        workflow_phase="completed",
+        decision=str(routing.get("intent") or ""),
+        duration_ms=stage_timings.get("full_orchestrator"),
+        stage_timings=stage_timings,
+    )
     fast_result = _handle_routing_fast_exit(session, payload, text, routing)
     if fast_result is not None:
         return fast_result
 
-    return _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+    _log_backend_workflow_step(
+        "backend_openai_fallback_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="openai_fallback",
+        workflow_phase="started",
+        stage_timings=stage_timings,
+    )
+    started = time.perf_counter()
+    result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+    _record_stage_timing(stage_timings, "openai_fallback", started)
+    _log_backend_workflow_step(
+        "backend_openai_fallback_completed",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="openai_fallback",
+        workflow_phase="completed",
+        route_taken=result.get("route_taken"),
+        model_used=result.get("model_used"),
+        model_tier=result.get("model_tier"),
+        duration_ms=stage_timings.get("openai_fallback"),
+        stage_timings=stage_timings,
+    )
+    return result
 
 
 def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
     text = _resolve_chat_text(payload)
-    pipeline_result = _run_chat_logic(session, payload, text)
+    stage_timings: Dict[str, Any] = {}
+    pipeline_result = _run_chat_logic(session, payload, text, stage_timings)
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
@@ -2844,7 +3025,22 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
         answer=str(normalized_pipeline.get("remodeled_english") or item.details or ""),
         request_id=payload.request_id or get_request_id(),
     )
-    return _build_chat_response(item, meta, normalized_pipeline)
+    response = _build_chat_response(item, meta, normalized_pipeline)
+    _log_backend_workflow_step(
+        "backend_chat_response_ready",
+        user_id=payload.user_id,
+        question=text,
+        answer=str(normalized_pipeline.get("remodeled_english") or item.details or ""),
+        workflow_step="chat_response",
+        workflow_phase="completed",
+        route_taken=normalized_pipeline.get("route_taken"),
+        agent_source=_backend_agent_source(normalized_pipeline),
+        cache_hit=normalized_pipeline.get("cache_hit") == "true",
+        model_used=normalized_pipeline.get("model_used"),
+        model_tier=normalized_pipeline.get("model_tier"),
+        stage_timings=stage_timings,
+    )
+    return response
 
 
 @app.post("/api/client/turn-log")
@@ -2874,6 +3070,7 @@ def api_client_turn_log(
             request_id=payload.request_id,
             turn_id=payload.turn_id,
             channel=payload.channel or "text",
+            question_hash=payload.question_hash,
             question=payload.question,
             answer=payload.answer,
             question_length=payload.question_length,
@@ -2886,6 +3083,31 @@ def api_client_turn_log(
             backend_duration_ms=payload.backend_duration_ms,
             total_duration_ms=payload.total_duration_ms,
             stage_timings=payload.stage_timings,
+            workflow_step=payload.workflow_step,
+            workflow_phase=payload.workflow_phase,
+            step_index=payload.step_index,
+            decision=payload.decision,
+            cache_hit=payload.cache_hit,
+            cache_source=payload.cache_source,
+            global_sync_status=payload.global_sync_status,
+            http_status=payload.http_status,
+            error_name=payload.error_name,
+            error_message=payload.error_message,
+            model_used=payload.model_used,
+            model_tier=payload.model_tier,
+            native_backend=payload.native_backend,
+            local_runtime_mode=payload.local_runtime_mode,
+            db_schema_ready=payload.db_schema_ready,
+            screen=payload.screen,
+            app_state=payload.app_state,
+            sync_id=payload.sync_id,
+            page=payload.page,
+            limit=payload.limit,
+            since=payload.since,
+            after_id=payload.after_id,
+            missing_tables=payload.missing_tables,
+            last_step=payload.last_step,
+            started_at=payload.started_at,
             error_type=payload.error_type,
             app_version=payload.app_version,
             api_base=payload.api_base,
@@ -2910,6 +3132,7 @@ def api_client_turn_log(
                 request_id=payload.request_id,
                 turn_id=payload.turn_id,
                 channel=payload.channel or "text",
+                question_hash=payload.question_hash,
                 question=payload.question,
                 answer=payload.answer,
                 question_length=payload.question_length,
@@ -2922,6 +3145,31 @@ def api_client_turn_log(
                 backend_duration_ms=payload.backend_duration_ms,
                 total_duration_ms=payload.total_duration_ms,
                 stage_timings=payload.stage_timings,
+                workflow_step=payload.workflow_step,
+                workflow_phase=payload.workflow_phase,
+                step_index=payload.step_index,
+                decision=payload.decision,
+                cache_hit=payload.cache_hit,
+                cache_source=payload.cache_source,
+                global_sync_status=payload.global_sync_status,
+                http_status=payload.http_status,
+                error_name=payload.error_name,
+                error_message=payload.error_message,
+                model_used=payload.model_used,
+                model_tier=payload.model_tier,
+                native_backend=payload.native_backend,
+                local_runtime_mode=payload.local_runtime_mode,
+                db_schema_ready=payload.db_schema_ready,
+                screen=payload.screen,
+                app_state=payload.app_state,
+                sync_id=payload.sync_id,
+                page=payload.page,
+                limit=payload.limit,
+                since=payload.since,
+                after_id=payload.after_id,
+                missing_tables=payload.missing_tables,
+                last_step=payload.last_step,
+                started_at=payload.started_at,
                 error_type=payload.error_type,
                 app_version=payload.app_version,
                 api_base=payload.api_base,
@@ -2944,6 +3192,46 @@ def api_debug_observability(
     auth_user: AuthUser = Depends(get_current_user),
 ):
     return _observability_config_payload()
+
+
+def _alembic_revision_status(session: Session) -> Dict[str, Any]:
+    try:
+        from alembic.config import Config
+        from alembic.runtime.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+
+        config = Config(str(BACKEND_ROOT / "alembic.ini"))
+        script = ScriptDirectory.from_config(config)
+        context = MigrationContext.configure(session.get_bind())
+        current = context.get_current_revision()
+        return {
+            "current": current,
+            "head": script.get_current_head(),
+            "ok": bool(current and current == script.get_current_head()),
+        }
+    except Exception as exc:
+        return {
+            "current": None,
+            "head": None,
+            "ok": False,
+            "error": sanitize_log_text(str(exc), 160),
+        }
+
+
+@app.get("/api/debug/schema-status")
+def api_debug_schema_status(
+    session: Session = Depends(get_session),
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    readiness = global_qa_schema_ready(session)
+    return {
+        "ok": bool(readiness.get("ok")),
+        "globalQa": {
+            "ok": bool(readiness.get("ok")),
+            "missingTables": readiness.get("missing_tables") or [],
+        },
+        "alembic": _alembic_revision_status(session),
+    }
 
 
 @app.get("/api/debug/global-qa-cache")
@@ -2993,7 +3281,63 @@ def api_global_knowledge_sync(
     session: Session = Depends(get_session),
     auth_user: AuthUser = Depends(get_current_user),
 ):
-    return build_global_knowledge_sync_payload(session, since=since, limit=limit, after_id=afterId)
+    user = get_owned_user(session, auth_user)
+    started = time.perf_counter()
+    set_request_context(user_id=str(user.id))
+    logger.info(
+        "backend_global_sync_requested",
+        extra=chat_log_payload(
+            event="backend_global_sync_requested",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            workflow_step="global_knowledge_sync",
+            workflow_phase="started",
+            since=since,
+            after_id=str(afterId) if afterId is not None else None,
+            limit=limit,
+        ),
+    )
+    try:
+        payload = build_global_knowledge_sync_payload(session, since=since, limit=limit, after_id=afterId)
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.exception(
+            "backend_global_sync_failed",
+            extra=chat_log_payload(
+                event="backend_global_sync_failed",
+                user_id=int(user.id),
+                request_id=get_request_id(),
+                workflow_step="global_knowledge_sync",
+                workflow_phase="failed",
+                error_type=exc.__class__.__name__,
+                error_message=sanitize_log_text(str(exc), 240),
+                duration_ms=duration_ms,
+                since=since,
+                after_id=str(afterId) if afterId is not None else None,
+                limit=limit,
+            ),
+        )
+        raise
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "backend_global_sync_completed",
+        extra=chat_log_payload(
+            event="backend_global_sync_completed",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            workflow_step="global_knowledge_sync",
+            workflow_phase="completed",
+            global_sync_status="ok" if payload.get("ok") else str(payload.get("error") or "failed"),
+            db_schema_ready=payload.get("schemaReady", True),
+            cache_hit=False,
+            duration_ms=duration_ms,
+            since=since,
+            after_id=str(afterId) if afterId is not None else None,
+            limit=limit,
+            missing_tables=payload.get("missingTables") or [],
+        ),
+    )
+    return payload
 
 
 @app.post("/api/chat")
@@ -3007,6 +3351,18 @@ def api_chat(
     text = _resolve_chat_text(payload)
     started = time.perf_counter()
     set_request_context(request_id=payload.request_id or get_request_id() or new_request_id(), user_id=str(user.id))
+    logger.info(
+        "backend_chat_received",
+        extra=chat_log_payload(
+            event="backend_chat_received",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            channel="text",
+            question=text,
+            workflow_step="chat_received",
+            workflow_phase="started",
+        ),
+    )
     logger.info(
         "chat_turn_started",
         extra=chat_log_payload(

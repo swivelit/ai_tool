@@ -40,6 +40,13 @@ def _is_production_environment() -> bool:
     return str(value or "development").strip().lower() in {"prod", "production"}
 
 
+def _require_migrations_before_startup() -> bool:
+    return _env_bool(
+        "REQUIRE_MIGRATIONS_BEFORE_STARTUP",
+        True if _is_production_environment() else False,
+    )
+
+
 def _terminate_background_migration() -> None:
     global _migration_process
     process = _migration_process
@@ -49,33 +56,96 @@ def _terminate_background_migration() -> None:
 
 
 def _watch_background_migration(process: subprocess.Popen) -> None:
+    global _migration_process
     return_code = process.wait()
+    if _migration_process is process:
+        _migration_process = None
     if return_code == 0:
-        logger.info("Alembic migrations completed successfully")
+        logger.info("migration_completed Alembic migrations completed successfully", extra={"event": "migration_completed"})
     else:
-        logger.error("Alembic migrations exited with status %s", return_code)
+        logger.error(
+            "migration_failed Alembic migrations exited with status %s",
+            return_code,
+            extra={"event": "migration_failed", "return_code": return_code},
+        )
 
 
 def _start_migrations_with_grace_period() -> None:
     global _migration_process
 
     if not _env_bool("RUN_MIGRATIONS_ON_STARTUP", True):
+        if _require_migrations_before_startup():
+            logger.error(
+                "server_start_blocked_schema_not_ready RUN_MIGRATIONS_ON_STARTUP is disabled while migrations are required",
+                extra={"event": "server_start_blocked_schema_not_ready"},
+            )
+            sys.exit(1)
         logger.info("RUN_MIGRATIONS_ON_STARTUP is disabled; skipping Alembic migrations")
         return
 
     command = [sys.executable, "-m", "alembic", "upgrade", "head"]
     grace_seconds = _env_int("MIGRATION_STARTUP_GRACE_SECONDS", 15)
+    require_before_startup = _require_migrations_before_startup()
+    timeout_seconds = _env_int(
+        "MIGRATION_STARTUP_TIMEOUT_SECONDS",
+        grace_seconds if grace_seconds > 0 else 120,
+    )
 
-    logger.info("Starting Alembic migrations: %s", " ".join(command))
+    logger.info(
+        "migration_started Starting Alembic migrations: %s",
+        " ".join(command),
+        extra={
+            "event": "migration_started",
+            "require_before_startup": require_before_startup,
+            "timeout_seconds": timeout_seconds if require_before_startup else grace_seconds,
+        },
+    )
 
     try:
         process = subprocess.Popen(command)
     except BaseException:
-        logger.exception("Could not start Alembic migrations")
+        logger.exception("migration_failed Could not start Alembic migrations", extra={"event": "migration_failed"})
         sys.exit(1)
 
     _migration_process = process
     atexit.register(_terminate_background_migration)
+
+    if require_before_startup:
+        try:
+            return_code = process.wait(timeout=max(1, timeout_seconds))
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "migration_timeout Alembic migrations did not finish within %s seconds",
+                timeout_seconds,
+                extra={"event": "migration_timeout", "timeout_seconds": timeout_seconds},
+            )
+            process.terminate()
+            _migration_process = None
+            logger.error(
+                "server_start_blocked_schema_not_ready Migration timeout blocked server startup",
+                extra={"event": "server_start_blocked_schema_not_ready"},
+            )
+            sys.exit(124)
+
+        if return_code == 0:
+            _migration_process = None
+            logger.info(
+                "migration_completed Alembic migrations completed before web startup",
+                extra={"event": "migration_completed"},
+            )
+            return
+
+        logger.error(
+            "migration_failed Alembic migrations failed before web startup with status %s",
+            return_code,
+            extra={"event": "migration_failed", "return_code": return_code},
+        )
+        logger.error(
+            "server_start_blocked_schema_not_ready Migration failure blocked server startup",
+            extra={"event": "server_start_blocked_schema_not_ready"},
+        )
+        _migration_process = None
+        sys.exit(return_code or 1)
 
     if grace_seconds <= 0:
         logger.info("Not waiting for migrations because MIGRATION_STARTUP_GRACE_SECONDS=%s", grace_seconds)
@@ -104,10 +174,16 @@ def _start_migrations_with_grace_period() -> None:
         return
 
     if return_code == 0:
-        logger.info("Alembic migrations completed before web startup")
+        _migration_process = None
+        logger.info("migration_completed Alembic migrations completed before web startup", extra={"event": "migration_completed"})
         return
 
-    logger.error("Alembic migrations failed before web startup with status %s", return_code)
+    logger.error(
+        "migration_failed Alembic migrations failed before web startup with status %s",
+        return_code,
+        extra={"event": "migration_failed", "return_code": return_code},
+    )
+    _migration_process = None
     sys.exit(return_code)
 
 
@@ -120,6 +196,10 @@ def main() -> None:
     os.environ.setdefault("AUTO_CREATE_TABLES", "false")
     startup_failure_default = "true" if _is_production_environment() else "false"
     os.environ.setdefault("FAIL_STARTUP_ON_REQUIRED_SERVICE_ERROR", startup_failure_default)
+    os.environ.setdefault(
+        "REQUIRE_MIGRATIONS_BEFORE_STARTUP",
+        "true" if _is_production_environment() else "false",
+    )
 
     _start_migrations_with_grace_period()
 

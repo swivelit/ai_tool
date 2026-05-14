@@ -12,6 +12,7 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, inspect, or_, text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlmodel import Session, select
 
 from .models import GlobalQACache, GlobalQAObservation, GlobalQATombstone
@@ -21,6 +22,12 @@ from .time_utils import utc_now
 logger = logging.getLogger(__name__)
 _SCHEMA_COMPAT_LOCK = threading.Lock()
 _SCHEMA_COMPAT_READY = False
+REQUIRED_GLOBAL_QA_TABLES = (
+    "global_qa_cache",
+    "global_qa_observation",
+    "global_qa_tombstone",
+    "openai_usage_log",
+)
 
 _TOKEN_RE = re.compile(r"[\w\u0B80-\u0BFF]+", re.UNICODE)
 _LIVE_TERMS = {
@@ -166,6 +173,40 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
 
 def _enabled() -> bool:
     return _env_bool("GLOBAL_QA_CACHE_ENABLED", False)
+
+
+def global_qa_schema_ready(session: Session) -> dict:
+    try:
+        inspector = inspect(session.get_bind())
+        missing_tables = [
+            table_name
+            for table_name in REQUIRED_GLOBAL_QA_TABLES
+            if not inspector.has_table(table_name)
+        ]
+        return {"ok": not missing_tables, "missing_tables": missing_tables}
+    except Exception as exc:
+        logger.warning(
+            "global_qa_schema_readiness_failed",
+            extra={
+                "event": "global_qa_schema_readiness_failed",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc)[:240],
+            },
+        )
+        return {"ok": False, "missing_tables": list(REQUIRED_GLOBAL_QA_TABLES)}
+
+
+def _schema_not_ready_payload(missing_tables: Optional[List[str]] = None) -> dict:
+    return {
+        "ok": False,
+        "schemaReady": False,
+        "entries": [],
+        "revokedIds": [],
+        "hasMore": False,
+        "count": 0,
+        "error": "global_qa_schema_not_ready",
+        "missingTables": list(missing_tables or []),
+    }
 
 
 def _ensure_schema_compat(session: Session) -> None:
@@ -529,20 +570,57 @@ def _answer_language(reply_language: Optional[str]) -> Optional[str]:
 def lookup_approved_global_cache(session: Session, question: str, reply_language: Optional[str] = None) -> Optional[dict]:
     if not _enabled() or not str(question or "").strip():
         return None
-    _ensure_schema_compat(session)
+    readiness = global_qa_schema_ready(session)
+    if not readiness.get("ok"):
+        logger.warning(
+            "global_cache_schema_not_ready",
+            extra={
+                "event": "global_cache_schema_not_ready",
+                "missing_tables": readiness.get("missing_tables") or [],
+                "db_schema_ready": False,
+            },
+        )
+        return None
+    try:
+        _ensure_schema_compat(session)
+    except (ProgrammingError, OperationalError) as exc:
+        session.rollback()
+        logger.warning(
+            "global_cache_schema_not_ready",
+            extra={
+                "event": "global_cache_schema_not_ready",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc)[:240],
+                "db_schema_ready": False,
+            },
+        )
+        return None
     if is_live_or_current_question(question) or is_private_or_personal_question(question):
         return None
 
     language = _answer_language(reply_language)
     now = utc_now()
     query_embedding = embed_question_for_global_cache(question)
-    rows = list(
-        session.exec(
-            select(GlobalQACache)
-            .where(GlobalQACache.status == "approved")
-            .order_by(GlobalQACache.updated_at.desc())
-        ).all()
-    )
+    try:
+        rows = list(
+            session.exec(
+                select(GlobalQACache)
+                .where(GlobalQACache.status == "approved")
+                .order_by(GlobalQACache.updated_at.desc())
+            ).all()
+        )
+    except (ProgrammingError, OperationalError) as exc:
+        session.rollback()
+        logger.warning(
+            "global_cache_schema_not_ready",
+            extra={
+                "event": "global_cache_schema_not_ready",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc)[:240],
+                "db_schema_ready": False,
+            },
+        )
+        return None
     best: Optional[GlobalQACache] = None
     best_score = 0.0
     for row in rows:
@@ -651,7 +729,36 @@ def record_backend_openai_answer(
 ) -> dict:
     if not _enabled():
         return {"ok": False, "skipped": True, "reason": "disabled"}
-    _ensure_schema_compat(session)
+    readiness = global_qa_schema_ready(session)
+    if not readiness.get("ok"):
+        logger.warning(
+            "global_cache_record_skipped_schema_not_ready",
+            extra={
+                "event": "global_cache_record_skipped_schema_not_ready",
+                "missing_tables": readiness.get("missing_tables") or [],
+                "db_schema_ready": False,
+            },
+        )
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "global_qa_schema_not_ready",
+            "missingTables": readiness.get("missing_tables") or [],
+        }
+    try:
+        _ensure_schema_compat(session)
+    except (ProgrammingError, OperationalError) as exc:
+        session.rollback()
+        logger.warning(
+            "global_cache_record_skipped_schema_not_ready",
+            extra={
+                "event": "global_cache_record_skipped_schema_not_ready",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc)[:240],
+                "db_schema_ready": False,
+            },
+        )
+        return {"ok": False, "skipped": True, "reason": "global_qa_schema_not_ready"}
 
     if not is_cacheable_global_question(question, answer):
         logger.info(
@@ -948,38 +1055,65 @@ def build_global_knowledge_sync_payload(
     limit: int = 250,
     after_id: Any = None,
 ) -> dict:
-    _ensure_schema_compat(session)
-    since_dt = _parse_since(since)
-    after_id_int = _parse_after_id(after_id)
-    now = utc_now()
-    safe_limit = max(1, min(int(limit or 250), 500))
-    query = (
-        select(GlobalQACache)
-        .order_by(GlobalQACache.updated_at.asc(), GlobalQACache.id.asc())
-        .limit(safe_limit + 1)
-    )
-    if since_dt is not None:
-        if after_id_int is not None:
-            query = query.where(
-                or_(
-                    GlobalQACache.updated_at > since_dt,
-                    and_(GlobalQACache.updated_at == since_dt, GlobalQACache.id > after_id_int),
+    readiness = global_qa_schema_ready(session)
+    if not readiness.get("ok"):
+        logger.warning(
+            "global_knowledge_sync_schema_not_ready",
+            extra={
+                "event": "global_knowledge_sync_schema_not_ready",
+                "missing_tables": readiness.get("missing_tables") or [],
+                "db_schema_ready": False,
+            },
+        )
+        return _schema_not_ready_payload(readiness.get("missing_tables") or [])
+
+    try:
+        _ensure_schema_compat(session)
+        since_dt = _parse_since(since)
+        after_id_int = _parse_after_id(after_id)
+        now = utc_now()
+        safe_limit = max(1, min(int(limit or 250), 500))
+        query = (
+            select(GlobalQACache)
+            .order_by(GlobalQACache.updated_at.asc(), GlobalQACache.id.asc())
+            .limit(safe_limit + 1)
+        )
+        if since_dt is not None:
+            if after_id_int is not None:
+                query = query.where(
+                    or_(
+                        GlobalQACache.updated_at > since_dt,
+                        and_(GlobalQACache.updated_at == since_dt, GlobalQACache.id > after_id_int),
+                    )
                 )
-            )
-        else:
-            query = query.where(GlobalQACache.updated_at > since_dt)
-    rows = list(session.exec(query).all())
-    page_rows = rows[:safe_limit]
-    has_more = len(rows) > safe_limit
-    entries: List[Dict[str, Any]] = []
-    tombstone_query = select(GlobalQATombstone)
-    if since_dt is not None:
-        tombstone_query = tombstone_query.where(GlobalQATombstone.deleted_at > since_dt)
-    revoked_ids: List[int] = [
-        int(row.global_cache_id)
-        for row in session.exec(tombstone_query).all()
-        if int(row.global_cache_id or 0) > 0
-    ]
+            else:
+                query = query.where(GlobalQACache.updated_at > since_dt)
+        rows = list(session.exec(query).all())
+        page_rows = rows[:safe_limit]
+        has_more = len(rows) > safe_limit
+        entries: List[Dict[str, Any]] = []
+        tombstone_query = select(GlobalQATombstone)
+        if since_dt is not None:
+            tombstone_query = tombstone_query.where(GlobalQATombstone.deleted_at > since_dt)
+        revoked_ids: List[int] = [
+            int(row.global_cache_id)
+            for row in session.exec(tombstone_query).all()
+            if int(row.global_cache_id or 0) > 0
+        ]
+    except (ProgrammingError, OperationalError) as exc:
+        session.rollback()
+        readiness = global_qa_schema_ready(session)
+        logger.warning(
+            "global_knowledge_sync_schema_not_ready",
+            extra={
+                "event": "global_knowledge_sync_schema_not_ready",
+                "missing_tables": readiness.get("missing_tables") or [],
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc)[:240],
+                "db_schema_ready": False,
+            },
+        )
+        return _schema_not_ready_payload(readiness.get("missing_tables") or [])
     last_processed: Optional[GlobalQACache] = None
     for row in page_rows:
         last_processed = row
@@ -1058,6 +1192,7 @@ def build_global_knowledge_sync_payload(
     )
     return {
         "ok": True,
+        "schemaReady": True,
         "entries": entries,
         "count": len(entries),
         "nextSince": next_since,

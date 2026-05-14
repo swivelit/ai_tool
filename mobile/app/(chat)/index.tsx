@@ -43,6 +43,11 @@ import {
   apiPostForm,
   sendClientTurnLog,
 } from "@/lib/api";
+import {
+  clearActiveWorkflow,
+  markActiveWorkflow,
+  updateActiveWorkflowStep,
+} from "@/lib/chatTelemetry";
 import { computeChatScreenLayout } from "@/lib/chatScreenLayout";
 import {
   BackendChatResponse,
@@ -1544,6 +1549,9 @@ export default function Home() {
 
   function logClientTurn(payload: Parameters<typeof sendClientTurnLog>[0]) {
     sendClientTurnLog(payload);
+    if (payload.request_id && payload.event) {
+      void updateActiveWorkflowStep(String(payload.request_id), payload.event).catch(() => undefined);
+    }
   }
 
   function safeVoiceErrorType(error: unknown, fallback = "voice_error") {
@@ -1714,6 +1722,7 @@ export default function Home() {
     const requestId = nextChatRequestId(source);
     const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
+    const turnStartedAt = Date.now();
     let softNoticeTimer: ReturnType<typeof setTimeout> | null = null;
     const clearSoftNoticeTimer = () => {
       if (softNoticeTimer) {
@@ -1724,6 +1733,26 @@ export default function Home() {
 
     try {
       setBusy(true);
+      await markActiveWorkflow({
+        requestId,
+        userId: profile.userId,
+        question: cleaned,
+        lastStep: "client_chat_turn_started",
+      }).catch(() => undefined);
+      logClientTurn({
+        event: "client_chat_turn_started",
+        user_id: profile.userId,
+        request_id: requestId,
+        channel: source,
+        question: cleaned,
+        question_length: cleaned.length,
+        agent_source: "mobile",
+        route_taken: "chat_turn",
+        workflow_step: "chat_turn",
+        workflow_phase: "started",
+        screen: "chat",
+        app_state: AppState.currentState,
+      });
       setPendingChatTurn({
         requestId,
         sessionId: currentSessionId,
@@ -1773,6 +1802,7 @@ export default function Home() {
       clearSoftNoticeTimer();
 
       if (!isActiveChatRequest(requestId)) {
+        await clearActiveWorkflow(requestId).catch(() => undefined);
         return;
       }
 
@@ -1782,6 +1812,25 @@ export default function Home() {
       await attachItemToCurrentChat(nextItem, mergedHistory);
       maybePromptModelSetup(response);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      logClientTurn({
+        event: "client_chat_turn_rendered",
+        user_id: profile.userId,
+        request_id: requestId,
+        channel: source,
+        question: cleaned,
+        answer: nextItem.details || "",
+        question_length: cleaned.length,
+        answer_length: (nextItem.details || "").length,
+        agent_source: String((response as any)?.meta?.source || (response as any)?.pipeline?.direct_answer_source || "mobile"),
+        route_taken: String((response as any)?.pipeline?.route_taken || (response as any)?.meta?.route || nextItem.intent || "chat_turn"),
+        workflow_step: "chat_turn_rendered",
+        workflow_phase: "completed",
+        duration_ms: Date.now() - turnStartedAt,
+        stage_timings: ((response as any)?.meta?.stageTimings || (response as any)?.pipeline?.meta?.stageTimings || null),
+        screen: "chat",
+        app_state: AppState.currentState,
+      });
+      await clearActiveWorkflow(requestId).catch(() => undefined);
 
       if (
         nextItem.details &&
@@ -1819,8 +1868,13 @@ export default function Home() {
             question_length: cleaned.length,
             agent_source: "local_model",
             route_taken: "local_answer",
+            workflow_step: "chat_turn",
+            workflow_phase: "failed",
             fallback_reason: "local_timeout",
             error_type: "local_timeout",
+            duration_ms: Date.now() - turnStartedAt,
+            screen: "chat",
+            app_state: AppState.currentState,
           });
           showPendingAssistantError(
             requestId,
@@ -1828,10 +1882,47 @@ export default function Home() {
             cleaned,
             source,
           );
+          logClientTurn({
+            event: "client_chat_turn_failed",
+            user_id: profile.userId,
+            request_id: requestId,
+            channel: source,
+            question: cleaned,
+            question_length: cleaned.length,
+            agent_source: "mobile",
+            route_taken: "chat_turn",
+            workflow_step: "chat_turn",
+            workflow_phase: "failed",
+            fallback_reason: "local_timeout",
+            error_type: "local_timeout",
+            duration_ms: Date.now() - turnStartedAt,
+            screen: "chat",
+            app_state: AppState.currentState,
+          });
+          await clearActiveWorkflow(requestId).catch(() => undefined);
           return;
         }
         const message = assistantFailureMessage(error);
         showPendingAssistantError(requestId, message, cleaned, source);
+        logClientTurn({
+          event: "client_chat_turn_failed",
+          user_id: profile.userId,
+          request_id: requestId,
+          channel: source,
+          question: cleaned,
+          question_length: cleaned.length,
+          agent_source: "mobile",
+          route_taken: "chat_turn",
+          workflow_step: "chat_turn",
+          workflow_phase: "failed",
+          error_type: (error as any)?.name || "chat_turn_failed",
+          error_name: (error as any)?.name || "Error",
+          error_message: String((error as any)?.message || error || "Unknown error").replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]").slice(0, 240),
+          duration_ms: Date.now() - turnStartedAt,
+          screen: "chat",
+          app_state: AppState.currentState,
+        });
+        await clearActiveWorkflow(requestId).catch(() => undefined);
         warnChatFailure(error, requestId, source);
       }
     } finally {

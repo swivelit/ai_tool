@@ -4,10 +4,11 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import app.main as main_module
-from app.database import SessionLocal
+from app.database import SessionLocal, engine
 from app.global_qa_cache import (
     build_global_knowledge_sync_payload,
     embed_question_for_global_cache,
+    global_qa_schema_ready,
     lookup_approved_global_cache,
     normalize_question,
     record_backend_openai_answer,
@@ -15,7 +16,8 @@ from app.global_qa_cache import (
 )
 from app.models import GlobalQACache, GlobalQAObservation, GlobalQATombstone
 from conftest import auth_headers, create_test_user
-from sqlmodel import select
+from sqlalchemy import text
+from sqlmodel import SQLModel, select
 
 
 def _stub_openai_pipeline(monkeypatch, calls: list[str]):
@@ -699,3 +701,70 @@ def test_private_data_bypass_and_sync_safety():
         payload = build_global_knowledge_sync_payload(session)
         assert payload["count"] == 0
         assert payload["entries"] == []
+
+
+def _drop_global_qa_schema_for_test():
+    with SessionLocal() as session:
+        for table_name in [
+            "global_qa_observation",
+            "global_qa_tombstone",
+            "global_qa_cache",
+            "openai_usage_log",
+        ]:
+            session.exec(text(f"DROP TABLE IF EXISTS {table_name}"))
+        session.commit()
+
+
+def _restore_global_qa_schema_for_test():
+    SQLModel.metadata.create_all(engine)
+
+
+def test_global_knowledge_sync_missing_schema_returns_safe_payload(client):
+    create_test_user("sync-missing-uid", "sync-missing@example.com")
+    _drop_global_qa_schema_for_test()
+    try:
+        response = client.get(
+            "/api/global-knowledge/sync?limit=250",
+            headers=auth_headers("sync-missing-uid", "sync-missing@example.com"),
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is False
+        assert payload["schemaReady"] is False
+        assert payload["entries"] == []
+        assert payload["revokedIds"] == []
+        assert payload["hasMore"] is False
+        assert payload["count"] == 0
+        assert payload["error"] == "global_qa_schema_not_ready"
+        assert "global_qa_cache" in payload["missingTables"]
+    finally:
+        _restore_global_qa_schema_for_test()
+
+
+def test_lookup_approved_global_cache_returns_none_when_schema_missing(caplog):
+    _drop_global_qa_schema_for_test()
+    try:
+        with SessionLocal() as session:
+            assert global_qa_schema_ready(session)["ok"] is False
+            assert lookup_approved_global_cache(session, "What is photosynthesis?", "en") is None
+        assert "global_cache_schema_not_ready" in caplog.text
+    finally:
+        _restore_global_qa_schema_for_test()
+
+
+def test_record_backend_openai_answer_skips_when_schema_missing(caplog):
+    _drop_global_qa_schema_for_test()
+    try:
+        with SessionLocal() as session:
+            result = record_backend_openai_answer(
+                session,
+                user_id=1,
+                question="What is photosynthesis?",
+                answer="Photosynthesis is how plants make food.",
+                model_used="cheap-test-model",
+            )
+        assert result["skipped"] is True
+        assert result["reason"] == "global_qa_schema_not_ready"
+        assert "global_cache_record_skipped_schema_not_ready" in caplog.text
+    finally:
+        _restore_global_qa_schema_for_test()

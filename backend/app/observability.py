@@ -110,6 +110,31 @@ _SAFE_EXTRA_KEYS = {
     "text_preview",
     "audio_count",
     "stage_timings",
+    "workflow_step",
+    "workflow_phase",
+    "step_index",
+    "decision",
+    "cache_source",
+    "global_sync_status",
+    "http_status",
+    "error_name",
+    "error_message",
+    "model_tier",
+    "native_backend",
+    "local_runtime_mode",
+    "db_schema_ready",
+    "screen",
+    "app_state",
+    "sync_id",
+    "page",
+    "limit",
+    "since",
+    "after_id",
+    "missing_tables",
+    "exception_class",
+    "exception_message",
+    "last_step",
+    "started_at",
     "error_type",
     "skipped",
     "created_at",
@@ -296,7 +321,7 @@ def chat_log_payload(**kwargs: Any) -> Dict[str, Any]:
 
     if question is not None:
         question_text = str(question or "")
-        payload["question_hash"] = hash_log_text(question_text)
+        payload["question_hash"] = payload.get("question_hash") or hash_log_text(question_text)
         payload["question_length"] = len(question_text)
         if LOG_CHAT_CONTENT:
             payload["question_preview"] = sanitize_log_text(question_text)

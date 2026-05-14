@@ -4,6 +4,7 @@ import logging
 from unittest.mock import Mock
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 import app.main as main_module
 import app.observability as observability
@@ -260,6 +261,23 @@ def test_client_turn_log_accepts_local_telemetry_safely(client, caplog):
                 "answer": "local answer",
                 "agent_source": "local_rules",
                 "route_taken": "fast_greeting",
+                "workflow_step": "quick_reply_check",
+                "workflow_phase": "completed",
+                "step_index": 2,
+                "decision": "hit",
+                "cache_hit": False,
+                "cache_source": "local_rules",
+                "global_sync_status": "ok",
+                "http_status": 200,
+                "error_name": "None",
+                "error_message": "",
+                "model_used": "local_rules",
+                "model_tier": "rules",
+                "native_backend": "llama_cpp",
+                "local_runtime_mode": "native_on_device",
+                "db_schema_ready": True,
+                "screen": "chat",
+                "app_state": "active",
             },
         )
 
@@ -268,6 +286,14 @@ def test_client_turn_log_accepts_local_telemetry_safely(client, caplog):
     assert getattr(record, "question_hash")
     assert getattr(record, "answer_hash")
     assert getattr(record, "agent_source") == "local_rules"
+    assert getattr(record, "workflow_step") == "quick_reply_check"
+    assert getattr(record, "workflow_phase") == "completed"
+    assert getattr(record, "step_index") == 2
+    assert getattr(record, "decision") == "hit"
+    assert getattr(record, "cache_hit") is False
+    assert getattr(record, "http_status") == 200
+    assert getattr(record, "model_used") == "local_rules"
+    assert getattr(record, "db_schema_ready") is True
     assert "secret-token" not in caplog.text
 
 
@@ -316,6 +342,32 @@ def test_observability_startup_log(caplog):
     assert "OPENAI_API_KEY" not in caplog.text
     assert "SARVAM_API_KEY" not in caplog.text
     assert "Bearer" not in caplog.text
+
+
+def test_request_failed_exception_is_logged(monkeypatch, caplog):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    def explode(session, payload):
+        raise RuntimeError("synthetic backend failure bearer secret-token")
+
+    monkeypatch.setattr(main_module, "_run_chat_request", explode)
+
+    with caplog.at_level(logging.ERROR):
+        with TestClient(main_module.app, raise_server_exceptions=False) as test_client:
+            response = test_client.post(
+                "/api/chat",
+                headers=headers,
+                json={"message": "hello", "reply_language": "en"},
+            )
+
+    assert response.status_code == 500
+    records = [record for record in caplog.records if getattr(record, "event", "") == "request_failed_exception"]
+    assert records
+    record = records[-1]
+    assert getattr(record, "exception_class") in {"RuntimeError", "ExceptionGroup"}
+    assert "bearer [REDACTED]" in getattr(record, "exception_message")
+    assert getattr(record, "duration_ms") >= 0
 
 
 def test_voice_upload_rejects_missing_auth_missing_file_bad_type_and_large_file(client, monkeypatch):

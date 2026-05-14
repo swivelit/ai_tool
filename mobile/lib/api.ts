@@ -3,6 +3,7 @@ import Constants from "expo-constants";
 import {
   enqueueClientTurnLog,
   flushClientTurnLogs as flushQueuedClientTurnLogs,
+  updateActiveWorkflowStep,
   type ClientTurnLogPayload,
 } from "./chatTelemetry";
 import { getCachedDeviceCapabilities } from "./deviceCapabilities";
@@ -873,6 +874,13 @@ export function sendClientTurnLog(payload: ClientTurnLogPayload) {
 
 export const flushClientTurnLogs = flushQueuedClientTurnLogs;
 
+function logClientWorkflowStep(payload: ClientTurnLogPayload) {
+  sendClientTurnLog(payload);
+  if (payload.request_id && payload.event) {
+    void updateActiveWorkflowStep(String(payload.request_id), payload.event).catch(() => undefined);
+  }
+}
+
 function logClientLocalTurnCompleted(input: {
   userId: number;
   requestId?: string | null;
@@ -882,7 +890,7 @@ function logClientLocalTurnCompleted(input: {
   route: string;
   stageTimings?: Record<string, any> | null;
 }) {
-  sendClientTurnLog({
+  logClientWorkflowStep({
     event: "client_local_turn_completed",
     user_id: input.userId,
     request_id: input.requestId || null,
@@ -905,7 +913,7 @@ function logClientLocalTurnFailed(input: {
   route?: string | null;
   stageTimings?: Record<string, any> | null;
 }) {
-  sendClientTurnLog({
+  logClientWorkflowStep({
     event: "client_local_turn_failed",
     user_id: input.userId,
     request_id: input.requestId || null,
@@ -1045,7 +1053,8 @@ async function postChatFallbackToBackend(input: {
   originalRoute?: string | null;
   stageTimings?: Record<string, any> | null;
 }) {
-  sendClientTurnLog({
+  const startedAt = Date.now();
+  logClientWorkflowStep({
     event: "client_backend_fallback_started",
     user_id: input.userId,
     request_id: input.requestId || null,
@@ -1055,22 +1064,48 @@ async function postChatFallbackToBackend(input: {
     agent_source: "backend_openai",
     route_taken: "fallback_openai",
     fallback_reason: input.fallbackReason,
+    workflow_step: "backend_fallback",
+    workflow_phase: "started",
     stage_timings: input.stageTimings || null,
   });
 
-  const backend = await apiPostBackendOnly<LocalChatProxyResponse>("/api/chat", {
-    user_id: input.userId,
-    message: input.message,
-    reply_language: input.replyLanguage,
-    request_id: input.requestId || undefined,
-  });
+  let backend: LocalChatProxyResponse;
+  try {
+    backend = await apiPostBackendOnly<LocalChatProxyResponse>("/api/chat", {
+      user_id: input.userId,
+      message: input.message,
+      reply_language: input.replyLanguage,
+      request_id: input.requestId || undefined,
+    });
+  } catch (error) {
+    logClientWorkflowStep({
+      event: "client_backend_fallback_completed",
+      user_id: input.userId,
+      request_id: input.requestId || null,
+      channel: "text",
+      question: input.message,
+      question_length: textLength(input.message),
+      agent_source: "backend_openai",
+      route_taken: "fallback_openai",
+      fallback_reason: input.fallbackReason,
+      workflow_step: "backend_fallback",
+      workflow_phase: "failed",
+      http_status: getApiErrorDetails(error, { method: "POST", path: "/api/chat" }).status,
+      error_type: getApiErrorDetails(error, { method: "POST", path: "/api/chat" }).name,
+      error_name: getApiErrorDetails(error, { method: "POST", path: "/api/chat" }).name,
+      error_message: getApiErrorDetails(error, { method: "POST", path: "/api/chat" }).message,
+      duration_ms: Date.now() - startedAt,
+      stage_timings: input.stageTimings || null,
+    });
+    throw error;
+  }
   const annotated = annotateBackendOpenAiFallbackResponse(backend, {
     fallbackReason: input.fallbackReason,
     originalRoute: input.originalRoute,
     stageTimings: input.stageTimings,
   });
   const answer = safeAnswerText(annotated);
-  sendClientTurnLog({
+  logClientWorkflowStep({
     event: "client_backend_fallback_completed",
     user_id: input.userId,
     request_id: input.requestId || null,
@@ -1082,6 +1117,10 @@ async function postChatFallbackToBackend(input: {
     agent_source: "backend_openai",
     route_taken: "fallback_openai",
     fallback_reason: input.fallbackReason,
+    workflow_step: "backend_fallback",
+    workflow_phase: "completed",
+    http_status: 200,
+    duration_ms: Date.now() - startedAt,
     stage_timings: input.stageTimings || null,
   });
   void import("./globalKnowledgeSync")
@@ -1682,6 +1721,7 @@ async function handleLocalChat(
   const userId = Number(body?.user_id ?? body?.userId ?? 0);
   const message = String(body?.message ?? body?.text ?? "").trim();
   const requestId = String(body?.request_id ?? body?.requestId ?? "").trim() || null;
+  const workflowStartedAt = Date.now();
 
   if (!Number.isFinite(userId) || userId <= 0 || !message) {
     throw new Error(
@@ -1692,12 +1732,43 @@ async function handleLocalChat(
   const explicitReplyLanguage = normalizeReplyLanguage(
     body?.reply_language ?? body?.replyLanguage,
   );
+  logClientWorkflowStep({
+    event: "client_quick_reply_check_started",
+    user_id: userId,
+    request_id: requestId,
+    channel: "text",
+    question: message,
+    question_length: textLength(message),
+    agent_source: "local_rules",
+    route_taken: "quick_reply_check",
+    workflow_step: "quick_reply_check",
+    workflow_phase: "started",
+    step_index: 1,
+    stage_timings: stageTimings,
+  });
   let quick = tryBuildQuickLocalReply({
     message,
     replyLanguage: explicitReplyLanguage,
   });
 
   if (quick) {
+    logClientWorkflowStep({
+      event: "client_quick_reply_hit",
+      user_id: userId,
+      request_id: requestId,
+      channel: "text",
+      question: message,
+      question_length: textLength(message),
+      agent_source: "local_rules",
+      route_taken: quick.route,
+      workflow_step: "quick_reply_check",
+      workflow_phase: "completed",
+      step_index: 2,
+      decision: "hit",
+      cache_hit: false,
+      duration_ms: Date.now() - workflowStartedAt,
+      stage_timings: stageTimings,
+    });
     const quickProfile = await timeStage("quick_profile", () =>
       loadCachedProfileForQuickReply(userId),
     );
@@ -1775,6 +1846,24 @@ async function handleLocalChat(
     });
     return response;
   }
+
+  logClientWorkflowStep({
+    event: "client_quick_reply_miss",
+    user_id: userId,
+    request_id: requestId,
+    channel: "text",
+    question: message,
+    question_length: textLength(message),
+    agent_source: "local_rules",
+    route_taken: "quick_reply_check",
+    workflow_step: "quick_reply_check",
+    workflow_phase: "completed",
+    step_index: 2,
+    decision: "miss",
+    cache_hit: false,
+    duration_ms: Date.now() - workflowStartedAt,
+    stage_timings: stageTimings,
+  });
 
   const cachedProfile = await timeStage("cached_profile", () =>
     loadCachedLocalAssistantProfile(userId),
@@ -1966,7 +2055,7 @@ async function handleLocalChat(
   };
 
   if (turn.source === "openai_fallback") {
-    sendClientTurnLog({
+    logClientWorkflowStep({
       event: "client_backend_fallback_completed",
       user_id: userId,
       request_id: requestId,
