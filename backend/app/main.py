@@ -1184,6 +1184,9 @@ class ChatAPIRequest(BaseModel):
     include_pipeline: bool = True
     reply_language: Optional[str] = None
     request_id: Optional[str] = None
+    client_fallback_reason: Optional[str] = None
+    client_local_budget_ms: Optional[int] = None
+    client_original_route: Optional[str] = None
 
 
 class ClientTurnLogRequest(BaseModel):
@@ -2984,6 +2987,11 @@ def _run_chat_logic(
         question=text,
         workflow_step="openai_fallback",
         workflow_phase="started",
+        client_fallback_reason=payload.client_fallback_reason,
+        client_local_budget_ms=payload.client_local_budget_ms,
+        client_original_route=payload.client_original_route,
+        fallback_reason=payload.client_fallback_reason,
+        original_route=payload.client_original_route,
         stage_timings=stage_timings,
     )
     started = time.perf_counter()
@@ -3026,6 +3034,21 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
         request_id=payload.request_id or get_request_id(),
     )
     response = _build_chat_response(item, meta, normalized_pipeline)
+    response_meta = response.get("meta") if isinstance(response, dict) else {}
+    if isinstance(response_meta, dict):
+        response_meta.setdefault("request_id", payload.request_id or get_request_id())
+        response_meta.setdefault("route", normalized_pipeline.get("route_taken"))
+        response_meta.setdefault("source", _backend_agent_source(normalized_pipeline))
+        response_meta.setdefault("model_used", normalized_pipeline.get("model_used"))
+        response_meta.setdefault("model_tier", normalized_pipeline.get("model_tier"))
+        if payload.client_fallback_reason:
+            response_meta.setdefault("fallback_reason", payload.client_fallback_reason)
+            response_meta.setdefault("client_fallback_reason", payload.client_fallback_reason)
+        if payload.client_local_budget_ms is not None:
+            response_meta.setdefault("client_local_budget_ms", payload.client_local_budget_ms)
+        if payload.client_original_route:
+            response_meta.setdefault("original_route", payload.client_original_route)
+            response_meta.setdefault("client_original_route", payload.client_original_route)
     _log_backend_workflow_step(
         "backend_chat_response_ready",
         user_id=payload.user_id,
@@ -3361,6 +3384,11 @@ def api_chat(
             question=text,
             workflow_step="chat_received",
             workflow_phase="started",
+            client_fallback_reason=payload.client_fallback_reason,
+            client_local_budget_ms=payload.client_local_budget_ms,
+            client_original_route=payload.client_original_route,
+            fallback_reason=payload.client_fallback_reason,
+            original_route=payload.client_original_route,
         ),
     )
     logger.info(

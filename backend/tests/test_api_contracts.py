@@ -172,6 +172,48 @@ def test_chat_logs_turn_started_and_completed_safely(client, monkeypatch, caplog
     assert user.id is not None
 
 
+def test_chat_accepts_client_fallback_metadata_and_preserves_request_id(client, monkeypatch, caplog):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    _stub_chat_pipeline(monkeypatch, assistant_text="Forced backend fallback answer")
+    request_id = "text_contract_fallback_15s"
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={
+                "message": "Explain a hard local-only topic",
+                "reply_language": "en",
+                "request_id": request_id,
+                "client_fallback_reason": "local_timeout",
+                "client_local_budget_ms": 15000,
+                "client_original_route": "local_answer",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assistant"]["text"] == "Forced backend fallback answer"
+    assert payload["meta"]["request_id"] == request_id
+    assert payload["meta"]["route"]
+    assert payload["meta"]["source"]
+    assert "model_used" in payload["meta"]
+    assert "model_tier" in payload["meta"]
+    assert payload["meta"]["fallback_reason"] == "local_timeout"
+    assert payload["meta"]["client_local_budget_ms"] == 15000
+    assert payload["meta"]["original_route"] == "local_answer"
+
+    received = [r for r in caplog.records if getattr(r, "event", "") == "backend_chat_received"][-1]
+    started = [r for r in caplog.records if getattr(r, "event", "") == "backend_openai_fallback_started"][-1]
+    assert getattr(received, "request_id") == request_id
+    assert getattr(started, "request_id") == request_id
+    assert getattr(received, "client_fallback_reason") == "local_timeout"
+    assert getattr(started, "client_fallback_reason") == "local_timeout"
+    assert getattr(started, "client_local_budget_ms") == 15000
+    assert getattr(started, "client_original_route") == "local_answer"
+
+
 def test_chat_turn_summary_without_content(client, monkeypatch, caplog):
     create_test_user()
     headers = auth_headers("test-uid", "test@example.com")

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  getLocalToBackendFallbackMs,
   getLocalTurnSoftNoticeMs,
   getLocalTurnTimeoutMs,
 } from "../lib/localTurnTimeouts";
@@ -61,5 +62,12 @@ describe("local turn timeouts", () => {
     expect(notice).toBeGreaterThanOrEqual(15_000);
     expect(notice).toBeLessThanOrEqual(20_000);
     expect(notice).toBeLessThan(getLocalTurnTimeoutMs({ source: "text", selectedTier: "lite" }));
+  });
+
+  it("keeps the local-to-backend fallback budget separate from the hard timeout", () => {
+    expect(getLocalToBackendFallbackMs()).toBe(15_000);
+    expect(getLocalToBackendFallbackMs()).toBeLessThan(
+      getLocalTurnTimeoutMs({ source: "text", selectedTier: "lite" }),
+    );
   });
 });

@@ -103,58 +103,6 @@ const ROUTE_TITLES: Record<QuickLocalRoute, string> = {
   goodbye: "Goodbye",
 };
 
-const LIVE_CURRENT_TERMS = [
-  "latest",
-  "today",
-  "current",
-  "live",
-  "score",
-  "scores",
-  "news",
-  "breaking",
-  "now",
-  "new",
-  "recent",
-  "update",
-  "updates",
-  "election",
-  "elections",
-  "vote",
-  "voting",
-  "poll",
-  "polls",
-  "result",
-  "results",
-  "winner",
-  "candidate",
-  "candidates",
-  "government",
-  "president",
-  "prime",
-  "minister",
-  "pm",
-  "cm",
-  "mla",
-  "mp",
-  "weather",
-  "forecast",
-  "tomorrow",
-  "yesterday",
-  "price",
-  "rate",
-  "stock",
-  "crypto",
-  "best",
-  "cheapest",
-  "deal",
-  "offer",
-];
-
-const LIVE_CURRENT_PHRASES = [
-  ["near", "me"],
-  ["prime", "minister"],
-];
-
 const TASK_CONTEXT_WORDS = [
   "reminder",
   "reminders",
@@ -251,10 +199,7 @@ function hasTaskContext(tokens: string[]) {
 }
 
 function hasLiveCurrentTerms(tokens: string[]) {
-  return (
-    LIVE_CURRENT_TERMS.some((word) => containsToken(tokens, word)) ||
-    LIVE_CURRENT_PHRASES.some((phraseTokens) => containsPhraseTokens(tokens, phraseTokens))
-  );
+  return isCurrentOrLiveDataQuestion(tokens.join(" "));
 }
 
 function phraseStartIndex(tokens: string[], phraseTokens: string[]) {
@@ -461,6 +406,10 @@ export function tryBuildQuickLocalReply(
     return null;
   }
 
+  if (isCurrentOrLiveDataQuestion(normalized)) {
+    return null;
+  }
+
   const tokens = normalized.split(/\s+/).filter(Boolean);
   const routeOrder: QuickLocalRoute[] = [
     "wellbeing_support",
@@ -494,3 +443,4 @@ export function tryBuildQuickLocalReply(
     source: "local_rules",
   };
 }
+import { isCurrentOrLiveDataQuestion } from "./currentDataGuards";

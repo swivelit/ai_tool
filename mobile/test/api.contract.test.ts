@@ -729,7 +729,7 @@ describe("API client contracts", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { apiPost } = await import("../lib/api");
+    const { CLOUD_FALLBACK_CONSENT_MESSAGE, apiPost } = await import("../lib/api");
     const payload = await apiPost<any>("/api/chat", {
       user_id: 7,
       message: "What are you up to ?",
@@ -809,7 +809,7 @@ describe("API client contracts", () => {
     const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const { apiPost } = await import("../lib/api");
+    const { CLOUD_FALLBACK_CONSENT_MESSAGE, apiPost } = await import("../lib/api");
     await apiPost<any>("/api/chat", {
       user_id: 7,
       message: "What are you up to ?",
@@ -987,7 +987,7 @@ describe("API client contracts", () => {
     const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const { apiPost } = await import("../lib/api");
+    const { CLOUD_FALLBACK_CONSENT_MESSAGE, apiPost } = await import("../lib/api");
     const payload = await apiPost<any>("/api/chat", {
       user_id: 7,
       message: "Explain recursion",
@@ -1565,7 +1565,7 @@ describe("API client contracts", () => {
     expect(payload.meta.request_id).toBe("text_test_timeout_disabled_123");
   });
 
-  it("keeps waiting for a local response that resolves after the old 45s UI threshold", async () => {
+  it("uses the 15s local-to-backend budget instead of waiting for a slow local response", async () => {
     vi.useFakeTimers();
     mockCachedProfile(null, { allowCloudFallback: false });
     vi.doMock("expo-constants", () => ({
@@ -1610,7 +1610,7 @@ describe("API client contracts", () => {
     const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const { apiPost } = await import("../lib/api");
+    const { CLOUD_FALLBACK_CONSENT_MESSAGE, apiPost } = await import("../lib/api");
     const pending = apiPost<any>("/api/chat", {
       user_id: 7,
       message: "Explain a local topic slowly",
@@ -1624,13 +1624,15 @@ describe("API client contracts", () => {
     }
     expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(46_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     const payload = await pending;
 
-    expect(payload.assistant.text).toBe("Local answer after CPU inference.");
-    expect(payload.assistant.text).not.toContain("backend/OpenAI");
-    expect(payload.kind).not.toBe("cloud_consent_required");
+    expect(payload.assistant.text).toBe(CLOUD_FALLBACK_CONSENT_MESSAGE);
+    expect(payload.kind).toBe("cloud_consent_required");
+    expect(payload.meta.fallback_reason).toBe("local_timeout");
     expect(backendChatCalls(fetchMock)).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(31_000);
   });
 
   it("lets explicit backend fallback bypass the local chat interceptor", async () => {

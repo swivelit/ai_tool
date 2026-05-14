@@ -40,6 +40,7 @@ import {
   apiDelete,
   apiGet,
   apiPost,
+  apiPostBackendOnly,
   apiPostForm,
   sendClientTurnLog,
 } from "@/lib/api";
@@ -69,11 +70,13 @@ import { saveScheduledTask } from "@/lib/localAgents";
 import { getNativeOnDeviceModelBridge } from "@/lib/nativeOnDeviceModelBridge";
 import {
   friendlyLocalTimeoutMessage,
+  getLocalToBackendFallbackMs,
   getLocalTurnSoftNoticeMs,
   getLocalTurnTimeoutMs,
   isLocalTurnTimeoutError,
   withLocalTimeout,
 } from "@/lib/localTurnTimeouts";
+import { loadCloudFallbackConsent } from "@/lib/localAssistantSettings";
 import { shouldAutoSpeakReply } from "@/lib/replyPlaybackPolicy";
 import { ensureNotificationsReady, scheduleReminder } from "@/lib/reminders";
 import {
@@ -130,7 +133,8 @@ const MODEL_SETUP_ALERT_THROTTLE_MS = 5 * 60 * 1000;
 const VOICE_UNAVAILABLE_MESSAGE =
   "Voice is unavailable right now. Please try again.";
 const CHAT_LOCAL_SOFT_NOTICE_MESSAGE =
-  "Still working locally on this phone...";
+  "Still working...";
+const CHAT_SWITCHING_TO_CLOUD_MESSAGE = "Switching to cloud...";
 
 function normalizeHandsFreeText(value?: string | null) {
   return String(value || "")
@@ -1724,10 +1728,15 @@ export default function Home() {
     activeChatRequestIdRef.current = requestId;
     const turnStartedAt = Date.now();
     let softNoticeTimer: ReturnType<typeof setTimeout> | null = null;
-    const clearSoftNoticeTimer = () => {
+    let switchingTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearProgressTimers = () => {
       if (softNoticeTimer) {
         clearTimeout(softNoticeTimer);
         softNoticeTimer = null;
+      }
+      if (switchingTimer) {
+        clearTimeout(switchingTimer);
+        switchingTimer = null;
       }
     };
 
@@ -1773,6 +1782,7 @@ export default function Home() {
         getChatTurnTimeoutMs(source),
         getChatTurnSoftNoticeMs(source),
       ]);
+      const localToBackendFallbackMs = getLocalToBackendFallbackMs();
       softNoticeTimer = setTimeout(() => {
         setPendingChatTurn((current) =>
           current?.requestId === requestId && current.status === "thinking"
@@ -1785,7 +1795,20 @@ export default function Home() {
         if (source === "handsfree") {
           setHandsFreeStatus(CHAT_LOCAL_SOFT_NOTICE_MESSAGE);
         }
-      }, softNoticeMs);
+      }, Math.min(Math.max(softNoticeMs, 5_000), 8_000));
+      switchingTimer = setTimeout(() => {
+        setPendingChatTurn((current) =>
+          current?.requestId === requestId && current.status === "thinking"
+            ? {
+                ...current,
+                assistantText: CHAT_SWITCHING_TO_CLOUD_MESSAGE,
+              }
+            : current,
+        );
+        if (source === "handsfree") {
+          setHandsFreeStatus(CHAT_SWITCHING_TO_CLOUD_MESSAGE);
+        }
+      }, localToBackendFallbackMs);
       const response = await withLocalTimeout(
         apiPost<BackendChatResponse>("/api/chat", {
           user_id: profile.userId,
@@ -1799,7 +1822,7 @@ export default function Home() {
           message: friendlyLocalTimeoutMessage(),
         },
       );
-      clearSoftNoticeTimer();
+      clearProgressTimers();
 
       if (!isActiveChatRequest(requestId)) {
         await clearActiveWorkflow(requestId).catch(() => undefined);
@@ -1852,7 +1875,7 @@ export default function Home() {
         setConfirmOpen(true);
       }
     } catch (error: unknown) {
-      clearSoftNoticeTimer();
+      clearProgressTimers();
       if (isActiveChatRequest(requestId)) {
         if (isLocalTurnTimeoutError(error)) {
           const bridge = getNativeOnDeviceModelBridge();
@@ -1876,6 +1899,83 @@ export default function Home() {
             screen: "chat",
             app_state: AppState.currentState,
           });
+          if (await loadCloudFallbackConsent().catch(() => false)) {
+            try {
+              logClientTurn({
+                event: "client_backend_fallback_started",
+                user_id: profile.userId,
+                request_id: requestId,
+                channel: source,
+                question: cleaned,
+                question_length: cleaned.length,
+                agent_source: "backend_openai",
+                route_taken: "fallback_openai",
+                workflow_step: "backend_fallback",
+                workflow_phase: "started",
+                fallback_reason: "local_timeout",
+                screen: "chat",
+                app_state: AppState.currentState,
+              });
+              const backendResponse = await apiPostBackendOnly<BackendChatResponse>("/api/chat", {
+                user_id: profile.userId,
+                message: cleaned,
+                reply_language: settings.languageMode,
+                request_id: requestId,
+                client_fallback_reason: "local_timeout",
+                client_local_budget_ms: getLocalToBackendFallbackMs(),
+                client_original_route: "local_answer",
+              });
+              if (!isActiveChatRequest(requestId)) {
+                await clearActiveWorkflow(requestId).catch(() => undefined);
+                return;
+              }
+              const nextItem = normalizeChatTurnPayload(backendResponse, cleaned);
+              clearPendingAssistant(requestId);
+              const mergedHistory = await refreshHistoryAndSessions([nextItem]);
+              await attachItemToCurrentChat(nextItem, mergedHistory);
+              maybePromptModelSetup(backendResponse);
+              logClientTurn({
+                event: "client_backend_fallback_completed",
+                user_id: profile.userId,
+                request_id: requestId,
+                channel: source,
+                question: cleaned,
+                answer: nextItem.details || "",
+                question_length: cleaned.length,
+                answer_length: (nextItem.details || "").length,
+                agent_source: "backend_openai",
+                route_taken: "fallback_openai",
+                workflow_step: "backend_fallback",
+                workflow_phase: "completed",
+                fallback_reason: "local_timeout",
+                duration_ms: Date.now() - turnStartedAt,
+                screen: "chat",
+                app_state: AppState.currentState,
+              });
+              logClientTurn({
+                event: "client_chat_turn_rendered",
+                user_id: profile.userId,
+                request_id: requestId,
+                channel: source,
+                question: cleaned,
+                answer: nextItem.details || "",
+                question_length: cleaned.length,
+                answer_length: (nextItem.details || "").length,
+                agent_source: String((backendResponse as any)?.meta?.source || "backend_openai"),
+                route_taken: String((backendResponse as any)?.pipeline?.route_taken || (backendResponse as any)?.meta?.route || "fallback_openai"),
+                workflow_step: "chat_turn_rendered",
+                workflow_phase: "completed",
+                duration_ms: Date.now() - turnStartedAt,
+                stage_timings: ((backendResponse as any)?.meta?.stageTimings || (backendResponse as any)?.pipeline?.meta?.stageTimings || null),
+                screen: "chat",
+                app_state: AppState.currentState,
+              });
+              await clearActiveWorkflow(requestId).catch(() => undefined);
+              return;
+            } catch (fallbackError) {
+              warnChatFailure(fallbackError, requestId, source);
+            }
+          }
           showPendingAssistantError(
             requestId,
             friendlyLocalTimeoutMessage(),
@@ -1926,7 +2026,7 @@ export default function Home() {
         warnChatFailure(error, requestId, source);
       }
     } finally {
-      clearSoftNoticeTimer();
+      clearProgressTimers();
       if (isActiveChatRequest(requestId)) {
         activeChatRequestIdRef.current = null;
         setBusy(false);

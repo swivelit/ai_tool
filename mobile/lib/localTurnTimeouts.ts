@@ -1,4 +1,7 @@
+import Constants from "expo-constants";
+
 export const LOCAL_TURN_TIMEOUT_ERROR_CODE = "LOCAL_TURN_TIMEOUT";
+export const LOCAL_BUDGET_EXCEEDED_ERROR_CODE = "LOCAL_BUDGET_EXCEEDED";
 
 export type LocalTurnSource = "text" | "voice" | "handsfree" | string;
 
@@ -13,7 +16,7 @@ export type LocalTurnTimeoutDeviceInfo = {
 };
 
 export class LocalTurnTimeoutError extends Error {
-  readonly code = LOCAL_TURN_TIMEOUT_ERROR_CODE;
+  readonly code: string = LOCAL_TURN_TIMEOUT_ERROR_CODE;
   readonly timeoutMs: number;
   readonly source?: string;
 
@@ -25,10 +28,41 @@ export class LocalTurnTimeoutError extends Error {
   }
 }
 
+export class LocalBudgetExceededError extends LocalTurnTimeoutError {
+  readonly code: string = LOCAL_BUDGET_EXCEEDED_ERROR_CODE;
+  readonly stage?: string;
+
+  constructor(
+    message: string,
+    options: { timeoutMs: number; source?: string; stage?: string },
+  ) {
+    super(message, options);
+    this.name = "LocalBudgetExceededError";
+    this.stage = options.stage;
+  }
+}
+
 export function isLocalTurnTimeoutError(error: unknown) {
   return (
     error instanceof LocalTurnTimeoutError ||
-    (error as any)?.code === LOCAL_TURN_TIMEOUT_ERROR_CODE
+    (error as any)?.code === LOCAL_TURN_TIMEOUT_ERROR_CODE ||
+    (error as any)?.code === LOCAL_BUDGET_EXCEEDED_ERROR_CODE
+  );
+}
+
+function positiveEnvInt(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : fallback;
+}
+
+export function getLocalToBackendFallbackMs() {
+  const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
+  return positiveEnvInt(
+    extra.LOCAL_TO_BACKEND_FALLBACK_MS ||
+      process.env.EXPO_PUBLIC_LOCAL_TO_BACKEND_FALLBACK_MS,
+    15_000,
   );
 }
 

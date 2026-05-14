@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { apiGet } from "./api";
 import { enqueueClientTurnLog, type ClientTurnLogPayload } from "./chatTelemetry";
+import { isCurrentOrLiveDataQuestion } from "./currentDataGuards";
 
 export const GLOBAL_KNOWLEDGE_CACHE_KEY = "global_knowledge_cache_v1";
 export const GLOBAL_KNOWLEDGE_SYNC_META_KEY = "global_knowledge_sync_meta_v1";
@@ -231,12 +232,7 @@ function semanticTokens(value: unknown) {
 }
 
 export function isLiveOrCurrentGlobalKnowledgeQuestion(value: unknown) {
-  const normalized = normalizeGlobalKnowledgeQuestion(value);
-  if (LIVE_PHRASES.some((phrase) => new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(normalized))) {
-    return true;
-  }
-  const tokens = semanticTokens(value);
-  return tokens.some((token) => LIVE_TERMS.has(token));
+  return isCurrentOrLiveDataQuestion(value);
 }
 
 function aliasVariants(value: unknown) {

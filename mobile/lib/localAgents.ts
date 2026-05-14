@@ -33,6 +33,7 @@ import {
   normalizeLocalRuntimeBaseUrl,
 } from "./localModelRuntime";
 import {
+  LocalBudgetExceededError,
   isLocalTurnTimeoutError,
 } from "./localTurnTimeouts";
 import {
@@ -49,6 +50,7 @@ import {
   lookupSyncedGlobalKnowledge,
   syncGlobalKnowledge,
 } from "./globalKnowledgeSync";
+import { isCurrentOrLiveDataQuestion } from "./currentDataGuards";
 import { __idleQueueTestUtils, enqueueLocalIdleJob } from "./localIdleQueue";
 import {
   clearPendingLocalTurn,
@@ -5767,7 +5769,12 @@ function isLikelyLiveCurrentDataRequest(message: string) {
   );
   const hasTodayScore =
     /\btoday\b/.test(normalized) && /\b(score|scores)\b/.test(normalized);
-  return hasLiveMarker || hasTodayScore;
+  const hasPoliticalCurrentMarker =
+    isCurrentOrLiveDataQuestion(message) &&
+    /\b(election|elections|vote|voting|poll|polls|result|results|winner|candidate|candidates|government|president|prime minister|pm|cm|mla|mp)\b/.test(
+      normalized,
+    );
+  return hasLiveMarker || hasTodayScore || hasPoliticalCurrentMarker;
 }
 
 function ruleBasedOrchestratorDecision(
@@ -7115,6 +7122,8 @@ async function callBackendOpenAiFallback(opts: {
       message: opts.message,
       reply_language: opts.replyLanguage,
       request_id: opts.requestId || undefined,
+      client_fallback_reason: opts.fallbackReason,
+      client_original_route: opts.originalRoute || undefined,
     });
   } catch (error) {
     logClientWorkflowStep({
@@ -7455,15 +7464,56 @@ export async function runLocalAssistantTurn(opts: {
   deviceInfo?: DeviceCapabilitySnapshot;
   proOptIn?: boolean;
   requestId?: string | null;
+  abortSignal?: AbortSignal;
+  localDeadlineMs?: number;
 }): Promise<LocalAssistantTurnResult> {
   const stageTimings: Record<string, number> = {};
+  const localBudgetStartedAt = Date.now();
+  const localBudgetMs =
+    Number.isFinite(Number(opts.localDeadlineMs)) && Number(opts.localDeadlineMs) > 0
+      ? Math.max(1, Math.floor(Number(opts.localDeadlineMs) - localBudgetStartedAt))
+      : 0;
+  const throwIfLocalBudgetExceeded = (stage: string) => {
+    const reason = (opts.abortSignal as any)?.reason;
+    if (opts.abortSignal?.aborted) {
+      if (reason instanceof LocalBudgetExceededError) {
+        throw reason;
+      }
+      throw new LocalBudgetExceededError(
+        `Local assistant budget was aborted during ${stage}.`,
+        {
+          timeoutMs: localBudgetMs || 1,
+          source: "local_agents",
+          stage,
+        },
+      );
+    }
+    if (
+      Number.isFinite(Number(opts.localDeadlineMs)) &&
+      Number(opts.localDeadlineMs) > 0 &&
+      Date.now() >= Number(opts.localDeadlineMs)
+    ) {
+      throw new LocalBudgetExceededError(
+        `Local assistant exceeded backend fallback budget during ${stage}.`,
+        {
+          timeoutMs: localBudgetMs || 1,
+          source: "local_agents",
+          stage,
+        },
+      );
+    }
+  };
   const timeStage = async <T,>(label: string, fn: () => Promise<T>): Promise<T> => {
     const startedAt = Date.now();
+    throwIfLocalBudgetExceeded(label);
+    let value!: T;
     try {
-      return await fn();
+      value = await fn();
     } finally {
       stageTimings[label] = (stageTimings[label] || 0) + (Date.now() - startedAt);
     }
+    throwIfLocalBudgetExceeded(label);
+    return value;
   };
   const userId = opts.userId;
   const message = String(opts.message || "").trim();
@@ -7753,6 +7803,7 @@ export async function runLocalAssistantTurn(opts: {
       fallbackAllowed: opts.userAllowedCloudFallback === true,
     };
     if (opts.userAllowedCloudFallback === true) {
+      throwIfLocalBudgetExceeded("backend_fallback");
       return buildBackendFallbackTurn({
         userId,
         message,
@@ -7950,6 +8001,7 @@ export async function runLocalAssistantTurn(opts: {
       stage_timings: stageTimings,
     });
     try {
+      throwIfLocalBudgetExceeded("local_model_route_classification");
       const classified = await classifyRouteWithModel(
         message,
         replyLanguage,
@@ -7958,6 +8010,7 @@ export async function runLocalAssistantTurn(opts: {
         preferredSelectedModel,
         modelRuntimeOptions,
       );
+      throwIfLocalBudgetExceeded("local_model_route_classification");
       logClientWorkflowStep({
         event: "client_local_model_completed",
         user_id: userId,
@@ -8289,6 +8342,7 @@ export async function runLocalAssistantTurn(opts: {
         local_runtime_mode: cfg.runtime?.mode || "native_on_device",
         stage_timings: stageTimings,
       });
+      throwIfLocalBudgetExceeded("local_reasoner");
       const reasoned = await timeStage("local_reasoner", () =>
         buildLocalReasoningWithContext({
           userId,
@@ -8301,6 +8355,7 @@ export async function runLocalAssistantTurn(opts: {
           runtimeOptions: modelRuntimeOptions,
         }),
       );
+      throwIfLocalBudgetExceeded("local_reasoner");
       draft = reasoned.draft;
       ragResponseMetadata = {
         rewrittenQuery: reasoned.rewrittenQuery,
@@ -8458,6 +8513,7 @@ export async function runLocalAssistantTurn(opts: {
     };
     if (decision.fallbackAllowed) {
       source = "openai_fallback";
+      throwIfLocalBudgetExceeded("backend_fallback");
       const backend = await callBackendOpenAiFallback({
         userId,
         message,
@@ -8467,6 +8523,7 @@ export async function runLocalAssistantTurn(opts: {
         originalRoute: decision.reason === fallbackReason ? "local_answer" : decision.route,
         stageTimings,
       });
+      throwIfLocalBudgetExceeded("backend_fallback");
       backendFallbackResponse = backend;
       const backendText =
         String(

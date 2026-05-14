@@ -25,7 +25,12 @@ import {
 } from "./localAssistantProfile";
 import { tryBuildQuickLocalReply } from "./localQuickReplies";
 import { loadCloudFallbackConsent } from "./localAssistantSettings";
-import { isLocalTurnTimeoutError } from "./localTurnTimeouts";
+import { isCurrentOrLiveDataQuestion } from "./currentDataGuards";
+import {
+  LocalBudgetExceededError,
+  getLocalToBackendFallbackMs,
+  isLocalTurnTimeoutError,
+} from "./localTurnTimeouts";
 import {
   PRODUCT_DEFAULT_REPLY_LANGUAGE,
   ReplyLanguage,
@@ -1051,6 +1056,7 @@ async function postChatFallbackToBackend(input: {
   replyLanguage: ReplyLanguage;
   fallbackReason: BackendFallbackReason;
   originalRoute?: string | null;
+  localBudgetMs?: number | null;
   stageTimings?: Record<string, any> | null;
 }) {
   const startedAt = Date.now();
@@ -1076,6 +1082,9 @@ async function postChatFallbackToBackend(input: {
       message: input.message,
       reply_language: input.replyLanguage,
       request_id: input.requestId || undefined,
+      client_fallback_reason: input.fallbackReason,
+      client_local_budget_ms: input.localBudgetMs || undefined,
+      client_original_route: input.originalRoute || undefined,
     });
   } catch (error) {
     logClientWorkflowStep({
@@ -1127,6 +1136,129 @@ async function postChatFallbackToBackend(input: {
     .then(({ syncGlobalKnowledge }) => syncGlobalKnowledge())
     .catch(() => undefined);
   return annotated;
+}
+
+function localBudgetTimer(timeoutMs: number, source = "local_to_backend_budget") {
+  const safeTimeoutMs = Math.max(1, Number(timeoutMs) || 1);
+  return new Promise<{
+    type: "local_budget_exceeded";
+    error: LocalBudgetExceededError;
+  }>((resolve) => {
+    setTimeout(() => {
+      resolve({
+        type: "local_budget_exceeded",
+        error: new LocalBudgetExceededError(
+          `Local assistant exceeded ${safeTimeoutMs}ms backend fallback budget.`,
+          {
+            timeoutMs: safeTimeoutMs,
+            source,
+            stage: "api_local_to_backend_budget",
+          },
+        ),
+      });
+    }, safeTimeoutMs);
+  });
+}
+
+function logClientLocalBudgetExceeded(input: {
+  userId: number;
+  requestId?: string | null;
+  message: string;
+  localBudgetMs: number;
+  stageTimings?: Record<string, any> | null;
+}) {
+  logClientWorkflowStep({
+    event: "client_local_budget_exceeded",
+    user_id: input.userId,
+    request_id: input.requestId || null,
+    channel: "text",
+    question: input.message,
+    question_length: textLength(input.message),
+    agent_source: "local_model",
+    route_taken: "local_answer",
+    fallback_reason: "local_timeout",
+    workflow_step: "local_to_backend_budget",
+    workflow_phase: "exceeded",
+    duration_ms: input.localBudgetMs,
+    stage_timings: input.stageTimings || null,
+  });
+}
+
+function logIgnoredLateLocalResult(input: {
+  userId: number;
+  requestId?: string | null;
+  message: string;
+  route?: string | null;
+  source?: string | null;
+  stageTimings?: Record<string, any> | null;
+}) {
+  logClientWorkflowStep({
+    event: "client_local_result_ignored_after_backend_fallback",
+    user_id: input.userId,
+    request_id: input.requestId || null,
+    channel: "text",
+    question: input.message,
+    question_length: textLength(input.message),
+    agent_source: input.source || "local_model",
+    route_taken: input.route || "local_answer",
+    fallback_reason: "local_timeout",
+    workflow_step: "local_to_backend_budget",
+    workflow_phase: "ignored_late_result",
+    stage_timings: input.stageTimings || null,
+  });
+}
+
+function logCurrentDataBackendRequired(input: {
+  userId: number;
+  requestId?: string | null;
+  message: string;
+  userAllowedCloudFallback: boolean;
+  stageTimings?: Record<string, any> | null;
+}) {
+  logClientWorkflowStep({
+    event: "client_current_data_backend_required",
+    user_id: input.userId,
+    request_id: input.requestId || null,
+    channel: "text",
+    question: input.message,
+    question_length: textLength(input.message),
+    agent_source: "mobile",
+    route_taken: input.userAllowedCloudFallback
+      ? "fallback_openai"
+      : "cloud_consent_required",
+    fallback_reason: "live_data_needed",
+    workflow_step: "current_data_guard",
+    workflow_phase: "completed",
+    stage_timings: input.stageTimings || null,
+  });
+}
+
+function requestNativeLocalCancel(input: {
+  requestId?: string | null;
+  userId: number;
+  message: string;
+  stageTimings?: Record<string, any> | null;
+}) {
+  const requestId = String(input.requestId || "").trim();
+  if (!requestId) return;
+  const bridge = getNativeOnDeviceModelBridge();
+  if (typeof bridge?.cancelRequest !== "function") return;
+
+  logClientWorkflowStep({
+    event: "client_native_cancel_requested",
+    user_id: input.userId,
+    request_id: requestId,
+    channel: "text",
+    question: input.message,
+    question_length: textLength(input.message),
+    agent_source: "local_model",
+    route_taken: "local_answer",
+    fallback_reason: "local_timeout",
+    workflow_step: "native_cancel",
+    workflow_phase: "requested",
+    stage_timings: input.stageTimings || null,
+  });
+  void Promise.resolve(bridge.cancelRequest(requestId)).catch(() => undefined);
 }
 
 function isNativeSttNotImplementedError(error: unknown) {
@@ -1881,23 +2013,148 @@ async function handleLocalChat(
     getCachedDeviceCapabilities(),
   );
 
+  if (isCurrentOrLiveDataQuestion(message)) {
+    stageTimings.global_knowledge_cache = stageTimings.global_knowledge_cache || 0;
+    logClientWorkflowStep({
+      event: "client_global_knowledge_lookup_miss",
+      user_id: userId,
+      request_id: requestId,
+      channel: "text",
+      question: message,
+      question_length: textLength(message),
+      agent_source: "global_rag",
+      route_taken: "global_knowledge_cache",
+      workflow_step: "global_knowledge_lookup",
+      workflow_phase: "completed",
+      cache_hit: false,
+      cache_source: "global_knowledge_sync",
+      duration_ms: 0,
+      stage_timings: stageTimings,
+    });
+    logCurrentDataBackendRequired({
+      userId,
+      requestId,
+      message,
+      userAllowedCloudFallback,
+      stageTimings,
+    });
+    if (userAllowedCloudFallback) {
+      return postChatFallbackToBackend({
+        userId,
+        requestId,
+        message,
+        replyLanguage,
+        fallbackReason: "live_data_needed",
+        originalRoute: "current_data_guard",
+        stageTimings,
+      });
+    }
+    return buildCloudFallbackConsentResponse({
+      userId,
+      requestId,
+      message,
+      replyLanguage,
+      fallbackReason: "live_data_needed",
+      originalRoute: "current_data_guard",
+      stageTimings,
+    });
+  }
+
   const importStartedAt = Date.now();
   const { runLocalAssistantTurn } = await import("./localAgents");
   stageTimings.local_agents_import =
     (stageTimings.local_agents_import || 0) + (Date.now() - importStartedAt);
   let turn;
+  const localBudgetMs = getLocalToBackendFallbackMs();
+  const localAbortController = new AbortController();
+  let backendFallbackStarted = false;
+  let localResultHandled = false;
+  const localTurnPromise = timeStage("local_turn", () =>
+    runLocalAssistantTurn({
+      userId,
+      message,
+      replyLanguage,
+      userAllowedCloudFallback,
+      deviceInfo,
+      requestId,
+      abortSignal: localAbortController.signal,
+      localDeadlineMs: Date.now() + localBudgetMs,
+      ...(userProfile ? { userProfile } : {}),
+    }),
+  );
+  localTurnPromise.then(
+    (lateTurn) => {
+      if (backendFallbackStarted && !localResultHandled) {
+        logIgnoredLateLocalResult({
+          userId,
+          requestId,
+          message,
+          route: lateTurn?.route,
+          source: lateTurn?.source,
+          stageTimings: {
+            ...stageTimings,
+            ...(lateTurn?.meta?.stageTimings || {}),
+          },
+        });
+      }
+    },
+    () => undefined,
+  );
   try {
-    turn = await timeStage("local_turn", () =>
-      runLocalAssistantTurn({
+    const localOutcome = await Promise.race([
+      localTurnPromise.then(
+        (value) => ({ type: "local_result" as const, value }),
+        (error) => ({ type: "local_error" as const, error }),
+      ),
+      localBudgetTimer(localBudgetMs),
+    ]);
+
+    if (localOutcome.type === "local_budget_exceeded") {
+      backendFallbackStarted = true;
+      stageTimings.local_to_backend_budget = localBudgetMs;
+      localAbortController.abort(localOutcome.error);
+      requestNativeLocalCancel({
         userId,
+        requestId,
+        message,
+        stageTimings,
+      });
+      logClientLocalBudgetExceeded({
+        userId,
+        requestId,
+        message,
+        localBudgetMs,
+        stageTimings,
+      });
+      if (userAllowedCloudFallback) {
+        return postChatFallbackToBackend({
+          userId,
+          requestId,
+          message,
+          replyLanguage,
+          fallbackReason: "local_timeout",
+          originalRoute: "local_answer",
+          localBudgetMs,
+          stageTimings,
+        });
+      }
+      return buildCloudFallbackConsentResponse({
+        userId,
+        requestId,
         message,
         replyLanguage,
-        userAllowedCloudFallback,
-        deviceInfo,
-        requestId,
-        ...(userProfile ? { userProfile } : {}),
-      }),
-    );
+        fallbackReason: "local_timeout",
+        originalRoute: "local_answer",
+        stageTimings,
+      });
+    }
+
+    if (localOutcome.type === "local_error") {
+      throw localOutcome.error;
+    }
+
+    localResultHandled = true;
+    turn = localOutcome.value;
   } catch (error) {
     const fallbackReason: BackendFallbackReason = isLocalTurnTimeoutError(error)
       ? "local_timeout"
@@ -1913,6 +2170,7 @@ async function handleLocalChat(
       stageTimings,
     });
     if (userAllowedCloudFallback) {
+      backendFallbackStarted = true;
       return postChatFallbackToBackend({
         userId,
         requestId,
@@ -1920,6 +2178,8 @@ async function handleLocalChat(
         replyLanguage,
         fallbackReason,
         originalRoute: "local_answer",
+        localBudgetMs:
+          fallbackReason === "local_timeout" ? localBudgetMs : undefined,
         stageTimings,
       });
     }
