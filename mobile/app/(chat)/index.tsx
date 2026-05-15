@@ -37,6 +37,7 @@ import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 import {
+  annotateBackendOpenAiFallbackResponse,
   apiDelete,
   apiGet,
   apiPost,
@@ -44,11 +45,6 @@ import {
   apiPostForm,
   sendClientTurnLog,
 } from "@/lib/api";
-import {
-  clearActiveWorkflow,
-  markActiveWorkflow,
-  updateActiveWorkflowStep,
-} from "@/lib/chatTelemetry";
 import { computeChatScreenLayout } from "@/lib/chatScreenLayout";
 import {
   BackendChatResponse,
@@ -56,9 +52,11 @@ import {
   normalizeChatTurnPayload,
 } from "@/lib/chatResponse";
 import {
+  activeSessionStorageKey,
   classifyChatHistoryItemsForDeletion,
   filterHistoryItemsByHiddenItemIds,
   filterLocalChatHistoryItems,
+  generateLocalChatItemId,
   localChatItemsStorageKey,
   markChatHistoryItemsOrigin,
   mergeChatHistoryItems,
@@ -67,16 +65,12 @@ import {
 import { parseDatetime } from "@/lib/datetime";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import { saveScheduledTask } from "@/lib/localAgents";
-import { getNativeOnDeviceModelBridge } from "@/lib/nativeOnDeviceModelBridge";
 import {
   friendlyLocalTimeoutMessage,
-  getLocalToBackendFallbackMs,
-  getLocalTurnSoftNoticeMs,
   getLocalTurnTimeoutMs,
   isLocalTurnTimeoutError,
   withLocalTimeout,
 } from "@/lib/localTurnTimeouts";
-import { loadCloudFallbackConsent } from "@/lib/localAssistantSettings";
 import { shouldAutoSpeakReply } from "@/lib/replyPlaybackPolicy";
 import { ensureNotificationsReady, scheduleReminder } from "@/lib/reminders";
 import {
@@ -116,6 +110,8 @@ type ChatRequestSource = "text" | "handsfree" | "voice";
 type PendingChatTurn = {
   requestId: string;
   sessionId: string | null;
+  /** Pre-allocated local-only item ID (negative int) for this turn's placeholder. */
+  localItemId: number;
   source: ChatRequestSource;
   userMessage: string;
   assistantText?: string;
@@ -130,11 +126,12 @@ const CHAT_SESSIONS_STORAGE_PREFIX = "chat_sessions_v2";
 const HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX = "hidden_chat_session_ids_v2";
 const HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX = "hidden_chat_item_ids_v1";
 const MODEL_SETUP_ALERT_THROTTLE_MS = 5 * 60 * 1000;
+// Persists the last-active session ID across app restarts.
+const ACTIVE_SESSION_STORAGE_KEY_PREFIX = "active_chat_session_v1";
 const VOICE_UNAVAILABLE_MESSAGE =
   "Voice is unavailable right now. Please try again.";
-const CHAT_LOCAL_SOFT_NOTICE_MESSAGE =
-  "Still working...";
-const CHAT_SWITCHING_TO_CLOUD_MESSAGE = "Switching to cloud...";
+const CHAT_CLOUD_FALLBACK_DISABLED_MESSAGE =
+  "I need backend/OpenAI help for this. Turn on cloud fallback in settings to answer it.";
 
 function normalizeHandsFreeText(value?: string | null) {
   return String(value || "")
@@ -466,6 +463,10 @@ export default function Home() {
   );
   const localChatItemStorageKey = useMemo(
     () => localChatItemsStorageKey(profile?.userId),
+    [profile?.userId]
+  );
+  const activeSessionStorageKeyForUser = useMemo(
+    () => activeSessionStorageKey(profile?.userId),
     [profile?.userId]
   );
   const hiddenChatSessionIdSet = useMemo(
@@ -926,12 +927,6 @@ export default function Home() {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState !== "active" && activeChatRequestIdRef.current) {
-        const bridge = getNativeOnDeviceModelBridge();
-        if (typeof bridge?.cancelRequest === "function") {
-          void Promise.resolve(bridge.cancelRequest(activeChatRequestIdRef.current)).catch(() => undefined);
-        }
-      }
       setAppState(nextState);
     });
 
@@ -994,12 +989,6 @@ export default function Home() {
     return () => {
       void shutdownHandsFree(true);
       void releaseReplySound();
-      if (activeChatRequestIdRef.current) {
-        const bridge = getNativeOnDeviceModelBridge();
-        if (typeof bridge?.cancelRequest === "function") {
-          void Promise.resolve(bridge.cancelRequest(activeChatRequestIdRef.current)).catch(() => undefined);
-        }
-      }
 
       const activeRecording = recordingRef.current;
       if (activeRecording) {
@@ -1173,6 +1162,19 @@ export default function Home() {
     await persistLocalChatItems(nextStoredItems);
   }
 
+  /** Persists the active session ID so the app can restore it on reload. */
+  async function persistActiveChatSessionId(id: string | null) {
+    try {
+      if (id) {
+        await AsyncStorage.setItem(activeSessionStorageKeyForUser, id);
+      } else {
+        await AsyncStorage.removeItem(activeSessionStorageKeyForUser);
+      }
+    } catch {
+      // ignore storage failures
+    }
+  }
+
   const bootstrapChatState = useCallback(async () => {
     const [
       itemsFromApi,
@@ -1180,6 +1182,7 @@ export default function Home() {
       storedSessions,
       storedHiddenSessionIds,
       storedHiddenItemIds,
+      storedActiveSessionId,
     ] =
       await Promise.all([
         readChatHistoryFromApi(),
@@ -1187,6 +1190,7 @@ export default function Home() {
         readStoredChatSessions(),
         readHiddenChatSessionIds(),
         readHiddenChatItemIds(),
+        AsyncStorage.getItem(activeSessionStorageKeyForUser),
       ]);
 
     const migratedHiddenItemIds = uniqueNumberList([
@@ -1209,8 +1213,15 @@ export default function Home() {
     const reconciled = reconcileChatSessions(visibleItemsFromApi, storedSessions);
     setChatSessions(reconciled);
     chatSessionsRef.current = reconciled;
-    if (!activeChatSessionIdRef.current && !activeChatRequestIdRef.current) {
-      setActiveChatSessionId(null);
+
+    // Restore active session if it still exists and no turn is in flight.
+    if (!activeChatRequestIdRef.current) {
+      const candidateId = activeChatSessionIdRef.current || storedActiveSessionId || null;
+      const sessionStillExists =
+        candidateId && reconciled.some((s) => s.id === candidateId);
+      const nextActiveId = sessionStillExists ? candidateId : null;
+      activeChatSessionIdRef.current = nextActiveId;
+      setActiveChatSessionId(nextActiveId);
     }
 
     try {
@@ -1229,6 +1240,7 @@ export default function Home() {
       // ignore storage failures
     }
   }, [
+    activeSessionStorageKeyForUser,
     chatSessionStorageKey,
     hiddenChatItemStorageKey,
     localChatItemStorageKey,
@@ -1304,6 +1316,7 @@ export default function Home() {
     const timestamp = item.created_at || item.datetime || new Date().toISOString();
 
     const currentSessionId = activeChatSessionIdRef.current;
+    let resolvedSessionId = currentSessionId;
 
     if (currentSessionId) {
       const targetIndex = workingSessions.findIndex(
@@ -1321,12 +1334,14 @@ export default function Home() {
       } else {
         const nextSession = createChatSessionFromItem(item);
         workingSessions = [nextSession, ...workingSessions];
+        resolvedSessionId = nextSession.id;
         activeChatSessionIdRef.current = nextSession.id;
         setActiveChatSessionId(nextSession.id);
       }
     } else {
       const nextSession = createChatSessionFromItem(item);
       workingSessions = [nextSession, ...workingSessions];
+      resolvedSessionId = nextSession.id;
       activeChatSessionIdRef.current = nextSession.id;
       setActiveChatSessionId(nextSession.id);
     }
@@ -1336,7 +1351,10 @@ export default function Home() {
     chatSessionsRef.current = workingSessions;
 
     try {
-      await AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(workingSessions));
+      await Promise.all([
+        AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(workingSessions)),
+        persistActiveChatSessionId(resolvedSessionId),
+      ]);
     } catch {
       // ignore storage failures
     }
@@ -1404,6 +1422,7 @@ export default function Home() {
             if (activeChatSessionId === targetItem.id) {
               activeChatSessionIdRef.current = null;
               setActiveChatSessionId(null);
+              void persistActiveChatSessionId(null);
             }
 
             const optimisticHistoryItems = filterHistoryItemsByHiddenItemIds(
@@ -1505,7 +1524,7 @@ export default function Home() {
       return "I couldn’t finish that on this phone. Please try again.";
     }
 
-    return "I hit a local processing error. Please try again.";
+    return raw || "I couldn’t finish that. Please try again.";
   }
 
   function chatResponseSetupRequired(response: BackendChatResponse) {
@@ -1553,9 +1572,6 @@ export default function Home() {
 
   function logClientTurn(payload: Parameters<typeof sendClientTurnLog>[0]) {
     sendClientTurnLog(payload);
-    if (payload.request_id && payload.event) {
-      void updateActiveWorkflowStep(String(payload.request_id), payload.event).catch(() => undefined);
-    }
   }
 
   function safeVoiceErrorType(error: unknown, fallback = "voice_error") {
@@ -1605,20 +1621,6 @@ export default function Home() {
     }
   }
 
-  async function getChatTurnSoftNoticeMs(source: ChatRequestSource) {
-    try {
-      const deviceInfo = await getCachedDeviceCapabilities();
-      return getLocalTurnSoftNoticeMs({
-        source,
-        deviceInfo,
-        selectedTier: deviceInfo.preferredTier,
-        preferredTier: deviceInfo.preferredTier,
-      });
-    } catch {
-      return getLocalTurnSoftNoticeMs({ source });
-    }
-  }
-
   function handleComposerLayout(event: LayoutChangeEvent) {
     const nextHeight = Math.ceil(event.nativeEvent.layout.height || 0);
     if (nextHeight > 0 && Math.abs(nextHeight - composerHeight) > 1) {
@@ -1629,6 +1631,7 @@ export default function Home() {
   function startNewChat() {
     activeChatSessionIdRef.current = null;
     setActiveChatSessionId(null);
+    void persistActiveChatSessionId(null);
     setText("");
     setComposerInputHeight(MIN_INPUT_HEIGHT);
     setPendingChatTurn(null);
@@ -1646,6 +1649,7 @@ export default function Home() {
     setHistorySearch("");
     activeChatSessionIdRef.current = item.id;
     setActiveChatSessionId(item.id);
+    void persistActiveChatSessionId(item.id);
     setTimeout(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
     }, 100);
@@ -1726,45 +1730,90 @@ export default function Home() {
     const requestId = nextChatRequestId(source);
     const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
-    const turnStartedAt = Date.now();
-    let softNoticeTimer: ReturnType<typeof setTimeout> | null = null;
-    let switchingTimer: ReturnType<typeof setTimeout> | null = null;
-    const clearProgressTimers = () => {
-      if (softNoticeTimer) {
-        clearTimeout(softNoticeTimer);
-        softNoticeTimer = null;
+
+    // Pre-allocate a local-only ID (negative int) that cannot collide with
+    // backend item IDs (positive ints). This ID travels with the pending turn
+    // so both the optimistic placeholder and the resolved item share one identity.
+    const localItemId = generateLocalChatItemId();
+
+    /**
+     * Directly inserts `item` into the in-memory history + active session
+     * without triggering a full reconcile. This is what prevents the second
+     * query from creating an orphan session and hiding the first answer.
+     */
+    async function insertItemDirectly(item: ChatHistoryItem) {
+      // Snapshot current ref values – do NOT read stale state closures.
+      const prevItems = historyItemsRef.current;
+      const itemId = Number(item.id);
+
+      // Remove any placeholder with the same localItemId and append the real item.
+      const nextItems = mergeChatHistoryItems(
+        prevItems.filter((i) => Number(i.id) !== localItemId),
+        [item],
+      );
+      setHistoryItems(nextItems);
+      historyItemsRef.current = nextItems;
+
+      // Update the session: append itemId, drop localItemId placeholder.
+      const prevSessions = chatSessionsRef.current;
+      let sessionId = activeChatSessionIdRef.current;
+      let workingSessions = prevSessions.map((s) => ({
+        ...s,
+        itemIds: s.itemIds.filter((id) => id !== localItemId && id !== itemId),
+      }));
+
+      const timestamp = item.created_at || item.datetime || new Date().toISOString();
+
+      if (sessionId) {
+        const idx = workingSessions.findIndex((s) => s.id === sessionId);
+        if (idx >= 0) {
+          workingSessions[idx] = {
+            ...workingSessions[idx],
+            itemIds: [...workingSessions[idx].itemIds, itemId],
+            updatedAt: timestamp,
+          };
+        } else {
+          // Session was lost (e.g. deleted); create a fresh one.
+          const fresh = createChatSessionFromItem(item);
+          sessionId = fresh.id;
+          workingSessions = [fresh, ...workingSessions];
+          activeChatSessionIdRef.current = fresh.id;
+          setActiveChatSessionId(fresh.id);
+        }
+      } else {
+        const fresh = createChatSessionFromItem(item);
+        sessionId = fresh.id;
+        workingSessions = [fresh, ...workingSessions];
+        activeChatSessionIdRef.current = fresh.id;
+        setActiveChatSessionId(fresh.id);
       }
-      if (switchingTimer) {
-        clearTimeout(switchingTimer);
-        switchingTimer = null;
+
+      workingSessions = workingSessions
+        .filter((s) => s.itemIds.length > 0)
+        .sort(sortSessionsByRecent);
+      setChatSessions(workingSessions);
+      chatSessionsRef.current = workingSessions;
+
+      try {
+        await Promise.all([
+          AsyncStorage.setItem(chatSessionStorageKey, JSON.stringify(workingSessions)),
+          AsyncStorage.setItem(
+            localChatItemStorageKey,
+            JSON.stringify(filterLocalChatHistoryItems(nextItems))
+          ),
+          persistActiveChatSessionId(sessionId),
+        ]);
+      } catch {
+        // ignore storage failures
       }
-    };
+    }
 
     try {
       setBusy(true);
-      await markActiveWorkflow({
-        requestId,
-        userId: profile.userId,
-        question: cleaned,
-        lastStep: "client_chat_turn_started",
-      }).catch(() => undefined);
-      logClientTurn({
-        event: "client_chat_turn_started",
-        user_id: profile.userId,
-        request_id: requestId,
-        channel: source,
-        question: cleaned,
-        question_length: cleaned.length,
-        agent_source: "mobile",
-        route_taken: "chat_turn",
-        workflow_step: "chat_turn",
-        workflow_phase: "started",
-        screen: "chat",
-        app_state: AppState.currentState,
-      });
       setPendingChatTurn({
         requestId,
         sessionId: currentSessionId,
+        localItemId,
         source,
         userMessage: cleaned,
         status: "thinking",
@@ -1778,43 +1827,12 @@ export default function Home() {
         setHandsFreeStatus("Working on it…");
       }
 
-      const [timeoutMs, softNoticeMs] = await Promise.all([
-        getChatTurnTimeoutMs(source),
-        getChatTurnSoftNoticeMs(source),
-      ]);
-      const localToBackendFallbackMs = getLocalToBackendFallbackMs();
-      softNoticeTimer = setTimeout(() => {
-        setPendingChatTurn((current) =>
-          current?.requestId === requestId && current.status === "thinking"
-            ? {
-                ...current,
-                assistantText: CHAT_LOCAL_SOFT_NOTICE_MESSAGE,
-              }
-            : current,
-        );
-        if (source === "handsfree") {
-          setHandsFreeStatus(CHAT_LOCAL_SOFT_NOTICE_MESSAGE);
-        }
-      }, Math.min(Math.max(softNoticeMs, 5_000), 8_000));
-      switchingTimer = setTimeout(() => {
-        setPendingChatTurn((current) =>
-          current?.requestId === requestId && current.status === "thinking"
-            ? {
-                ...current,
-                assistantText: CHAT_SWITCHING_TO_CLOUD_MESSAGE,
-              }
-            : current,
-        );
-        if (source === "handsfree") {
-          setHandsFreeStatus(CHAT_SWITCHING_TO_CLOUD_MESSAGE);
-        }
-      }, localToBackendFallbackMs);
+      const timeoutMs = await getChatTurnTimeoutMs(source);
       const response = await withLocalTimeout(
         apiPost<BackendChatResponse>("/api/chat", {
           user_id: profile.userId,
           message: cleaned,
           reply_language: settings.languageMode,
-          request_id: requestId,
         }),
         timeoutMs,
         {
@@ -1822,38 +1840,16 @@ export default function Home() {
           message: friendlyLocalTimeoutMessage(),
         },
       );
-      clearProgressTimers();
 
       if (!isActiveChatRequest(requestId)) {
-        await clearActiveWorkflow(requestId).catch(() => undefined);
         return;
       }
 
       const nextItem = normalizeChatTurnPayload(response, cleaned);
       clearPendingAssistant(requestId);
-      const mergedHistory = await refreshHistoryAndSessions([nextItem]);
-      await attachItemToCurrentChat(nextItem, mergedHistory);
+      await insertItemDirectly(nextItem);
       maybePromptModelSetup(response);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      logClientTurn({
-        event: "client_chat_turn_rendered",
-        user_id: profile.userId,
-        request_id: requestId,
-        channel: source,
-        question: cleaned,
-        answer: nextItem.details || "",
-        question_length: cleaned.length,
-        answer_length: (nextItem.details || "").length,
-        agent_source: String((response as any)?.meta?.source || (response as any)?.pipeline?.direct_answer_source || "mobile"),
-        route_taken: String((response as any)?.pipeline?.route_taken || (response as any)?.meta?.route || nextItem.intent || "chat_turn"),
-        workflow_step: "chat_turn_rendered",
-        workflow_phase: "completed",
-        duration_ms: Date.now() - turnStartedAt,
-        stage_timings: ((response as any)?.meta?.stageTimings || (response as any)?.pipeline?.meta?.stageTimings || null),
-        screen: "chat",
-        app_state: AppState.currentState,
-      });
-      await clearActiveWorkflow(requestId).catch(() => undefined);
 
       if (
         nextItem.details &&
@@ -1875,13 +1871,8 @@ export default function Home() {
         setConfirmOpen(true);
       }
     } catch (error: unknown) {
-      clearProgressTimers();
       if (isActiveChatRequest(requestId)) {
         if (isLocalTurnTimeoutError(error)) {
-          const bridge = getNativeOnDeviceModelBridge();
-          if (typeof bridge?.cancelRequest === "function") {
-            void Promise.resolve(bridge.cancelRequest(requestId)).catch(() => undefined);
-          }
           logClientTurn({
             event: "client_local_turn_failed",
             user_id: profile.userId,
@@ -1891,15 +1882,11 @@ export default function Home() {
             question_length: cleaned.length,
             agent_source: "local_model",
             route_taken: "local_answer",
-            workflow_step: "chat_turn",
-            workflow_phase: "failed",
             fallback_reason: "local_timeout",
             error_type: "local_timeout",
-            duration_ms: Date.now() - turnStartedAt,
-            screen: "chat",
-            app_state: AppState.currentState,
           });
-          if (await loadCloudFallbackConsent().catch(() => false)) {
+
+          if (settings.allowCloudFallback) {
             try {
               logClientTurn({
                 event: "client_backend_fallback_started",
@@ -1910,30 +1897,31 @@ export default function Home() {
                 question_length: cleaned.length,
                 agent_source: "backend_openai",
                 route_taken: "fallback_openai",
-                workflow_step: "backend_fallback",
-                workflow_phase: "started",
                 fallback_reason: "local_timeout",
-                screen: "chat",
-                app_state: AppState.currentState,
               });
-              const backendResponse = await apiPostBackendOnly<BackendChatResponse>("/api/chat", {
-                user_id: profile.userId,
-                message: cleaned,
-                reply_language: settings.languageMode,
-                request_id: requestId,
-                client_fallback_reason: "local_timeout",
-                client_local_budget_ms: getLocalToBackendFallbackMs(),
-                client_original_route: "local_answer",
-              });
+              const backendResponse = await apiPostBackendOnly<BackendChatResponse>(
+                "/api/chat",
+                {
+                  user_id: profile.userId,
+                  message: cleaned,
+                  reply_language: settings.languageMode,
+                },
+              );
+              const response = annotateBackendOpenAiFallbackResponse(
+                backendResponse,
+                {
+                  fallbackReason: "local_timeout",
+                  originalRoute: "local_answer",
+                },
+              );
+
               if (!isActiveChatRequest(requestId)) {
-                await clearActiveWorkflow(requestId).catch(() => undefined);
                 return;
               }
-              const nextItem = normalizeChatTurnPayload(backendResponse, cleaned);
+
+              const nextItem = normalizeChatTurnPayload(response, cleaned);
               clearPendingAssistant(requestId);
-              const mergedHistory = await refreshHistoryAndSessions([nextItem]);
-              await attachItemToCurrentChat(nextItem, mergedHistory);
-              maybePromptModelSetup(backendResponse);
+              await insertItemDirectly(nextItem);
               logClientTurn({
                 event: "client_backend_fallback_completed",
                 user_id: profile.userId,
@@ -1942,91 +1930,53 @@ export default function Home() {
                 question: cleaned,
                 answer: nextItem.details || "",
                 question_length: cleaned.length,
-                answer_length: (nextItem.details || "").length,
+                answer_length: String(nextItem.details || "").length,
                 agent_source: "backend_openai",
                 route_taken: "fallback_openai",
-                workflow_step: "backend_fallback",
-                workflow_phase: "completed",
                 fallback_reason: "local_timeout",
-                duration_ms: Date.now() - turnStartedAt,
-                screen: "chat",
-                app_state: AppState.currentState,
               });
-              logClientTurn({
-                event: "client_chat_turn_rendered",
-                user_id: profile.userId,
-                request_id: requestId,
-                channel: source,
-                question: cleaned,
-                answer: nextItem.details || "",
-                question_length: cleaned.length,
-                answer_length: (nextItem.details || "").length,
-                agent_source: String((backendResponse as any)?.meta?.source || "backend_openai"),
-                route_taken: String((backendResponse as any)?.pipeline?.route_taken || (backendResponse as any)?.meta?.route || "fallback_openai"),
-                workflow_step: "chat_turn_rendered",
-                workflow_phase: "completed",
-                duration_ms: Date.now() - turnStartedAt,
-                stage_timings: ((backendResponse as any)?.meta?.stageTimings || (backendResponse as any)?.pipeline?.meta?.stageTimings || null),
-                screen: "chat",
-                app_state: AppState.currentState,
-              });
-              await clearActiveWorkflow(requestId).catch(() => undefined);
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+              if (
+                nextItem.details &&
+                shouldAutoSpeakReply({
+                  source,
+                  autoSpeakReplies: settings.autoSpeakReplies,
+                  handsFreeMode,
+                })
+              ) {
+                void playAgentReply(nextItem.details);
+              }
+
+              if (nextItem.intent === "reminder" && nextItem.datetime) {
+                setPendingReminder({
+                  title: nextItem.title || "Reminder",
+                  details: nextItem.details || nextItem.raw_text,
+                  datetimeText: nextItem.datetime,
+                });
+                setConfirmOpen(true);
+              }
               return;
             } catch (fallbackError) {
               warnChatFailure(fallbackError, requestId, source);
             }
           }
+
+          // Error-state: show error in pending bubble; do NOT clobber history.
           showPendingAssistantError(
             requestId,
-            friendlyLocalTimeoutMessage(),
+            CHAT_CLOUD_FALLBACK_DISABLED_MESSAGE,
             cleaned,
             source,
           );
-          logClientTurn({
-            event: "client_chat_turn_failed",
-            user_id: profile.userId,
-            request_id: requestId,
-            channel: source,
-            question: cleaned,
-            question_length: cleaned.length,
-            agent_source: "mobile",
-            route_taken: "chat_turn",
-            workflow_step: "chat_turn",
-            workflow_phase: "failed",
-            fallback_reason: "local_timeout",
-            error_type: "local_timeout",
-            duration_ms: Date.now() - turnStartedAt,
-            screen: "chat",
-            app_state: AppState.currentState,
-          });
-          await clearActiveWorkflow(requestId).catch(() => undefined);
           return;
         }
+        // Generic error: show error bubble; earlier successful items stay intact.
         const message = assistantFailureMessage(error);
         showPendingAssistantError(requestId, message, cleaned, source);
-        logClientTurn({
-          event: "client_chat_turn_failed",
-          user_id: profile.userId,
-          request_id: requestId,
-          channel: source,
-          question: cleaned,
-          question_length: cleaned.length,
-          agent_source: "mobile",
-          route_taken: "chat_turn",
-          workflow_step: "chat_turn",
-          workflow_phase: "failed",
-          error_type: (error as any)?.name || "chat_turn_failed",
-          error_name: (error as any)?.name || "Error",
-          error_message: String((error as any)?.message || error || "Unknown error").replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]").slice(0, 240),
-          duration_ms: Date.now() - turnStartedAt,
-          screen: "chat",
-          app_state: AppState.currentState,
-        });
-        await clearActiveWorkflow(requestId).catch(() => undefined);
         warnChatFailure(error, requestId, source);
       }
     } finally {
-      clearProgressTimers();
       if (isActiveChatRequest(requestId)) {
         activeChatRequestIdRef.current = null;
         setBusy(false);
@@ -2043,6 +1993,7 @@ export default function Home() {
   async function handleChatSend() {
     await submitChatMessage(text, "text");
   }
+
 
   async function cleanupVoiceRecordingState(options?: { cancelStartup?: boolean }) {
     if (options?.cancelStartup) {
@@ -2626,9 +2577,7 @@ export default function Home() {
                             {activePendingChatTurn.status === "thinking" ? (
                               <>
                                 <ActivityIndicator size="small" color={Brand.cocoa} />
-                                <Text style={styles.typingText}>
-                                  {activePendingChatTurn.assistantText || "Thinking…"}
-                                </Text>
+                                <Text style={styles.typingText}>Thinking…</Text>
                               </>
                             ) : (
                               <Text style={[styles.messageText, styles.assistantMessageText]}>
