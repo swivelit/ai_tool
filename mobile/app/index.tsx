@@ -29,7 +29,7 @@ export default function LandingScreen() {
   const primaryHeight = isCompact ? 54 : 58;
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+    <LinearGradient colors={Brand.gradients.page} style={styles.page} testID="landing-screen">
       <StatusBar style="dark" />
 
       <ScrollView
