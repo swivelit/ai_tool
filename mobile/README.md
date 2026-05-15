@@ -26,6 +26,56 @@ local pipeline explicitly decides fallback is required
 
 Do not change normal `/api/chat` into a backend-primary path. Missing model files, failed downloads, checksum mismatches, missing native bridge code, or missing llama.cpp bindings must fail clearly and must not silently call backend/OpenAI.
 
+## Backend chat smoke test
+
+`npm run smoke:chat` runs the seeded 10-question chat smoke test. With no `SMOKE_CHAT_BASE_URL`, it defaults to mock mode and does not require auth:
+
+```bash
+cd mobile
+npm run smoke:chat
+```
+
+Real backend mode requires Firebase bearer auth because `/api/chat` uses the same authenticated user ownership checks as the app. `SMOKE_CHAT_USER_ID` only fills the legacy request body; the backend resolves and owns the real user from the verified bearer token and ignores spoofed IDs.
+
+Using an existing Firebase ID token:
+
+```bash
+cd mobile
+SMOKE_CHAT_BASE_URL=https://ai-tool-rrau.onrender.com \
+SMOKE_CHAT_AUTH_TOKEN="$FIREBASE_ID_TOKEN" \
+SMOKE_CHAT_USE_MOCK=false \
+npm run smoke:chat
+```
+
+Using a dedicated Firebase email/password smoke account:
+
+```bash
+cd mobile
+SMOKE_CHAT_BASE_URL=https://ai-tool-rrau.onrender.com \
+SMOKE_CHAT_FIREBASE_API_KEY="$EXPO_PUBLIC_FIREBASE_API_KEY" \
+SMOKE_CHAT_FIREBASE_EMAIL="smoke@example.com" \
+SMOKE_CHAT_FIREBASE_PASSWORD="$SMOKE_CHAT_FIREBASE_PASSWORD" \
+SMOKE_CHAT_ENSURE_USER=true \
+SMOKE_CHAT_USE_MOCK=false \
+npm run smoke:chat
+```
+
+For local development only, backend dev bearer tokens work when the backend is explicitly started with `AUTH_ALLOW_DEV_TOKENS=true`:
+
+```bash
+cd mobile
+SMOKE_CHAT_BASE_URL=http://127.0.0.1:8000 \
+SMOKE_CHAT_AUTH_TOKEN="dev:smoke-local:smoke@example.com" \
+SMOKE_CHAT_USE_MOCK=false \
+npm run smoke:chat
+```
+
+Common failures:
+
+- `401`: missing or invalid bearer token.
+- `404`: token is valid, but no backend user exists for that Firebase account. Sign up once in the app or set `SMOKE_CHAT_ENSURE_USER=true` for a dedicated smoke account.
+- `503`: Firebase Admin, OpenAI, or another backend dependency is not configured.
+
 ## Runtime modes
 
 - `runtime.mode = "native_on_device"` is the intended production mode.
