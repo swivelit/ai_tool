@@ -36,15 +36,7 @@ import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
-import {
-  annotateBackendOpenAiFallbackResponse,
-  apiDelete,
-  apiGet,
-  apiPost,
-  apiPostBackendOnly,
-  apiPostForm,
-  sendClientTurnLog,
-} from "@/lib/api";
+import { apiDelete, apiGet, apiPost, apiPostForm, acquireRequestSlot } from "@/lib/api";
 import { computeChatScreenLayout } from "@/lib/chatScreenLayout";
 import {
   BackendChatResponse,
@@ -71,14 +63,6 @@ import {
 } from "@/lib/localTurnTimeouts";
 import { shouldAutoSpeakReply } from "@/lib/replyPlaybackPolicy";
 import { ensureNotificationsReady, scheduleReminder } from "@/lib/reminders";
-import {
-  EMPTY_AUDIO_MESSAGE,
-  MIC_START_TIMEOUT_MESSAGE,
-  RecordingStartCancelledError,
-  RecordingStartTimeoutError,
-  assertUsableAudioFile,
-  withRecordingStartTimeout,
-} from "@/lib/voiceRecording";
 
 type ChatSessionRecord = {
   id: string;
@@ -122,10 +106,6 @@ const CHAT_SESSIONS_STORAGE_PREFIX = "chat_sessions_v2";
 const HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX = "hidden_chat_session_ids_v2";
 const HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX = "hidden_chat_item_ids_v1";
 const MODEL_SETUP_ALERT_THROTTLE_MS = 5 * 60 * 1000;
-const VOICE_UNAVAILABLE_MESSAGE =
-  "Voice is unavailable right now. Please try again.";
-const CHAT_CLOUD_FALLBACK_DISABLED_MESSAGE =
-  "I need backend/OpenAI help for this. Turn on cloud fallback in settings to answer it.";
 
 function normalizeHandsFreeText(value?: string | null) {
   return String(value || "")
@@ -369,12 +349,9 @@ export default function Home() {
     "idle"
   );
   const stopWhenReadyRef = useRef(false);
-  const recordingStartCancelledRef = useRef(false);
-  const voiceBusyRequestIdRef = useRef<string | null>(null);
   const drawerProgress = useRef(new Animated.Value(0)).current;
   const [drawerMounted, setDrawerMounted] = useState(false);
   const scrollViewRef = useRef<ScrollView | null>(null);
-  const activeChatSessionIdRef = useRef<string | null>(null);
   const historyLongPressTriggeredRef = useRef(false);
   const handsFreeDesiredModeRef = useRef<"off" | "wake" | "command">("off");
   const handsFreeStartingRef = useRef(false);
@@ -480,10 +457,6 @@ export default function Home() {
     chatSessionsRef.current = chatSessions;
   }, [chatSessions]);
 
-  useEffect(() => {
-    activeChatSessionIdRef.current = activeChatSessionId;
-  }, [activeChatSessionId]);
-
   const latestHistory = useMemo(() => {
     return chatSessions
       .filter((session) => !hiddenChatSessionIdSet.has(session.id))
@@ -554,14 +527,13 @@ export default function Home() {
       : `Ask ${assistantLabel}`;
 
   const handsFreeSummaryText = recordingPreparing && activeSurface === "live"
-    ? "Tap stop if you need to cancel."
-    : listening && activeSurface === "live"
-      ? "Tap stop when done."
-      : handsFreeMode === "command"
+    ? "Keep holding the orb. Start speaking when the orb begins pulsing."
+    :
+    handsFreeMode === "command"
       ? "Listening for your request…"
       : settings.handsFreeEnabled
-        ? `Say "${handsFreeWakePhrase}" or tap the orb.`
-        : "Tap the orb to start. Tap stop when done.";
+        ? `Say "${handsFreeWakePhrase}" or hold the orb.`
+        : "Press and hold the orb to record. Release to stop and send.";
 
   const drawerTranslateX = drawerProgress.interpolate({
     inputRange: [0, 1],
@@ -1186,9 +1158,7 @@ export default function Home() {
     const reconciled = reconcileChatSessions(visibleItemsFromApi, storedSessions);
     setChatSessions(reconciled);
     chatSessionsRef.current = reconciled;
-    if (!activeChatSessionIdRef.current && !activeChatRequestIdRef.current) {
-      setActiveChatSessionId(null);
-    }
+    setActiveChatSessionId(null);
 
     try {
       await Promise.all([
@@ -1280,11 +1250,9 @@ export default function Home() {
 
     const timestamp = item.created_at || item.datetime || new Date().toISOString();
 
-    const currentSessionId = activeChatSessionIdRef.current;
-
-    if (currentSessionId) {
+    if (activeChatSessionId) {
       const targetIndex = workingSessions.findIndex(
-        (session) => session.id === currentSessionId
+        (session) => session.id === activeChatSessionId
       );
 
       if (targetIndex >= 0) {
@@ -1298,13 +1266,11 @@ export default function Home() {
       } else {
         const nextSession = createChatSessionFromItem(item);
         workingSessions = [nextSession, ...workingSessions];
-        activeChatSessionIdRef.current = nextSession.id;
         setActiveChatSessionId(nextSession.id);
       }
     } else {
       const nextSession = createChatSessionFromItem(item);
       workingSessions = [nextSession, ...workingSessions];
-      activeChatSessionIdRef.current = nextSession.id;
       setActiveChatSessionId(nextSession.id);
     }
 
@@ -1379,7 +1345,6 @@ export default function Home() {
           style: "destructive",
           onPress: async () => {
             if (activeChatSessionId === targetItem.id) {
-              activeChatSessionIdRef.current = null;
               setActiveChatSessionId(null);
             }
 
@@ -1460,7 +1425,7 @@ export default function Home() {
 
       return {
         requestId,
-        sessionId: activeChatSessionIdRef.current,
+        sessionId: activeChatSessionId,
         source,
         userMessage: fallbackUserMessage,
         assistantText: message,
@@ -1528,10 +1493,6 @@ export default function Home() {
     });
   }
 
-  function logClientTurn(payload: Parameters<typeof sendClientTurnLog>[0]) {
-    sendClientTurnLog(payload);
-  }
-
   function clearPendingAssistant(requestId: string) {
     setPendingChatTurn((current) =>
       current?.requestId === requestId ? null : current,
@@ -1560,7 +1521,6 @@ export default function Home() {
   }
 
   function startNewChat() {
-    activeChatSessionIdRef.current = null;
     setActiveChatSessionId(null);
     setText("");
     setComposerInputHeight(MIN_INPUT_HEIGHT);
@@ -1577,7 +1537,6 @@ export default function Home() {
     closeDrawer();
     closeHistoryItemActions();
     setHistorySearch("");
-    activeChatSessionIdRef.current = item.id;
     setActiveChatSessionId(item.id);
     setTimeout(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
@@ -1656,15 +1615,18 @@ export default function Home() {
     const cleaned = stripAssistantTrigger(rawMessage);
     if (!cleaned.trim()) return;
 
+    const slot = acquireRequestSlot("chat");
+    if (!slot.acquired) return;
+
     const requestId = nextChatRequestId(source);
-    const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
+    const startMs = Date.now();
 
     try {
       setBusy(true);
       setPendingChatTurn({
         requestId,
-        sessionId: currentSessionId,
+        sessionId: activeChatSessionId,
         source,
         userMessage: cleaned,
         status: "thinking",
@@ -1724,110 +1686,12 @@ export default function Home() {
       }
     } catch (error: unknown) {
       if (isActiveChatRequest(requestId)) {
-        if (isLocalTurnTimeoutError(error)) {
-          logClientTurn({
-            event: "client_local_turn_failed",
-            user_id: profile.userId,
-            request_id: requestId,
-            channel: source,
-            question: cleaned,
-            question_length: cleaned.length,
-            agent_source: "local_model",
-            route_taken: "local_answer",
-            fallback_reason: "local_timeout",
-            error_type: "local_timeout",
-          });
-
-          if (settings.allowCloudFallback) {
-            try {
-              logClientTurn({
-                event: "client_backend_fallback_started",
-                user_id: profile.userId,
-                request_id: requestId,
-                channel: source,
-                question: cleaned,
-                question_length: cleaned.length,
-                agent_source: "backend_openai",
-                route_taken: "fallback_openai",
-                fallback_reason: "local_timeout",
-              });
-              const backendResponse = await apiPostBackendOnly<BackendChatResponse>(
-                "/api/chat",
-                {
-                  user_id: profile.userId,
-                  message: cleaned,
-                  reply_language: settings.languageMode,
-                },
-              );
-              const response = annotateBackendOpenAiFallbackResponse(
-                backendResponse,
-                {
-                  fallbackReason: "local_timeout",
-                  originalRoute: "local_answer",
-                },
-              );
-
-              if (!isActiveChatRequest(requestId)) {
-                return;
-              }
-
-              const nextItem = normalizeChatTurnPayload(response, cleaned);
-              clearPendingAssistant(requestId);
-              const mergedHistory = await refreshHistoryAndSessions([nextItem]);
-              await attachItemToCurrentChat(nextItem, mergedHistory);
-              logClientTurn({
-                event: "client_backend_fallback_completed",
-                user_id: profile.userId,
-                request_id: requestId,
-                channel: source,
-                question: cleaned,
-                answer: nextItem.details || "",
-                question_length: cleaned.length,
-                answer_length: String(nextItem.details || "").length,
-                agent_source: "backend_openai",
-                route_taken: "fallback_openai",
-                fallback_reason: "local_timeout",
-              });
-              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-              if (
-                nextItem.details &&
-                shouldAutoSpeakReply({
-                  source,
-                  autoSpeakReplies: settings.autoSpeakReplies,
-                  handsFreeMode,
-                })
-              ) {
-                void playAgentReply(nextItem.details);
-              }
-
-              if (nextItem.intent === "reminder" && nextItem.datetime) {
-                setPendingReminder({
-                  title: nextItem.title || "Reminder",
-                  details: nextItem.details || nextItem.raw_text,
-                  datetimeText: nextItem.datetime,
-                });
-                setConfirmOpen(true);
-              }
-              return;
-            } catch (fallbackError) {
-              warnChatFailure(fallbackError, requestId, source);
-            }
-          }
-
-          showPendingAssistantError(
-            requestId,
-            CHAT_CLOUD_FALLBACK_DISABLED_MESSAGE,
-            cleaned,
-            source,
-          );
-          return;
-        }
         const message = assistantFailureMessage(error);
         showPendingAssistantError(requestId, message, cleaned, source);
         warnChatFailure(error, requestId, source);
       }
     } finally {
+      slot.release();
       if (isActiveChatRequest(requestId)) {
         activeChatRequestIdRef.current = null;
         setBusy(false);
@@ -1838,6 +1702,8 @@ export default function Home() {
         setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
         queueHandsFreeRestart("wake", 520);
       }
+      
+      console.info(`[perf:chat_final] text turn completed | ${Date.now() - startMs}ms | ${JSON.stringify({ requestId })}`);
     }
   }
 
@@ -1845,51 +1711,14 @@ export default function Home() {
     await submitChatMessage(text, "text");
   }
 
-  async function cleanupVoiceRecordingState(options?: { cancelStartup?: boolean }) {
-    if (options?.cancelStartup) {
-      recordingStartCancelledRef.current = true;
-    }
-    recordingPhaseRef.current = "idle";
-    stopWhenReadyRef.current = false;
-    recordingRef.current = null;
-    setRecording(null);
-    setRecordingPreparing(false);
-    setListening(false);
-    setActiveSurface(null);
-    await resetAudioMode();
-  }
-
   async function startRecording(surface: RecorderSurface) {
     if (busy || recordingPhaseRef.current !== "idle") return;
-    let nextRecording: Audio.Recording | null = null;
-
-    async function cleanupLateRecording() {
-      const target = nextRecording;
-      nextRecording = null;
-      if (!target) return;
-      try {
-        await target.stopAndUnloadAsync();
-      } catch {
-        try {
-          await (target as any).unloadAsync?.();
-        } catch {
-          // ignore late startup cleanup failures
-        }
-      }
-    }
-
-    async function assertStartupActive() {
-      if (!recordingStartCancelledRef.current) return;
-      await cleanupLateRecording();
-      throw new RecordingStartCancelledError();
-    }
 
     try {
       await abortHandsFreeRecognizer(false);
       await releaseReplySound();
       recordingPhaseRef.current = "starting";
       stopWhenReadyRef.current = false;
-      recordingStartCancelledRef.current = false;
       setActiveSurface(surface);
       setRecordingPreparing(true);
       setListening(false);
@@ -1898,33 +1727,25 @@ export default function Home() {
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
-        await cleanupVoiceRecordingState();
+        recordingPhaseRef.current = "idle";
+        setRecordingPreparing(false);
+        setListening(false);
+        setActiveSurface(null);
         Alert.alert("Mic permission needed", "Please allow microphone access.");
         return;
       }
 
-      nextRecording = await withRecordingStartTimeout(
-        (async () => {
-          await Audio.setAudioModeAsync({
-            allowsRecordingIOS: true,
-            playsInSilentModeIOS: true,
-          });
-          await assertStartupActive();
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
 
-          const createdRecording = new Audio.Recording();
-          nextRecording = createdRecording;
-          await createdRecording.prepareToRecordAsync(
-            Audio.RecordingOptionsPresets.HIGH_QUALITY
-          );
-          await assertStartupActive();
-
-          await createdRecording.startAsync();
-          await assertStartupActive();
-          return createdRecording;
-        })(),
+      const nextRecording = new Audio.Recording();
+      await nextRecording.prepareToRecordAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
+      await nextRecording.startAsync();
       await wait(RECORDING_STARTUP_SETTLE_MS);
-      await assertStartupActive();
 
       recordingRef.current = nextRecording;
       setRecording(nextRecording);
@@ -1938,40 +1759,37 @@ export default function Home() {
         await stopAndAnalyze();
       }
     } catch (error: unknown) {
-      recordingStartCancelledRef.current = true;
-      await cleanupLateRecording();
-      await cleanupVoiceRecordingState();
-      if (error instanceof RecordingStartCancelledError) {
-        return;
-      }
+      recordingPhaseRef.current = "idle";
+      stopWhenReadyRef.current = false;
+      recordingRef.current = null;
+      setRecording(null);
+      setRecordingPreparing(false);
+      setListening(false);
+      setActiveSurface(null);
+      await resetAudioMode();
       const message =
-        error instanceof RecordingStartTimeoutError
-          ? MIC_START_TIMEOUT_MESSAGE
-          : error instanceof Error
-            ? error.message
-            : "Could not start recording.";
+        error instanceof Error ? error.message : "Could not start recording.";
       Alert.alert("Error", message);
     }
   }
 
   async function stopAndAnalyze() {
     if (recordingPhaseRef.current === "starting") {
-      await cleanupVoiceRecordingState({ cancelStartup: true });
+      stopWhenReadyRef.current = true;
       return;
     }
 
     const activeRecording = recordingRef.current;
     if (!activeRecording || recordingPhaseRef.current !== "recording") {
-      if (recordingPhaseRef.current !== "idle") {
-        await cleanupVoiceRecordingState();
-      }
       return;
     }
 
+    const slot = acquireRequestSlot("voice");
+    if (!slot.acquired) return;
+
     const requestId = nextChatRequestId("voice");
-    const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
-    voiceBusyRequestIdRef.current = requestId;
+    const startMs = Date.now();
 
     try {
       recordingPhaseRef.current = "stopping";
@@ -1979,7 +1797,7 @@ export default function Home() {
       setBusy(true);
       setPendingChatTurn({
         requestId,
-        sessionId: currentSessionId,
+        sessionId: activeChatSessionId,
         source: "voice",
         userMessage: "Voice message",
         status: "thinking",
@@ -1997,7 +1815,6 @@ export default function Home() {
 
       const uri = activeRecording.getURI();
       if (!uri) throw new Error("No audio file URI");
-      await assertUsableAudioFile(uri);
 
       const form = new FormData();
       form.append(
@@ -2055,34 +1872,27 @@ export default function Home() {
       }
     } catch (error: unknown) {
       if (isActiveChatRequest(requestId)) {
-        const rawMessage = error instanceof Error ? error.message : "";
-        const message =
-          rawMessage === EMPTY_AUDIO_MESSAGE
-            ? EMPTY_AUDIO_MESSAGE
-            : VOICE_UNAVAILABLE_MESSAGE;
+        const message = assistantFailureMessage(error);
         showPendingAssistantError(requestId, message, "Voice message", "voice");
         warnChatFailure(error, requestId, "voice");
       }
     } finally {
-      await cleanupVoiceRecordingState();
+      slot.release();
+      recordingPhaseRef.current = "idle";
+      stopWhenReadyRef.current = false;
+      recordingRef.current = null;
+      setRecording(null);
+      setRecordingPreparing(false);
+      setListening(false);
       if (isActiveChatRequest(requestId)) {
         activeChatRequestIdRef.current = null;
-        if (voiceBusyRequestIdRef.current === requestId) {
-          setBusy(false);
-        }
+        setBusy(false);
       }
-      if (voiceBusyRequestIdRef.current === requestId) {
-        voiceBusyRequestIdRef.current = null;
-      }
+      setActiveSurface(null);
+      await resetAudioMode();
+      
+      console.info(`[perf:stt] voice turn completed | ${Date.now() - startMs}ms | ${JSON.stringify({ requestId })}`);
     }
-  }
-
-  async function closeVoiceSheetSafely() {
-    const phase = recordingPhaseRef.current;
-    if (phase === "starting" || phase === "recording") {
-      await stopAndAnalyze();
-    }
-    setVoiceSheetOpen(false);
   }
 
   async function handleQuickMicPress() {
@@ -2099,17 +1909,18 @@ export default function Home() {
     await startRecording("quick");
   }
 
-  async function handleLiveOrbPress() {
-    if (busy && recordingPhaseRef.current === "idle") return;
+  async function handleLiveOrbPressIn() {
+    if (busy || recordingPhaseRef.current !== "idle") return;
+    await startRecording("live");
+  }
+
+  async function handleLiveOrbPressOut() {
     if (
       recordingPhaseRef.current === "starting" ||
       recordingPhaseRef.current === "recording"
     ) {
       await stopAndAnalyze();
-      return;
     }
-
-    await startRecording("live");
   }
 
   async function confirmScheduleReminder() {
@@ -2463,11 +2274,11 @@ export default function Home() {
 
                 {recordingPreparing ? (
                   <Text style={styles.composerHintText}>
-                    Preparing microphone... tap stop to cancel
+                    Preparing microphone... keep holding and start speaking when recording begins
                   </Text>
                 ) : listening ? (
                   <Text style={styles.composerHintText}>
-                    Recording in progress... tap stop when done
+                    Recording in progress... tap stop or release the orb
                   </Text>
                 ) : null}
               </View>
@@ -2634,9 +2445,7 @@ export default function Home() {
         transparent
         visible={voiceSheetOpen}
         animationType="slide"
-        onRequestClose={() => {
-          void closeVoiceSheetSafely();
-        }}
+        onRequestClose={() => setVoiceSheetOpen(false)}
       >
         <LinearGradient colors={Brand.gradients.page} style={styles.voiceScreen}>
           <StatusBar style="dark" />
@@ -2655,12 +2464,7 @@ export default function Home() {
               <Text style={styles.voiceLiveBadgeText}>Live</Text>
             </View>
 
-            <Pressable
-              onPress={() => {
-                void closeVoiceSheetSafely();
-              }}
-              style={styles.voiceCloseButton}
-            >
+            <Pressable onPress={() => setVoiceSheetOpen(false)} style={styles.voiceCloseButton}>
               <Ionicons name="close" size={18} color={Brand.cream} />
             </Pressable>
           </View>
@@ -2669,7 +2473,8 @@ export default function Home() {
             <View pointerEvents="none" style={styles.voiceOrbGlow} />
             <Orb
               listening={listening && activeSurface === "live"}
-              onPress={handleLiveOrbPress}
+              onPressIn={handleLiveOrbPressIn}
+              onPressOut={handleLiveOrbPressOut}
               size={orbSize}
             />
 
@@ -2722,7 +2527,7 @@ export default function Home() {
             <View style={styles.voiceBottomRow}>
               <Pressable
                 onPress={() => {
-                  void closeVoiceSheetSafely();
+                  setVoiceSheetOpen(false);
                 }}
                 style={styles.voiceDockButton}
               >
@@ -2736,8 +2541,15 @@ export default function Home() {
               </View>
 
               <Pressable
-                onPress={() => {
-                  void closeVoiceSheetSafely();
+                onPress={async () => {
+                  if (
+                    recordingPhaseRef.current === "starting" ||
+                    recordingPhaseRef.current === "recording"
+                  ) {
+                    await stopAndAnalyze();
+                  } else {
+                    setVoiceSheetOpen(false);
+                  }
                 }}
                 style={styles.voiceDockButtonDanger}
               >
