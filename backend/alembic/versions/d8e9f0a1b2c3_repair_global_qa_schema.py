@@ -1,0 +1,275 @@
+"""repair global qa schema
+
+Revision ID: d8e9f0a1b2c3
+Revises: c3f1a8d4e6b2
+Create Date: 2026-05-14 00:00:00.000000
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy import inspect
+
+
+revision: str = "d8e9f0a1b2c3"
+down_revision: Union[str, Sequence[str], None] = "c3f1a8d4e6b2"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def _inspector():
+    return inspect(op.get_bind())
+
+
+def _has_table(table_name: str) -> bool:
+    return _inspector().has_table(table_name)
+
+
+def _has_column(table_name: str, column_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
+    return column_name in {column["name"] for column in _inspector().get_columns(table_name)}
+
+
+def _has_index(table_name: str, index_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
+    return index_name in {idx["name"] for idx in _inspector().get_indexes(table_name)}
+
+
+def _has_columns(table_name: str, columns: list[str]) -> bool:
+    if not _has_table(table_name):
+        return False
+    existing = {column["name"] for column in _inspector().get_columns(table_name)}
+    return all(column in existing for column in columns)
+
+
+def _add_column_if_missing(table_name: str, column: sa.Column) -> None:
+    if _has_table(table_name) and not _has_column(table_name, str(column.name)):
+        op.add_column(table_name, column)
+
+
+def _create_index(table_name: str, index_name: str, columns: list[str], *, unique: bool = False) -> None:
+    if _has_table(table_name) and _has_columns(table_name, columns) and not _has_index(table_name, index_name):
+        op.create_index(index_name, table_name, columns, unique=unique)
+
+
+def _now_default():
+    return sa.text("CURRENT_TIMESTAMP")
+
+
+def _ensure_global_qa_cache() -> None:
+    if not _has_table("global_qa_cache"):
+        op.create_table(
+            "global_qa_cache",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("canonical_question", sa.String(), nullable=False),
+            sa.Column("normalized_question", sa.String(), nullable=False),
+            sa.Column("answer", sa.String(), nullable=False),
+            sa.Column("answer_language", sa.String(), nullable=False, server_default="en"),
+            sa.Column("topic", sa.String(), nullable=True),
+            sa.Column("status", sa.String(), nullable=False, server_default="candidate"),
+            sa.Column("hit_count", sa.Integer(), nullable=False, server_default="1"),
+            sa.Column("distinct_user_count", sa.Integer(), nullable=False, server_default="1"),
+            sa.Column("observed_question_count", sa.Integer(), nullable=False, server_default="1"),
+            sa.Column("source_question_hashes_json", sa.String(), nullable=False, server_default="[]"),
+            sa.Column("observed_safe_questions_json", sa.String(), nullable=False, server_default="[]"),
+            sa.Column("aliases_json", sa.String(), nullable=False, server_default="[]"),
+            sa.Column("answer_hash", sa.String(), nullable=False),
+            sa.Column("embedding_json", sa.String(), nullable=True),
+            sa.Column("embedding_kind", sa.String(), nullable=False, server_default="token_hash_v1"),
+            sa.Column("embedding_norm", sa.Float(), nullable=False, server_default="0.0"),
+            sa.Column("confidence", sa.Float(), nullable=False, server_default="0.0"),
+            sa.Column("safety_label", sa.String(), nullable=False, server_default="general"),
+            sa.Column("model_used", sa.String(), nullable=True),
+            sa.Column("first_seen_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("last_seen_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("expires_at", sa.DateTime(), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("reviewed_at", sa.DateTime(), nullable=True),
+            sa.Column("review_notes", sa.String(), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+        )
+    else:
+        for column in [
+            sa.Column("canonical_question", sa.String(), nullable=False, server_default=""),
+            sa.Column("normalized_question", sa.String(), nullable=False, server_default=""),
+            sa.Column("answer", sa.String(), nullable=False, server_default=""),
+            sa.Column("answer_language", sa.String(), nullable=False, server_default="en"),
+            sa.Column("topic", sa.String(), nullable=True),
+            sa.Column("status", sa.String(), nullable=False, server_default="candidate"),
+            sa.Column("hit_count", sa.Integer(), nullable=False, server_default="1"),
+            sa.Column("distinct_user_count", sa.Integer(), nullable=False, server_default="1"),
+            sa.Column("observed_question_count", sa.Integer(), nullable=False, server_default="1"),
+            sa.Column("source_question_hashes_json", sa.String(), nullable=False, server_default="[]"),
+            sa.Column("observed_safe_questions_json", sa.String(), nullable=False, server_default="[]"),
+            sa.Column("aliases_json", sa.String(), nullable=False, server_default="[]"),
+            sa.Column("answer_hash", sa.String(), nullable=False, server_default=""),
+            sa.Column("embedding_json", sa.String(), nullable=True),
+            sa.Column("embedding_kind", sa.String(), nullable=False, server_default="token_hash_v1"),
+            sa.Column("embedding_norm", sa.Float(), nullable=False, server_default="0.0"),
+            sa.Column("confidence", sa.Float(), nullable=False, server_default="0.0"),
+            sa.Column("safety_label", sa.String(), nullable=False, server_default="general"),
+            sa.Column("model_used", sa.String(), nullable=True),
+            sa.Column("first_seen_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("last_seen_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("expires_at", sa.DateTime(), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("reviewed_at", sa.DateTime(), nullable=True),
+            sa.Column("review_notes", sa.String(), nullable=True),
+        ]:
+            _add_column_if_missing("global_qa_cache", column)
+
+    for index_name, columns in {
+        "ix_global_qa_cache_normalized_question": ["normalized_question"],
+        "ix_global_qa_cache_answer_language": ["answer_language"],
+        "ix_global_qa_cache_topic": ["topic"],
+        "ix_global_qa_cache_status": ["status"],
+        "ix_global_qa_cache_hit_count": ["hit_count"],
+        "ix_global_qa_cache_distinct_user_count": ["distinct_user_count"],
+        "ix_global_qa_cache_answer_hash": ["answer_hash"],
+        "ix_global_qa_cache_embedding_kind": ["embedding_kind"],
+        "ix_global_qa_cache_safety_label": ["safety_label"],
+        "ix_global_qa_cache_model_used": ["model_used"],
+        "ix_global_qa_cache_first_seen_at": ["first_seen_at"],
+        "ix_global_qa_cache_last_seen_at": ["last_seen_at"],
+        "ix_global_qa_cache_expires_at": ["expires_at"],
+        "ix_global_qa_cache_updated_at": ["updated_at"],
+    }.items():
+        _create_index("global_qa_cache", index_name, columns)
+
+
+def _ensure_global_qa_observation() -> None:
+    if not _has_table("global_qa_observation"):
+        op.create_table(
+            "global_qa_observation",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("global_cache_id", sa.Integer(), nullable=False),
+            sa.Column("user_id_hash", sa.String(), nullable=False),
+            sa.Column("question_hash", sa.String(), nullable=False),
+            sa.Column("normalized_question", sa.String(), nullable=False),
+            sa.Column("similarity_score", sa.Float(), nullable=False, server_default="0.0"),
+            sa.Column("answer_similarity_score", sa.Float(), nullable=False, server_default="1.0"),
+            sa.Column("backend_answer_hash", sa.String(), nullable=False),
+            sa.Column("conflicting_answer_hashes_json", sa.String(), nullable=False, server_default="[]"),
+            sa.Column("model_used", sa.String(), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.ForeignKeyConstraint(["global_cache_id"], ["global_qa_cache.id"]),
+            sa.PrimaryKeyConstraint("id"),
+        )
+    else:
+        for column in [
+            sa.Column("global_cache_id", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("user_id_hash", sa.String(), nullable=False, server_default=""),
+            sa.Column("question_hash", sa.String(), nullable=False, server_default=""),
+            sa.Column("normalized_question", sa.String(), nullable=False, server_default=""),
+            sa.Column("similarity_score", sa.Float(), nullable=False, server_default="0.0"),
+            sa.Column("answer_similarity_score", sa.Float(), nullable=False, server_default="1.0"),
+            sa.Column("backend_answer_hash", sa.String(), nullable=False, server_default=""),
+            sa.Column("conflicting_answer_hashes_json", sa.String(), nullable=False, server_default="[]"),
+            sa.Column("model_used", sa.String(), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+        ]:
+            _add_column_if_missing("global_qa_observation", column)
+
+    for index_name, columns in {
+        "ix_global_qa_observation_global_cache_id": ["global_cache_id"],
+        "ix_global_qa_observation_user_id_hash": ["user_id_hash"],
+        "ix_global_qa_observation_question_hash": ["question_hash"],
+        "ix_global_qa_observation_similarity_score": ["similarity_score"],
+        "ix_global_qa_observation_answer_similarity_score": ["answer_similarity_score"],
+        "ix_global_qa_observation_backend_answer_hash": ["backend_answer_hash"],
+        "ix_global_qa_observation_model_used": ["model_used"],
+        "ix_global_qa_observation_created_at": ["created_at"],
+    }.items():
+        _create_index("global_qa_observation", index_name, columns)
+
+
+def _ensure_global_qa_tombstone() -> None:
+    if not _has_table("global_qa_tombstone"):
+        op.create_table(
+            "global_qa_tombstone",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("global_cache_id", sa.Integer(), nullable=False),
+            sa.Column("deleted_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("reason", sa.String(), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+        )
+    else:
+        for column in [
+            sa.Column("global_cache_id", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("deleted_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.Column("reason", sa.String(), nullable=True),
+        ]:
+            _add_column_if_missing("global_qa_tombstone", column)
+
+    _create_index("global_qa_tombstone", "ix_global_qa_tombstone_global_cache_id", ["global_cache_id"])
+    _create_index("global_qa_tombstone", "ix_global_qa_tombstone_deleted_at", ["deleted_at"])
+
+
+def _ensure_openai_usage_log() -> None:
+    if not _has_table("openai_usage_log"):
+        op.create_table(
+            "openai_usage_log",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("request_id", sa.String(), nullable=True),
+            sa.Column("user_id_hash", sa.String(), nullable=True),
+            sa.Column("route", sa.String(), nullable=False),
+            sa.Column("model_used", sa.String(), nullable=False),
+            sa.Column("model_tier", sa.String(), nullable=False),
+            sa.Column("reason", sa.String(), nullable=True),
+            sa.Column("estimated_input_tokens", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("estimated_output_tokens", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("estimated_cost_usd", sa.Float(), nullable=False, server_default="0.0"),
+            sa.Column("actual_input_tokens", sa.Integer(), nullable=True),
+            sa.Column("actual_output_tokens", sa.Integer(), nullable=True),
+            sa.Column("actual_cost_usd", sa.Float(), nullable=True),
+            sa.Column("cache_hit", sa.Boolean(), nullable=False, server_default=sa.false()),
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+            sa.PrimaryKeyConstraint("id"),
+        )
+    else:
+        for column in [
+            sa.Column("request_id", sa.String(), nullable=True),
+            sa.Column("user_id_hash", sa.String(), nullable=True),
+            sa.Column("route", sa.String(), nullable=False, server_default="api_chat"),
+            sa.Column("model_used", sa.String(), nullable=False, server_default="unknown"),
+            sa.Column("model_tier", sa.String(), nullable=False, server_default="unknown"),
+            sa.Column("reason", sa.String(), nullable=True),
+            sa.Column("estimated_input_tokens", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("estimated_output_tokens", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("estimated_cost_usd", sa.Float(), nullable=False, server_default="0.0"),
+            sa.Column("actual_input_tokens", sa.Integer(), nullable=True),
+            sa.Column("actual_output_tokens", sa.Integer(), nullable=True),
+            sa.Column("actual_cost_usd", sa.Float(), nullable=True),
+            sa.Column("cache_hit", sa.Boolean(), nullable=False, server_default=sa.false()),
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=_now_default()),
+        ]:
+            _add_column_if_missing("openai_usage_log", column)
+
+    for index_name, columns in {
+        "ix_openai_usage_log_request_id": ["request_id"],
+        "ix_openai_usage_log_user_id_hash": ["user_id_hash"],
+        "ix_openai_usage_log_route": ["route"],
+        "ix_openai_usage_log_model_used": ["model_used"],
+        "ix_openai_usage_log_model_tier": ["model_tier"],
+        "ix_openai_usage_log_cache_hit": ["cache_hit"],
+        "ix_openai_usage_log_created_at": ["created_at"],
+    }.items():
+        _create_index("openai_usage_log", index_name, columns)
+
+
+def upgrade() -> None:
+    _ensure_global_qa_cache()
+    _ensure_global_qa_observation()
+    _ensure_global_qa_tombstone()
+    _ensure_openai_usage_log()
+
+
+def downgrade() -> None:
+    # Intentionally non-destructive: this repair migration must never drop
+    # production cache data when rolled back during incident recovery.
+    pass
