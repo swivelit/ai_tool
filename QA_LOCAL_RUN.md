@@ -1,6 +1,6 @@
 # Tamil AI: Local QA Automation Guide
 
-This guide provides instructions for Senior QA Engineers and Developers to execute the regression suite on local machines. 
+This guide provides instructions for QA guide to execute the regression suite on local machines. 
 
 ## 📋 Prerequisites
 
