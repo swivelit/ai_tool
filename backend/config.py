@@ -118,6 +118,7 @@ def _env_float(name: str, default: float, *, minimum: Optional[float] = None) ->
 
 
 OPENAI_API_KEY = _env_str("OPENAI_API_KEY", "")
+SARVAM_API_KEY = _env_str("SARVAM_API_KEY", "")
 OPENAI_MODEL = _env_str("OPENAI_MODEL", "gpt-4.1-mini")
 OPENAI_TIMEOUT = _env_int("OPENAI_TIMEOUT", 60, minimum=5)
 OPENAI_MAX_RETRIES = _env_int("OPENAI_MAX_RETRIES", 3, minimum=1)

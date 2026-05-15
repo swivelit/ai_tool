@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from zoneinfo import ZoneInfo
+from config import SARVAM_API_KEY
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -205,7 +206,6 @@ def _require_parent_user(session: Session, user_id: int) -> User:
 PERSONALITY_QUESTIONS_VERSION = 1
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_JSON_MODEL = os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini")
-SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
 SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
 SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
 
@@ -2031,7 +2031,7 @@ def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> st
         with open(file_path, "rb") as audio_file:
             response = requests.post(
                 SARVAM_STT_URL,
-                headers={"api-subscription-key": api_key},
+                headers={"api-subscription-key": SARVAM_API_KEY},
                 files={"file": (Path(file_path).name, audio_file)},
                 data=form_data,
                 timeout=(5, 60),
@@ -2605,7 +2605,7 @@ def api_tts(
     try:
         response = requests.post(
             SARVAM_TTS_URL,
-            headers=headers,
+            headers={"api-subscription-key": SARVAM_API_KEY},
             json=req_payload,
             timeout=(5, 30),
         )
@@ -2623,7 +2623,7 @@ def api_tts(
         try:
             response = requests.post(
                 SARVAM_TTS_URL,
-                headers=headers,
+                headers={"api-subscription-key": SARVAM_API_KEY},
                 json=legacy_payload,
                 timeout=(5, 30),
             )
