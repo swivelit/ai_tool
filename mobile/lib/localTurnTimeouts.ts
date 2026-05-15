@@ -2,6 +2,12 @@ export const LOCAL_TURN_TIMEOUT_ERROR_CODE = "LOCAL_TURN_TIMEOUT";
 
 export type LocalTurnSource = "text" | "voice" | "handsfree" | string;
 
+export type FriendlyTimeoutState = {
+  title: string;
+  message: string;
+  suggestedAction: "retry" | "open_model_setup" | "wait";
+};
+
 export type LocalTurnTimeoutDeviceInfo = {
   lowPowerMode?: boolean | null;
   lowMemory?: boolean | null;
@@ -10,6 +16,7 @@ export type LocalTurnTimeoutDeviceInfo = {
   thermalState?: string | null;
   availableMemoryBytes?: number | null;
   preferredTier?: "lite" | "standard" | "pro" | string | null;
+  deviceTier?: "low" | "mid" | "high" | string | null;
 };
 
 export class LocalTurnTimeoutError extends Error {
@@ -83,11 +90,24 @@ export function getLocalTurnTimeoutMs(input: {
     }
   }
 
-  return Math.min(Math.max(timeoutMs, isVoiceLike ? 90_000 : 20_000), 150_000);
+  if (deviceInfo.deviceTier === "high") {
+    timeoutMs -= isVoiceLike ? 10_000 : 5_000;
+  }
+
+  const minFloor = isVoiceLike ? (deviceInfo.deviceTier === "high" ? 80_000 : 90_000) : 15_000;
+  return Math.min(Math.max(timeoutMs, minFloor), 150_000);
 }
 
 export function friendlyLocalTimeoutMessage() {
   return "This is taking longer than expected on this phone. Please try again, or open model setup to check the local AI files.";
+}
+
+export function getFriendlyTimeoutState(source?: string): FriendlyTimeoutState {
+  return {
+    title: "Taking too long",
+    message: friendlyLocalTimeoutMessage(),
+    suggestedAction: "open_model_setup"
+  };
 }
 
 export function withLocalTimeout<T>(
