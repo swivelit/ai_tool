@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  LogBox,
   Modal,
   Pressable,
   StyleSheet,
@@ -18,9 +17,18 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
-import { resolveDesiredRoute } from "@/lib/appBoot";
+import {
+  resolveDesiredRoute,
+  createBootTimeline,
+  recordBootPhase,
+  emitBootPerfLog,
+  getCurrentBootPhase,
+  BOOT_PHASE_LABELS,
+  type BootTimeline
+} from "@/lib/appBoot";
+import { enqueueLocalIdleJob } from "@/lib/localIdleQueue";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
-import { isAnyE2eEnvEnabled, isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
+import { isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
 import {
   getModelDeliveryMode,
   getModelInstallStatus,
@@ -46,11 +54,7 @@ type AlertState = {
   onDismiss?: (() => void) | undefined;
 } | null;
 
-if (isAnyE2eEnvEnabled()) {
-  LogBox.ignoreAllLogs(true);
-}
-
-function BootScreen() {
+function BootScreen({ phaseLabel = "Setting things up." }: { phaseLabel?: string }) {
   return (
     <LinearGradient
       colors={Brand.gradients.page}
@@ -68,7 +72,7 @@ function BootScreen() {
         <View style={styles.bootCard}>
           <ActivityIndicator size="small" color={Brand.bronze} />
           <Text style={styles.bootTitle}>Loading J AI...</Text>
-          <Text style={styles.bootText}>Setting things up.</Text>
+          <Text style={styles.bootText}>{phaseLabel}</Text>
         </View>
       </GlassCard>
     </LinearGradient>
@@ -281,6 +285,38 @@ function AppShell() {
   const [modelStatusError, setModelStatusError] = useState<unknown>(null);
   const [profileRetrying, setProfileRetrying] = useState(false);
 
+  const bootTimelineRef = useRef<BootTimeline | null>(null);
+  if (!bootTimelineRef.current) {
+    bootTimelineRef.current = createBootTimeline();
+  }
+  const timeline = bootTimelineRef.current;
+  const bootReportedRef = useRef(false);
+
+  const currentPhase = getCurrentBootPhase({
+    authLoading,
+    profileLoading,
+    modelStatusLoading
+  });
+  const bootPhaseLabel = BOOT_PHASE_LABELS[currentPhase] || "Setting things up.";
+
+  useEffect(() => {
+    if (!authLoading) {
+      recordBootPhase(timeline, "auth_restore", user ? "completed" : "completed");
+    }
+  }, [authLoading, user, timeline]);
+
+  useEffect(() => {
+    if (!profileLoading) {
+      recordBootPhase(timeline, "profile_restore", profileSyncIssue ? "failed" : "completed");
+    }
+  }, [profileLoading, profileSyncIssue, timeline]);
+
+  useEffect(() => {
+    if (!modelStatusLoading) {
+      recordBootPhase(timeline, "model_readiness", modelStatusError ? "failed" : "completed");
+    }
+  }, [modelStatusLoading, modelStatusError, timeline]);
+
   const activeProfile = useMemo(() => {
     if (!user) return null;
     if (!profile) return null;
@@ -362,6 +398,20 @@ function AppShell() {
       return;
     }
 
+    if (!bootReportedRef.current) {
+      bootReportedRef.current = true;
+      recordBootPhase(timeline, "ui_ready", "completed");
+      emitBootPerfLog(timeline);
+
+      enqueueLocalIdleJob("post_boot_device_capabilities", () => {
+        return getCachedDeviceCapabilities({ forceRefresh: true });
+      }, { priority: "low", delayMs: 500 });
+
+      enqueueLocalIdleJob("post_boot_model_install_status", () => {
+        return getModelInstallStatus({ forceRefresh: true });
+      }, { priority: "low", delayMs: 1200 });
+    }
+
     if (!targetRoute) {
       lastRedirectRef.current = null;
       return;
@@ -426,7 +476,7 @@ function AppShell() {
         <Stack.Screen name="onboarding/questionnaire" />
         <Stack.Screen name="setup" />
         <Stack.Screen name="model-setup" />
-        <Stack.Screen name="(chat)/index" />
+        <Stack.Screen name="(chat)" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="item/[id]" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
@@ -478,7 +528,7 @@ function AppShell() {
 
       {shouldShowBoot ? (
         <View style={styles.bootOverlay}>
-          <BootScreen />
+          <BootScreen phaseLabel={bootPhaseLabel} />
         </View>
       ) : null}
     </View>
