@@ -1237,6 +1237,10 @@ class ClientTurnLogRequest(BaseModel):
     app_version: Optional[str] = None
     api_base: Optional[str] = None
     build_number: Optional[str] = None
+    mobile_build_id: Optional[str] = None
+    mobile_git_sha: Optional[str] = None
+    local_to_backend_fallback_ms: Optional[int] = None
+    cloud_fallback_enabled: Optional[bool] = None
     created_at: Optional[str] = None
     provider: Optional[str] = None
     voice_phase: Optional[str] = None
@@ -3135,6 +3139,10 @@ def api_client_turn_log(
             app_version=payload.app_version,
             api_base=payload.api_base,
             build_number=payload.build_number,
+            mobile_build_id=payload.mobile_build_id,
+            mobile_git_sha=payload.mobile_git_sha,
+            local_to_backend_fallback_ms=payload.local_to_backend_fallback_ms,
+            cloud_fallback_enabled=payload.cloud_fallback_enabled,
             created_at=payload.created_at,
             provider=payload.provider,
             voice_phase=payload.voice_phase,
@@ -3197,6 +3205,10 @@ def api_client_turn_log(
                 app_version=payload.app_version,
                 api_base=payload.api_base,
                 build_number=payload.build_number,
+                mobile_build_id=payload.mobile_build_id,
+                mobile_git_sha=payload.mobile_git_sha,
+                local_to_backend_fallback_ms=payload.local_to_backend_fallback_ms,
+                cloud_fallback_enabled=payload.cloud_fallback_enabled,
                 created_at=payload.created_at,
                 provider=payload.provider,
                 voice_phase=payload.voice_phase,

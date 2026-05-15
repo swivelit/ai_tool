@@ -25,7 +25,7 @@ import {
 } from "./localAssistantProfile";
 import { tryBuildQuickLocalReply } from "./localQuickReplies";
 import { loadCloudFallbackConsent } from "./localAssistantSettings";
-import { isCurrentOrLiveDataQuestion } from "./currentDataGuards";
+import { requiresImmediateBackendCurrentData } from "./currentDataGuards";
 import {
   LocalBudgetExceededError,
   getLocalToBackendFallbackMs,
@@ -894,6 +894,7 @@ function logClientLocalTurnCompleted(input: {
   source: string;
   route: string;
   stageTimings?: Record<string, any> | null;
+  cloudFallbackEnabled?: boolean | null;
 }) {
   logClientWorkflowStep({
     event: "client_local_turn_completed",
@@ -907,6 +908,7 @@ function logClientLocalTurnCompleted(input: {
     agent_source: input.source === "local_model" ? "local_model" : "local_rules",
     route_taken: input.route,
     stage_timings: input.stageTimings || null,
+    cloud_fallback_enabled: input.cloudFallbackEnabled ?? undefined,
   });
 }
 
@@ -917,6 +919,7 @@ function logClientLocalTurnFailed(input: {
   errorType: string;
   route?: string | null;
   stageTimings?: Record<string, any> | null;
+  cloudFallbackEnabled?: boolean | null;
 }) {
   logClientWorkflowStep({
     event: "client_local_turn_failed",
@@ -930,6 +933,7 @@ function logClientLocalTurnFailed(input: {
     stage_timings: input.stageTimings || null,
     error_type: input.errorType,
     fallback_reason: input.errorType,
+    cloud_fallback_enabled: input.cloudFallbackEnabled ?? undefined,
   });
 }
 
@@ -1058,6 +1062,7 @@ async function postChatFallbackToBackend(input: {
   originalRoute?: string | null;
   localBudgetMs?: number | null;
   stageTimings?: Record<string, any> | null;
+  cloudFallbackEnabled?: boolean | null;
 }) {
   const startedAt = Date.now();
   logClientWorkflowStep({
@@ -1073,6 +1078,7 @@ async function postChatFallbackToBackend(input: {
     workflow_step: "backend_fallback",
     workflow_phase: "started",
     stage_timings: input.stageTimings || null,
+    cloud_fallback_enabled: input.cloudFallbackEnabled ?? true,
   });
 
   let backend: LocalChatProxyResponse;
@@ -1105,6 +1111,7 @@ async function postChatFallbackToBackend(input: {
       error_message: getApiErrorDetails(error, { method: "POST", path: "/api/chat" }).message,
       duration_ms: Date.now() - startedAt,
       stage_timings: input.stageTimings || null,
+      cloud_fallback_enabled: input.cloudFallbackEnabled ?? true,
     });
     throw error;
   }
@@ -1131,6 +1138,7 @@ async function postChatFallbackToBackend(input: {
     http_status: 200,
     duration_ms: Date.now() - startedAt,
     stage_timings: input.stageTimings || null,
+    cloud_fallback_enabled: input.cloudFallbackEnabled ?? true,
   });
   void import("./globalKnowledgeSync")
     .then(({ syncGlobalKnowledge }) => syncGlobalKnowledge())
@@ -1166,6 +1174,7 @@ function logClientLocalBudgetExceeded(input: {
   message: string;
   localBudgetMs: number;
   stageTimings?: Record<string, any> | null;
+  cloudFallbackEnabled?: boolean | null;
 }) {
   logClientWorkflowStep({
     event: "client_local_budget_exceeded",
@@ -1181,6 +1190,7 @@ function logClientLocalBudgetExceeded(input: {
     workflow_phase: "exceeded",
     duration_ms: input.localBudgetMs,
     stage_timings: input.stageTimings || null,
+    cloud_fallback_enabled: input.cloudFallbackEnabled ?? undefined,
   });
 }
 
@@ -1191,6 +1201,7 @@ function logIgnoredLateLocalResult(input: {
   route?: string | null;
   source?: string | null;
   stageTimings?: Record<string, any> | null;
+  cloudFallbackEnabled?: boolean | null;
 }) {
   logClientWorkflowStep({
     event: "client_local_result_ignored_after_backend_fallback",
@@ -1205,6 +1216,7 @@ function logIgnoredLateLocalResult(input: {
     workflow_step: "local_to_backend_budget",
     workflow_phase: "ignored_late_result",
     stage_timings: input.stageTimings || null,
+    cloud_fallback_enabled: input.cloudFallbackEnabled ?? true,
   });
 }
 
@@ -1230,6 +1242,7 @@ function logCurrentDataBackendRequired(input: {
     workflow_step: "current_data_guard",
     workflow_phase: "completed",
     stage_timings: input.stageTimings || null,
+    cloud_fallback_enabled: input.userAllowedCloudFallback,
   });
 }
 
@@ -1238,6 +1251,7 @@ function requestNativeLocalCancel(input: {
   userId: number;
   message: string;
   stageTimings?: Record<string, any> | null;
+  cloudFallbackEnabled?: boolean | null;
 }) {
   const requestId = String(input.requestId || "").trim();
   if (!requestId) return;
@@ -1257,6 +1271,7 @@ function requestNativeLocalCancel(input: {
     workflow_step: "native_cancel",
     workflow_phase: "requested",
     stage_timings: input.stageTimings || null,
+    cloud_fallback_enabled: input.cloudFallbackEnabled ?? undefined,
   });
   void Promise.resolve(bridge.cancelRequest(requestId)).catch(() => undefined);
 }
@@ -2013,7 +2028,7 @@ async function handleLocalChat(
     getCachedDeviceCapabilities(),
   );
 
-  if (isCurrentOrLiveDataQuestion(message)) {
+  if (requiresImmediateBackendCurrentData(message)) {
     stageTimings.global_knowledge_cache = stageTimings.global_knowledge_cache || 0;
     logClientWorkflowStep({
       event: "client_global_knowledge_lookup_miss",
@@ -2030,6 +2045,7 @@ async function handleLocalChat(
       cache_source: "global_knowledge_sync",
       duration_ms: 0,
       stage_timings: stageTimings,
+      cloud_fallback_enabled: userAllowedCloudFallback,
     });
     logCurrentDataBackendRequired({
       userId,
@@ -2047,6 +2063,7 @@ async function handleLocalChat(
         fallbackReason: "live_data_needed",
         originalRoute: "current_data_guard",
         stageTimings,
+        cloudFallbackEnabled: userAllowedCloudFallback,
       });
     }
     return buildCloudFallbackConsentResponse({
@@ -2095,6 +2112,7 @@ async function handleLocalChat(
             ...stageTimings,
             ...(lateTurn?.meta?.stageTimings || {}),
           },
+          cloudFallbackEnabled: userAllowedCloudFallback,
         });
       }
     },
@@ -2118,6 +2136,7 @@ async function handleLocalChat(
         requestId,
         message,
         stageTimings,
+        cloudFallbackEnabled: userAllowedCloudFallback,
       });
       logClientLocalBudgetExceeded({
         userId,
@@ -2125,6 +2144,7 @@ async function handleLocalChat(
         message,
         localBudgetMs,
         stageTimings,
+        cloudFallbackEnabled: userAllowedCloudFallback,
       });
       if (userAllowedCloudFallback) {
         return postChatFallbackToBackend({
@@ -2136,6 +2156,7 @@ async function handleLocalChat(
           originalRoute: "local_answer",
           localBudgetMs,
           stageTimings,
+          cloudFallbackEnabled: userAllowedCloudFallback,
         });
       }
       return buildCloudFallbackConsentResponse({
@@ -2168,6 +2189,7 @@ async function handleLocalChat(
       errorType: fallbackReason,
       route: "local_answer",
       stageTimings,
+      cloudFallbackEnabled: userAllowedCloudFallback,
     });
     if (userAllowedCloudFallback) {
       backendFallbackStarted = true;
@@ -2181,6 +2203,7 @@ async function handleLocalChat(
         localBudgetMs:
           fallbackReason === "local_timeout" ? localBudgetMs : undefined,
         stageTimings,
+        cloudFallbackEnabled: userAllowedCloudFallback,
       });
     }
     return buildCloudFallbackConsentResponse({
@@ -2210,6 +2233,7 @@ async function handleLocalChat(
         ...stageTimings,
         ...(turn.meta?.stageTimings || {}),
       },
+      cloudFallbackEnabled: userAllowedCloudFallback,
     });
     if (userAllowedCloudFallback) {
       return postChatFallbackToBackend({
@@ -2223,6 +2247,7 @@ async function handleLocalChat(
           ...stageTimings,
           ...(turn.meta?.stageTimings || {}),
         },
+        cloudFallbackEnabled: userAllowedCloudFallback,
       });
     }
     return buildCloudFallbackConsentResponse({
@@ -2328,6 +2353,7 @@ async function handleLocalChat(
       route_taken: "fallback_openai",
       fallback_reason: String(turn.meta?.fallback_reason || ""),
       stage_timings: response.meta?.stageTimings || null,
+      cloud_fallback_enabled: userAllowedCloudFallback,
     });
   } else {
     logClientLocalTurnCompleted({
@@ -2338,6 +2364,7 @@ async function handleLocalChat(
       source: turn.source,
       route: turn.route,
       stageTimings: response.meta?.stageTimings || null,
+      cloudFallbackEnabled: userAllowedCloudFallback,
     });
   }
 

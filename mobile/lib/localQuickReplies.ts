@@ -1,3 +1,5 @@
+import { isUnsafeForStaticCache } from "./currentDataGuards";
+
 export type QuickLocalRoute =
   | "fast_greeting"
   | "identity"
@@ -199,7 +201,7 @@ function hasTaskContext(tokens: string[]) {
 }
 
 function hasLiveCurrentTerms(tokens: string[]) {
-  return isCurrentOrLiveDataQuestion(tokens.join(" "));
+  return isUnsafeForStaticCache(tokens.join(" "));
 }
 
 function phraseStartIndex(tokens: string[], phraseTokens: string[]) {
@@ -406,7 +408,7 @@ export function tryBuildQuickLocalReply(
     return null;
   }
 
-  if (isCurrentOrLiveDataQuestion(normalized)) {
+  if (isUnsafeForStaticCache(normalized)) {
     return null;
   }
 
@@ -443,4 +445,3 @@ export function tryBuildQuickLocalReply(
     source: "local_rules",
   };
 }
-import { isCurrentOrLiveDataQuestion } from "./currentDataGuards";

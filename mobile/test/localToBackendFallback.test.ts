@@ -275,6 +275,69 @@ describe("local to backend fallback budget", () => {
     expect(logs.some((entry) => entry.event === "client_current_data_backend_required")).toBe(true);
   });
 
+  it.each([
+    ["What is the weather tomorrow?", "text_current_weather"],
+    ["What is the latest IPL score today?", "text_current_score"],
+    ["Do you know about the new election details?", "text_current_election_2"],
+  ])("routes immediate current-data question to backend: %s", async (message, requestId) => {
+    vi.useFakeTimers();
+    const runLocalAssistantTurn = vi.fn(async () => localTurn("Should not run."));
+    const { fetchMock, logs } = setupApiHarness({
+      cloudFallback: true,
+      runLocalAssistantTurn,
+      backendAnswer: "Immediate backend answer.",
+    });
+
+    const { apiPost } = await import("../lib/api");
+    const payload = await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message,
+      reply_language: "en",
+      request_id: requestId,
+    });
+
+    expect(runLocalAssistantTurn).not.toHaveBeenCalled();
+    expect(backendChatCalls(fetchMock)).toHaveLength(1);
+    expect(payload.assistant.text).toBe("Immediate backend answer.");
+    expect(logs.some((entry) => entry.event === "client_current_data_backend_required")).toBe(true);
+  });
+
+  it.each([
+    ["Create a reminder for tomorrow morning", "text_reminder_tomorrow"],
+    ["Give me 5 birthday gift ideas for my brother", "text_gift_ideas"],
+  ])("does not route non-current task immediately: %s", async (message, requestId) => {
+    vi.useFakeTimers();
+    const runLocalAssistantTurn = vi.fn(() => new Promise(() => undefined));
+    const { fetchMock, logs } = setupApiHarness({
+      cloudFallback: true,
+      runLocalAssistantTurn,
+      backendAnswer: "Backend answer after local budget.",
+    });
+
+    const { apiPost } = await import("../lib/api");
+    const resultPromise = apiPost<any>("/api/chat", {
+      user_id: 7,
+      message,
+      reply_language: "en",
+      request_id: requestId,
+    });
+    await waitForMockCall(runLocalAssistantTurn);
+
+    expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
+    expect(backendChatCalls(fetchMock)).toHaveLength(0);
+    expect(logs.some((entry) => entry.event === "client_current_data_backend_required")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(backendChatCalls(fetchMock)).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const payload = await resultPromise;
+
+    expect(payload.assistant.text).toBe("Backend answer after local budget.");
+    expect(backendChatCalls(fetchMock)).toHaveLength(1);
+    expect(logs.some((entry) => entry.event === "client_local_budget_exceeded")).toBe(true);
+  });
+
   it("preserves requestId in the backend fallback body", async () => {
     vi.useFakeTimers();
     const runLocalAssistantTurn = vi.fn(() => new Promise(() => undefined));

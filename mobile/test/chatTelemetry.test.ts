@@ -9,15 +9,28 @@ function jsonResponse(payload: any, status = 200) {
   } as Response;
 }
 
-function setupTelemetryMocks(options: { token?: string | null } = {}) {
+function setupTelemetryMocks(options: {
+  token?: string | null;
+  preserveBuildEnv?: boolean;
+} = {}) {
   const storage = new Map<string, string>();
   vi.resetModules();
+  if (!options.preserveBuildEnv) {
+    vi.stubEnv("EXPO_PUBLIC_MOBILE_BUILD_ID", "");
+    vi.stubEnv("EXPO_PUBLIC_GIT_SHA", "");
+    vi.stubEnv("EXPO_PUBLIC_LOCAL_TO_BACKEND_FALLBACK_MS", "");
+  }
   vi.doMock("expo-constants", () => ({
     default: {
       expoConfig: {
         version: "1.2.3",
         android: { versionCode: 42 },
-        extra: { API_BASE: "https://api.example.test" },
+        extra: {
+          API_BASE: "https://api.example.test",
+          MOBILE_BUILD_ID: "test-build-extra",
+          GIT_SHA: "extra-sha",
+          LOCAL_TO_BACKEND_FALLBACK_MS: 15_000,
+        },
       },
     },
   }));
@@ -51,6 +64,7 @@ describe("chat telemetry queue", () => {
     vi.restoreAllMocks();
     vi.resetModules();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("enqueues and flushes client turn logs to /api/client/turn-log", async () => {
@@ -69,6 +83,7 @@ describe("chat telemetry queue", () => {
       answer: "hi",
       agent_source: "local_rules",
       route_taken: "fast_greeting",
+      cloud_fallback_enabled: true,
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -80,9 +95,40 @@ describe("chat telemetry queue", () => {
     expect(body.event).toBe("client_local_turn_completed");
     expect(body.api_base).toBe("https://api.example.test");
     expect(body.app_version).toBe("1.2.3");
+    expect(body.mobile_build_id).toBe("test-build-extra");
+    expect(body.mobile_git_sha).toBe("extra-sha");
+    expect(body.local_to_backend_fallback_ms).toBe(15_000);
+    expect(body.cloud_fallback_enabled).toBe(true);
     expect(body.telemetry_delivery).toBe("realtime");
     expect(body.request_id).toBeTruthy();
     expect(storage.get(CLIENT_TURN_LOG_QUEUE_KEY)).toBeUndefined();
+  });
+
+  it("uses EXPO_PUBLIC build identity env overrides in client workflow logs", async () => {
+    vi.stubEnv("EXPO_PUBLIC_MOBILE_BUILD_ID", "env-build-99");
+    vi.stubEnv("EXPO_PUBLIC_GIT_SHA", "env-sha-123");
+    vi.stubEnv("EXPO_PUBLIC_LOCAL_TO_BACKEND_FALLBACK_MS", "17000");
+    setupTelemetryMocks({ preserveBuildEnv: true });
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { enqueueClientTurnLog } = await import("../lib/chatTelemetry");
+
+    await enqueueClientTurnLog({
+      event: "client_backend_fallback_started",
+      channel: "text",
+      question: "unknown",
+      agent_source: "backend_openai",
+      route_taken: "fallback_openai",
+      fallback_reason: "local_timeout",
+      cloud_fallback_enabled: true,
+    });
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as any[])[1].body));
+    expect(body.mobile_build_id).toBe("env-build-99");
+    expect(body.mobile_git_sha).toBe("env-sha-123");
+    expect(body.local_to_backend_fallback_ms).toBe(17_000);
+    expect(body.cloud_fallback_enabled).toBe(true);
   });
 
   it("keeps failed telemetry queued for retry", async () => {

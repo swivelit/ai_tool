@@ -21,6 +21,7 @@
     "native:verify-llama": "node ./scripts/verify-native-llama-runtime.js",
     "release": "npm run release:verify-local-first",
     "release:verify-local-first": "node ./scripts/verify-release-local-first-config.js",
+    "smoke:chat": "node ./scripts/smoke-chat-10.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

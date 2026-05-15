@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 
 import { auth } from "./firebase";
+import { getMobileBuildInfo } from "./mobileBuildInfo";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
@@ -59,6 +60,10 @@ export type ClientTurnLogPayload = {
   app_version?: string | null;
   api_base?: string | null;
   build_number?: string | null;
+  mobile_build_id?: string | null;
+  mobile_git_sha?: string | null;
+  local_to_backend_fallback_ms?: number | null;
+  cloud_fallback_enabled?: boolean | null;
   created_at?: string | null;
   provider?: string | null;
   voice_phase?: string | null;
@@ -154,6 +159,7 @@ function sanitizeQuestionPreview(value: unknown) {
 
 function enrichPayload(payload: ClientTurnLogPayload): ClientTurnLogPayload {
   const turnId = payload.turn_id || payload.request_id || newTurnId();
+  const buildInfo = getMobileBuildInfo();
   return {
     ...payload,
     request_id: payload.request_id || turnId,
@@ -162,6 +168,11 @@ function enrichPayload(payload: ClientTurnLogPayload): ClientTurnLogPayload {
     app_version: payload.app_version ?? APP_VERSION,
     api_base: payload.api_base ?? API_BASE,
     build_number: payload.build_number ?? BUILD_NUMBER,
+    mobile_build_id: payload.mobile_build_id ?? buildInfo.mobile_build_id,
+    mobile_git_sha: payload.mobile_git_sha ?? buildInfo.mobile_git_sha,
+    local_to_backend_fallback_ms:
+      payload.local_to_backend_fallback_ms ??
+      buildInfo.local_to_backend_fallback_ms,
     question_length:
       payload.question_length ?? (payload.question != null ? textLength(payload.question) : undefined),
     answer_length:

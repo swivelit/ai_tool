@@ -50,7 +50,7 @@ import {
   lookupSyncedGlobalKnowledge,
   syncGlobalKnowledge,
 } from "./globalKnowledgeSync";
-import { isCurrentOrLiveDataQuestion } from "./currentDataGuards";
+import { requiresImmediateBackendCurrentData } from "./currentDataGuards";
 import { __idleQueueTestUtils, enqueueLocalIdleJob } from "./localIdleQueue";
 import {
   clearPendingLocalTurn,
@@ -5764,17 +5764,7 @@ function isLikelyLiveCurrentDataRequest(message: string) {
   if (/\b(without live data|no live data|offline)\b/.test(normalized)) {
     return false;
   }
-  const hasLiveMarker = /\b(latest|current|live|news|breaking|score|scores)\b/.test(
-    normalized,
-  );
-  const hasTodayScore =
-    /\btoday\b/.test(normalized) && /\b(score|scores)\b/.test(normalized);
-  const hasPoliticalCurrentMarker =
-    isCurrentOrLiveDataQuestion(message) &&
-    /\b(election|elections|vote|voting|poll|polls|result|results|winner|candidate|candidates|government|president|prime minister|pm|cm|mla|mp)\b/.test(
-      normalized,
-    );
-  return hasLiveMarker || hasTodayScore || hasPoliticalCurrentMarker;
+  return requiresImmediateBackendCurrentData(message);
 }
 
 function ruleBasedOrchestratorDecision(

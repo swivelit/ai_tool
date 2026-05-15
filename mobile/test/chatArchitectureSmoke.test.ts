@@ -196,7 +196,7 @@ describe("chat architecture smoke", () => {
     vi.setSystemTime(0);
     const harness = setupArchitectureHarness();
     const { apiPost } = await import("../lib/api");
-    const { isCurrentOrLiveDataQuestion } = await import("../lib/currentDataGuards");
+    const { requiresImmediateBackendCurrentData } = await import("../lib/currentDataGuards");
     const questions = seededSample(QUESTION_BANK, 10);
     const rows: Array<{
       question: string;
@@ -250,7 +250,7 @@ describe("chat architecture smoke", () => {
           entry.request_id === requestId &&
           entry.event === "client_backend_fallback_started",
       ) || source.includes("backend");
-      const isCurrent = isCurrentOrLiveDataQuestion(question);
+      const isCurrent = requiresImmediateBackendCurrentData(question);
       const localHung = harness.hangingRequestIds.has(requestId);
       const fallbackLog = harness.logs.find(
         (entry) =>

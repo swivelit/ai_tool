@@ -320,6 +320,10 @@ def test_client_turn_log_accepts_local_telemetry_safely(client, caplog):
                 "db_schema_ready": True,
                 "screen": "chat",
                 "app_state": "active",
+                "mobile_build_id": "build-test-1",
+                "mobile_git_sha": "abc1234",
+                "local_to_backend_fallback_ms": 15000,
+                "cloud_fallback_enabled": True,
             },
         )
 
@@ -336,6 +340,10 @@ def test_client_turn_log_accepts_local_telemetry_safely(client, caplog):
     assert getattr(record, "http_status") == 200
     assert getattr(record, "model_used") == "local_rules"
     assert getattr(record, "db_schema_ready") is True
+    assert getattr(record, "mobile_build_id") == "build-test-1"
+    assert getattr(record, "mobile_git_sha") == "abc1234"
+    assert getattr(record, "local_to_backend_fallback_ms") == 15000
+    assert getattr(record, "cloud_fallback_enabled") is True
     assert "secret-token" not in caplog.text
 
 
