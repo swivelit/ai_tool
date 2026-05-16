@@ -130,6 +130,20 @@ DEFAULT_MEMORY_CONFIG = {
 
 
 TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
+BAD_CACHED_ANSWER_RE = re.compile(
+    r"("
+    r"I could not fetch a reliable web result|"
+    r"I could not complete the web lookup|"
+    r"I could not fetch the weather right now|"
+    r"Internal Server Error|"
+    r"OpenAI provider/configuration error|"
+    r"requires OPENAI_API_KEY|"
+    r"local_timeout|"
+    r"You do not have any tomorrow reminders|"
+    r"You do not have any reminders scheduled for tomorrow"
+    r")",
+    re.IGNORECASE,
+)
 
 
 class AgenticService:
@@ -876,6 +890,30 @@ Return ONLY JSON:
                 return True
         return False
 
+    def _should_route_web_search(self, normalized_message: str, routes: Dict[str, Any]) -> bool:
+        if re.search(r"\b(latest|news|current|live|score|election|internet|browse|breaking)\b", normalized_message):
+            return True
+        if "search online" in normalized_message:
+            return True
+        if re.search(r"\b(today|tonight)\b", normalized_message) and re.search(
+            r"\b(score|result|news|election|stock|price|rate)\b", normalized_message
+        ):
+            return True
+
+        # Older internal configs treated generic "what is" questions as web
+        # lookups. Keep those on the normal pipeline unless the question clearly
+        # needs current public data.
+        generic_web_keywords = {"what is", "who is"}
+        for keyword in self._route_keywords(routes, "web_search"):
+            normalized_keyword = self._normalize_lookup_text(keyword)
+            if normalized_keyword in generic_web_keywords:
+                continue
+            if normalized_keyword and (
+                normalized_message == normalized_keyword or f" {normalized_keyword} " in f" {normalized_message} "
+            ):
+                return True
+        return False
+
     def _quick_route(self, message: str) -> Optional[str]:
         normalized = self._normalize_lookup_text(message)
         route_config = self._route_config()
@@ -887,14 +925,10 @@ Return ONLY JSON:
         if self._matches_route_keyword(normalized, routes, "weather"):
             return "weather"
 
-        if re.search(r"\b(latest|news|current|live|score|election|internet|browse)\b", normalized):
-            return "web_search"
-        if "search online" in normalized:
+        if self._should_route_web_search(normalized, routes):
             return "web_search"
         if self._matches_route_keyword(normalized, routes, "calendar"):
             return "calendar"
-        if self._matches_route_keyword(normalized, routes, "web_search"):
-            return "web_search"
         return None
 
     def _classify_route(self, user: Optional[User], message: str, reply_language: str) -> Dict[str, Any]:
@@ -991,11 +1025,39 @@ Return ONLY JSON:
         tz = self._get_user_timezone(user)
         now_local = datetime.now(tz)
         normalized = self._normalize_lookup_text(message)
+        create_intent = bool(
+            re.search(
+                r"\b(create|set|add|schedule|make|new)\s+(?:a\s+)?(?:reminder|task|todo)\b",
+                normalized,
+            )
+            or re.search(r"\bremind\s+me\b", normalized)
+            or "dont let me forget" in normalized
+            or "don't let me forget" in str(message or "").lower()
+        )
         scope = "upcoming"
         if "today" in normalized or "இன்று" in message:
             scope = "today"
         elif "tomorrow" in normalized or "நாளை" in message:
             scope = "tomorrow"
+
+        if create_intent:
+            content_probe = normalized
+            content_probe = re.sub(
+                r"\b(create|set|add|schedule|make|new)\s+(?:a\s+)?(?:reminder|task|todo)\b",
+                " ",
+                content_probe,
+            )
+            content_probe = re.sub(r"\bremind\s+me\b", " ", content_probe)
+            content_probe = re.sub(
+                r"\b(?:for|on|at|by|in|this|next|today|tomorrow|morning|afternoon|evening|night|am|pm)\b",
+                " ",
+                content_probe,
+            )
+            content_probe = re.sub(r"\b\d{1,2}(?::\d{2})?\b", " ", content_probe)
+            content_probe = re.sub(r"\s+", " ", content_probe).strip()
+            if len(content_probe) < 3:
+                when = "tomorrow morning" if "tomorrow" in normalized and "morning" in normalized else "that time"
+                return f"What should I remind you about {when}?"
 
         items = list(
             session.exec(
@@ -1126,6 +1188,22 @@ Keep it very short and actionable.
         query = str(message or "").strip()
         if not query:
             return "I need a search query first."
+        normalized = self._normalize_lookup_text(query)
+
+        if "election" in normalized and not re.search(
+            r"\b(india|indian|tamil nadu|usa|u s|united states|uk|canada|state|country|parliament|assembly|presidential|lok sabha)\b",
+            normalized,
+        ):
+            return "Which election and location do you mean? Share the country, state, or election name and I can look up the latest details."
+
+        if re.search(r"\b(?:ipl|indian premier league)\b", normalized) and re.search(
+            r"\b(?:latest|live|today|score|scores|match)\b", normalized
+        ):
+            return (
+                "Live IPL score lookup needs a configured live sports data provider. "
+                "The backend does not have a reliable live sports provider configured right now, "
+                "so I cannot verify today's score safely."
+            )
 
         try:
             ddg_resp = requests.get(
@@ -1268,6 +1346,12 @@ Return ONLY JSON:
 
         threshold = float((self._memory_config() or {}).get("semantic_cache_threshold", 0.95) or 0.95)
         route_taken = str(result.get("route_taken", "")).strip()
+        answer_text = " ".join(
+            str(result.get(key) or "").strip()
+            for key in ("raw_english", "remodeled_english", "tamil_text", "theni_tamil_text")
+        )
+        if BAD_CACHED_ANSWER_RE.search(answer_text):
+            return None
 
         if score >= threshold or route_taken in {"cached_answer", "local_schedule_rag", "local_routine_rag"}:
             return result
@@ -1490,16 +1574,26 @@ Return ONLY JSON:
             self.maybe_sync_memory(session, user_id, force=False)
             return pipeline_result
 
-        aligned = self._align_answer(
-            user=user,
-            profile=profile,
-            routine=routine,
-            user_message=message,
-            draft_answer=draft_english,
-            reply_language=resolved_lang,
-            route=route,
-            tool_meta=tool_meta,
-        )
+        lower_draft = draft_english.lower()
+        skip_alignment = route == "web_search" and "live sports data provider" in lower_draft
+        if skip_alignment:
+            aligned = {
+                "english_answer": draft_english,
+                "final_answer": draft_english,
+                "style_applied": ["alignment_skipped_for_infra_status"],
+                "code_switch": False,
+            }
+        else:
+            aligned = self._align_answer(
+                user=user,
+                profile=profile,
+                routine=routine,
+                user_message=message,
+                draft_answer=draft_english,
+                reply_language=resolved_lang,
+                route=route,
+                tool_meta=tool_meta,
+            )
         english_answer = str(aligned.get("english_answer", draft_english)).strip() or draft_english
         final_answer = str(aligned.get("final_answer", english_answer)).strip() or english_answer
 

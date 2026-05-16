@@ -9,6 +9,7 @@ import pytest
 import app.agentic_service as agentic_service_module
 from app.agentic_service import AgenticService
 from app.database import SessionLocal
+from app.models import User
 
 
 class DummyLocalRag:
@@ -92,3 +93,45 @@ def test_quick_route_supports_mobile_orchestrator_config_shape(agentic_service: 
     assert agentic_service._quick_route("Create a reminder for tomorrow morning") == "calendar"
     assert agentic_service._quick_route("What is the latest IPL score today?") == "web_search"
     assert agentic_service._quick_route("Hi elli") == "fast_greeting"
+
+
+def test_quick_route_keeps_stable_knowledge_off_web_search(agentic_service: AgenticService) -> None:
+    assert agentic_service._quick_route("What is photosynthesis?") is None
+    assert agentic_service._quick_route("What is a compiler?") is None
+    assert agentic_service._quick_route("Do you know about IPL?") is None
+    assert agentic_service._quick_route("Tell me about Indian Premier League") is None
+    assert agentic_service._quick_route("What is the latest IPL score today?") == "web_search"
+
+
+def test_calendar_create_reminder_missing_content_asks_clarifying_question(agentic_service: AgenticService) -> None:
+    with SessionLocal() as session:
+        user = User(
+            firebase_uid="calendar-uid",
+            email="calendar@example.com",
+            name="Calendar User",
+            timezone="Asia/Kolkata",
+            assistant_name="Elli",
+            reply_language="en",
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+
+        answer = agentic_service._tool_calendar(
+            session,
+            int(user.id),
+            "Create a reminder for tomorrow morning",
+            user,
+        )
+
+    assert "What should I remind you about tomorrow morning?" == answer
+    assert "do not have any reminders" not in answer.lower()
+
+
+def test_web_search_ambiguous_election_and_live_ipl_are_clear_non_500(agentic_service: AgenticService) -> None:
+    election_answer = agentic_service._tool_web_search("Do you know about the new election details?")
+    assert "Which election and location" in election_answer
+
+    ipl_answer = agentic_service._tool_web_search("What is the latest IPL score today?")
+    assert "Live IPL score lookup needs a configured live sports data provider" in ipl_answer
+    assert "I could not fetch a reliable web result" not in ipl_answer

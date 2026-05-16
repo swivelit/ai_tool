@@ -8,7 +8,7 @@ import pytest
 from app.database import SessionLocal
 import app.main as main_module
 from app.main import _get_job_queue
-from app.models import Item
+from app.models import Item, QACache
 from conftest import auth_headers, create_test_user
 
 
@@ -215,6 +215,223 @@ def test_reminder_creation_flow(client, monkeypatch, pipeline_stub):
     assert payload["item"]["intent"] == "reminder"
     assert payload["item"]["datetime"] == "2026-03-28T08:00:00"
     assert payload["item"]["title"] == "Standup"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_terms"),
+    [
+        ("What is photosynthesis?", ["sunlight", "carbon dioxide", "oxygen"]),
+        ("Explain quantum computing in simple words", ["qubit", "computing"]),
+        ("What is a compiler?", ["compiler", "source code", "machine"]),
+        ("What is fistula?", ["fistula", "abnormal", "clinician"]),
+        ("Write a short email asking for a meeting", ["Subject:", "meeting", "Best regards"]),
+    ],
+)
+def test_static_general_smoke_answers_do_not_require_openai(client, message, expected_terms):
+    create_test_user()
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={"message": message, "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    answer = payload["assistant"]["text"]
+    assert payload["pipeline"]["route_taken"] == "static_general_answer"
+    for term in expected_terms:
+        assert term.lower() in answer.lower()
+
+
+def test_weather_without_location_asks_for_location_instead_of_500(client):
+    create_test_user()
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={"message": "What is the weather tomorrow?", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    answer = response.json()["assistant"]["text"]
+    assert "location" in answer.lower() or "city" in answer.lower() or "place" in answer.lower()
+    assert "could not fetch the weather" not in answer.lower()
+
+
+def test_reminder_create_missing_content_asks_clarifying_question(client):
+    create_test_user()
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={"message": "Create a reminder for tomorrow morning", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    answer = response.json()["assistant"]["text"]
+    assert "What should I remind you about tomorrow morning?" in answer
+    assert "do not have any reminders" not in answer.lower()
+
+
+def test_bad_cached_reminder_list_answer_is_skipped_for_create_intent(client):
+    user = create_test_user()
+    cached_payload = {
+        "pipeline": {
+            "raw_english": "You do not have any tomorrow reminders, Smoke Test User.",
+            "remodeled_english": "You do not have any tomorrow reminders, Smoke Test User.",
+            "route_taken": "local_schedule_rag",
+            "direct_answer_source": "local_schedule_memory",
+            "direct_answer_confidence": "1.0000",
+            "predicted_label": "schedule",
+            "risk_level": "low",
+        },
+        "meta": {},
+    }
+    with SessionLocal() as session:
+        session.add(
+            QACache(
+                user_id=int(user.id),
+                question="Create a reminder for tomorrow morning",
+                answer=json.dumps(cached_payload),
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={"message": "Create a reminder for tomorrow morning", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pipeline"]["route_taken"] == "agentic_calendar"
+    assert "What should I remind you about tomorrow morning?" in payload["assistant"]["text"]
+
+
+def test_ipl_general_question_gets_general_answer_not_clarification(client):
+    create_test_user()
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={"message": "Do you know about IPL?", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    answer = payload["assistant"]["text"].lower()
+    assert payload["pipeline"]["route_taken"] == "static_general_answer"
+    assert "indian premier league" in answer
+    assert "cricket" in answer
+    assert "are you asking" not in answer
+
+
+def test_latest_ipl_score_reports_missing_live_provider_instead_of_generic_failure(client):
+    create_test_user()
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={"message": "What is the latest IPL score today?", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    answer = payload["assistant"]["text"]
+    assert payload["pipeline"]["route_taken"] == "agentic_web_search"
+    assert "Live IPL score lookup needs a configured live sports data provider" in answer
+    assert "I could not fetch a reliable web result" not in answer
+
+
+def test_live_ipl_score_ignores_local_cache_and_uses_web_route(client):
+    user = create_test_user()
+    cached_payload = {
+        "pipeline": {
+            "raw_english": "I can't check the live IPL score right now because the backend doesn't have a reliable sports data provider set up.",
+            "remodeled_english": "I can't check the live IPL score right now because the backend doesn't have a reliable sports data provider set up.",
+            "route_taken": "agentic_web_search",
+            "direct_answer_source": "agentic_web_search",
+            "direct_answer_confidence": "0.9900",
+            "predicted_label": "web_search",
+            "risk_level": "low",
+        },
+        "meta": {},
+    }
+    with SessionLocal() as session:
+        session.add(
+            QACache(
+                user_id=int(user.id),
+                question="What is the latest IPL score today?",
+                answer=json.dumps(cached_payload),
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={"message": "What is the latest IPL score today?", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pipeline"]["route_taken"] == "agentic_web_search"
+    assert payload["pipeline"]["cache_hit"] == "false"
+    assert "Live IPL score lookup needs a configured live sports data provider" in payload["assistant"]["text"]
+
+
+def test_cache_side_effect_failure_does_not_fail_chat(client, monkeypatch):
+    create_test_user()
+
+    monkeypatch.setattr(
+        "app.main.run_orchestrator",
+        lambda client, text: {
+            "intent": "GENERAL",
+            "priority": "low",
+            "confidence": 1.0,
+            "matched_keyword": "",
+        },
+    )
+    monkeypatch.setattr(
+        "app.main._run_agentic_or_pipeline",
+        lambda session, user_id, message, reply_language=None: {
+            "remodeled_english": "Useful answer despite cache failure",
+            "tamil_text": "",
+            "theni_tamil_text": "",
+            "pipeline_version": "test",
+            "stage_notes": "[]",
+            "core_meta": "{}",
+            "remodel_meta": "{}",
+            "review_meta": "{}",
+            "translation_meta": "{}",
+            "timings_ms": "{}",
+        },
+    )
+    monkeypatch.setattr(
+        "app.main._metadata_for_item",
+        lambda session, user_id, text, fallback_details: {
+            "intent": "assistant",
+            "category": "Other",
+            "datetime": None,
+            "title": "Assistant",
+            "details": fallback_details,
+        },
+    )
+    monkeypatch.setattr(
+        "app.main.upsert_qa_cache",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic cache failure")),
+    )
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={"message": "Tell me something useful", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assistant"]["text"] == "Useful answer despite cache failure"
 
 
 def test_async_export_job_flow(client, monkeypatch, tmp_path: Path):

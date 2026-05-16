@@ -38,6 +38,7 @@ describe("smoke-chat-10 script", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("question | httpStatus | route | source | answerPreview | pass/fail");
     expect(result.stdout).toContain("mock_backend");
+    expect(result.stdout).toContain("summary | total=10");
     expect(result.stderr).toBe("");
   });
 
@@ -78,6 +79,92 @@ describe("smoke-chat-10 script", () => {
     });
     expect(serverRow.pass).toBe(false);
     expect(serverRow.line).toContain("OpenAI provider/configuration error");
+  });
+
+  it("can select the full smoke question bank", () => {
+    const { QUESTION_BANK, selectQuestions } = requireScript(scriptPath) as {
+      QUESTION_BANK: string[];
+      selectQuestions: (env: Record<string, string>) => string[];
+    };
+
+    expect(selectQuestions({ SMOKE_CHAT_ALL_QUESTIONS: "true" })).toEqual(QUESTION_BANK);
+    expect(selectQuestions({ SMOKE_CHAT_ALL_QUESTIONS: "" })).toHaveLength(10);
+  });
+
+  it("fails generic failure answers and weak per-question answers", () => {
+    const { evaluateAnswer, formatRow } = requireScript(scriptPath) as {
+      evaluateAnswer: (question: string, status: number, payload: any) => { result: string; reason: string };
+      formatRow: (question: string, status: number, payload: any) => { pass: boolean; failed: boolean; reason: string };
+    };
+
+    expect(
+      evaluateAnswer("What is photosynthesis?", 200, {
+        ok: true,
+        assistant: { text: "I could not fetch a reliable web result for that right now." },
+      }),
+    ).toMatchObject({ result: "fail", reason: "generic_failure_answer" });
+    expect(
+      evaluateAnswer("Do you know about the new election details?", 200, {
+        ok: true,
+        assistant: { text: "I couldn't find any reliable information about the new election details right now." },
+        meta: { route: "agentic_web_search", source: "backend_pipeline" },
+      }),
+    ).toMatchObject({ result: "fail", reason: "generic_failure_answer" });
+
+    expect(
+      evaluateAnswer("Create a reminder for tomorrow morning", 200, {
+        ok: true,
+        assistant: { text: "You do not have any reminders scheduled for tomorrow." },
+      }),
+    ).toMatchObject({ result: "fail", reason: "listed_reminders_instead_of_creation_clarification" });
+
+    const row = formatRow("What is a compiler?", 200, {
+      ok: true,
+      assistant: { text: "A compiler is useful." },
+    });
+    expect(row.pass).toBe(false);
+    expect(row.failed).toBe(true);
+    expect(row.reason).toBe("expected_compiler_explanation");
+  });
+
+  it("marks missing live sports provider as infra instead of pass", () => {
+    const { formatRow, rowPass } = requireScript(scriptPath) as {
+      formatRow: (question: string, status: number, payload: any) => {
+        pass: boolean;
+        blocked: boolean;
+        result: string;
+        reason: string;
+      };
+      rowPass: (status: number, payload: any, question?: string) => boolean;
+    };
+    const payload = {
+      ok: true,
+      assistant: {
+        text:
+          "Live IPL score lookup needs a configured live sports data provider. The backend does not have a reliable live sports provider configured right now, so I cannot verify today's score safely.",
+      },
+      meta: { route: "agentic_web_search", source: "backend_pipeline" },
+    };
+
+    const row = formatRow("What is the latest IPL score today?", 200, payload);
+    expect(row.pass).toBe(false);
+    expect(row.blocked).toBe(true);
+    expect(row.result).toBe("infra");
+    expect(row.reason).toBe("live_sports_provider_unavailable");
+    expect(rowPass(200, payload, "What is the latest IPL score today?")).toBe(false);
+
+    const rewrittenPayload = {
+      ok: true,
+      assistant: {
+        text:
+          "I can't check the live IPL score right now because the backend doesn't have a reliable live sports data provider configured.",
+      },
+      meta: { route: "agentic_web_search", source: "backend_pipeline" },
+    };
+    const rewrittenRow = formatRow("What is the latest IPL score today?", 200, rewrittenPayload);
+    expect(rewrittenRow.pass).toBe(false);
+    expect(rewrittenRow.blocked).toBe(true);
+    expect(rewrittenRow.result).toBe("infra");
   });
 
   it("sends the resolved bearer token to /api/chat", async () => {

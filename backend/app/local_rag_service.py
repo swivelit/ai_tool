@@ -120,6 +120,29 @@ FAST_RAG_STRONG_MATCH_THRESHOLD = _env_float("FAST_RAG_STRONG_MATCH_THRESHOLD", 
 FAST_RAG_PREFIX_MATCH_THRESHOLD = _env_float("FAST_RAG_PREFIX_MATCH_THRESHOLD", 0.965)
 FAST_RAG_CACHE_MATCH_THRESHOLD = _env_float("FAST_RAG_CACHE_MATCH_THRESHOLD", 0.94)
 FAST_RAG_MAX_CACHE_ROWS = max(5, _env_int("FAST_RAG_MAX_CACHE_ROWS", 40))
+BAD_CACHED_ANSWER_RE = re.compile(
+    r"("
+    r"I could not fetch a reliable web result|"
+    r"I could not complete the web lookup|"
+    r"I could not fetch the weather right now|"
+    r"Internal Server Error|"
+    r"OpenAI provider/configuration error|"
+    r"requires OPENAI_API_KEY|"
+    r"local_timeout|"
+    r"You do not have any tomorrow reminders|"
+    r"You do not have any reminders scheduled for tomorrow"
+    r")",
+    re.IGNORECASE,
+)
+LIVE_CURRENT_QUERY_RE = re.compile(
+    r"\b(latest|current|live|score|scores|news|election|breaking)\b",
+    re.IGNORECASE,
+)
+TODAY_LIVE_QUERY_RE = re.compile(
+    r"\btoday\b.*\b(score|scores|news|election|result|results|stock|price|rate)\b|"
+    r"\b(score|scores|news|election|result|results|stock|price|rate)\b.*\btoday\b",
+    re.IGNORECASE,
+)
 
 
 def _utc_now() -> datetime:
@@ -923,6 +946,12 @@ class LocalRAGService:
         schedule_tokens = {"schedule", "reminder", "reminders", "task", "tasks", "todo", "plan", "plans", "upcoming", "நினைவூட்டல்", "நினைவூட்டல்கள்", "அட்டவணை"}
         if not any(tok in normalized_query.split() or tok in normalized_query for tok in schedule_tokens):
             return None
+        if (
+            re.search(r"\b(create|set|add|schedule|make|new)\s+(?:a\s+)?(?:reminder|task|todo)\b", normalized_query)
+            or re.search(r"\bremind\s+me\b", normalized_query)
+            or "dont let me forget" in normalized_query
+        ):
+            return None
         scope = "upcoming"
         label_en = "upcoming"
         label_ta = "வரவிருக்கும்"
@@ -1303,6 +1332,9 @@ class LocalRAGService:
         normalized = self.normalize_lookup_text(message)
         if not normalized:
             return None
+        is_live_current_query = bool(
+            LIVE_CURRENT_QUERY_RE.search(normalized) or TODAY_LIVE_QUERY_RE.search(normalized)
+        )
 
         user = session.get(User, user_id) if user_id else None
 
@@ -1336,6 +1368,13 @@ class LocalRAGService:
             # This prevents fallback-to-user-message mirroring.
             if not (raw_english or remodeled_english or tamil_text or theni_tamil_text):
                 return None
+            combined_answer = " ".join(
+                value
+                for value in (raw_english, remodeled_english, tamil_text, theni_tamil_text)
+                if value
+            )
+            if BAD_CACHED_ANSWER_RE.search(combined_answer):
+                return None
 
             return {
                 "raw_english": raw_english,
@@ -1360,11 +1399,13 @@ class LocalRAGService:
             if routine_answer is not None:
                 return routine_answer
 
-            cache_rows = list(
-                session.exec(
-                    select(QACache).where(QACache.user_id == int(user_id)).order_by(QACache.updated_at.desc())
-                ).all()
-            )[: int(FAST_RAG_MAX_CACHE_ROWS)]
+            cache_rows = []
+            if not is_live_current_query:
+                cache_rows = list(
+                    session.exec(
+                        select(QACache).where(QACache.user_id == int(user_id)).order_by(QACache.updated_at.desc())
+                    ).all()
+                )[: int(FAST_RAG_MAX_CACHE_ROWS)]
 
             best_payload: Optional[Dict[str, Any]] = None
             best_score = 0.0

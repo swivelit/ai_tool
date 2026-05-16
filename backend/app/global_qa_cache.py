@@ -30,6 +30,20 @@ REQUIRED_GLOBAL_QA_TABLES = (
 )
 
 _TOKEN_RE = re.compile(r"[\w\u0B80-\u0BFF]+", re.UNICODE)
+BAD_CACHED_ANSWER_RE = re.compile(
+    r"("
+    r"I could not fetch a reliable web result|"
+    r"I could not complete the web lookup|"
+    r"I could not fetch the weather right now|"
+    r"Internal Server Error|"
+    r"OpenAI provider/configuration error|"
+    r"requires OPENAI_API_KEY|"
+    r"local_timeout|"
+    r"You do not have any tomorrow reminders|"
+    r"You do not have any reminders scheduled for tomorrow"
+    r")",
+    re.IGNORECASE,
+)
 _LIVE_TERMS = {
     "latest",
     "today",
@@ -647,6 +661,8 @@ def lookup_approved_global_cache(session: Session, question: str, reply_language
     best_score = 0.0
     for row in rows:
         if not _not_expired(row, now):
+            continue
+        if BAD_CACHED_ANSWER_RE.search(str(row.answer or "")):
             continue
         if row.safety_label in {"private", "personal_high_risk", "unsafe"}:
             continue
