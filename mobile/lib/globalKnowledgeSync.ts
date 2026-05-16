@@ -527,7 +527,12 @@ function parseTimeMs(value?: string | null) {
 let inFlightSync: Promise<any> | null = null;
 
 export async function syncGlobalKnowledge(
-  options: { limit?: number; force?: boolean; minIntervalMs?: number } = {},
+  options: {
+    limit?: number;
+    force?: boolean;
+    minIntervalMs?: number;
+    lightweight?: boolean;
+  } = {},
 ) {
   if (inFlightSync && !options.force) {
     return inFlightSync;
@@ -556,7 +561,9 @@ export async function syncGlobalKnowledge(
     const startedAt = Date.now();
     const current = await loadGlobalKnowledgeStore();
     const byId = new Map(current.entries.map((entry) => [entry.id, entry]));
-    const limit = Math.max(1, Math.min(Number(options.limit || 250), 500));
+    const defaultLimit = options.lightweight ? 25 : 250;
+    const pageCap = options.lightweight ? 1 : GLOBAL_KNOWLEDGE_SYNC_PAGE_CAP;
+    const limit = Math.max(1, Math.min(Number(options.limit || defaultLimit), 500));
     let cursorSince = options.force ? "" : String(meta.since || "");
     let cursorAfterId = options.force ? "" : String(meta.afterId || "");
     let updatedAt = meta.updatedAt || nowIso();
@@ -574,7 +581,7 @@ export async function syncGlobalKnowledge(
       since: cursorSince || null,
       after_id: cursorAfterId || null,
     });
-    while (hasMore && page < GLOBAL_KNOWLEDGE_SYNC_PAGE_CAP) {
+    while (hasMore && page < pageCap) {
       const params = new URLSearchParams({ limit: String(limit) });
       if (cursorSince) params.set("since", cursorSince);
       if (cursorSince && cursorAfterId) params.set("afterId", cursorAfterId);
@@ -721,7 +728,12 @@ export async function syncGlobalKnowledge(
 }
 
 export async function syncGlobalKnowledgeIfStale(
-  options: { limit?: number; staleMs?: number; minIntervalMs?: number } = {},
+  options: {
+    limit?: number;
+    staleMs?: number;
+    minIntervalMs?: number;
+    lightweight?: boolean;
+  } = {},
 ) {
   const meta = await loadSyncMeta();
   const staleMs = Math.max(0, Number(options.staleMs ?? GLOBAL_KNOWLEDGE_FOREGROUND_STALE_MS));
@@ -740,6 +752,7 @@ export async function syncGlobalKnowledgeIfStale(
   return syncGlobalKnowledge({
     limit: options.limit,
     minIntervalMs: options.minIntervalMs,
+    lightweight: options.lightweight,
   });
 }
 

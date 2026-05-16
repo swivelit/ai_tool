@@ -73,6 +73,7 @@ export type ClientTurnLogPayload = {
   chat_routing?: string | null;
   voice_routing?: string | null;
   native_safety_status?: Record<string, any> | null;
+  device_memory_status?: Record<string, any> | null;
   question_preview?: string | null;
   answer_preview?: string | null;
 };

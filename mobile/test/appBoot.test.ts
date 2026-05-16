@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { resolveDesiredRoute, runBootStep } from "@/lib/appBoot";
+import {
+  getHeavyBootWorkSkipReason,
+  resolveDesiredRoute,
+  runBootStep,
+  scheduleOptionalBootWork,
+  shouldSkipHeavyBootWorkForMemory,
+} from "@/lib/appBoot";
 
 describe("runBootStep", () => {
   it("returns completed results before the timeout", async () => {
@@ -56,6 +62,37 @@ describe("runBootStep", () => {
       "[boot] broken step failed; continuing without blocking app.",
       error
     );
+  });
+});
+
+describe("optional boot work", () => {
+  it("detects low-memory devices", () => {
+    expect(shouldSkipHeavyBootWorkForMemory({ lowMemory: true })).toBe(true);
+    expect(shouldSkipHeavyBootWorkForMemory({ lowRamDevice: true })).toBe(true);
+    expect(
+      shouldSkipHeavyBootWorkForMemory({ availableMemoryBytes: 256 * 1024 * 1024 }),
+    ).toBe(true);
+    expect(
+      shouldSkipHeavyBootWorkForMemory({ availableMemoryBytes: 1024 * 1024 * 1024 }),
+    ).toBe(false);
+    expect(getHeavyBootWorkSkipReason({ lowRamDevice: true })).toBe(
+      "low_ram_device",
+    );
+  });
+
+  it("delays optional boot work and supports cancellation", async () => {
+    vi.useFakeTimers();
+    const task = vi.fn();
+
+    const scheduled = scheduleOptionalBootWork(task, { delayMs: 15_000 });
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(task).not.toHaveBeenCalled();
+
+    scheduled.cancel();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(task).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
   });
 });
 

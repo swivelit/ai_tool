@@ -132,6 +132,16 @@ EOF
   fi
 }
 
+print_debug_env() {
+  info "Debug APK environment"
+  printf "EXPO_PUBLIC_E2E_MOCK_AUTH=%s\n" "${EXPO_PUBLIC_E2E_MOCK_AUTH:-}"
+  printf "EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=%s\n" "${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}"
+  printf "EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=%s\n" "${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-}"
+  printf "EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=%s\n" "${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-}"
+  printf "JAI_DEBUG_LITE=%s\n" "${JAI_DEBUG_LITE:-}"
+  printf "JAI_ANDROID_ABIS=%s\n" "${JAI_ANDROID_ABIS:-}"
+}
+
 command -v adb >/dev/null 2>&1 || fail "adb is required but was not found in PATH."
 command -v node >/dev/null 2>&1 || fail "Node.js is required but was not found in PATH."
 command -v npm >/dev/null 2>&1 || fail "npm is required but was not found in PATH."
@@ -207,6 +217,9 @@ if is_truthy "${RUN_APK_TESTS:-}"; then
   info "APK test mode: E2E mock auth/model setup enabled; unverified native inference disabled"
 fi
 
+print_debug_env
+stop_old_metro
+
 info "Building debug APK first"
 BUILD_TYPE=debug ./build-apk.sh
 
@@ -219,28 +232,32 @@ if [[ "$DEVICE_REQUIRES_16KB_APK" == "1" ]]; then
   fi
 fi
 
-info "Cleaning old installed APK"
+info "Cleaning old installed APK and app data"
+adb shell am force-stop "$PACKAGE_NAME" >/dev/null 2>&1 || true
+adb shell pm clear "$PACKAGE_NAME" >/dev/null 2>&1 || true
 adb uninstall "$PACKAGE_NAME" >/dev/null 2>&1 || true
 
 info "Installing debug APK"
 adb install -r "$APK_PATH"
 
-stop_old_metro
+adb shell am force-stop "$PACKAGE_NAME" >/dev/null 2>&1 || true
+adb shell pm clear "$PACKAGE_NAME" >/dev/null 2>&1 || true
+
 start_metro
 wait_for_metro
 
 info "Forwarding device port ${METRO_PORT} to Metro"
 adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
 
-open_logs_terminal
-
-info "Launching app"
-adb shell monkey -p "$PACKAGE_NAME" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 \
-  || warn "APK installed, but automatic launch failed. Open it manually."
-
 if is_truthy "${RUN_APK_TESTS:-}"; then
   info "Running APK test harness"
   REUSE_APK=1 SKIP_PRECHECKS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh
+else
+  open_logs_terminal
+
+  info "Launching app"
+  adb shell monkey -p "$PACKAGE_NAME" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 \
+    || warn "APK installed, but automatic launch failed. Open it manually."
 fi
 
 echo ""

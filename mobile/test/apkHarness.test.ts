@@ -33,6 +33,11 @@ describe("APK test harness", () => {
       "SIGSEGV",
       "SIGABRT",
       "OutOfMemoryError",
+      "lowmemorykiller",
+      "Kill '${PACKAGE_NAME}'",
+      "WINDOW DIED",
+      "Process ${PACKAGE_NAME}",
+      "has died",
       "ReactNativeJS.*Error",
       "ReactNativeJS.*Requiring unknown module",
       'Requiring unknown module \\"react-native\\"',
@@ -45,6 +50,9 @@ describe("APK test harness", () => {
     ].forEach((marker) => {
       expect(source).toContain(marker);
     });
+    expect(source).toContain("memory-pressure.log");
+    expect(source).toContain('lowmemorykiller:.*(Kill \'${PACKAGE_NAME}\'|${PACKAGE_NAME})');
+    expect(source).toContain("Process ${PACKAGE_NAME} .*has died");
   });
 
   it("does not treat normal adb helper AndroidRuntime startup as a crash", () => {
@@ -70,6 +78,11 @@ describe("APK test harness", () => {
     expect(source).toContain("Open debugger to view warnings");
     expect(chatSource).toContain("activeChatSessionIdRef");
     expect(chatSource).toContain("!activeChatSessionIdRef.current && !activeChatRequestIdRef.current");
+    expect(chatSource).not.toContain('from "@/lib/localAgents"');
+    expect(chatSource).toContain('from "@/lib/localTaskStore"');
+    expect(chatSource).toContain("getCachedDeviceCapabilitiesLazy");
+    expect(chatSource).toContain("import(");
+    expect(chatSource).toContain("@/lib/nativeOnDeviceModelBridge");
   });
 
   it("registers the chat index route without triggering the Expo Router warning overlay", () => {
@@ -129,6 +142,10 @@ describe("APK test harness", () => {
     expect(source).toContain("REUSE_APK=1 SKIP_PRECHECKS=1");
     expect(source).toContain("./test_apk.sh");
     expect(source).toContain('METRO_LOG="$DIST_DIR/launch-debug-metro-${METRO_PORT}.log"');
+    expect(source).toContain("stop_old_metro");
+    expect(source).toContain('adb shell am force-stop "$PACKAGE_NAME"');
+    expect(source).toContain('adb shell pm clear "$PACKAGE_NAME"');
+    expect(source).toContain("print_debug_env");
   });
 
   it("launch-debug_apk enables E2E and native safety envs before building for APK tests", () => {

@@ -355,6 +355,7 @@ capture_step() {
   dump_ui "$label" >/dev/null || true
   collect_cmd "dumpsys-activity-${label}" adb shell dumpsys activity
   collect_cmd "dumpsys-window-${label}" adb shell dumpsys window
+  collect_cmd "dumpsys-meminfo-package-${label}" adb shell dumpsys meminfo "$PACKAGE_NAME"
 }
 
 assert_app_alive() {
@@ -373,7 +374,10 @@ assert_app_alive() {
 scan_crashes() {
   local log_file="$ARTIFACT_DIR/logcat-full.log"
   local markers_file="$ARTIFACT_DIR/crash-markers.log"
+  local memory_pressure_file="$ARTIFACT_DIR/memory-pressure.log"
   : > "$markers_file"
+  : > "$memory_pressure_file"
+  CRASH_MARKERS_FOUND=0
 
   CRASH_MARKERS=(
     "FATAL EXCEPTION"
@@ -382,6 +386,11 @@ scan_crashes() {
     "SIGSEGV"
     "SIGABRT"
     "OutOfMemoryError"
+    "lowmemorykiller"
+    "Kill '${PACKAGE_NAME}'"
+    "WINDOW DIED"
+    "Process ${PACKAGE_NAME}"
+    "has died"
     "ReactNativeJS.*Error"
     "ReactNativeJS.*Requiring unknown module"
     "Requiring unknown module \"react-native\""
@@ -395,6 +404,25 @@ scan_crashes() {
 
   if [[ -f "$log_file" ]]; then
     for marker in "${CRASH_MARKERS[@]}"; do
+      if [[ "$marker" == "lowmemorykiller" ]]; then
+        grep -E -n "lowmemorykiller" "$log_file" >> "$memory_pressure_file" 2>/dev/null || true
+        if grep -E -n "lowmemorykiller:.*(Kill '${PACKAGE_NAME}'|${PACKAGE_NAME})" "$log_file" >> "$markers_file" 2>/dev/null; then
+          CRASH_MARKERS_FOUND=1
+        fi
+        continue
+      fi
+      if [[ "$marker" == "has died" ]]; then
+        if grep -E -n "Process ${PACKAGE_NAME} .*has died|Process ${PACKAGE_NAME}.*has died|${PACKAGE_NAME} has died" "$log_file" >> "$markers_file" 2>/dev/null; then
+          CRASH_MARKERS_FOUND=1
+        fi
+        continue
+      fi
+      if [[ "$marker" == "ReactNativeJS.*Error" ]]; then
+        if grep -E -n "ReactNativeJS:.*(\\[Error|Error:|Unhandled|Uncaught)" "$log_file" >> "$markers_file" 2>/dev/null; then
+          CRASH_MARKERS_FOUND=1
+        fi
+        continue
+      fi
       if grep -E -n "$marker" "$log_file" >> "$markers_file" 2>/dev/null; then
         CRASH_MARKERS_FOUND=1
       fi

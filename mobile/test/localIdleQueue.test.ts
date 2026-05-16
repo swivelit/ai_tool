@@ -1,6 +1,12 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type IdleQueueModule = typeof import("../lib/localIdleQueue");
+const testDir = path.dirname(fileURLToPath(import.meta.url));
+const sourcePath = path.resolve(testDir, "../lib/localIdleQueue.ts");
 
 async function loadIdleQueue() {
   return import("../lib/localIdleQueue") as Promise<IdleQueueModule>;
@@ -95,6 +101,16 @@ describe("local idle queue", () => {
 
     expect(globalRequire).not.toHaveBeenCalled();
     expect(job).toHaveBeenCalledTimes(1);
+  });
+
+  it("source does not contain dynamic react-native require patterns", () => {
+    const source = fs.readFileSync(sourcePath, "utf8");
+
+    expect(source).toContain('import { InteractionManager } from "react-native";');
+    expect(source).not.toContain('require("react-native")');
+    expect(source).not.toContain("require('react-native')");
+    expect(source).not.toContain('maybeRequire?.("react-native")');
+    expect(source).not.toContain("maybeRequire?.('react-native')");
   });
 
   it("does not throw when scheduling a job", async () => {

@@ -2,6 +2,8 @@ export const APP_BOOT_TIMEOUT_MS = 10000;
 export const LOCAL_AGENT_SEED_TIMEOUT_MS = 4000;
 export const PROFILE_BOOT_TIMEOUT_MS = 5000;
 export const GLOBAL_KNOWLEDGE_SYNC_TIMEOUT_MS = 5000;
+export const OPTIONAL_BOOT_WORK_DELAY_MS = 20_000;
+const LOW_AVAILABLE_MEMORY_BYTES = 512 * 1024 * 1024;
 
 const SIGNED_OUT_ENTRY_ROUTE = "/auth/login";
 const SIGNED_IN_HOME_ROUTE = "/(chat)";
@@ -10,6 +12,16 @@ const TAB_GROUP_ROOT_ROUTE = "/(tabs)";
 const CHAT_GROUP_ROOT_ROUTE = "/(chat)";
 
 type BootLogger = (message: string, error?: unknown) => void;
+
+type DeviceMemoryInfo = {
+  availableMemoryBytes?: number | null;
+  lowMemory?: boolean | null;
+  lowRamDevice?: boolean | null;
+};
+
+type OptionalBootWorkHandle = {
+  cancel: () => void;
+};
 
 export type BootStepResult<T> =
   | { status: "completed"; value: T }
@@ -29,6 +41,91 @@ function defaultBootLogger(message: string, error?: unknown) {
   }
 
   console.warn(message, error);
+}
+
+function emitBootTelemetry(payload: { event: string } & Record<string, any>) {
+  void import("./chatTelemetry")
+    .then(({ enqueueClientTurnLog }) =>
+      enqueueClientTurnLog({
+        channel: "app",
+        agent_source: "mobile",
+        route_taken: "app_boot",
+        ...payload,
+      }),
+    )
+    .catch(() => undefined);
+}
+
+export function getHeavyBootWorkSkipReason(
+  deviceInfo?: DeviceMemoryInfo | null,
+): "low_memory" | "low_ram_device" | null {
+  if (deviceInfo?.lowRamDevice === true) return "low_ram_device";
+  if (deviceInfo?.lowMemory === true) return "low_memory";
+  const availableMemoryBytes = Number(deviceInfo?.availableMemoryBytes || 0);
+  if (
+    Number.isFinite(availableMemoryBytes) &&
+    availableMemoryBytes > 0 &&
+    availableMemoryBytes < LOW_AVAILABLE_MEMORY_BYTES
+  ) {
+    return "low_memory";
+  }
+  return null;
+}
+
+export function shouldSkipHeavyBootWorkForMemory(
+  deviceInfo?: DeviceMemoryInfo | null,
+) {
+  return getHeavyBootWorkSkipReason(deviceInfo) !== null;
+}
+
+export function logOptionalBootWorkSkipped(
+  reason: "low_memory" | "low_ram_device" | "app_not_stable" | "disabled_for_e2e",
+  extra: Record<string, any> = {},
+) {
+  emitBootTelemetry({
+    event: "client_boot_global_knowledge_sync_skipped",
+    workflow_step: "global_knowledge_sync",
+    workflow_phase: "skipped",
+    fallback_reason: reason,
+    reason,
+    ...extra,
+  });
+}
+
+export function scheduleOptionalBootWork(
+  task: () => void | Promise<void>,
+  options: {
+    delayMs?: number;
+    skipReason?:
+      | "low_memory"
+      | "low_ram_device"
+      | "app_not_stable"
+      | "disabled_for_e2e"
+      | null;
+  } = {},
+): OptionalBootWorkHandle {
+  const skipReason = options.skipReason || null;
+  if (skipReason) {
+    logOptionalBootWorkSkipped(skipReason);
+    return { cancel: () => undefined };
+  }
+
+  const delayMs = Math.max(
+    0,
+    Number(options.delayMs ?? OPTIONAL_BOOT_WORK_DELAY_MS) || 0,
+  );
+  let cancelled = false;
+  const timer = setTimeout(() => {
+    if (cancelled) return;
+    void Promise.resolve(task()).catch(() => undefined);
+  }, delayMs);
+
+  return {
+    cancel() {
+      cancelled = true;
+      clearTimeout(timer);
+    },
+  };
 }
 
 export async function runBootStep<T>(
@@ -84,13 +181,18 @@ export async function runBootStep<T>(
 export async function runGlobalKnowledgeSyncBootStep(options: {
   force?: boolean;
   limit?: number;
+  lightweight?: boolean;
   logger?: BootLogger;
 } = {}) {
   return runBootStep(
     "global knowledge sync",
     async () => {
       const { syncGlobalKnowledge } = await import("./globalKnowledgeSync");
-      return syncGlobalKnowledge({ force: options.force, limit: options.limit });
+      return syncGlobalKnowledge({
+        force: options.force,
+        limit: options.limit ?? 25,
+        lightweight: options.lightweight ?? true,
+      });
     },
     {
       timeoutMs: GLOBAL_KNOWLEDGE_SYNC_TIMEOUT_MS,
@@ -102,13 +204,17 @@ export async function runGlobalKnowledgeSyncBootStep(options: {
 
 export async function runGlobalKnowledgeForegroundSyncStep(options: {
   limit?: number;
+  lightweight?: boolean;
   logger?: BootLogger;
 } = {}) {
   return runBootStep(
     "foreground global knowledge sync",
     async () => {
       const { syncGlobalKnowledgeIfStale } = await import("./globalKnowledgeSync");
-      return syncGlobalKnowledgeIfStale({ limit: options.limit });
+      return syncGlobalKnowledgeIfStale({
+        limit: options.limit ?? 25,
+        lightweight: options.lightweight ?? true,
+      });
     },
     {
       timeoutMs: GLOBAL_KNOWLEDGE_SYNC_TIMEOUT_MS,

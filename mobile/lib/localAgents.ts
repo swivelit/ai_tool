@@ -63,6 +63,13 @@ import {
   markPendingLocalTurn,
   updateActiveWorkflowStep,
 } from "./chatTelemetry";
+import {
+  loadTasks,
+  scheduledTasksPath,
+  type LocalTaskRecord,
+} from "./localTaskStore";
+
+export { saveScheduledTask } from "./localTaskStore";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -171,16 +178,6 @@ type ProfileRagRecord = {
   metadata: Record<string, any>;
   chunks: LocalRagChunk[];
   updatedAt: string;
-};
-
-export type LocalTaskRecord = {
-  id: string;
-  title: string;
-  details?: string;
-  datetimeText?: string | null;
-  isoDatetime?: string | null;
-  status: "scheduled" | "draft" | "done";
-  createdAt: string;
 };
 
 export type LocalRagChunk = {
@@ -1721,7 +1718,7 @@ function semanticCacheStorePath() {
   return `${CACHE_DIR}/semantic_cache.json`;
 }
 function tasksPath(userId: number) {
-  return `${TASKS_DIR}/${userId}.json`;
+  return scheduledTasksPath(userId);
 }
 function convoPath(userId: number) {
   return `${CONVERSATIONS_DIR}/${userId}.jsonl`;
@@ -2169,14 +2166,6 @@ async function loadProfilerState(userId: number): Promise<LocalProfilerState> {
 
 async function saveProfilerState(userId: number, state: LocalProfilerState) {
   await writeJson(profilerStatePath(userId), state);
-}
-
-async function loadTasks(userId: number) {
-  return readJson<LocalTaskRecord[]>(tasksPath(userId), []);
-}
-
-async function saveTasks(userId: number, tasks: LocalTaskRecord[]) {
-  await writeJson(tasksPath(userId), tasks);
 }
 
 async function appendConversation(
@@ -6184,6 +6173,27 @@ function canAnswerRouteWithoutNativeInference(
   return Boolean(decision && SAFE_DETERMINISTIC_LOCAL_ROUTES.has(decision.route));
 }
 
+function isLikelyDeterministicLocalRequest(message: string) {
+  const normalized = normalizeText(message);
+  if (!normalized) return true;
+  return (
+    isReminderCreateToolIntent(normalized) ||
+    isReminderListToolIntent(normalized) ||
+    isSimpleTimeOrDateQuery(message) ||
+    /\b(capabilities|what can you do|who are you|your name)\b/.test(normalized)
+  );
+}
+
+function shouldRouteGeneralQuestionToBackendEarly(
+  message: string,
+  nativeSafety: { safe: boolean },
+  userAllowedCloudFallback?: boolean | null,
+) {
+  if (nativeSafety.safe) return false;
+  if (isLikelyDeterministicLocalRequest(message)) return false;
+  return userAllowedCloudFallback === true || userAllowedCloudFallback === false;
+}
+
 function tokenCountForMessage(message: string) {
   const normalized = normalizeText(message);
   return normalized ? normalized.split(/\s+/).filter(Boolean).length : 0;
@@ -6381,6 +6391,26 @@ async function lookupSemanticCache(
   }
 
   return null;
+}
+
+async function lookupSemanticCacheExact(userId: number, message: string) {
+  if (isTimeSensitiveRagQuery(message)) return null;
+  const store = await loadSemanticCacheStore(userId);
+  const now = Date.now();
+  const normalizedMessage = normalizeText(message);
+  const exactMatch = store.entries.find((row) => {
+    if (row.userId !== userId) return false;
+    if (row.expiresAt && new Date(row.expiresAt).getTime() < now) return false;
+    return (
+      normalizeText(row.normalizedQuestion || row.sourceQuestion) ===
+      normalizedMessage
+    );
+  });
+  if (!exactMatch) return null;
+  const confidence = clampConfidence(exactMatch.confidence, 1);
+  return confidence >= 0.92
+    ? { ...exactMatch, score: 1, confidence }
+    : null;
 }
 
 async function recordSemanticCacheHit(
@@ -7273,7 +7303,7 @@ async function callBackendOpenAiFallback(opts: {
       backend_fallback: durationMs,
     },
   });
-  void syncGlobalKnowledge().catch(() => undefined);
+  void syncGlobalKnowledge({ lightweight: true, limit: 25 }).catch(() => undefined);
   return annotated;
 }
 
@@ -7410,22 +7440,6 @@ async function appendRouteDecisionLog(
     decision,
     ...extra,
   });
-}
-
-export async function saveScheduledTask(
-  userId: number,
-  task: Omit<LocalTaskRecord, "id" | "createdAt">,
-) {
-  await ensureLocalAgentData();
-  const current = await loadTasks(userId);
-  const row: LocalTaskRecord = {
-    id: `${Date.now()}_${simpleHash(JSON.stringify(task))}`,
-    createdAt: nowIso(),
-    ...task,
-  };
-  current.unshift(row);
-  await saveTasks(userId, current.slice(0, 500));
-  return row;
 }
 
 async function runProfilerExtractionInsideNormalChat(opts: {
@@ -7664,6 +7678,132 @@ export async function runLocalAssistantTurn(opts: {
         stageTimings,
       },
     } satisfies LocalAssistantTurnResult;
+  }
+
+  const earlyNativeSafetyStatus = getNativeInferenceSafetyStatus({
+    mode: "native_on_device",
+    modelsReady: false,
+  });
+  const earlyNativeGeneralChatSafety = earlyNativeSafetyStatus.generalChat;
+  if (!isLikelyDeterministicLocalRequest(message)) {
+    const exactSemantic = await timeStage("semantic_cache_exact", () =>
+      lookupSemanticCacheExact(userId, message),
+    );
+    if (exactSemantic) {
+      const assistantText =
+        exactSemantic.lastPresentedAnswer ||
+        exactSemantic.englishAnswer ||
+        exactSemantic.canonicalAnswer;
+      logClientWorkflowStep({
+        event: "client_semantic_cache_exact_hit",
+        user_id: userId,
+        request_id: opts.requestId || undefined,
+        channel: "text",
+        question: message,
+        question_length: textLength(message),
+        agent_source: "semantic_cache",
+        route_taken: "semantic_cache",
+        workflow_step: "semantic_cache",
+        workflow_phase: "completed",
+        cache_hit: true,
+        cache_source: "semantic_cache_exact",
+        stage_timings: stageTimings,
+      });
+      await appendConversation(userId, "user", message);
+      await appendConversation(userId, "assistant", assistantText);
+      return {
+        route: "semantic_cache",
+        source: "semantic_cache",
+        cacheHit: true,
+        assistantText,
+        englishText:
+          exactSemantic.englishAnswer ||
+          exactSemantic.canonicalAnswer ||
+          assistantText,
+        intent: exactSemantic.intent || "assistant",
+        profileSummary: "",
+        meta: {
+          sourceQuestion: message,
+          matchedQuestion: exactSemantic.sourceQuestion,
+          similarity: exactSemantic.score,
+          confidence: exactSemantic.confidence ?? exactSemantic.score,
+          semanticCache: {
+            confidence: exactSemantic.confidence ?? exactSemantic.score,
+            sourceQuestion: exactSemantic.sourceQuestion,
+            sourceLabels: exactSemantic.sourceLabels || [exactSemantic.route],
+          },
+          source: "semantic_cache",
+          route: "semantic_cache",
+          fastPath: true,
+          responsePath: "semantic_cache",
+          stageTimings,
+        },
+      } satisfies LocalAssistantTurnResult;
+    }
+  }
+  if (
+    shouldRouteGeneralQuestionToBackendEarly(
+      message,
+      earlyNativeGeneralChatSafety,
+      opts.userAllowedCloudFallback,
+    )
+  ) {
+    const decision: OrchestratorDecision = {
+      route: "fallback_openai",
+      reason: "local_model_unavailable",
+      confidence: 1,
+      needsClarification: false,
+      clarificationQuestion: "",
+      needsLiveData: false,
+      selectedModel: "native_inference_guard",
+      fallbackAllowed: opts.userAllowedCloudFallback === true,
+    };
+    stageTimings.native_inference_guard =
+      stageTimings.native_inference_guard || 0;
+    logClientWorkflowStep({
+      event: "client_local_path_skipped_for_safety",
+      user_id: userId,
+      request_id: opts.requestId || undefined,
+      channel: "text",
+      question: message,
+      question_length: textLength(message),
+      agent_source: "local_safety_guard",
+      route_taken: "local_native_guard",
+      workflow_step: "native_inference_guard",
+      workflow_phase: "skipped",
+      fallback_reason: "local_model_unavailable",
+      native_safety_status: earlyNativeSafetyStatus,
+      device_memory_status: {
+        lowMemory: opts.deviceInfo?.lowMemory ?? null,
+        lowRamDevice: opts.deviceInfo?.lowRamDevice ?? null,
+        availableMemoryBytes: opts.deviceInfo?.availableMemoryBytes ?? null,
+      },
+      stage_timings: stageTimings,
+    });
+    if (opts.userAllowedCloudFallback === true) {
+      throwIfLocalBudgetExceeded("backend_fallback");
+      return buildBackendFallbackTurn({
+        userId,
+        message,
+        replyLanguage,
+        requestId: opts.requestId,
+        fallbackReason: "local_model_unavailable",
+        originalRoute: "native_inference_guard",
+        decision,
+        stageTimings,
+        appendUserTurn: true,
+      });
+    }
+    return buildCloudFallbackConsentTurn({
+      userId,
+      message,
+      replyLanguage,
+      fallbackReason: "local_model_unavailable",
+      originalRoute: "native_inference_guard",
+      decision,
+      stageTimings,
+      appendUserTurn: true,
+    });
   }
 
   await timeStage("ensure_agent_data", () => ensureLocalAgentData());

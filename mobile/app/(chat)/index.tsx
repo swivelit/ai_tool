@@ -66,9 +66,7 @@ import {
   uniqueNumberList,
 } from "@/lib/chatHistory";
 import { parseDatetime } from "@/lib/datetime";
-import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
-import { saveScheduledTask } from "@/lib/localAgents";
-import { getNativeOnDeviceModelBridge } from "@/lib/nativeOnDeviceModelBridge";
+import { saveScheduledTask } from "@/lib/localTaskStore";
 import {
   friendlyLocalTimeoutMessage,
   getLocalToBackendFallbackMs,
@@ -195,6 +193,26 @@ function clamp(value: number, min: number, max: number) {
 
 function wait(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+async function getCachedDeviceCapabilitiesLazy() {
+  const { getCachedDeviceCapabilities } = await import("@/lib/deviceCapabilities");
+  return getCachedDeviceCapabilities();
+}
+
+async function cancelNativeRequestIfAvailable(requestId: string | null) {
+  if (!requestId) return;
+  try {
+    const { getNativeOnDeviceModelBridge } = await import(
+      "@/lib/nativeOnDeviceModelBridge"
+    );
+    const bridge = getNativeOnDeviceModelBridge();
+    if (typeof bridge?.cancelRequest === "function") {
+      await Promise.resolve(bridge.cancelRequest(requestId));
+    }
+  } catch {
+    // Best-effort cancellation must not crash chat or unmount cleanup.
+  }
 }
 
 function formatHistoryTime(value?: string | null) {
@@ -927,10 +945,7 @@ export default function Home() {
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
       if (nextState !== "active" && activeChatRequestIdRef.current) {
-        const bridge = getNativeOnDeviceModelBridge();
-        if (typeof bridge?.cancelRequest === "function") {
-          void Promise.resolve(bridge.cancelRequest(activeChatRequestIdRef.current)).catch(() => undefined);
-        }
+        void cancelNativeRequestIfAvailable(activeChatRequestIdRef.current);
       }
       setAppState(nextState);
     });
@@ -995,10 +1010,7 @@ export default function Home() {
       void shutdownHandsFree(true);
       void releaseReplySound();
       if (activeChatRequestIdRef.current) {
-        const bridge = getNativeOnDeviceModelBridge();
-        if (typeof bridge?.cancelRequest === "function") {
-          void Promise.resolve(bridge.cancelRequest(activeChatRequestIdRef.current)).catch(() => undefined);
-        }
+        void cancelNativeRequestIfAvailable(activeChatRequestIdRef.current);
       }
 
       const activeRecording = recordingRef.current;
@@ -1601,7 +1613,7 @@ export default function Home() {
 
   async function getChatTurnTimeoutMs(source: ChatRequestSource) {
     try {
-      const deviceInfo = await getCachedDeviceCapabilities();
+      const deviceInfo = await getCachedDeviceCapabilitiesLazy();
       return getLocalTurnTimeoutMs({
         source,
         deviceInfo,
@@ -1615,7 +1627,7 @@ export default function Home() {
 
   async function getChatTurnSoftNoticeMs(source: ChatRequestSource) {
     try {
-      const deviceInfo = await getCachedDeviceCapabilities();
+      const deviceInfo = await getCachedDeviceCapabilitiesLazy();
       return getLocalTurnSoftNoticeMs({
         source,
         deviceInfo,
@@ -1873,10 +1885,7 @@ export default function Home() {
       if (isActiveChatRequest(requestId)) {
         if (isLocalTurnTimeoutError(error)) {
           let backendFallbackError: unknown = null;
-          const bridge = getNativeOnDeviceModelBridge();
-          if (typeof bridge?.cancelRequest === "function") {
-            void Promise.resolve(bridge.cancelRequest(requestId)).catch(() => undefined);
-          }
+          void cancelNativeRequestIfAvailable(requestId);
           logClientTurn({
             event: "client_local_turn_failed",
             user_id: profile.userId,

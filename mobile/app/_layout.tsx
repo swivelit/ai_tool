@@ -19,8 +19,15 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { AssistantProvider, useAssistant } from "@/components/AssistantProvider";
 import { GlassCard } from "@/components/Glass";
 import { Brand } from "@/constants/theme";
-import { resolveDesiredRoute, runGlobalKnowledgeForegroundSyncStep, runGlobalKnowledgeSyncBootStep, runPendingCrashTelemetryBootStep } from "@/lib/appBoot";
-import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
+import {
+  getHeavyBootWorkSkipReason,
+  logOptionalBootWorkSkipped,
+  resolveDesiredRoute,
+  runGlobalKnowledgeForegroundSyncStep,
+  runGlobalKnowledgeSyncBootStep,
+  runPendingCrashTelemetryBootStep,
+  scheduleOptionalBootWork,
+} from "@/lib/appBoot";
 import { isAnyE2eEnvEnabled, isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
 import {
   getModelDeliveryMode,
@@ -262,6 +269,11 @@ function isDebugBuild() {
   return Boolean((globalThis as any).__DEV__);
 }
 
+async function getCachedDeviceCapabilitiesLazy(options?: Record<string, any>) {
+  const { getCachedDeviceCapabilities } = await import("@/lib/deviceCapabilities");
+  return getCachedDeviceCapabilities(options);
+}
+
 function AppShell() {
   const pathname = usePathname();
   const segments = useSegments();
@@ -277,7 +289,7 @@ function AppShell() {
   const { profile, loading: profileLoading, refresh: refreshAssistant } = useAssistant();
 
   const lastRedirectRef = useRef<string | null>(null);
-  const globalKnowledgeSyncStartedRef = useRef(false);
+  const globalKnowledgeSyncStartedRef = useRef<number | null>(null);
   const [modelStatus, setModelStatus] = useState<ModelInstallStatus | null>(null);
   const [modelStatusLoading, setModelStatusLoading] = useState(false);
   const [modelStatusError, setModelStatusError] = useState<unknown>(null);
@@ -311,7 +323,7 @@ function AppShell() {
     }
 
     setModelStatusLoading(true);
-    getCachedDeviceCapabilities()
+    getCachedDeviceCapabilitiesLazy()
       .then((deviceInfo) => getModelInstallStatus({ deviceInfo }))
       .then((status) => {
         if (cancelled) return;
@@ -333,12 +345,54 @@ function AppShell() {
   }, [shouldCheckModelSetup, pathname]);
 
   useEffect(() => {
-    if (!activeProfile?.userId || globalKnowledgeSyncStartedRef.current) {
+    if (!activeProfile?.userId) {
       return;
     }
-    globalKnowledgeSyncStartedRef.current = true;
+    if (globalKnowledgeSyncStartedRef.current === activeProfile.userId) {
+      return;
+    }
+    globalKnowledgeSyncStartedRef.current = activeProfile.userId;
     void runPendingCrashTelemetryBootStep().catch(() => undefined);
-    void runGlobalKnowledgeSyncBootStep().catch(() => undefined);
+
+    const skipReason = isAnyE2eEnvEnabled() ? "disabled_for_e2e" : null;
+    let cancelled = false;
+    const scheduled = scheduleOptionalBootWork(
+      async () => {
+        if (cancelled) return;
+        let deviceInfo: any = null;
+        try {
+          deviceInfo = await getCachedDeviceCapabilitiesLazy({
+            cacheTtlMs: 5 * 60 * 1000,
+          });
+        } catch {
+          deviceInfo = null;
+        }
+        const memorySkipReason = getHeavyBootWorkSkipReason(deviceInfo);
+        if (memorySkipReason) {
+          logOptionalBootWorkSkipped(memorySkipReason, {
+            device_memory_status: {
+              lowMemory: deviceInfo?.lowMemory ?? null,
+              lowRamDevice: deviceInfo?.lowRamDevice ?? null,
+              availableMemoryBytes: deviceInfo?.availableMemoryBytes ?? null,
+            },
+          });
+          return;
+        }
+        await runGlobalKnowledgeSyncBootStep({
+          lightweight: true,
+          limit: 25,
+        }).catch(() => undefined);
+      },
+      {
+        delayMs: 20_000,
+        skipReason,
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      scheduled.cancel();
+    };
   }, [activeProfile?.userId]);
 
   useEffect(() => {
@@ -347,7 +401,10 @@ function AppShell() {
     }
     const subscription = AppState.addEventListener("change", (nextState) => {
       if (nextState === "active") {
-        void runGlobalKnowledgeForegroundSyncStep().catch(() => undefined);
+        void runGlobalKnowledgeForegroundSyncStep({
+          lightweight: true,
+          limit: 25,
+        }).catch(() => undefined);
       }
     });
     return () => {
