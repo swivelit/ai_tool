@@ -72,6 +72,11 @@ start_metro() {
   cd "$MOBILE_DIR"
 
   nohup env EXPO_NO_TELEMETRY=1 \
+    EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-}" \
+    EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}" \
+    EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" \
+    EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-}" \
+    EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-}" \
     npx expo start --dev-client --host lan --port "$METRO_PORT" --clear \
     > "$METRO_LOG" 2>&1 &
 
@@ -192,6 +197,14 @@ if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
   info "Debug APK voice routing: local/native STT (manual development opt-in)"
 else
   info "Debug APK voice routing: backend Sarvam (default)"
+fi
+
+if is_truthy "${RUN_APK_TESTS:-}"; then
+  export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
+  export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
+  export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
+  export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
+  info "APK test mode: E2E mock auth/model setup enabled; unverified native inference disabled"
 fi
 
 info "Building debug APK first"

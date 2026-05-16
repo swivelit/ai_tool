@@ -299,6 +299,35 @@ sys.exit(1)
 PY
 }
 
+assistant_response_count() {
+  local label="${1:-assistant-response-count}"
+  local xml_path
+  xml_path="$(dump_ui "$label")"
+  [[ -s "$xml_path" ]] || {
+    printf "0\n"
+    return 0
+  }
+  python3 - "$xml_path" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except Exception:
+    print(0)
+    sys.exit(0)
+
+count = 0
+for node in root.iter():
+    content_desc = node.attrib.get("content-desc") or ""
+    resource_id = node.attrib.get("resource-id") or ""
+    if "chat-assistant-response" in content_desc or "chat-assistant-response" in resource_id:
+        count += 1
+
+print(count)
+PY
+}
+
 wait_for_chat_input_cleared() {
   local previous_text="$1"
   local timeout="${2:-8}"
@@ -328,6 +357,19 @@ capture_step() {
   collect_cmd "dumpsys-window-${label}" adb shell dumpsys window
 }
 
+assert_app_alive() {
+  local label="$1"
+  local log="$ARTIFACT_DIR/app-pid-${label}.log"
+
+  if adb shell pidof "$PACKAGE_NAME" > "$log" 2>&1; then
+    return 0
+  fi
+
+  mark_failed "app-not-running-${label}"
+  capture_step "app-not-running-${label}"
+  return 1
+}
+
 scan_crashes() {
   local log_file="$ARTIFACT_DIR/logcat-full.log"
   local markers_file="$ARTIFACT_DIR/crash-markers.log"
@@ -339,6 +381,7 @@ scan_crashes() {
     "ANR in"
     "SIGSEGV"
     "SIGABRT"
+    "OutOfMemoryError"
     "ReactNativeJS.*Error"
     "Unable to load script"
     "ReferenceError"
@@ -358,6 +401,23 @@ scan_crashes() {
   if [[ "$CRASH_MARKERS_FOUND" == "1" ]]; then
     mark_failed "crash-markers"
   fi
+}
+
+scan_general_question_route_markers() {
+  local label="$1"
+  local start_line="${2:-0}"
+  local log_file="$ARTIFACT_DIR/logcat-full.log"
+  local markers_file="$ARTIFACT_DIR/route-markers-${label}.log"
+
+  : > "$markers_file"
+
+  if [[ -f "$log_file" ]] && tail -n "+$((start_line + 1))" "$log_file" | grep -E -n \
+    "client_local_path_skipped_for_safety|client_backend_fallback_started|client_backend_fallback_completed|chat_turn_completed" \
+    > "$markers_file" 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
 }
 
 start_logcat() {
@@ -545,6 +605,8 @@ fi
 export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
 export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
 export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-false}"
+export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
+export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
 
 if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
   info "Debug APK voice routing: local/native STT (manual development opt-in)"
@@ -602,6 +664,9 @@ else
     EXPO_NO_TELEMETRY=1 \
     EXPO_PUBLIC_E2E_MOCK_AUTH="$EXPO_PUBLIC_E2E_MOCK_AUTH" \
     EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="$EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP" \
+    EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="$EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE" \
+    EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT" \
+    EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS" \
     npx expo start --dev-client --host lan --port "$METRO_PORT" --clear
   ) > "$ARTIFACT_DIR/metro.log" 2>&1 &
   METRO_PID="$!"
@@ -636,23 +701,40 @@ if wait_for_desc "chat-input" 60; then
 else
   capture_step "auth-or-setup"
   if wait_for_desc "login-email-input" 3; then
+    mark_failed "chat-automation-stopped-at-login"
     record_skip "Chat automation stopped at login screen; E2E mock auth did not take effect"
   elif wait_for_desc "model-setup-status" 3; then
+    mark_failed "chat-automation-stopped-at-model-setup"
     record_skip "Chat automation stopped at model setup screen"
   else
+    mark_failed "chat-input-not-found-after-launch"
     record_skip "Chat input not found after launch"
   fi
   exit "$RESULT"
 fi
 
-for message in "hello" "what can you do"; do
+for message in "hello" "what can you do" "tell me about solo leveling"; do
   label="$(printf '%s' "$message" | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]')"
+  is_general_question=0
+  input_clear_timeout=8
+  result_wait_seconds=8
+  if [[ "$message" == "tell me about solo leveling" ]]; then
+    is_general_question=1
+    input_clear_timeout=90
+    result_wait_seconds=90
+  fi
+
   dismiss_expo_warning || true
   if ! clear_chat_input; then
     mark_failed "clear-chat-input"
     continue
   fi
   sleep 1
+  before_response_count="$(assistant_response_count "before-message-${label}" || printf "0")"
+  general_log_start_line=0
+  if [[ "$is_general_question" == "1" && -f "$ARTIFACT_DIR/logcat-full.log" ]]; then
+    general_log_start_line="$(wc -l < "$ARTIFACT_DIR/logcat-full.log" | tr -d '[:space:]')"
+  fi
   type_text "$message"
   sleep 1
   dismiss_expo_warning || true
@@ -663,24 +745,77 @@ for message in "hello" "what can you do"; do
     mark_failed "tap-chat-send-button"
     continue
   fi
-  if ! wait_for_chat_input_cleared "$message" 8 "input-cleared-${label}"; then
+  if ! assert_app_alive "after-submit-${label}"; then
+    continue
+  fi
+  if ! wait_for_chat_input_cleared "$message" "$input_clear_timeout" "input-cleared-${label}"; then
     mark_failed "message-not-submitted-${label}"
     capture_step "submit-failed-${label}"
     continue
   fi
-  wait_for_desc "chat-thinking-indicator" 8 || true
-  sleep 8
+
+  if [[ "$is_general_question" == "1" ]]; then
+    route_marker_seen=0
+    response_seen=0
+    deadline=$((SECONDS + result_wait_seconds))
+
+    while [[ "$SECONDS" -lt "$deadline" ]]; do
+      if ! assert_app_alive "during-general-question-${label}"; then
+        break
+      fi
+
+      scan_crashes
+      if [[ "$CRASH_MARKERS_FOUND" == "1" ]]; then
+        capture_step "crash-during-general-question-${label}"
+        break
+      fi
+
+      if scan_general_question_route_markers "$label" "$general_log_start_line"; then
+        route_marker_seen=1
+      fi
+
+      current_response_count="$(assistant_response_count "general-response-count-${label}-${SECONDS}" || printf "0")"
+      if [[ "$before_response_count" =~ ^[0-9]+$ ]] && \
+        [[ "$current_response_count" =~ ^[0-9]+$ ]] && \
+        (( current_response_count > before_response_count )); then
+        response_seen=1
+      fi
+
+      if [[ "$response_seen" == "1" || "$route_marker_seen" == "1" ]]; then
+        break
+      fi
+
+      sleep 2
+    done
+
+    if ! assert_app_alive "after-general-question-${label}"; then
+      continue
+    fi
+
+    if [[ "$route_marker_seen" != "1" && "$response_seen" != "1" ]]; then
+      mark_failed "general-question-no-route-marker-or-response-${label}"
+    fi
+  else
+    wait_for_desc "chat-thinking-indicator" 8 || true
+    sleep 8
+    assert_app_alive "after-local-question-${label}" || true
+  fi
+
   capture_step "after-message-${label}"
   local_end="$(now_ms)"
   RESPONSE_TIMINGS+=("${message}: $((local_end - local_start))ms")
 done
 
-if [[ -f "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml" ]]; then
-  if ! grep -q 'text="hello"' "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml"; then
+final_chat_xml="$ARTIFACT_DIR/ui-after-message-tell_me_about_solo_leveling.xml"
+if [[ -f "$final_chat_xml" ]]; then
+  if ! grep -q 'text="hello"' "$final_chat_xml"; then
     mark_failed "first-message-not-visible-after-second"
   fi
-  if ! grep -q 'text="what can you do"' "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml"; then
+  if ! grep -q 'text="what can you do"' "$final_chat_xml"; then
     mark_failed "second-message-not-visible"
+  fi
+  if ! grep -q 'text="tell me about solo leveling"' "$final_chat_xml"; then
+    mark_failed "general-message-not-visible"
   fi
 fi
 

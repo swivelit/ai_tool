@@ -32,6 +32,7 @@ describe("APK test harness", () => {
       "ANR in",
       "SIGSEGV",
       "SIGABRT",
+      "OutOfMemoryError",
       "ReactNativeJS.*Error",
       "Unable to load script",
       "ReferenceError",
@@ -54,10 +55,12 @@ describe("APK test harness", () => {
     const source = readRepo("test_apk.sh");
     const chatSource = readMobile("app/(chat)/index.tsx");
 
+    expect(source).toContain('"hello" "what can you do" "tell me about solo leveling"');
     expect(source).toContain("wait_for_chat_input_cleared");
     expect(source).toContain("message-not-submitted");
     expect(source).toContain("first-message-not-visible-after-second");
     expect(source).toContain("second-message-not-visible");
+    expect(source).toContain("general-message-not-visible");
     expect(source).toContain("input keyevent 111");
     expect(source).toContain('tap_desc_offset "chat-send-button" 0 35');
     expect(source).toContain("dismiss_expo_warning");
@@ -88,14 +91,32 @@ describe("APK test harness", () => {
     expect(source).toContain('[[ "$DEVICE_REQUIRES_16KB_APK" == "1" && "$APK_16KB_VALIDATION_FAILED" == "1" ]]');
   });
 
-  it("passes bash syntax validation", () => {
-    const result = spawnSync("bash", ["-n", path.join(repoRoot, "test_apk.sh")], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
+  it("checks app liveness and backend/native safety markers for general questions", () => {
+    const source = readRepo("test_apk.sh");
 
-    expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
+    expect(source).toContain("assert_app_alive");
+    expect(source).toContain('adb shell pidof "$PACKAGE_NAME"');
+    expect(source).toContain("input_clear_timeout=90");
+    expect(source).toContain("result_wait_seconds=90");
+    expect(source).toContain("scan_general_question_route_markers");
+    expect(source).toContain("client_local_path_skipped_for_safety");
+    expect(source).toContain("client_backend_fallback_started");
+    expect(source).toContain("client_backend_fallback_completed");
+    expect(source).toContain("chat_turn_completed");
+    expect(source).toContain("general-question-no-route-marker-or-response");
+    expect(source).toContain("chat-input-not-found-after-launch");
+  });
+
+  it("passes bash syntax validation", () => {
+    for (const script of ["launch-debug_apk.sh", "test_apk.sh"]) {
+      const result = spawnSync("bash", ["-n", path.join(repoRoot, script)], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toBe("");
+    }
   });
 
   it("launch-debug_apk supports RUN_APK_TESTS and writes logs under dist", () => {
@@ -105,6 +126,43 @@ describe("APK test harness", () => {
     expect(source).toContain("REUSE_APK=1 SKIP_PRECHECKS=1");
     expect(source).toContain("./test_apk.sh");
     expect(source).toContain('METRO_LOG="$DIST_DIR/launch-debug-metro-${METRO_PORT}.log"');
+  });
+
+  it("launch-debug_apk enables E2E and native safety envs before building for APK tests", () => {
+    const source = readRepo("launch-debug_apk.sh");
+    const envIndex = source.indexOf('if is_truthy "${RUN_APK_TESTS:-}"');
+    const buildIndex = source.indexOf("BUILD_TYPE=debug ./build-apk.sh");
+    const testIndex = source.indexOf("REUSE_APK=1 SKIP_PRECHECKS=1");
+
+    expect(envIndex).toBeGreaterThanOrEqual(0);
+    expect(envIndex).toBeLessThan(buildIndex);
+    expect(envIndex).toBeLessThan(testIndex);
+    expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"',
+    );
+    expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"',
+    );
+    expect(source).toContain(
+      'export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"',
+    );
+    expect(source).toContain(
+      'export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"',
+    );
+  });
+
+  it("passes E2E and native safety envs into Metro", () => {
+    const launchDebug = readRepo("launch-debug_apk.sh");
+    const testApk = readRepo("test_apk.sh");
+
+    for (const source of [launchDebug, testApk]) {
+      expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_AUTH=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=");
+      expect(source).toContain("EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=");
+      expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=");
+      expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=");
+      expect(source).toContain("npx expo start --dev-client");
+    }
   });
 
   it("debug APK scripts default voice tests to backend routing and keep manual local opt-in", () => {
