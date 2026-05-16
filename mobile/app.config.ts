@@ -97,6 +97,9 @@ const isProductionNativeDownloadBuild =
   isProductionOrReleaseBuild &&
   isNativeOnDeviceRuntime &&
   normalizedModelDeliveryMode === "download_on_first_launch";
+const isReleaseLocalVoicePipelineAllowed = isTruthyEnv(
+  process.env.JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE,
+);
 
 const enabledE2eEnvNames = [
   ["EXPO_PUBLIC_E2E_MOCK_AUTH", E2E_MOCK_AUTH],
@@ -110,6 +113,18 @@ if (isProductionOrReleaseBuild && enabledE2eEnvNames.length) {
     `Release/production builds cannot enable debug E2E flags: ${enabledE2eEnvNames.join(
       ", ",
     )}. Disable mock auth/model setup bypass before building a release APK.`,
+  );
+}
+
+if (
+  isProductionOrReleaseBuild &&
+  isTruthyEnv(USE_LOCAL_VOICE_PIPELINE) &&
+  !isReleaseLocalVoicePipelineAllowed
+) {
+  throw new Error(
+    "Release/production builds should route recorded voice through backend Sarvam by default. " +
+      "EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true enables local/native STT and requires " +
+      "JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE=1 as an explicit release override.",
   );
 }
 

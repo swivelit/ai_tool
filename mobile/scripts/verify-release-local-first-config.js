@@ -489,9 +489,19 @@ function verifyReleaseEnvironment() {
 
   const voiceValue = env('EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE') || 'false';
   if (isTruthy(voiceValue)) {
-    pass('release env explicitly enables development local voice routing');
+    if (!isTruthy(process.env.JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE)) {
+      fail(
+        'Release recorded voice should use backend Sarvam by default',
+        [
+          'EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true enables local/native STT.',
+          'Set JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE=1 only when intentionally shipping experimental/development-style release local/native voice routing.',
+        ].join('\n'),
+      );
+    }
+    log('⚠️  Release local/native voice routing is explicitly allowed; this is experimental/development-style routing.');
+    pass('release env explicitly allows local/native voice routing with JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE');
   } else {
-    pass('release env keeps recorded voice on authenticated backend routing');
+    pass('release env keeps recorded voice on backend Sarvam routing');
   }
 
   const missingFirebaseEnvNames = FIREBASE_ENV_NAMES.filter((name) => !env(name));

@@ -192,6 +192,14 @@ if [[ "$BUILD_TYPE" == "release" || "$EAS_PROFILE" == "production" || "$EAS_PROF
   IS_PRODUCTION_OR_RELEASE_BUILD=1
 fi
 
+if [[ -z "${NODE_ENV:-}" ]]; then
+  if [[ "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
+    export NODE_ENV="production"
+  else
+    export NODE_ENV="development"
+  fi
+fi
+
 if is_truthy "${JAI_DEBUG_LITE:-}"; then
   if [[ "$BUILD_TYPE" != "debug" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
     fail "JAI_DEBUG_LITE=1 is debug-only and cannot be used for production/release builds."
@@ -226,7 +234,18 @@ if [[ "$BUILD_TYPE" == "release" || "$RUNTIME_MODE" == "native_on_device" || "$I
   SHOULD_SYNC_LLAMA_CPP=1
 fi
 
-if [[ -z "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" ]]; then
+if [[ "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
+  if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
+    if is_truthy "${JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE:-}"; then
+      warn "Release local/native voice routing explicitly allowed by JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE. This is experimental/development-style routing; recorded voice normally uses backend Sarvam."
+    else
+      warn "Release/production build had EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true; forcing false so recorded voice uses backend Sarvam by default. Set JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE=1 only to ship experimental local/native STT."
+      export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="false"
+    fi
+  elif [[ -z "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" ]]; then
+    export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="false"
+  fi
+elif [[ -z "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" ]]; then
   # Recorded voice defaults to authenticated backend Sarvam. Phone-local/native
   # STT is an explicit development-only opt-in.
   export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="false"
@@ -290,11 +309,16 @@ fi
 
 info "Using mobile app at: $MOBILE_DIR"
 info "Build type: $BUILD_TYPE"
+info "NODE_ENV: ${NODE_ENV:-<unset>}"
 info "Android ABIs: $JAI_ANDROID_ABIS"
 info "Runtime mode: ${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}"
 info "Model delivery mode: ${EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE:-download_on_first_launch}"
 if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
-  info "Voice routing: local/native STT (development opt-in)"
+  if [[ "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
+    warn "Voice routing: local/native STT (explicit release override; experimental/development-style)"
+  else
+    info "Voice routing: local/native STT (development opt-in)"
+  fi
 else
   info "Voice routing: backend Sarvam (default)"
 fi
@@ -307,14 +331,16 @@ cd "$MOBILE_DIR"
 
 info "Installing mobile dependencies"
 if [[ -f package-lock.json ]]; then
-  if npm ci; then
+  # NODE_ENV=production makes npm omit dev dependencies by default. Keep the
+  # existing full lockfile install behavior for Expo/Gradle build tooling.
+  if npm ci --include=dev; then
     info "Dependencies installed with npm ci"
   else
     warn "package-lock.json is out of sync with package.json. Falling back to npm install to refresh the lockfile."
-    npm install
+    npm install --include=dev
   fi
 else
-  npm install
+  npm install --include=dev
 fi
 
 info "Ensuring Expo CLI is available"

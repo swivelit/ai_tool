@@ -33,6 +33,7 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "JAI_BUILD_PROFILE",
   "JAI_BUILD_TYPE",
   "JAI_REQUIRE_LLAMA_CPP",
+  "JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE",
   "JAI_SKIP_LOCAL_ENV_FILES",
   "JAI_LLAMA_CPP_DIR",
   "EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE",
@@ -425,13 +426,30 @@ export const runtime = {
     expect(buildApk).not.toContain("EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false");
   });
 
-  it("defaults APK recorded voice routing to backend Sarvam unless explicitly opted into local STT", () => {
+  it("sets NODE_ENV from the resolved APK build type when unset", () => {
+    const buildApk = readRepo("build-apk.sh");
+    const releaseDetectionIndex = buildApk.indexOf("IS_PRODUCTION_OR_RELEASE_BUILD=0");
+    const nodeEnvIndex = buildApk.indexOf('if [[ -z "${NODE_ENV:-}" ]]; then');
+
+    expect(releaseDetectionIndex).toBeGreaterThanOrEqual(0);
+    expect(nodeEnvIndex).toBeGreaterThanOrEqual(0);
+    expect(releaseDetectionIndex).toBeLessThan(nodeEnvIndex);
+    expect(buildApk).toContain('export NODE_ENV="production"');
+    expect(buildApk).toContain('export NODE_ENV="development"');
+    expect(buildApk).toContain('info "NODE_ENV: ${NODE_ENV:-<unset>}"');
+  });
+
+  it("protects release APK recorded voice routing from accidental local STT opt-in", () => {
     const buildApk = readRepo("build-apk.sh");
 
     expect(buildApk).toContain('export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="false"');
     expect(buildApk).not.toContain('export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="true"');
+    expect(buildApk).toContain('if [[ "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then');
+    expect(buildApk).toContain("JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE");
+    expect(buildApk).toContain("forcing false so recorded voice uses backend Sarvam by default");
     expect(buildApk).toContain("Voice routing: backend Sarvam (default)");
     expect(buildApk).toContain("Voice routing: local/native STT (development opt-in)");
+    expect(buildApk).toContain("explicit release override; experimental/development-style");
   });
 
   it("validates Expo config before Android prebuild so local release metadata failures stop early", () => {
@@ -505,6 +523,43 @@ export const runtime = {
     expect(appConfig.expo.extra.LOCAL_MODEL_RUNTIME_MODE).toBe("native_on_device");
     expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("false");
     expect(appConfig.expo.extra.USE_LOCAL_VOICE_PIPELINE).toBe("false");
+  });
+
+  it("rejects release app.config local voice routing without explicit override", async () => {
+    await expect(
+      importAppConfigWithEnv({
+        BUILD_TYPE: "release",
+        EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+        EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+        EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+        ...validReleaseModelMetadata,
+        ...validReleaseFirebaseEnv,
+      }),
+    ).rejects.toThrow(/backend Sarvam.*JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE=1/s);
+  });
+
+  it("allows release app.config local voice routing only with explicit override", async () => {
+    const appConfig = await importAppConfigWithEnv({
+      BUILD_TYPE: "release",
+      JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE: "1",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      ...validReleaseModelMetadata,
+      ...validReleaseFirebaseEnv,
+    });
+
+    expect(appConfig.expo.extra.USE_LOCAL_VOICE_PIPELINE).toBe("true");
+  });
+
+  it("allows debug app.config to opt into local voice routing", async () => {
+    const appConfig = await importAppConfigWithEnv({
+      BUILD_TYPE: "debug",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+    });
+
+    expect(appConfig.expo.extra.USE_LOCAL_VOICE_PIPELINE).toBe("true");
   });
 
   it("allows debug app.config to omit Firebase env", async () => {
@@ -700,13 +755,43 @@ export const runtime = {
       BUILD_TYPE: "release",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
-      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
       ...validReleaseModelMetadata,
       ...validReleaseFirebaseEnv,
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout + result.stderr).toMatch(/authenticated backend routing/);
+    expect(result.stdout + result.stderr).toMatch(/backend Sarvam routing/);
+  });
+
+  it("release verification fails when local voice routing lacks explicit override", () => {
+    const result = runReleaseVerifierWithMockLlama({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      ...validReleaseModelMetadata,
+      ...validReleaseFirebaseEnv,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/backend Sarvam by default/);
+    expect(result.stdout + result.stderr).toMatch(/JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE=1/);
+  });
+
+  it("release verification allows local voice routing only with explicit override", () => {
+    const result = runReleaseVerifierWithMockLlama({
+      BUILD_TYPE: "release",
+      JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE: "1",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "true",
+      ...validReleaseModelMetadata,
+      ...validReleaseFirebaseEnv,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/explicitly allowed/);
+    expect(result.stdout + result.stderr).toMatch(/experimental\/development-style/);
   });
 
   it("sets JAI_LLAMA_CPP_AVAILABLE=1 in Android CMake when vendored llama.cpp exists", () => {
