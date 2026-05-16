@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __idleQueueTestUtils,
   enqueueLocalIdleJob,
+  getQueueSnapshot,
 } from "../lib/localIdleQueue";
 
 describe("local idle queue", () => {
@@ -84,5 +85,40 @@ describe("local idle queue", () => {
     expect(job).not.toHaveBeenCalled();
     await __idleQueueTestUtils.flush();
     expect(job).toHaveBeenCalledTimes(1);
+  });
+
+  it("drains high-priority jobs before normal and low", async () => {
+    const order: string[] = [];
+    enqueueLocalIdleJob("low1", () => order.push("low1"), { priority: "low" });
+    enqueueLocalIdleJob("normal1", () => order.push("normal1"), { priority: "normal" });
+    enqueueLocalIdleJob("high1", () => order.push("high1"), { priority: "high" });
+    enqueueLocalIdleJob("high2", () => order.push("high2"), { priority: "high" });
+    
+    await __idleQueueTestUtils.flush();
+    
+    expect(order).toEqual(["high1", "high2", "normal1", "low1"]);
+  });
+
+  it("returns accurate queue snapshot", () => {
+    enqueueLocalIdleJob("snap_job", () => {}, { priority: "high", delayMs: 123 });
+    const snap = getQueueSnapshot();
+    expect(snap.length).toBe(1);
+    expect(snap[0].label).toBe("snap_job");
+    expect(snap[0].priority).toBe("high");
+    expect(snap[0].delayMs).toBe(123);
+  });
+
+  it("fires onComplete after successful job", async () => {
+    const onComplete = vi.fn();
+    enqueueLocalIdleJob("success_job", () => "done", { onComplete });
+    await __idleQueueTestUtils.flush();
+    expect(onComplete).toHaveBeenCalled();
+  });
+
+  it("fires onComplete even when job throws an error", async () => {
+    const onComplete = vi.fn();
+    enqueueLocalIdleJob("error_job", () => { throw new Error("fail") }, { onComplete });
+    await __idleQueueTestUtils.flush();
+    expect(onComplete).toHaveBeenCalled();
   });
 });
