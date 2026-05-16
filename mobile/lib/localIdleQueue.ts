@@ -1,3 +1,5 @@
+import { InteractionManager } from "react-native";
+
 type LocalIdleTask = () => Promise<unknown> | unknown;
 
 export type LocalIdleJobOptions = {
@@ -21,10 +23,6 @@ type InteractionManagerLike = {
   runAfterInteractions?: (task: () => void) => InteractionHandle | void;
 };
 
-declare const require:
-  | ((moduleName: string) => { InteractionManager?: InteractionManagerLike })
-  | undefined;
-
 const DEFAULT_INITIAL_DELAY_MS = 80;
 const DEFAULT_STAGGER_MS = 350;
 const MAX_FLUSH_JOBS = 1000;
@@ -34,7 +32,6 @@ let nextId = 1;
 let running = false;
 let scheduledTimer: ReturnType<typeof setTimeout> | null = null;
 let scheduledInteraction: InteractionHandle | null = null;
-let cachedInteractionManager: InteractionManagerLike | null | undefined;
 
 function isTestEnvironment() {
   return (
@@ -44,19 +41,8 @@ function isTestEnvironment() {
 }
 
 function getInteractionManager(): InteractionManagerLike | null {
-  if (cachedInteractionManager !== undefined) {
-    return cachedInteractionManager;
-  }
-
-  try {
-    const maybeRequire = typeof require === "function" ? require : null;
-    cachedInteractionManager =
-      maybeRequire?.("react-native")?.InteractionManager || null;
-  } catch {
-    cachedInteractionManager = null;
-  }
-
-  return cachedInteractionManager;
+  if (isTestEnvironment()) return null;
+  return (InteractionManager as InteractionManagerLike | null | undefined) || null;
 }
 
 function logIdleError(label: string, error: unknown) {
@@ -84,6 +70,14 @@ function cancelScheduledWork() {
   scheduledInteraction = null;
 }
 
+function scheduleWithTimer(delayMs: number) {
+  scheduledInteraction = null;
+  scheduledTimer = setTimeout(() => {
+    scheduledTimer = null;
+    void drainOne();
+  }, delayMs);
+}
+
 function scheduleNext() {
   if (isTestEnvironment() || running || scheduledTimer || scheduledInteraction) {
     return;
@@ -92,22 +86,25 @@ function scheduleNext() {
   const next = queue[0];
   if (!next) return;
 
-  const scheduleTimer = () => {
-    scheduledInteraction = null;
-    scheduledTimer = setTimeout(() => {
-      scheduledTimer = null;
-      void drainOne();
-    }, next.delayMs);
-  };
+  const scheduleTimer = () => scheduleWithTimer(next.delayMs);
 
-  const interactionManager = getInteractionManager();
-  if (typeof interactionManager?.runAfterInteractions === "function") {
-    scheduledInteraction =
-      interactionManager.runAfterInteractions(scheduleTimer) || null;
-    return;
+  try {
+    const interactionManager = getInteractionManager();
+    if (typeof interactionManager?.runAfterInteractions === "function") {
+      const handle =
+        interactionManager.runAfterInteractions(scheduleTimer) || null;
+      scheduledInteraction = scheduledTimer
+        ? null
+        : handle || { cancel: undefined };
+      return;
+    }
+  } catch (error) {
+    logIdleError("schedule_interaction", error);
   }
 
-  scheduleTimer();
+  if (!scheduledTimer) {
+    scheduleTimer();
+  }
 }
 
 async function drainOne() {

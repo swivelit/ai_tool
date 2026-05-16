@@ -12,6 +12,13 @@ export const AppState = {
   }),
 };
 
+export const InteractionManager = {
+  runAfterInteractions: (task: () => void) => {
+    task();
+    return { cancel: () => undefined };
+  },
+};
+
 export const StyleSheet = {
   absoluteFillObject: {
     position: "absolute",
@@ -39,6 +46,7 @@ export const NativeModules = {};
 export default {
   Platform,
   AppState,
+  InteractionManager,
   StyleSheet,
   useWindowDimensions,
   View,

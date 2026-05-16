@@ -401,4 +401,43 @@ describe("local to backend fallback budget", () => {
     expect(body.client_local_budget_ms).toBe(15_000);
     expect(body.client_original_route).toBe("local_answer");
   });
+
+  it("keeps backend fallback reachable when idle work is scheduled during a general local turn", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("NODE_ENV", "development");
+    const globalRequire = vi.fn(() => {
+      throw new Error('Requiring unknown module "react-native"');
+    });
+    vi.stubGlobal("require", globalRequire);
+    const runLocalAssistantTurn = vi.fn(async () => {
+      const { enqueueLocalIdleJob } = await import("../lib/localIdleQueue");
+      enqueueLocalIdleJob("regression_general_question_idle_job", () => undefined, {
+        delayMs: 0,
+        staggerMs: 0,
+      });
+      return new Promise(() => undefined);
+    });
+    const { fetchMock } = setupApiHarness({
+      cloudFallback: true,
+      runLocalAssistantTurn,
+      backendAnswer: "Backend answer after idle scheduling.",
+    });
+
+    const { apiPost } = await import("../lib/api");
+    const resultPromise = apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "tell me about solo leveling",
+      reply_language: "en",
+      request_id: "text_idle_queue_regression",
+    });
+    await waitForMockCall(runLocalAssistantTurn);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    const payload = await resultPromise;
+
+    expect(globalRequire).not.toHaveBeenCalled();
+    expect(backendChatCalls(fetchMock)).toHaveLength(1);
+    expect(payload.assistant.text).toBe("Backend answer after idle scheduling.");
+    expect(payload.meta.fallback_reason).toBe("local_timeout");
+  });
 });
