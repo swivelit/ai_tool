@@ -43,18 +43,23 @@ export type AssistantSettings = {
   tone: AssistantTone;
   languageMode: LanguageMode;
   allowCloudFallback: boolean;
+  cloudFallbackUserChoice?: boolean;
+  cloudFallbackPolicyVersion?: number;
   handsFreeEnabled: boolean;
   autoSpeakReplies: boolean;
   wakePhrase: string;
   wakeTrainingSamples: string[];
 };
 
+export const CLOUD_FALLBACK_POLICY_VERSION = 2;
+
 export const DEFAULTS: { name: string; settings: AssistantSettings } = {
   name: "Elli",
   settings: {
     tone: "pro",
     languageMode: "ta",
-    allowCloudFallback: false,
+    allowCloudFallback: true,
+    cloudFallbackPolicyVersion: CLOUD_FALLBACK_POLICY_VERSION,
     handsFreeEnabled: false,
     autoSpeakReplies: false,
     wakePhrase: "Hey Elli",
@@ -92,6 +97,45 @@ function normalizeWakeTrainingSamples(value: unknown): string[] {
   );
 }
 
+function normalizeCloudFallback(value: Partial<AssistantSettings> | null | undefined): boolean {
+  if (value?.cloudFallbackUserChoice === true) {
+    return value.allowCloudFallback === true;
+  }
+
+  if (value?.allowCloudFallback === true) {
+    return true;
+  }
+
+  return DEFAULTS.settings.allowCloudFallback;
+}
+
+function normalizeCloudFallbackPolicyVersion(value: unknown): number {
+  const version = Number(value);
+  return Number.isFinite(version) && version >= CLOUD_FALLBACK_POLICY_VERSION
+    ? version
+    : CLOUD_FALLBACK_POLICY_VERSION;
+}
+
+export function normalizeAssistantSettings(
+  value?: Partial<AssistantSettings> | null
+): AssistantSettings {
+  const cloudFallbackUserChoice = value?.cloudFallbackUserChoice === true;
+
+  return {
+    tone: value?.tone === "friendly" ? "friendly" : DEFAULTS.settings.tone,
+    languageMode: normalizeLanguageMode(value?.languageMode),
+    allowCloudFallback: normalizeCloudFallback(value),
+    ...(cloudFallbackUserChoice ? { cloudFallbackUserChoice: true } : {}),
+    cloudFallbackPolicyVersion: normalizeCloudFallbackPolicyVersion(
+      value?.cloudFallbackPolicyVersion
+    ),
+    handsFreeEnabled: Boolean(value?.handsFreeEnabled),
+    autoSpeakReplies: value?.autoSpeakReplies === true,
+    wakePhrase: normalizeWakePhrase(value?.wakePhrase),
+    wakeTrainingSamples: normalizeWakeTrainingSamples(value?.wakeTrainingSamples),
+  };
+}
+
 export async function getAssistantName(): Promise<string> {
   return (await secureGet(KEYS.assistantName)) || DEFAULTS.name;
 }
@@ -106,30 +150,14 @@ export async function getSettings(): Promise<AssistantSettings> {
 
   try {
     const parsed = JSON.parse(raw) || {};
-    return {
-      tone: parsed.tone === "friendly" ? "friendly" : DEFAULTS.settings.tone,
-      languageMode: normalizeLanguageMode(parsed.languageMode),
-      allowCloudFallback: parsed.allowCloudFallback === true,
-      handsFreeEnabled: Boolean(parsed.handsFreeEnabled),
-      autoSpeakReplies: parsed.autoSpeakReplies === true,
-      wakePhrase: normalizeWakePhrase(parsed.wakePhrase),
-      wakeTrainingSamples: normalizeWakeTrainingSamples(parsed.wakeTrainingSamples),
-    };
+    return normalizeAssistantSettings(parsed);
   } catch {
     return DEFAULTS.settings;
   }
 }
 
 export async function setSettings(s: AssistantSettings): Promise<void> {
-  const normalized: AssistantSettings = {
-    tone: s.tone === "friendly" ? "friendly" : "pro",
-    languageMode: normalizeLanguageMode(s.languageMode),
-    allowCloudFallback: s.allowCloudFallback === true,
-    handsFreeEnabled: Boolean(s.handsFreeEnabled),
-    autoSpeakReplies: s.autoSpeakReplies === true,
-    wakePhrase: normalizeWakePhrase(s.wakePhrase),
-    wakeTrainingSamples: normalizeWakeTrainingSamples(s.wakeTrainingSamples),
-  };
+  const normalized = normalizeAssistantSettings(s);
 
   await secureSet(KEYS.settings, JSON.stringify(normalized));
 }

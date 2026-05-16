@@ -21,6 +21,13 @@ function jsonResponse(payload: any, status = 200) {
 
 function mockLocalStorage() {
   const storage = new Map<string, string>();
+  storage.set(
+    "assistant_settings_v1",
+    JSON.stringify({
+      allowCloudFallback: false,
+      cloudFallbackUserChoice: true,
+    }),
+  );
   vi.doMock("@react-native-async-storage/async-storage", () => ({
     default: {
       getItem: vi.fn(async (key: string) => storage.get(key) ?? null),

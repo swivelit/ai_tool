@@ -493,7 +493,10 @@ describe("API client contracts", () => {
   });
 
   it("does not leak raw native STT not-implemented errors to voice response", async () => {
-    mockCachedProfile(null);
+    mockCachedProfile(null, {
+      allowCloudFallback: false,
+      cloudFallbackUserChoice: true,
+    });
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {
@@ -634,7 +637,7 @@ describe("API client contracts", () => {
       userId: 7,
       message: "please explain local voice",
       replyLanguage: "en",
-      userAllowedCloudFallback: false,
+      userAllowedCloudFallback: true,
     }));
     expect(backendChatCalls(fetchMock)).toHaveLength(0);
     expect(payload.assistant.text).toBe("Native voice answer.");
@@ -693,7 +696,7 @@ describe("API client contracts", () => {
       userId: 7,
       message: "Explain recursion",
       replyLanguage: "en",
-      userAllowedCloudFallback: false,
+      userAllowedCloudFallback: true,
     }));
     expect(backendChatCalls(fetchMock)).toHaveLength(0);
     expect(payload.assistant.text).toBe("Local answer first.");
@@ -997,7 +1000,7 @@ describe("API client contracts", () => {
       userId: 7,
       message: "Explain recursion",
       replyLanguage: "en",
-      userAllowedCloudFallback: false,
+      userAllowedCloudFallback: true,
     }));
     expect(payload.assistant.english).toBe("English answer.");
     expect(payload.assistant.tamil).toBeUndefined();
@@ -1041,7 +1044,7 @@ describe("API client contracts", () => {
       userId: 7,
       message: "நாளைக்கு என்ன செய்யலாம்?",
       replyLanguage: "ta",
-      userAllowedCloudFallback: false,
+      userAllowedCloudFallback: true,
     }));
     expect(payload.assistant.tamil).toBe("தமிழ் பதில்.");
   });
@@ -1091,7 +1094,7 @@ describe("API client contracts", () => {
       userId: 7,
       message: "Explain recursion",
       replyLanguage: "ta",
-      userAllowedCloudFallback: false,
+      userAllowedCloudFallback: true,
       userProfile: {
         name: "Hari",
         place: "Chennai",
@@ -1145,7 +1148,7 @@ describe("API client contracts", () => {
       userId: 7,
       message: "Explain recursion",
       replyLanguage: "en",
-      userAllowedCloudFallback: false,
+      userAllowedCloudFallback: true,
       userProfile: {
         name: "Hari",
         place: "Chennai",
@@ -1268,7 +1271,7 @@ describe("API client contracts", () => {
       userId: 7,
       message: "what is the weather",
       replyLanguage: "en",
-      userAllowedCloudFallback: false,
+      userAllowedCloudFallback: true,
       userProfile: {
         name: "Hari",
         place: "Madurai",
@@ -1522,7 +1525,10 @@ describe("API client contracts", () => {
   });
 
   it("shows cloud fallback consent when local chat times out and cloud fallback is disabled", async () => {
-    mockCachedProfile(null, { allowCloudFallback: false });
+    mockCachedProfile(null, {
+      allowCloudFallback: false,
+      cloudFallbackUserChoice: true,
+    });
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {
@@ -1567,7 +1573,10 @@ describe("API client contracts", () => {
 
   it("uses the 15s local-to-backend budget instead of waiting for a slow local response", async () => {
     vi.useFakeTimers();
-    mockCachedProfile(null, { allowCloudFallback: false });
+    mockCachedProfile(null, {
+      allowCloudFallback: false,
+      cloudFallbackUserChoice: true,
+    });
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {

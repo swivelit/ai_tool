@@ -24,6 +24,7 @@ import {
   DEFAULTS,
   getAssistantName,
   getSettings,
+  normalizeAssistantSettings,
   setAssistantName,
   setSettings,
 } from "@/lib/storage";
@@ -46,37 +47,8 @@ function normalizeName(value?: string | null) {
   return trimmed || DEFAULTS.name;
 }
 
-function normalizeWakePhrase(value?: string | null) {
-  const trimmed = String(value || "").trim();
-  return trimmed || DEFAULTS.settings.wakePhrase;
-}
-
-function normalizeWakeTrainingSamples(value?: string[] | null) {
-  if (!Array.isArray(value)) return [];
-
-  return Array.from(
-    new Set(
-      value
-        .map((item) => String(item || "").trim())
-        .filter(Boolean)
-        .slice(0, 5)
-    )
-  );
-}
-
 function normalizeSettings(value?: Partial<AssistantSettings> | null): AssistantSettings {
-  return {
-    tone: value?.tone === "friendly" ? "friendly" : DEFAULTS.settings.tone,
-    languageMode:
-      value?.languageMode === "en" || value?.languageMode === "ta"
-        ? value.languageMode
-        : DEFAULTS.settings.languageMode,
-    allowCloudFallback: value?.allowCloudFallback === true,
-    handsFreeEnabled: Boolean(value?.handsFreeEnabled),
-    autoSpeakReplies: value?.autoSpeakReplies === true,
-    wakePhrase: normalizeWakePhrase(value?.wakePhrase),
-    wakeTrainingSamples: normalizeWakeTrainingSamples(value?.wakeTrainingSamples),
-  };
+  return normalizeAssistantSettings(value);
 }
 
 export function AssistantProvider({ children }: { children: React.ReactNode }) {
@@ -144,6 +116,10 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       resolvedSettings.tone !== normalizedStoredSettings.tone ||
       resolvedSettings.languageMode !== normalizedStoredSettings.languageMode ||
       resolvedSettings.allowCloudFallback !== normalizedStoredSettings.allowCloudFallback ||
+      resolvedSettings.cloudFallbackUserChoice !==
+        normalizedStoredSettings.cloudFallbackUserChoice ||
+      resolvedSettings.cloudFallbackPolicyVersion !==
+        normalizedStoredSettings.cloudFallbackPolicyVersion ||
       resolvedSettings.handsFreeEnabled !== normalizedStoredSettings.handsFreeEnabled ||
       resolvedSettings.autoSpeakReplies !== normalizedStoredSettings.autoSpeakReplies ||
       resolvedSettings.wakePhrase !== normalizedStoredSettings.wakePhrase ||

@@ -54,7 +54,7 @@ function backendChatCalls(fetchMock: ReturnType<typeof vi.fn>) {
 }
 
 function setupApiHarness(options: {
-  cloudFallback: boolean;
+  cloudFallback?: boolean;
   runLocalAssistantTurn: ReturnType<typeof vi.fn>;
   cancelRequest?: ReturnType<typeof vi.fn>;
   backendAnswer?: string;
@@ -82,7 +82,7 @@ function setupApiHarness(options: {
     ),
   }));
   vi.doMock("../lib/localAssistantSettings", () => ({
-    loadCloudFallbackConsent: vi.fn(async () => options.cloudFallback),
+    loadCloudFallbackConsent: vi.fn(async () => options.cloudFallback ?? true),
   }));
   vi.doMock("../lib/deviceCapabilities", () => ({
     getCachedDeviceCapabilities: vi.fn(async () => ({ preferredTier: "lite" })),
@@ -137,11 +137,10 @@ describe("local to backend fallback budget", () => {
     vi.unstubAllGlobals();
   });
 
-  it("falls back at 15 seconds when the local model never resolves", async () => {
+  it("uses default cloud fallback after 15 seconds when the local model never resolves", async () => {
     vi.useFakeTimers();
     const runLocalAssistantTurn = vi.fn(() => new Promise(() => undefined));
     const { fetchMock, cancelRequest, logs } = setupApiHarness({
-      cloudFallback: true,
       runLocalAssistantTurn,
       backendAnswer: "Backend answer after budget.",
     });
@@ -226,7 +225,7 @@ describe("local to backend fallback budget", () => {
     expect(backendChatCalls(fetchMock)).toHaveLength(1);
   });
 
-  it("returns cloud consent after 15 seconds when cloud fallback is disabled", async () => {
+  it("returns cloud consent after 15 seconds when cloud fallback is explicitly disabled", async () => {
     vi.useFakeTimers();
     const runLocalAssistantTurn = vi.fn(() => new Promise(() => undefined));
     const { fetchMock } = setupApiHarness({

@@ -717,6 +717,7 @@ export default function CustomiseScreen() {
 
   async function handleSave() {
     const trimmedName = assistantNameInput.trim();
+    const cloudFallbackChanged = allowCloudFallback !== settings.allowCloudFallback;
 
     if (!trimmedName) {
       Alert.alert("Assistant name required", "Please enter an assistant name.");
@@ -733,7 +734,7 @@ export default function CustomiseScreen() {
       if (
         tone !== settings.tone ||
         languageMode !== settings.languageMode ||
-        allowCloudFallback !== settings.allowCloudFallback ||
+        cloudFallbackChanged ||
         handsFreeEnabled !== settings.handsFreeEnabled ||
         wakePrompt !== (settings.wakePhrase || `Hey ${name || "Elli"}`).trim() ||
         JSON.stringify(uniqueSamples(wakeTrainingSamples)) !==
@@ -742,7 +743,9 @@ export default function CustomiseScreen() {
         await updateSettings({
           tone,
           languageMode,
-          allowCloudFallback,
+          ...(cloudFallbackChanged
+            ? { allowCloudFallback, cloudFallbackUserChoice: true }
+            : {}),
           handsFreeEnabled,
           wakePhrase: wakePrompt,
           wakeTrainingSamples: uniqueSamples(wakeTrainingSamples),
@@ -916,7 +919,7 @@ export default function CustomiseScreen() {
               <View style={{ flex: 1, paddingRight: 12 }}>
                 <Text style={styles.inputLabel}>Cloud fallback</Text>
                 <Text style={styles.helperText}>
-                  Ask first before sending unresolved local requests to backend/cloud.
+                  Use backend/cloud only when phone-local answer is not ready. Turn off for strict phone-only mode.
                 </Text>
               </View>
               <Switch
