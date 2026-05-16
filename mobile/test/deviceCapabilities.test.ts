@@ -75,4 +75,50 @@ describe("deviceCapabilities", () => {
     expect(snapshot.freeStorageBytes).toBe(32 * GIB);
     expect(snapshot.preferredTier).toBe("lite");
   });
+
+  it("Returns cached result without native query when cache TTL is valid (120s limit)", async () => {
+    vi.useFakeTimers();
+    const bridge = nativeBridge({ totalMemoryBytes: 8 * GIB });
+    vi.stubGlobal("__JAI_NATIVE_ON_DEVICE_MODEL_RUNTIME__", bridge);
+
+    const { getCachedDeviceCapabilities } = await importCapabilities(32 * GIB);
+    await getCachedDeviceCapabilities({ forceRefresh: true });
+    expect(bridge.getDeviceCapabilities).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60 * 1000);
+    await getCachedDeviceCapabilities();
+    expect(bridge.getDeviceCapabilities).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(65 * 1000);
+    await getCachedDeviceCapabilities();
+    expect(bridge.getDeviceCapabilities).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+  });
+
+  it("Falls back to stale cache on native failure instead of crashing", async () => {
+    const bridge = nativeBridge({ totalMemoryBytes: 8 * GIB });
+    vi.stubGlobal("__JAI_NATIVE_ON_DEVICE_MODEL_RUNTIME__", bridge);
+
+    const { getCachedDeviceCapabilities } = await importCapabilities(32 * GIB);
+    const first = await getCachedDeviceCapabilities({ forceRefresh: true });
+    
+    bridge.getDeviceCapabilities.mockRejectedValue(new Error("native failed"));
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const second = await getCachedDeviceCapabilities({ forceRefresh: true });
+    expect(second.totalMemoryBytes).toBe(first.totalMemoryBytes);
+    expect(consoleSpy).toHaveBeenCalledWith("[perf:device] capability refresh failed, returning stale cache", expect.any(Error));
+
+    consoleSpy.mockRestore();
+  });
+
+  it("deviceTier defaults to high for known modern RAM capacity", async () => {
+    const bridge = nativeBridge({ totalMemoryBytes: 16 * GIB, cpuCoreCount: 8 });
+    vi.stubGlobal("__JAI_NATIVE_ON_DEVICE_MODEL_RUNTIME__", bridge);
+
+    const { getCachedDeviceCapabilities } = await importCapabilities(32 * GIB);
+    const snapshot = await getCachedDeviceCapabilities({ forceRefresh: true });
+    expect(snapshot.deviceTier).toBe("high");
+  });
 });
