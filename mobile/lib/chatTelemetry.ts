@@ -72,6 +72,9 @@ export type ClientTurnLogPayload = {
   mime_type?: string | null;
   chat_routing?: string | null;
   voice_routing?: string | null;
+  native_safety_status?: Record<string, any> | null;
+  question_preview?: string | null;
+  answer_preview?: string | null;
 };
 
 export type PendingLocalTurnMarker = {
@@ -87,6 +90,8 @@ export type ActiveWorkflowMarker = {
   user_id?: number | string | null;
   question_hash: string;
   question?: string | null;
+  question_preview?: string | null;
+  question_length?: number;
   startedAt: string;
   lastStep: string;
 };
@@ -369,6 +374,8 @@ export async function markActiveWorkflow(input: {
     user_id: input.userId ?? null,
     question_hash: simpleHash(input.question),
     question: sanitizeQuestionPreview(input.question),
+    question_preview: sanitizeQuestionPreview(input.question),
+    question_length: String(input.question || "").length,
     startedAt: new Date().toISOString(),
     lastStep: input.lastStep || "client_chat_turn_started",
   };
@@ -435,7 +442,8 @@ export async function sendActiveWorkflowCrashMarkerIfPresent() {
     channel: "text",
     question_hash: marker.question_hash,
     question: marker.question || null,
-    question_length: marker.question?.length,
+    question_preview: marker.question_preview || marker.question || null,
+    question_length: marker.question_length ?? marker.question?.length,
     agent_source: "mobile",
     route_taken: "active_workflow",
     workflow_step: marker.lastStep,

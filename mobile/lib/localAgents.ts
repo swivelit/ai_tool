@@ -51,6 +51,11 @@ import {
   lookupSyncedGlobalKnowledge,
   syncGlobalKnowledge,
 } from "./globalKnowledgeSync";
+import {
+  canUseNativeEmbeddingsSafely,
+  canUseNativeGeneralChatSafely,
+  getNativeInferenceSafetyStatus,
+} from "./nativeInferenceGuard";
 import { requiresImmediateBackendCurrentData } from "./currentDataGuards";
 import { __idleQueueTestUtils, enqueueLocalIdleJob } from "./localIdleQueue";
 import {
@@ -2396,6 +2401,19 @@ async function localChatRaw(
       "Required local model files are not ready. Normal chat must not start model downloads.",
     );
   }
+  if (isNativeOnDeviceModelConfig(cfg)) {
+    const safety = canUseNativeGeneralChatSafely({
+      mode: cfg.runtime?.mode,
+      nativeModuleName:
+        cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName,
+      modelsReady: runtimeOptions.modelsReady,
+    });
+    if (!safety.safe) {
+      throw new NativeOnDeviceRuntimeUnavailableError(
+        `Native on-device chat is not verified safe for general inference: ${safety.reason}.`,
+      );
+    }
+  }
   const runtime = createLocalModelRuntime({
     primary: cfg.runtime?.primary,
     mode: cfg.runtime?.mode,
@@ -2471,6 +2489,19 @@ async function embedTexts(
     throw new NativeOnDeviceRuntimeUnavailableError(
       "Required local embedding model files are not ready. Normal chat must not start model downloads.",
     );
+  }
+  if (nativeMode) {
+    const safety = canUseNativeEmbeddingsSafely({
+      mode: cfg.runtime?.mode,
+      nativeModuleName:
+        cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName,
+      modelsReady: runtimeOptions.modelsReady,
+    });
+    if (!safety.safe) {
+      throw new NativeOnDeviceRuntimeUnavailableError(
+        `Native on-device embeddings are not verified safe: ${safety.reason}.`,
+      );
+    }
   }
 
   try {
@@ -6134,6 +6165,25 @@ const VECTOR_SEMANTIC_CACHE_SKIP_ROUTES = new Set<OrchestratorRoute>([
   "setup_required",
 ]);
 
+const SAFE_DETERMINISTIC_LOCAL_ROUTES = new Set<OrchestratorRoute>([
+  "fast_greeting",
+  "identity",
+  "small_talk",
+  "capabilities",
+  "knowledge_ack",
+  "thanks",
+  "goodbye",
+  "clarify",
+  "calendar_query",
+  "reminder_create",
+]);
+
+function canAnswerRouteWithoutNativeInference(
+  decision?: OrchestratorDecision | null,
+) {
+  return Boolean(decision && SAFE_DETERMINISTIC_LOCAL_ROUTES.has(decision.route));
+}
+
 function tokenCountForMessage(message: string) {
   const normalized = normalizeText(message);
   return normalized ? normalized.split(/\s+/).filter(Boolean).length : 0;
@@ -6196,7 +6246,11 @@ async function lookupSemanticCache(
   userId: number,
   message: string,
   runtimeOptions: ModelRuntimeTierOptions = {},
-  opts: { route?: OrchestratorRoute | null } = {},
+  opts: {
+    route?: OrchestratorRoute | null;
+    allowVectorEmbeddings?: boolean;
+    onTelemetry?: (event: string, payload?: Record<string, any>) => void;
+  } = {},
 ) {
   const rules = await getMemoryRules();
   if (isTimeSensitiveRagQuery(message)) {
@@ -6222,6 +6276,14 @@ async function lookupSemanticCache(
   if (exactMatch) {
     const confidence = clampConfidence(exactMatch.confidence, 1);
     const threshold = positiveFloat(rules.cache?.similarityThreshold, 0.92);
+    if (confidence >= threshold) {
+      opts.onTelemetry?.("client_semantic_cache_exact_hit", {
+        cache_hit: true,
+        cache_source: "semantic_cache_exact",
+        route_taken: "semantic_cache",
+        decision: "exact_hit",
+      });
+    }
     return confidence >= threshold
       ? { ...exactMatch, score: 1, confidence }
       : null;
@@ -6232,13 +6294,60 @@ async function lookupSemanticCache(
     runtimeOptions.modelsReady === false ||
     shouldSkipVectorSemanticCache(message, opts.route)
   ) {
+    opts.onTelemetry?.("client_semantic_cache_vector_skipped", {
+      cache_hit: false,
+      cache_source: "semantic_cache_vector",
+      route_taken: "semantic_cache",
+      decision:
+        runtimeOptions.modelsReady === false
+          ? "models_not_ready"
+          : "route_or_message_skipped",
+    });
+    return null;
+  }
+  if (opts.allowVectorEmbeddings !== true) {
+    opts.onTelemetry?.("client_semantic_cache_vector_skipped", {
+      cache_hit: false,
+      cache_source: "semantic_cache_vector",
+      route_taken: "semantic_cache",
+      decision: "native_embeddings_not_verified",
+    });
     return null;
   }
   // Important: compare the actual user message against cached questions.
   // Do not inject aliases here, because aliases can bypass the similarity
   // threshold. The exact check above is a narrow deterministic local cache hit.
-  const queryVectors = await optionalEmbedTexts([message], runtimeOptions);
-  if (!queryVectors?.length) return null;
+  opts.onTelemetry?.("client_semantic_cache_vector_started", {
+    cache_hit: false,
+    cache_source: "semantic_cache_vector",
+    route_taken: "semantic_cache",
+    workflow_phase: "started",
+  });
+  let queryVectors: number[][] | null = null;
+  try {
+    queryVectors = await optionalEmbedTexts([message], runtimeOptions);
+  } catch (error) {
+    opts.onTelemetry?.("client_semantic_cache_vector_failed", {
+      cache_hit: false,
+      cache_source: "semantic_cache_vector",
+      route_taken: "semantic_cache",
+      workflow_phase: "failed",
+      error_type: "semantic_cache_embedding_failed",
+      error_name: (error as any)?.name || "Error",
+      error_message: String((error as any)?.message || error || "Unknown error").slice(0, 240),
+    });
+    return null;
+  }
+  if (!queryVectors?.length) {
+    opts.onTelemetry?.("client_semantic_cache_vector_failed", {
+      cache_hit: false,
+      cache_source: "semantic_cache_vector",
+      route_taken: "semantic_cache",
+      workflow_phase: "failed",
+      error_type: "semantic_cache_embedding_unavailable",
+    });
+    return null;
+  }
 
   let best: SemanticCacheEntry | null = null;
   let bestScore = 0;
@@ -6293,10 +6402,12 @@ async function writeSemanticCache(
   intent: LocalAssistantTurnResult["intent"],
   alignmentProfile?: SemanticCacheEntry["alignmentProfile"],
   runtimeOptions: ModelRuntimeTierOptions = {},
+  opts: { allowVectorEmbeddings?: boolean } = {},
 ) {
   const rules = await getMemoryRules();
   const skipRoutes = rules.cache?.skipRoutes || [];
   if (skipRoutes.includes(route)) return;
+  if (opts.allowVectorEmbeddings !== true) return;
   const vectors = await optionalEmbedTexts([question], runtimeOptions);
   const embedding = vectors?.[0];
   if (!embedding) return;
@@ -7662,6 +7773,14 @@ export async function runLocalAssistantTurn(opts: {
       modelsReady: readiness.ready,
     };
   }
+  const nativeSafetyStatus = getNativeInferenceSafetyStatus({
+    mode: cfg.runtime?.mode,
+    nativeModuleName:
+      cfg.native?.bridgeModuleName || cfg.runtime?.nativeModuleName,
+    modelsReady: modelRuntimeOptions.modelsReady,
+  });
+  const nativeGeneralChatSafety = nativeSafetyStatus.generalChat;
+  const nativeEmbeddingSafety = nativeSafetyStatus.embeddings;
 
   const globalKnowledgeHit = await timeStage("global_knowledge_cache", () =>
     (async () => {
@@ -7682,7 +7801,8 @@ export async function runLocalAssistantTurn(opts: {
       return lookupSyncedGlobalKnowledge(message, {
         embedTexts:
           modelRuntimeOptions.modelsReady === false ||
-          isLiveOrCurrentGlobalKnowledgeQuestion(message)
+          isLiveOrCurrentGlobalKnowledgeQuestion(message) ||
+          !nativeEmbeddingSafety.safe
             ? undefined
             : (texts) => embedTexts(texts, modelRuntimeOptions),
       });
@@ -7823,13 +7943,9 @@ export async function runLocalAssistantTurn(opts: {
     });
   }
 
-  await appendConversation(userId, "user", message);
-
-  const registry = await getAgentRegistry();
-
   let answers = await loadAnswers(userId);
   let normalChatProfiler = skippedNormalChatProfiler(answers);
-  if (isExplicitProfileOrMemoryUpdate(message)) {
+  if (isExplicitProfileOrMemoryUpdate(message) && nativeGeneralChatSafety.safe) {
     normalChatProfiler = await timeStage("profiler", () =>
       runProfilerExtractionInsideNormalChat({
         userId,
@@ -7844,16 +7960,48 @@ export async function runLocalAssistantTurn(opts: {
   const profileSummary = await loadSummary(userId);
 
   const semantic = await timeStage("semantic_cache", () =>
-    lookupSemanticCache(userId, message, modelRuntimeOptions, {
-      route: earlyRuleDecision?.route,
-    }),
+    (async () => {
+      logClientWorkflowStep({
+        event: "client_semantic_cache_lookup_started",
+        user_id: userId,
+        request_id: opts.requestId || undefined,
+        channel: "text",
+        question: message,
+        question_length: textLength(message),
+        agent_source: "semantic_cache",
+        route_taken: "semantic_cache",
+        workflow_step: "semantic_cache",
+        workflow_phase: "started",
+        cache_source: "semantic_cache",
+        stage_timings: stageTimings,
+      });
+      return lookupSemanticCache(userId, message, modelRuntimeOptions, {
+        route: earlyRuleDecision?.route,
+        allowVectorEmbeddings: nativeEmbeddingSafety.safe,
+        onTelemetry: (event, payload = {}) =>
+          logClientWorkflowStep({
+            event,
+            user_id: userId,
+            request_id: opts.requestId || undefined,
+            channel: "text",
+            question: message,
+            question_length: textLength(message),
+            agent_source: "semantic_cache",
+            route_taken: "semantic_cache",
+            workflow_step: "semantic_cache",
+            workflow_phase: String(payload.workflow_phase || "completed"),
+            stage_timings: stageTimings,
+            ...payload,
+          }),
+      });
+    })(),
   );
   if (semantic) {
     const needsAlignmentReapply =
       semantic.alignmentProfile?.replyLanguage !== replyLanguage ||
       normalizeText(semantic.alignmentProfile?.tone || "") !==
         normalizeText(displayValue(answers.communication_tone));
-    const aligned = needsAlignmentReapply
+    const aligned = needsAlignmentReapply && nativeGeneralChatSafety.safe
       ? await timeStage("alignment", () =>
           alignAnswer(
             semantic.englishAnswer || semantic.canonicalAnswer,
@@ -7874,6 +8022,7 @@ export async function runLocalAssistantTurn(opts: {
         };
     const assistantText =
       aligned.final || aligned.english || semantic.canonicalAnswer;
+    await appendConversation(userId, "user", message);
     await appendConversation(userId, "assistant", assistantText);
     enqueueLocalIdleJob("semantic_cache_hit", async () => {
       await recordSemanticCacheHit(userId, {
@@ -7943,6 +8092,66 @@ export async function runLocalAssistantTurn(opts: {
       },
     } satisfies LocalAssistantTurnResult;
   }
+
+  if (!canAnswerRouteWithoutNativeInference(earlyRuleDecision)) {
+    if (!nativeGeneralChatSafety.safe) {
+      const decision: OrchestratorDecision = {
+        route: "fallback_openai",
+        reason: "local_model_unavailable",
+        confidence: 1,
+        needsClarification: false,
+        clarificationQuestion: "",
+        needsLiveData: false,
+        selectedModel: "native_inference_guard",
+        fallbackAllowed: opts.userAllowedCloudFallback === true,
+      };
+      stageTimings.native_inference_guard =
+        stageTimings.native_inference_guard || 0;
+      logClientWorkflowStep({
+        event: "client_local_path_skipped_for_safety",
+        user_id: userId,
+        request_id: opts.requestId || undefined,
+        channel: "text",
+        question: message,
+        question_length: textLength(message),
+        agent_source: "local_safety_guard",
+        route_taken: "local_native_guard",
+        workflow_step: "native_inference_guard",
+        workflow_phase: "skipped",
+        fallback_reason: "local_model_unavailable",
+        native_safety_status: nativeSafetyStatus,
+        stage_timings: stageTimings,
+      });
+      if (opts.userAllowedCloudFallback === true) {
+        throwIfLocalBudgetExceeded("backend_fallback");
+        return buildBackendFallbackTurn({
+          userId,
+          message,
+          replyLanguage,
+          requestId: opts.requestId,
+          fallbackReason: "local_model_unavailable",
+          originalRoute: "native_inference_guard",
+          decision,
+          stageTimings,
+          appendUserTurn: true,
+        });
+      }
+      return buildCloudFallbackConsentTurn({
+        userId,
+        message,
+        replyLanguage,
+        fallbackReason: "local_model_unavailable",
+        originalRoute: "native_inference_guard",
+        decision,
+        stageTimings,
+        appendUserTurn: true,
+      });
+    }
+  }
+
+  await appendConversation(userId, "user", message);
+
+  const registry = await getAgentRegistry();
 
   const turns = await recentConversation(userId, 10);
   const preferredSelectedModel = selectedReasonerModel(
@@ -8612,6 +8821,7 @@ export async function runLocalAssistantTurn(opts: {
           tone: displayValue(answers.communication_tone),
         },
         modelRuntimeOptions,
+        { allowVectorEmbeddings: nativeEmbeddingSafety.safe },
       ),
       { delayMs: 450, staggerMs: 450 },
     );
@@ -8647,6 +8857,7 @@ export async function runLocalAssistantTurn(opts: {
   }, { delayMs: 260, staggerMs: 300 });
 
   if (
+    nativeGeneralChatSafety.safe &&
     !isExplicitProfileOrMemoryUpdate(message) &&
     hasDurableProfileFactCue(message)
   ) {
@@ -8662,7 +8873,7 @@ export async function runLocalAssistantTurn(opts: {
     );
   }
 
-  if (shouldAttemptLocalMemoryConsolidation(userId)) {
+  if (nativeGeneralChatSafety.safe && shouldAttemptLocalMemoryConsolidation(userId)) {
     enqueueLocalIdleJob("memory_consolidation", () =>
       consolidateLocalMemoryOnIdle(userId, {
         userProfile: { ...opts.userProfile, replyLanguage },

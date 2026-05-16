@@ -124,6 +124,10 @@ describe("cloud fallback settings", () => {
     );
 
     expect(source).not.toContain("Switching to cloud");
+    expect(source).not.toContain("I couldn’t finish that on this phone");
+    expect(source).toContain(
+      "Something went wrong while generating the answer. Please try again.",
+    );
     expect(source).toContain("Still working...");
   });
 });

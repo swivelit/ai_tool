@@ -1498,7 +1498,9 @@ export default function Home() {
     options: { backendFallbackAttempted?: boolean } = {},
   ) {
     if (isLocalTurnTimeoutError(error)) {
-      return friendlyLocalTimeoutMessage();
+      return options.backendFallbackAttempted
+        ? "The answer took too long. Please try again."
+        : "Something went wrong while generating the answer. Please try again.";
     }
 
     const raw = error instanceof Error ? error.message : String(error || "");
@@ -1508,10 +1510,10 @@ export default function Home() {
       if (options.backendFallbackAttempted) {
         return "The answer took too long. Please try again.";
       }
-      return "I couldn’t finish that on this phone. Please try again.";
+      return "Something went wrong while generating the answer. Please try again.";
     }
 
-    return "I hit a local processing error. Please try again.";
+    return "Something went wrong while generating the answer. Please try again.";
   }
 
   function chatResponseSetupRequired(response: BackendChatResponse) {

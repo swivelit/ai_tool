@@ -148,6 +148,7 @@ _SAFE_EXTRA_KEYS = {
     "created_at",
     "chat_routing",
     "voice_routing",
+    "native_safety_status",
 }
 
 _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")

@@ -330,6 +330,12 @@ def test_client_turn_log_accepts_local_telemetry_safely(client, monkeypatch, cap
                 "mobile_git_sha": "abc1234",
                 "local_to_backend_fallback_ms": 15000,
                 "cloud_fallback_enabled": True,
+                "native_safety_status": {
+                    "generalChat": {
+                        "safe": False,
+                        "reason": "native_smoke_test_not_verified",
+                    }
+                },
             },
         )
 
@@ -351,7 +357,41 @@ def test_client_turn_log_accepts_local_telemetry_safely(client, monkeypatch, cap
     assert getattr(record, "mobile_git_sha") == "abc1234"
     assert getattr(record, "local_to_backend_fallback_ms") == 15000
     assert getattr(record, "cloud_fallback_enabled") is True
+    assert getattr(record, "native_safety_status")["generalChat"]["safe"] is False
     assert "secret-token" not in caplog.text
+
+
+def test_client_turn_log_hashes_without_content_preview(client, monkeypatch, caplog):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setattr(observability, "LOG_CHAT_CONTENT", False)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/client/turn-log",
+            headers=headers,
+            json={
+                "event": "client_local_path_skipped_for_safety",
+                "user_id": user.id,
+                "channel": "text",
+                "question": "private general question",
+                "agent_source": "local_safety_guard",
+                "route_taken": "local_native_guard",
+                "workflow_step": "native_inference_guard",
+                "workflow_phase": "skipped",
+                "fallback_reason": "local_model_unavailable",
+                "error_type": "active_workflow_marker_found",
+            },
+        )
+
+    assert response.status_code == 200
+    record = [r for r in caplog.records if getattr(r, "event", "") == "client_local_path_skipped_for_safety"][-1]
+    assert getattr(record, "question_hash")
+    assert getattr(record, "question_length") == len("private general question")
+    assert not hasattr(record, "question_preview")
+    assert getattr(record, "workflow_step") == "native_inference_guard"
+    assert getattr(record, "fallback_reason") == "local_model_unavailable"
+    assert "private general question" not in caplog.text
 
 
 def test_client_turn_log_emits_client_turn_summary(client, caplog):
@@ -446,12 +486,13 @@ def test_local_timeout_general_chat_uses_backend_fast_fallback(client, monkeypat
     assert getattr(completed, "fallback_reason") == "local_timeout"
 
 
-def test_observability_startup_log(caplog):
+def test_observability_startup_log(monkeypatch, caplog):
+    monkeypatch.setattr(main_module, "LOG_CHAT_CONTENT", True)
     with caplog.at_level(logging.INFO):
         main_module.emit_observability_config_log()
 
     record = [r for r in caplog.records if getattr(r, "event", "") == "observability_config"][-1]
-    assert getattr(record, "log_chat_content") in {True, False}
+    assert getattr(record, "log_chat_content") is True
     assert isinstance(getattr(record, "log_chat_content_max_chars"), int)
     assert getattr(record, "client_turn_logs_enabled") in {True, False}
     assert getattr(record, "chat_turn_summary_logs_enabled") in {True, False}

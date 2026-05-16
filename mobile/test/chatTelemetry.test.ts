@@ -294,6 +294,9 @@ describe("chat telemetry queue", () => {
     expect(body.event).toBe("client_workflow_crash_suspected");
     expect(body.request_id).toBe("workflow-crash-1");
     expect(body.workflow_step).toBe("client_backend_fallback_started");
+    expect(body.last_step).toBe("client_backend_fallback_started");
+    expect(body.question_preview).toBe("Question that died mid-workflow");
+    expect(body.question_hash).toBeTruthy();
     expect(body.error_type).toBe("active_workflow_marker_found");
   });
 });

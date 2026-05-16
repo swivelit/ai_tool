@@ -7,6 +7,7 @@ import orchestratorRoutes from "../data/config/orchestrator_routes.json";
 import profilerSlots from "../data/config/profiler_slots.json";
 import prompts from "../data/config/prompts.json";
 import { __idleQueueTestUtils } from "../lib/localIdleQueue";
+import { resetNativeInferenceSafetyForTests } from "../lib/nativeInferenceGuard";
 
 const mockedState = vi.hoisted(() => ({
   files: new Map<string, string>(),
@@ -168,6 +169,7 @@ async function flushLocalLearningJobs() {
 
 describe("local memory and semantic cache", () => {
   beforeEach(() => {
+    resetNativeInferenceSafetyForTests();
     __idleQueueTestUtils.clear();
     mockedState.files.clear();
     mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
@@ -759,7 +761,7 @@ describe("local memory and semantic cache", () => {
     expect(global.fetch as any).not.toHaveBeenCalled();
   });
 
-  it("treats native unavailable embedding errors as non-fatal for semantic cache work", async () => {
+  it("skips native vector embeddings when they are not verified safe", async () => {
     writeJson(`${dataRoot}/config/models.json`, {
       ...models,
       runtime: { ...models.runtime, mode: "native_on_device" },
@@ -823,7 +825,7 @@ describe("local memory and semantic cache", () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(embedTexts).toHaveBeenCalled();
+    expect(embedTexts).not.toHaveBeenCalled();
     const store = readJson(`${dataRoot}/cache/semantic_cache.json`);
     expect(store.entries.map((entry: any) => entry.id)).toEqual([
       "native_unavailable",
@@ -1330,7 +1332,7 @@ describe("local memory and semantic cache", () => {
     const { upsertLocalRagChunks } = await import("../lib/localAgents");
     await expect(
       upsertLocalRagChunks(46, "doc-native", ["store this as a native embedding"]),
-    ).rejects.toThrow(/native_on_device|Qwen|hash embeddings/i);
+    ).rejects.toThrow(/native_on_device|Qwen|hash embeddings|verified safe/i);
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 });

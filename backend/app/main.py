@@ -1251,7 +1251,9 @@ class ClientTurnLogRequest(BaseModel):
     channel: Optional[str] = None
     question_hash: Optional[str] = None
     question: Optional[str] = None
+    question_preview: Optional[str] = None
     answer: Optional[str] = None
+    answer_preview: Optional[str] = None
     question_length: Optional[int] = None
     answer_length: Optional[int] = None
     agent_source: Optional[str] = None
@@ -1303,6 +1305,7 @@ class ClientTurnLogRequest(BaseModel):
     mime_type: Optional[str] = None
     chat_routing: Optional[str] = None
     voice_routing: Optional[str] = None
+    native_safety_status: Optional[Dict[str, Any]] = None
 
 
 class PipelineChatRequest(BaseModel):
@@ -3517,6 +3520,7 @@ def api_client_turn_log(
             mime_type=payload.mime_type,
             chat_routing=payload.chat_routing,
             voice_routing=payload.voice_routing,
+            native_safety_status=payload.native_safety_status,
         ),
     )
     if CHAT_TURN_SUMMARY_LOGS_ENABLED:
@@ -3583,6 +3587,7 @@ def api_client_turn_log(
                 mime_type=payload.mime_type,
                 chat_routing=payload.chat_routing,
                 voice_routing=payload.voice_routing,
+                native_safety_status=payload.native_safety_status,
             ),
         )
     return {"ok": True}

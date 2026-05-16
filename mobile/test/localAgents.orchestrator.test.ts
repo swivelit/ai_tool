@@ -8,6 +8,7 @@ import orchestratorRoutes from "../data/config/orchestrator_routes.json";
 import profilerSlots from "../data/config/profiler_slots.json";
 import prompts from "../data/config/prompts.json";
 import { __idleQueueTestUtils } from "../lib/localIdleQueue";
+import { resetNativeInferenceSafetyForTests } from "../lib/nativeInferenceGuard";
 import { setNativeOnDeviceModelBridgeForTests } from "../lib/nativeOnDeviceModelBridge";
 import AsyncStorage, { __resetAsyncStorageMock } from "./mocks/async-storage";
 
@@ -171,6 +172,7 @@ describe("phone-local agent configuration", () => {
 
 describe("local orchestrator and alignment", () => {
   beforeEach(() => {
+    resetNativeInferenceSafetyForTests();
     setNativeOnDeviceModelBridgeForTests(null);
     __idleQueueTestUtils.clear();
     __resetAsyncStorageMock();
@@ -402,7 +404,7 @@ describe("local orchestrator and alignment", () => {
     });
 
     expect(result.kind).toBe("cloud_consent_required");
-    expect(result.route).toBe("clarify");
+    expect(result.route).toBe("fallback_openai");
     expect(result.source).toBe("local_rules");
     expect(result.assistantText).toBe(
       "This needs backend/OpenAI help. Enable cloud fallback to answer this.",
@@ -413,6 +415,198 @@ describe("local orchestrator and alignment", () => {
     );
     expect(apiPostMock).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("routes normal general questions to backend immediately when native smoke is not verified", async () => {
+    const completeChat = vi.fn(async () => ({ text: "unsafe native answer" }));
+    const embedTexts = vi.fn(async () => ({ data: [{ embedding: unitEmbedding() }] }));
+    setNativeOnDeviceModelBridgeForTests({
+      isAvailable: vi.fn(async () => true),
+      initialize: vi.fn(async () => ({ ok: true })),
+      completeChat,
+      embedTexts,
+    });
+    mockedState.files.set(
+      `${dataRoot}/config/models.json`,
+      JSON.stringify(
+        {
+          ...models,
+          runtime: {
+            ...models.runtime,
+            mode: "native_on_device",
+          },
+          modelDelivery: {
+            ...models.modelDelivery,
+            mode: "bundled_assets",
+          },
+          baseUrl: "",
+          timeoutMs: 1000,
+        },
+        null,
+        2,
+      ),
+    );
+    apiPostMock.mockResolvedValueOnce({
+      ok: true,
+      item: {
+        id: 900,
+        intent: "assistant",
+        category: "Other",
+        raw_text: "Explain recursion",
+        details: "Backend safe answer.",
+        source: "text",
+      },
+      assistant: {
+        text: "Backend safe answer.",
+        english: "Backend safe answer.",
+      },
+      meta: {
+        source: "backend_openai",
+      },
+    });
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 215,
+      message: "Explain recursion in simple terms",
+      replyLanguage: "en",
+      userAllowedCloudFallback: true,
+    });
+
+    expect(result.route).toBe("fallback_openai");
+    expect(result.source).toBe("openai_fallback");
+    expect(result.assistantText).toBe("Backend safe answer.");
+    expect(result.meta?.fallback_reason).toBe("local_model_unavailable");
+    expect(result.meta?.original_route).toBe("native_inference_guard");
+    expect(apiPostMock).toHaveBeenCalledWith(
+      "/api/chat",
+      expect.objectContaining({
+        message: "Explain recursion in simple terms",
+        client_fallback_reason: "local_model_unavailable",
+        client_original_route: "native_inference_guard",
+      }),
+      expect.objectContaining({ timeoutMs: 90_000 }),
+    );
+    expect(completeChat).not.toHaveBeenCalled();
+    expect(embedTexts).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns cloud consent instead of native inference when cloud fallback is disabled", async () => {
+    const completeChat = vi.fn(async () => ({ text: "unsafe native answer" }));
+    const embedTexts = vi.fn(async () => ({ data: [{ embedding: unitEmbedding() }] }));
+    setNativeOnDeviceModelBridgeForTests({
+      isAvailable: vi.fn(async () => true),
+      initialize: vi.fn(async () => ({ ok: true })),
+      completeChat,
+      embedTexts,
+    });
+    mockedState.files.set(
+      `${dataRoot}/config/models.json`,
+      JSON.stringify(
+        {
+          ...models,
+          runtime: {
+            ...models.runtime,
+            mode: "native_on_device",
+          },
+          modelDelivery: {
+            ...models.modelDelivery,
+            mode: "bundled_assets",
+          },
+          baseUrl: "",
+          timeoutMs: 1000,
+        },
+        null,
+        2,
+      ),
+    );
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 216,
+      message: "Explain recursion in simple terms",
+      replyLanguage: "en",
+      userAllowedCloudFallback: false,
+    });
+
+    expect(result.kind).toBe("cloud_consent_required");
+    expect(result.meta?.fallback_reason).toBe("local_model_unavailable");
+    expect(result.meta?.original_route).toBe("native_inference_guard");
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(completeChat).not.toHaveBeenCalled();
+    expect(embedTexts).not.toHaveBeenCalled();
+  });
+
+  it("serves semantic cache exact matches without native embeddings", async () => {
+    const completeChat = vi.fn(async () => ({ text: "unsafe native answer" }));
+    const embedTexts = vi.fn(async () => ({ data: [{ embedding: unitEmbedding() }] }));
+    setNativeOnDeviceModelBridgeForTests({
+      isAvailable: vi.fn(async () => true),
+      initialize: vi.fn(async () => ({ ok: true })),
+      completeChat,
+      embedTexts,
+    });
+    mockedState.files.set(
+      `${dataRoot}/config/models.json`,
+      JSON.stringify(
+        {
+          ...models,
+          runtime: {
+            ...models.runtime,
+            mode: "native_on_device",
+          },
+          modelDelivery: {
+            ...models.modelDelivery,
+            mode: "bundled_assets",
+          },
+          baseUrl: "",
+          timeoutMs: 1000,
+        },
+        null,
+        2,
+      ),
+    );
+    mockedState.files.set(
+      `${dataRoot}/cache/semantic_cache.json`,
+      JSON.stringify({
+        version: 2,
+        entries: [
+          {
+            id: "exact_safe",
+            userId: 217,
+            sourceQuestion: "Explain recursion",
+            normalizedQuestion: "explain recursion",
+            canonicalAnswer: "Recursion is when a function calls itself.",
+            englishAnswer: "Recursion is when a function calls itself.",
+            lastPresentedAnswer: "Recursion is when a function calls itself.",
+            route: "local_answer",
+            intent: "assistant",
+            embedding: unitEmbedding(),
+            confidence: 1,
+            alignmentProfile: { replyLanguage: "en" },
+            createdAt: "2026-05-01T00:00:00.000Z",
+            updatedAt: "2026-05-01T00:00:00.000Z",
+            expiresAt: null,
+          },
+        ],
+        hits: [],
+      }),
+    );
+
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+    const result = await runLocalAssistantTurn({
+      userId: 217,
+      message: "Explain recursion",
+      replyLanguage: "en",
+      userAllowedCloudFallback: true,
+    });
+
+    expect(result.route).toBe("semantic_cache");
+    expect(result.assistantText).toBe("Recursion is when a function calls itself.");
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(completeChat).not.toHaveBeenCalled();
+    expect(embedTexts).not.toHaveBeenCalled();
   });
 
   it("selects reasoner models only from the selected installed tier", async () => {
