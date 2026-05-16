@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { resolveDesiredRoute, runBootStep } from "@/lib/appBoot";
+import { 
+  resolveDesiredRoute, 
+  runBootStep,
+  createBootTimeline,
+  recordBootPhase,
+  getBootSummary,
+  emitBootPerfLog,
+  getCurrentBootPhase,
+  BOOT_PHASE_LABELS,
+  perfLog,
+} from "@/lib/appBoot";
 
 describe("runBootStep", () => {
   it("returns completed results before the timeout", async () => {
@@ -197,5 +207,62 @@ describe("resolveDesiredRoute", () => {
         questionnaireCompleted: true,
       })
     ).toBe("/(chat)");
+  });
+});
+
+describe("Boot Timeline Tracking", () => {
+  it("creates an empty timeline with pending phases", () => {
+    const timeline = createBootTimeline();
+    expect(timeline.createdMs).toBeGreaterThan(0);
+    expect(timeline.phases.auth_restore.status).toBe("pending");
+    expect(timeline.phases.profile_restore.status).toBe("pending");
+    expect(timeline.phases.model_readiness.status).toBe("pending");
+    expect(timeline.phases.ui_ready.status).toBe("pending");
+  });
+
+  it("records phases correctly", () => {
+    const timeline = createBootTimeline();
+    recordBootPhase(timeline, "auth_restore", "completed");
+    expect(timeline.phases.auth_restore.status).toBe("completed");
+    expect(timeline.phases.auth_restore.endMs).not.toBeNull();
+  });
+
+  it("gets boot summary correctly", () => {
+    const timeline = createBootTimeline();
+    recordBootPhase(timeline, "auth_restore", "completed");
+    const summary = getBootSummary(timeline);
+    expect(summary.totalMs).toBeGreaterThanOrEqual(0);
+    expect(summary.phases).toContain("auth_restore=completed");
+  });
+
+  it("emits boot perf log", () => {
+    const timeline = createBootTimeline();
+    const consoleSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    emitBootPerfLog(timeline);
+    expect(consoleSpy).toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  it("getCurrentBootPhase works correctly", () => {
+    expect(getCurrentBootPhase({ authLoading: true, profileLoading: true })).toBe("auth_restore");
+    expect(getCurrentBootPhase({ authLoading: false, profileLoading: true })).toBe("profile_restore");
+    expect(getCurrentBootPhase({ authLoading: false, profileLoading: false, modelStatusLoading: true })).toBe("model_readiness");
+    expect(getCurrentBootPhase({ authLoading: false, profileLoading: false, modelStatusLoading: false })).toBe("ui_ready");
+  });
+
+  it("has valid BOOT_PHASE_LABELS", () => {
+    expect(BOOT_PHASE_LABELS.auth_restore).toBe("Restoring session…");
+    expect(BOOT_PHASE_LABELS.profile_restore).toBe("Loading profile…");
+    expect(BOOT_PHASE_LABELS.model_readiness).toBe("Checking model…");
+    expect(BOOT_PHASE_LABELS.ui_ready).toBe("Ready");
+  });
+});
+
+describe("perfLog utility", () => {
+  it("formats perf log correctly", () => {
+    const consoleSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    perfLog("test", "label", 100, { a: 1 });
+    expect(consoleSpy).toHaveBeenCalledWith('[perf:test] | label | 100ms | {"a":1}');
+    consoleSpy.mockRestore();
   });
 });
