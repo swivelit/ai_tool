@@ -744,7 +744,7 @@ describe("API client contracts", () => {
     expect(payload.meta.fastPath).toBe(true);
     expect(payload.pipeline.route_taken).toBe("small_talk");
     expect(payload.pipeline.direct_answer_source).toBe("local_rules");
-    expect(payload.assistant.text).toContain("right here with you");
+    expect(payload.assistant.text).toBe("I'm here and ready whenever you need me.");
     expect(runLocalAssistantTurn).not.toHaveBeenCalled();
     expect(backendChatCalls(fetchMock)).toHaveLength(0);
   });
@@ -1517,6 +1517,7 @@ describe("API client contracts", () => {
     expect(completed.route_taken).toBe("fallback_openai");
     expect(completed.fallback_reason).toBe("local_timeout");
     expect(completed.request_id).toBe("text_test_timeout_123");
+    expect(completed.question).toBe("Explain a hard local-only topic");
     expect(completed.answer).toContain("Backend fallback answer");
     const failed = events.find((body) => body.event === "client_local_turn_failed");
     const started = events.find((body) => body.event === "client_backend_fallback_started");

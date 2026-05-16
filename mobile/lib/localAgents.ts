@@ -2,6 +2,7 @@ import Constants from "expo-constants";
 import * as FileSystem from "expo-file-system/legacy";
 
 import {
+  BACKEND_CHAT_FALLBACK_TIMEOUT_MS,
   CLOUD_FALLBACK_CONSENT_MESSAGE,
   annotateBackendOpenAiFallbackResponse,
   apiPost,
@@ -7107,14 +7108,18 @@ async function callBackendOpenAiFallback(opts: {
   });
   let backend: any;
   try {
-    backend = await apiPostBackendOnly<any>("/api/chat", {
-      user_id: opts.userId,
-      message: opts.message,
-      reply_language: opts.replyLanguage,
-      request_id: opts.requestId || undefined,
-      client_fallback_reason: opts.fallbackReason,
-      client_original_route: opts.originalRoute || undefined,
-    });
+    backend = await apiPostBackendOnly<any>(
+      "/api/chat",
+      {
+        user_id: opts.userId,
+        message: opts.message,
+        reply_language: opts.replyLanguage,
+        request_id: opts.requestId || undefined,
+        client_fallback_reason: opts.fallbackReason,
+        client_original_route: opts.originalRoute || undefined,
+      },
+      { timeoutMs: BACKEND_CHAT_FALLBACK_TIMEOUT_MS },
+    );
   } catch (error) {
     logClientWorkflowStep({
       event: "client_backend_fallback_completed",

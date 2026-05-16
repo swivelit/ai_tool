@@ -87,6 +87,7 @@ vi.mock("../lib/localAgentBootstrap", () => ({
 }));
 
 vi.mock("../lib/api", () => ({
+  BACKEND_CHAT_FALLBACK_TIMEOUT_MS: 90_000,
   CLOUD_FALLBACK_CONSENT_MESSAGE:
     "This needs backend/OpenAI help. Enable cloud fallback to answer this.",
   annotateBackendOpenAiFallbackResponse: (payload: any) => payload,
@@ -244,8 +245,7 @@ describe("local orchestrator and alignment", () => {
 
     expect(result.route).toBe("small_talk");
     expect(result.source).toBe("local_rules");
-    expect(result.assistantText).toContain("right here with you");
-    expect(result.assistantText).toContain("What would you like to do?");
+    expect(result.assistantText).toBe("I'm here and ready whenever you need me.");
     expect(global.fetch).not.toHaveBeenCalled();
     expect(apiPostMock).not.toHaveBeenCalled();
     expect(mockedState.fetchQueue).toHaveLength(0);
@@ -1062,6 +1062,7 @@ describe("local orchestrator and alignment", () => {
     expect(result.source).toBe("openai_fallback");
     expect(result.assistantText).toContain("Backend answer");
     expect(apiPostMock).toHaveBeenCalledTimes(1);
+    const { BACKEND_CHAT_FALLBACK_TIMEOUT_MS } = await import("../lib/api");
     expect(apiPostMock).toHaveBeenCalledWith(
       "/api/chat",
       expect.objectContaining({
@@ -1070,6 +1071,7 @@ describe("local orchestrator and alignment", () => {
         reply_language: "en",
         request_id: "chat-screen-request-25",
       }),
+      { timeoutMs: BACKEND_CHAT_FALLBACK_TIMEOUT_MS },
     );
     expect(result.meta?.orchestratorDecision?.fallbackAllowed).toBe(true);
   });

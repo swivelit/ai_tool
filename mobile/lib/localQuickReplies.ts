@@ -321,6 +321,7 @@ function formatKnowledgeTopic(topic: string) {
 function englishReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
   const userName = displayName(input.userName);
   const assistantName = displayName(input.assistantName);
+  const normalized = normalizeQuickText(input.message);
 
   switch (route) {
     case "fast_greeting":
@@ -332,7 +333,12 @@ function englishReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
         ? `I'm ${assistantName}, your local-first AI assistant on this phone.`
         : "I'm your local-first AI assistant on this phone.";
     case "small_talk":
-      return "I'm right here with you. I can help you plan, remember things, answer from local memory, or just chat. What would you like to do?";
+      if (/\bhow are you\b|\bhow is it going\b/.test(normalized)) {
+        return userName
+          ? `I'm doing well, ${userName}. I'm ready to help. How are you?`
+          : "I'm doing well. I'm ready to help. How are you?";
+      }
+      return "I'm here and ready whenever you need me.";
     case "wellbeing_support":
       return "That sounds exhausting. Take a short rest, drink some water, and don't push yourself too hard. If this feels unusual, severe, or keeps happening, please consider checking with a medical professional.";
     case "capabilities":
@@ -360,6 +366,7 @@ function englishReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
 function tamilReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
   const userName = displayName(input.userName);
   const assistantName = displayName(input.assistantName);
+  const normalized = normalizeQuickText(input.message);
 
   switch (route) {
     case "fast_greeting":
@@ -371,7 +378,12 @@ function tamilReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
         ? `நான் ${assistantName}, இந்த phone-லேயே local-first ஆக இயங்கும் உங்கள் AI assistant.`
         : "நான் இந்த phone-லேயே local-first ஆக இயங்கும் உங்கள் AI assistant.";
     case "small_talk":
-      return "நான் இங்கேதான் இருக்கிறேன். திட்டமிட, நினைவூட்டல்கள் உருவாக்க, local memory-லிருந்து பதில் சொல்ல, அல்லது சும்மா chat செய்ய உதவலாம். என்ன செய்யலாம்?";
+      if (/\bhow are you\b|\bhow is it going\b/.test(normalized)) {
+        return userName
+          ? `நான் நன்றாக இருக்கிறேன் ${userName}. உதவ தயாராக இருக்கிறேன். நீங்கள் எப்படி இருக்கிறீர்கள்?`
+          : "நான் நன்றாக இருக்கிறேன். உதவ தயாராக இருக்கிறேன். நீங்கள் எப்படி இருக்கிறீர்கள்?";
+      }
+      return "நான் இங்கே இருக்கிறேன். உங்களுக்கு தேவைப்படும் போது தயாராக இருக்கிறேன்.";
     case "wellbeing_support":
       return "அது ரொம்ப சோர்வாக இருக்கலாம். கொஞ்சம் ஓய்வு எடுத்துக்கோங்க, தண்ணீர் குடிங்க, உங்களை அதிகம் அழுத்த வேண்டாம். இது வழக்கத்துக்கு மாறாக, கடுமையாக, அல்லது தொடர்ந்து இருந்தால் மருத்துவரிடம் பேசுங்கள்.";
     case "capabilities":

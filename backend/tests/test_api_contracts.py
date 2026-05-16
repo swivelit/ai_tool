@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from fastapi import HTTPException
@@ -164,6 +165,9 @@ def test_chat_logs_turn_started_and_completed_safely(client, monkeypatch, caplog
     assert getattr(started[-1], "question_hash")
     assert getattr(started[-1], "question_length") == len("private cricket question")
     assert not hasattr(started[-1], "question_preview")
+    assert getattr(completed[-1], "question_hash")
+    assert getattr(completed[-1], "question_length") == len("private cricket question")
+    assert not hasattr(completed[-1], "question_preview")
     assert getattr(completed[-1], "route_taken") == "agentic"
     assert getattr(completed[-1], "agent_source") in {"backend_pipeline", "backend_openai", "backend_cache"}
     assert getattr(completed[-1], "answer_hash")
@@ -183,7 +187,7 @@ def test_chat_accepts_client_fallback_metadata_and_preserves_request_id(client, 
             "/api/chat",
             headers=headers,
             json={
-                "message": "Explain a hard local-only topic",
+                "message": "What is the weather tomorrow?",
                 "reply_language": "en",
                 "request_id": request_id,
                 "client_fallback_reason": "local_timeout",
@@ -261,6 +265,7 @@ def test_chat_logs_truncated_previews_when_enabled(client, monkeypatch, caplog):
     started = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_started"][-1]
     completed = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_completed"][-1]
     assert getattr(started, "question_preview") == "question..."
+    assert getattr(completed, "question_preview") == "question..."
     assert getattr(completed, "answer_preview") == "answer p..."
 
 
@@ -287,9 +292,10 @@ def test_chat_turn_summary_with_content(client, monkeypatch, caplog):
     assert getattr(summary, "duration_ms") >= 0
 
 
-def test_client_turn_log_accepts_local_telemetry_safely(client, caplog):
+def test_client_turn_log_accepts_local_telemetry_safely(client, monkeypatch, caplog):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setattr(observability, "LOG_CHAT_CONTENT", True)
 
     with caplog.at_level(logging.INFO):
         response = client.post(
@@ -331,6 +337,7 @@ def test_client_turn_log_accepts_local_telemetry_safely(client, caplog):
     record = [r for r in caplog.records if getattr(r, "event", "") == "client_local_turn_completed"][-1]
     assert getattr(record, "question_hash")
     assert getattr(record, "answer_hash")
+    assert getattr(record, "question_preview") == "hello bearer [REDACTED]"
     assert getattr(record, "agent_source") == "local_rules"
     assert getattr(record, "workflow_step") == "quick_reply_check"
     assert getattr(record, "workflow_phase") == "completed"
@@ -378,6 +385,65 @@ def test_client_turn_log_emits_client_turn_summary(client, caplog):
     assert getattr(summary, "duration_ms") == 12.5
     assert getattr(summary, "question_hash")
     assert getattr(summary, "answer_hash")
+
+
+def test_local_timeout_general_chat_uses_backend_fast_fallback(client, monkeypatch, caplog):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    calls = []
+
+    def fake_tracked_chat_completion(client_arg, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Solo Leveling is a Korean action-fantasy story about Sung Jinwoo growing from the weakest hunter into an exceptionally powerful one."
+                    )
+                )
+            ]
+        )
+
+    def fail_long_pipeline(*args, **kwargs):
+        raise AssertionError("long backend pipeline should not run for fast fallback")
+
+    monkeypatch.setattr(main_module, "_get_openai_client", lambda required=True: object())
+    monkeypatch.setattr(main_module, "tracked_chat_completion", fake_tracked_chat_completion)
+    monkeypatch.setattr(main_module, "run_orchestrator", fail_long_pipeline)
+    monkeypatch.setattr(main_module, "_run_agentic_or_pipeline", fail_long_pipeline)
+    monkeypatch.setattr(main_module, "_metadata_for_item", fail_long_pipeline)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={
+                "message": "Tell me about solo leveling",
+                "reply_language": "en",
+                "request_id": "text_fast_fallback_1",
+                "client_fallback_reason": "local_timeout",
+                "client_local_budget_ms": 15000,
+                "client_original_route": "local_answer",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(calls) == 1
+    assert calls[0]["route"] == "backend_fast_fallback"
+    assert calls[0]["task"] == "normal_qa"
+    assert payload["assistant"]["text"].startswith("Solo Leveling is")
+    assert payload["pipeline"]["route_taken"] == "backend_fast_fallback"
+    assert payload["pipeline"]["predicted_label"] == "general_qa"
+    assert payload["pipeline"]["direct_answer_source"] == "backend_openai_fast_fallback"
+    assert payload["meta"]["source"] == "backend_openai"
+    assert payload["meta"]["fallback_reason"] == "local_timeout"
+    assert payload["meta"]["client_local_budget_ms"] == 15000
+    completed = [r for r in caplog.records if getattr(r, "event", "") == "chat_turn_completed"][-1]
+    assert getattr(completed, "route_taken") == "backend_fast_fallback"
+    assert getattr(completed, "predicted_label") == "general_qa"
+    assert getattr(completed, "direct_answer_source") == "backend_openai_fast_fallback"
+    assert getattr(completed, "fallback_reason") == "local_timeout"
 
 
 def test_observability_startup_log(caplog):

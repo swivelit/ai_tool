@@ -93,6 +93,10 @@ describe("chat telemetry queue", () => {
     );
     const body = JSON.parse(String((firstCall[1] as any).body));
     expect(body.event).toBe("client_local_turn_completed");
+    expect(body.question).toBe("hello");
+    expect(body.answer).toBe("hi");
+    expect(body.question_length).toBe(5);
+    expect(body.answer_length).toBe(2);
     expect(body.api_base).toBe("https://api.example.test");
     expect(body.app_version).toBe("1.2.3");
     expect(body.mobile_build_id).toBe("test-build-extra");

@@ -80,7 +80,7 @@ from .global_qa_cache import (
     record_backend_openai_answer,
 )
 from .openai_model_router import OpenAIConfigurationError, OpenAIModelRouter, record_openai_usage
-from .openai_tracked import OpenAIBudgetExceededError, tracked_chat_completion
+from .openai_tracked import OpenAIBudgetExceededError, get_tracked_chat_completion_metadata, tracked_chat_completion
 
 
 bootstrap_observability()
@@ -1978,6 +1978,17 @@ def _metadata_for_item(session: Session, user_id: Optional[int], text: str, fall
         }
 
 
+def _fast_fallback_metadata_for_item(text: str, answer: str) -> Dict[str, Any]:
+    clean_text = " ".join(str(text or "").strip().split())
+    return {
+        "intent": "assistant",
+        "category": "Other",
+        "datetime": None,
+        "title": (clean_text[:60] + "...") if len(clean_text) > 60 else clean_text or "Chat",
+        "details": str(answer or "").strip(),
+    }
+
+
 def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
     def _maybe(value: Any, default: Any):
         if isinstance(value, str):
@@ -2011,6 +2022,10 @@ def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "model_tier": result.get("model_tier"),
         "model_reason": result.get("model_reason"),
         "openai_usage_tracked": bool(result.get("openai_usage_tracked")),
+        "fallback_reason": result.get("fallback_reason"),
+        "client_fallback_reason": result.get("client_fallback_reason"),
+        "client_local_budget_ms": result.get("client_local_budget_ms"),
+        "client_original_route": result.get("client_original_route"),
     }
 
 
@@ -2039,9 +2054,11 @@ def _save_item_from_pipeline(
     transcript: Optional[str],
     pipeline_result: Dict[str, Any],
     reply_language: Optional[str] = None,
+    metadata_override: Optional[Dict[str, Any]] = None,
+    skip_expensive_side_effects: bool = False,
 ) -> tuple[Item, Dict[str, Any], Dict[str, Any]]:
     spoken_answer = _assistant_text_from_pipeline(pipeline_result, raw_text, reply_language)
-    meta = _metadata_for_item(session, user_id, raw_text, spoken_answer)
+    meta = metadata_override or _metadata_for_item(session, user_id, raw_text, spoken_answer)
 
     item = Item(
         intent=str(meta.get("intent", "other")).lower(),
@@ -2060,35 +2077,37 @@ def _save_item_from_pipeline(
     session.commit()
     session.refresh(item)
 
-    try:
-        source_id, content_text, updated_at = LOCAL_RAG_SERVICE._candidate_from_item(item)
-        LOCAL_RAG_SERVICE._get_or_create_embedding(
-            session,
-            user_id=user_id,
-            source_type="item",
-            source_id=source_id,
-            content_text=content_text,
-            updated_at=updated_at,
-        )
-    except Exception:
-        session.rollback()
-        logger.warning(
-            "RAG embedding failed",
-            extra={"user_id": user_id, "item_id": getattr(item, "id", None)},
-            exc_info=True,
-        )
+    if not skip_expensive_side_effects:
+        try:
+            source_id, content_text, updated_at = LOCAL_RAG_SERVICE._candidate_from_item(item)
+            LOCAL_RAG_SERVICE._get_or_create_embedding(
+                session,
+                user_id=user_id,
+                source_type="item",
+                source_id=source_id,
+                content_text=content_text,
+                updated_at=updated_at,
+            )
+        except Exception:
+            session.rollback()
+            logger.warning(
+                "RAG embedding failed",
+                extra={"user_id": user_id, "item_id": getattr(item, "id", None)},
+                exc_info=True,
+            )
 
     normalized_pipeline = _normalized_pipeline_result(pipeline_result)
     payload = {"pipeline": normalized_pipeline, "meta": meta}
     log_conversation(session, user_id, source, raw_text, transcript, payload)
-    try:
-        upsert_qa_cache(session, user_id, raw_text, payload)
-    except Exception:
-        session.rollback()
-        logger.exception(
-            "QA cache side effect failed",
-            extra={"user_id": user_id, "source": source},
-        )
+    if not skip_expensive_side_effects:
+        try:
+            upsert_qa_cache(session, user_id, raw_text, payload)
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "QA cache side effect failed",
+                extra={"user_id": user_id, "source": source},
+            )
     return item, meta, normalized_pipeline
 
 
@@ -3004,6 +3023,161 @@ def _handle_routing_fast_exit(
     return None
 
 
+_FAST_FALLBACK_CURRENT_DATA_RE = re.compile(
+    r"\b("
+    r"latest|current|live|breaking|today|tonight|tomorrow|yesterday|now|"
+    r"news|score|scores|weather|forecast|rain|temperature|stock|price|"
+    r"election|result|results|fixture|schedule\s+today|standings"
+    r")\b",
+    re.IGNORECASE,
+)
+_FAST_FALLBACK_TOOL_RE = re.compile(
+    r"\b(remind|reminder|calendar|appointment|todo|to\s+do|task|schedule|alarm)\b",
+    re.IGNORECASE,
+)
+_FAST_FALLBACK_HIGH_RISK_RE = re.compile(
+    r"\b("
+    r"emergency|suicide|self\s*harm|kill myself|hurt myself|chest pain|"
+    r"bleeding|cannot breathe|can't breathe|doctor|medical|medicine|"
+    r"symptom|diagnosis|treatment|prescription|dosage|legal|lawyer|"
+    r"lawsuit|contract|tax|financial advice|investment|loan|insurance|"
+    r"bank account|credit card"
+    r")\b",
+    re.IGNORECASE,
+)
+_FAST_FALLBACK_PRIVATE_RE = re.compile(
+    r"\b("
+    r"my name|who am i|where do i live|my profile|my memory|remember|"
+    r"what do you know about me|my routine|my goal|my address|my phone|"
+    r"my email|my password|my salary|my bank"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_backend_fast_fallback_candidate(payload: ChatAPIRequest, text: str, routing: Dict[str, Any]) -> bool:
+    if str(payload.client_fallback_reason or "").strip().lower() != "local_timeout":
+        return False
+    if str(routing.get("intent") or "").strip().upper() != "GENERAL":
+        return False
+    normalized = _normalize_lookup_text(text)
+    if not normalized:
+        return False
+    for pattern in (
+        _FAST_FALLBACK_CURRENT_DATA_RE,
+        _FAST_FALLBACK_TOOL_RE,
+        _FAST_FALLBACK_HIGH_RISK_RE,
+        _FAST_FALLBACK_PRIVATE_RE,
+    ):
+        if pattern.search(normalized):
+            return False
+    return True
+
+
+def _run_backend_fast_fallback(
+    session: Session,
+    payload: ChatAPIRequest,
+    text: str,
+    stage_timings: Dict[str, Any],
+) -> Dict[str, Any]:
+    reply_language = _normalize_reply_language(payload.reply_language)
+    language_instruction = (
+        "Answer directly in Tamil. Do not translate through a second step."
+        if reply_language == "ta"
+        else "Answer directly in English."
+    )
+    started = time.perf_counter()
+    _log_backend_workflow_step(
+        "backend_fast_fallback_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="backend_fast_fallback",
+        workflow_phase="started",
+        client_fallback_reason=payload.client_fallback_reason,
+        client_local_budget_ms=payload.client_local_budget_ms,
+        client_original_route=payload.client_original_route,
+        fallback_reason=payload.client_fallback_reason,
+        original_route=payload.client_original_route,
+        stage_timings=stage_timings,
+    )
+    try:
+        response = tracked_chat_completion(
+            _get_openai_client(),
+            task="normal_qa",
+            route="backend_fast_fallback",
+            session=session,
+            user_id=payload.user_id,
+            request_id=payload.request_id or get_request_id(),
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a concise, helpful assistant. The phone-local model timed out, "
+                        "so answer the user's ordinary general question in one direct response. "
+                        "Do not claim access to live or current data."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"{language_instruction}\n\nUser question: {text}",
+                },
+            ],
+            temperature=0.3,
+            max_tokens=700,
+        )
+    except OpenAIBudgetExceededError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    answer = _extract_response_text(response) or "I could not produce an answer in time. Please try again."
+    metadata = get_tracked_chat_completion_metadata(response)
+    _record_stage_timing(stage_timings, "backend_fast_fallback", started)
+    _log_backend_workflow_step(
+        "backend_fast_fallback_completed",
+        user_id=payload.user_id,
+        question=text,
+        answer=answer,
+        workflow_step="backend_fast_fallback",
+        workflow_phase="completed",
+        route_taken="backend_fast_fallback",
+        agent_source="backend_openai",
+        fallback_reason=payload.client_fallback_reason,
+        model_used=metadata.get("model_used"),
+        model_tier=metadata.get("model_tier"),
+        duration_ms=stage_timings.get("backend_fast_fallback"),
+        stage_timings=stage_timings,
+    )
+    result = _build_pipeline_result(
+        raw_english=answer if reply_language == "en" else "",
+        remodeled_english=answer if reply_language == "en" else "",
+        tamil_text=answer if reply_language == "ta" else "",
+        theni_tamil_text=answer if reply_language == "ta" else "",
+        route_taken="backend_fast_fallback",
+        direct_answer_source="backend_openai_fast_fallback",
+        direct_answer_confidence="1.0000",
+        predicted_label="general_qa",
+        risk_level="low",
+        stage_notes=["Answered through one tracked backend OpenAI fast-fallback call after local timeout."],
+        core_meta={
+            "source": "backend_openai_fast_fallback",
+            "fallback_reason": payload.client_fallback_reason,
+            "client_original_route": payload.client_original_route,
+            **metadata,
+        },
+        timings_ms={"backend_fast_fallback": stage_timings.get("backend_fast_fallback", 0.0)},
+    )
+    result["fallback_reason"] = payload.client_fallback_reason
+    result["client_fallback_reason"] = payload.client_fallback_reason
+    result["client_original_route"] = payload.client_original_route
+    if payload.client_local_budget_ms is not None:
+        result["client_local_budget_ms"] = payload.client_local_budget_ms
+    if metadata.get("model_used"):
+        result["model_used"] = metadata.get("model_used")
+        result["model_tier"] = metadata.get("model_tier")
+        result["model_reason"] = metadata.get("reason")
+        result["openai_usage_tracked"] = True
+    return result
+
+
 def _run_chat_logic(
     session: Session,
     payload: ChatAPIRequest,
@@ -3036,6 +3210,8 @@ def _run_chat_logic(
     fast_result = _handle_routing_fast_exit(session, payload, text, routing)
     if fast_result is not None:
         return fast_result
+    if _is_backend_fast_fallback_candidate(payload, text, routing):
+        return _run_backend_fast_fallback(session, payload, text, stage_timings)
 
     _log_backend_workflow_step(
         "backend_global_cache_lookup_started",
@@ -3184,6 +3360,16 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
     text = _resolve_chat_text(payload)
     stage_timings: Dict[str, Any] = {}
     pipeline_result = _run_chat_logic(session, payload, text, stage_timings)
+    is_fast_backend_fallback = (
+        str(pipeline_result.get("route_taken") or "") == "backend_fast_fallback"
+    )
+    fast_answer = str(
+        pipeline_result.get("theni_tamil_text")
+        or pipeline_result.get("tamil_text")
+        or pipeline_result.get("remodeled_english")
+        or pipeline_result.get("raw_english")
+        or ""
+    ).strip()
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
@@ -3192,22 +3378,29 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
         transcript=None,
         pipeline_result=pipeline_result,
         reply_language=payload.reply_language,
+        metadata_override=(
+            _fast_fallback_metadata_for_item(text, fast_answer)
+            if is_fast_backend_fallback
+            else None
+        ),
+        skip_expensive_side_effects=is_fast_backend_fallback,
     )
-    try:
-        _record_backend_openai_side_effects(
-            session,
-            user_id=payload.user_id,
-            question=text,
-            pipeline_result=normalized_pipeline,
-            answer=str(normalized_pipeline.get("remodeled_english") or item.details or ""),
-            request_id=payload.request_id or get_request_id(),
-        )
-    except Exception:
-        session.rollback()
-        logger.exception(
-            "OpenAI/global-cache side effects failed",
-            extra={"user_id": payload.user_id, "request_id": payload.request_id or get_request_id()},
-        )
+    if not is_fast_backend_fallback:
+        try:
+            _record_backend_openai_side_effects(
+                session,
+                user_id=payload.user_id,
+                question=text,
+                pipeline_result=normalized_pipeline,
+                answer=str(normalized_pipeline.get("remodeled_english") or item.details or ""),
+                request_id=payload.request_id or get_request_id(),
+            )
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "OpenAI/global-cache side effects failed",
+                extra={"user_id": payload.user_id, "request_id": payload.request_id or get_request_id()},
+            )
     response = _build_chat_response(item, meta, normalized_pipeline)
     response_meta = response.get("meta") if isinstance(response, dict) else {}
     if isinstance(response_meta, dict):
@@ -3216,6 +3409,8 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
         response_meta.setdefault("source", _backend_agent_source(normalized_pipeline))
         response_meta.setdefault("model_used", normalized_pipeline.get("model_used"))
         response_meta.setdefault("model_tier", normalized_pipeline.get("model_tier"))
+        response_meta.setdefault("stageTimings", stage_timings)
+        response_meta.setdefault("stage_timings", stage_timings)
         if payload.client_fallback_reason:
             response_meta.setdefault("fallback_reason", payload.client_fallback_reason)
             response_meta.setdefault("client_fallback_reason", payload.client_fallback_reason)
@@ -3637,6 +3832,8 @@ def api_chat(
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
     pipeline = response.get("pipeline") if isinstance(response, dict) else {}
     pipeline = pipeline if isinstance(pipeline, dict) else {}
+    meta = response.get("meta") if isinstance(response, dict) else {}
+    meta = meta if isinstance(meta, dict) else {}
     answer = ""
     if isinstance(response, dict):
         assistant = response.get("assistant")
@@ -3652,20 +3849,43 @@ def api_chat(
             user_id=int(user.id),
             request_id=get_request_id(),
             channel="text",
+            question=text,
             route_taken=pipeline.get("route_taken"),
             predicted_label=pipeline.get("predicted_label"),
             direct_answer_source=pipeline.get("direct_answer_source"),
             direct_answer_confidence=pipeline.get("direct_answer_confidence"),
+            model_used=pipeline.get("model_used"),
+            model_tier=pipeline.get("model_tier"),
+            fallback_reason=(
+                pipeline.get("fallback_reason")
+                or pipeline.get("client_fallback_reason")
+                or meta.get("fallback_reason")
+                or meta.get("fallbackReason")
+            ),
+            client_fallback_reason=(
+                pipeline.get("client_fallback_reason")
+                or meta.get("client_fallback_reason")
+                or meta.get("clientFallbackReason")
+            ),
+            client_local_budget_ms=(
+                pipeline.get("client_local_budget_ms")
+                or meta.get("client_local_budget_ms")
+                or meta.get("clientLocalBudgetMs")
+            ),
+            client_original_route=(
+                pipeline.get("client_original_route")
+                or meta.get("client_original_route")
+                or meta.get("clientOriginalRoute")
+            ),
             cache_hit=pipeline.get("cache_hit"),
             rag_snippet_count=_rag_snippet_count(pipeline),
             agent_source=_backend_agent_source(pipeline),
             answer=answer,
             duration_ms=duration_ms,
+            stage_timings=meta.get("stageTimings") or meta.get("stage_timings") or pipeline.get("timings_ms"),
         ),
     )
     if CHAT_TURN_SUMMARY_LOGS_ENABLED:
-        meta = response.get("meta") if isinstance(response, dict) else {}
-        meta = meta if isinstance(meta, dict) else {}
         logger.info(
             "chat_turn_summary",
             extra=build_turn_summary_payload(
@@ -3679,6 +3899,8 @@ def api_chat(
                 predicted_label=pipeline.get("predicted_label"),
                 direct_answer_source=pipeline.get("direct_answer_source"),
                 direct_answer_confidence=pipeline.get("direct_answer_confidence"),
+                model_used=pipeline.get("model_used"),
+                model_tier=pipeline.get("model_tier"),
                 cache_hit=pipeline.get("cache_hit"),
                 fallback_reason=(
                     pipeline.get("fallback_reason")
@@ -3688,6 +3910,7 @@ def api_chat(
                 rag_snippet_count=_rag_snippet_count(pipeline),
                 agent_source=_backend_agent_source(pipeline),
                 duration_ms=duration_ms,
+                stage_timings=meta.get("stageTimings") or meta.get("stage_timings") or pipeline.get("timings_ms"),
             ),
         )
     return response

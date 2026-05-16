@@ -58,6 +58,7 @@ function setupApiHarness(options: {
   runLocalAssistantTurn: ReturnType<typeof vi.fn>;
   cancelRequest?: ReturnType<typeof vi.fn>;
   backendAnswer?: string;
+  backendDelayMs?: number;
 }) {
   const logs: any[] = [];
   const cancelRequest = options.cancelRequest || vi.fn(async () => ({ ok: true }));
@@ -114,9 +115,12 @@ function setupApiHarness(options: {
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-  const fetchMock = vi.fn(async () =>
-    jsonResponse(backendPayload(options.backendAnswer || "Backend answer.")),
-  );
+  const fetchMock = vi.fn(async () => {
+    if (options.backendDelayMs && options.backendDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, options.backendDelayMs));
+    }
+    return jsonResponse(backendPayload(options.backendAnswer || "Backend answer."));
+  });
   vi.stubGlobal("fetch", fetchMock);
 
   return { logs, fetchMock, cancelRequest };
@@ -164,6 +168,41 @@ describe("local to backend fallback budget", () => {
     expect(logs.some((entry) => entry.event === "client_local_budget_exceeded")).toBe(true);
     expect(backendChatCalls(fetchMock)).toHaveLength(1);
     expect(payload.assistant.text).toBe("Backend answer after budget.");
+    expect(payload.meta.fallback_reason).toBe("local_timeout");
+  });
+
+  it("keeps backend fallback alive past the normal 30 second API timeout", async () => {
+    vi.useFakeTimers();
+    const runLocalAssistantTurn = vi.fn(() => new Promise(() => undefined));
+    const { fetchMock } = setupApiHarness({
+      cloudFallback: true,
+      runLocalAssistantTurn,
+      backendAnswer: "Backend answer after a slow fallback.",
+      backendDelayMs: 45_000,
+    });
+
+    const { apiPost } = await import("../lib/api");
+    let settled = false;
+    const resultPromise = apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "Tell me about solo leveling",
+      reply_language: "en",
+      request_id: "text_slow_backend_fallback",
+    }).finally(() => {
+      settled = true;
+    });
+    await waitForMockCall(runLocalAssistantTurn);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(backendChatCalls(fetchMock)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    const payload = await resultPromise;
+
+    expect(payload.assistant.text).toBe("Backend answer after a slow fallback.");
     expect(payload.meta.fallback_reason).toBe("local_timeout");
   });
 

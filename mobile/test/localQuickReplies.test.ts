@@ -72,4 +72,28 @@ describe("local quick replies", () => {
     expect(identity?.assistantText).toContain("Kani");
     expect(greeting?.assistantText).toContain("Hari");
   });
+
+  it("answers small talk naturally without capability copy", () => {
+    const wellbeing = tryBuildQuickLocalReply({
+      message: "How are you doing?",
+      userName: "Hari",
+    });
+    const presence = tryBuildQuickLocalReply({
+      message: "What are you up to?",
+      userName: "Hari",
+    });
+    const capabilities = tryBuildQuickLocalReply({
+      message: "What can you do?",
+      userName: "Hari",
+    });
+
+    expect(wellbeing?.route).toBe("small_talk");
+    expect(wellbeing?.assistantText).toBe(
+      "I'm doing well, Hari. I'm ready to help. How are you?",
+    );
+    expect(presence?.route).toBe("small_talk");
+    expect(presence?.assistantText).toBe("I'm here and ready whenever you need me.");
+    expect(capabilities?.route).toBe("capabilities");
+    expect(capabilities?.assistantText).toContain("create reminders");
+  });
 });

@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const asyncStorage = new Map<string, string>();
 const secureStorage = new Map<string, string>();
@@ -113,5 +115,15 @@ describe("cloud fallback settings", () => {
       allowCloudFallback: false,
       cloudFallbackUserChoice: true,
     });
+  });
+
+  it("does not expose backend fallback routing copy in the chat UI", () => {
+    const source = readFileSync(
+      resolve(__dirname, "../app/(chat)/index.tsx"),
+      "utf8",
+    );
+
+    expect(source).not.toContain("Switching to cloud");
+    expect(source).toContain("Still working...");
   });
 });

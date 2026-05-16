@@ -75,6 +75,18 @@ export class ApiError extends Error {
 }
 
 const DEFAULT_API_TIMEOUT_MS = 30_000;
+function positiveTimeoutMs(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : fallback;
+}
+
+export const BACKEND_CHAT_FALLBACK_TIMEOUT_MS = positiveTimeoutMs(
+  extra.BACKEND_CHAT_FALLBACK_TIMEOUT_MS ||
+    process.env.EXPO_PUBLIC_BACKEND_CHAT_FALLBACK_TIMEOUT_MS,
+  90_000,
+);
 export const CLOUD_FALLBACK_CONSENT_MESSAGE =
   "This needs backend/OpenAI help. Enable cloud fallback to answer this.";
 
@@ -1083,15 +1095,19 @@ async function postChatFallbackToBackend(input: {
 
   let backend: LocalChatProxyResponse;
   try {
-    backend = await apiPostBackendOnly<LocalChatProxyResponse>("/api/chat", {
-      user_id: input.userId,
-      message: input.message,
-      reply_language: input.replyLanguage,
-      request_id: input.requestId || undefined,
-      client_fallback_reason: input.fallbackReason,
-      client_local_budget_ms: input.localBudgetMs || undefined,
-      client_original_route: input.originalRoute || undefined,
-    });
+    backend = await apiPostBackendOnly<LocalChatProxyResponse>(
+      "/api/chat",
+      {
+        user_id: input.userId,
+        message: input.message,
+        reply_language: input.replyLanguage,
+        request_id: input.requestId || undefined,
+        client_fallback_reason: input.fallbackReason,
+        client_local_budget_ms: input.localBudgetMs || undefined,
+        client_original_route: input.originalRoute || undefined,
+      },
+      { timeoutMs: BACKEND_CHAT_FALLBACK_TIMEOUT_MS },
+    );
   } catch (error) {
     logClientWorkflowStep({
       event: "client_backend_fallback_completed",
@@ -2423,12 +2439,13 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
 export async function apiPostBackendOnly<T>(
   path: string,
   body?: any,
+  config: { timeoutMs?: number; auth?: boolean } = {},
 ): Promise<T> {
   const res = await fetchBackend(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
-  });
+  }, config);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new ApiError(

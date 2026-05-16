@@ -322,7 +322,12 @@ class EmbeddedTextClassifier:
 
     def predict(self, text: str) -> str:
         probs = self.predict_proba_map(text)
-        return max(probs.items(), key=lambda item: item[1])[0] if probs else "unknown"
+        if not probs:
+            return "unknown"
+        label, score = max(probs.items(), key=lambda item: item[1])
+        if score <= 0.0:
+            return "general_qa" if "general_qa" in self.label_centroids else "unknown"
+        return label
 
     def predict_proba_map(self, text: str) -> Dict[str, float]:
         query_counter = Counter(_tokenize(text))
