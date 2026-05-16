@@ -75,13 +75,37 @@ function answerText(payload) {
   ).trim();
 }
 
+function previewValue(value) {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function errorPreviewText(payload) {
+  return String(
+    previewValue(payload?.detail) ||
+      previewValue(payload?.error?.message) ||
+      previewValue(payload?.error) ||
+      previewValue(payload?.message) ||
+      previewValue(payload?.reason) ||
+      "",
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function previewText(payload) {
   return String(
     answerText(payload) ||
-      payload?.detail ||
-      payload?.error ||
-      payload?.message ||
-      payload?.reason ||
+      errorPreviewText(payload) ||
       "",
   )
     .replace(/\s+/g, " ")
@@ -267,9 +291,17 @@ function rowPass(status, payload) {
 
 function formatRow(question, status, payload) {
   const pass = rowPass(status, payload);
+  const preview =
+    status >= 500
+      ? errorPreviewText(payload) || previewText(payload)
+      : previewText(payload);
+  const route = routeOf(payload) || "unknown";
+  const source = sourceOf(payload) || "unknown";
+  const httpStatus = status || "error";
+  const result = pass ? "pass" : "fail";
   return {
     pass,
-    line: `${question} | ${status || "error"} | ${routeOf(payload) || "unknown"} | ${sourceOf(payload) || "unknown"} | ${previewText(payload).slice(0, 72)} | ${pass ? "pass" : "fail"}`,
+    line: `${question} | ${httpStatus} | ${route} | ${source} | ${preview.slice(0, 72)} | ${result}`,
   };
 }
 

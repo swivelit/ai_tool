@@ -79,7 +79,7 @@ from .global_qa_cache import (
     lookup_approved_global_cache,
     record_backend_openai_answer,
 )
-from .openai_model_router import OpenAIModelRouter, record_openai_usage
+from .openai_model_router import OpenAIConfigurationError, OpenAIModelRouter, record_openai_usage
 from .openai_tracked import OpenAIBudgetExceededError, tracked_chat_completion
 
 
@@ -402,6 +402,60 @@ def _openai_required_error(operation: str = "This operation") -> HTTPException:
         status_code=503,
         detail=f"{operation} requires OPENAI_API_KEY to be configured on the server.",
     )
+
+
+OPENAI_PROVIDER_CONFIG_DETAIL = "OpenAI provider/configuration error. Check OPENAI_API_KEY and OPENAI_MODEL settings."
+OPENAI_PROVIDER_RATE_LIMIT_DETAIL = "OpenAI provider rate limit reached. Try again later."
+OPENAI_PROVIDER_CONNECTION_DETAIL = "OpenAI provider is temporarily unavailable. Try again later."
+OPENAI_PROVIDER_TIMEOUT_DETAIL = "OpenAI provider timed out. Try again later."
+OPENAI_PROVIDER_STATUS_DETAIL = "OpenAI provider returned an upstream error. Try again later."
+
+
+def _openai_provider_http_exception(exc: BaseException) -> Optional[HTTPException]:
+    if isinstance(exc, OpenAIBudgetExceededError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, OpenAIConfigurationError):
+        return HTTPException(status_code=503, detail=OPENAI_PROVIDER_CONFIG_DETAIL)
+    if isinstance(
+        exc,
+        (
+            openai.AuthenticationError,
+            openai.PermissionDeniedError,
+            openai.NotFoundError,
+            openai.BadRequestError,
+        ),
+    ):
+        return HTTPException(status_code=503, detail=OPENAI_PROVIDER_CONFIG_DETAIL)
+    if isinstance(exc, openai.RateLimitError):
+        return HTTPException(status_code=503, detail=OPENAI_PROVIDER_RATE_LIMIT_DETAIL)
+    if isinstance(exc, openai.APITimeoutError):
+        return HTTPException(status_code=504, detail=OPENAI_PROVIDER_TIMEOUT_DETAIL)
+    if isinstance(exc, openai.APIConnectionError):
+        return HTTPException(status_code=503, detail=OPENAI_PROVIDER_CONNECTION_DETAIL)
+    if isinstance(exc, openai.APIStatusError):
+        return HTTPException(status_code=502, detail=OPENAI_PROVIDER_STATUS_DETAIL)
+    return None
+
+
+@app.exception_handler(OpenAIConfigurationError)
+async def openai_configuration_exception_handler(request: Request, exc: OpenAIConfigurationError):
+    mapped = _openai_provider_http_exception(exc)
+    status_code = mapped.status_code if mapped is not None else 503
+    detail = mapped.detail if mapped is not None else OPENAI_PROVIDER_CONFIG_DETAIL
+    return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
+@app.exception_handler(openai.OpenAIError)
+async def openai_provider_exception_handler(request: Request, exc: openai.OpenAIError):
+    mapped = _openai_provider_http_exception(exc)
+    status_code = mapped.status_code if mapped is not None else 502
+    detail = mapped.detail if mapped is not None else OPENAI_PROVIDER_STATUS_DETAIL
+    return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
+@app.exception_handler(OpenAIBudgetExceededError)
+async def openai_budget_exception_handler(request: Request, exc: OpenAIBudgetExceededError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 def _get_openai_client(*, required: bool = True) -> Optional[openai.OpenAI]:
@@ -3420,7 +3474,14 @@ def api_chat(
         )
     except Exception as exc:
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
-        status_code = exc.status_code if isinstance(exc, HTTPException) else getattr(exc, "status_code", 500)
+        mapped_openai_exc = _openai_provider_http_exception(exc)
+        status_code = (
+            mapped_openai_exc.status_code
+            if mapped_openai_exc is not None
+            else exc.status_code
+            if isinstance(exc, HTTPException)
+            else getattr(exc, "status_code", 500)
+        )
         logger.info(
             "chat_turn_failed",
             extra=chat_log_payload(
@@ -3452,6 +3513,8 @@ def api_chat(
             )
         if isinstance(exc, OpenAIBudgetExceededError):
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if mapped_openai_exc is not None:
+            raise mapped_openai_exc from exc
         raise
 
     duration_ms = round((time.perf_counter() - started) * 1000, 2)

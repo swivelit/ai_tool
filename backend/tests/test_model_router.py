@@ -2,10 +2,73 @@ from __future__ import annotations
 
 from sqlmodel import select
 
+import app.openai_model_router as model_router_module
 from app.database import SessionLocal
 from app.models import OpenAIUsageLog
 from app.openai_model_router import OpenAIModelRouter, get_today_estimated_openai_spend, record_openai_usage
 from app.openai_tracked import OpenAIBudgetExceededError, get_tracked_chat_completion_metadata, tracked_chat_completion, tracked_embedding
+
+
+MODEL_ENV_VARS = (
+    "OPENAI_MODEL_CHEAP",
+    "OPENAI_MODEL_STANDARD",
+    "OPENAI_MODEL_REASONING",
+    "OPENAI_MODEL_HIGH",
+    "OPENAI_JSON_MODEL",
+    "OPENAI_MODEL",
+)
+
+
+def _clear_model_env(monkeypatch):
+    for name in MODEL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_model_router_uses_safe_default_when_env_models_are_missing(monkeypatch):
+    _clear_model_env(monkeypatch)
+    monkeypatch.setattr(model_router_module, "CONFIG_OPENAI_MODEL_DEFAULT", "")
+    router = OpenAIModelRouter()
+
+    selected = router.select_model("normal_qa", "What is a compiler?")
+
+    assert selected.model == "gpt-4o-mini"
+    assert selected.model.strip()
+
+
+def test_model_router_respects_explicit_env_models(monkeypatch):
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-env-model")
+    monkeypatch.setenv("OPENAI_MODEL_STANDARD", "standard-env-model")
+    monkeypatch.setenv("OPENAI_MODEL_REASONING", "reasoning-env-model")
+    monkeypatch.setenv("OPENAI_MODEL_HIGH", "high-env-model")
+    monkeypatch.setenv("OPENAI_DISABLE_HIGHEST_MODEL", "false")
+    monkeypatch.setenv("OPENAI_HIGH_MODEL_ALLOWLIST", "highest")
+    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "10")
+    router = OpenAIModelRouter()
+
+    assert router.select_model("classification", "classify this").model == "cheap-env-model"
+    assert router.select_model("normal_qa", "latest news", needs_live_data=True).model == "standard-env-model"
+    assert (
+        router.select_model("normal_qa", "Design a multi-step coding architecture.").model
+        == "reasoning-env-model"
+    )
+    assert router.select_model("highest", "Use the highest model.", route="highest").model == "high-env-model"
+
+
+def test_select_model_never_returns_empty_model(monkeypatch):
+    _clear_model_env(monkeypatch)
+    monkeypatch.setattr(model_router_module, "CONFIG_OPENAI_MODEL_DEFAULT", "")
+    router = OpenAIModelRouter()
+
+    selections = [
+        router.select_model("classification", "classify this"),
+        router.select_model("normal_qa", "Explain black holes simply."),
+        router.select_model("normal_qa", "Design a multi-step coding architecture."),
+        router.select_model("normal_qa", "latest IPL score", needs_live_data=True),
+        router.select_model("highest", "Use the highest model.", route="highest"),
+    ]
+
+    assert all(selection.model.strip() for selection in selections)
 
 
 def test_model_router_uses_cheap_for_classification(monkeypatch):

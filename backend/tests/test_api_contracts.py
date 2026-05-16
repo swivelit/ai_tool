@@ -420,6 +420,31 @@ def test_request_failed_exception_is_logged(monkeypatch, caplog):
     assert getattr(record, "duration_ms") >= 0
 
 
+def test_chat_openai_configuration_error_returns_sanitized_503(monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    def explode(session, payload):
+        raise main_module.OpenAIConfigurationError(
+            "invalid OpenAI config OPENAI_API_KEY=sk-secret-token bearer firebase-token provider response"
+        )
+
+    monkeypatch.setattr(main_module, "_run_chat_request", explode)
+
+    with TestClient(main_module.app, raise_server_exceptions=False) as test_client:
+        response = test_client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "Explain quantum computing in simple words", "reply_language": "en"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == main_module.OPENAI_PROVIDER_CONFIG_DETAIL
+    assert "sk-secret-token" not in response.text
+    assert "firebase-token" not in response.text
+    assert "provider response" not in response.text
+
+
 def test_voice_upload_rejects_missing_auth_missing_file_bad_type_and_large_file(client, monkeypatch):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")

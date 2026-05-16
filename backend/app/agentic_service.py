@@ -480,6 +480,64 @@ class AgenticService:
     def _route_config(self) -> Dict[str, Any]:
         return self._read_json(Path(AGENT_ORCHESTRATOR_CONFIG_PATH), DEFAULT_ORCHESTRATOR_CONFIG)
 
+    @staticmethod
+    def _route_keywords(routes: Dict[str, Any], route_name: str) -> List[str]:
+        mobile_shape_keys = {
+            "fast_greeting": ("fastGreetingKeywords", "smallTalkKeywords"),
+            "calendar": ("calendarKeywords", "reminderKeywords"),
+            "weather": ("weatherKeywords",),
+            "web_search": ("liveDataKeywords",),
+        }
+        builtins = {
+            "fast_greeting": [
+                "hi",
+                "hello",
+                "hey",
+                "thanks",
+                "thank you",
+                "how are you",
+                "what's up",
+                "whats up",
+            ],
+            "calendar": ["schedule", "calendar", "reminder", "task", "todo", "to do"],
+            "weather": ["weather", "forecast", "rain", "temperature"],
+            "web_search": [
+                "latest",
+                "news",
+                "current",
+                "today",
+                "live",
+                "score",
+                "election",
+                "internet",
+                "browse",
+                "search online",
+            ],
+        }
+
+        keywords: List[str] = []
+        internal_route = routes.get(route_name)
+        if isinstance(internal_route, dict):
+            raw_keywords = internal_route.get("keywords")
+            if isinstance(raw_keywords, list):
+                keywords.extend(str(item) for item in raw_keywords)
+
+        for key in mobile_shape_keys.get(route_name, ()):
+            raw_keywords = routes.get(key)
+            if isinstance(raw_keywords, list):
+                keywords.extend(str(item) for item in raw_keywords)
+
+        keywords.extend(builtins.get(route_name, []))
+        seen: set[str] = set()
+        out: List[str] = []
+        for keyword in keywords:
+            normalized = " ".join(str(keyword or "").split()).strip()
+            lookup = normalized.lower()
+            if normalized and lookup not in seen:
+                seen.add(lookup)
+                out.append(normalized)
+        return out
+
     def _alignment_config(self) -> Dict[str, Any]:
         return self._read_json(Path(AGENT_ALIGNMENT_CONFIG_PATH), DEFAULT_ALIGNMENT_RULES)
 
@@ -808,16 +866,34 @@ Return ONLY JSON:
     # -----------------------------
     # orchestrator + tools
     # -----------------------------
+    def _matches_route_keyword(self, normalized_message: str, routes: Dict[str, Any], route_name: str) -> bool:
+        padded = f" {normalized_message} "
+        for keyword in self._route_keywords(routes, route_name):
+            normalized_keyword = self._normalize_lookup_text(keyword)
+            if normalized_keyword and (
+                normalized_message == normalized_keyword or f" {normalized_keyword} " in padded
+            ):
+                return True
+        return False
+
     def _quick_route(self, message: str) -> Optional[str]:
         normalized = self._normalize_lookup_text(message)
-        routes = (self._route_config().get("routes") or {})
-        for route_name in ("fast_greeting", "calendar", "weather"):
-            for keyword in list((routes.get(route_name) or {}).get("keywords") or []):
-                k = self._normalize_lookup_text(keyword)
-                if k and (normalized == k or f" {k} " in f" {normalized} "):
-                    return route_name
+        route_config = self._route_config()
+        routes = route_config.get("routes") if isinstance(route_config, dict) else {}
+        routes = routes if isinstance(routes, dict) else {}
 
-        if re.search(r"\b(latest|news|current|search|internet)\b", normalized):
+        if self._matches_route_keyword(normalized, routes, "fast_greeting"):
+            return "fast_greeting"
+        if self._matches_route_keyword(normalized, routes, "weather"):
+            return "weather"
+
+        if re.search(r"\b(latest|news|current|live|score|election|internet|browse)\b", normalized):
+            return "web_search"
+        if "search online" in normalized:
+            return "web_search"
+        if self._matches_route_keyword(normalized, routes, "calendar"):
+            return "calendar"
+        if self._matches_route_keyword(normalized, routes, "web_search"):
             return "web_search"
         return None
 

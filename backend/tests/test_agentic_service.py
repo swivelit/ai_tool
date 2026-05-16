@@ -79,3 +79,16 @@ def test_orchestrate_chat_accepts_onboarding_profile_without_crashing(
     assert captured_tool_meta["onboarding_profile"] == onboarding_profile
     assert core_meta["tool_meta"]["onboarding_profile"] == onboarding_profile
     assert result["route_taken"] == "agentic_clarify"
+
+
+def test_quick_route_supports_mobile_orchestrator_config_shape(agentic_service: AgenticService) -> None:
+    mobile_config_path = (
+        Path(__file__).resolve().parents[2] / "mobile" / "data" / "config" / "orchestrator_routes.json"
+    )
+    temp_config_path = Path(agentic_service_module.AGENT_ORCHESTRATOR_CONFIG_PATH)
+    temp_config_path.write_text(mobile_config_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    assert agentic_service._quick_route("What is the weather tomorrow?") == "weather"
+    assert agentic_service._quick_route("Create a reminder for tomorrow morning") == "calendar"
+    assert agentic_service._quick_route("What is the latest IPL score today?") == "web_search"
+    assert agentic_service._quick_route("Hi elli") == "fast_greeting"

@@ -70,6 +70,14 @@ describe("smoke-chat-10 script", () => {
     const row = formatRow("Q", 401, { detail: "Not authenticated" });
     expect(row.pass).toBe(false);
     expect(row.line).toContain("Not authenticated");
+
+    const serverRow = formatRow("Q", 503, {
+      assistant: { text: "" },
+      detail:
+        "OpenAI provider/configuration error. Check OPENAI_API_KEY and OPENAI_MODEL settings.",
+    });
+    expect(serverRow.pass).toBe(false);
+    expect(serverRow.line).toContain("OpenAI provider/configuration error");
   });
 
   it("sends the resolved bearer token to /api/chat", async () => {

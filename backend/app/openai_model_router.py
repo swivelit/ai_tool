@@ -15,9 +15,21 @@ from sqlmodel import Session, select
 from .models import OpenAIUsageLog
 from .time_utils import utc_now
 
+try:
+    from config import OPENAI_MODEL as CONFIG_OPENAI_MODEL_DEFAULT
+except Exception:  # pragma: no cover
+    CONFIG_OPENAI_MODEL_DEFAULT = ""
+
 logger = logging.getLogger(__name__)
 _USAGE_SCHEMA_COMPAT_LOCK = threading.Lock()
 _USAGE_SCHEMA_COMPAT_READY = False
+OPENAI_SAFE_DEFAULT_MODEL = "gpt-4o-mini"
+
+
+class OpenAIConfigurationError(RuntimeError):
+    """Raised before provider calls when OpenAI runtime config is invalid."""
+
+    status_code = 503
 
 
 @dataclass(frozen=True)
@@ -33,6 +45,14 @@ class ModelSelection:
 
 def _env_str(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
+
+
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        normalized = str(value or "").strip()
+        if normalized:
+            return normalized
+    return ""
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -104,12 +124,12 @@ class OpenAIModelRouter:
     high_tier = "high"
 
     def __init__(self) -> None:
-        legacy_default = _env_str("OPENAI_MODEL", _env_str("OPENAI_JSON_MODEL", ""))
+        self._explicit_high_model = _env_str("OPENAI_MODEL_HIGH")
         self.models = {
-            self.cheap_tier: _env_str("OPENAI_MODEL_CHEAP", _env_str("OPENAI_JSON_MODEL", legacy_default)),
-            self.standard_tier: _env_str("OPENAI_MODEL_STANDARD", legacy_default),
-            self.reasoning_tier: _env_str("OPENAI_MODEL_REASONING", legacy_default),
-            self.high_tier: _env_str("OPENAI_MODEL_HIGH", ""),
+            self.cheap_tier: self._resolve_model("OPENAI_MODEL_CHEAP"),
+            self.standard_tier: self._resolve_model("OPENAI_MODEL_STANDARD"),
+            self.reasoning_tier: self._resolve_model("OPENAI_MODEL_REASONING"),
+            self.high_tier: self._resolve_model("OPENAI_MODEL_HIGH"),
         }
         self.disable_highest = _env_bool("OPENAI_DISABLE_HIGHEST_MODEL", True)
         self.daily_budget_usd = _env_float("OPENAI_DAILY_BUDGET_USD", 0.0)
@@ -120,6 +140,21 @@ class OpenAIModelRouter:
             for item in _env_str("OPENAI_HIGH_MODEL_ALLOWLIST", "").split(",")
             if item.strip()
         }
+
+    @staticmethod
+    def _resolve_model(tier_env_name: str) -> str:
+        model = _first_non_empty(
+            _env_str(tier_env_name),
+            _env_str("OPENAI_JSON_MODEL"),
+            _env_str("OPENAI_MODEL"),
+            CONFIG_OPENAI_MODEL_DEFAULT,
+            OPENAI_SAFE_DEFAULT_MODEL,
+        )
+        if not model:
+            raise OpenAIConfigurationError(
+                "OpenAI model is not configured. Set OPENAI_MODEL or OPENAI_JSON_MODEL."
+            )
+        return model
 
     @staticmethod
     def estimate_tokens(text: Any) -> int:
@@ -179,7 +214,7 @@ class OpenAIModelRouter:
     def _highest_allowed(self, task: str, route: Optional[str]) -> bool:
         if self.disable_highest:
             return False
-        if not self.models.get(self.high_tier):
+        if not self._explicit_high_model:
             return False
         if not self._daily_budget_available():
             return False
@@ -216,7 +251,11 @@ class OpenAIModelRouter:
 
         model = self.models.get(tier) or self.models.get(self.standard_tier) or self.models.get(self.cheap_tier)
         if not model:
-            model = _env_str("OPENAI_MODEL", _env_str("OPENAI_JSON_MODEL", ""))
+            model = self._resolve_model("OPENAI_MODEL_STANDARD")
+        if not model:
+            raise OpenAIConfigurationError(
+                "OpenAI model is not configured. Set OPENAI_MODEL or OPENAI_JSON_MODEL."
+            )
 
         input_tokens = self.estimate_tokens(message)
         output_tokens = min(self.max_output_default, self.max_output_hard)
