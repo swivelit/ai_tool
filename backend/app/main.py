@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, Session, delete, select
@@ -2857,14 +2858,43 @@ async def _transcribe_and_analyze_upload(
     if user_id is not None:
         assert_owner(int(user_id), user)
 
+    allowed_types = [
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/webm",
+    "audio/mp4",
+    "audio/x-m4a",
+    "audio/m4a",
+]
+
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported audio format"
+        )
+
     suffix = os.path.splitext(file.filename or "")[-1] or ".m4a"
+
+    audio_bytes = await read_limited_upload(file)
+
+    if not audio_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="Empty audio file"
+        )
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await read_limited_upload(file))
+        tmp.write(audio_bytes)
         tmp_path = tmp.name
 
     try:
-        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
-
+        
+        transcript_text = _transcribe_audio_file(
+            tmp_path,
+            speech_language,
+        )
         pipeline_result = _run_agentic_or_pipeline(
             session,
             int(user.id),
@@ -2935,8 +2965,16 @@ async def transcribe_wake_phrase(
     auth_user: AuthUser = Depends(get_current_user),
 ):
     suffix = os.path.splitext(file.filename or "")[-1] or ".wav"
+    audio_bytes = await read_limited_upload(file)
+
+    if not audio_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="Empty audio file"
+        )
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await read_limited_upload(file))
+        tmp.write(audio_bytes)
         tmp_path = tmp.name
 
     try:
