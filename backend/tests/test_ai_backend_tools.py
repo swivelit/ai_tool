@@ -1,7 +1,7 @@
 from sqlmodel import select
 
 from app.ai.orchestrator import run_text_turn
-from app.ai.types import AIRequest
+from app.ai.types import AIProviderResponse, AIRequest
 from app.database import SessionLocal
 from app.models import DailyRoutine, Item, UserProfile
 from conftest import auth_headers, create_test_user
@@ -62,6 +62,80 @@ def test_ambiguous_reminder_asks_clarification_without_saved_claim(client, monke
     assert payload["item"]["intent"] == "assistant"
     assert "What should I remind you about" in payload["assistant"]["text"]
     assert "saved" not in payload["assistant"]["text"].lower()
+
+
+def test_reminder_clarification_followup_creates_reminder_without_provider_call(client, monkeypatch):
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    first = client.post(
+        "/api/chat",
+        headers=headers,
+        json={"message": "Remind me tomorrow morning", "reply_language": "en"},
+    )
+    assert first.status_code == 200
+    assert "What should I remind you about" in first.json()["assistant"]["text"]
+
+    second = client.post(
+        "/api/chat",
+        headers=headers,
+        json={"message": "Call Amma", "reply_language": "en"},
+    )
+
+    assert second.status_code == 200
+    payload = second.json()
+    assert payload["item"]["intent"] == "reminder"
+    assert payload["item"]["category"] == "Reminder"
+    assert payload["item"]["title"] == "Call Amma"
+    assert payload["item"]["datetime"]
+    assert "tomorrow morning" in payload["assistant"]["text"]
+
+    with SessionLocal() as session:
+        reminders = session.exec(select(Item).where(Item.user_id == user.id, Item.intent == "reminder")).all()
+    assert len(reminders) == 1
+    assert reminders[0].title == "Call Amma"
+
+
+def test_unrelated_followup_after_pending_reminder_answers_normally(client, monkeypatch):
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    client.post(
+        "/api/chat",
+        headers=headers,
+        json={"message": "Remind me tomorrow morning", "reply_language": "en"},
+    )
+
+    class _StaticProvider:
+        def complete(self, request, route):
+            return AIProviderResponse(
+                text="A compiler translates source code.",
+                provider="openai",
+                model=route.model,
+                route=route.route,
+                reason=route.reason,
+                language=route.language,
+                intent=route.intent,
+            )
+
+    monkeypatch.setattr("app.ai.orchestrator.OpenAIProvider", lambda: _StaticProvider())
+
+    response = client.post(
+        "/api/chat",
+        headers=headers,
+        json={"message": "What is a compiler?", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["item"]["intent"] != "reminder"
+    assert payload["assistant"]["text"].startswith("A compiler")
+
+    with SessionLocal() as session:
+        reminders = session.exec(select(Item).where(Item.intent == "reminder")).all()
+    assert reminders == []
 
 
 def test_profile_and_routine_tools_read_saved_data_without_provider_calls():

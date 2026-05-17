@@ -65,6 +65,9 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET",
   "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
   "EXPO_PUBLIC_FIREBASE_APP_ID",
+  "GOOGLE_SERVICES_JSON_BASE64",
+  "GOOGLE_SERVICES_JSON",
+  "FIREBASE_GOOGLE_SERVICES_JSON",
   "EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID",
 ];
 
@@ -137,6 +140,9 @@ const validReleaseFirebaseEnv = {
   EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET: "firebase-project.appspot.com",
   EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "1234567890",
   EXPO_PUBLIC_FIREBASE_APP_ID: "1:1234567890:android:abcdef",
+  GOOGLE_SERVICES_JSON_BASE64: Buffer.from(
+    JSON.stringify({ project_info: { project_id: "firebase-project" }, client: [] }),
+  ).toString("base64"),
 };
 
 function read(relativePath: string) {
@@ -458,12 +464,66 @@ export const runtime = {
 
   it("validates Expo config before Android prebuild so local release metadata failures stop early", () => {
     const buildApk = readRepo("build-apk.sh");
+    const ensureIndex = buildApk.indexOf("node scripts/ensure-google-services-json.js --mode");
     const configIndex = buildApk.indexOf("npx expo config --type public");
     const prebuildIndex = buildApk.indexOf("npx expo prebuild --platform android --clean");
 
+    expect(ensureIndex).toBeGreaterThanOrEqual(0);
     expect(configIndex).toBeGreaterThanOrEqual(0);
     expect(prebuildIndex).toBeGreaterThanOrEqual(0);
+    expect(ensureIndex).toBeLessThan(configIndex);
     expect(configIndex).toBeLessThan(prebuildIndex);
+  });
+
+  it("omits android.googleServicesFile in debug mock mode when the JSON file is missing", async () => {
+    const googleServicesPath = path.join(mobileRoot, "google-services.json");
+    const backup = fs.existsSync(googleServicesPath)
+      ? fs.readFileSync(googleServicesPath, "utf8")
+      : null;
+    if (backup !== null) fs.rmSync(googleServicesPath, { force: true });
+    try {
+      const appConfig = await importAppConfigWithEnv({
+        BUILD_TYPE: "debug",
+        EXPO_PUBLIC_E2E_MOCK_AUTH: "1",
+      });
+
+      expect(appConfig.expo.android.googleServicesFile).toBeUndefined();
+    } finally {
+      if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
+    }
+  });
+
+  it("ensure-google-services-json decodes base64 without printing JSON content", () => {
+    const googleServicesPath = path.join(mobileRoot, "google-services.json");
+    const backup = fs.existsSync(googleServicesPath)
+      ? fs.readFileSync(googleServicesPath, "utf8")
+      : null;
+    fs.rmSync(googleServicesPath, { force: true });
+    const secretProjectId = "secret-project-id-not-printed";
+    try {
+      const result = spawnSync(
+        process.execPath,
+        ["scripts/ensure-google-services-json.js", "--mode", "release"],
+        {
+          cwd: mobileRoot,
+          env: {
+            ...process.env,
+            GOOGLE_SERVICES_JSON_BASE64: Buffer.from(
+              JSON.stringify({ project_info: { project_id: secretProjectId }, client: [] }),
+            ).toString("base64"),
+          },
+          encoding: "utf8",
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(fs.existsSync(googleServicesPath)).toBe(true);
+      expect(result.stdout + result.stderr).toContain("GOOGLE_SERVICES_JSON_BASE64");
+      expect(result.stdout + result.stderr).not.toContain(secretProjectId);
+    } finally {
+      fs.rmSync(googleServicesPath, { force: true });
+      if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
+    }
   });
 
   it("keys model delivery validation to production/release native_on_device download_on_first_launch builds", () => {
@@ -717,6 +777,34 @@ export const runtime = {
       "Only variable names are shown here; values are intentionally omitted.",
     );
     expect(result.stdout + result.stderr).not.toContain(secretLikeValue);
+  });
+
+  it("release verifier rejects missing google-services source clearly", () => {
+    const {
+      GOOGLE_SERVICES_JSON_BASE64: _missingGoogleServices,
+      ...firebaseWithoutGoogleServices
+    } = validReleaseFirebaseEnv;
+    const googleServicesPath = path.join(mobileRoot, "google-services.json");
+    const backup = fs.existsSync(googleServicesPath)
+      ? fs.readFileSync(googleServicesPath, "utf8")
+      : null;
+    if (backup !== null) fs.rmSync(googleServicesPath, { force: true });
+    try {
+      const result = runReleaseVerifierWithMockLlama({
+        BUILD_TYPE: "release",
+        EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+        EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+        EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE: "false",
+        ...validReleaseModelMetadata,
+        ...firebaseWithoutGoogleServices,
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout + result.stderr).toContain("GOOGLE_SERVICES_JSON_BASE64");
+      expect(result.stdout + result.stderr).toContain("Do not commit mobile/google-services.json");
+    } finally {
+      if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
+    }
   });
 
   it("release verification does not require native_on_device for optional local fallback", () => {

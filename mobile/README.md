@@ -31,6 +31,34 @@ Default release/public builds keep `EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false`,
 llama.cpp, GGUF CDN URLs, byte sizes, or SHA hashes must not block a backend-first
 release unless local fallback is explicitly enabled.
 
+## Firebase Android config
+
+Expo Android prebuild only points to `mobile/google-services.json` when the file
+exists. The file is gitignored and must not be committed.
+
+Local debug options:
+
+```bash
+# Real Firebase Auth in debug:
+GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json> ./launch-debug_apk.sh
+# or place mobile/google-services.json locally.
+
+# Debug-lite/mock auth without native Firebase config:
+EXPO_PUBLIC_E2E_MOCK_AUTH=1 ./launch-debug_apk.sh
+# JAI_DEBUG_LITE=1 also allows the missing file for emulator smoke work.
+```
+
+Release/EAS builds must provide a real Firebase Android config source:
+
+```bash
+GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json>
+# or GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON
+```
+
+`mobile/scripts/ensure-google-services-json.js` decodes those values before
+prebuild/build and never prints the JSON content. Release verification also
+requires the backend API base and Firebase public `EXPO_PUBLIC_FIREBASE_*` values.
+
 ## Backend chat smoke test
 
 `npm run smoke:chat` runs the seeded 10-question chat smoke test. With no `SMOKE_CHAT_BASE_URL`, it defaults to mock mode and does not require auth:
@@ -204,6 +232,7 @@ EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false
 EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false
 EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false
 EXPO_PUBLIC_API_BASE=https://<your-render-service>
+GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json>
 EXPO_PUBLIC_FIREBASE_API_KEY=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_PROJECT_ID=<firebase-public-value>

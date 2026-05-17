@@ -12,6 +12,7 @@ class AIRequest:
     channel: Literal["text", "voice", "tool", "background"]
     request_id: Optional[str]
     metadata: dict
+    context_turns: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

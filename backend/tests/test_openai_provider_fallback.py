@@ -104,6 +104,8 @@ def test_gpt5_nano_400_falls_back_to_gpt41_nano():
     assert response.model == "gpt-4.1-nano"
     assert response.raw["fallback_attempted"] is True
     assert response.raw["openai_attempted_models"] == ["gpt-5-nano", "gpt-4.1-nano"]
+    assert response.raw["primary_model_candidate"] == "gpt-5-nano"
+    assert response.raw["selected_model_reason"] == "primary_model_endpoint_error"
 
 
 def test_gpt5_mini_400_falls_back_to_gpt41_mini():
@@ -137,6 +139,8 @@ def test_all_openai_candidates_fail_with_sanitized_metadata(caplog):
     metadata = excinfo.value.metadata
     assert metadata["model_candidates"] == ["gpt-5-nano", "gpt-4.1-nano"]
     assert metadata["provider_error_type"] == "_OpenAI400"
+    assert metadata["primary_model_candidate"] == "gpt-5-nano"
+    assert metadata["selected_model_reason"] == "primary_model_endpoint_error"
     assert "sk-test-secret" not in str(metadata)
     assert "sk-test-secret" not in caplog.text
 
@@ -153,12 +157,16 @@ def test_model_health_skips_recently_failed_model():
 
     assert first.model == "gpt-4.1-nano"
     assert second.model == "gpt-4.1-nano"
+    assert second.raw["model_health_skip_reason"] == "primary_model_health_cache"
+    assert second.raw["selected_model_reason"] == "primary_model_health_cache"
     assert is_model_temporarily_unavailable("openai", "gpt-5-nano", "responses") is True
     assert len(client.responses.calls) == 1
     assert len(client.completions.calls) == 2
 
 
-def test_normal_english_turn_does_not_return_unavailable_when_openai_fallback_succeeds():
+def test_normal_english_turn_does_not_return_unavailable_when_openai_fallback_succeeds(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP_PRIMARY", "gpt-5-nano")
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP_FALLBACKS", "gpt-4.1-nano,gpt-4o-mini")
     client = _Client(
         responses_outcomes=[_OpenAI400("gpt5 bad request")],
         chat_outcomes=[_ChatResponse("compiler fallback answer")],
@@ -173,4 +181,20 @@ def test_normal_english_turn_does_not_return_unavailable_when_openai_fallback_su
 
     assert response.provider == "openai"
     assert response.model == "gpt-4.1-nano"
+    assert response.raw["selected_model_reason"] == "primary_model_endpoint_error"
     assert "temporarily unavailable" not in response.text.lower()
+
+
+def test_user_facing_openai_answer_does_not_expose_model_fallback_details():
+    client = _Client(
+        responses_outcomes=[_OpenAI400("gpt5 bad request")],
+        chat_outcomes=[_ChatResponse("A compiler translates source code.")],
+    )
+
+    response = OpenAIProvider(client).complete(
+        _request(),
+        _route(["gpt-5-nano", "gpt-4.1-nano"], ["responses", "chat_completions"]),
+    )
+
+    assert "gpt-5" not in response.text
+    assert "model" not in response.text.lower()

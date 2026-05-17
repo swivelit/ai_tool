@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 
 from ..openai_model_router import OpenAIModelRouter
-from .intent import classify_intent
+from .intent import IntentDecision, classify_intent
 from .language import detect_language
+from .prompts import concise_max_output_tokens
 from .providers.sarvam_provider import chat_model_for_intent
 from .types import AIRequest, AIRoute
 
@@ -12,8 +13,17 @@ from .types import AIRequest, AIRoute
 class AIProviderRouter:
     def select_route(self, request: AIRequest) -> AIRoute:
         language = detect_language(request.message, request.reply_language)
-        intent = classify_intent(request.message)
-        max_output_tokens = _max_output_tokens()
+        forced_contextual = str(request.metadata.get("contextual_intent") or "").strip()
+        intent = (
+            IntentDecision(
+                intent=forced_contextual,
+                route=forced_contextual,
+                reason=f"{forced_contextual}_uses_recent_context",
+            )
+            if forced_contextual.startswith("contextual_")
+            else classify_intent(request.message)
+        )
+        max_output_tokens = _max_output_tokens(request.message)
 
         if intent.intent == "unsafe_or_sensitive":
             return AIRoute(
@@ -49,7 +59,7 @@ class AIProviderRouter:
                 max_output_tokens=0,
             )
 
-        if language.prefer_provider == "sarvam" or intent.intent in {"translation", "tts", "stt"}:
+        if language.prefer_provider == "sarvam" or intent.intent in {"translation", "tts", "stt", "contextual_translate", "contextual_explain"}:
             model = chat_model_for_intent(intent.intent)
             return AIRoute(
                 provider="sarvam",
@@ -64,13 +74,15 @@ class AIProviderRouter:
 
         openai_task = "coding" if intent.intent in {"coding", "complex_reasoning"} else "normal_qa"
         user_tier = str(request.metadata.get("user_tier") or request.metadata.get("tier") or "free")
-        selections = OpenAIModelRouter().select_candidates(
+        model_router = OpenAIModelRouter()
+        selections = model_router.select_candidates(
             openai_task,
             request.message,
             route=intent.route,
             user_tier=user_tier,
         )
-        selection = selections[0] if selections else OpenAIModelRouter().select_model(openai_task, request.message, route=intent.route)
+        selection = selections[0] if selections else model_router.select_model(openai_task, request.message, route=intent.route)
+        selection_meta = getattr(model_router, "last_selection_metadata", {}) or {}
         return AIRoute(
             provider="openai",
             model=selection.model,
@@ -78,11 +90,17 @@ class AIProviderRouter:
             reason=f"{intent.reason}:{selection.reason}",
             language=language.language,
             intent=intent.intent,
-            max_output_tokens=selection.max_output_tokens,
+            max_output_tokens=max_output_tokens,
             needs_voice_output=request.channel == "voice",
             model_candidates=[candidate.model for candidate in selections] or [selection.model],
             provider_endpoint_candidates=[candidate.endpoint for candidate in selections] or [selection.endpoint],
-            metadata={"model_tier": selection.tier},
+            metadata={
+                "model_tier": selection.tier,
+                "primary_model_candidate": selection_meta.get("primary_model_candidate") or selection.model,
+                "selected_model_reason": selection_meta.get("selected_model_reason") or "cost_optimizer_choice",
+                "skipped_models": selection_meta.get("skipped_models") or [],
+                "model_health_skip_reason": selection_meta.get("model_health_skip_reason") or "",
+            },
         )
 
 
@@ -93,7 +111,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def _max_output_tokens() -> int:
+def _max_output_tokens(message: str = "") -> int:
     try:
         default = int(str(os.getenv("OPENAI_MAX_OUTPUT_TOKENS_DEFAULT", "450")).strip())
     except Exception:
@@ -102,4 +120,4 @@ def _max_output_tokens() -> int:
         hard = int(str(os.getenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "900")).strip())
     except Exception:
         hard = 900
-    return max(1, min(default, hard))
+    return concise_max_output_tokens(message, configured_default=default, configured_hard=hard)

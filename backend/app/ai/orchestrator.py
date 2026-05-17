@@ -8,11 +8,12 @@ from fastapi import HTTPException
 from sqlmodel import Session
 
 from .budget import enforce_free_text_quota, enforce_provider_budget
+from .intent import classify_contextual_followup
 from .openai_catalog import get_model_spec
 from .providers.openai_provider import OpenAIProvider
 from .providers.sarvam_provider import SarvamProvider
 from .router import AIProviderRouter
-from .tools import handle_backend_tool
+from .tools import handle_backend_tool, try_handle_pending_reminder
 from .types import AIProviderResponse, AIRequest, AIRoute
 from .usage import record_ai_usage_event
 
@@ -31,6 +32,16 @@ def run_text_turn(
         admin_email=str(ai_request.metadata.get("admin_email") or ""),
     )
 
+    pending_reminder = try_handle_pending_reminder(session, ai_request)
+    if pending_reminder is not None:
+        return _record(session, pending_reminder, ai_request, started)
+
+    contextual = _prepare_contextual_followup(ai_request)
+    if contextual[0] is not None:
+        ai_request = contextual[0]
+        if contextual[1] is not None:
+            return _record(session, contextual[1], ai_request, started)
+
     route = context.get("router", AIProviderRouter()).select_route(ai_request)
     if route.provider == "blocked":
         response = _blocked_response(ai_request, route)
@@ -40,13 +51,14 @@ def run_text_turn(
         response = handle_backend_tool(session, ai_request, route)
         return _record(session, response, ai_request, started)
 
-    cached = _try_global_cache(session, ai_request, context)
-    if cached is not None:
-        return _record(session, cached, ai_request, started, cache_hit=True, metadata={"embedding_calls": context.get("embedding_calls", 0)})
+    if not route.intent.startswith("contextual_"):
+        cached = _try_global_cache(session, ai_request, context)
+        if cached is not None:
+            return _record(session, cached, ai_request, started, cache_hit=True, metadata={"embedding_calls": context.get("embedding_calls", 0)})
 
-    local = _try_local_rag(session, ai_request, route, context)
-    if local is not None:
-        return _record(session, local, ai_request, started, cache_hit=True, metadata={"embedding_calls": context.get("embedding_calls", 0)})
+        local = _try_local_rag(session, ai_request, route, context)
+        if local is not None:
+            return _record(session, local, ai_request, started, cache_hit=True, metadata={"embedding_calls": context.get("embedding_calls", 0)})
 
     response, metadata = _complete_with_controlled_fallback(session, ai_request, route, context)
     metadata.setdefault("embedding_calls", context.get("embedding_calls", 0))
@@ -101,6 +113,7 @@ def _complete_with_controlled_fallback(
         channel=request.channel,
         request_id=request.request_id,
         metadata={**request.metadata, "session": session},
+        context_turns=request.context_turns,
     )
     try:
         return _call_provider(session, request_for_provider, route, context), {}
@@ -194,6 +207,8 @@ def _provider_unavailable_response(
     text = "The selected AI provider is temporarily unavailable. Please try again shortly."
     if route.provider == "openai" and route.intent in {"coding", "complex_reasoning"}:
         text = "The reasoning provider is temporarily unavailable. Please try again shortly."
+    if route.language in {"ta", "mixed"} or route.intent.startswith("contextual_"):
+        text = "மன்னிக்கவும், இப்போது பதில் உருவாக்க முடியவில்லை. சிறிது நேரம் கழித்து முயற்சிக்கவும்."
     return AIProviderResponse(
         text=text,
         provider="blocked",
@@ -234,10 +249,126 @@ def _exception_metadata(exc: Exception) -> dict[str, Any]:
         "provider_error_type",
         "fallback_attempted",
         "errors",
+        "primary_model_candidate",
+        "selected_model_reason",
+        "skipped_models",
+        "model_health_skip_reason",
     ):
         if key in metadata:
             safe[key] = metadata[key]
     return safe
+
+
+def _prepare_contextual_followup(request: AIRequest) -> tuple[Optional[AIRequest], Optional[AIProviderResponse]]:
+    decision = classify_contextual_followup(request.message)
+    if decision is None:
+        return None, None
+
+    context_turns = list(request.context_turns or [])
+    target = _last_context_target(context_turns)
+    language = _contextual_language(request.message, request.reply_language)
+    metadata = {
+        **dict(request.metadata or {}),
+        "context_turn_count": len(context_turns),
+        "contextual_followup": True,
+        "contextual_intent": decision.intent,
+    }
+    if not target:
+        text = (
+            "எதை தமிழில் எளிமையாக விளக்க வேண்டும்?"
+            if language in {"ta", "mixed"}
+            else "What should I explain or rewrite?"
+        )
+        response = AIProviderResponse(
+            text=text,
+            provider="backend_tool",
+            model=None,
+            route=f"{decision.route}_clarify",
+            reason="contextual_followup_missing_context",
+            language=language,
+            intent=decision.intent,
+            characters=len(text),
+            raw={"tool_action": "clarify_context", "item_metadata": _assistant_item_metadata(request.message, text)},
+        )
+        clarified = AIRequest(
+            user_id=request.user_id,
+            message=request.message,
+            reply_language=language,
+            channel=request.channel,
+            request_id=request.request_id,
+            metadata=metadata,
+            context_turns=context_turns,
+        )
+        return clarified, response
+
+    expanded = _expanded_contextual_prompt(request.message, decision.intent, target, language)
+    return (
+        AIRequest(
+            user_id=request.user_id,
+            message=expanded,
+            reply_language=language,
+            channel=request.channel,
+            request_id=request.request_id,
+            metadata=metadata,
+            context_turns=context_turns,
+        ),
+        None,
+    )
+
+
+def _last_context_target(context_turns: list[dict[str, str]]) -> dict[str, str]:
+    for turn in reversed(context_turns or []):
+        user = str(turn.get("user") or turn.get("user_input") or "").strip()
+        assistant = str(turn.get("assistant") or turn.get("assistant_text") or "").strip()
+        if not user and not assistant:
+            continue
+        if _is_clarification_text(assistant):
+            continue
+        return {"user": user, "assistant": assistant}
+    return {}
+
+
+def _expanded_contextual_prompt(message: str, intent: str, target: dict[str, str], language: str) -> str:
+    previous_user = target.get("user", "")
+    previous_assistant = target.get("assistant", "")
+    operation = {
+        "contextual_translate": "translate or restate the previous topic",
+        "contextual_rewrite": "rewrite or shorten the previous answer",
+        "contextual_explain": "explain the previous topic simply",
+    }.get(intent, "answer the contextual follow-up")
+    language_label = "Tamil" if language in {"ta", "mixed", "tanglish"} else "English"
+    return (
+        f"Current follow-up: {message}\n"
+        f"Requested operation: {operation}.\n"
+        f"Previous user question/topic: {previous_user}\n"
+        f"Previous assistant answer: {previous_assistant}\n"
+        f"Answer the previous topic in {language_label}. Keep it concise and do not ask a clarification."
+    )
+
+
+def _contextual_language(message: str, reply_language: Optional[str]) -> str:
+    text = str(message or "").lower()
+    if reply_language and str(reply_language).lower() in {"ta", "tamil", "mixed", "tanglish"}:
+        return "ta"
+    if re.search(r"\b(tamil|tanglish|tamil la|in tamil|sollu|sollunga|pannunga|simple ah|short ah)\b", text) or re.search(r"[\u0b80-\u0bff]", str(message or "")):
+        return "ta"
+    return str(reply_language or "en").strip().lower() or "en"
+
+
+def _assistant_item_metadata(message: str, text: str) -> dict[str, Any]:
+    clean = " ".join(str(message or "").strip().split())
+    return {
+        "intent": "assistant",
+        "category": "Other",
+        "datetime": None,
+        "title": (clean[:60] + "...") if len(clean) > 60 else clean or "Assistant",
+        "details": text,
+    }
+
+
+def _is_clarification_text(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return "what should i remind you about" in lowered or "what should i explain" in lowered or "எதை" in str(text or "")
 
 
 def _is_budget_or_quota_exception(exc: Exception) -> bool:

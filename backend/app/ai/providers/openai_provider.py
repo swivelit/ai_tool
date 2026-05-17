@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from ...openai_model_router import OpenAIModelRouter
 from ...openai_tracked import get_tracked_chat_completion_metadata, tracked_openai_generation
+from ..prompts import build_provider_messages, build_system_instructions
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import AIProvider
 
@@ -39,11 +40,8 @@ class OpenAIProvider(AIProvider):
             if index < len(route.provider_endpoint_candidates):
                 candidate["endpoint"] = route.provider_endpoint_candidates[index]
             candidates.append(candidate)
-        instructions = (
-            "You are a concise backend-controlled assistant. Answer directly. "
-            "Do not claim access to live/current data unless it was provided. "
-            f"If the requested reply language is {request.reply_language or route.language}, answer in that language."
-        )
+        instructions = build_system_instructions(request, route, provider="openai")
+        messages = build_provider_messages(request, route, provider="openai")
         response = tracked_openai_generation(
             self._client_or_create(),
             task=task,
@@ -54,10 +52,7 @@ class OpenAIProvider(AIProvider):
             candidates=candidates,
             input_text=request.message,
             instructions=instructions,
-            messages=[
-                {"role": "system", "content": instructions},
-                {"role": "user", "content": request.message},
-            ],
+            messages=messages,
             temperature=0.2,
             max_output_tokens=route.max_output_tokens,
         )
@@ -73,6 +68,17 @@ class OpenAIProvider(AIProvider):
             "openai_attempted_models": metadata.get("attempted_models") or [],
             "fallback_attempted": bool(metadata.get("fallback_attempted")),
             "candidate_index": metadata.get("candidate_index"),
+            "primary_model_candidate": metadata.get("primary_model_candidate")
+            or route.metadata.get("primary_model_candidate")
+            or (route.model_candidates[0] if route.model_candidates else route.model),
+            "selected_model_reason": metadata.get("selected_model_reason")
+            or route.metadata.get("selected_model_reason")
+            or metadata.get("reason")
+            or route.reason,
+            "skipped_models": metadata.get("skipped_models") or route.metadata.get("skipped_models") or [],
+            "model_health_skip_reason": metadata.get("model_health_skip_reason")
+            or route.metadata.get("model_health_skip_reason")
+            or "",
         }
         return AIProviderResponse(
             text=text or "I could not produce an answer. Please try again.",

@@ -91,6 +91,8 @@ def test_chat_contract_uses_ai_router_when_enabled(client, monkeypatch):
 
     def fake_run_text_turn(session, ai_request, *, existing_context=None):
         assert ai_request.message == "What is a compiler?"
+        assert ai_request.context_turns == []
+        assert ai_request.metadata["context_turn_count"] == 0
         return AIProviderResponse(
             text="A compiler translates source code into another form.",
             provider="openai",
@@ -107,6 +109,10 @@ def test_chat_contract_uses_ai_router_when_enabled(client, monkeypatch):
                 "openai_attempted_models": ["gpt-5-nano"],
                 "fallback_attempted": False,
                 "embedding_calls": 0,
+                "primary_model_candidate": "gpt-5-nano",
+                "selected_model_reason": "cost_optimizer_choice",
+                "skipped_models": [],
+                "model_health_skip_reason": "",
             },
         )
 
@@ -130,7 +136,59 @@ def test_chat_contract_uses_ai_router_when_enabled(client, monkeypatch):
     assert payload["meta"]["model_candidates"] == ["gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"]
     assert payload["meta"]["openai_attempted_models"] == ["gpt-5-nano"]
     assert payload["meta"]["embedding_calls"] == 0
+    assert payload["meta"]["context_turn_count"] == 0
+    assert payload["meta"]["primary_model_candidate"] == "gpt-5-nano"
+    assert payload["meta"]["selected_model_reason"] == "cost_optimizer_choice"
     assert payload["meta"]["ai_router_enabled"] is True
+
+
+def test_chat_contract_passes_recent_context_to_ai_router(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+
+    def first_turn(session, ai_request, *, existing_context=None):
+        return AIProviderResponse(
+            text="A compiler translates source code into another form.",
+            provider="openai",
+            model="gpt-5-nano",
+            route="openai_general",
+            reason="unit_test",
+            language="en",
+            intent="general",
+        )
+
+    monkeypatch.setattr(main_module, "run_text_turn", first_turn)
+    first = client.post(
+        "/api/chat",
+        headers=headers,
+        json={"message": "What is a compiler?", "reply_language": "en"},
+    )
+    assert first.status_code == 200
+
+    def second_turn(session, ai_request, *, existing_context=None):
+        assert ai_request.metadata["context_turn_count"] == 1
+        assert ai_request.context_turns[-1]["user"] == "What is a compiler?"
+        assert "compiler translates" in ai_request.context_turns[-1]["assistant"]
+        return AIProviderResponse(
+            text="கம்பைலர் code-ஐ மாற்றும்.",
+            provider="sarvam",
+            model="sarvam-30b",
+            route="sarvam_contextual_explain",
+            reason="unit_test",
+            language="ta",
+            intent="contextual_explain",
+        )
+
+    monkeypatch.setattr(main_module, "run_text_turn", second_turn)
+    second = client.post(
+        "/api/chat",
+        headers=headers,
+        json={"message": "Tamil la simple ah explain pannunga", "reply_language": "en"},
+    )
+
+    assert second.status_code == 200
+    assert second.json()["meta"]["context_turn_count"] == 1
 
 
 def test_voice_contract_uses_sarvam_stt_and_ai_router(client, monkeypatch):

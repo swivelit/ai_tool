@@ -2,19 +2,21 @@
 
 ## Architecture
 
-The primary runtime is now **phone-local agents** in the Expo app.
+The primary public runtime is now **backend-first** from the Expo app.
 
-- `mobile/lib/localAgents.ts` is the main agent runtime.
-- `mobile/lib/api.ts` keeps the existing `/api/chat` contract stable. Local chat is used only when a reachable local model base URL is configured; otherwise backend chat is used.
-- The Orchestrator Agent is now the local-first traffic cop.
-  It routes greeting/small-talk, clarification, profile, reminders/tasks, weather/live-tool requests, offline reasoning, and only then considers backend fallback.
-- The Alignment Agent now rewrites local or fallback drafts to the user's preferred tone/language while preserving facts.
-- The Memory & Cache Agent is now the final local-first intelligence layer.
-  It owns semantic cache lookup, durable memory consolidation, conservative profile updates, and memory chunk persistence on-device.
+- `mobile/lib/api.ts` sends normal chat and recorded voice through the authenticated backend by default.
+- The FastAPI backend is the AI control plane: intent routing, provider budget,
+  safety, contextual follow-ups, reminders, cache/memory/RAG, and usage logging.
+- Sarvam handles Indic/Tanglish/Tamil, STT, TTS, and translation paths.
+- OpenAI uses cheap/reasoning model ladders for English/general/coding answers,
+  with flagship models disabled for free users.
+- Phone-local agents and local model runtime remain optional fallback/development
+  paths only when explicitly enabled.
 - `mobile/data/` is the checked-in source of truth for agent configs, prompts, training seeds, and RAG seeds.
 - On first launch, the app bootstraps those checked-in seed files into `Expo FileSystem.documentDirectory/data`.
 - Live phone runtime data stays only in `documentDirectory/data` and is not stored in git.
-- The backend is now a **mirror / support / OpenAI fallback** path, not the primary architecture.
+- Architecture/coding answers are prompted with this app context so responses are
+  implementation-focused instead of generic backend boilerplate.
 
 ## Folder Map
 
@@ -65,6 +67,16 @@ ai_tool/
 2. `mobile/lib/localAgentBootstrap.ts` copies those files into `documentDirectory/data` on first launch, or when the checked-in seed version changes.
 3. `mobile/lib/localAgents.ts` reads runtime config from `documentDirectory/data`.
 4. Runtime folders such as profiles, cache, memory, conversations, tasks, `rag/runtime`, and `training/captures` are created on-device only.
+
+## Backend-First Release Notes
+
+- Contextual follow-ups such as `Tamil la simple ah explain pannunga` use the
+  previous chat topic. If there is no prior topic, the backend asks a clarification.
+- Reminder clarification continues across turns: `Remind me tomorrow morning`
+  followed by `Call Amma` creates the reminder without an AI provider call.
+- Local Android debug can run with either a real `mobile/google-services.json`
+  / `GOOGLE_SERVICES_JSON_BASE64` or debug mock auth. Release/EAS builds require
+  real Firebase public env plus a real google-services config source.
 
 ## Profiler Runtime Artifacts
 

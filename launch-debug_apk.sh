@@ -209,6 +209,16 @@ else
   info "Debug APK voice routing: backend Sarvam (default)"
 fi
 
+if [[ ! -f "$MOBILE_DIR/google-services.json" \
+  && -z "${GOOGLE_SERVICES_JSON_BASE64:-}" \
+  && -z "${GOOGLE_SERVICES_JSON:-}" \
+  && -z "${FIREBASE_GOOGLE_SERVICES_JSON:-}" ]]; then
+  if ! is_truthy "${EXPO_PUBLIC_E2E_MOCK_AUTH:-}" && ! is_truthy "${JAI_DEBUG_LITE:-}"; then
+    export EXPO_PUBLIC_E2E_MOCK_AUTH="1"
+    warn "mobile/google-services.json is missing; enabling EXPO_PUBLIC_E2E_MOCK_AUTH=1 for this local debug launch. Configure GOOGLE_SERVICES_JSON_BASE64 or mobile/google-services.json to test real Firebase auth."
+  fi
+fi
+
 if is_truthy "${RUN_APK_TESTS:-}"; then
   export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
   export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
@@ -216,6 +226,9 @@ if is_truthy "${RUN_APK_TESTS:-}"; then
   export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
   info "APK test mode: E2E mock auth/model setup enabled; unverified native inference disabled"
 fi
+
+info "Checking Firebase Android config for debug APK"
+node "$MOBILE_DIR/scripts/ensure-google-services-json.js" --mode debug
 
 print_debug_env
 stop_old_metro

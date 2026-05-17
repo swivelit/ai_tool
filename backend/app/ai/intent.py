@@ -11,6 +11,29 @@ class IntentDecision:
     reason: str
 
 
+_CONTEXTUAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "contextual_translate",
+        re.compile(r"(?:\btamil\s+la\s+sollu(?:nga)?\b|தமிழில்\s+சொல்ல)", re.I),
+    ),
+    (
+        "contextual_explain",
+        re.compile(
+            r"(?:\btamil\s+la\b|\bin\s+tamil\b|\bsimple\s+ah\b|\bmake\s+it\s+simple\b|"
+            r"\bexplain\s+in\s+tamil\b|தமிழில்|சிம்பிளா|விளக்க)",
+            re.I,
+        ),
+    ),
+    (
+        "contextual_rewrite",
+        re.compile(
+            r"(?:\bmake\s+it\s+(?:shorter|short|concise|brief)\b|\bshort\s+ah\s+sollu(?:nga)?\b|"
+            r"\bsummar(?:y|ize)\s+it\b|\bshorten\s+it\b)",
+            re.I,
+        ),
+    ),
+)
+
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("unsafe_or_sensitive", re.compile(r"\b(suicide|self[- ]?harm|kill myself|hurt myself|harm myself|emergency|cannot breathe|can't breathe|chest pain|overdose|bleeding|medical advice|diagnos(?:e|is)|prescription|dosage|legal advice|lawsuit|tax advice|investment advice|stock tip)\b", re.I)),
     ("reminder", re.compile(r"\b(remind|reminder|alarm|todo|to-do|task|appointment|calendar)\b", re.I)),
@@ -30,6 +53,9 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 def classify_intent(message: str) -> IntentDecision:
     text = str(message or "").strip()
+    contextual = classify_contextual_followup(text)
+    if contextual is not None:
+        return contextual
     for intent, pattern in _PATTERNS:
         if pattern.search(text):
             if intent in {"reminder", "routine", "profile", "settings"}:
@@ -40,3 +66,52 @@ def classify_intent(message: str) -> IntentDecision:
                 return IntentDecision(intent=intent, route="safety", reason="high_risk_safety_path")
             return IntentDecision(intent=intent, route=intent, reason=f"{intent}_keyword")
     return IntentDecision(intent="general", route="general", reason="default_general")
+
+
+def classify_contextual_followup(message: str) -> IntentDecision | None:
+    text = str(message or "").strip()
+    if not text:
+        return None
+    for intent, pattern in _CONTEXTUAL_PATTERNS:
+        if not pattern.search(text):
+            continue
+        if _has_explicit_subject(text):
+            continue
+        return IntentDecision(intent=intent, route=intent, reason=f"{intent}_needs_recent_context")
+    return None
+
+
+def _has_explicit_subject(text: str) -> bool:
+    probe = str(text or "").lower()
+    removals = (
+        r"\btamil\s+la\b",
+        r"\bin\s+tamil\b",
+        r"\bexplain\s+in\s+tamil\b",
+        r"\bexplain\b",
+        r"\btranslate\b",
+        r"\btranslation\b",
+        r"\bmake\b",
+        r"\bit\b",
+        r"\bthis\b",
+        r"\bthat\b",
+        r"\bsimple\b",
+        r"\bah\b",
+        r"\bshort(?:er)?\b",
+        r"\bconcise\b",
+        r"\bbrief\b",
+        r"\bsollu(?:nga)?\b",
+        r"\bpannu(?:nga)?\b",
+        r"\bplease\b",
+        r"தமிழில்",
+        r"சொல்லுங்கள்",
+        r"சொல்லு",
+        r"இதை",
+        r"சிம்பிளா",
+        r"விளக்க",
+        r"வேண்டும்",
+    )
+    for pattern in removals:
+        probe = re.sub(pattern, " ", probe, flags=re.I)
+    probe = re.sub(r"[^\w\u0b80-\u0bff]+", " ", probe, flags=re.I)
+    words = [word for word in probe.split() if word not in {"la", "ah", "nga"}]
+    return len(" ".join(words).strip()) >= 4

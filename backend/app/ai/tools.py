@@ -10,7 +10,44 @@ from sqlmodel import Session, select
 
 from ..models import DailyRoutine, User, UserProfile
 from ..time_utils import utc_now
+from .intent import classify_intent
 from .types import AIProviderResponse, AIRequest, AIRoute
+
+
+def try_handle_pending_reminder(session: Session, request: AIRequest) -> Optional[AIProviderResponse]:
+    pending = _pending_reminder_from_context(request)
+    if not pending:
+        return None
+    message = _clean(request.message)
+    if not message or _looks_unrelated_to_pending_reminder(message):
+        return None
+
+    user = _get_user(session, request.user_id)
+    when = _parse_simple_datetime(pending.get("request") or "", user, request.metadata)
+    title = _title_from_reminder(message)
+    when_phrase = _pending_when_phrase(pending.get("request") or "", when)
+    if when_phrase:
+        text = f"Done — I’ll remind you {when_phrase} to {title}."
+    else:
+        text = f"Done — I’ll remind you to {title}."
+    route = AIRoute(
+        provider="backend_tool",
+        model=None,
+        route="backend_tool_reminder_continuation",
+        reason="pending_reminder_clarification_completed",
+        language=request.reply_language or "en",
+        intent="reminder",
+        max_output_tokens=0,
+    )
+    metadata = {
+        "intent": "reminder",
+        "category": "Reminder",
+        "datetime": when,
+        "title": title,
+        "details": text,
+        "pending_reminder_completed": True,
+    }
+    return _tool_response(text, request, route, item_metadata=metadata, action="complete_pending_reminder")
 
 
 def handle_backend_tool(session: Session, request: AIRequest, route: AIRoute) -> AIProviderResponse:
@@ -30,7 +67,15 @@ def _handle_reminder(session: Session, request: AIRequest, route: AIRoute) -> AI
     reminder_text = _extract_reminder_text(message)
     if not reminder_text:
         text = "What should I remind you about?"
-        return _tool_response(text, request, route, item_metadata=_assistant_metadata(message, text), action="clarify")
+        user = _get_user(session, request.user_id)
+        when = _parse_simple_datetime(message, user, request.metadata)
+        metadata = _assistant_metadata(message, text)
+        metadata["pending_tool_action"] = {
+            "intent": "reminder",
+            "datetime": when,
+            "source_request": message,
+        }
+        return _tool_response(text, request, route, item_metadata=metadata, action="clarify")
 
     user = _get_user(session, request.user_id)
     when = _parse_simple_datetime(message, user, request.metadata)
@@ -203,6 +248,39 @@ def _mentions_time(message: str) -> bool:
             flags=re.I,
         )
     )
+
+
+def _pending_reminder_from_context(request: AIRequest) -> dict[str, str]:
+    turns = list(request.context_turns or [])
+    for turn in reversed(turns[-6:]):
+        user_text = _clean(turn.get("user") or turn.get("user_input") or "")
+        assistant_text = _clean(turn.get("assistant") or turn.get("assistant_text") or "")
+        if not user_text or not assistant_text:
+            continue
+        if "what should i remind you about" not in assistant_text.lower():
+            continue
+        if classify_intent(user_text).intent != "reminder":
+            continue
+        return {"request": user_text, "assistant": assistant_text}
+    return {}
+
+
+def _looks_unrelated_to_pending_reminder(message: str) -> bool:
+    lowered = message.lower().strip()
+    if re.search(r"\b(remind|reminder|alarm|todo|to-do|task)\b", lowered):
+        return True
+    if "?" in lowered or re.match(r"^(what|who|why|how|when|where|explain|design|debug|write|latest)\b", lowered):
+        return True
+    intent = classify_intent(message).intent
+    return intent not in {"general", "reminder"}
+
+
+def _pending_when_phrase(source_request: str, when: Optional[str]) -> str:
+    text = source_request.lower()
+    for phrase in ("tomorrow morning", "tomorrow evening", "today evening", "tonight", "tomorrow", "today"):
+        if phrase in text:
+            return phrase
+    return "at the saved time" if when else ""
 
 
 def _parse_simple_datetime(message: str, user: Optional[User], metadata: dict[str, Any]) -> Optional[str]:

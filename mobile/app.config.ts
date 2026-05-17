@@ -70,6 +70,12 @@ const FIREBASE_PUBLIC_ENV_NAMES = [
   "EXPO_PUBLIC_FIREBASE_APP_ID",
 ];
 
+const GOOGLE_SERVICES_ENV_NAMES = [
+  "GOOGLE_SERVICES_JSON_BASE64",
+  "GOOGLE_SERVICES_JSON",
+  "FIREBASE_GOOGLE_SERVICES_JSON",
+];
+
 function normalizeEnvFlag(value: unknown) {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -149,6 +155,27 @@ if (isProductionOrReleaseBuild && missingFirebaseEnvNames.length) {
   );
 }
 
+const MOBILE_ROOT = fs.existsSync(path.join(process.cwd(), "app.config.ts"))
+  ? process.cwd()
+  : fs.existsSync(path.join(process.cwd(), "mobile", "app.config.ts"))
+    ? path.join(process.cwd(), "mobile")
+    : process.cwd();
+
+const GOOGLE_SERVICES_JSON_PATH = path.join(MOBILE_ROOT, "google-services.json");
+const hasGoogleServicesJson = fs.existsSync(GOOGLE_SERVICES_JSON_PATH);
+const hasGoogleServicesEnvSource = GOOGLE_SERVICES_ENV_NAMES.some((name) =>
+  String(process.env[name] || "").trim(),
+);
+
+if (isProductionOrReleaseBuild && !hasGoogleServicesJson && !hasGoogleServicesEnvSource) {
+  throw new Error(
+    "Release/production Android builds require mobile/google-services.json or " +
+      "GOOGLE_SERVICES_JSON_BASE64 / GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON. " +
+      "Run node mobile/scripts/ensure-google-services-json.js --mode release before prebuild/build. " +
+      "Do not commit google-services.json.",
+  );
+}
+
 const LOCAL_MODEL_REQUIRE_SHA256 = isProductionNativeDownloadBuild
   ? "true"
   : process.env.EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256 ||
@@ -161,12 +188,6 @@ if (isProductionOrReleaseBuild && isLocalModelFallbackEnabled && normalizedRunti
       "local_adapter is development-only; use EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device for explicit local fallback releases.",
   );
 }
-
-const MOBILE_ROOT = fs.existsSync(path.join(process.cwd(), "app.config.ts"))
-  ? process.cwd()
-  : fs.existsSync(path.join(process.cwd(), "mobile", "app.config.ts"))
-    ? path.join(process.cwd(), "mobile")
-    : process.cwd();
 
 const DEFAULT_LLAMA_CPP_DIR = path.join(
   MOBILE_ROOT,
@@ -412,7 +433,7 @@ export default {
 
     android: {
       package: "com.harishajahan.tamilai",
-      googleServicesFile: "./google-services.json",
+      ...(hasGoogleServicesJson ? { googleServicesFile: "./google-services.json" } : {}),
       edgeToEdgeEnabled: true,
       softwareKeyboardLayoutMode: "resize",
       predictiveBackGestureEnabled: false,

@@ -1487,6 +1487,58 @@ def log_conversation(
         logger.exception("Failed to log conversation", extra={"user_id": user_id, "channel": channel})
 
 
+def _recent_ai_context_turns(session: Session, user_id: Optional[int], *, limit: int = 6) -> List[Dict[str, str]]:
+    if user_id is None:
+        return []
+    try:
+        rows = list(
+            session.exec(
+                select(Conversation)
+                .where(Conversation.user_id == int(user_id))
+                .order_by(Conversation.created_at.desc())
+                .limit(max(1, limit))
+            ).all()
+        )
+    except Exception:
+        session.rollback()
+        return []
+
+    turns: List[Dict[str, str]] = []
+    for row in reversed(rows):
+        user_text = " ".join(str(row.user_input or "").strip().split())
+        assistant_text = _assistant_text_from_conversation(row)
+        if not user_text and not assistant_text:
+            continue
+        turns.append(
+            {
+                "user": user_text[:500],
+                "assistant": assistant_text[:900],
+            }
+        )
+    return turns[-limit:]
+
+
+def _assistant_text_from_conversation(row: Conversation) -> str:
+    try:
+        payload = json.loads(row.llm_output_json or "{}")
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return ""
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        details = str(meta.get("details") or "").strip()
+        if details:
+            return " ".join(details.split())
+    pipeline = payload.get("pipeline")
+    if isinstance(pipeline, dict):
+        for key in ("theni_tamil_text", "tamil_text", "remodeled_english", "raw_english"):
+            value = str(pipeline.get(key) or "").strip()
+            if value:
+                return " ".join(value.split())
+    return ""
+
+
 def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, answer_json: dict):
     q = select(QACache).where(QACache.question == question)
     if user_id is not None:
@@ -2068,6 +2120,10 @@ def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "cost_currency": result.get("cost_currency"),
         "openai_usage_tracked": bool(result.get("openai_usage_tracked")),
         "fallback_reason": result.get("fallback_reason"),
+        "primary_model_candidate": result.get("primary_model_candidate"),
+        "selected_model_reason": result.get("selected_model_reason"),
+        "skipped_models": result.get("skipped_models"),
+        "model_health_skip_reason": result.get("model_health_skip_reason"),
         "client_fallback_reason": result.get("client_fallback_reason"),
         "client_local_budget_ms": result.get("client_local_budget_ms"),
         "client_original_route": result.get("client_original_route"),
@@ -3306,6 +3362,7 @@ def _metadata_for_ai_response(text: str, response: AIProviderResponse) -> Dict[s
 def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
     text = _resolve_chat_text(payload)
     request_id = payload.request_id or get_request_id()
+    context_turns = _recent_ai_context_turns(session, payload.user_id, limit=6)
     ai_response = run_text_turn(
         session,
         AIRequest(
@@ -3319,7 +3376,9 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
                 "client_fallback_reason": payload.client_fallback_reason,
                 "client_local_budget_ms": payload.client_local_budget_ms,
                 "client_original_route": payload.client_original_route,
+                "context_turn_count": len(context_turns),
             },
+            context_turns=context_turns,
         ),
         existing_context={
             "local_rag_service": LOCAL_RAG_SERVICE,
@@ -3352,12 +3411,17 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
             response_meta.setdefault("endpoint", ai_response.raw.get("endpoint") or "")
             response_meta.setdefault("openai_attempted_models", ai_response.raw.get("openai_attempted_models") or ai_response.raw.get("attempted_models") or [])
             response_meta.setdefault("fallback_attempted", bool(ai_response.raw.get("fallback_attempted")))
+            response_meta.setdefault("primary_model_candidate", ai_response.raw.get("primary_model_candidate") or "")
+            response_meta.setdefault("selected_model_reason", ai_response.raw.get("selected_model_reason") or "")
+            response_meta.setdefault("skipped_models", ai_response.raw.get("skipped_models") or [])
+            response_meta.setdefault("model_health_skip_reason", ai_response.raw.get("model_health_skip_reason") or "")
             if ai_response.raw.get("fallback_reason"):
                 response_meta.setdefault("fallback_reason", ai_response.raw.get("fallback_reason"))
             if ai_response.raw.get("provider_error_type"):
                 response_meta.setdefault("provider_error_type", ai_response.raw.get("provider_error_type"))
             response_meta.setdefault("embedding_calls", int(ai_response.raw.get("embedding_calls") or 0))
         response_meta.setdefault("ai_router_enabled", True)
+        response_meta.setdefault("context_turn_count", len(context_turns))
         response_meta.setdefault("cost_estimate", ai_response.estimated_cost_amount)
         response_meta.setdefault("cost_currency", ai_response.estimated_cost_currency)
         if payload.client_fallback_reason:
@@ -4459,6 +4523,7 @@ async def _transcribe_and_analyze_upload(
 
         use_ai_router = _ai_router_enabled()
         if use_ai_router:
+            context_turns = _recent_ai_context_turns(session, int(user.id), limit=6)
             ai_response = run_text_turn(
                 session,
                 AIRequest(
@@ -4472,7 +4537,9 @@ async def _transcribe_and_analyze_upload(
                         "file_size": len(upload_bytes),
                         "audio_seconds": estimated_audio_seconds,
                         "duration_estimation_method": duration_estimation_method,
+                        "context_turn_count": len(context_turns),
                     },
+                    context_turns=context_turns,
                 ),
                 existing_context={
                     "local_rag_service": LOCAL_RAG_SERVICE,

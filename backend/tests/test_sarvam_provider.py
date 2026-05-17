@@ -16,6 +16,11 @@ class _FakeCompletions:
         return {"choices": [{"message": {"content": "வணக்கம்"}}]}
 
 
+class _BlankCompletions:
+    def __call__(self, **_kwargs):
+        return {"choices": [{"message": {"content": "   "}}]}
+
+
 def test_sarvam_chat_uses_sdk_client_without_real_network(monkeypatch):
     monkeypatch.setenv("SARVAM_API_KEY", "test-key")
     completions = _FakeCompletions()
@@ -45,6 +50,21 @@ def test_sarvam_chat_missing_key_is_sanitized(monkeypatch):
 
     assert exc.value.status_code == 503
     assert "SARVAM_API_KEY" in exc.value.detail
+
+
+def test_sarvam_empty_chat_response_raises_for_orchestrator_fallback(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_BlankCompletions()))
+    provider = SarvamProvider(client=client)
+
+    with pytest.raises(HTTPException) as exc:
+        provider.complete(
+            AIRequest(1, "Tamil la sollu", "ta", "text", "sarvam-test", {}),
+            AIRoute("sarvam", "sarvam-30b", "sarvam_translation", "test", "ta", "translation", 100),
+        )
+
+    assert exc.value.status_code == 502
+    assert getattr(exc.value, "metadata")["provider_error_type"] == "empty_sarvam_response"
 
 
 def test_sarvam_tts_modern_payload_and_audio(monkeypatch):

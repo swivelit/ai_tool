@@ -130,6 +130,7 @@ class OpenAIModelRouter:
 
     def __init__(self) -> None:
         self._explicit_high_model = _env_str("OPENAI_MODEL_HIGH")
+        self.last_selection_metadata: dict[str, Any] = {}
         self.catalog = get_openai_model_catalog()
         self.models = {
             self.cheap_tier: self._resolve_model("OPENAI_MODEL_CHEAP"),
@@ -285,12 +286,21 @@ class OpenAIModelRouter:
         output_tokens = min(self.max_output_default, self.max_output_hard)
         selections: list[ModelSelection] = []
         seen: set[str] = set()
+        raw_names = [str(model or "").strip() for model in names if str(model or "").strip()]
+        skipped_models: list[dict[str, str]] = []
         for index, model in enumerate(names):
             model = str(model or "").strip()
             if not model or model in seen:
                 continue
             seen.add(model)
-            if not self._model_allowed(model, user_tier=user_tier, task=task_key, route=route_key):
+            skip_reason = self._model_skip_reason(model, user_tier=user_tier, task=task_key, route=route_key)
+            if skip_reason:
+                skipped_models.append(
+                    {
+                        "model": model,
+                        "reason": "primary_model_disabled" if index == 0 else skip_reason,
+                    }
+                )
                 continue
             spec = get_model_spec(model)
             tier = self._candidate_tier(model, index=index, ladder_kind=ladder_kind, message=message, spec_tier=spec.tier)
@@ -306,6 +316,16 @@ class OpenAIModelRouter:
                     estimated_cost_usd=self.estimate_cost(model, input_tokens, output_tokens),
                 )
             )
+        primary_model = raw_names[0] if raw_names else (selections[0].model if selections else "")
+        selected_reason = "cost_optimizer_choice"
+        if skipped_models and skipped_models[0].get("model") == primary_model:
+            selected_reason = skipped_models[0].get("reason") or "primary_model_disabled"
+        self.last_selection_metadata = {
+            "primary_model_candidate": primary_model,
+            "selected_model_reason": selected_reason,
+            "skipped_models": skipped_models,
+            "model_health_skip_reason": "",
+        }
         if selections:
             logger.info(
                 "openai_model_ladder_selected",
@@ -476,28 +496,31 @@ class OpenAIModelRouter:
         return spec_tier
 
     def _model_allowed(self, model: str, *, user_tier: Optional[str], task: str, route: str) -> bool:
+        return not self._model_skip_reason(model, user_tier=user_tier, task=task, route=route)
+
+    def _model_skip_reason(self, model: str, *, user_tier: Optional[str], task: str, route: str) -> str:
         normalized = str(model or "").strip()
         if not normalized:
-            return False
+            return "empty_model"
         if normalized in self.disabled_models:
-            return False
+            return "primary_model_disabled"
         lowered = normalized.lower()
         if re.search(r"^(gpt-5\.(?:5|4)|gpt-5-pro|gpt-5\.5-pro|o1-pro|o3-pro)", lowered):
-            return False
+            return "primary_model_disabled"
         if lowered in {"babbage-002", "davinci-002"}:
-            return False
+            return "legacy_model_disabled"
         if lowered in {"gpt-5", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"} and self.disable_highest:
-            return False
+            return "primary_model_disabled"
         if normalized == self._explicit_high_model and not self._highest_allowed(task, route):
-            return False
+            return "primary_model_disabled"
         spec = get_model_spec(normalized)
         if not spec.enabled_by_default and normalized != self._explicit_high_model:
-            return False
+            return "primary_model_disabled"
         tier = str(user_tier or "free").strip().lower()
         if tier not in {"admin", "internal"}:
             if spec.admin_only or not spec.free_user_allowed:
-                return False
-        return True
+                return "primary_model_disabled"
+        return ""
 
     @staticmethod
     def _is_hard_reasoning_message(message: str) -> bool:

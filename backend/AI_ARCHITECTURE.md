@@ -9,6 +9,7 @@ flowchart TD
   Budget --> Intent[Rules-first safety, language and intent routing]
   Intent --> Block[Blocked/clarify: live data and unsafe high-risk]
   Intent --> Tool[Backend tools: reminders, routine, profile, settings]
+  Intent --> Context[Contextual follow-up rewrite/translate/explain]
   Intent --> Cache[Approved global cache and local RAG for safe normal turns]
   Intent --> Sarvam[Sarvam AI: Indic chat, STT, TTS, translation]
   Intent --> OpenAILadder[OpenAI model ladder: Responses or Chat per model]
@@ -30,7 +31,8 @@ flowchart TD
 - `openai_catalog`: model endpoint, parameter, pricing, and free-user policy metadata.
 - `model_health`: short TTL cache for model access/compatibility failures.
 - `run_text_turn`: single-provider orchestrator with safety-before-cache,
-  backend tools, and one controlled fallback only after provider errors.
+  backend tools, contextual follow-ups, and one controlled fallback only after
+  provider errors.
 - `tools`: rules-only backend actions for reminders, profile, routine, and settings.
 - `response_adapter`: maps provider output into the existing pipeline shape.
 
@@ -42,6 +44,8 @@ flowchart TD
 | Complex Indic reasoning | Sarvam `sarvam-105b` |
 | English general chat | OpenAI ladder: `gpt-5-nano` Responses, then `gpt-4.1-nano`, then `gpt-4o-mini` |
 | Coding, architecture, debugging | OpenAI ladder: `gpt-5-mini` Responses, then `gpt-4.1-mini`, then `gpt-4o-mini` |
+| Contextual Tamil/Tanglish explain/translate follow-up | Recent chat context -> Sarvam, then OpenAI cheap fallback preserving Tamil |
+| Contextual English rewrite/shorten follow-up | Recent chat context -> OpenAI cheap ladder |
 | Reminder/routine/profile/settings | Backend tool, no model call |
 | STT/TTS | Sarvam `saaras:v3`, `bulbul:v2` default |
 | Latest/current/live data for free users | Blocked with clear unavailable message |
@@ -50,10 +54,32 @@ Voice uploads use Sarvam Saaras for STT first. The transcript then routes like a
 normal text turn: English transcripts go to OpenAI, Indic/Tanglish transcripts go
 to Sarvam chat, and backend-tool intents use backend tools.
 
+## Context And Product Prompts
+
+- `/api/chat` passes only the last 3-6 meaningful user/assistant turns into
+  `AIRequest.context_turns`. Usage logs record `context_turn_count`; raw context
+  text is not logged unless chat-content logging is explicitly enabled elsewhere.
+- Follow-ups such as `Tamil la simple ah explain pannunga`, `Tamil la sollu`,
+  `make it shorter`, and `இதை சிம்பிளா சொல்லு` use the previous user question
+  and assistant answer. If there is no prior topic, the backend asks a short
+  clarification instead of calling a model.
+- Reminder clarification is continued from recent context: `Remind me tomorrow
+  morning` asks what to remind, and the next short reply such as `Call Amma`
+  creates the reminder for the pending time without a provider call.
+- Coding, architecture, and product answers receive app context: this is an AI
+  mobile app with a backend-first AI router/orchestrator, Sarvam for
+  Indic/Tanglish/Tamil plus STT/TTS/translation, OpenAI cheap/reasoning ladders,
+  cache, memory/RAG, budgets, usage logs, Firebase auth, rate limits, and safety.
+- Default answers use `AI_DEFAULT_ANSWER_STYLE=mobile_concise`; detailed answers
+  are allowed when the user asks for detail, step-by-step, full architecture,
+  complete code, or a deep dive.
+
 ## Env Vars
 
 Core flags: `AI_ROUTER_ENABLED`, `AI_LEGACY_PIPELINE_ENABLED`,
 `AI_PROVIDER_ROUTING_MODE`, `AI_MAX_PROVIDER_CALLS_PER_TURN`,
+`AI_DEFAULT_ANSWER_STYLE`, `AI_DEFAULT_MAX_BULLETS`,
+`AI_DEFAULT_MAX_PARAGRAPHS`, `AI_DETAILED_ANSWER_TRIGGERS`,
 `FREE_DAILY_TEXT_LIMIT`, `FREE_DAILY_VOICE_SECONDS`,
 `ENABLE_WEB_SEARCH_FOR_FREE`, `ENABLE_OPENAI_FILE_SEARCH`,
 `ENABLE_OPENAI_MODERATION`, `AI_ALLOW_OPENAI_TO_SARVAM_FALLBACK`,
@@ -89,6 +115,9 @@ Sarvam defaults: `SARVAM_CHAT_MODEL`, `SARVAM_CHAT_MODEL_REASONING`,
 - OpenAI generation tries the configured in-provider model ladder before returning
   provider-unavailable. A model that returns access/compatibility 400 is skipped
   for `OPENAI_MODEL_PROBE_CACHE_TTL_SECONDS`.
+- OpenAI meta includes `primary_model_candidate`, `selected_model_reason`,
+  `skipped_models`, and `model_health_skip_reason` so fallbacks distinguish
+  disabled models, health-cache skips, endpoint/access errors, and cost choices.
 - Simple chat does not call semantic/RAG embedding paths by default. Exact/global
   cache lookup remains cheap; RAG embedding lookup is reserved for saved
   docs/memory/reusable knowledge intents or explicit env opt-in.

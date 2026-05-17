@@ -10,7 +10,7 @@ from app.database import SessionLocal
 from app.models import AIUsageEvent
 
 
-def _request(message: str, reply_language: str | None = "en", channel: str = "text") -> AIRequest:
+def _request(message: str, reply_language: str | None = "en", channel: str = "text", context_turns=None) -> AIRequest:
     return AIRequest(
         user_id=1,
         message=message,
@@ -18,6 +18,7 @@ def _request(message: str, reply_language: str | None = "en", channel: str = "te
         channel=channel,
         request_id="router-test",
         metadata={},
+        context_turns=context_turns or [],
     )
 
 
@@ -35,6 +36,16 @@ def test_tanglish_routes_to_sarvam_30b(monkeypatch):
 
     assert route.provider == "sarvam"
     assert route.model == "sarvam-30b"
+    assert route.intent.startswith("contextual_")
+
+
+def test_contextual_shortening_routes_to_openai_cheap_ladder(monkeypatch):
+    monkeypatch.delenv("OPENAI_MODEL_CHEAP", raising=False)
+    route = AIProviderRouter().select_route(_request("make it shorter", "en"))
+
+    assert route.provider == "openai"
+    assert route.intent == "contextual_rewrite"
+    assert route.model == "gpt-5-nano"
 
 
 def test_complex_indic_uses_sarvam_105b(monkeypatch):
@@ -131,7 +142,11 @@ def test_sarvam_failure_falls_back_once_to_openai_for_safe_indic(monkeypatch):
     with SessionLocal() as session:
         response = run_text_turn(
             session,
-            _request("Tamil la explain pannunga", None),
+            _request(
+                "Tamil la explain pannunga",
+                None,
+                context_turns=[{"user": "What is a compiler?", "assistant": "A compiler translates code."}],
+            ),
             existing_context={"sarvam_provider": sarvam, "openai_provider": openai},
         )
         event = session.exec(select(AIUsageEvent)).one()
@@ -191,7 +206,11 @@ def test_fallback_respects_hard_call_limit(monkeypatch):
     with SessionLocal() as session:
         response = run_text_turn(
             session,
-            _request("Tamil la explain pannunga", None),
+            _request(
+                "Tamil la explain pannunga",
+                None,
+                context_turns=[{"user": "What is a compiler?", "assistant": "A compiler translates code."}],
+            ),
             existing_context={"sarvam_provider": sarvam, "openai_provider": openai},
         )
 

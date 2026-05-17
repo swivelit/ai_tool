@@ -162,6 +162,42 @@ def _attach_metadata(response: Any, metadata: dict[str, Any]) -> Any:
     return response
 
 
+def _selected_model_reason(
+    *,
+    index: int,
+    errors: list[dict[str, Any]],
+    skipped_models: list[dict[str, Any]],
+    default_reason: str,
+) -> str:
+    if index <= 0 and not skipped_models and not errors:
+        return "cost_optimizer_choice"
+    if skipped_models and str(skipped_models[0].get("reason") or "") == "primary_model_health_cache":
+        return "primary_model_health_cache"
+    if errors:
+        first = errors[0]
+        if str(first.get("error_type") or "") == "model_health_skip":
+            return "primary_model_health_cache"
+        status = first.get("status_code")
+        try:
+            status_int = int(status) if status is not None else 0
+        except Exception:
+            status_int = 0
+        if status_int in {401, 403, 404}:
+            return "primary_model_access_error"
+        if status_int == 400:
+            return "primary_model_endpoint_error"
+        return "primary_model_unavailable"
+    return default_reason or "cost_optimizer_choice"
+
+
+def _model_health_skip_reason(skipped_models: list[dict[str, Any]]) -> str:
+    for skipped in skipped_models:
+        reason = str(skipped.get("reason") or "")
+        if "health_cache" in reason:
+            return reason
+    return ""
+
+
 def _sanitize_openai_error_message(value: Any, *, limit: int = 240) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     text = re.sub(r"sk-[A-Za-z0-9_-]+", "[REDACTED]", text)
@@ -360,11 +396,21 @@ def tracked_openai_generation(
     owned_session, usage_session = _session_context(session)
     attempted_models: list[str] = []
     errors: list[dict[str, Any]] = []
+    skipped_models: list[dict[str, Any]] = []
+    primary_model_candidate = selections[0].model if selections else ""
     try:
         for index, selection in enumerate(selections):
             spec = get_model_spec(selection.model)
             endpoint = str(selection.endpoint or spec.endpoint)
             if is_model_temporarily_unavailable("openai", selection.model, endpoint):
+                skip_reason = "primary_model_health_cache" if index == 0 else "model_health_cache"
+                skipped_models.append(
+                    {
+                        "model": selection.model,
+                        "endpoint": endpoint,
+                        "reason": skip_reason,
+                    }
+                )
                 errors.append(
                     {
                         "model": selection.model,
@@ -456,15 +502,25 @@ def tracked_openai_generation(
             actual_input = actual_metadata.get("actual_input_tokens")
             actual_output = actual_metadata.get("actual_output_tokens")
             actual_cost = actual_metadata.get("actual_cost_usd")
+            selected_model_reason = _selected_model_reason(
+                index=index,
+                errors=errors,
+                skipped_models=skipped_models,
+                default_reason=selection.reason,
+            )
             metadata = {
                 "model_used": selection.model,
                 "model_tier": selection.tier,
                 "endpoint": endpoint,
                 "reason": selection.reason,
                 "candidate_index": index,
-                "fallback_attempted": index > 0,
+                "fallback_attempted": index > 0 or bool(skipped_models),
                 "attempted_models": list(attempted_models),
                 "model_candidates": [candidate.model for candidate in selections],
+                "primary_model_candidate": primary_model_candidate,
+                "selected_model_reason": selected_model_reason,
+                "skipped_models": list(skipped_models),
+                "model_health_skip_reason": _model_health_skip_reason(skipped_models),
                 "estimated_input_tokens": input_tokens,
                 "estimated_output_tokens": output_tokens,
                 "estimated_cost_usd": estimated_cost,
@@ -476,6 +532,7 @@ def tracked_openai_generation(
                 request_id=request_id,
                 route=route,
                 selection=selection,
+                reason=selected_model_reason,
                 estimated_input_tokens=input_tokens,
                 estimated_output_tokens=output_tokens,
                 estimated_cost_usd=estimated_cost,
@@ -493,6 +550,9 @@ def tracked_openai_generation(
                     "model_tier": selection.tier,
                     "endpoint": endpoint,
                     "reason": selection.reason,
+                    "selected_model_reason": selected_model_reason,
+                    "primary_model_candidate": primary_model_candidate,
+                    "model_health_skip_reason": _model_health_skip_reason(skipped_models),
                     "estimated_input_tokens": input_tokens,
                     "estimated_output_tokens": output_tokens,
                     "estimated_cost_usd": round(estimated_cost, 8),
@@ -514,6 +574,15 @@ def tracked_openai_generation(
             "errors": errors,
             "provider_error_type": errors[-1]["error_type"] if errors else "no_candidate_available",
             "fallback_attempted": len(attempted_models) > 1 or any(e.get("error_type") == "model_health_skip" for e in errors),
+            "primary_model_candidate": primary_model_candidate,
+            "selected_model_reason": _selected_model_reason(
+                index=max(0, len(attempted_models) - 1),
+                errors=errors,
+                skipped_models=skipped_models,
+                default_reason="primary_model_unavailable",
+            ),
+            "skipped_models": skipped_models,
+            "model_health_skip_reason": _model_health_skip_reason(skipped_models),
         },
     )
 

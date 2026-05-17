@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from ...observability import chat_log_payload
 from ...openai_model_router import OpenAIModelRouter
+from ..prompts import build_provider_messages
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import AIProvider
 
@@ -61,23 +62,18 @@ class SarvamProvider(AIProvider):
 
     def complete(self, request: AIRequest, route: AIRoute) -> AIProviderResponse:
         client = self._client_or_create()
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful Indian-language assistant. Answer directly in the user's requested language. "
-                    "Do not claim access to live/current data unless it was provided."
-                ),
-            },
-            {"role": "user", "content": request.message},
-        ]
+        messages = build_provider_messages(request, route, provider="sarvam")
         raw = self._call_chat(client, route.model or chat_model_for_intent(route.intent), messages, route.max_output_tokens)
         text = _extract_chat_text(raw)
+        if not text.strip():
+            exc = HTTPException(status_code=502, detail="Sarvam chat returned empty text.")
+            exc.metadata = {"provider_error_type": "empty_sarvam_response"}  # type: ignore[attr-defined]
+            raise exc
         input_tokens = OpenAIModelRouter.estimate_tokens(request.message)
         output_tokens = OpenAIModelRouter.estimate_tokens(text)
         cost = estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens)
         return AIProviderResponse(
-            text=text or "மன்னிக்கவும், பதில் உருவாக்க முடியவில்லை. மீண்டும் முயற்சிக்கவும்.",
+            text=text,
             provider="sarvam",
             model=route.model,
             route=route.route,

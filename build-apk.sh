@@ -365,6 +365,9 @@ fi
 info "Ensuring Expo CLI is available"
 npx expo --version >/dev/null
 
+info "Ensuring Firebase google-services.json configuration"
+node scripts/ensure-google-services-json.js --mode "$BUILD_TYPE"
+
 if [[ "$SHOULD_SYNC_LLAMA_CPP" == "1" ]]; then
   info "Ensuring llama.cpp native backend is available"
   if npm run native:sync-llama; then

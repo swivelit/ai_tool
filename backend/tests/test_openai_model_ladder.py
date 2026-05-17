@@ -25,6 +25,8 @@ def test_compiler_explanation_uses_cheap_general_ladder(monkeypatch):
 
     assert _models(selections)[:3] == ["gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"]
     assert selections[0].tier == "cheap"
+    assert router.last_selection_metadata["primary_model_candidate"] == "gpt-5-nano"
+    assert router.last_selection_metadata["selected_model_reason"] == "cost_optimizer_choice"
     assert router.classify_task("What is a compiler?") == "normal_qa"
 
 
@@ -73,6 +75,20 @@ def test_flagship_models_disabled_for_free_users(monkeypatch):
     selections = OpenAIModelRouter().select_candidates("normal_qa", "What is a compiler?", user_tier="free")
 
     assert _models(selections) == ["gpt-4o-mini"]
+
+
+def test_skipped_primary_model_records_disabled_reason(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP_PRIMARY", "gpt-5")
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP_FALLBACKS", "gpt-4.1-nano,gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_DISABLE_HIGHEST_MODEL", "true")
+    router = OpenAIModelRouter()
+
+    selections = router.select_candidates("normal_qa", "What is a compiler?", user_tier="free")
+
+    assert selections[0].model == "gpt-4.1-nano"
+    assert router.last_selection_metadata["primary_model_candidate"] == "gpt-5"
+    assert router.last_selection_metadata["selected_model_reason"] == "primary_model_disabled"
+    assert router.last_selection_metadata["skipped_models"][0]["reason"] == "primary_model_disabled"
 
 
 def test_legacy_completion_models_are_not_used_for_chat_routes(monkeypatch):

@@ -15,6 +15,7 @@ const apiFile = path.join(mobileRoot, 'lib', 'api.ts');
 const envExampleFile = path.join(mobileRoot, '.env.example');
 const modelsConfigFile = path.join(mobileRoot, 'data', 'config', 'models.json');
 const agentRegistryFile = path.join(mobileRoot, 'data', 'config', 'agent_registry.json');
+const googleServicesFile = path.join(mobileRoot, 'google-services.json');
 
 const FIREBASE_ENV_NAMES = [
   'EXPO_PUBLIC_FIREBASE_API_KEY',
@@ -215,6 +216,22 @@ function verifyReleaseEnvironment() {
     );
   }
   pass('release env has Firebase public config required by Firebase Auth');
+
+  const hasGoogleServicesSource =
+    fs.existsSync(googleServicesFile) ||
+    String(process.env.GOOGLE_SERVICES_JSON_BASE64 || '').trim() ||
+    String(process.env.GOOGLE_SERVICES_JSON || '').trim() ||
+    String(process.env.FIREBASE_GOOGLE_SERVICES_JSON || '').trim();
+  if (!hasGoogleServicesSource) {
+    fail(
+      'Release builds are missing Firebase Android google-services config',
+      [
+        'Provide mobile/google-services.json locally or set GOOGLE_SERVICES_JSON_BASE64, GOOGLE_SERVICES_JSON, or FIREBASE_GOOGLE_SERVICES_JSON in CI/EAS.',
+        'Do not commit mobile/google-services.json; it is intentionally gitignored.',
+      ].join('\n'),
+    );
+  }
+  pass('release env has Firebase Android google-services config source');
   verifyExplicitLocalFallbackReleaseEnvironment();
 }
 
