@@ -22,26 +22,6 @@ import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 import { getPasswordVisibilityProps } from "@/lib/authUi";
 
-const DEV_TEST_PASSWORD = "Test@123456";
-
-const HIGHLIGHTS = [
-  {
-    icon: "person-outline" as const,
-    title: "Made for you",
-    copy: "Get everything ready in just a moment.",
-  },
-  {
-    icon: "calendar-clear-outline" as const,
-    title: "Stay organized",
-    copy: "Everything you need to manage your day.",
-  },
-  {
-    icon: "lock-closed-outline" as const,
-    title: "Secure account access",
-    copy: "A smooth and secure way to begin.",
-  },
-];
-
 function emailLooksValid(value: string) {
   return /\S+@\S+\.\S+/.test(value.trim());
 }
@@ -57,16 +37,6 @@ function passwordStrengthTone(value: string) {
   if (!value || value.length < 6) return Brand.danger;
   if (value.length < 9) return Brand.bronze;
   return Brand.success;
-}
-
-function buildDevSignupSeed() {
-  const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
-
-  return {
-    name: "Test User",
-    email: `test.user+${stamp}@jai-dev.app`,
-    password: DEV_TEST_PASSWORD,
-  };
 }
 
 export default function SignupScreen() {
@@ -86,7 +56,6 @@ export default function SignupScreen() {
   const { width, height } = useWindowDimensions();
 
   const isCompact = width < 370 || height < 760;
-  const isVeryCompact = width < 345 || height < 700;
 
   const horizontalPadding = isCompact ? 16 : 20;
   const topPadding = insets.top + (isCompact ? 10 : 16);
@@ -153,30 +122,6 @@ export default function SignupScreen() {
     } catch (error: unknown) {
       setErrorText(
         error instanceof Error ? error.message : "Google sign-in failed."
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleDevSignup() {
-    if (!__DEV__) {
-      return;
-    }
-
-    const seed = buildDevSignupSeed();
-
-    try {
-      setBusy(true);
-      setErrorText("");
-      setName(seed.name);
-      setEmail(seed.email);
-      setPassword(seed.password);
-      setConfirmPassword(seed.password);
-      await signUpWithPassword(seed.name, seed.email, seed.password);
-    } catch (error: unknown) {
-      setErrorText(
-        error instanceof Error ? error.message : "Temporary test sign up failed."
       );
     } finally {
       setBusy(false);
@@ -266,6 +211,8 @@ export default function SignupScreen() {
                   </View>
                   <TextInput
                     value={name}
+                    testID="signup-name-input"
+                    accessibilityLabel="signup-name-input"
                     onChangeText={(value) => {
                       setName(value);
                       if (errorText) setErrorText("");
@@ -291,6 +238,8 @@ export default function SignupScreen() {
                   </View>
                   <TextInput
                     value={email}
+                    testID="signup-email-input"
+                    accessibilityLabel="signup-email-input"
                     onChangeText={(value) => {
                       setEmail(value);
                       if (errorText) setErrorText("");
@@ -327,6 +276,8 @@ export default function SignupScreen() {
                   </View>
                   <TextInput
                     value={password}
+                    testID="signup-password-input"
+                    accessibilityLabel="signup-password-input"
                     onChangeText={(value) => {
                       setPassword(value);
                       if (errorText) setErrorText("");
@@ -371,6 +322,8 @@ export default function SignupScreen() {
                   </View>
                   <TextInput
                     value={confirmPassword}
+                    testID="signup-confirm-password-input"
+                    accessibilityLabel="signup-confirm-password-input"
                     onChangeText={(value) => {
                       setConfirmPassword(value);
                       if (errorText) setErrorText("");
@@ -407,6 +360,8 @@ export default function SignupScreen() {
               <Pressable
                 onPress={handleSignup}
                 disabled={!canSubmit}
+                testID="signup-submit-button"
+                accessibilityLabel="signup-submit-button"
                 style={({ pressed }) => [
                   styles.buttonShell,
                   pressed && styles.pressed,

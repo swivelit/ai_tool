@@ -1,0 +1,3 @@
+[submodule "mobile/modules/jai-on-device-model/vendor/llama.cpp"]
+	path = mobile/modules/jai-on-device-model/vendor/llama.cpp
+	url = https://github.com/ggml-org/llama.cpp.git

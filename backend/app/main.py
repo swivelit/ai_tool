@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hmac
+import hashlib
 import json
 import logging
 import os
 import re
+import secrets
 import sys
 import tempfile
 import threading
@@ -13,9 +17,9 @@ from collections import OrderedDict
 import requests
 import time
 import openai
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -23,7 +27,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlmodel import SQLModel, Session, delete, select
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -33,15 +37,67 @@ if str(BACKEND_ROOT) not in sys.path:
 
 load_dotenv()
 
+from .auth import (
+    AuthConfigurationError,
+    AuthUser,
+    assert_owner,
+    firebase_auth_runtime_status,
+    get_current_user,
+    get_owned_user,
+    is_production_environment,
+    normalize_app_env,
+    verify_firebase_id_token,
+    validate_auth_configuration,
+)
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
-from .models import Conversation, DailyRoutine, Item, Job, QACache, RagEmbedding, User, UserProfile
-from .observability import bootstrap_observability, clear_request_context, new_request_id, set_request_context
+from .models import Conversation, DailyRoutine, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
+from .time_utils import utc_now as _utc_now
+from .observability import (
+    APP_RELEASE,
+    CHAT_TURN_SUMMARY_LOGS_ENABLED,
+    CLIENT_TURN_LOGS_ENABLED,
+    LOG_CHAT_CONTENT,
+    LOG_CHAT_CONTENT_MAX_CHARS,
+    build_turn_summary_payload,
+    bootstrap_observability,
+    chat_log_payload,
+    clear_request_context,
+    get_request_id,
+    new_request_id,
+    sanitize_log_text,
+    set_request_context,
+)
 from .vector_store import VectorStore
 from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
-from .orchestrator_task import run_orchestrator
+from .orchestrator_task import run_orchestrator, run_rule_orchestrator
+from .global_qa_cache import (
+    build_global_knowledge_sync_payload,
+    global_qa_schema_ready,
+    lookup_approved_global_cache,
+    record_backend_openai_answer,
+)
+from .openai_model_router import OpenAIConfigurationError, OpenAIModelRouter, record_openai_usage
+from .openai_tracked import OpenAIBudgetExceededError, get_tracked_chat_completion_metadata, tracked_chat_completion, tracked_openai_generation
+from .ai.model_health import clear_model_health, model_health_snapshot
+from .ai.openai_catalog import get_model_spec, get_openai_model_catalog
+from .ai.budget import enforce_free_voice_quota, enforce_provider_budget
+from .ai.orchestrator import run_text_turn
+from .ai.providers.sarvam_provider import (
+    SarvamProvider,
+    estimate_audio_duration_details,
+    estimate_stt_cost,
+    estimate_tts_cost,
+    extract_sarvam_transcript,
+    normalize_audio_language,
+    redact_sarvam_provider_message,
+    sarvam_provider_error_detail,
+)
+from .ai.response_adapter import ai_response_to_pipeline
+from .ai.types import AIProviderResponse, AIRequest
+from .ai.usage import record_ai_usage_event
 
 
 bootstrap_observability()
@@ -70,18 +126,172 @@ else:
 
 logger = logging.getLogger(__name__)
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+REQUIRED_PROFILE_SLOTS = {
+    "preferred_language",
+    "secondary_language",
+    "occupation",
+    "industry_or_field",
+    "hobbies",
+    "interests",
+    "communication_tone",
+    "answer_length",
+    "personality_style",
+    "assistant_persona",
+    "planning_style",
+    "learning_style",
+    "main_goal",
+    "dislikes",
+    "work_rhythm",
+}
 
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+ALLOWED_AUDIO_CONTENT_TYPES = {
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/m4a",
+    "audio/aac",
+    "audio/webm",
+    "application/octet-stream",
+}
+
+_download_token_secret = (
+    os.getenv("DOWNLOAD_TOKEN_SECRET", "").strip()
+    or os.getenv("SECRET_KEY", "").strip()
+)
+
+APP_ENV = normalize_app_env()
+
+if not _download_token_secret:
+    if APP_ENV in {"prod", "production"}:
+        raise RuntimeError("DOWNLOAD_TOKEN_SECRET or SECRET_KEY must be set in production.")
+    logger.warning("DOWNLOAD_TOKEN_SECRET is not set; using a dev-only random secret.")
+    _download_token_secret = secrets.token_urlsafe(32)
+
+DOWNLOAD_TOKEN_SECRET = _download_token_secret
+DOWNLOAD_TOKEN_TTL_SECONDS = int(os.getenv("DOWNLOAD_TOKEN_TTL_SECONDS", "900") or 900)
 
 def _utc_now_iso() -> str:
     return _utc_now().isoformat().replace("+00:00", "Z")
+
+
+def safe_commit(session: Session, context: str) -> None:
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("DB commit failed", extra={"context": context})
+        raise
+
+
+def _admin_emails() -> set[str]:
+    return {
+        item.strip().lower()
+        for item in str(os.getenv("ADMIN_EMAILS", "")).split(",")
+        if item.strip()
+    }
+
+
+def _debug_admin_token() -> str:
+    return os.getenv("DEBUG_ADMIN_TOKEN", "").strip()
+
+
+async def require_debug_admin(request: Request) -> Optional[AuthUser]:
+    configured_admin_emails = _admin_emails()
+    configured_debug_token = _debug_admin_token()
+    if not configured_admin_emails and not configured_debug_token:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supplied_debug_token = request.headers.get("x-admin-token", "").strip()
+    if (
+        configured_debug_token
+        and supplied_debug_token
+        and hmac.compare_digest(supplied_debug_token, configured_debug_token)
+    ):
+        return None
+
+    authorization = request.headers.get("authorization", "")
+    if authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+        if token:
+            try:
+                decoded = verify_firebase_id_token(token)
+            except AuthConfigurationError as exc:
+                logger.exception("Firebase auth is not configured for debug admin check")
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except Exception:
+                decoded = {}
+            email = str(decoded.get("email") or "").strip().lower() if isinstance(decoded, dict) else ""
+            if email and email in configured_admin_emails:
+                return AuthUser(firebase_uid=str(decoded.get("uid") or ""), email=email)
+
+    raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def _load_json_object(raw: Optional[str]) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _has_completed_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_has_completed_value(item) for item in value)
+    if isinstance(value, dict):
+        return bool(value)
+    return True
+
+
+def _redact_user_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    redacted = dict(payload)
+    for key in {
+        "email",
+        "firebase_uid",
+        "transcript",
+        "user_input",
+        "profile_summary",
+        "answers",
+        "message",
+        "text",
+    }:
+        if key in redacted:
+            redacted[key] = "[REDACTED]"
+    return redacted
+
+
+async def read_limited_upload(file: UploadFile) -> bytes:
+    content_type = str(file.content_type or "").split(";")[0].strip().lower()
+    if content_type and content_type not in ALLOWED_AUDIO_CONTENT_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported file type")
+
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+    return data
+
+
+def _require_parent_user(session: Session, user_id: int) -> User:
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
 
 PERSONALITY_QUESTIONS_VERSION = 1
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_JSON_MODEL = os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini")
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
+SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
+SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
 
 client: Optional[openai.OpenAI] = None
 JOB_QUEUE: Optional[DBJobQueue] = None
@@ -197,6 +407,7 @@ STAGE_REMODELER: Optional[EnglishRemodeler] = None
 STAGE_TRANSLATOR: Optional[StageTranslator] = None
 AGENTIC_SERVICE: Optional[AgenticService] = None
 SAFETY_FILTER: Optional[BehaviouralRAGFilter] = None
+SARVAM_PROVIDER: Optional[SarvamProvider] = None
 STAGE_CACHE = ThreadSafeLRUCache(max_size=128)
 
 
@@ -209,6 +420,60 @@ def _openai_required_error(operation: str = "This operation") -> HTTPException:
         status_code=503,
         detail=f"{operation} requires OPENAI_API_KEY to be configured on the server.",
     )
+
+
+OPENAI_PROVIDER_CONFIG_DETAIL = "OpenAI provider/configuration error. Check OPENAI_API_KEY and OPENAI_MODEL settings."
+OPENAI_PROVIDER_RATE_LIMIT_DETAIL = "OpenAI provider rate limit reached. Try again later."
+OPENAI_PROVIDER_CONNECTION_DETAIL = "OpenAI provider is temporarily unavailable. Try again later."
+OPENAI_PROVIDER_TIMEOUT_DETAIL = "OpenAI provider timed out. Try again later."
+OPENAI_PROVIDER_STATUS_DETAIL = "OpenAI provider returned an upstream error. Try again later."
+
+
+def _openai_provider_http_exception(exc: BaseException) -> Optional[HTTPException]:
+    if isinstance(exc, OpenAIBudgetExceededError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, OpenAIConfigurationError):
+        return HTTPException(status_code=503, detail=OPENAI_PROVIDER_CONFIG_DETAIL)
+    if isinstance(
+        exc,
+        (
+            openai.AuthenticationError,
+            openai.PermissionDeniedError,
+            openai.NotFoundError,
+            openai.BadRequestError,
+        ),
+    ):
+        return HTTPException(status_code=503, detail=OPENAI_PROVIDER_CONFIG_DETAIL)
+    if isinstance(exc, openai.RateLimitError):
+        return HTTPException(status_code=503, detail=OPENAI_PROVIDER_RATE_LIMIT_DETAIL)
+    if isinstance(exc, openai.APITimeoutError):
+        return HTTPException(status_code=504, detail=OPENAI_PROVIDER_TIMEOUT_DETAIL)
+    if isinstance(exc, openai.APIConnectionError):
+        return HTTPException(status_code=503, detail=OPENAI_PROVIDER_CONNECTION_DETAIL)
+    if isinstance(exc, openai.APIStatusError):
+        return HTTPException(status_code=502, detail=OPENAI_PROVIDER_STATUS_DETAIL)
+    return None
+
+
+@app.exception_handler(OpenAIConfigurationError)
+async def openai_configuration_exception_handler(request: Request, exc: OpenAIConfigurationError):
+    mapped = _openai_provider_http_exception(exc)
+    status_code = mapped.status_code if mapped is not None else 503
+    detail = mapped.detail if mapped is not None else OPENAI_PROVIDER_CONFIG_DETAIL
+    return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
+@app.exception_handler(openai.OpenAIError)
+async def openai_provider_exception_handler(request: Request, exc: openai.OpenAIError):
+    mapped = _openai_provider_http_exception(exc)
+    status_code = mapped.status_code if mapped is not None else 502
+    detail = mapped.detail if mapped is not None else OPENAI_PROVIDER_STATUS_DETAIL
+    return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
+@app.exception_handler(OpenAIBudgetExceededError)
+async def openai_budget_exception_handler(request: Request, exc: OpenAIBudgetExceededError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 def _get_openai_client(*, required: bool = True) -> Optional[openai.OpenAI]:
@@ -279,10 +544,24 @@ def _get_safety_filter() -> Optional[BehaviouralRAGFilter]:
         try:
             SAFETY_FILTER = BehaviouralRAGFilter()
         except Exception as exc:
-            print(f"[WARN] Failed to initialize SAFETY_FILTER: {exc}")
+            logger.warning("Failed to initialize SAFETY_FILTER: %s", exc)
             return None
 
     return SAFETY_FILTER
+
+
+def _get_sarvam_provider() -> SarvamProvider:
+    global SARVAM_PROVIDER
+    SARVAM_PROVIDER = SarvamProvider(http_post=requests.post, api_key_getter=_sarvam_api_key)
+    return SARVAM_PROVIDER
+
+
+def _ai_router_enabled() -> bool:
+    return os.getenv("AI_ROUTER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _legacy_pipeline_enabled() -> bool:
+    return os.getenv("AI_LEGACY_PIPELINE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _normalize_reply_language(value: Optional[str]) -> str:
@@ -514,8 +793,6 @@ def _try_local_fast_path(session: Session, user_id: Optional[int], message: str)
     
     return None
 
-    return None
-
 def _serialize_job(job: Optional[Job]) -> Dict[str, Any]:
     if job is None:
         raise HTTPException(404, "Job not found")
@@ -584,7 +861,7 @@ def _job_handle_export(session: Session, payload: Dict[str, Any]) -> Dict[str, A
     generator = generators.get(export_format)
     if generator is None:
         raise RuntimeError(f"Unsupported export format: {export_format}")
-    return _build_download_payload(generator(item))
+    return _build_download_payload(generator(item), item=item)
 
 
 def _job_handle_chat(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -621,8 +898,37 @@ def _record_runtime_service(name: str, *, ok: bool, required: bool, detail: str 
         RUNTIME_STATUS["errors"].append({"service": name, "detail": detail, "required": required})
 
 
+def _observability_config_payload() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "environment": APP_ENV,
+        "release": APP_RELEASE,
+        "log_chat_content": bool(LOG_CHAT_CONTENT),
+        "log_chat_content_max_chars": int(LOG_CHAT_CONTENT_MAX_CHARS),
+        "client_turn_logs_enabled": bool(CLIENT_TURN_LOGS_ENABLED),
+        "chat_turn_summary_logs_enabled": bool(CHAT_TURN_SUMMARY_LOGS_ENABLED),
+    }
+
+
+def emit_observability_config_log() -> None:
+    payload = _observability_config_payload()
+    logger.info(
+        "observability_config",
+        extra=chat_log_payload(
+            event="observability_config",
+            environment=payload["environment"],
+            release=payload["release"],
+            log_chat_content=payload["log_chat_content"],
+            log_chat_content_max_chars=payload["log_chat_content_max_chars"],
+            client_turn_logs_enabled=payload["client_turn_logs_enabled"],
+            chat_turn_summary_logs_enabled=payload["chat_turn_summary_logs_enabled"],
+        ),
+    )
+
+
 @app.on_event("startup")
 def startup_runtime_services() -> None:
+    emit_observability_config_log()
     RUNTIME_STATUS["status"] = "starting"
     RUNTIME_STATUS["services"] = {}
     RUNTIME_STATUS["errors"] = []
@@ -632,6 +938,29 @@ def startup_runtime_services() -> None:
         _record_runtime_service("openai", ok=False, required=False, detail="OPENAI_API_KEY is not configured.")
     else:
         _record_runtime_service("openai", ok=True, required=False)
+
+    auth_required = is_production_environment(APP_ENV)
+    try:
+        validate_auth_configuration(APP_ENV)
+        auth_status = firebase_auth_runtime_status()
+        token_verification_configured = bool(auth_status.get("token_verification_configured"))
+        if token_verification_configured:
+            _record_runtime_service("firebase_auth", ok=True, required=auth_required)
+        else:
+            _record_runtime_service(
+                "firebase_auth",
+                ok=False,
+                required=auth_required,
+                detail="Firebase token verification is not configured.",
+            )
+    except AuthConfigurationError as exc:
+        logger.error("Firebase auth configuration check failed: %s", exc)
+        _record_runtime_service(
+            "firebase_auth",
+            ok=False,
+            required=auth_required,
+            detail=str(exc),
+        )
 
     auto_create_tables = os.getenv("AUTO_CREATE_TABLES", "").strip().lower() in {"1", "true", "yes", "on"}
     if str(engine.url).startswith("sqlite"):
@@ -680,10 +1009,18 @@ async def log_requests(request: Request, call_next):
     set_request_context(request_id=request_id, route=request.url.path)
     try:
         response = await call_next(request)
-    except Exception:
-        logger.exception(
-            "request failed",
-            extra={"method": request.method, "path": request.url.path},
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        logger.error(
+            "request_failed_exception",
+            extra={
+                "event": "request_failed_exception",
+                "method": request.method,
+                "path": request.url.path,
+                "exception_class": exc.__class__.__name__,
+                "exception_message": sanitize_log_text(str(exc), 240),
+                "duration_ms": duration_ms,
+            },
         )
         clear_request_context()
         raise
@@ -716,27 +1053,27 @@ def root():
     }
 
 
-def _health_payload() -> Dict[str, Any]:
+def _health_status_code(payload: Dict[str, Any]) -> int:
+    return 200 if payload["status"] == "ok" else 503
+
+
+def _public_health_payload() -> Dict[str, Any]:
+    return {
+        "status": RUNTIME_STATUS.get("status") or "starting",
+        "app": "J AI",
+    }
+
+
+def _debug_health_payload() -> Dict[str, Any]:
     return {
         "status": RUNTIME_STATUS.get("status") or "starting",
         "app": "J AI",
         "pipeline_version": PIPELINE_VERSION,
         "services": RUNTIME_STATUS.get("services", {}),
+        "auth": {
+            "firebase": firebase_auth_runtime_status(),
+        },
         "errors": RUNTIME_STATUS.get("errors", []),
-    }
-
-
-@app.get("/health")
-def health():
-    payload = _health_payload()
-    status_code = 200 if payload["status"] == "ok" else 503
-    return JSONResponse(payload, status_code=status_code)
-
-
-@app.get("/api/health")
-def api_health():
-    payload = _health_payload()
-    payload.update({
         "mode": PIPELINE_VERSION,
         "features": [
             "persona_context",
@@ -749,9 +1086,27 @@ def api_health():
             "semantic_memory_rag",
             "qa_cache_rag",
         ],
-    })
-    status_code = 200 if payload["status"] == "ok" else 503
-    return JSONResponse(payload, status_code=status_code)
+    }
+
+
+@app.get("/health")
+def health():
+    payload = _public_health_payload()
+    return JSONResponse(payload, status_code=_health_status_code(payload))
+
+
+@app.get("/api/health")
+def api_health():
+    payload = _public_health_payload()
+    return JSONResponse(payload, status_code=_health_status_code(payload))
+
+
+@app.get("/api/debug/health")
+def debug_health():
+    if APP_ENV in {"prod", "production"}:
+        raise HTTPException(status_code=404, detail="Not found")
+    payload = _debug_health_payload()
+    return JSONResponse(payload, status_code=_health_status_code(payload))
 
 
 PARSE_DT_PROMPT = """
@@ -848,6 +1203,8 @@ Return ONLY JSON:
 
 class TTSRequest(BaseModel):
     text: str
+    target_language_code: Optional[str] = None
+    speaker: Optional[str] = None
 
 
 class ParseDatetimeRequest(BaseModel):
@@ -875,8 +1232,11 @@ class TextAnalysisRequest(BaseModel):
     reply_language: Optional[str] = None
 
 
+PersonalityAnswerValue = Union[str, List[str]]
+
+
 class PersonalityAnswersIn(BaseModel):
-    answers: Dict[str, str]
+    answers: Dict[str, PersonalityAnswerValue]
 
 
 class TextAnalysisResponse(BaseModel):
@@ -909,6 +1269,80 @@ class ChatAPIRequest(BaseModel):
     text: Optional[str] = None
     include_pipeline: bool = True
     reply_language: Optional[str] = None
+    request_id: Optional[str] = None
+    client_fallback_reason: Optional[str] = None
+    client_local_budget_ms: Optional[int] = None
+    client_original_route: Optional[str] = None
+    admin_email: Optional[str] = None
+
+
+class AIModelProbeRequest(BaseModel):
+    models: Optional[List[str]] = None
+
+
+class ClientTurnLogRequest(BaseModel):
+    event: str
+    user_id: Optional[int] = None
+    request_id: Optional[str] = None
+    turn_id: Optional[str] = None
+    channel: Optional[str] = None
+    question_hash: Optional[str] = None
+    question: Optional[str] = None
+    question_preview: Optional[str] = None
+    answer: Optional[str] = None
+    answer_preview: Optional[str] = None
+    question_length: Optional[int] = None
+    answer_length: Optional[int] = None
+    agent_source: Optional[str] = None
+    route_taken: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    duration_ms: Optional[float] = None
+    local_duration_ms: Optional[float] = None
+    backend_duration_ms: Optional[float] = None
+    total_duration_ms: Optional[float] = None
+    stage_timings: Optional[Dict[str, Any]] = None
+    workflow_step: Optional[str] = None
+    workflow_phase: Optional[str] = None
+    step_index: Optional[int] = None
+    decision: Optional[str] = None
+    cache_hit: Optional[bool] = None
+    cache_source: Optional[str] = None
+    global_sync_status: Optional[str] = None
+    http_status: Optional[int] = None
+    error_name: Optional[str] = None
+    error_message: Optional[str] = None
+    model_used: Optional[str] = None
+    model_tier: Optional[str] = None
+    native_backend: Optional[str] = None
+    local_runtime_mode: Optional[str] = None
+    db_schema_ready: Optional[bool] = None
+    screen: Optional[str] = None
+    app_state: Optional[str] = None
+    sync_id: Optional[str] = None
+    page: Optional[int] = None
+    limit: Optional[int] = None
+    since: Optional[str] = None
+    after_id: Optional[str] = None
+    missing_tables: Optional[List[str]] = None
+    last_step: Optional[str] = None
+    started_at: Optional[str] = None
+    error_type: Optional[str] = None
+    app_version: Optional[str] = None
+    api_base: Optional[str] = None
+    build_number: Optional[str] = None
+    mobile_build_id: Optional[str] = None
+    mobile_git_sha: Optional[str] = None
+    local_to_backend_fallback_ms: Optional[int] = None
+    cloud_fallback_enabled: Optional[bool] = None
+    created_at: Optional[str] = None
+    provider: Optional[str] = None
+    voice_phase: Optional[str] = None
+    telemetry_delivery: Optional[str] = None
+    file_size: Optional[int] = None
+    mime_type: Optional[str] = None
+    chat_routing: Optional[str] = None
+    voice_routing: Optional[str] = None
+    native_safety_status: Optional[Dict[str, Any]] = None
 
 
 class PipelineChatRequest(BaseModel):
@@ -933,28 +1367,59 @@ def _extract_response_text(response: Any) -> str:
 
 
 def llm_json(system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
-    response = _get_openai_client().chat.completions.create(
-        model=OPENAI_JSON_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt.strip()},
-            {"role": "user", "content": user_content.strip()},
-        ],
-        temperature=temperature,
-        response_format={"type": "json_object"},
-    )
+    try:
+        response = tracked_chat_completion(
+            _get_openai_client(),
+            task="json",
+            route="main_llm_json",
+            request_id=get_request_id(),
+            messages=[
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_content.strip()},
+            ],
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+    except OpenAIBudgetExceededError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     raw = _extract_response_text(response)
-    return json.loads(raw)
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "LLM returned invalid JSON",
+            extra={"raw_length": len(raw or "")},
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Model returned invalid JSON",
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status_code=502,
+            detail="Model returned JSON but not an object",
+        )
+
+    return parsed
 
 
 def llm_text(system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
-    response = _get_openai_client().chat.completions.create(
-        model=OPENAI_JSON_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt.strip()},
-            {"role": "user", "content": user_content.strip()},
-        ],
-        temperature=temperature,
-    )
+    try:
+        response = tracked_chat_completion(
+            _get_openai_client(),
+            task="simple_fallback",
+            route="main_llm_text",
+            request_id=get_request_id(),
+            messages=[
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_content.strip()},
+            ],
+            temperature=temperature,
+        )
+    except OpenAIBudgetExceededError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _extract_response_text(response)
 
 
@@ -966,6 +1431,8 @@ def normalize_category(raw: str) -> str:
         return "Home"
     if cr == "business":
         return "Business"
+    if cr == "reminder":
+        return "Reminder"
     return "Other"
 
 
@@ -1012,8 +1479,12 @@ def log_conversation(
         llm_output_json=json.dumps(llm_json_out, ensure_ascii=False) if llm_json_out else None,
         created_at=_utc_now(),
     )
-    session.add(row)
-    session.commit()
+    try:
+        session.add(row)
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("Failed to log conversation", extra={"user_id": user_id, "channel": channel})
 
 
 def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, answer_json: dict):
@@ -1026,42 +1497,66 @@ def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, ans
         row.hits = (row.hits or 0) + 1
         row.updated_at = _utc_now()
         session.add(row)
-        session.commit()
+        safe_commit(session, "upsert_qa_cache_update")
         return
-    session.add(
-        QACache(
-            user_id=user_id,
-            question=question,
-            answer=json.dumps(answer_json, ensure_ascii=False),
-            hits=1,
-            updated_at=_utc_now(),
+
+    try:
+        session.add(
+            QACache(
+                user_id=user_id,
+                question=question,
+                answer=json.dumps(answer_json, ensure_ascii=False),
+                hits=1,
+                updated_at=_utc_now(),
+            )
         )
-    )
-    session.commit()
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        row = session.exec(q).first()
+        if not row:
+            raise
+        row.answer = json.dumps(answer_json, ensure_ascii=False)
+        row.hits = (row.hits or 0) + 1
+        row.updated_at = _utc_now()
+        session.add(row)
+        safe_commit(session, "upsert_qa_cache_integrity_update")
+    except Exception:
+        session.rollback()
+        logger.exception("Failed to upsert QA cache", extra={"user_id": user_id})
+        raise
 
 # -----------------------------
 # 🔹 ADD YOUR FUNCTION HERE
 # -----------------------------
 
-def load_onboarding_profile(user_id: str):
-    db_file = os.path.join(os.path.dirname(__file__), "user_database.json")
+def load_onboarding_profile(session: Session, user_id: Union[int, str]) -> Dict[str, Any]:
+    """Load onboarding/personality context from the database.
 
-    if not os.path.exists(db_file):
+    Older code attempted to read ``user_database.json`` from the app directory,
+    but that file is not part of the repo and the rest of the app stores
+    onboarding answers in ``UserProfile.answers_json``. Keeping this helper
+    backed by the DB prevents ``build_user_context()`` from silently handing the
+    LLM an empty onboarding profile.
+    """
+    try:
+        numeric_user_id = int(user_id)
+    except (TypeError, ValueError):
         return {}
 
-    try:
-        with open(db_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    profile = session.exec(select(UserProfile).where(UserProfile.user_id == numeric_user_id)).first()
+    if not profile:
+        return {}
 
-        # get latest profile (simple approach)
-        for item in reversed(data):
-            if str(item.get("user_id")) == str(user_id):
-                return item
-
-    except Exception:
-        pass
-
-    return {}
+    answers = _load_json_object(profile.answers_json)
+    return {
+        "user_id": numeric_user_id,
+        "answers": answers,
+        "profile_summary": profile.profile_summary or "",
+        "questions_version": profile.questions_version,
+        "questionnaire_completed": _questionnaire_completed(profile),
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+    }
 
 
 def build_user_context(session: Session, user_id: int) -> dict:
@@ -1071,7 +1566,7 @@ def build_user_context(session: Session, user_id: int) -> dict:
 
     routine = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
-    onboarding_profile = load_onboarding_profile(str(user_id))
+    onboarding_profile = load_onboarding_profile(session, user_id)
     if profile and profile.questions_version != PERSONALITY_QUESTIONS_VERSION:
         personality = "Personality profile outdated. Be neutral and helpful."
     elif profile and profile.profile_summary:
@@ -1231,10 +1726,10 @@ def _log_stage_history(user_id: Optional[int], profile: Dict[str, Any], query: s
     record = {
         "timestamp": _utc_now_iso(),
         "user_id": uid,
-        "query": query,
-        "profile_summary": profile.get("profile_summary", ""),
-        "profile_card": profile.get("profile_card", {}),
-        "result": result,
+        "query": "[REDACTED]",
+        "profile_summary": "[REDACTED]",
+        "profile_card": {},
+        "result": {k: v for k, v in result.items() if k not in {"raw_english", "remodeled_english", "tamil_text", "theni_tamil_text"}},
     }
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -1325,10 +1820,10 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
             STAGE_CACHE.set(cache_key, fast_path)
             return fast_path
         else:
-            print(f"[DEBUG] Fast-path skipped (Confidence: {confidence:.2f}, Source: {source}). Falling back to OpenAI.")
+            logger.debug("Fast path skipped; falling back to OpenAI", extra={"confidence": confidence, "source": source})
 
     profile = _sync_stage_profile(session, user_id)
-    onboarding_profile = load_onboarding_profile(str(user_id))
+    onboarding_profile = load_onboarding_profile(session, user_id)
     total_start = time.perf_counter()
     timings: Dict[str, float] = {}
     stage_notes: List[str] = []
@@ -1430,7 +1925,7 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
     if checker is not None:
         _safety_result = checker.apply(_safety_result, session, user_id)
     else:
-        print("[WARN] Safety filter skip: Filter not initialized.")
+        logger.warning("Safety filter skipped because it is not initialized")
 
     raw_english       = _safety_result.get("raw_english", raw_english)
     remodeled_english = _safety_result.get("remodeled_english", remodeled_english)
@@ -1451,16 +1946,19 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         theni_tamil_text = _safety_theni
         translation_meta = {"source": "safety_filter_retranslation"}
     elif resolved_reply_language == "ta":
-        stage_translator = _get_stage_translator()
-        t0 = time.perf_counter()
-        translation_meta = stage_translator.english_to_tamil_with_meta(remodeled_english, profile)
-        tamil_text = str(translation_meta.get("tamil_text", "")).strip()
-        timings["english_to_tamil_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        stage_translator = _get_stage_translator(required=False)
+        if stage_translator is None:
+            logger.warning("Tamil translator unavailable; falling back to English")
+            translation_meta = {"skipped": True, "reason": "translator_unavailable", "fallback_language": "en"}
+        else:
+            t0 = time.perf_counter()
+            translation_meta = stage_translator.english_to_tamil_with_meta(remodeled_english, profile)
+            tamil_text = str(translation_meta.get("tamil_text", "")).strip()
+            timings["english_to_tamil_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
-        stage_translator = _get_stage_translator()
-        t0 = time.perf_counter()
-        theni_tamil_text = stage_translator.tamil_to_thenitamil(tamil_text)
-        timings["tamil_to_theni_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+            t0 = time.perf_counter()
+            theni_tamil_text = stage_translator.tamil_to_thenitamil(tamil_text)
+            timings["tamil_to_theni_ms"] = round((time.perf_counter() - t0) * 1000, 2)
     else:
         translation_meta = {"skipped": True, "reason": "reply_language_is_english"}
 
@@ -1484,6 +1982,13 @@ def _run_stage_pipeline(session: Session, user_id: Optional[int], message: str, 
         "translation_meta": _safe_json(translation_meta),
         "timings_ms": json.dumps({**timings, "total_ms": total_ms}, ensure_ascii=False),
     }
+    model_used = str(core_meta.get("model_used") or review_meta.get("model_used") or "").strip()
+    if model_used:
+        result["model_used"] = model_used
+        result["model_tier"] = str(core_meta.get("model_tier") or review_meta.get("model_tier") or "")
+        result["model_reason"] = str(core_meta.get("model_reason") or review_meta.get("model_reason") or "")
+    if bool(core_meta.get("openai_usage_tracked") or review_meta.get("openai_usage_tracked")):
+        result["openai_usage_tracked"] = True
 
     _log_stage_history(user_id, profile, message, result)
     STAGE_CACHE.set(cache_key, result)
@@ -1515,6 +2020,17 @@ def _metadata_for_item(session: Session, user_id: Optional[int], text: str, fall
         }
 
 
+def _fast_fallback_metadata_for_item(text: str, answer: str) -> Dict[str, Any]:
+    clean_text = " ".join(str(text or "").strip().split())
+    return {
+        "intent": "assistant",
+        "category": "Other",
+        "datetime": None,
+        "title": (clean_text[:60] + "...") if len(clean_text) > 60 else clean_text or "Chat",
+        "details": str(answer or "").strip(),
+    }
+
+
 def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
     def _maybe(value: Any, default: Any):
         if isinstance(value, str):
@@ -1544,6 +2060,17 @@ def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "review_meta": _maybe(result.get("review_meta"), {}),
         "translation_meta": _maybe(result.get("translation_meta"), {}),
         "timings_ms": _maybe(result.get("timings_ms"), {}),
+        "model_used": result.get("model_used"),
+        "model_tier": result.get("model_tier"),
+        "model_reason": result.get("model_reason"),
+        "provider": result.get("provider"),
+        "cost_estimate": result.get("cost_estimate"),
+        "cost_currency": result.get("cost_currency"),
+        "openai_usage_tracked": bool(result.get("openai_usage_tracked")),
+        "fallback_reason": result.get("fallback_reason"),
+        "client_fallback_reason": result.get("client_fallback_reason"),
+        "client_local_budget_ms": result.get("client_local_budget_ms"),
+        "client_original_route": result.get("client_original_route"),
     }
 
 
@@ -1572,9 +2099,11 @@ def _save_item_from_pipeline(
     transcript: Optional[str],
     pipeline_result: Dict[str, Any],
     reply_language: Optional[str] = None,
+    metadata_override: Optional[Dict[str, Any]] = None,
+    skip_expensive_side_effects: bool = False,
 ) -> tuple[Item, Dict[str, Any], Dict[str, Any]]:
     spoken_answer = _assistant_text_from_pipeline(pipeline_result, raw_text, reply_language)
-    meta = _metadata_for_item(session, user_id, raw_text, spoken_answer)
+    meta = metadata_override or _metadata_for_item(session, user_id, raw_text, spoken_answer)
 
     item = Item(
         intent=str(meta.get("intent", "other")).lower(),
@@ -1593,23 +2122,37 @@ def _save_item_from_pipeline(
     session.commit()
     session.refresh(item)
 
-    try:
-        source_id, content_text, updated_at = LOCAL_RAG_SERVICE._candidate_from_item(item)
-        LOCAL_RAG_SERVICE._get_or_create_embedding(
-            session,
-            user_id=user_id,
-            source_type="item",
-            source_id=source_id,
-            content_text=content_text,
-            updated_at=updated_at,
-        )
-    except Exception:
-        session.rollback()
+    if not skip_expensive_side_effects:
+        try:
+            source_id, content_text, updated_at = LOCAL_RAG_SERVICE._candidate_from_item(item)
+            LOCAL_RAG_SERVICE._get_or_create_embedding(
+                session,
+                user_id=user_id,
+                source_type="item",
+                source_id=source_id,
+                content_text=content_text,
+                updated_at=updated_at,
+            )
+        except Exception:
+            session.rollback()
+            logger.warning(
+                "RAG embedding failed",
+                extra={"user_id": user_id, "item_id": getattr(item, "id", None)},
+                exc_info=True,
+            )
 
     normalized_pipeline = _normalized_pipeline_result(pipeline_result)
     payload = {"pipeline": normalized_pipeline, "meta": meta}
     log_conversation(session, user_id, source, raw_text, transcript, payload)
-    upsert_qa_cache(session, user_id, raw_text, payload)
+    if not skip_expensive_side_effects:
+        try:
+            upsert_qa_cache(session, user_id, raw_text, payload)
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "QA cache side effect failed",
+                extra={"user_id": user_id, "source": source},
+            )
     return item, meta, normalized_pipeline
 
 
@@ -1647,6 +2190,44 @@ def _resolve_chat_text(payload: ChatAPIRequest) -> str:
     return text
 
 
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _rag_snippet_count(pipeline: Dict[str, Any]) -> Optional[int]:
+    for container_key in ("core_meta", "review_meta"):
+        container = pipeline.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        rag_context = container.get("rag_context") or container.get("rag_context_used")
+        if isinstance(rag_context, dict) and "snippet_count" in rag_context:
+            try:
+                return int(rag_context.get("snippet_count") or 0)
+            except Exception:
+                return None
+    return None
+
+
+def _backend_agent_source(pipeline: Dict[str, Any]) -> str:
+    if str(pipeline.get("route_taken") or "").lower() == "global_knowledge_cache":
+        return "global_rag"
+    if _boolish(pipeline.get("cache_hit")):
+        return "backend_cache"
+    direct_source = str(pipeline.get("direct_answer_source") or "").lower()
+    route_taken = str(pipeline.get("route_taken") or "").lower()
+    if "openai" in direct_source or route_taken in {"full_pipeline", "full_rewrite"}:
+        return "backend_openai"
+    return "backend_pipeline"
+
+
+def _safe_error_type(exc: BaseException) -> str:
+    if isinstance(exc, HTTPException):
+        return f"http_{exc.status_code}"
+    return exc.__class__.__name__
+
+
 def _run_agentic_or_pipeline(
     session: Session,
     user_id: Optional[int],
@@ -1654,7 +2235,7 @@ def _run_agentic_or_pipeline(
     reply_language: Optional[str] = None,
 ) -> Dict[str, Any]:
     
-    onboarding_profile = load_onboarding_profile(str(user_id))
+    onboarding_profile = load_onboarding_profile(session, user_id)
 
     return _get_agentic_service().orchestrate_chat(
         session,
@@ -1696,50 +2277,109 @@ def _normalize_audio_language(language: Optional[str]) -> Optional[str]:
         return None
 
     # Let the transcription model auto-detect when requested.
-    if value in {"auto", "detect", "auto-detect", "autodetect"}:
+    if value in {"auto", "detect", "auto-detect", "autodetect", "unknown"}:
         return None
 
     if value.startswith("ta"):
-        return "ta"
+        return "ta-IN"
     if value.startswith("en"):
-        return "en"
+        return "en-IN"
     return None
 
 
-def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> str:
-    normalized_language = _normalize_audio_language(language)
+def _sarvam_api_key() -> str:
+    return (os.getenv("SARVAM_API_KEY") or SARVAM_API_KEY or "").strip()
 
+
+def _redact_sarvam_provider_message(message: str) -> str:
+    redacted = str(message or "")
+    api_key = _sarvam_api_key()
+    if api_key:
+        redacted = redacted.replace(api_key, "[REDACTED]")
+    redacted = re.sub(
+        r"(?i)(api[-_ ]?subscription[-_ ]?key\s*[:=]\s*)[^\s,;]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(authorization\s*[:=]\s*bearer\s+)[A-Za-z0-9._~+/=-]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    return redacted
+
+
+def _sarvam_provider_error_detail(response: requests.Response, label: str) -> str:
+    message = ""
     try:
-        if not os.path.exists(file_path) or os.path.getsize(file_path) <= 0:
-            raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
+        payload = response.json()
+    except ValueError:
+        payload = None
 
-        request_kwargs: Dict[str, Any] = {
-            "model": "whisper-1",
-            "response_format": "json",
-        }
-        if normalized_language:
-            request_kwargs["language"] = normalized_language
+    if isinstance(payload, dict):
+        error_payload = payload.get("error") if isinstance(payload.get("error"), dict) else payload
+        message = str(
+            error_payload.get("message")
+            or error_payload.get("detail")
+            or error_payload.get("error")
+            or ""
+        ).strip()
 
-        with open(file_path, "rb") as audio_file:
-            transcript_obj = _get_openai_client().audio.transcriptions.create(
-                file=audio_file,
-                **request_kwargs,
-            )
-    except openai.BadRequestError as exc:
-        if _is_audio_too_short_error(exc):
-            raise HTTPException(400, "Audio file is too short. Please record for at least a moment and try again.") from exc
-        raise HTTPException(400, _extract_openai_error_message(exc)) from exc
+    if not message:
+        message = str(getattr(response, "text", "") or "").strip()
 
-    text = str(getattr(transcript_obj, "text", "") or "").strip()
-    if not text:
-        raise HTTPException(400, "Failed to transcribe audio")
-    return text
+    message = _redact_sarvam_provider_message(message)
+
+    if len(message) > 300:
+        message = f"{message[:300]}..."
+
+    return f"{label} returned {response.status_code}{f': {message}' if message else ''}"
+
+
+def _extract_sarvam_transcript(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+
+    if not isinstance(payload, dict):
+        return ""
+
+    for key in ("transcript", "text", "transcript_text", "output_text"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    for key in ("results", "transcripts"):
+        values = payload.get(key)
+        if not isinstance(values, list):
+            continue
+        parts: List[str] = []
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+            elif isinstance(value, dict):
+                text = _extract_sarvam_transcript(value)
+                if text:
+                    parts.append(text)
+        if parts:
+            return " ".join(parts).strip()
+
+    return ""
+
+
+def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> str:
+    return _get_sarvam_provider().stt_file(file_path, language)
 
 
 @app.post("/parse-datetime")
-def parse_datetime(payload: ParseDatetimeRequest):
+def parse_datetime(
+    payload: ParseDatetimeRequest,
+    auth_user: AuthUser = Depends(get_current_user),
+):
     now_iso = payload.now_iso or _utc_now_iso()
-    user_content = json.dumps({"timezone": payload.timezone, "now": now_iso, "text": payload.text}, ensure_ascii=False)
+    user_content = json.dumps(
+        {"timezone": payload.timezone, "now": now_iso, "text": payload.text},
+        ensure_ascii=False,
+    )
     out = llm_json(PARSE_DT_PROMPT, user_content, temperature=0.0)
     return {
         "iso": out.get("iso"),
@@ -1755,12 +2395,15 @@ def _questionnaire_completed(profile: Optional[UserProfile]) -> bool:
     if not profile:
         return False
 
-    try:
-        answers = json.loads(profile.answers_json or "{}")
-    except Exception:
-        answers = {}
+    answers = _load_json_object(profile.answers_json)
+    if not answers:
+        return False
 
-    return bool(answers)
+    for slot in REQUIRED_PROFILE_SLOTS:
+        if not _has_completed_value(answers.get(slot)):
+            return False
+
+    return True
 
 
 def _ensure_user_profile(session: Session, user_id: int) -> UserProfile:
@@ -1775,7 +2418,7 @@ def _ensure_user_profile(session: Session, user_id: int) -> UserProfile:
         updated_at=_utc_now(),
     )
     session.add(profile)
-    session.commit()
+    safe_commit(session, "_ensure_user_profile")
     session.refresh(profile)
     return profile
 
@@ -1826,25 +2469,41 @@ def _find_existing_user(
 
 
 @app.post("/users")
-def create_user(payload: UserCreate, session: Session = Depends(get_session)):
+def create_user(
+    payload: UserCreate,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
     assistant_name = (payload.assistant_name or "Elli").strip() or "Elli"
     reply_language = _normalize_reply_language(payload.reply_language)
-    normalized_email = _normalize_email(payload.email)
-    firebase_uid = (payload.firebase_uid or "").strip() or None
+    normalized_email = _normalize_email(auth_user.email or payload.email)
+    firebase_uid = auth_user.firebase_uid
 
-    print(
-        "[DEBUG] /users incoming payload:",
-        json.dumps(payload.model_dump(), ensure_ascii=False, default=str),
-    )
+    existing_by_uid = session.exec(
+        select(User).where(User.firebase_uid == firebase_uid)
+    ).first()
 
-    try:
-        user = _find_existing_user(
-            session,
-            user_id=payload.user_id,
-            firebase_uid=firebase_uid,
-            email=normalized_email,
+    existing_by_email = None
+    if normalized_email:
+        existing_by_email = session.exec(
+            select(User).where(User.email == normalized_email)
+        ).first()
+
+    if existing_by_uid and existing_by_email and existing_by_uid.id != existing_by_email.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Firebase UID and email belong to different users",
         )
 
+    user = existing_by_uid or existing_by_email
+
+    if user and user.firebase_uid and user.firebase_uid != firebase_uid:
+        raise HTTPException(
+            status_code=409,
+            detail="Email already belongs to a different Firebase user",
+        )
+
+    try:
         if user is None:
             user = User(
                 firebase_uid=firebase_uid,
@@ -1855,52 +2514,29 @@ def create_user(payload: UserCreate, session: Session = Depends(get_session)):
                 assistant_name=assistant_name,
                 reply_language=reply_language,
             )
-            session.add(user)
         else:
-            user.firebase_uid = firebase_uid or user.firebase_uid
+            user.firebase_uid = firebase_uid
             user.email = normalized_email or user.email
             user.name = payload.name
             user.place = payload.place
             user.timezone = payload.timezone or user.timezone or "Asia/Kolkata"
             user.assistant_name = assistant_name
             user.reply_language = reply_language or getattr(user, "reply_language", "ta") or "ta"
-            session.add(user)
 
-        session.commit()
-        session.refresh(user)
-    except IntegrityError:
-        session.rollback()
-        user = _find_existing_user(
-            session,
-            user_id=payload.user_id,
-            firebase_uid=firebase_uid,
-            email=normalized_email,
-        )
-        if user is None:
-            raise HTTPException(409, "User could not be created because of a conflicting identity record.")
-        user.firebase_uid = firebase_uid or user.firebase_uid
-        user.email = normalized_email or user.email
-        user.name = payload.name
-        user.place = payload.place
-        user.timezone = payload.timezone or user.timezone or "Asia/Kolkata"
-        user.assistant_name = assistant_name
-        user.reply_language = reply_language or getattr(user, "reply_language", "ta") or "ta"
         session.add(user)
-        session.commit()
+        safe_commit(session, "create_user")
         session.refresh(user)
-    except Exception as exc:
+    except IntegrityError as exc:
         session.rollback()
-        print(f"[DEBUG] /users failed while saving: {exc}")
-        raise
+        raise HTTPException(
+            status_code=409,
+            detail="User could not be created because of a conflicting identity record.",
+        ) from exc
 
     profile = _ensure_user_profile(session, int(user.id))
     response_payload = _serialize_user_payload(user, profile)
 
-    print(
-        "[DEBUG] /users response payload:",
-        json.dumps(response_payload, ensure_ascii=False, default=str),
-    )
-
+    logger.info("User profile saved", extra={"user_id": user.id})
     _get_agentic_service().persist_profile_snapshot(session, int(user.id))
     return response_payload
 
@@ -1910,19 +2546,10 @@ def resolve_user(
     firebase_uid: Optional[str] = Query(default=None),
     email: Optional[str] = Query(default=None),
     session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    normalized_email = _normalize_email(email)
-    normalized_uid = (firebase_uid or "").strip() or None
-
-    if not normalized_uid and not normalized_email:
-        raise HTTPException(400, "firebase_uid or email is required")
-
-    user = _find_existing_user(
-        session,
-        firebase_uid=normalized_uid,
-        email=normalized_email,
-    )
-
+    # Compatibility endpoint: identity is resolved only from the verified bearer token.
+    user = session.exec(select(User).where(User.firebase_uid == auth_user.firebase_uid)).first()
     if not user:
         return {"found": False}
 
@@ -1933,19 +2560,36 @@ def resolve_user(
     }
 
 
+@app.get("/users/me")
+def get_me(
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    profile = _ensure_user_profile(session, int(user.id))
+    return _serialize_user_payload(user, profile)
+
+
 @app.get("/users/{user_id}")
-def get_user(user_id: int, session: Session = Depends(get_session)):
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
+def get_user(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     profile = _ensure_user_profile(session, user_id)
     return _serialize_user_payload(user, profile)
 
+
 @app.delete("/users/{user_id}")
-def delete_user_account(user_id: int, session: Session = Depends(get_session)):
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
+def delete_user_account(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
 
     try:
         session.exec(delete(Item).where(Item.user_id == user_id))
@@ -1956,17 +2600,17 @@ def delete_user_account(user_id: int, session: Session = Depends(get_session)):
         session.exec(delete(RagEmbedding).where(RagEmbedding.user_id == user_id))
         session.exec(delete(Job).where(Job.user_id == user_id))
         session.delete(user)
-        session.commit()
-    except Exception as exc:
+        safe_commit(session, "delete_user_account")
+    except Exception:
         session.rollback()
-        print(f"[DEBUG] /users/{{user_id}} delete failed: {exc}")
+        logger.exception("Failed to delete user account", extra={"user_id": user_id})
         raise
 
     for path_getter in (STAGE_BEHAVIOUR._profile_path, STAGE_BEHAVIOUR._history_log_path):
         try:
             path_getter(str(user_id)).unlink(missing_ok=True)
-        except Exception as exc:
-            print(f"[WARN] Failed to delete stage file for user {user_id}: {exc}")
+        except Exception:
+            logger.warning("Failed to delete stage file", extra={"user_id": user_id})
 
     STAGE_CACHE.delete_prefix(f"{user_id}:")
 
@@ -1983,13 +2627,26 @@ def get_pipeline_questions():
 
 
 @app.get("/api/profile/{user_id}")
-def get_pipeline_profile(user_id: int, session: Session = Depends(get_session)):
+def get_pipeline_profile(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     profile = _sync_stage_profile(session, user_id)
     return {"exists": True, "profile": profile}
 
 
 @app.post("/api/profile/{user_id}")
-def save_pipeline_profile(user_id: int, payload: PersonalityAnswersIn, session: Session = Depends(get_session)):
+def save_pipeline_profile(
+    user_id: int,
+    payload: PersonalityAnswersIn,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     _get_agentic_service().sync_answers_to_profile(session, user_id, payload.answers)
     stage_profile = _sync_stage_profile(session, user_id)
     STAGE_CACHE.clear()
@@ -1997,17 +2654,36 @@ def save_pipeline_profile(user_id: int, payload: PersonalityAnswersIn, session: 
 
 
 @app.get("/api/agents/profiler/{user_id}")
-def get_profiler_state(user_id: int, session: Session = Depends(get_session)):
+def get_profiler_state(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     return _get_agentic_service().get_profiler_state(session, user_id)
 
 
 @app.post("/api/agents/profiler/{user_id}/start")
-def start_profiler_agent(user_id: int, session: Session = Depends(get_session)):
+def start_profiler_agent(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     return _get_agentic_service().start_profiler(session, user_id)
 
 
 @app.post("/api/agents/profiler/{user_id}/message")
-def profiler_agent_message(user_id: int, payload: AgentMessageRequest, session: Session = Depends(get_session)):
+def profiler_agent_message(
+    user_id: int,
+    payload: AgentMessageRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     try:
         return _get_agentic_service().profiler_turn(session, user_id, payload.message, payload.reply_language)
     except ValueError as exc:
@@ -2015,7 +2691,14 @@ def profiler_agent_message(user_id: int, payload: AgentMessageRequest, session: 
 
 
 @app.post("/api/agents/memory/{user_id}/sync")
-def sync_memory_agent(user_id: int, payload: AgentMemorySyncRequest, session: Session = Depends(get_session)):
+def sync_memory_agent(
+    user_id: int,
+    payload: AgentMemorySyncRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     return _get_agentic_service().maybe_sync_memory(session, user_id, force=bool(payload.force))
 
 
@@ -2044,42 +2727,606 @@ def _build_direct_answer_pipeline_result(
     )
 
 
-def _run_chat_logic(session: Session, payload: ChatAPIRequest, text: str) -> Dict[str, Any]:
-    routing = run_orchestrator(_get_openai_client(required=False), text)
+def _build_global_cache_pipeline_result(hit: Dict[str, Any]) -> Dict[str, Any]:
+    answer = str(hit.get("answer") or "").strip()
+    language = _normalize_reply_language(hit.get("answer_language") or "en")
+    result = _build_pipeline_result(
+        raw_english=answer,
+        remodeled_english=answer,
+        tamil_text=answer if language == "ta" else "",
+        theni_tamil_text=answer if language == "ta" else "",
+        route_taken="global_knowledge_cache",
+        direct_answer_source="global_qa_cache",
+        direct_answer_confidence=f"{float(hit.get('similarity_score') or hit.get('confidence') or 0.0):.4f}",
+        predicted_label="global_knowledge",
+        risk_level="low",
+        stage_notes=["Answered from approved global repeated-question knowledge."],
+        core_meta={
+            "source": "global_qa_cache",
+            "global_cache_id": hit.get("id"),
+            "answer_hash": hit.get("answer_hash"),
+            "topic": hit.get("topic"),
+        },
+        timings_ms={"total_ms": 0.0},
+        cache_hit="true",
+    )
+    result["model_used"] = None
+    result["model_tier"] = None
+    result["model_reason"] = "global_cache_hit"
+    return result
 
-    if routing["intent"] == "EMERGENCY":
+
+def _static_general_answer_pipeline_result(message: str) -> Optional[Dict[str, Any]]:
+    normalized = _normalize_lookup_text(message)
+    answers: Dict[str, tuple[str, str]] = {
+        "do you know about ipl": (
+            "Yes. The IPL, or Indian Premier League, is a professional Twenty20 cricket league in India with city-based franchise teams. It is known for short-format matches, auctions, playoffs, and a mix of Indian and international players.",
+            "ipl_general",
+        ),
+        "tell me about indian premier league": (
+            "The Indian Premier League is India's major franchise-based Twenty20 cricket league. Teams represent different cities or regions, matches are short and high-scoring, and the tournament usually includes a league stage followed by playoffs.",
+            "ipl_general",
+        ),
+        "what is photosynthesis": (
+            "Photosynthesis is the process plants use to make food. They use sunlight, carbon dioxide from the air, and water from the soil to produce glucose, and they release oxygen as a by-product.",
+            "science_general",
+        ),
+        "explain quantum computing in simple words": (
+            "Quantum computing is a different way of computing that uses qubits instead of normal bits. A normal bit is 0 or 1; a qubit can represent a richer state, which lets quantum computers explore some kinds of problems in special ways.",
+            "science_general",
+        ),
+        "write a short email asking for a meeting": (
+            "Subject: Meeting Request\n\nHi,\n\nI hope you are doing well. Could we schedule a short meeting this week to discuss this further? Please let me know a time that works for you.\n\nBest regards,",
+            "writing",
+        ),
+        "give me 5 birthday gift ideas for my brother": (
+            "1. Wireless earbuds\n2. A good backpack or laptop bag\n3. A book in a genre he likes\n4. A smartwatch or fitness band\n5. A personalized wallet or keychain",
+            "ideas",
+        ),
+        "what is a compiler": (
+            "A compiler is a program that translates source code written by a programmer into machine code, bytecode, or another executable form that a computer can run.",
+            "computing_general",
+        ),
+        "explain black holes simply": (
+            "A black hole is a region in space where gravity is so strong that even light cannot escape after it crosses the boundary called the event horizon. They usually form when very massive stars collapse.",
+            "science_general",
+        ),
+        "summarize why the sky is blue": (
+            "The sky looks blue because sunlight is scattered by tiny molecules in Earth's atmosphere. Shorter blue wavelengths scatter more than longer red wavelengths, a process often called Rayleigh scattering.",
+            "science_general",
+        ),
+        "what is fistula": (
+            "A fistula is an abnormal tunnel or connection between two body parts, such as between organs or from an organ to the skin. It can have different causes, so it is best to consult a clinician for diagnosis and treatment options.",
+            "medical_general",
+        ),
+    }
+    entry = answers.get(normalized)
+    if entry is None:
+        return None
+    answer, label = entry
+    return _build_pipeline_result(
+        raw_english=answer,
+        remodeled_english=answer,
+        route_taken="static_general_answer",
+        direct_answer_source="static_smoke_knowledge",
+        direct_answer_confidence="0.9900",
+        predicted_label=label,
+        risk_level="low",
+        stage_notes=["Answered from deterministic backend knowledge without calling OpenAI."],
+        timings_ms={"total_ms": 0.0},
+    )
+
+
+def _is_openai_unavailable_exception(exc: BaseException) -> bool:
+    if _openai_provider_http_exception(exc) is not None:
+        return True
+    if isinstance(exc, HTTPException) and int(exc.status_code) in {502, 503, 504}:
+        detail = str(exc.detail or "")
+        return "OPENAI_API_KEY" in detail or "OpenAI" in detail or "Model" in detail
+    return False
+
+
+def _is_backend_openai_pipeline(pipeline: Dict[str, Any]) -> bool:
+    route_taken = str(pipeline.get("route_taken") or "").lower()
+    direct_source = str(pipeline.get("direct_answer_source") or "").lower()
+    return (
+        route_taken in {"full_pipeline", "full_rewrite"}
+        or "openai" in direct_source
+        or str(pipeline.get("model_used") or "").strip() != ""
+    )
+
+
+def _record_backend_openai_side_effects(
+    session: Session,
+    *,
+    user_id: Optional[int],
+    question: str,
+    pipeline_result: Dict[str, Any],
+    answer: str,
+    request_id: Optional[str],
+) -> None:
+    if not _is_backend_openai_pipeline(pipeline_result):
+        return
+    model_used = str(pipeline_result.get("model_used") or "").strip()
+    model_tier = str(pipeline_result.get("model_tier") or "").strip()
+    model_reason = str(pipeline_result.get("model_reason") or "").strip()
+    if not model_used:
+        selection = OpenAIModelRouter().select_model("normal_qa", question)
+        model_used = selection.model
+        model_tier = selection.tier
+        model_reason = selection.reason
+        estimated_input_tokens = selection.estimated_input_tokens
+        estimated_output_tokens = selection.estimated_output_tokens
+        estimated_cost_usd = selection.estimated_cost_usd
+    else:
+        router = OpenAIModelRouter()
+        estimated_input_tokens = router.estimate_tokens(question)
+        estimated_output_tokens = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS_DEFAULT", "900") or 900)
+        estimated_cost_usd = router.estimate_cost(model_used, estimated_input_tokens, estimated_output_tokens)
+
+    if not bool(pipeline_result.get("openai_usage_tracked")):
+        record_openai_usage(
+            session,
+            user_id=user_id,
+            request_id=request_id,
+            route=str(pipeline_result.get("route_taken") or "api_chat"),
+            model_used=model_used,
+            model_tier=model_tier or "standard",
+            reason=model_reason or "backend_openai_pipeline",
+            estimated_input_tokens=estimated_input_tokens,
+            estimated_output_tokens=estimated_output_tokens,
+            estimated_cost_usd=estimated_cost_usd,
+            cache_hit=False,
+        )
+    record_backend_openai_answer(
+        session,
+        user_id,
+        question,
+        answer,
+        model_used,
+        request_id=request_id,
+    )
+
+
+def _record_stage_timing(stage_timings: Dict[str, Any], label: str, started_at: float) -> None:
+    stage_timings[label] = round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def _log_backend_workflow_step(
+    event: str,
+    *,
+    user_id: Optional[int],
+    question: Optional[str] = None,
+    stage_timings: Optional[Dict[str, Any]] = None,
+    **extra_fields: Any,
+) -> None:
+    logger.info(
+        event,
+        extra=chat_log_payload(
+            event=event,
+            user_id=user_id,
+            request_id=get_request_id(),
+            question=question,
+            stage_timings=stage_timings or None,
+            **extra_fields,
+        ),
+    )
+
+
+def _handle_routing_fast_exit(
+    session: Session,
+    payload: ChatAPIRequest,
+    text: str,
+    routing: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    intent = str(routing.get("intent") or "GENERAL").upper()
+    priority = str(routing.get("priority") or "low")
+    confidence = float(routing.get("confidence") or 0.0)
+    matched_keyword = str(routing.get("matched_keyword") or "")
+
+    if intent == "EMERGENCY":
         res = "🚨 EMERGENCY DETECTED: Please stay safe and contact emergency services (112) immediately."
         return _build_direct_answer_pipeline_result(
             res,
             "EMERGENCY",
             "orchestrator_emergency",
-            routing["priority"],
-            routing["confidence"],
-            routing.get("matched_keyword", ""),
+            priority,
+            confidence,
+            matched_keyword,
         )
 
-    if routing["intent"] == "AMBIGUOUS":
+    if intent == "AMBIGUOUS":
         res = routing.get("clarification_question") or "Could you share a bit more so I can assist you better?"
         return _build_direct_answer_pipeline_result(
             res,
             "AMBIGUOUS",
             "orchestrator_clarification",
-            routing["priority"],
-            routing["confidence"],
-            routing.get("matched_keyword", ""),
+            priority,
+            confidence,
+            matched_keyword,
         )
 
-    if routing["intent"] in {"GREETING", "SMALLTALK", "PROFILE", "IDENTITY"}:
+    if intent in {"GREETING", "SMALLTALK", "PROFILE", "IDENTITY"}:
         tl_fast_res = _try_local_fast_path(session, payload.user_id, text)
         if tl_fast_res:
             return tl_fast_res
 
-    return _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+    return None
 
 
-def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
+_FAST_FALLBACK_CURRENT_DATA_RE = re.compile(
+    r"\b("
+    r"latest|current|live|breaking|today|tonight|tomorrow|yesterday|now|"
+    r"news|score|scores|weather|forecast|rain|temperature|stock|price|"
+    r"election|result|results|fixture|schedule\s+today|standings"
+    r")\b",
+    re.IGNORECASE,
+)
+_FAST_FALLBACK_TOOL_RE = re.compile(
+    r"\b(remind|reminder|calendar|appointment|todo|to\s+do|task|schedule|alarm)\b",
+    re.IGNORECASE,
+)
+_FAST_FALLBACK_HIGH_RISK_RE = re.compile(
+    r"\b("
+    r"emergency|suicide|self\s*harm|kill myself|hurt myself|chest pain|"
+    r"bleeding|cannot breathe|can't breathe|doctor|medical|medicine|"
+    r"symptom|diagnosis|treatment|prescription|dosage|legal|lawyer|"
+    r"lawsuit|contract|tax|financial advice|investment|loan|insurance|"
+    r"bank account|credit card"
+    r")\b",
+    re.IGNORECASE,
+)
+_FAST_FALLBACK_PRIVATE_RE = re.compile(
+    r"\b("
+    r"my name|who am i|where do i live|my profile|my memory|remember|"
+    r"what do you know about me|my routine|my goal|my address|my phone|"
+    r"my email|my password|my salary|my bank"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_backend_fast_fallback_candidate(payload: ChatAPIRequest, text: str, routing: Dict[str, Any]) -> bool:
+    if str(payload.client_fallback_reason or "").strip().lower() != "local_timeout":
+        return False
+    if str(routing.get("intent") or "").strip().upper() != "GENERAL":
+        return False
+    normalized = _normalize_lookup_text(text)
+    if not normalized:
+        return False
+    for pattern in (
+        _FAST_FALLBACK_CURRENT_DATA_RE,
+        _FAST_FALLBACK_TOOL_RE,
+        _FAST_FALLBACK_HIGH_RISK_RE,
+        _FAST_FALLBACK_PRIVATE_RE,
+    ):
+        if pattern.search(normalized):
+            return False
+    return True
+
+
+def _run_backend_fast_fallback(
+    session: Session,
+    payload: ChatAPIRequest,
+    text: str,
+    stage_timings: Dict[str, Any],
+) -> Dict[str, Any]:
+    reply_language = _normalize_reply_language(payload.reply_language)
+    language_instruction = (
+        "Answer directly in Tamil. Do not translate through a second step."
+        if reply_language == "ta"
+        else "Answer directly in English."
+    )
+    started = time.perf_counter()
+    _log_backend_workflow_step(
+        "backend_fast_fallback_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="backend_fast_fallback",
+        workflow_phase="started",
+        client_fallback_reason=payload.client_fallback_reason,
+        client_local_budget_ms=payload.client_local_budget_ms,
+        client_original_route=payload.client_original_route,
+        fallback_reason=payload.client_fallback_reason,
+        original_route=payload.client_original_route,
+        stage_timings=stage_timings,
+    )
+    try:
+        response = tracked_chat_completion(
+            _get_openai_client(),
+            task="normal_qa",
+            route="backend_fast_fallback",
+            session=session,
+            user_id=payload.user_id,
+            request_id=payload.request_id or get_request_id(),
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a concise, helpful assistant. The phone-local model timed out, "
+                        "so answer the user's ordinary general question in one direct response. "
+                        "Do not claim access to live or current data."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"{language_instruction}\n\nUser question: {text}",
+                },
+            ],
+            temperature=0.3,
+            max_tokens=700,
+        )
+    except OpenAIBudgetExceededError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    answer = _extract_response_text(response) or "I could not produce an answer in time. Please try again."
+    metadata = get_tracked_chat_completion_metadata(response)
+    _record_stage_timing(stage_timings, "backend_fast_fallback", started)
+    _log_backend_workflow_step(
+        "backend_fast_fallback_completed",
+        user_id=payload.user_id,
+        question=text,
+        answer=answer,
+        workflow_step="backend_fast_fallback",
+        workflow_phase="completed",
+        route_taken="backend_fast_fallback",
+        agent_source="backend_openai",
+        fallback_reason=payload.client_fallback_reason,
+        model_used=metadata.get("model_used"),
+        model_tier=metadata.get("model_tier"),
+        duration_ms=stage_timings.get("backend_fast_fallback"),
+        stage_timings=stage_timings,
+    )
+    result = _build_pipeline_result(
+        raw_english=answer if reply_language == "en" else "",
+        remodeled_english=answer if reply_language == "en" else "",
+        tamil_text=answer if reply_language == "ta" else "",
+        theni_tamil_text=answer if reply_language == "ta" else "",
+        route_taken="backend_fast_fallback",
+        direct_answer_source="backend_openai_fast_fallback",
+        direct_answer_confidence="1.0000",
+        predicted_label="general_qa",
+        risk_level="low",
+        stage_notes=["Answered through one tracked backend OpenAI fast-fallback call after local timeout."],
+        core_meta={
+            "source": "backend_openai_fast_fallback",
+            "fallback_reason": payload.client_fallback_reason,
+            "client_original_route": payload.client_original_route,
+            **metadata,
+        },
+        timings_ms={"backend_fast_fallback": stage_timings.get("backend_fast_fallback", 0.0)},
+    )
+    result["fallback_reason"] = payload.client_fallback_reason
+    result["client_fallback_reason"] = payload.client_fallback_reason
+    result["client_original_route"] = payload.client_original_route
+    if payload.client_local_budget_ms is not None:
+        result["client_local_budget_ms"] = payload.client_local_budget_ms
+    if metadata.get("model_used"):
+        result["model_used"] = metadata.get("model_used")
+        result["model_tier"] = metadata.get("model_tier")
+        result["model_reason"] = metadata.get("reason")
+        result["openai_usage_tracked"] = True
+    return result
+
+
+def _run_chat_logic(
+    session: Session,
+    payload: ChatAPIRequest,
+    text: str,
+    stage_timings: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    stage_timings = stage_timings if stage_timings is not None else {}
+    _log_backend_workflow_step(
+        "backend_rule_orchestrator_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="rule_orchestrator",
+        workflow_phase="started",
+        stage_timings=stage_timings,
+    )
+    started = time.perf_counter()
+    routing = run_rule_orchestrator(text)
+    _record_stage_timing(stage_timings, "rule_orchestrator", started)
+    _log_backend_workflow_step(
+        "backend_rule_orchestrator_completed",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="rule_orchestrator",
+        workflow_phase="completed",
+        decision=str(routing.get("intent") or ""),
+        route_taken=str(routing.get("intent") or ""),
+        duration_ms=stage_timings.get("rule_orchestrator"),
+        stage_timings=stage_timings,
+    )
+    fast_result = _handle_routing_fast_exit(session, payload, text, routing)
+    if fast_result is not None:
+        return fast_result
+    if _is_backend_fast_fallback_candidate(payload, text, routing):
+        return _run_backend_fast_fallback(session, payload, text, stage_timings)
+
+    _log_backend_workflow_step(
+        "backend_global_cache_lookup_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="global_cache_lookup",
+        workflow_phase="started",
+        stage_timings=stage_timings,
+    )
+    started = time.perf_counter()
+    try:
+        global_hit = lookup_approved_global_cache(session, text, payload.reply_language)
+    except (ProgrammingError, OperationalError) as exc:
+        session.rollback()
+        _record_stage_timing(stage_timings, "global_cache_lookup", started)
+        _log_backend_workflow_step(
+            "backend_global_cache_error",
+            user_id=payload.user_id,
+            question=text,
+            workflow_step="global_cache_lookup",
+            workflow_phase="failed",
+            error_type=exc.__class__.__name__,
+            error_message=sanitize_log_text(str(exc), 240),
+            db_schema_ready=False,
+            duration_ms=stage_timings.get("global_cache_lookup"),
+            stage_timings=stage_timings,
+        )
+        global_hit = None
+    else:
+        _record_stage_timing(stage_timings, "global_cache_lookup", started)
+    if global_hit is not None:
+        _log_backend_workflow_step(
+            "backend_global_cache_hit",
+            user_id=payload.user_id,
+            question=text,
+            workflow_step="global_cache_lookup",
+            workflow_phase="completed",
+            cache_hit=True,
+            cache_source="global_qa_cache",
+            duration_ms=stage_timings.get("global_cache_lookup"),
+            stage_timings=stage_timings,
+        )
+        return _build_global_cache_pipeline_result(global_hit)
+    _log_backend_workflow_step(
+        "backend_global_cache_miss",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="global_cache_lookup",
+        workflow_phase="completed",
+        cache_hit=False,
+        cache_source="global_qa_cache",
+        duration_ms=stage_timings.get("global_cache_lookup"),
+        stage_timings=stage_timings,
+    )
+
+    static_result = _static_general_answer_pipeline_result(text)
+    if static_result is not None and static_result.get("predicted_label") == "ipl_general":
+        _log_backend_workflow_step(
+            "backend_static_general_answer",
+            user_id=payload.user_id,
+            question=text,
+            workflow_step="static_general_answer",
+            workflow_phase="completed",
+            route_taken=static_result.get("route_taken"),
+            direct_answer_source=static_result.get("direct_answer_source"),
+            stage_timings=stage_timings,
+        )
+        return static_result
+
+    _log_backend_workflow_step(
+        "backend_full_orchestrator_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="full_orchestrator",
+        workflow_phase="started",
+        stage_timings=stage_timings,
+    )
+    started = time.perf_counter()
+    routing = run_orchestrator(_get_openai_client(required=False), text)
+    _record_stage_timing(stage_timings, "full_orchestrator", started)
+    _log_backend_workflow_step(
+        "backend_full_orchestrator_completed",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="full_orchestrator",
+        workflow_phase="completed",
+        decision=str(routing.get("intent") or ""),
+        duration_ms=stage_timings.get("full_orchestrator"),
+        stage_timings=stage_timings,
+    )
+    fast_result = _handle_routing_fast_exit(session, payload, text, routing)
+    if fast_result is not None:
+        return fast_result
+
+    _log_backend_workflow_step(
+        "backend_openai_fallback_started",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="openai_fallback",
+        workflow_phase="started",
+        client_fallback_reason=payload.client_fallback_reason,
+        client_local_budget_ms=payload.client_local_budget_ms,
+        client_original_route=payload.client_original_route,
+        fallback_reason=payload.client_fallback_reason,
+        original_route=payload.client_original_route,
+        stage_timings=stage_timings,
+    )
+    started = time.perf_counter()
+    try:
+        result = _run_agentic_or_pipeline(session, payload.user_id, text, payload.reply_language)
+    except Exception as exc:
+        static_result = _static_general_answer_pipeline_result(text)
+        if static_result is not None and _is_openai_unavailable_exception(exc):
+            _record_stage_timing(stage_timings, "openai_fallback", started)
+            _log_backend_workflow_step(
+                "backend_static_general_answer",
+                user_id=payload.user_id,
+                question=text,
+                workflow_step="static_general_answer",
+                workflow_phase="completed",
+                route_taken=static_result.get("route_taken"),
+                direct_answer_source=static_result.get("direct_answer_source"),
+                safe_error_type=_safe_error_type(exc),
+                duration_ms=stage_timings.get("openai_fallback"),
+                stage_timings=stage_timings,
+            )
+            return static_result
+        raise
+    _record_stage_timing(stage_timings, "openai_fallback", started)
+    _log_backend_workflow_step(
+        "backend_openai_fallback_completed",
+        user_id=payload.user_id,
+        question=text,
+        workflow_step="openai_fallback",
+        workflow_phase="completed",
+        route_taken=result.get("route_taken"),
+        model_used=result.get("model_used"),
+        model_tier=result.get("model_tier"),
+        duration_ms=stage_timings.get("openai_fallback"),
+        stage_timings=stage_timings,
+    )
+    return result
+
+
+def _metadata_for_ai_response(text: str, response: AIProviderResponse) -> Dict[str, Any]:
+    if isinstance(response.raw, dict) and isinstance(response.raw.get("item_metadata"), dict):
+        return dict(response.raw["item_metadata"])
+    clean_text = " ".join(str(text or "").strip().split())
+    intent = "assistant"
+    if response.intent in {"reminder", "routine", "profile", "settings"}:
+        intent = response.intent
+    return {
+        "intent": intent,
+        "category": "Other",
+        "datetime": None,
+        "title": (clean_text[:60] + "...") if len(clean_text) > 60 else clean_text or "Chat",
+        "details": response.text,
+    }
+
+
+def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
     text = _resolve_chat_text(payload)
-    pipeline_result = _run_chat_logic(session, payload, text)
+    request_id = payload.request_id or get_request_id()
+    ai_response = run_text_turn(
+        session,
+        AIRequest(
+            user_id=payload.user_id,
+            message=text,
+            reply_language=payload.reply_language,
+            channel="text",
+            request_id=request_id,
+            metadata={
+                "admin_email": getattr(payload, "admin_email", None),
+                "client_fallback_reason": payload.client_fallback_reason,
+                "client_local_budget_ms": payload.client_local_budget_ms,
+                "client_original_route": payload.client_original_route,
+            },
+        ),
+        existing_context={
+            "local_rag_service": LOCAL_RAG_SERVICE,
+            "sarvam_provider": _get_sarvam_provider(),
+        },
+    )
+    pipeline_result = ai_response_to_pipeline(ai_response)
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
@@ -2088,13 +3335,694 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
         transcript=None,
         pipeline_result=pipeline_result,
         reply_language=payload.reply_language,
+        metadata_override=_metadata_for_ai_response(text, ai_response),
+        skip_expensive_side_effects=True,
     )
-    return _build_chat_response(item, meta, normalized_pipeline)
+    response = _build_chat_response(item, meta, normalized_pipeline)
+    response_meta = response.get("meta") if isinstance(response, dict) else {}
+    if isinstance(response_meta, dict):
+        response_meta.setdefault("request_id", request_id)
+        response_meta.setdefault("route", ai_response.route)
+        response_meta.setdefault("source", ai_response.provider)
+        response_meta.setdefault("provider", ai_response.provider)
+        response_meta.setdefault("model_used", ai_response.model)
+        response_meta.setdefault("model_tier", normalized_pipeline.get("model_tier"))
+        if isinstance(ai_response.raw, dict):
+            response_meta.setdefault("model_candidates", ai_response.raw.get("model_candidates") or [])
+            response_meta.setdefault("endpoint", ai_response.raw.get("endpoint") or "")
+            response_meta.setdefault("openai_attempted_models", ai_response.raw.get("openai_attempted_models") or ai_response.raw.get("attempted_models") or [])
+            response_meta.setdefault("fallback_attempted", bool(ai_response.raw.get("fallback_attempted")))
+            if ai_response.raw.get("fallback_reason"):
+                response_meta.setdefault("fallback_reason", ai_response.raw.get("fallback_reason"))
+            if ai_response.raw.get("provider_error_type"):
+                response_meta.setdefault("provider_error_type", ai_response.raw.get("provider_error_type"))
+            response_meta.setdefault("embedding_calls", int(ai_response.raw.get("embedding_calls") or 0))
+        response_meta.setdefault("ai_router_enabled", True)
+        response_meta.setdefault("cost_estimate", ai_response.estimated_cost_amount)
+        response_meta.setdefault("cost_currency", ai_response.estimated_cost_currency)
+        if payload.client_fallback_reason:
+            response_meta.setdefault("fallback_reason", payload.client_fallback_reason)
+            response_meta.setdefault("client_fallback_reason", payload.client_fallback_reason)
+        if payload.client_local_budget_ms is not None:
+            response_meta.setdefault("client_local_budget_ms", payload.client_local_budget_ms)
+        if payload.client_original_route:
+            response_meta.setdefault("original_route", payload.client_original_route)
+            response_meta.setdefault("client_original_route", payload.client_original_route)
+    return response
+
+
+def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
+    if _ai_router_enabled():
+        return _run_ai_router_chat_request(session, payload)
+    if not _legacy_pipeline_enabled():
+        raise HTTPException(503, "AI router is disabled and the legacy pipeline is not enabled.")
+
+    text = _resolve_chat_text(payload)
+    stage_timings: Dict[str, Any] = {}
+    pipeline_result = _run_chat_logic(session, payload, text, stage_timings)
+    is_fast_backend_fallback = (
+        str(pipeline_result.get("route_taken") or "") == "backend_fast_fallback"
+    )
+    fast_answer = str(
+        pipeline_result.get("theni_tamil_text")
+        or pipeline_result.get("tamil_text")
+        or pipeline_result.get("remodeled_english")
+        or pipeline_result.get("raw_english")
+        or ""
+    ).strip()
+    item, meta, normalized_pipeline = _save_item_from_pipeline(
+        session,
+        user_id=payload.user_id,
+        source="text",
+        raw_text=text,
+        transcript=None,
+        pipeline_result=pipeline_result,
+        reply_language=payload.reply_language,
+        metadata_override=(
+            _fast_fallback_metadata_for_item(text, fast_answer)
+            if is_fast_backend_fallback
+            else None
+        ),
+        skip_expensive_side_effects=is_fast_backend_fallback,
+    )
+    if not is_fast_backend_fallback:
+        try:
+            _record_backend_openai_side_effects(
+                session,
+                user_id=payload.user_id,
+                question=text,
+                pipeline_result=normalized_pipeline,
+                answer=str(normalized_pipeline.get("remodeled_english") or item.details or ""),
+                request_id=payload.request_id or get_request_id(),
+            )
+        except Exception:
+            session.rollback()
+            logger.exception(
+                "OpenAI/global-cache side effects failed",
+                extra={"user_id": payload.user_id, "request_id": payload.request_id or get_request_id()},
+            )
+    response = _build_chat_response(item, meta, normalized_pipeline)
+    response_meta = response.get("meta") if isinstance(response, dict) else {}
+    if isinstance(response_meta, dict):
+        response_meta.setdefault("request_id", payload.request_id or get_request_id())
+        response_meta.setdefault("route", normalized_pipeline.get("route_taken"))
+        response_meta.setdefault("source", _backend_agent_source(normalized_pipeline))
+        response_meta.setdefault("model_used", normalized_pipeline.get("model_used"))
+        response_meta.setdefault("model_tier", normalized_pipeline.get("model_tier"))
+        response_meta.setdefault("stageTimings", stage_timings)
+        response_meta.setdefault("stage_timings", stage_timings)
+        if payload.client_fallback_reason:
+            response_meta.setdefault("fallback_reason", payload.client_fallback_reason)
+            response_meta.setdefault("client_fallback_reason", payload.client_fallback_reason)
+        if payload.client_local_budget_ms is not None:
+            response_meta.setdefault("client_local_budget_ms", payload.client_local_budget_ms)
+        if payload.client_original_route:
+            response_meta.setdefault("original_route", payload.client_original_route)
+            response_meta.setdefault("client_original_route", payload.client_original_route)
+    _log_backend_workflow_step(
+        "backend_chat_response_ready",
+        user_id=payload.user_id,
+        question=text,
+        answer=str(normalized_pipeline.get("remodeled_english") or item.details or ""),
+        workflow_step="chat_response",
+        workflow_phase="completed",
+        route_taken=normalized_pipeline.get("route_taken"),
+        agent_source=_backend_agent_source(normalized_pipeline),
+        cache_hit=normalized_pipeline.get("cache_hit") == "true",
+        model_used=normalized_pipeline.get("model_used"),
+        model_tier=normalized_pipeline.get("model_tier"),
+        stage_timings=stage_timings,
+    )
+    return response
+
+
+@app.post("/api/client/turn-log")
+def api_client_turn_log(
+    payload: ClientTurnLogRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    if payload.user_id is not None:
+        assert_owner(int(payload.user_id), user)
+
+    if not CLIENT_TURN_LOGS_ENABLED:
+        return {"ok": True, "skipped": True}
+
+    event = sanitize_log_text(payload.event, 80) or "client_turn_log"
+    set_request_context(
+        request_id=payload.request_id or get_request_id() or new_request_id(),
+        route="/api/client/turn-log",
+        user_id=str(user.id),
+    )
+    logger.info(
+        event,
+        extra=chat_log_payload(
+            event=event,
+            user_id=int(user.id),
+            request_id=payload.request_id,
+            turn_id=payload.turn_id,
+            channel=payload.channel or "text",
+            question_hash=payload.question_hash,
+            question=payload.question,
+            answer=payload.answer,
+            question_length=payload.question_length,
+            answer_length=payload.answer_length,
+            agent_source=payload.agent_source,
+            route_taken=payload.route_taken,
+            fallback_reason=payload.fallback_reason,
+            duration_ms=payload.duration_ms,
+            local_duration_ms=payload.local_duration_ms,
+            backend_duration_ms=payload.backend_duration_ms,
+            total_duration_ms=payload.total_duration_ms,
+            stage_timings=payload.stage_timings,
+            workflow_step=payload.workflow_step,
+            workflow_phase=payload.workflow_phase,
+            step_index=payload.step_index,
+            decision=payload.decision,
+            cache_hit=payload.cache_hit,
+            cache_source=payload.cache_source,
+            global_sync_status=payload.global_sync_status,
+            http_status=payload.http_status,
+            error_name=payload.error_name,
+            error_message=payload.error_message,
+            model_used=payload.model_used,
+            model_tier=payload.model_tier,
+            native_backend=payload.native_backend,
+            local_runtime_mode=payload.local_runtime_mode,
+            db_schema_ready=payload.db_schema_ready,
+            screen=payload.screen,
+            app_state=payload.app_state,
+            sync_id=payload.sync_id,
+            page=payload.page,
+            limit=payload.limit,
+            since=payload.since,
+            after_id=payload.after_id,
+            missing_tables=payload.missing_tables,
+            last_step=payload.last_step,
+            started_at=payload.started_at,
+            error_type=payload.error_type,
+            app_version=payload.app_version,
+            api_base=payload.api_base,
+            build_number=payload.build_number,
+            mobile_build_id=payload.mobile_build_id,
+            mobile_git_sha=payload.mobile_git_sha,
+            local_to_backend_fallback_ms=payload.local_to_backend_fallback_ms,
+            cloud_fallback_enabled=payload.cloud_fallback_enabled,
+            created_at=payload.created_at,
+            provider=payload.provider,
+            voice_phase=payload.voice_phase,
+            telemetry_delivery=payload.telemetry_delivery,
+            file_size=payload.file_size,
+            mime_type=payload.mime_type,
+            chat_routing=payload.chat_routing,
+            voice_routing=payload.voice_routing,
+            native_safety_status=payload.native_safety_status,
+        ),
+    )
+    if CHAT_TURN_SUMMARY_LOGS_ENABLED:
+        logger.info(
+            "client_turn_summary",
+            extra=build_turn_summary_payload(
+                event="client_turn_summary",
+                client_event=event,
+                user_id=int(user.id),
+                request_id=payload.request_id,
+                turn_id=payload.turn_id,
+                channel=payload.channel or "text",
+                question_hash=payload.question_hash,
+                question=payload.question,
+                answer=payload.answer,
+                question_length=payload.question_length,
+                answer_length=payload.answer_length,
+                agent_source=payload.agent_source,
+                route_taken=payload.route_taken,
+                fallback_reason=payload.fallback_reason,
+                duration_ms=payload.duration_ms,
+                local_duration_ms=payload.local_duration_ms,
+                backend_duration_ms=payload.backend_duration_ms,
+                total_duration_ms=payload.total_duration_ms,
+                stage_timings=payload.stage_timings,
+                workflow_step=payload.workflow_step,
+                workflow_phase=payload.workflow_phase,
+                step_index=payload.step_index,
+                decision=payload.decision,
+                cache_hit=payload.cache_hit,
+                cache_source=payload.cache_source,
+                global_sync_status=payload.global_sync_status,
+                http_status=payload.http_status,
+                error_name=payload.error_name,
+                error_message=payload.error_message,
+                model_used=payload.model_used,
+                model_tier=payload.model_tier,
+                native_backend=payload.native_backend,
+                local_runtime_mode=payload.local_runtime_mode,
+                db_schema_ready=payload.db_schema_ready,
+                screen=payload.screen,
+                app_state=payload.app_state,
+                sync_id=payload.sync_id,
+                page=payload.page,
+                limit=payload.limit,
+                since=payload.since,
+                after_id=payload.after_id,
+                missing_tables=payload.missing_tables,
+                last_step=payload.last_step,
+                started_at=payload.started_at,
+                error_type=payload.error_type,
+                app_version=payload.app_version,
+                api_base=payload.api_base,
+                build_number=payload.build_number,
+                mobile_build_id=payload.mobile_build_id,
+                mobile_git_sha=payload.mobile_git_sha,
+                local_to_backend_fallback_ms=payload.local_to_backend_fallback_ms,
+                cloud_fallback_enabled=payload.cloud_fallback_enabled,
+                created_at=payload.created_at,
+                provider=payload.provider,
+                voice_phase=payload.voice_phase,
+                telemetry_delivery="received",
+                file_size=payload.file_size,
+                mime_type=payload.mime_type,
+                chat_routing=payload.chat_routing,
+                voice_routing=payload.voice_routing,
+                native_safety_status=payload.native_safety_status,
+            ),
+        )
+    return {"ok": True}
+
+
+@app.get("/api/debug/observability")
+def api_debug_observability(
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    return _observability_config_payload()
+
+
+def _alembic_revision_status(session: Session) -> Dict[str, Any]:
+    try:
+        from alembic.config import Config
+        from alembic.runtime.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+
+        config = Config(str(BACKEND_ROOT / "alembic.ini"))
+        script = ScriptDirectory.from_config(config)
+        context = MigrationContext.configure(session.get_bind())
+        current = context.get_current_revision()
+        return {
+            "current": current,
+            "head": script.get_current_head(),
+            "ok": bool(current and current == script.get_current_head()),
+        }
+    except Exception as exc:
+        return {
+            "current": None,
+            "head": None,
+            "ok": False,
+            "error": sanitize_log_text(str(exc), 160),
+        }
+
+
+@app.get("/api/debug/schema-status")
+def api_debug_schema_status(
+    session: Session = Depends(get_session),
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    readiness = global_qa_schema_ready(session)
+    return {
+        "ok": bool(readiness.get("ok")),
+        "globalQa": {
+            "ok": bool(readiness.get("ok")),
+            "missingTables": readiness.get("missing_tables") or [],
+        },
+        "alembic": _alembic_revision_status(session),
+    }
+
+
+def _admin_ai_probe_enabled() -> bool:
+    return str(os.getenv("ENABLE_ADMIN_AI_PROBE", "false")).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+@app.get("/api/admin/ai/provider-health")
+def api_admin_ai_provider_health(
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    if not _admin_ai_probe_enabled():
+        raise HTTPException(status_code=403, detail="Admin AI probe is disabled")
+    return {"ok": True, "models": model_health_snapshot()}
+
+
+@app.post("/api/admin/ai/model-probe")
+def api_admin_ai_model_probe(
+    payload: AIModelProbeRequest,
+    session: Session = Depends(get_session),
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    if not _admin_ai_probe_enabled():
+        raise HTTPException(status_code=403, detail="Admin AI probe is disabled")
+    catalog = get_openai_model_catalog()
+    requested_models = [str(model or "").strip() for model in (payload.models or []) if str(model or "").strip()]
+    models = requested_models or [
+        name
+        for name, spec in catalog.items()
+        if spec.enabled_by_default and (spec.free_user_allowed or not spec.admin_only)
+    ]
+    client = _get_openai_client()
+    rows: list[dict[str, Any]] = []
+    for model in models:
+        spec = get_model_spec(model)
+        clear_model_health("openai", model)
+        started = time.perf_counter()
+        try:
+            response = tracked_openai_generation(
+                client,
+                messages=[{"role": "user", "content": "Say ok in one short sentence."}],
+                input_text="Say ok in one short sentence.",
+                instructions="Return a one-sentence health probe answer. Do not include secrets.",
+                task="normal_qa",
+                route="admin_model_probe",
+                candidates=[
+                    {
+                        "model": model,
+                        "tier": spec.tier,
+                        "endpoint": spec.endpoint,
+                        "reason": "admin_probe",
+                        "max_output_tokens": 16,
+                    }
+                ],
+                session=session,
+                request_id=get_request_id(),
+                max_output_tokens=16,
+            )
+            metadata = get_tracked_chat_completion_metadata(response)
+            rows.append(
+                {
+                    "provider": "openai",
+                    "model": model,
+                    "endpoint": metadata.get("endpoint") or spec.endpoint,
+                    "ok": True,
+                    "error_type": "",
+                    "latency_ms": int(round((time.perf_counter() - started) * 1000)),
+                }
+            )
+        except Exception as exc:
+            rows.append(
+                {
+                    "provider": "openai",
+                    "model": model,
+                    "endpoint": spec.endpoint,
+                    "ok": False,
+                    "error_type": exc.__class__.__name__,
+                    "error_message_sanitized": sanitize_log_text(str(exc), 160),
+                    "latency_ms": int(round((time.perf_counter() - started) * 1000)),
+                }
+            )
+    return {"ok": True, "results": rows}
+
+
+@app.get("/api/debug/global-qa-cache")
+def api_debug_global_qa_cache(
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    session: Session = Depends(get_session),
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status and normalized_status not in {"candidate", "approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="status must be candidate, approved, or rejected")
+    query = select(GlobalQACache).order_by(GlobalQACache.updated_at.desc()).limit(limit)
+    if normalized_status:
+        query = query.where(GlobalQACache.status == normalized_status)
+    rows = list(session.exec(query).all())
+    safe_rows = [
+        row
+        for row in rows
+        if str(row.safety_label or "").strip().lower() not in {"private", "personal_high_risk"}
+    ]
+    return {
+        "ok": True,
+        "count": len(safe_rows),
+        "entries": [
+            {
+                "id": row.id,
+                "canonical_question": row.canonical_question,
+                "status": row.status,
+                "hit_count": row.hit_count,
+                "distinct_user_count": row.distinct_user_count,
+                "observed_question_count": row.observed_question_count,
+                "confidence": row.confidence,
+                "review_notes": row.review_notes,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in safe_rows
+        ],
+    }
+
+
+@app.get("/api/global-knowledge/sync")
+def api_global_knowledge_sync(
+    since: Optional[str] = Query(default=None),
+    afterId: Optional[int] = Query(default=None, ge=1),
+    limit: int = Query(default=250, ge=1, le=500),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    started = time.perf_counter()
+    set_request_context(user_id=str(user.id))
+    logger.info(
+        "backend_global_sync_requested",
+        extra=chat_log_payload(
+            event="backend_global_sync_requested",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            workflow_step="global_knowledge_sync",
+            workflow_phase="started",
+            since=since,
+            after_id=str(afterId) if afterId is not None else None,
+            limit=limit,
+        ),
+    )
+    try:
+        payload = build_global_knowledge_sync_payload(session, since=since, limit=limit, after_id=afterId)
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.exception(
+            "backend_global_sync_failed",
+            extra=chat_log_payload(
+                event="backend_global_sync_failed",
+                user_id=int(user.id),
+                request_id=get_request_id(),
+                workflow_step="global_knowledge_sync",
+                workflow_phase="failed",
+                error_type=exc.__class__.__name__,
+                error_message=sanitize_log_text(str(exc), 240),
+                duration_ms=duration_ms,
+                since=since,
+                after_id=str(afterId) if afterId is not None else None,
+                limit=limit,
+            ),
+        )
+        raise
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "backend_global_sync_completed",
+        extra=chat_log_payload(
+            event="backend_global_sync_completed",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            workflow_step="global_knowledge_sync",
+            workflow_phase="completed",
+            global_sync_status="ok" if payload.get("ok") else str(payload.get("error") or "failed"),
+            db_schema_ready=payload.get("schemaReady", True),
+            cache_hit=False,
+            duration_ms=duration_ms,
+            since=since,
+            after_id=str(afterId) if afterId is not None else None,
+            limit=limit,
+            missing_tables=payload.get("missingTables") or [],
+        ),
+    )
+    return payload
 
 
 @app.post("/api/chat")
-def api_chat(payload: ChatAPIRequest, session: Session = Depends(get_session)):
-    return _run_chat_request(session, payload)
+def api_chat(
+    payload: ChatAPIRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    payload = payload.model_copy(
+        update={
+            "user_id": int(user.id),
+            "reply_language": payload.reply_language or getattr(user, "reply_language", None),
+            "admin_email": auth_user.email,
+        }
+    )
+    text = _resolve_chat_text(payload)
+    started = time.perf_counter()
+    set_request_context(request_id=payload.request_id or get_request_id() or new_request_id(), user_id=str(user.id))
+    logger.info(
+        "backend_chat_received",
+        extra=chat_log_payload(
+            event="backend_chat_received",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            channel="text",
+            question=text,
+            workflow_step="chat_received",
+            workflow_phase="started",
+            client_fallback_reason=payload.client_fallback_reason,
+            client_local_budget_ms=payload.client_local_budget_ms,
+            client_original_route=payload.client_original_route,
+            fallback_reason=payload.client_fallback_reason,
+            original_route=payload.client_original_route,
+        ),
+    )
+    logger.info(
+        "chat_turn_started",
+        extra=chat_log_payload(
+            event="chat_turn_started",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            channel="text",
+            question=text,
+        ),
+    )
+    try:
+        response = _run_chat_request(
+            session,
+            payload.model_copy(update={"message": text, "text": None}),
+        )
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        mapped_openai_exc = _openai_provider_http_exception(exc)
+        status_code = (
+            mapped_openai_exc.status_code
+            if mapped_openai_exc is not None
+            else exc.status_code
+            if isinstance(exc, HTTPException)
+            else getattr(exc, "status_code", 500)
+        )
+        logger.info(
+            "chat_turn_failed",
+            extra=chat_log_payload(
+                event="chat_turn_failed",
+                user_id=int(user.id),
+                request_id=get_request_id(),
+                channel="text",
+                question=text,
+                safe_error_type=_safe_error_type(exc),
+                status_code=status_code,
+                duration_ms=duration_ms,
+            ),
+        )
+        if CHAT_TURN_SUMMARY_LOGS_ENABLED:
+            logger.info(
+                "chat_turn_summary",
+                extra=build_turn_summary_payload(
+                    event="chat_turn_summary",
+                    user_id=int(user.id),
+                    request_id=get_request_id(),
+                    channel="text",
+                    question=text,
+                    route_taken="failed",
+                    agent_source="backend_pipeline",
+                    safe_error_type=_safe_error_type(exc),
+                    status_code=status_code,
+                    duration_ms=duration_ms,
+                ),
+            )
+        if isinstance(exc, OpenAIBudgetExceededError):
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if mapped_openai_exc is not None:
+            raise mapped_openai_exc from exc
+        raise
+
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    pipeline = response.get("pipeline") if isinstance(response, dict) else {}
+    pipeline = pipeline if isinstance(pipeline, dict) else {}
+    meta = response.get("meta") if isinstance(response, dict) else {}
+    meta = meta if isinstance(meta, dict) else {}
+    answer = ""
+    if isinstance(response, dict):
+        assistant = response.get("assistant")
+        if isinstance(assistant, dict):
+            answer = str(assistant.get("text") or assistant.get("english") or "")
+        item = response.get("item")
+        if not answer and isinstance(item, dict):
+            answer = str(item.get("details") or "")
+    logger.info(
+        "chat_turn_completed",
+        extra=chat_log_payload(
+            event="chat_turn_completed",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            channel="text",
+            question=text,
+            route_taken=pipeline.get("route_taken"),
+            predicted_label=pipeline.get("predicted_label"),
+            direct_answer_source=pipeline.get("direct_answer_source"),
+            direct_answer_confidence=pipeline.get("direct_answer_confidence"),
+            model_used=pipeline.get("model_used"),
+            model_tier=pipeline.get("model_tier"),
+            fallback_reason=(
+                pipeline.get("fallback_reason")
+                or pipeline.get("client_fallback_reason")
+                or meta.get("fallback_reason")
+                or meta.get("fallbackReason")
+            ),
+            client_fallback_reason=(
+                pipeline.get("client_fallback_reason")
+                or meta.get("client_fallback_reason")
+                or meta.get("clientFallbackReason")
+            ),
+            client_local_budget_ms=(
+                pipeline.get("client_local_budget_ms")
+                or meta.get("client_local_budget_ms")
+                or meta.get("clientLocalBudgetMs")
+            ),
+            client_original_route=(
+                pipeline.get("client_original_route")
+                or meta.get("client_original_route")
+                or meta.get("clientOriginalRoute")
+            ),
+            cache_hit=pipeline.get("cache_hit"),
+            rag_snippet_count=_rag_snippet_count(pipeline),
+            agent_source=_backend_agent_source(pipeline),
+            answer=answer,
+            duration_ms=duration_ms,
+            stage_timings=meta.get("stageTimings") or meta.get("stage_timings") or pipeline.get("timings_ms"),
+        ),
+    )
+    if CHAT_TURN_SUMMARY_LOGS_ENABLED:
+        logger.info(
+            "chat_turn_summary",
+            extra=build_turn_summary_payload(
+                event="chat_turn_summary",
+                user_id=int(user.id),
+                request_id=get_request_id(),
+                channel="text",
+                question=text,
+                answer=answer,
+                route_taken=pipeline.get("route_taken"),
+                predicted_label=pipeline.get("predicted_label"),
+                direct_answer_source=pipeline.get("direct_answer_source"),
+                direct_answer_confidence=pipeline.get("direct_answer_confidence"),
+                model_used=pipeline.get("model_used"),
+                model_tier=pipeline.get("model_tier"),
+                cache_hit=pipeline.get("cache_hit"),
+                fallback_reason=(
+                    pipeline.get("fallback_reason")
+                    or meta.get("fallback_reason")
+                    or meta.get("fallbackReason")
+                ),
+                rag_snippet_count=_rag_snippet_count(pipeline),
+                agent_source=_backend_agent_source(pipeline),
+                duration_ms=duration_ms,
+                stage_timings=meta.get("stageTimings") or meta.get("stage_timings") or pipeline.get("timings_ms"),
+            ),
+        )
+    return response
 
 
 def _run_chat_payload(payload: ChatAPIRequest) -> Dict[str, Any]:
@@ -2107,15 +4035,30 @@ def _sse_event(event: str, data: Any) -> str:
 
 
 @app.post("/api/chat/stream")
-async def api_chat_stream(payload: ChatAPIRequest):
-    started_at = time.perf_counter()
-    response = await asyncio.to_thread(_run_chat_payload, payload)
-    assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
+async def api_chat_stream(
+    payload: ChatAPIRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    payload = payload.model_copy(
+        update={
+            "user_id": int(user.id),
+            "reply_language": payload.reply_language or getattr(user, "reply_language", None),
+            "admin_email": auth_user.email,
+        }
+    )
     chunk_size = max(12, int(os.getenv("STREAM_CHUNK_SIZE", "32") or 32))
 
     async def event_generator():
+        started_at = time.perf_counter()
         yield _sse_event("status", {"phase": "accepted"})
+        await asyncio.sleep(0)
         yield _sse_event("status", {"phase": "running"})
+        await asyncio.sleep(0)
+
+        response = await asyncio.to_thread(_run_chat_payload, payload)
+        assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
         for index in range(0, len(assistant_text), chunk_size):
             yield _sse_event(
                 "token",
@@ -2134,15 +4077,20 @@ async def api_chat_stream(payload: ChatAPIRequest):
 
 
 @app.post("/api/chat/jobs")
-def enqueue_chat_job(payload: ChatAPIRequest, session: Session = Depends(get_session)):
+def enqueue_chat_job(
+    payload: ChatAPIRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
     _require_async_jobs_available()
+    user = get_owned_user(session, auth_user)
     text = _resolve_chat_text(payload)
     job = _get_job_queue().enqueue(
         session,
         job_type="chat",
-        user_id=payload.user_id,
+        user_id=int(user.id),
         payload={
-            "user_id": payload.user_id,
+            "user_id": int(user.id),
             "message": text,
             "reply_language": payload.reply_language,
         },
@@ -2152,8 +4100,16 @@ def enqueue_chat_job(payload: ChatAPIRequest, session: Session = Depends(get_ses
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job_status(job_id: int, session: Session = Depends(get_session)):
-    return {"ok": True, "job": _serialize_job(_get_job_queue().get_job(session, job_id))}
+def get_job_status(
+    job_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    job = _get_job_queue().get_job(session, job_id)
+    if not job or job.user_id != user.id:
+        raise HTTPException(404, "Job not found")
+    return {"ok": True, "job": _serialize_job(job)}
 
 
 @app.get("/api/flags")
@@ -2172,53 +4128,76 @@ def get_feature_flags():
     }
 
 @app.post("/api/tts")
-def api_tts(payload: TTSRequest):
-    if not SARVAM_API_KEY:
-        raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
-    
-    url = "https://api.sarvam.ai/text-to-speech"
-    headers = {
-        "api-subscription-key": SARVAM_API_KEY,
-        "Content-Type": "application/json"
-    }
-    
-    req_payload = {
-        "inputs": [payload.text],
-        "target_language_code": "ta-IN",
-        "speaker": "manisha",
-        "model": "bulbul:v2",
-        "pace": 0.85
-    }
-    
-    response = requests.post(url, headers=headers, json=req_payload)
-    
-    # Fallback to "text" instead of "inputs" if the API format diverges
-    if response.status_code in [422, 400] and "inputs" in req_payload:
-        req_payload["text"] = payload.text
-        del req_payload["inputs"]
-        response = requests.post(url, headers=headers, json=req_payload)
-        
-    if response.status_code == 200:
-        data = response.json()
-        if "audios" in data and len(data["audios"]) > 0:
-            return {"audio_base64": data["audios"][0]}
-        else:
-            raise HTTPException(status_code=500, detail="Response did not contain 'audios' field.")
-    else:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+def api_tts(
+    payload: TTSRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    text = str(payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required.")
+    user = get_owned_user(session, auth_user)
+    enforce_provider_budget(session, "sarvam", currency="INR")
+    started = time.perf_counter()
+    premium = str(os.getenv("SARVAM_TTS_PREMIUM", "false")).strip().lower() in {"1", "true", "yes", "on"}
+    model = (
+        os.getenv("SARVAM_TTS_MODEL_PREMIUM", "bulbul:v3")
+        if premium
+        else os.getenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    ).strip() or ("bulbul:v3" if premium else "bulbul:v2")
+    logger.info(
+        "tts_started",
+        extra=chat_log_payload(
+            event="tts_started",
+            target_language_code=payload.target_language_code or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN") or "ta-IN",
+            speaker=payload.speaker or os.getenv("SARVAM_TTS_SPEAKER", "shubh") or "shubh",
+            model=model,
+            text=text,
+        ),
+    )
+    audio_base64 = _get_sarvam_provider().tts(
+        text,
+        target_language_code=payload.target_language_code,
+        speaker=payload.speaker,
+        premium=premium,
+    )
+    record_ai_usage_event(
+        session,
+        AIProviderResponse(
+            text="",
+            provider="sarvam",
+            model=model,
+            route="sarvam_tts",
+            reason="tts_endpoint",
+            language=str(payload.target_language_code or "ta-IN"),
+            intent="tts",
+            characters=len(text),
+            estimated_cost_amount=estimate_tts_cost(text, model),
+            estimated_cost_currency="INR",
+        ),
+        user_id=int(user.id),
+        request_id=get_request_id(),
+        latency_ms=int(round((time.perf_counter() - started) * 1000)),
+        metadata={"text_length": len(text)},
+    )
+    return {"audio_base64": audio_base64}
 
 
 @app.post("/users/{user_id}/questionnaire")
-def save_mobile_questionnaire(user_id: int, payload: Dict[str, Any], session: Session = Depends(get_session)):
+def save_mobile_questionnaire(
+    user_id: int,
+    payload: Dict[str, Any],
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
     """Deprecated compatibility endpoint for older mobile builds.
 
     Questionnaire completion is derived from saved personality/profiler answers in
     ``UserProfile.answers_json``. This route intentionally does not write daily
     routine data; daily routine writes belong to ``PUT /users/{user_id}/daily-routine``.
     """
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
 
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
     completed = _questionnaire_completed(profile)
@@ -2236,10 +4215,13 @@ def save_mobile_questionnaire(user_id: int, payload: Dict[str, Any], session: Se
 
 
 @app.post("/users/{user_id}/generate-daily-checkins")
-def generate_daily_checkins(user_id: int, session: Session = Depends(get_session)):
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
+def generate_daily_checkins(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     routine = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
     if not routine:
         raise HTTPException(400, "Daily routine not set. Please configure routine first.")
@@ -2267,7 +4249,13 @@ def generate_daily_checkins(user_id: int, session: Session = Depends(get_session
 
 
 @app.get("/users/{user_id}/daily-routine", response_model=DailyRoutineOut)
-def get_daily_routine(user_id: int, session: Session = Depends(get_session)):
+def get_daily_routine(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     routine = session.exec(select(DailyRoutine).where(DailyRoutine.user_id == user_id)).first()
     if not routine:
         raise HTTPException(404, "Daily routine not set")
@@ -2275,7 +4263,14 @@ def get_daily_routine(user_id: int, session: Session = Depends(get_session)):
 
 
 @app.put("/users/{user_id}/daily-routine", response_model=DailyRoutineOut)
-def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session = Depends(get_session)):
+def upsert_daily_routine(
+    user_id: int,
+    payload: DailyRoutineIn,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     work_start = normalize_optional(payload.work_start)
     work_end = normalize_optional(payload.work_end)
     daily_habits = normalize_optional(payload.daily_habits)
@@ -2295,6 +4290,7 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
         routine.daily_habits = daily_habits
         routine.updated_at = _utc_now()
     else:
+        _require_parent_user(session, user_id)
         routine = DailyRoutine(
             user_id=user_id,
             wake_time=payload.wake_time,
@@ -2305,7 +4301,7 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
             updated_at=_utc_now(),
         )
         session.add(routine)
-    session.commit()
+    safe_commit(session, "upsert_daily_routine")
     session.refresh(routine)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
@@ -2314,26 +4310,46 @@ def upsert_daily_routine(user_id: int, payload: DailyRoutineIn, session: Session
 
 
 @app.get("/users/{user_id}/personality")
-def get_personality(user_id: int, session: Session = Depends(get_session)):
+def get_personality(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
     if not profile:
         raise HTTPException(404, "Personality profile not found")
-    return {"answers": json.loads(profile.answers_json or "{}"), "summary": profile.profile_summary}
+    return {"answers": _load_json_object(profile.answers_json), "summary": profile.profile_summary}
 
 
 @app.post("/users/{user_id}/personality")
-def save_personality_answers(user_id: int, payload: PersonalityAnswersIn, session: Session = Depends(get_session)):
+def save_personality_answers(
+    user_id: int,
+    payload: PersonalityAnswersIn,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     _get_agentic_service().sync_answers_to_profile(session, user_id, payload.answers)
     STAGE_CACHE.clear()
     _sync_stage_profile(session, user_id)
     return {"ok": True}
 
+
 @app.post("/users/{user_id}/personality/generate-summary")
-def generate_personality_summary(user_id: int, session: Session = Depends(get_session)):
+def generate_personality_summary(
+    user_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    assert_owner(user_id, user)
     profile = session.exec(select(UserProfile).where(UserProfile.user_id == user_id)).first()
     if not profile:
         raise HTTPException(404, "Personality answers not found")
-    answers = json.loads(profile.answers_json or "{}")
+    answers = _load_json_object(profile.answers_json)
     if not answers:
         raise HTTPException(400, "No personality answers provided yet")
     result = _get_agentic_service().sync_answers_to_profile(session, user_id, answers)
@@ -2342,12 +4358,17 @@ def generate_personality_summary(user_id: int, session: Session = Depends(get_se
     return {"summary": result.get("summary", "")}
 
 @app.post("/analyze-text", response_model=TextAnalysisResponse)
-def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_session)):
+def analyze_text(
+    payload: TextAnalysisRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     reply_language = payload.reply_language or (payload.meta or {}).get("reply_language")
-    pipeline_result = _run_agentic_or_pipeline(session, payload.user_id, payload.text, reply_language)
+    pipeline_result = _run_agentic_or_pipeline(session, int(user.id), payload.text, reply_language)
     item, _, _ = _save_item_from_pipeline(
         session,
-        user_id=payload.user_id,
+        user_id=int(user.id),
         source="text",
         raw_text=payload.text,
         transcript=None,
@@ -2356,6 +4377,177 @@ def analyze_text(payload: TextAnalysisRequest, session: Session = Depends(get_se
     )
     return item_to_response(item)
 
+
+async def _transcribe_and_analyze_upload(
+    *,
+    user_id: Optional[int],
+    reply_language: Optional[str],
+    speech_language: Optional[str],
+    file: UploadFile,
+    session: Session,
+    auth_user: AuthUser,
+) -> Dict[str, Any]:
+    started = time.perf_counter()
+    user = get_owned_user(session, auth_user)
+    if user_id is not None:
+        assert_owner(int(user_id), user)
+    set_request_context(user_id=str(user.id))
+    reply_language = reply_language or getattr(user, "reply_language", None)
+
+    content_type = str(file.content_type or "").split(";")[0].strip().lower()
+    filename = file.filename or "audio.m4a"
+    upload_bytes = await read_limited_upload(file)
+    logger.info(
+        "voice_upload_received",
+        extra=chat_log_payload(
+            event="voice_upload_received",
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            filename=filename,
+            content_type=content_type,
+            size_bytes=len(upload_bytes),
+            reply_language=reply_language,
+            speech_language=speech_language,
+        ),
+    )
+    if len(upload_bytes) <= 0:
+        raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
+    suffix = os.path.splitext(file.filename or "")[-1] or ".m4a"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(upload_bytes)
+        tmp_path = tmp.name
+
+    try:
+        estimated_audio_seconds, duration_estimation_method = estimate_audio_duration_details(
+            tmp_path,
+            content_type,
+            len(upload_bytes),
+        )
+        enforce_free_voice_quota(
+            session,
+            int(user.id),
+            additional_seconds=estimated_audio_seconds,
+            admin_email=auth_user.email,
+        )
+        enforce_provider_budget(session, "sarvam", currency="INR")
+        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
+        record_ai_usage_event(
+            session,
+            AIProviderResponse(
+                text=transcript_text,
+                provider="sarvam",
+                model=os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
+                route="sarvam_stt",
+                reason="voice_upload_stt",
+                language=normalize_audio_language(speech_language) or "auto",
+                intent="stt",
+                audio_seconds=estimated_audio_seconds,
+                characters=len(transcript_text),
+                estimated_cost_amount=estimate_stt_cost(estimated_audio_seconds),
+                estimated_cost_currency="INR",
+            ),
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            latency_ms=int(round((time.perf_counter() - started) * 1000)),
+            metadata={
+                "file_size": len(upload_bytes),
+                "content_type": content_type,
+                "filename": filename,
+                "duration_estimation_method": duration_estimation_method,
+            },
+        )
+
+        use_ai_router = _ai_router_enabled()
+        if use_ai_router:
+            ai_response = run_text_turn(
+                session,
+                AIRequest(
+                    user_id=int(user.id),
+                    message=transcript_text,
+                    reply_language=reply_language,
+                    channel="voice",
+                    request_id=get_request_id(),
+                    metadata={
+                        "admin_email": auth_user.email,
+                        "file_size": len(upload_bytes),
+                        "audio_seconds": estimated_audio_seconds,
+                        "duration_estimation_method": duration_estimation_method,
+                    },
+                ),
+                existing_context={
+                    "local_rag_service": LOCAL_RAG_SERVICE,
+                    "sarvam_provider": _get_sarvam_provider(),
+                },
+            )
+            pipeline_result = ai_response_to_pipeline(ai_response)
+            metadata_override = _metadata_for_ai_response(transcript_text, ai_response)
+            skip_expensive_side_effects = True
+        elif _legacy_pipeline_enabled():
+            pipeline_result = _run_agentic_or_pipeline(
+                session,
+                int(user.id),
+                transcript_text,
+                reply_language,
+            )
+            metadata_override = None
+            skip_expensive_side_effects = False
+        else:
+            raise HTTPException(503, "AI router is disabled and the legacy pipeline is not enabled.")
+
+        item, meta, normalized_pipeline = _save_item_from_pipeline(
+            session,
+            user_id=int(user.id),
+            source="voice",
+            raw_text=transcript_text,
+            transcript=transcript_text,
+            pipeline_result=pipeline_result,
+            reply_language=reply_language,
+            metadata_override=metadata_override,
+            skip_expensive_side_effects=skip_expensive_side_effects,
+        )
+        response = _build_chat_response(item, meta, normalized_pipeline)
+        response_meta = response.get("meta") if isinstance(response, dict) else {}
+        if isinstance(response_meta, dict) and use_ai_router:
+            response_meta.setdefault("provider", normalized_pipeline.get("provider"))
+            response_meta.setdefault("model_used", normalized_pipeline.get("model_used"))
+            response_meta.setdefault("model_tier", normalized_pipeline.get("model_tier"))
+            response_meta.setdefault("route", normalized_pipeline.get("route_taken"))
+            response_meta.setdefault("ai_router_enabled", True)
+        if CHAT_TURN_SUMMARY_LOGS_ENABLED:
+            assistant = response.get("assistant") if isinstance(response, dict) else {}
+            answer = ""
+            if isinstance(assistant, dict):
+                answer = str(assistant.get("text") or assistant.get("english") or "")
+            pipeline = response.get("pipeline") if isinstance(response, dict) else {}
+            pipeline = pipeline if isinstance(pipeline, dict) else {}
+            logger.info(
+                "voice_turn_summary",
+                extra=build_turn_summary_payload(
+                    event="voice_turn_summary",
+                    user_id=int(user.id),
+                    request_id=get_request_id(),
+                    channel="voice",
+                    question=transcript_text,
+                    answer=answer,
+                    route_taken=pipeline.get("route_taken"),
+                    predicted_label=pipeline.get("predicted_label"),
+                    direct_answer_source=pipeline.get("direct_answer_source"),
+                    cache_hit=pipeline.get("cache_hit"),
+                    fallback_reason=pipeline.get("fallback_reason"),
+                    rag_snippet_count=_rag_snippet_count(pipeline),
+                    agent_source=_backend_agent_source(pipeline),
+                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    voice_phase="completed",
+                ),
+            )
+        return response
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
 @app.post("/transcribe-and-analyze")
 async def transcribe_and_analyze(
     user_id: Optional[int] = None,
@@ -2363,51 +4555,16 @@ async def transcribe_and_analyze(
     speech_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    suffix = os.path.splitext(file.filename)[-1] or ".m4a"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
-        tmp_path = tmp.name
-
-    try:
-        # IMPORTANT:
-        # reply_language controls the assistant's reply language.
-        # speech_language controls STT only.
-        # If speech_language is not provided, Whisper auto-detects the spoken language.
-        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
-
-        pipeline_result = _run_agentic_or_pipeline(
-            session,
-            user_id,
-            transcript_text,
-            reply_language,
-        )
-
-        item, meta, normalized_pipeline = _save_item_from_pipeline(
-            session,
-            user_id=user_id,
-            source="voice",
-            raw_text=transcript_text,
-            transcript=transcript_text,
-            pipeline_result=pipeline_result,
-            reply_language=reply_language,
-        )
-
-        response = item_to_response(item).model_dump()
-        response["assistant"] = {
-            "text": item.details or transcript_text,
-            "english": normalized_pipeline.get("remodeled_english", ""),
-            "tamil": normalized_pipeline.get("tamil_text", ""),
-            "theni_tamil": normalized_pipeline.get("theni_tamil_text", ""),
-        }
-        response["pipeline"] = normalized_pipeline
-        response["meta"] = meta
-        return response
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+    return await _transcribe_and_analyze_upload(
+        user_id=user_id,
+        reply_language=reply_language,
+        speech_language=speech_language,
+        file=file,
+        session=session,
+        auth_user=auth_user,
+    )
 
 
 @app.post("/api/transcribe-and-analyze")
@@ -2417,42 +4574,16 @@ async def api_transcribe_and_analyze(
     speech_language: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    suffix = os.path.splitext(file.filename)[-1] or ".m4a"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
-        tmp_path = tmp.name
-
-    try:
-        # IMPORTANT:
-        # reply_language controls the assistant's reply language.
-        # speech_language controls STT only.
-        # If speech_language is not provided, Whisper auto-detects the spoken language.
-        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
-
-        pipeline_result = _run_agentic_or_pipeline(
-            session,
-            user_id,
-            transcript_text,
-            reply_language,
-        )
-
-        item, meta, normalized_pipeline = _save_item_from_pipeline(
-            session,
-            user_id=user_id,
-            source="voice",
-            raw_text=transcript_text,
-            transcript=transcript_text,
-            pipeline_result=pipeline_result,
-            reply_language=reply_language,
-        )
-        return _build_chat_response(item, meta, normalized_pipeline)
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-
+    return await _transcribe_and_analyze_upload(
+        user_id=user_id,
+        reply_language=reply_language,
+        speech_language=speech_language,
+        file=file,
+        session=session,
+        auth_user=auth_user,
+    )
 
 @app.post("/wake-phrase/transcribe")
 @app.post("/api/wake-phrase/transcribe")
@@ -2460,10 +4591,11 @@ async def transcribe_wake_phrase(
     language: Optional[str] = Query(default=None),
     locale: Optional[str] = Query(default=None),
     file: UploadFile = File(...),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    suffix = os.path.splitext(file.filename)[-1] or ".wav"
+    suffix = os.path.splitext(file.filename or "")[-1] or ".wav"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
+        tmp.write(await read_limited_upload(file))
         tmp_path = tmp.name
 
     try:
@@ -2486,15 +4618,78 @@ def _require_positive_user_id(user_id: Optional[int]) -> int:
     return int(user_id)
 
 
+def _get_owned_item(session: Session, item_id: int, user_id: int) -> Item:
+    item = session.get(Item, item_id)
+    if not item or item.user_id != user_id:
+        raise HTTPException(404, "Item not found")
+    return item
+
+
+def _delete_related_item_memory(session: Session, item: Item, user_id: int) -> None:
+    item_id = str(item.id)
+    raw_text = str(item.raw_text or "")
+
+    qa_rows = list(
+        session.exec(
+            select(QACache).where(
+                QACache.user_id == user_id,
+                QACache.question == raw_text,
+            )
+        ).all()
+    )
+    conversation_query = select(Conversation).where(
+        Conversation.user_id == user_id,
+        Conversation.channel == item.source,
+        Conversation.user_input == raw_text,
+    )
+    if item.transcript is not None:
+        conversation_query = conversation_query.where(Conversation.transcript == item.transcript)
+    conversation_rows = list(session.exec(conversation_query).all())
+
+    session.exec(
+        delete(RagEmbedding).where(
+            RagEmbedding.user_id == user_id,
+            RagEmbedding.source_type == "item",
+            RagEmbedding.source_id == item_id,
+        )
+    )
+
+    for row in qa_rows:
+        if row.id is not None:
+            session.exec(
+                delete(RagEmbedding).where(
+                    RagEmbedding.user_id == user_id,
+                    RagEmbedding.source_type == "qa_cache",
+                    RagEmbedding.source_id == str(row.id),
+                )
+            )
+        session.delete(row)
+
+    for row in conversation_rows:
+        if row.id is not None:
+            session.exec(
+                delete(RagEmbedding).where(
+                    RagEmbedding.user_id == user_id,
+                    RagEmbedding.source_type == "conversation",
+                    RagEmbedding.source_id == str(row.id),
+                )
+            )
+        session.delete(row)
+
+
 @app.get("/items", response_model=List[TextAnalysisResponse])
 def list_items(
     session: Session = Depends(get_session),
-    user_id: int = Query(...),
+    user_id: Optional[int] = Query(default=None),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    resolved_user_id = _require_positive_user_id(user_id)
+    user = get_owned_user(session, auth_user)
+    if user_id is not None:
+        assert_owner(int(user_id), user)
+
     query = (
         select(Item)
-        .where(Item.user_id == resolved_user_id)
+        .where(Item.user_id == int(user.id))
         .order_by(Item.created_at.desc())
     )
     items = session.exec(query).all()
@@ -2505,32 +4700,40 @@ def list_items(
 def get_item(
     item_id: int,
     session: Session = Depends(get_session),
-    user_id: int = Query(...),
+    user_id: Optional[int] = Query(default=None),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    resolved_user_id = _require_positive_user_id(user_id)
-    item = session.exec(
-        select(Item).where(Item.id == item_id, Item.user_id == resolved_user_id)
-    ).first()
-    if not item:
-        raise HTTPException(404, "Item not found")
+    user = get_owned_user(session, auth_user)
+    if user_id is not None:
+        assert_owner(int(user_id), user)
+    item = _get_owned_item(session, item_id, int(user.id))
     return item_to_response(item)
 
 
 @app.delete("/items/{item_id}")
 def delete_item(
     item_id: int,
-    user_id: int = Query(...),
+    user_id: Optional[int] = Query(default=None),
     session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
 ):
-    resolved_user_id = _require_positive_user_id(user_id)
-    item = session.exec(
-        select(Item).where(Item.id == item_id, Item.user_id == resolved_user_id)
-    ).first()
-    if not item:
-        raise HTTPException(404, "Item not found")
+    user = get_owned_user(session, auth_user)
+    if user_id is not None:
+        assert_owner(int(user_id), user)
+    item = _get_owned_item(session, item_id, int(user.id))
+
+    try:
+        _delete_related_item_memory(session, item, int(user.id))
+    except Exception:
+        session.rollback()
+        logger.warning(
+            "Failed to delete item-related memory rows",
+            extra={"user_id": int(user.id), "item_id": item_id},
+            exc_info=True,
+        )
 
     session.delete(item)
-    session.commit()
+    safe_commit(session, "delete_item")
 
     return {"ok": True, "id": item_id}
 
@@ -2558,22 +4761,55 @@ def _category_export_dir(base_dir: Path, category: Optional[str]) -> Path:
     return category_dir
 
 
-def _build_download_payload(path: Path) -> Dict[str, Any]:
+def _sign_download_payload(payload: Dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    sig = hmac.new(DOWNLOAD_TOKEN_SECRET.encode("utf-8"), body.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
+
+
+def _verify_download_token(token: str) -> Dict[str, Any]:
+    token = str(token or "").strip()
+    if "." not in token:
+        raise HTTPException(404, "File not found")
+    body, sig = token.rsplit(".", 1)
+    expected = hmac.new(DOWNLOAD_TOKEN_SECRET.encode("utf-8"), body.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        raise HTTPException(404, "File not found")
+    try:
+        padded = body + "=" * (-len(body) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(404, "File not found") from exc
+    if int(payload.get("exp") or 0) < int(time.time()):
+        raise HTTPException(404, "File not found")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _build_download_payload(path: Path, *, item: Item) -> Dict[str, Any]:
     resolved = path.resolve()
     relative_path = resolved.relative_to(DOCS_BASE_DIR).as_posix()
-    return {"ok": True, "path": relative_path, "download_url": f"/download?path={relative_path}"}
+    token = _sign_download_payload(
+        {
+            "path": relative_path,
+            "user_id": int(item.user_id),
+            "item_id": int(item.id),
+            "exp": int(time.time()) + DOWNLOAD_TOKEN_TTL_SECONDS,
+        }
+    )
+    return {"ok": True, "download_id": token, "download_url": f"/download/{token}"}
 
 
 def _resolve_generated_doc_path(raw_path: str) -> Path:
     relative_path = str(raw_path or "").strip().lstrip("/")
     if not relative_path:
-        raise HTTPException(400, "Path is required")
+        raise HTTPException(404, "File not found")
 
     candidate = (DOCS_BASE_DIR / relative_path).resolve()
     try:
         candidate.relative_to(DOCS_BASE_DIR)
     except ValueError as exc:
-        raise HTTPException(400, "Invalid download path") from exc
+        raise HTTPException(404, "File not found") from exc
 
     if not candidate.is_file():
         raise HTTPException(404, "File not found")
@@ -2673,16 +4909,20 @@ def generate_ppt(item: Item) -> Path:
     return path
 
 
-def _enqueue_export_job(session: Session, *, item_id: int, export_format: str) -> Dict[str, Any]:
+def _enqueue_export_job(
+    session: Session,
+    *,
+    item_id: int,
+    export_format: str,
+    user: User,
+) -> Dict[str, Any]:
     _require_async_jobs_available()
     normalized_format = _validate_export_format(export_format)
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+    item = _get_owned_item(session, item_id, int(user.id))
     job = _get_job_queue().enqueue(
         session,
         job_type="export",
-        user_id=item.user_id,
+        user_id=int(user.id),
         payload={"item_id": item_id, "export_format": normalized_format},
         max_attempts=int(os.getenv("JOB_EXPORT_MAX_ATTEMPTS", "3") or 3),
     )
@@ -2690,55 +4930,101 @@ def _enqueue_export_job(session: Session, *, item_id: int, export_format: str) -
 
 
 @app.post("/items/{item_id}/exports/{export_format}/jobs")
-def item_generate_export_job(item_id: int, export_format: str, session: Session = Depends(get_session)):
-    return _enqueue_export_job(session, item_id=item_id, export_format=export_format)
+def item_generate_export_job(
+    item_id: int,
+    export_format: str,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    return _enqueue_export_job(session, item_id=item_id, export_format=export_format, user=user)
 
 
 @app.post("/items/{item_id}/generate-pdf")
-def item_generate_pdf(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+def item_generate_pdf(
+    item_id: int,
+    session: Session = Depends(get_session),
+    background: bool = Query(default=False),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     if background:
-        return _enqueue_export_job(session, item_id=item_id, export_format="pdf")
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+        return _enqueue_export_job(session, item_id=item_id, export_format="pdf", user=user)
+    item = _get_owned_item(session, item_id, int(user.id))
     path = generate_pdf(item)
-    return _build_download_payload(path)
+    return _build_download_payload(path, item=item)
 
 
 @app.post("/items/{item_id}/generate-excel")
-def item_generate_excel(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+def item_generate_excel(
+    item_id: int,
+    session: Session = Depends(get_session),
+    background: bool = Query(default=False),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     if background:
-        return _enqueue_export_job(session, item_id=item_id, export_format="excel")
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+        return _enqueue_export_job(session, item_id=item_id, export_format="excel", user=user)
+    item = _get_owned_item(session, item_id, int(user.id))
     path = generate_excel(item)
-    return _build_download_payload(path)
+    return _build_download_payload(path, item=item)
 
 
 @app.post("/items/{item_id}/generate-ppt")
-def item_generate_ppt(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+def item_generate_ppt(
+    item_id: int,
+    session: Session = Depends(get_session),
+    background: bool = Query(default=False),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     if background:
-        return _enqueue_export_job(session, item_id=item_id, export_format="ppt")
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+        return _enqueue_export_job(session, item_id=item_id, export_format="ppt", user=user)
+    item = _get_owned_item(session, item_id, int(user.id))
     path = generate_ppt(item)
-    return _build_download_payload(path)
+    return _build_download_payload(path, item=item)
 
 
 @app.post("/items/{item_id}/generate-docx")
-def item_generate_docx(item_id: int, session: Session = Depends(get_session), background: bool = Query(default=False)):
+def item_generate_docx(
+    item_id: int,
+    session: Session = Depends(get_session),
+    background: bool = Query(default=False),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
     if background:
-        return _enqueue_export_job(session, item_id=item_id, export_format="docx")
-    item = session.get(Item, item_id)
-    if not item:
-        raise HTTPException(404, "Item not found")
+        return _enqueue_export_job(session, item_id=item_id, export_format="docx", user=user)
+    item = _get_owned_item(session, item_id, int(user.id))
     path = generate_docx(item)
-    return _build_download_payload(path)
+    return _build_download_payload(path, item=item)
+
+
+@app.get("/download/{download_id}")
+def download_generated_by_token(
+    download_id: str,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    payload = _verify_download_token(download_id)
+    if int(payload.get("user_id") or 0) != int(user.id):
+        raise HTTPException(404, "File not found")
+    item_id = int(payload.get("item_id") or 0)
+    _get_owned_item(session, item_id, int(user.id))
+    resolved_path = _resolve_generated_doc_path(str(payload.get("path") or ""))
+    return FileResponse(str(resolved_path), filename=resolved_path.name)
 
 
 @app.get("/download")
-def download_generated(path: str = Query(..., min_length=1)):
-    resolved_path = _resolve_generated_doc_path(path)
-    return FileResponse(str(resolved_path), filename=resolved_path.name)
+def download_generated(
+    download_id: Optional[str] = Query(default=None),
+    path: Optional[str] = Query(default=None),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    if path:
+        raise HTTPException(400, "Raw path downloads are disabled. Use a signed download_id.")
+    if not download_id:
+        raise HTTPException(400, "download_id is required")
+    return download_generated_by_token(download_id, session, auth_user)

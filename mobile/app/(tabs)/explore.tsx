@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -277,10 +277,10 @@ export default function Explore() {
   const heroRadius = isSmallPhone ? 26 : 30;
   const searchHeight = isSmallPhone ? 52 : 56;
 
-  async function load(
+  const load = useCallback(async (
     userId = profile?.userId,
     isActive: () => boolean = () => true
-  ) {
+  ) => {
     try {
       if (!isActive()) return;
 
@@ -295,7 +295,7 @@ export default function Explore() {
         setLoading(false);
       }
     }
-  }
+  }, [profile?.userId]);
 
   useEffect(() => {
     let mounted = true;
@@ -306,7 +306,7 @@ export default function Explore() {
     return () => {
       mounted = false;
     };
-  }, [profile?.userId]);
+  }, [load, profile?.userId]);
 
   const [nowTs, setNowTs] = useState(() => Date.now());
 
@@ -611,7 +611,7 @@ export default function Explore() {
                   </View>
 
                   <Pressable
-                    onPress={() => router.replace("/(tabs)")}
+                    onPress={() => router.replace("/(chat)" as any)}
                     style={styles.nextUpAction}
                   >
                     <Text style={styles.nextUpActionText}>Create more</Text>
@@ -743,7 +743,7 @@ export default function Explore() {
 
             {!q.trim() ? (
               <Pressable
-                onPress={() => router.replace("/(tabs)")}
+                onPress={() => router.replace("/(chat)" as any)}
                 style={({ pressed }) => [
                   styles.emptyCta,
                   pressed && styles.pressed,

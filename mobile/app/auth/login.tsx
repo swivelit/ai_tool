@@ -22,13 +22,6 @@ import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 import { getPasswordVisibilityProps } from "@/lib/authUi";
 
-const DEV_TEST_ACCOUNT = {
-  name: "Test User",
-  email: "test.user@jai-dev.app",
-  password: "Test@123456",
-};
-
-
 function emailLooksValid(value: string) {
   return /\S+@\S+\.\S+/.test(value.trim());
 }
@@ -36,7 +29,6 @@ function emailLooksValid(value: string) {
 export default function LoginScreen() {
   const {
     signInWithPassword,
-    signUpWithPassword,
     signInWithGoogle,
     googleConfigured,
     googleReady,
@@ -52,7 +44,6 @@ export default function LoginScreen() {
   const { width, height } = useWindowDimensions();
 
   const isCompact = width < 370 || height < 760;
-  const isVeryCompact = width < 345 || height < 700;
 
   const horizontalPadding = isCompact ? 16 : 20;
   const topPadding = insets.top + (isCompact ? 10 : 16);
@@ -99,44 +90,6 @@ export default function LoginScreen() {
     } catch (error: unknown) {
       setErrorText(
         error instanceof Error ? error.message : "Google sign-in failed."
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleDevLogin() {
-    if (!__DEV__) {
-      return;
-    }
-
-    try {
-      setBusy(true);
-      setErrorText("");
-      setEmail(DEV_TEST_ACCOUNT.email);
-      setPassword(DEV_TEST_ACCOUNT.password);
-
-      try {
-        await signInWithPassword(
-          DEV_TEST_ACCOUNT.email,
-          DEV_TEST_ACCOUNT.password
-        );
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : "";
-
-        if (message !== "Invalid email or password.") {
-          throw error;
-        }
-
-        await signUpWithPassword(
-          DEV_TEST_ACCOUNT.name,
-          DEV_TEST_ACCOUNT.email,
-          DEV_TEST_ACCOUNT.password
-        );
-      }
-    } catch (error: unknown) {
-      setErrorText(
-        error instanceof Error ? error.message : "Temporary test login failed."
       );
     } finally {
       setBusy(false);
@@ -224,6 +177,8 @@ export default function LoginScreen() {
                   </View>
                   <TextInput
                     value={email}
+                    testID="login-email-input"
+                    accessibilityLabel="login-email-input"
                     onChangeText={(value) => {
                       setEmail(value);
                       if (errorText) setErrorText("");
@@ -254,6 +209,8 @@ export default function LoginScreen() {
                   </View>
                   <TextInput
                     value={password}
+                    testID="login-password-input"
+                    accessibilityLabel="login-password-input"
                     onChangeText={(value) => {
                       setPassword(value);
                       if (errorText) setErrorText("");
@@ -290,6 +247,8 @@ export default function LoginScreen() {
               <Pressable
                 onPress={handleLogin}
                 disabled={!canSubmit}
+                testID="login-submit-button"
+                accessibilityLabel="login-submit-button"
                 style={({ pressed }) => [
                   styles.buttonShell,
                   pressed && styles.pressed,

@@ -6,48 +6,86 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 import numpy as np
 import openai
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
 from sqlalchemy import text
 
 from .database import SessionLocal, engine
 from .model_runtime import patch_openai_client
 from .observability import bootstrap_observability
+from .openai_tracked import tracked_chat_completion
 
-bootstrap_observability()
-patch_openai_client()
-load_dotenv()
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
-MEMORY_TABLE_NAME = (
-    os.getenv("CONTINUOUS_LEARNING_TABLE", "continuous_learning_memory").strip()
-    or "continuous_learning_memory"
-)
-OPENAI_CHAT_MODEL = os.getenv(
-    "CONTINUOUS_LEARNING_CHAT_MODEL",
-    os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini"),
-)
-EMBED_MODEL_NAME = os.getenv("CONTINUOUS_LEARNING_EMBED_MODEL", "intfloat/e5-small")
-MEMORY_MATCH_THRESHOLD = float(
-    os.getenv("CONTINUOUS_LEARNING_MATCH_THRESHOLD", "0.80") or 0.80
-)
-IDLE_THRESHOLD_SECONDS = int(
-    os.getenv("CONTINUOUS_LEARNING_IDLE_SECONDS", "30") or 30
-)
-BACKGROUND_POLL_SECONDS = float(
-    os.getenv("CONTINUOUS_LEARNING_POLL_SECONDS", "5") or 5
-)
-MAX_MEMORY_ROWS_TO_SCAN = int(
-    os.getenv("CONTINUOUS_LEARNING_MAX_ROWS", "500") or 500
-)
+# Load .env before module-level configuration is read so imported defaults
+# reflect local deployment settings on first import.
+load_dotenv()
+
+_runtime_initialized = False
+_runtime_init_lock = threading.Lock()
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_config_from_env() -> None:
+    global MEMORY_TABLE_NAME, OPENAI_CHAT_MODEL, EMBED_MODEL_NAME
+    global MEMORY_MATCH_THRESHOLD, IDLE_THRESHOLD_SECONDS
+    global BACKGROUND_POLL_SECONDS, MAX_MEMORY_ROWS_TO_SCAN
+
+    MEMORY_TABLE_NAME = (
+        os.getenv("CONTINUOUS_LEARNING_TABLE", "continuous_learning_memory").strip()
+        or "continuous_learning_memory"
+    )
+    OPENAI_CHAT_MODEL = os.getenv(
+        "CONTINUOUS_LEARNING_CHAT_MODEL",
+        os.getenv("OPENAI_JSON_MODEL", "gpt-4o-mini"),
+    )
+    EMBED_MODEL_NAME = os.getenv("CONTINUOUS_LEARNING_EMBED_MODEL", "intfloat/e5-small")
+    MEMORY_MATCH_THRESHOLD = _env_float("CONTINUOUS_LEARNING_MATCH_THRESHOLD", 0.80)
+    IDLE_THRESHOLD_SECONDS = _env_int("CONTINUOUS_LEARNING_IDLE_SECONDS", 30)
+    BACKGROUND_POLL_SECONDS = _env_float("CONTINUOUS_LEARNING_POLL_SECONDS", 5.0)
+    MAX_MEMORY_ROWS_TO_SCAN = _env_int("CONTINUOUS_LEARNING_MAX_ROWS", 500)
+
+
+def initialize_continuous_learning() -> None:
+    """Initialize optional runtime hooks explicitly instead of at import time."""
+    global _runtime_initialized
+    if _runtime_initialized:
+        return
+
+    with _runtime_init_lock:
+        if _runtime_initialized:
+            return
+
+        load_dotenv()
+        bootstrap_observability()
+        patch_openai_client()
+        _load_config_from_env()
+        _runtime_initialized = True
+
+
+_load_config_from_env()
 
 _client: Optional[openai.OpenAI] = None
-_embed_model: Optional[SentenceTransformer] = None
+_embed_model: Optional["SentenceTransformer"] = None
 _client_lock = threading.Lock()
 _embed_model_lock = threading.Lock()
 _schema_lock = threading.Lock()
@@ -107,6 +145,7 @@ def _ensure_schema() -> None:
 
 
 def get_openai_client() -> openai.OpenAI:
+    initialize_continuous_learning()
     global _client
     if _client is None:
         with _client_lock:
@@ -120,12 +159,24 @@ def get_openai_client() -> openai.OpenAI:
     return _client
 
 
-def get_embed_model() -> SentenceTransformer:
+def _load_sentence_transformer_class():
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise RuntimeError(
+            "sentence-transformers is optional and required only for continuous "
+            "learning embeddings. Install sentence-transformers to enable this feature."
+        ) from exc
+    return SentenceTransformer
+
+
+def get_embed_model() -> "SentenceTransformer":
+    initialize_continuous_learning()
     global _embed_model
     if _embed_model is None:
         with _embed_model_lock:
             if _embed_model is None:
-                _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
+                _embed_model = _load_sentence_transformer_class()(EMBED_MODEL_NAME)
     return _embed_model
 
 
@@ -181,8 +232,10 @@ def summarize_chat(chat_list: List[str]) -> str:
         return ""
 
     client = get_openai_client()
-    response = client.chat.completions.create(
-        model=OPENAI_CHAT_MODEL,
+    response = tracked_chat_completion(
+        client,
+        task="simple_transform",
+        route="continuous_learning_summarize",
         messages=[
             {
                 "role": "system",
@@ -212,8 +265,10 @@ Conversation:
 """.strip()
 
     client = get_openai_client()
-    response = client.chat.completions.create(
-        model=OPENAI_CHAT_MODEL,
+    response = tracked_chat_completion(
+        client,
+        task="json",
+        route="continuous_learning_extract_facts",
         messages=[{"role": "user", "content": prompt}],
     )
     return (response.choices[0].message.content or "{}").strip()
@@ -296,8 +351,11 @@ def chat_with_ai(user_input: str, user_id: Optional[int] = None) -> str:
         )
 
     client = get_openai_client()
-    response = client.chat.completions.create(
-        model=OPENAI_CHAT_MODEL,
+    response = tracked_chat_completion(
+        client,
+        task="normal_qa",
+        route="continuous_learning_chat",
+        user_id=user_id,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_input},
@@ -355,6 +413,7 @@ def background_worker() -> None:
 
 def start_background_learning() -> threading.Thread:
     global _worker_thread
+    initialize_continuous_learning()
     _ensure_schema()
 
     with _worker_lock:

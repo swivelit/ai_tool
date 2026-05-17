@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -134,6 +134,7 @@ export default function CustomiseScreen() {
   const [assistantNameInput, setAssistantNameInput] = useState(name || "Elli");
   const [tone, setTone] = useState<Tone>(settings.tone);
   const [languageMode, setLanguageMode] = useState<LanguageMode>(settings.languageMode);
+  const [allowCloudFallback, setAllowCloudFallback] = useState(settings.allowCloudFallback);
   const [handsFreeEnabled, setHandsFreeEnabled] = useState(settings.handsFreeEnabled);
   const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase || `Hey ${name || "Elli"}`);
   const [wakeTrainingSamples, setWakeTrainingSamples] = useState<string[]>(
@@ -175,6 +176,7 @@ export default function CustomiseScreen() {
   useEffect(() => {
     setTone(settings.tone);
     setLanguageMode(settings.languageMode);
+    setAllowCloudFallback(settings.allowCloudFallback);
     setHandsFreeEnabled(settings.handsFreeEnabled);
     setWakePhrase(settings.wakePhrase || `Hey ${name || "Elli"}`);
     setWakeTrainingSamples(settings.wakeTrainingSamples || []);
@@ -213,17 +215,11 @@ export default function CustomiseScreen() {
     [displayName, wakePhrase]
   );
 
-  useEffect(() => {
-    if (trainerVisible) {
-      setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
-      void refreshTrainingDiagnostics();
-    }
-  }, [speechLocale, trainerVisible, wakePrompt]);
-
   const isDirty =
     assistantNameInput.trim() !== assistantLabel ||
     tone !== settings.tone ||
     languageMode !== settings.languageMode ||
+    allowCloudFallback !== settings.allowCloudFallback ||
     handsFreeEnabled !== settings.handsFreeEnabled ||
     wakePrompt !== (settings.wakePhrase || `Hey ${name || "Elli"}`).trim() ||
     JSON.stringify(uniqueSamples(wakeTrainingSamples)) !==
@@ -256,7 +252,7 @@ export default function CustomiseScreen() {
     );
   }
 
-  async function refreshTrainingDiagnostics() {
+  const refreshTrainingDiagnostics = useCallback(async () => {
     if (Platform.OS !== "android") return;
 
     setTrainingDiagnostics((prev) => ({ ...prev, checking: true }));
@@ -314,7 +310,14 @@ export default function CustomiseScreen() {
       installedLocales,
       canUseOnDeviceForLocale: localeMatchesInstalled(speechLocale, installedLocales),
     });
-  }
+  }, [speechLocale]);
+
+  useEffect(() => {
+    if (trainerVisible) {
+      setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
+      void refreshTrainingDiagnostics();
+    }
+  }, [refreshTrainingDiagnostics, trainerVisible, wakePrompt]);
 
   async function downloadOnDeviceSpeechModel() {
     if (Platform.OS !== "android") return;
@@ -458,7 +461,7 @@ export default function CustomiseScreen() {
 
   useSpeechRecognitionEvent(
     "result",
-    (event: { results?: Array<{ transcript?: string }>; isFinal?: boolean } | undefined) => {
+    (event: { results?: { transcript?: string }[]; isFinal?: boolean } | undefined) => {
       if (!trainerVisibleRef.current || !trainingRef.current) return;
 
       const transcript = normalizeRecognitionTranscript(
@@ -714,6 +717,7 @@ export default function CustomiseScreen() {
 
   async function handleSave() {
     const trimmedName = assistantNameInput.trim();
+    const cloudFallbackChanged = allowCloudFallback !== settings.allowCloudFallback;
 
     if (!trimmedName) {
       Alert.alert("Assistant name required", "Please enter an assistant name.");
@@ -730,6 +734,7 @@ export default function CustomiseScreen() {
       if (
         tone !== settings.tone ||
         languageMode !== settings.languageMode ||
+        cloudFallbackChanged ||
         handsFreeEnabled !== settings.handsFreeEnabled ||
         wakePrompt !== (settings.wakePhrase || `Hey ${name || "Elli"}`).trim() ||
         JSON.stringify(uniqueSamples(wakeTrainingSamples)) !==
@@ -738,6 +743,9 @@ export default function CustomiseScreen() {
         await updateSettings({
           tone,
           languageMode,
+          ...(cloudFallbackChanged
+            ? { allowCloudFallback, cloudFallbackUserChoice: true }
+            : {}),
           handsFreeEnabled,
           wakePhrase: wakePrompt,
           wakeTrainingSamples: uniqueSamples(wakeTrainingSamples),
@@ -804,6 +812,11 @@ export default function CustomiseScreen() {
                 icon="radio-outline"
                 label="Hands-free"
                 value={handsFreeEnabled ? "On" : "Off"}
+              />
+              <MetricCard
+                icon="cloud-outline"
+                label="Cloud fallback"
+                value={allowCloudFallback ? "On" : "Off"}
               />
             </View>
           </GlassCard>
@@ -901,6 +914,21 @@ export default function CustomiseScreen() {
                 </View>
               </View>
             ) : null}
+
+            <View style={styles.switchCard}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={styles.inputLabel}>Cloud fallback</Text>
+                <Text style={styles.helperText}>
+                  Use backend/cloud only when phone-local answer is not ready. Turn off for strict phone-only mode.
+                </Text>
+              </View>
+              <Switch
+                value={allowCloudFallback}
+                onValueChange={setAllowCloudFallback}
+                trackColor={{ false: "rgba(124, 99, 80, 0.18)", true: "rgba(215,154,89,0.55)" }}
+                thumbColor="#fff7ef"
+              />
+            </View>
 
             <Pressable
               onPress={handleSave}

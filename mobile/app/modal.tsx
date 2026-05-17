@@ -4,7 +4,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Modal,
-  Switch,
   Platform,
   Pressable,
   ScrollView,
@@ -28,7 +27,7 @@ import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
-import { API_BASE, apiGet, apiPostForm } from "@/lib/api";
+import { apiGet, apiPostForm, apiPut } from "@/lib/api";
 import { getProfileForFirebaseUid } from "@/lib/account";
 
 type Routine = {
@@ -207,8 +206,6 @@ export default function SettingsModal() {
     settings,
     profile,
     refresh,
-    updateName,
-    updateSettings,
   } = useAssistant();
 
   const [resolvedUserId, setResolvedUserId] = useState<number | null>(
@@ -225,11 +222,9 @@ export default function SettingsModal() {
   });
 
   const [assistantNameInput, setAssistantNameInput] = useState(name || "Elli");
-  const [tone, setTone] = useState<"pro" | "friendly">(settings.tone);
   const [languageMode, setLanguageMode] = useState<"en" | "ta">(
     settings.languageMode
   );
-  const [handsFreeEnabled, setHandsFreeEnabled] = useState(settings.handsFreeEnabled);
   const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase || `Hey ${name || "Elli"}`);
   const [wakeTrainingSamples, setWakeTrainingSamples] = useState<string[]>(
     settings.wakeTrainingSamples || []
@@ -269,18 +264,14 @@ export default function SettingsModal() {
   const [deleting, setDeleting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [savingRoutine, setSavingRoutine] = useState(false);
-  const [savingPreferences, setSavingPreferences] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
 
   const isSmallPhone = width < 370 || height < 760;
-  const isVerySmallPhone = width < 345 || height < 700;
   const isCompactSettingsLayout = width < 390;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 6 : 10);
   const bottomPadding = Math.max(insets.bottom + 28, 28);
-  const heroTitleSize = isVerySmallPhone ? 24 : isSmallPhone ? 28 : 33;
-  const heroTitleLineHeight = heroTitleSize + 6;
 
   useEffect(() => {
     trainingWakePhraseRef.current = trainingWakePhrase;
@@ -324,9 +315,7 @@ export default function SettingsModal() {
   }, [name]);
 
   useEffect(() => {
-    setTone(settings.tone);
     setLanguageMode(settings.languageMode);
-    setHandsFreeEnabled(settings.handsFreeEnabled);
     setWakePhrase(settings.wakePhrase || `Hey ${name || "Elli"}`);
     setWakeTrainingSamples(settings.wakeTrainingSamples || []);
   }, [name, settings]);
@@ -369,15 +358,6 @@ export default function SettingsModal() {
       `When you’re ready, tap Start listening and say “${wakePrompt}”.`
     );
   }, [trainingScreenVisible, wakePrompt]);
-
-  const preferencesDirty =
-    assistantNameInput.trim() !== (name || "Elli").trim() ||
-    tone !== settings.tone ||
-    languageMode !== settings.languageMode ||
-    handsFreeEnabled !== settings.handsFreeEnabled ||
-    wakePrompt !== (settings.wakePhrase || `Hey ${name || "Elli"}`).trim() ||
-    JSON.stringify(uniqueSamples(wakeTrainingSamples)) !==
-      JSON.stringify(uniqueSamples(settings.wakeTrainingSamples || []));
 
   const sleepHours = useMemo(
     () => computeSleepHours(routine.wake_time, routine.sleep_time),
@@ -928,24 +908,6 @@ export default function SettingsModal() {
     }
   }
 
-  function openWakePhraseTrainer() {
-    setTrainingScreenVisible(true);
-    trainingScreenVisibleRef.current = true;
-    trainingBestTranscriptRef.current = "";
-    trainingPendingRecordedAudioFallbackRef.current = false;
-    trainingCheckingRecordedAudioRef.current = false;
-    trainingAudioUriRef.current = "";
-    trainingAudioCapturedRef.current = false;
-    setTrainingPhase("idle");
-    setTrainingError("");
-    setTrainingLevel(0);
-    setTrainingTranscript("");
-    setTrainingAudioCaptured(false);
-    setTrainingAudioUri("");
-    setTrainingStatus(`When you’re ready, tap Start listening and say “${wakePrompt}”.`);
-    void refreshTrainingDiagnostics();
-  }
-
   function closeWakePhraseTrainer() {
     trainingScreenVisibleRef.current = false;
     trainingWakePhraseRef.current = false;
@@ -1080,55 +1042,6 @@ export default function SettingsModal() {
     }
   }
 
-  async function savePreferences() {
-    const trimmedName = assistantNameInput.trim();
-
-    if (savingPreferences) return;
-
-    if (trimmedName.length < 2) {
-      showNotice("Invalid name", "Assistant name should be at least 2 characters.");
-      return;
-    }
-
-    try {
-      setSavingPreferences(true);
-
-      if (trimmedName !== (name || "Elli").trim()) {
-        await updateName(trimmedName);
-      }
-
-      if (
-        tone !== settings.tone ||
-        languageMode !== settings.languageMode ||
-        handsFreeEnabled !== settings.handsFreeEnabled ||
-        wakePrompt !== (settings.wakePhrase || `Hey ${name || "Elli"}`).trim() ||
-        JSON.stringify(uniqueSamples(wakeTrainingSamples)) !==
-          JSON.stringify(uniqueSamples(settings.wakeTrainingSamples || []))
-      ) {
-        await updateSettings({
-          tone,
-          languageMode,
-          handsFreeEnabled,
-          wakePhrase: wakePrompt,
-          wakeTrainingSamples: uniqueSamples(wakeTrainingSamples),
-        });
-      }
-
-      await refresh();
-      showNotice(
-        "Preferences saved",
-        "Your assistant preferences have been updated successfully."
-      );
-    } catch (error: any) {
-      showNotice(
-        "Save failed",
-        error?.message || "Could not save assistant preferences."
-      );
-    } finally {
-      setSavingPreferences(false);
-    }
-  }
-
   async function saveRoutine() {
     if (!resolvedUserId) {
       showNotice(
@@ -1169,16 +1082,7 @@ export default function SettingsModal() {
         daily_habits: routine.daily_habits?.trim() || null,
       };
 
-      const res = await fetch(`${API_BASE}/users/${resolvedUserId}/daily-routine`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || "Could not save routine");
-      }
+      await apiPut(`/users/${resolvedUserId}/daily-routine`, payload);
 
       await refresh();
       showNotice("Routine saved", "Your daily routine was updated successfully.");
@@ -1943,39 +1847,6 @@ function StatusChip({
         {label}
       </Text>
     </View>
-  );
-}
-
-function ChoiceCard({
-  label,
-  helper,
-  icon,
-  active,
-  onPress,
-}: {
-  label: string;
-  helper: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.choiceCard,
-        active && styles.choiceCardActive,
-        pressed && styles.pressed,
-      ]}
-    >
-      <View style={styles.choiceCardIconWrap}>
-        <Ionicons name={icon} size={16} color={active ? Brand.ink : Brand.bronze} />
-      </View>
-      <Text style={[styles.choiceCardTitle, active && styles.choiceCardTitleActive]}>
-        {label}
-      </Text>
-      <Text style={styles.choiceCardHelper}>{helper}</Text>
-    </Pressable>
   );
 }
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Callable, Dict, Optional
 
 from sqlalchemy import update as sql_update
@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, select
 
 from .models import Job
+from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,11 @@ class DBJobQueue:
             error_message=None,
             attempts=0,
             max_attempts=max(1, int(max_attempts)),
-            run_at=datetime.utcnow() + timedelta(seconds=max(0, int(run_after_seconds))),
+            run_at=utc_now() + timedelta(seconds=max(0, int(run_after_seconds))),
             started_at=None,
             finished_at=None,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=utc_now(),
+            updated_at=utc_now(),
         )
         session.add(job)
         session.commit()
@@ -89,7 +90,7 @@ class DBJobQueue:
                 self._stop.wait(self.poll_seconds)
 
     def _claim_next_job(self, session: Session) -> Optional[Job]:
-        now = datetime.utcnow()
+        now = utc_now()
         candidate_id = session.exec(
             select(Job.id)
             .where(Job.status.in_(["queued", "retrying"]))
@@ -127,8 +128,8 @@ class DBJobQueue:
             if handler is None:
                 job.status = "failed"
                 job.error_message = f"No handler registered for {job.job_type}"
-                job.finished_at = datetime.utcnow()
-                job.updated_at = datetime.utcnow()
+                job.finished_at = utc_now()
+                job.updated_at = utc_now()
                 session.add(job)
                 session.commit()
                 return True
@@ -138,8 +139,8 @@ class DBJobQueue:
                 result = handler(session, payload)
                 job.status = "completed"
                 job.result_json = json.dumps(result or {}, ensure_ascii=False)
-                job.finished_at = datetime.utcnow()
-                job.updated_at = datetime.utcnow()
+                job.finished_at = utc_now()
+                job.updated_at = utc_now()
                 session.add(job)
                 session.commit()
                 logger.info("job completed", extra={"job_id": job.id, "job_type": job.job_type, "user_id": job.user_id})
@@ -152,11 +153,11 @@ class DBJobQueue:
                 should_retry = job.attempts < int(job.max_attempts or 1)
                 job.status = "retrying" if should_retry else "failed"
                 job.error_message = str(exc)
-                job.updated_at = datetime.utcnow()
+                job.updated_at = utc_now()
                 if should_retry:
-                    job.run_at = datetime.utcnow() + timedelta(seconds=min(60, max(2, job.attempts * 2)))
+                    job.run_at = utc_now() + timedelta(seconds=min(60, max(2, job.attempts * 2)))
                 else:
-                    job.finished_at = datetime.utcnow()
+                    job.finished_at = utc_now()
                 session.add(job)
                 session.commit()
                 logger.exception("job failed", extra={"job_id": job.id, "job_type": job.job_type, "user_id": job.user_id})

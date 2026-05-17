@@ -2,7 +2,6 @@ import React, {
   createContext,
   useContext,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -29,14 +28,25 @@ import {
   statusCodes,
 } from "@react-native-google-signin/google-signin";
 
-import { auth } from "@/lib/firebase";
+import { auth, firebaseConfigStatus } from "@/lib/firebase";
 import {
   clearProfile,
-  createProfileOnBackend,
+  getProfile,
   deleteAccountOnBackend,
   getProfileForFirebaseUid,
 } from "@/lib/account";
+import { getApiErrorDetails } from "@/lib/api";
+import {
+  assertE2eModeAllowed,
+  getE2eMockFirebaseUser,
+  isE2eMockAuthEnabled,
+} from "@/lib/e2eMode";
+import {
+  syncProfileForAuthenticatedUser as syncBackendProfileForAuthenticatedUser,
+  type ProfileSyncResult,
+} from "@/lib/profileSync";
 import { clearAssistantStorage } from "@/lib/storage";
+import { clearLocalAgentDataForUser } from "@/lib/localAgents";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
 
@@ -123,30 +133,28 @@ function mapGoogleError(error: any) {
   return message || "Google sign-in failed. Please try again.";
 }
 
-function detectProvider(user: User): "password" | "google" {
-  if (hasProvider(user, "google.com")) {
-    return "google";
+function requireConfiguredAuth() {
+  if (auth) {
+    return auth;
   }
 
-  return "password";
+  throw new Error(
+    firebaseConfigStatus.message ||
+      "Firebase Auth is not configured. Add EXPO_PUBLIC_FIREBASE_* values before building."
+  );
 }
 
-function buildFallbackName(user: User) {
-  const displayName = user.displayName?.trim();
-  if (displayName) {
-    return displayName;
-  }
-
-  const email = user.email?.trim();
-  if (email && email.includes("@")) {
-    const localPart = email.split("@")[0]?.trim();
-    if (localPart) {
-      return localPart;
-    }
-  }
-
-  return "User";
-}
+type ProfileSyncIssue = {
+  kind: "auth_error" | "backend_error" | "offline";
+  message: string;
+  debugMessage: string;
+  canContinueSetup: boolean;
+  status?: number;
+  method?: string;
+  path?: string;
+  endpoint?: string;
+  apiBase?: string;
+};
 
 type AuthContextType = {
   user: User | null;
@@ -161,21 +169,35 @@ type AuthContextType = {
   linkPasswordForCurrentUser: (password: string, displayName?: string) => Promise<void>;
   signOutUser: () => Promise<void>;
   deleteCurrentAccount: (backendUserId?: number) => Promise<void>;
+  profileSyncIssue: ProfileSyncIssue | null;
+  retryProfileSync: () => Promise<void>;
+  clearProfileSyncIssue: () => void;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  assertE2eModeAllowed();
+  const e2eMockAuth = isE2eMockAuthEnabled();
+  const e2eUser = e2eMockAuth ? (getE2eMockFirebaseUser() as User) : null;
+
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(e2eUser);
+  const [loading, setLoading] = useState(!e2eMockAuth);
   const [googleReady, setGoogleReady] = useState(false);
   const [locallySignedOut, setLocallySignedOut] = useState(false);
+  const [profileSyncIssue, setProfileSyncIssue] = useState<ProfileSyncIssue | null>(null);
   const blockAuthRestoreRef = useRef(false);
+  const lastAuthUserRef = useRef<User | null>(null);
 
   const googleConfigured = Platform.OS !== "web" && Boolean(googleWebClientId);
   const user = locallySignedOut ? null : firebaseUser;
 
   useEffect(() => {
+    if (e2eMockAuth) {
+      setGoogleReady(false);
+      return;
+    }
+
     if (Platform.OS === "web") {
       setGoogleReady(false);
       return;
@@ -192,16 +214,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     setGoogleReady(true);
-  }, []);
+  }, [e2eMockAuth]);
 
   useEffect(() => {
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      lastAuthUserRef.current = e2eUser;
+      setLoading(false);
+      setLocallySignedOut(false);
+      setProfileSyncIssue(null);
+      return;
+    }
+
+    if (!auth) {
+      setFirebaseUser(null);
+      lastAuthUserRef.current = null;
+      setLoading(false);
+      setLocallySignedOut(false);
+      setProfileSyncIssue(null);
+      return;
+    }
+
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
       setFirebaseUser(nextUser);
+      lastAuthUserRef.current = nextUser;
       setLoading(false);
 
       if (!nextUser) {
         blockAuthRestoreRef.current = false;
         setLocallySignedOut(false);
+        setProfileSyncIssue(null);
         return;
       }
 
@@ -211,85 +253,87 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return unsubscribe;
-  }, []);
+  }, [e2eMockAuth]);
 
   async function reloadUser(authUser: User) {
+    const configuredAuth = requireConfiguredAuth();
+
     try {
       await authUser.reload();
     } catch {
       // Ignore reload failures and continue with the current user object.
     }
 
-    return auth.currentUser || authUser;
+    return configuredAuth.currentUser || authUser;
+  }
+
+  function issueFromProfileSyncResult(result: ProfileSyncResult): ProfileSyncIssue | null {
+    const cachedProfile = "cachedProfile" in result ? result.cachedProfile : undefined;
+
+    if (result.status === "ok" || result.status === "not_found" || cachedProfile) {
+      return null;
+    }
+
+    return {
+      kind: result.status,
+      message: result.error.userMessage,
+      debugMessage: result.error.debugMessage,
+      canContinueSetup: result.status === "offline" || result.status === "backend_error",
+      status: result.error.status,
+      method: result.error.method,
+      path: result.error.path,
+      endpoint: result.error.endpoint,
+      apiBase: result.error.apiBase,
+    };
   }
 
   async function syncProfileForAuthenticatedUser(authUser: User) {
     try {
-      const provider = detectProvider(authUser);
-      const restoredProfile = await getProfileForFirebaseUid(authUser.uid, authUser.email);
+      const result = await syncBackendProfileForAuthenticatedUser(authUser);
+      const nextIssue = issueFromProfileSyncResult(result);
 
-      if (!restoredProfile) {
-        if (provider === "google") {
-          // Brand-new Google users should go through profile onboarding first.
-          return null;
-        }
-
-        const createdProfile = await createProfileOnBackend({
-          userId: undefined,
-          firebaseUid: authUser.uid,
-          firebaseEmailVerified: authUser.emailVerified,
-          email: authUser.email || "",
-          avatarUrl: authUser.photoURL || undefined,
-          authProvider: provider,
-          name: buildFallbackName(authUser),
-          place: "",
-          assistantName: "Elli",
-          timezone: "Asia/Kolkata",
-          questionnaireCompleted: false,
-        });
-
-        return createdProfile;
+      if (result.status !== "ok" && result.status !== "not_found") {
+        console.warn(
+          "[auth] Failed to sync backend profile after authentication.",
+          result.error
+        );
       }
 
-      const normalizedAuthEmail = normalizeEmail(authUser.email);
-      const normalizedProfileEmail = normalizeEmail(restoredProfile.email);
-      const fallbackName = buildFallbackName(authUser);
+      setProfileSyncIssue(nextIssue);
 
-      const shouldSyncBackend =
-        restoredProfile.firebaseUid !== authUser.uid ||
-        normalizedProfileEmail !== normalizedAuthEmail ||
-        !restoredProfile.name?.trim() ||
-        restoredProfile.firebaseEmailVerified !== authUser.emailVerified;
-
-      if (!shouldSyncBackend) {
-        return restoredProfile;
+      if (result.status === "ok") {
+        return result.profile;
       }
 
-      const upsertedProfile = await createProfileOnBackend({
-        ...restoredProfile,
-        userId: restoredProfile.userId,
-        firebaseUid: authUser.uid,
-        firebaseEmailVerified: authUser.emailVerified,
-        email: authUser.email || restoredProfile.email || "",
-        avatarUrl: authUser.photoURL || restoredProfile.avatarUrl,
-        authProvider: provider,
-        name: restoredProfile.name || fallbackName,
-        place: restoredProfile.place || "",
-        assistantName: restoredProfile.assistantName || "Elli",
-        timezone: restoredProfile.timezone || "Asia/Kolkata",
-        questionnaireCompleted: restoredProfile.questionnaireCompleted ?? false,
-        replyLanguage: restoredProfile.replyLanguage,
-      });
-
-      return upsertedProfile;
+      return "cachedProfile" in result ? result.cachedProfile || null : null;
     } catch (error) {
-      console.warn("[auth] Failed to sync backend profile after authentication:", error);
+      const details = getApiErrorDetails(error);
+      console.warn(
+        "[auth] Failed to sync backend profile after authentication.",
+        details
+      );
+      setProfileSyncIssue({
+        kind: "backend_error",
+        message: "The backend could not restore your profile right now. Please try again.",
+        debugMessage: details.path
+          ? `Backend profile sync failed: ${details.method || "REQUEST"} ${details.path} returned ${
+              details.status ?? "unknown error"
+            }.`
+          : `Backend profile sync failed: ${details.message}`,
+        canContinueSetup: true,
+        status: details.status,
+        method: details.method,
+        path: details.path,
+        endpoint: details.endpoint,
+        apiBase: details.apiBase,
+      });
       return null;
     }
   }
 
   async function finalizeAuthenticatedUser(authUser: User) {
     const freshUser = await reloadUser(authUser);
+    lastAuthUserRef.current = freshUser;
     blockAuthRestoreRef.current = false;
     setLocallySignedOut(false);
     setLoading(true);
@@ -299,7 +343,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return freshUser;
   }
 
+  async function retryProfileSync() {
+    const configuredAuth = requireConfiguredAuth();
+    const candidate = configuredAuth.currentUser || lastAuthUserRef.current || firebaseUser;
+
+    if (!candidate) {
+      setProfileSyncIssue(null);
+      return;
+    }
+
+    const freshUser = await reloadUser(candidate);
+    lastAuthUserRef.current = freshUser;
+    setFirebaseUser(freshUser);
+    await syncProfileForAuthenticatedUser(freshUser);
+  }
+
+  function clearProfileSyncIssue() {
+    setProfileSyncIssue(null);
+  }
+
   async function tryLinkPendingGoogleCredential(authUser: User) {
+    const configuredAuth = requireConfiguredAuth();
     const pending = pendingGoogleLink;
     if (!pending?.credential) {
       return authUser;
@@ -320,20 +384,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         code !== "auth/credential-already-in-use" &&
         code !== "auth/email-already-in-use"
       ) {
-        console.warn("[auth] Failed to auto-link pending Google credential:", error);
+        console.warn("[auth] Failed to auto-link pending Google credential.");
       }
     } finally {
       pendingGoogleLink = null;
     }
 
-    return auth.currentUser || authUser;
+    return configuredAuth.currentUser || authUser;
   }
 
   async function signInWithPassword(email: string, password: string) {
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      setLocallySignedOut(false);
+      setLoading(false);
+      return;
+    }
+
     const normalizedEmail = email.trim();
 
     try {
-      const credential = await signInWithEmailAndPassword(auth, normalizedEmail, password);
+      const configuredAuth = requireConfiguredAuth();
+      const credential = await signInWithEmailAndPassword(
+        configuredAuth,
+        normalizedEmail,
+        password
+      );
       const maybeLinkedUser = await tryLinkPendingGoogleCredential(credential.user);
       await finalizeAuthenticatedUser(maybeLinkedUser);
     } catch (error) {
@@ -342,7 +418,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function linkPasswordForCurrentUser(password: string, displayName?: string) {
-    const currentUser = auth.currentUser;
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      setLocallySignedOut(false);
+      setLoading(false);
+      return;
+    }
+
+    const configuredAuth = requireConfiguredAuth();
+    const currentUser = configuredAuth.currentUser;
 
     if (!currentUser) {
       throw new Error("No logged-in user found.");
@@ -376,31 +460,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await updateProfile(currentUser, { displayName: displayName.trim() });
       }
 
-      await finalizeAuthenticatedUser(auth.currentUser || currentUser);
+      await finalizeAuthenticatedUser(configuredAuth.currentUser || currentUser);
     } catch (error) {
       throw new Error(mapFirebaseError(error));
     }
   }
 
   async function signUpWithPassword(name: string, email: string, password: string) {
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      setLocallySignedOut(false);
+      setLoading(false);
+      return;
+    }
+
     const normalizedEmail = email.trim();
-    const currentUser = auth.currentUser;
-    const currentUserEmail = normalizeEmail(currentUser?.email);
 
     try {
+      const configuredAuth = requireConfiguredAuth();
+      const currentUser = configuredAuth.currentUser;
+      const currentUserEmail = normalizeEmail(currentUser?.email);
+
       if (currentUser && currentUserEmail && currentUserEmail === normalizeEmail(normalizedEmail)) {
         await linkPasswordForCurrentUser(password, name.trim());
         return;
       }
 
-      const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
+      const credential = await createUserWithEmailAndPassword(
+        configuredAuth,
+        normalizedEmail,
+        password
+      );
 
       if (name.trim()) {
         await updateProfile(credential.user, { displayName: name.trim() });
       }
 
       const maybeLinkedUser = await tryLinkPendingGoogleCredential(
-        auth.currentUser || credential.user
+        configuredAuth.currentUser || credential.user
       );
       await finalizeAuthenticatedUser(maybeLinkedUser);
     } catch (error: any) {
@@ -411,7 +508,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ) {
         try {
           const existingCredential = await signInWithEmailAndPassword(
-            auth,
+            requireConfiguredAuth(),
             normalizedEmail,
             password
           );
@@ -433,6 +530,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function signInWithGoogle() {
+    if (e2eMockAuth) {
+      setFirebaseUser(e2eUser);
+      setLocallySignedOut(false);
+      setLoading(false);
+      return;
+    }
+
     if (Platform.OS === "web") {
       throw new Error("Google sign-in is currently enabled only for Android/iOS builds.");
     }
@@ -449,6 +553,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let googleCredential: AuthCredential | null = null;
 
     try {
+      const configuredAuth = requireConfiguredAuth();
+
       await GoogleSignin.hasPlayServices({
         showPlayServicesUpdateDialog: true,
       });
@@ -470,7 +576,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       googleCredential = GoogleAuthProvider.credential(idToken);
 
-      const currentUser = auth.currentUser;
+      const currentUser = configuredAuth.currentUser;
       const currentEmail = normalizeEmail(currentUser?.email);
 
       if (currentUser && currentEmail && googleEmail && currentEmail === googleEmail) {
@@ -488,11 +594,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         pendingGoogleLink = null;
-        await finalizeAuthenticatedUser(auth.currentUser || currentUser);
+        await finalizeAuthenticatedUser(configuredAuth.currentUser || currentUser);
         return;
       }
 
-      const userCredential = await signInWithCredential(auth, googleCredential);
+      const userCredential = await signInWithCredential(configuredAuth, googleCredential);
       pendingGoogleLink = null;
       await finalizeAuthenticatedUser(userCredential.user);
     } catch (error: any) {
@@ -517,10 +623,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function primeLocalSignedOutState() {
+  async function clearCachedSensitiveData(backendUserId?: number) {
+    const cachedProfile = await getProfile().catch(() => null);
+    const localUserId = backendUserId || cachedProfile?.userId;
+
+    if (localUserId) {
+      await clearLocalAgentDataForUser(localUserId).catch(() => undefined);
+    }
+  }
+
+  async function primeLocalSignedOutState(backendUserId?: number) {
+    await clearCachedSensitiveData(backendUserId);
     pendingGoogleLink = null;
     blockAuthRestoreRef.current = true;
     setLocallySignedOut(true);
+    setProfileSyncIssue(null);
     setLoading(false);
     await Promise.all([clearProfile(), clearAssistantStorage()]);
   }
@@ -546,10 +663,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function clearLocalSession(options?: { revokeGoogleAccess?: boolean }) {
+    if (e2eMockAuth) {
+      await primeLocalSignedOutState();
+      setFirebaseUser(null);
+      lastAuthUserRef.current = null;
+      return;
+    }
+
+    const configuredAuth = requireConfiguredAuth();
+
     await primeLocalSignedOutState();
 
     try {
-      await signOut(auth);
+      await signOut(configuredAuth);
     } catch {
       // Ignore Firebase sign-out errors during forced local cleanup.
     }
@@ -561,102 +687,81 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await clearLocalSession();
   }
 
-    async function deleteCurrentAccount(backendUserId?: number) {
-      const currentUser = auth.currentUser;
-
-      if (!currentUser) {
-        throw new Error("No logged-in user found.");
-      }
-
-      const restoredProfile = await getProfileForFirebaseUid(
-        currentUser.uid,
-        currentUser.email
-      );
-      const resolvedBackendUserId = backendUserId || restoredProfile?.userId;
-      const shouldCleanupGoogleSdk = hasProvider(currentUser, "google.com");
-
-      console.log(
-        "[auth] delete-account start:",
-        JSON.stringify({
-          firebaseUid: currentUser.uid,
-          backendUserId: resolvedBackendUserId ?? null,
-          providerIds: currentUser.providerData.map((item) => item.providerId),
-        })
-      );
-
-      try {
-        await currentUser.reload();
-      } catch {
-        // Ignore reload failures and continue with the current auth user.
-      }
-
-      const liveUser = auth.currentUser || currentUser;
-
-      try {
-        await deleteUser(liveUser);
-        console.log("[auth] delete-account firebase delete complete");
-      } catch (error) {
-        console.log("[auth] delete-account firebase delete failed:", error);
-        throw new Error(mapFirebaseError(error));
-      }
-
-      let backendDeleteError: any = null;
-
-      try {
-        if (resolvedBackendUserId) {
-          await deleteAccountOnBackend(resolvedBackendUserId);
-          console.log(
-            "[auth] delete-account backend delete complete:",
-            resolvedBackendUserId
-          );
-        } else {
-          console.log(
-            "[auth] delete-account backend delete skipped: no backend user id"
-          );
-        }
-      } catch (error: any) {
-        backendDeleteError = error;
-        console.log("[auth] delete-account backend delete failed:", error);
-      }
-
-      // Only now move the app into signed-out state.
-      // This prevents the UI from getting stuck on a loading page when
-      // Firebase deletion fails or takes longer than expected.
-      await primeLocalSignedOutState();
-
-      try {
-        await signOut(auth);
-      } catch {
-        // Ignore sign-out errors after account deletion attempts.
-      }
-
-      await cleanupGoogleSdk({ revokeGoogleAccess: shouldCleanupGoogleSdk });
-
-      if (backendDeleteError) {
-        throw new Error(
-          backendDeleteError?.message ||
-            "Your login account was deleted, but backend cleanup failed. Please remove the remaining profile data from the server."
-        );
-      }
+  async function deleteCurrentAccount(backendUserId?: number) {
+    if (e2eMockAuth) {
+      await primeLocalSignedOutState(backendUserId);
+      setFirebaseUser(null);
+      lastAuthUserRef.current = null;
+      return;
     }
 
-  const value = useMemo(
-    () => ({
-      user,
-      loading,
-      googleReady,
-      googleConfigured,
-      passwordLinked: hasProvider(user, "password"),
-      googleLinked: hasProvider(user, "google.com"),
-      signInWithPassword,
-      signUpWithPassword,
-      signInWithGoogle,
-      linkPasswordForCurrentUser,
-      signOutUser,
-      deleteCurrentAccount,
-    }),
-    [googleConfigured, googleReady, loading, user]
-  );
+    const configuredAuth = requireConfiguredAuth();
+    const currentUser = configuredAuth.currentUser;
+
+    if (!currentUser) {
+      throw new Error("No logged-in user found.");
+    }
+
+    const restoredProfile = await getProfileForFirebaseUid(
+      currentUser.uid,
+      currentUser.email
+    );
+    const resolvedBackendUserId = backendUserId || restoredProfile?.userId;
+    const shouldCleanupGoogleSdk = hasProvider(currentUser, "google.com");
+
+    try {
+      if (resolvedBackendUserId) {
+        await deleteAccountOnBackend(resolvedBackendUserId);
+      }
+    } catch (error: any) {
+      throw new Error(
+        error?.message ||
+          "Backend cleanup failed. Please try again before deleting the login account."
+      );
+    }
+
+    try {
+      await currentUser.reload();
+    } catch {
+      // Ignore reload failures and continue with the current auth user.
+    }
+
+    const liveUser = configuredAuth.currentUser || currentUser;
+
+    try {
+      await deleteUser(liveUser);
+    } catch (error) {
+      throw new Error(mapFirebaseError(error));
+    }
+
+    await primeLocalSignedOutState(resolvedBackendUserId);
+
+    try {
+      await signOut(configuredAuth);
+    } catch {
+      // Ignore sign-out errors after account deletion attempts.
+    }
+
+    await cleanupGoogleSdk({ revokeGoogleAccess: shouldCleanupGoogleSdk });
+  }
+
+  const value: AuthContextType = {
+    user,
+    loading,
+    googleReady,
+    googleConfigured,
+    passwordLinked: hasProvider(user, "password"),
+    googleLinked: hasProvider(user, "google.com"),
+    signInWithPassword,
+    signUpWithPassword,
+    signInWithGoogle,
+    linkPasswordForCurrentUser,
+    signOutUser,
+    deleteCurrentAccount,
+    profileSyncIssue,
+    retryProfileSync,
+    clearProfileSyncIssue,
+  };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

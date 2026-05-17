@@ -116,10 +116,11 @@
       "id": "urgency",
       "question": "Evlo fast result venum? ⚡",
       "type": "choice",
-      "options": 
+      "options": [
         "As soon as possible 🚀",
         "Within few months 📆",
         "No rush 🙂"
+      ]
     },
     {
       "id": "device",

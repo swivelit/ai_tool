@@ -19,10 +19,16 @@ __pycache__/
 
 # Runtime/generated data
 *.db
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.jsonl
+**/*.log
 tamil_voice_ai.db
 generated_docs/
 data/db/
 data/logs/
+data/profiles/
 data/generated_docs/
 data/agents/state/
 data/agents/memory/
@@ -30,3 +36,6 @@ data/agents/logs/
 data/agents/training/
 data/agents/snapshots/
 data/agents/rag_exports/
+!data/sample/
+!data/sample/**
+!data/README.md

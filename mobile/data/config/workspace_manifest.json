@@ -1,11 +1,12 @@
 {
-  "version": 3,
-  "seedVersion": "2026-04-09-phone-local-primary",
+  "version": 6,
+  "seedVersion": "2026-04-27-native-module-scaffolded",
   "description": "Phone-local agent workspace seed manifest",
   "architecture": {
-    "primaryRuntime": "phone_local_agents",
-    "backendRole": "mirror_support_openai_fallback",
-    "stableContract": "/api/chat remains unchanged"
+    "primaryRuntime": "backend_ai_router",
+    "backendRole": "primary",
+    "openAiPolicy": "backend_controlled",
+    "stableContract": "/api/chat remains unchanged; backend AI router is primary. /chat/completions and /embeddings remain development-only local adapter contracts."
   },
   "checkedInSeedFolders": [
     "config",
@@ -29,6 +30,7 @@
     "config/memory_rules.json",
     "config/prompts.json",
     "config/agent_registry.json",
+    "config/workspace_manifest.json",
     "training/seed/classifier_dataset.csv",
     "training/seed/pipeline_questions.csv",
     "training/seed/profiler.jsonl",
@@ -39,5 +41,22 @@
     "rag/seed/fast_rag_replies.csv",
     "rag/seed/local_rag_keywords.csv",
     "rag/seed/local_rag_synonyms.csv"
-  ]
+  ],
+  "runtime": {
+    "primary": "backend",
+    "mode": "native_on_device",
+    "productionMode": "native_on_device",
+    "developmentMode": "local_adapter",
+    "backendRole": "primary",
+    "backendPolicy": "backend_ai_router_primary",
+    "openAiPolicy": "backend_controlled",
+    "localRuntimeInterface": "LocalModelRuntime",
+    "nativeRuntime": "NativeOnDeviceModelRuntime",
+    "nativeImplementationStatus": "native_build_verified_by_native_verify_llama_llama_cpp_linkable_production_gguf_runtime_target_device_gguf_generation_required",
+    "nativeBackend": "llama_cpp",
+    "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",
+    "adapterDevelopmentOnly": true,
+    "allowDeviceLoopback": false,
+    "nativeModuleName": "JaiOnDeviceModel"
+  }
 }

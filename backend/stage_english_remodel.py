@@ -25,6 +25,7 @@ from config import (
 
 
 WORD_RE = re.compile(r"[a-zA-Z0-9_\u0B80-\u0BFF]+")
+CONTEXTUAL_HEALTH_RISK_TERMS = {"heart", "medicine", "tablet", "dose", "dosage"}
 
 DEFAULT_CLASSIFIER_ROWS: List[Dict[str, str]] = [
     {"text": "hi", "label": "greeting", "answer": "Hi there, how are you doing?"},
@@ -36,6 +37,193 @@ DEFAULT_CLASSIFIER_ROWS: List[Dict[str, str]] = [
     {"text": "who are you", "label": "assistant_identity", "answer": "I'm your assistant. I can help with reminders, schedules, and quick answers."},
     {"text": "help", "label": "assistant_identity", "answer": "I can help with reminders, schedules, and quick answers."},
 ]
+
+CURRENT_HEALTH_TOPIC_TERMS = (set(HEALTH_RISK_KEYWORDS) - CONTEXTUAL_HEALTH_RISK_TERMS) | {
+    "health",
+    "medical",
+    "doctor",
+    "clinic",
+    "hospital",
+    "symptom",
+    "symptoms",
+    "diagnosis",
+    "diagnose",
+    "treatment",
+    "prescription",
+    "medication",
+    "allergic",
+    "fever",
+    "cough",
+    "headache",
+    "dizzy",
+    "dizziness",
+    "vomit",
+    "vomiting",
+    "bleeding",
+    "உடல்",
+    "உடம்பு",
+    "மருத்துவர்",
+    "மருந்து",
+    "சிகிச்சை",
+    "அறிகுறி",
+    "வலி",
+    "காய்ச்சல்",
+    "சர்க்கரை",
+    "நீரிழிவு",
+    "கர்ப்ப",
+    "ஒவ்வாமை",
+}
+
+BODY_PART_TERMS = (
+    "stomach",
+    "abdomen",
+    "abdominal",
+    "chest",
+    "head",
+    "back",
+    "neck",
+    "throat",
+    "ear",
+    "tooth",
+    "teeth",
+    "leg",
+    "arm",
+    "hand",
+    "foot",
+    "feet",
+    "knee",
+    "shoulder",
+    "hip",
+    "joint",
+    "muscle",
+)
+
+MEDICAL_CONDITION_TERMS = (
+    "diabetes",
+    "blood pressure",
+    "bp",
+    "pregnant",
+    "pregnancy",
+    "postpartum",
+    "breastfeeding",
+    "allergy",
+    "allergic",
+    "kidney",
+    "heart attack",
+    "heart disease",
+    "heart condition",
+    "thyroid",
+    "cholesterol",
+    "asthma",
+)
+
+PERSONAL_DIET_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"what\s+(?:should|can)\s+i\s+eat|"
+    r"can\s+i\s+eat|"
+    r"foods?\s+(?:should|can)\s+i|"
+    r"(?:my\s+)?(?:diet|meal)\s+plan|"
+    r"(?:breakfast|lunch|dinner)\s+(?:plan|ideas?|for\s+me)|"
+    r"nutrition\s+(?:advice|plan|for\s+me)"
+    r")\b"
+)
+
+PERSONAL_EXERCISE_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:can|should)\s+i\s+(?:exercise|work\s*out)|"
+    r"(?:my\s+)?(?:exercise|workout)\s+(?:plan|routine|advice)|"
+    r"(?:exercise|workout)\s+for\s+me"
+    r")\b"
+)
+
+SLEEP_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:i\s+)?(?:can(?:not|'t)|cant|unable\s+to|struggling\s+to)\s+sleep|"
+    r"sleep(?:ing)?\s+(?:problem|problems|trouble|difficulty|disorder)|"
+    r"insomnia|sleepless"
+    r")\b"
+)
+
+PAIN_HEALTH_CONTEXT_RE = re.compile(
+    rf"\b(?:{'|'.join(BODY_PART_TERMS)})\s+(?:pain|ache|aches|hurts?)\b|"
+    rf"\b(?:pain|ache|aches|hurts?)\s+(?:in|near|around|inside)\s+(?:my\s+|the\s+)?(?:{'|'.join(BODY_PART_TERMS)})\b|"
+    r"\bi\s+(?:have|feel|am\s+in|am\s+having)\s+(?:[a-z0-9_]+\s+){0,3}(?:pain|ache|aches|hurt|hurts)\b"
+)
+
+HEART_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"heart\s+(?:attack|disease|condition|failure|rate|palpitations?|symptoms?)|"
+    r"symptoms?\s+of\s+(?:a\s+)?heart\s+attack"
+    r")\b"
+)
+
+MEDICATION_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:what|which|safe|recommended|correct)\s+(?:dose|dosage)\b|"
+    r"(?:dose|dosage)\s+of\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:can|should)\s+i\s+take\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:take|taking)\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:medicine|medication|tablet)\s+(?:dose|dosage|side\s+effects?|for|with)\b"
+    r")"
+)
+
+PROFILE_MEDICAL_FACT_TERMS = set(HEALTH_RISK_KEYWORDS) | {
+    "diabetes_or_sugar_control",
+    "blood_pressure_or_heart_care",
+    "thyroid_or_hormonal_care",
+    "allergy_digestion_kidney_or_other",
+    "pregnant",
+    "postpartum_or_breastfeeding",
+    "trying_to_conceive",
+    "avoid_sugary_foods",
+    "allergy_or_doctor_given_restrictions",
+}
+
+PROFILE_HEALTH_TRIGGER_TERMS = {
+    "health",
+    "medical",
+    "doctor",
+    "clinic",
+    "hospital",
+    "medicine",
+    "medication",
+    "tablet",
+    "dose",
+    "dosage",
+    "symptom",
+    "symptoms",
+    "diagnosis",
+    "diagnose",
+    "treatment",
+    "pregnant",
+    "pregnancy",
+    "allergy",
+    "allergic",
+    "diet",
+    "food",
+    "eat",
+    "eating",
+    "nutrition",
+    "exercise",
+    "workout",
+    "sleep",
+    "pain",
+    "fever",
+    "உடல்",
+    "உடம்பு",
+    "மருத்துவர்",
+    "மருந்து",
+    "சிகிச்சை",
+    "அறிகுறி",
+    "வலி",
+    "காய்ச்சல்",
+    "கர்ப்ப",
+    "உணவு",
+    "சாப்பாடு",
+    "சாப்பிட",
+    "ஒவ்வாமை",
+    "உடற்பயிற்சி",
+}
 
 
 def _ensure_default_classifier_dataset(path: Path) -> None:
@@ -134,7 +322,12 @@ class EmbeddedTextClassifier:
 
     def predict(self, text: str) -> str:
         probs = self.predict_proba_map(text)
-        return max(probs.items(), key=lambda item: item[1])[0] if probs else "unknown"
+        if not probs:
+            return "unknown"
+        label, score = max(probs.items(), key=lambda item: item[1])
+        if score <= 0.0:
+            return "general_qa" if "general_qa" in self.label_centroids else "unknown"
+        return label
 
     def predict_proba_map(self, text: str) -> Dict[str, float]:
         query_counter = Counter(_tokenize(text))
@@ -227,9 +420,81 @@ class EnglishRemodeler:
         values = [str(item).strip() for item in items if str(item).strip()]
         return ", ".join(values) if values else default
 
-    def _is_health_sensitive(self, text: str, profile: Dict[str, Any]) -> bool:
-        haystack = f"{text} {json_safe(profile)}".lower()
-        return any(keyword in haystack for keyword in HEALTH_RISK_KEYWORDS)
+    @staticmethod
+    def _contains_any_term(text: str, terms: Iterable[str]) -> bool:
+        haystack = str(text or "").lower()
+        for raw_term in terms:
+            term = str(raw_term or "").strip().lower()
+            if not term:
+                continue
+            if re.search(r"[a-z0-9_]", term):
+                if re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", haystack):
+                    return True
+            elif term in haystack:
+                return True
+        return False
+
+    @classmethod
+    def _contains_medical_condition_term(cls, text: str) -> bool:
+        return cls._contains_any_term(text, MEDICAL_CONDITION_TERMS)
+
+    @classmethod
+    def _contains_health_topic_context(cls, text: str) -> bool:
+        haystack = _normalize_text(text)
+        if cls._contains_any_term(haystack, CURRENT_HEALTH_TOPIC_TERMS):
+            return True
+        if HEART_HEALTH_CONTEXT_RE.search(haystack):
+            return True
+        if MEDICATION_HEALTH_CONTEXT_RE.search(haystack):
+            return True
+        if SLEEP_HEALTH_CONTEXT_RE.search(haystack):
+            return True
+        if PAIN_HEALTH_CONTEXT_RE.search(haystack):
+            return True
+        if cls._contains_medical_condition_term(haystack):
+            return True
+        return False
+
+    @classmethod
+    def _contains_profile_health_trigger_context(cls, text: str) -> bool:
+        haystack = _normalize_text(text)
+        contextual_terms = {
+            "diet",
+            "food",
+            "eat",
+            "eating",
+            "nutrition",
+            "exercise",
+            "workout",
+            "sleep",
+            "pain",
+            "heart",
+            "medicine",
+            "medication",
+            "tablet",
+            "dose",
+            "dosage",
+        }
+        if cls._contains_any_term(haystack, PROFILE_HEALTH_TRIGGER_TERMS - contextual_terms):
+            return True
+        return (
+            HEART_HEALTH_CONTEXT_RE.search(haystack) is not None
+            or MEDICATION_HEALTH_CONTEXT_RE.search(haystack) is not None
+            or SLEEP_HEALTH_CONTEXT_RE.search(haystack) is not None
+            or PAIN_HEALTH_CONTEXT_RE.search(haystack) is not None
+            or PERSONAL_DIET_CONTEXT_RE.search(haystack) is not None
+            or PERSONAL_EXERCISE_CONTEXT_RE.search(haystack) is not None
+        )
+
+    def _is_health_sensitive(self, user_query: str, raw_answer: str, profile: Dict[str, Any]) -> bool:
+        current_turn_text = f"{user_query} {raw_answer}".lower()
+        if self._contains_health_topic_context(current_turn_text):
+            return True
+
+        profile_text = json_safe(profile).lower() if profile else ""
+        if not self._contains_any_term(profile_text, PROFILE_MEDICAL_FACT_TERMS):
+            return False
+        return self._contains_profile_health_trigger_context(current_turn_text)
 
     @staticmethod
     def _post_process_answer(text: str) -> str:
@@ -257,7 +522,7 @@ class EnglishRemodeler:
     def decide_route(self, user_query: str, raw_answer: str, profile: Dict[str, Any]) -> RoutingDecision:
         match = self.get_direct_answer_match(user_query)
         predicted_label = self.classifier.predict(user_query)
-        risk_level = "high" if self._is_health_sensitive(user_query, profile) else ("medium" if predicted_label == "High" else "low")
+        risk_level = "high" if self._is_health_sensitive(user_query, raw_answer, profile) else ("medium" if predicted_label == "High" else "low")
 
         if match and match.confidence >= DIRECT_MATCH_FORCE_THRESHOLD:
             return RoutingDecision(

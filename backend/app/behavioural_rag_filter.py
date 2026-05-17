@@ -29,6 +29,7 @@ from openai import OpenAI
 from sqlmodel import Session, select
 
 from .models import UserProfile, DailyRoutine
+from .openai_tracked import tracked_chat_completion
 
 logger = logging.getLogger("behavioural_rag_filter")
 
@@ -229,8 +230,10 @@ class BehaviouralRAGFilter:
             "Return ONLY the corrected response text."
         )
         try:
-            resp = self._openai.chat.completions.create(
-                model="gpt-4o-mini",
+            resp = tracked_chat_completion(
+                self._openai,
+                task="rewrite",
+                route="behavioural_rag_filter_rewrite",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=512,
                 temperature=0.4,

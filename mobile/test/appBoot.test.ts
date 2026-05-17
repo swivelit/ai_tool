@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { resolveDesiredRoute, runBootStep } from "@/lib/appBoot";
+import {
+  getHeavyBootWorkSkipReason,
+  resolveDesiredRoute,
+  runBootStep,
+  scheduleOptionalBootWork,
+  shouldSkipHeavyBootWorkForMemory,
+} from "@/lib/appBoot";
 
 describe("runBootStep", () => {
   it("returns completed results before the timeout", async () => {
@@ -59,6 +65,37 @@ describe("runBootStep", () => {
   });
 });
 
+describe("optional boot work", () => {
+  it("detects low-memory devices", () => {
+    expect(shouldSkipHeavyBootWorkForMemory({ lowMemory: true })).toBe(true);
+    expect(shouldSkipHeavyBootWorkForMemory({ lowRamDevice: true })).toBe(true);
+    expect(
+      shouldSkipHeavyBootWorkForMemory({ availableMemoryBytes: 256 * 1024 * 1024 }),
+    ).toBe(true);
+    expect(
+      shouldSkipHeavyBootWorkForMemory({ availableMemoryBytes: 1024 * 1024 * 1024 }),
+    ).toBe(false);
+    expect(getHeavyBootWorkSkipReason({ lowRamDevice: true })).toBe(
+      "low_ram_device",
+    );
+  });
+
+  it("delays optional boot work and supports cancellation", async () => {
+    vi.useFakeTimers();
+    const task = vi.fn();
+
+    const scheduled = scheduleOptionalBootWork(task, { delayMs: 15_000 });
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(task).not.toHaveBeenCalled();
+
+    scheduled.cancel();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(task).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+});
+
 describe("resolveDesiredRoute", () => {
   it("keeps signed-out users on public auth routes", () => {
     expect(
@@ -74,10 +111,11 @@ describe("resolveDesiredRoute", () => {
   it("sends signed-out users away from protected routes", () => {
     expect(
       resolveDesiredRoute({
-        pathname: "/(tabs)",
+        pathname: "/(chat)",
         hasUser: false,
         hasProfile: false,
         questionnaireCompleted: false,
+        inChatGroup: true,
       })
     ).toBe("/auth/login");
   });
@@ -93,6 +131,18 @@ describe("resolveDesiredRoute", () => {
     ).toBe("/onboarding/profile");
   });
 
+  it("does not freeze routing solely because profile restore failed", () => {
+    expect(
+      resolveDesiredRoute({
+        pathname: "/auth/login",
+        hasUser: true,
+        hasProfile: false,
+        questionnaireCompleted: false,
+        profileRestoreFailed: true,
+      })
+    ).toBe("/onboarding/profile");
+  });
+
   it("routes signed-in users with an incomplete questionnaire to questionnaire onboarding", () => {
     expect(
       resolveDesiredRoute({
@@ -104,7 +154,7 @@ describe("resolveDesiredRoute", () => {
     ).toBe("/onboarding/questionnaire");
   });
 
-  it("routes fully onboarded users to tabs from auth and onboarding routes", () => {
+  it("routes fully onboarded users to chat from auth and onboarding routes", () => {
     expect(
       resolveDesiredRoute({
         pathname: "/auth/signup",
@@ -112,13 +162,55 @@ describe("resolveDesiredRoute", () => {
         hasProfile: true,
         questionnaireCompleted: true,
       })
-    ).toBe("/(tabs)");
+    ).toBe("/(chat)");
   });
 
-  it("keeps fully onboarded users on tabs and setup routes", () => {
+  it("routes fully onboarded users to model setup when required models are missing", () => {
+    expect(
+      resolveDesiredRoute({
+        pathname: "/(chat)",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+        modelSetupRequired: true,
+        inChatGroup: true,
+      })
+    ).toBe("/model-setup");
+
+    expect(
+      resolveDesiredRoute({
+        pathname: "/model-setup",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+        modelSetupRequired: true,
+      })
+    ).toBeNull();
+  });
+
+  it("keeps fully onboarded users on chat, tabs, and setup routes", () => {
+    expect(
+      resolveDesiredRoute({
+        pathname: "/(chat)",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+        inChatGroup: true,
+      })
+    ).toBeNull();
+
     expect(
       resolveDesiredRoute({
         pathname: "/(tabs)/explore",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+      })
+    ).toBeNull();
+
+    expect(
+      resolveDesiredRoute({
+        pathname: "/(tabs)/routine",
         hasUser: true,
         hasProfile: true,
         questionnaireCompleted: true,
@@ -133,5 +225,14 @@ describe("resolveDesiredRoute", () => {
         questionnaireCompleted: true,
       })
     ).toBeNull();
+
+    expect(
+      resolveDesiredRoute({
+        pathname: "/model-setup",
+        hasUser: true,
+        hasProfile: true,
+        questionnaireCompleted: true,
+      })
+    ).toBe("/(chat)");
   });
 });

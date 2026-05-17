@@ -16,10 +16,15 @@ import {
   UserProfile,
 } from "@/lib/account";
 import {
+  getE2eMockUserProfile,
+  isE2eMockAuthEnabled,
+} from "@/lib/e2eMode";
+import {
   AssistantSettings,
   DEFAULTS,
   getAssistantName,
   getSettings,
+  normalizeAssistantSettings,
   setAssistantName,
   setSettings,
 } from "@/lib/storage";
@@ -42,35 +47,8 @@ function normalizeName(value?: string | null) {
   return trimmed || DEFAULTS.name;
 }
 
-function normalizeWakePhrase(value?: string | null) {
-  const trimmed = String(value || "").trim();
-  return trimmed || DEFAULTS.settings.wakePhrase;
-}
-
-function normalizeWakeTrainingSamples(value?: string[] | null) {
-  if (!Array.isArray(value)) return [];
-
-  return Array.from(
-    new Set(
-      value
-        .map((item) => String(item || "").trim())
-        .filter(Boolean)
-        .slice(0, 5)
-    )
-  );
-}
-
 function normalizeSettings(value?: Partial<AssistantSettings> | null): AssistantSettings {
-  return {
-    tone: value?.tone === "friendly" ? "friendly" : DEFAULTS.settings.tone,
-    languageMode:
-      value?.languageMode === "en" || value?.languageMode === "ta"
-        ? value.languageMode
-        : DEFAULTS.settings.languageMode,
-    handsFreeEnabled: Boolean(value?.handsFreeEnabled),
-    wakePhrase: normalizeWakePhrase(value?.wakePhrase),
-    wakeTrainingSamples: normalizeWakeTrainingSamples(value?.wakeTrainingSamples),
-  };
+  return normalizeAssistantSettings(value);
 }
 
 export function AssistantProvider({ children }: { children: React.ReactNode }) {
@@ -82,6 +60,25 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
+    if (isE2eMockAuthEnabled()) {
+      const mockProfile = getE2eMockUserProfile();
+      const mockSettings: AssistantSettings = {
+        ...DEFAULTS.settings,
+        languageMode: mockProfile.replyLanguage || "en",
+      };
+
+      await Promise.all([
+        saveProfile(mockProfile),
+        setAssistantName(mockProfile.assistantName || DEFAULTS.name),
+        setSettings(mockSettings),
+      ]);
+
+      setNameState(mockProfile.assistantName || DEFAULTS.name);
+      setSettingsState(mockSettings);
+      setProfileState(mockProfile);
+      return mockProfile;
+    }
+
     const [storedName, storedSettings] = await Promise.all([getAssistantName(), getSettings()]);
 
     const normalizedStoredName = normalizeName(storedName);
@@ -118,7 +115,13 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
     const settingsChanged =
       resolvedSettings.tone !== normalizedStoredSettings.tone ||
       resolvedSettings.languageMode !== normalizedStoredSettings.languageMode ||
+      resolvedSettings.allowCloudFallback !== normalizedStoredSettings.allowCloudFallback ||
+      resolvedSettings.cloudFallbackUserChoice !==
+        normalizedStoredSettings.cloudFallbackUserChoice ||
+      resolvedSettings.cloudFallbackPolicyVersion !==
+        normalizedStoredSettings.cloudFallbackPolicyVersion ||
       resolvedSettings.handsFreeEnabled !== normalizedStoredSettings.handsFreeEnabled ||
+      resolvedSettings.autoSpeakReplies !== normalizedStoredSettings.autoSpeakReplies ||
       resolvedSettings.wakePhrase !== normalizedStoredSettings.wakePhrase ||
       JSON.stringify(resolvedSettings.wakeTrainingSamples) !==
         JSON.stringify(normalizedStoredSettings.wakeTrainingSamples);
@@ -208,7 +211,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
         console.warn("[assistant] Failed to sync assistant settings to backend:", error);
       }
     },
-    [name, profile, settings]
+    [profile, settings]
   );
 
   const value = useMemo<AssistantContextType>(

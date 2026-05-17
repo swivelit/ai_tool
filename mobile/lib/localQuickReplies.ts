@@ -1,0 +1,459 @@
+import { isUnsafeForStaticCache } from "./currentDataGuards";
+
+export type QuickLocalRoute =
+  | "fast_greeting"
+  | "identity"
+  | "small_talk"
+  | "wellbeing_support"
+  | "capabilities"
+  | "knowledge_ack"
+  | "thanks"
+  | "goodbye";
+
+export type QuickLocalReplyResult = {
+  route: QuickLocalRoute;
+  assistantText: string;
+  englishText: string;
+  intent: "assistant";
+  title: string;
+  confidence: number;
+  source: "local_rules";
+};
+
+type QuickLocalReplyInput = {
+  message: string;
+  replyLanguage?: "en" | "ta" | string | null;
+  assistantName?: string | null;
+  userName?: string | null;
+};
+
+const QUICK_PHRASES: Record<QuickLocalRoute, string[]> = {
+  fast_greeting: [
+    "hi",
+    "hello",
+    "hey",
+    "namaste",
+    "vanakkam",
+    "good morning",
+    "good evening",
+    "good night",
+    "thanks",
+  ],
+  identity: [
+    "who are you",
+    "what are you",
+    "what is your name",
+    "whats your name",
+    "what's your name",
+  ],
+  small_talk: [
+    "what are you up to",
+    "what are you doing",
+    "what's up",
+    "whats up",
+    "how are you",
+    "how is it going",
+    "are you there",
+    "can you hear me",
+    "are you awake",
+  ],
+  wellbeing_support: [
+    "i am sad",
+    "im sad",
+    "i'm sad",
+    "i feel sad",
+    "i am anxious",
+    "im anxious",
+    "i'm anxious",
+    "i feel anxious",
+    "i am stressed",
+    "im stressed",
+    "i'm stressed",
+    "i feel stressed",
+    "overwhelmed",
+    "tired",
+    "so tired",
+    "exhausted",
+    "sleepy",
+    "drained",
+    "stressed",
+    "not feeling good",
+    "feeling low",
+  ],
+  capabilities: [
+    "what can you do",
+    "what can you help with",
+    "can you help me",
+    "help",
+    "help me",
+    "how can you help",
+    "what are your features",
+  ],
+  knowledge_ack: [],
+  thanks: ["thanks", "thank you", "okay thanks"],
+  goodbye: ["bye", "good bye", "see you"],
+};
+
+const ROUTE_TITLES: Record<QuickLocalRoute, string> = {
+  fast_greeting: "Greeting",
+  identity: "Identity",
+  small_talk: "Chat",
+  wellbeing_support: "Wellbeing",
+  capabilities: "What I Can Do",
+  knowledge_ack: "Knowledge",
+  thanks: "Thanks",
+  goodbye: "Goodbye",
+};
+
+const TASK_CONTEXT_WORDS = [
+  "reminder",
+  "reminders",
+  "task",
+  "tasks",
+  "schedule",
+  "scheduled",
+  "calendar",
+  "remind",
+  "tomorrow",
+  "today",
+  "tonight",
+  "later",
+  "plan",
+  "plans",
+  "design",
+  "create",
+  "make",
+  "set",
+  "add",
+  "delete",
+  "update",
+  "change",
+  "find",
+  "search",
+  "weather",
+  "explain",
+  "explanation",
+  "summarize",
+  "summary",
+  "write",
+  "writing",
+  "code",
+  "coding",
+  "program",
+  "payment",
+  "payments",
+  "pay",
+  "upi",
+  "bank",
+  "file",
+  "files",
+  "document",
+  "documents",
+  "doc",
+  "docs",
+  "app",
+  "open",
+  "close",
+  "send",
+  "email",
+  "call",
+  "message",
+];
+
+function normalizeQuickText(value?: string | null) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u2018\u2019\u201B\u2032`´]/g, "'")
+    .replace(/(\p{L})'(\p{L})/gu, "$1$2")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokensFor(value: string) {
+  return normalizeQuickText(value).split(/\s+/).filter(Boolean);
+}
+
+function containsToken(tokens: string[], token: string) {
+  return tokens.some((candidate) => candidate === token);
+}
+
+function containsPhraseTokens(tokens: string[], phraseTokens: string[]) {
+  if (!phraseTokens.length || phraseTokens.length > tokens.length) {
+    return false;
+  }
+
+  for (let index = 0; index <= tokens.length - phraseTokens.length; index += 1) {
+    const matched = phraseTokens.every(
+      (token, offset) => tokens[index + offset] === token,
+    );
+    if (matched) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasTaskContext(tokens: string[]) {
+  return TASK_CONTEXT_WORDS.some((word) => containsToken(tokens, word));
+}
+
+function hasLiveCurrentTerms(tokens: string[]) {
+  return isUnsafeForStaticCache(tokens.join(" "));
+}
+
+function phraseStartIndex(tokens: string[], phraseTokens: string[]) {
+  for (let index = 0; index <= tokens.length - phraseTokens.length; index += 1) {
+    if (phraseTokens.every((token, offset) => tokens[index + offset] === token)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function topicFromKnowledgeAck(tokens: string[]) {
+  const patterns = [
+    ["do", "you", "know", "about"],
+    ["do", "you", "know"],
+    ["have", "you", "heard", "about"],
+    ["have", "you", "heard", "of"],
+  ];
+
+  for (const pattern of patterns) {
+    const start = phraseStartIndex(tokens, pattern);
+    if (start < 0) continue;
+    const topicTokens = tokens.slice(start + pattern.length);
+    if (!topicTokens.length || topicTokens.length > 8) return null;
+    if (hasLiveCurrentTerms(topicTokens) || hasTaskContext(topicTokens)) return null;
+    return topicTokens.join(" ");
+  }
+
+  return null;
+}
+
+function isShortPhraseMatch(tokens: string[], phrase: string, options?: {
+  allowContainingPhrase?: boolean;
+  blockTaskContext?: boolean;
+  extraTokensAllowed?: number;
+}) {
+  const phraseTokens = tokensFor(phrase);
+  if (!phraseTokens.length) {
+    return false;
+  }
+
+  if (tokens.length === phraseTokens.length && containsPhraseTokens(tokens, phraseTokens)) {
+    return true;
+  }
+
+  if (!options?.allowContainingPhrase) {
+    return false;
+  }
+
+  if (options.blockTaskContext && hasTaskContext(tokens)) {
+    return false;
+  }
+
+  const extraTokensAllowed = options.extraTokensAllowed ?? 2;
+  if (tokens.length > phraseTokens.length + extraTokensAllowed) {
+    return false;
+  }
+
+  return containsPhraseTokens(tokens, phraseTokens);
+}
+
+function routeMatches(route: QuickLocalRoute, tokens: string[]) {
+  const phrases = QUICK_PHRASES[route];
+
+  if (route === "knowledge_ack") {
+    return Boolean(topicFromKnowledgeAck(tokens));
+  }
+
+  if (route === "wellbeing_support") {
+    return phrases.some((phrase) => {
+      const phraseTokens = tokensFor(phrase);
+      return containsPhraseTokens(tokens, phraseTokens) && !hasTaskContext(tokens);
+    });
+  }
+
+  if (route === "identity") {
+    return phrases.some((phrase) =>
+      isShortPhraseMatch(tokens, phrase),
+    );
+  }
+
+  if (route === "small_talk") {
+    return phrases.some((phrase) =>
+      isShortPhraseMatch(tokens, phrase, {
+        allowContainingPhrase: true,
+        blockTaskContext: true,
+        extraTokensAllowed: 2,
+      }),
+    );
+  }
+
+  if (route === "capabilities") {
+    return phrases.some((phrase) =>
+      isShortPhraseMatch(tokens, phrase, {
+        allowContainingPhrase: true,
+        blockTaskContext: true,
+        extraTokensAllowed:
+          phrase === "help" || phrase === "help me" ? 0 : 3,
+      }),
+    );
+  }
+
+  return phrases.some((phrase) => isShortPhraseMatch(tokens, phrase));
+}
+
+function displayName(value?: string | null) {
+  const clean = String(value || "").trim();
+  return clean || null;
+}
+
+function formatKnowledgeTopic(topic: string) {
+  const normalized = topic.trim();
+  if (normalized.toLowerCase() === "ipl") return "IPL";
+  return normalized;
+}
+
+function englishReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
+  const userName = displayName(input.userName);
+  const assistantName = displayName(input.assistantName);
+  const normalized = normalizeQuickText(input.message);
+
+  switch (route) {
+    case "fast_greeting":
+      return userName
+        ? `Hi ${userName}. I'm here and ready to help.`
+        : "Hi. I'm here and ready to help.";
+    case "identity":
+      return assistantName
+        ? `I'm ${assistantName}, your local-first AI assistant on this phone.`
+        : "I'm your local-first AI assistant on this phone.";
+    case "small_talk":
+      if (/\bhow are you\b|\bhow is it going\b/.test(normalized)) {
+        return userName
+          ? `I'm doing well, ${userName}. I'm ready to help. How are you?`
+          : "I'm doing well. I'm ready to help. How are you?";
+      }
+      return "I'm here and ready whenever you need me.";
+    case "wellbeing_support":
+      return "That sounds exhausting. Take a short rest, drink some water, and don't push yourself too hard. If this feels unusual, severe, or keeps happening, please consider checking with a medical professional.";
+    case "capabilities":
+      return "I can chat with you, help plan your day, create reminders, remember useful details locally, and answer from local knowledge. What should we start with?";
+    case "knowledge_ack": {
+      const topic = formatKnowledgeTopic(
+        topicFromKnowledgeAck(tokensFor(input.message)) || "that",
+      );
+      if (topic.toLowerCase() === "ipl") {
+        return "Yes - IPL usually means the Indian Premier League, a professional T20 cricket league in India. I can explain the teams, format, rules, or history. For live scores or latest updates, I may need current-data access.";
+      }
+      return `Yes, I can help with that. Ask me what you want to know about ${topic}.`;
+    }
+    case "thanks":
+      return "You're welcome. I'm here when you need me.";
+    case "goodbye":
+      return assistantName
+        ? `Bye for now. ${assistantName} will be here when you come back.`
+        : "Bye for now. I'll be here when you come back.";
+    default:
+      return "I’m here with you. What would you like to do?";
+  }
+}
+
+function tamilReplyFor(route: QuickLocalRoute, input: QuickLocalReplyInput) {
+  const userName = displayName(input.userName);
+  const assistantName = displayName(input.assistantName);
+  const normalized = normalizeQuickText(input.message);
+
+  switch (route) {
+    case "fast_greeting":
+      return userName
+        ? `வணக்கம் ${userName}. நான் உதவ தயாராக இருக்கிறேன்.`
+        : "வணக்கம். நான் உதவ தயாராக இருக்கிறேன்.";
+    case "identity":
+      return assistantName
+        ? `நான் ${assistantName}, இந்த phone-லேயே local-first ஆக இயங்கும் உங்கள் AI assistant.`
+        : "நான் இந்த phone-லேயே local-first ஆக இயங்கும் உங்கள் AI assistant.";
+    case "small_talk":
+      if (/\bhow are you\b|\bhow is it going\b/.test(normalized)) {
+        return userName
+          ? `நான் நன்றாக இருக்கிறேன் ${userName}. உதவ தயாராக இருக்கிறேன். நீங்கள் எப்படி இருக்கிறீர்கள்?`
+          : "நான் நன்றாக இருக்கிறேன். உதவ தயாராக இருக்கிறேன். நீங்கள் எப்படி இருக்கிறீர்கள்?";
+      }
+      return "நான் இங்கே இருக்கிறேன். உங்களுக்கு தேவைப்படும் போது தயாராக இருக்கிறேன்.";
+    case "wellbeing_support":
+      return "அது ரொம்ப சோர்வாக இருக்கலாம். கொஞ்சம் ஓய்வு எடுத்துக்கோங்க, தண்ணீர் குடிங்க, உங்களை அதிகம் அழுத்த வேண்டாம். இது வழக்கத்துக்கு மாறாக, கடுமையாக, அல்லது தொடர்ந்து இருந்தால் மருத்துவரிடம் பேசுங்கள்.";
+    case "capabilities":
+      return "நான் உங்களுடன் chat செய்ய, நாள் திட்டமிட, reminders உருவாக்க, பயனுள்ள விஷயங்களை local-ஆக நினைவில் வைத்துக்கொள்ள, local knowledge-லிருந்து பதில் சொல்ல உதவலாம். எதிலிருந்து தொடங்கலாம்?";
+    case "knowledge_ack": {
+      const topic = formatKnowledgeTopic(
+        topicFromKnowledgeAck(tokensFor(input.message)) || "அது",
+      );
+      if (topic.toLowerCase() === "ipl") {
+        return "ஆம். IPL என்றால் பொதுவாக Indian Premier League - இந்தியாவில் நடக்கும் professional T20 cricket league. Teams, format, rules, history பற்றி சொல்ல முடியும். Live scores அல்லது latest updates வேண்டுமெனில் current-data access தேவைப்படலாம்.";
+      }
+      return `ஆம், அதைப் பற்றி உதவ முடியும். ${topic} பற்றி என்ன தெரிந்து கொள்ள விரும்புகிறீர்கள்?`;
+    }
+    case "thanks":
+      return "பரவாயில்லை. தேவைப்பட்டால் நான் இங்கே இருக்கிறேன்.";
+    case "goodbye":
+      return "சரி, பிறகு பார்க்கலாம். நீங்கள் திரும்ப வந்தால் நான் இங்கே இருப்பேன்.";
+    default:
+      return englishReplyFor(route, input);
+  }
+}
+
+function confidenceFor(route: QuickLocalRoute) {
+  if (route === "wellbeing_support") return 0.97;
+  if (route === "small_talk") return 0.98;
+  return 0.99;
+}
+
+export function tryBuildQuickLocalReply(
+  input: QuickLocalReplyInput,
+): QuickLocalReplyResult | null {
+  const normalized = normalizeQuickText(input.message);
+  if (!normalized) {
+    return null;
+  }
+
+  if (isUnsafeForStaticCache(normalized)) {
+    return null;
+  }
+
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  const routeOrder: QuickLocalRoute[] = [
+    "wellbeing_support",
+    "identity",
+    "capabilities",
+    "knowledge_ack",
+    "fast_greeting",
+    "thanks",
+    "goodbye",
+    "small_talk",
+  ];
+  const route = routeOrder.find((candidate) => routeMatches(candidate, tokens));
+
+  if (!route) {
+    return null;
+  }
+
+  const englishText = englishReplyFor(route, input);
+  const replyLanguage = normalizeQuickText(input.replyLanguage);
+  const assistantText = replyLanguage === "ta"
+    ? tamilReplyFor(route, input)
+    : englishText;
+
+  return {
+    route,
+    assistantText,
+    englishText,
+    intent: "assistant",
+    title: ROUTE_TITLES[route],
+    confidence: confidenceFor(route),
+    source: "local_rules",
+  };
+}

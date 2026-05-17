@@ -137,15 +137,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "AI",
-          tabBarStyle: {
-            display: "none",
-            height: 0,
-            position: "absolute",
-          },
-          tabBarIcon: ({ focused, color }) => (
-            <TabIcon focused={focused} color={color} name="sparkles-outline" />
-          ),
+          href: null,
         }}
       />
 

@@ -39,6 +39,14 @@ from config import (
     REVIEW_TEMPERATURE,
 )
 
+try:
+    from app.openai_model_router import OpenAIModelRouter
+    from app.openai_tracked import get_tracked_chat_completion_metadata, tracked_chat_completion
+except Exception:  # pragma: no cover
+    OpenAIModelRouter = None  # type: ignore
+    get_tracked_chat_completion_metadata = None  # type: ignore
+    tracked_chat_completion = None  # type: ignore
+
 
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _RETRYABLE_EXCEPTIONS = (
@@ -54,6 +62,111 @@ _NON_RETRYABLE_EXCEPTIONS = (
     NotFoundError,
     ConflictError,
     UnprocessableEntityError,
+)
+
+_CONTEXTUAL_HEALTH_RISK_TERMS = {"heart", "medicine", "tablet", "dose", "dosage"}
+_CONTEXTUAL_HEALTH_ADJACENT_TERMS = {
+    "diet",
+    "food",
+    "eat",
+    "eating",
+    "nutrition",
+    "exercise",
+    "workout",
+    "sleep",
+    "pain",
+    "heart",
+    "medicine",
+    "medication",
+    "tablet",
+    "dose",
+    "dosage",
+}
+_HEALTH_ADJACENT_TERMS = {
+    "health",
+    "medical",
+    "doctor",
+    "clinic",
+    "hospital",
+    "symptom",
+    "symptoms",
+    "diagnosis",
+    "diagnose",
+    "treatment",
+    "prescription",
+    "medication",
+    "pregnant",
+    "pregnancy",
+    "allergy",
+    "allergic",
+    "fever",
+}
+_BODY_PART_TERMS = (
+    "stomach",
+    "abdomen",
+    "abdominal",
+    "chest",
+    "head",
+    "back",
+    "neck",
+    "throat",
+    "ear",
+    "tooth",
+    "teeth",
+    "leg",
+    "arm",
+    "hand",
+    "foot",
+    "feet",
+    "knee",
+    "shoulder",
+    "hip",
+    "joint",
+    "muscle",
+)
+_HEART_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"heart\s+(?:attack|disease|condition|failure|rate|palpitations?|symptoms?)|"
+    r"symptoms?\s+of\s+(?:a\s+)?heart\s+attack"
+    r")\b"
+)
+_MEDICATION_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:what|which|safe|recommended|correct)\s+(?:dose|dosage)\b|"
+    r"(?:dose|dosage)\s+of\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:can|should)\s+i\s+take\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:take|taking)\s+(?:this\s+)?(?:medicine|medication|tablet)\b|"
+    r"(?:medicine|medication|tablet)\s+(?:dose|dosage|side\s+effects?|for|with)\b"
+    r")"
+)
+_PERSONAL_DIET_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"what\s+(?:should|can)\s+i\s+eat|"
+    r"can\s+i\s+eat|"
+    r"foods?\s+(?:should|can)\s+i|"
+    r"(?:my\s+)?(?:diet|meal)\s+plan|"
+    r"(?:breakfast|lunch|dinner)\s+(?:plan|ideas?|for\s+me)|"
+    r"nutrition\s+(?:advice|plan|for\s+me)"
+    r")\b"
+)
+_PERSONAL_EXERCISE_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:can|should)\s+i\s+(?:exercise|work\s*out)|"
+    r"(?:my\s+)?(?:exercise|workout)\s+(?:plan|routine|advice)|"
+    r"(?:exercise|workout)\s+for\s+me"
+    r")\b"
+)
+_SLEEP_HEALTH_CONTEXT_RE = re.compile(
+    r"\b(?:"
+    r"(?:i\s+)?(?:can(?:not|'t)|cant|unable\s+to|struggling\s+to)\s+sleep|"
+    r"sleep(?:ing)?\s+(?:problem|problems|trouble|difficulty|disorder)|"
+    r"insomnia|sleepless"
+    r")\b"
+)
+_PAIN_HEALTH_CONTEXT_RE = re.compile(
+    rf"\b(?:{'|'.join(_BODY_PART_TERMS)})\s+(?:pain|ache|aches|hurts?)\b|"
+    rf"\b(?:pain|ache|aches|hurts?)\s+(?:in|near|around|inside)\s+(?:my\s+|the\s+)?(?:{'|'.join(_BODY_PART_TERMS)})\b|"
+    r"\bi\s+(?:have|feel|am\s+in|am\s+having)\s+(?:[a-z0-9_]+\s+){0,3}(?:pain|ache|aches|hurt|hurts)\b"
 )
 
 
@@ -89,6 +202,8 @@ class OpenAICore:
         self.model = model
         self.client = OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT)
         self._cache: "OrderedDict[str, str]" = OrderedDict()
+        self._last_request_metadata: Dict[str, Any] = {}
+        self._last_json_metadata: Dict[str, Any] = {}
 
     @staticmethod
     def _build_input(system_prompt: str, user_prompt: str) -> List[Dict[str, str]]:
@@ -153,14 +268,62 @@ class OpenAICore:
         return response_format
 
     @staticmethod
-    def _contains_health_risk(text: str) -> bool:
+    def _normalize_health_text(text: str) -> str:
         normalized = str(text or "").lower()
-        return any(keyword in normalized for keyword in HEALTH_RISK_KEYWORDS)
+        normalized = re.sub(r"[^\w\s\u0B80-\u0BFF]", " ", normalized)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @staticmethod
+    def _contains_any_health_term(text: str, terms: set[str]) -> bool:
+        haystack = OpenAICore._normalize_health_text(text)
+        for raw_term in terms:
+            term = OpenAICore._normalize_health_text(raw_term)
+            if not term:
+                continue
+            if re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", haystack):
+                return True
+        return False
+
+    @classmethod
+    def _contains_health_risk(cls, text: str) -> bool:
+        normalized = str(text or "").lower()
+        non_contextual_terms = set(HEALTH_RISK_KEYWORDS) - _CONTEXTUAL_HEALTH_RISK_TERMS
+        if cls._contains_any_health_term(normalized, non_contextual_terms):
+            return True
+        return (
+            _HEART_HEALTH_CONTEXT_RE.search(cls._normalize_health_text(normalized)) is not None
+            or _MEDICATION_HEALTH_CONTEXT_RE.search(cls._normalize_health_text(normalized)) is not None
+        )
+
+    @classmethod
+    def _is_health_adjacent_query(cls, text: str) -> bool:
+        normalized = cls._normalize_health_text(text)
+        if cls._contains_health_risk(normalized):
+            return True
+
+        # Do not treat broad words such as food, pain, sleep, or exercise as
+        # medical by themselves. They are common in business/software prompts
+        # (for example, "food startup", "pain points", "sleep mode",
+        # "Python exercise"). Only profile medical facts should influence the
+        # core prompt when the current turn has an actual health context.
+        always_health_adjacent = _HEALTH_ADJACENT_TERMS - _CONTEXTUAL_HEALTH_ADJACENT_TERMS
+        if cls._contains_any_health_term(normalized, always_health_adjacent):
+            return True
+
+        return (
+            _HEART_HEALTH_CONTEXT_RE.search(normalized) is not None
+            or _MEDICATION_HEALTH_CONTEXT_RE.search(normalized) is not None
+            or _SLEEP_HEALTH_CONTEXT_RE.search(normalized) is not None
+            or _PAIN_HEALTH_CONTEXT_RE.search(normalized) is not None
+            or _PERSONAL_DIET_CONTEXT_RE.search(normalized) is not None
+            or _PERSONAL_EXERCISE_CONTEXT_RE.search(normalized) is not None
+        )
 
     def _cache_key(
         self,
         *,
         mode: str,
+        model: str,
         system_prompt: str,
         user_prompt: str,
         temperature: float,
@@ -170,7 +333,7 @@ class OpenAICore:
     ) -> str:
         payload = {
             "mode": mode,
-            "model": self.model,
+            "model": model,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
             "temperature": temperature,
@@ -201,19 +364,35 @@ class OpenAICore:
         temperature: float,
         max_output_tokens: int,
         response_format: Optional[Dict[str, Any]] = None,
+        model_override: Optional[str] = None,
+        forced_model_selection: Optional[Any] = None,
     ) -> str:
+        model = str(model_override or self.model).strip() or self.model
         last_error: Optional[Exception] = None
+        self._last_request_metadata = {}
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt.strip()},
-                        {"role": "user", "content": user_prompt.strip()},
-                    ],
+                request_messages = [
+                    {"role": "system", "content": system_prompt.strip()},
+                    {"role": "user", "content": user_prompt.strip()},
+                ]
+                if tracked_chat_completion is None:
+                    raise RuntimeError("Tracked OpenAI helper is unavailable.")
+                response = tracked_chat_completion(
+                    self.client,
+                    task="json" if response_format else "normal_qa",
+                    route="stage_openai_core",
+                    messages=request_messages,
                     temperature=temperature,
                     max_tokens=max_output_tokens,
                     response_format=self._normalize_response_format(response_format),
+                    forced_model_selection=forced_model_selection,
+                    model=model if forced_model_selection is None and model_override else None,
+                )
+                self._last_request_metadata = (
+                    get_tracked_chat_completion_metadata(response)
+                    if get_tracked_chat_completion_metadata is not None
+                    else {}
                 )
                 text = self._extract_response_text(response)
                 if not text:
@@ -241,9 +420,12 @@ class OpenAICore:
         *,
         temperature: float = RAW_TEMPERATURE,
         max_output_tokens: int = 800,
+        model_override: Optional[str] = None,
     ) -> str:
+        model = str(model_override or self.model).strip() or self.model
         key = self._cache_key(
             mode="text",
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
@@ -257,6 +439,7 @@ class OpenAICore:
             user_prompt,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            model_override=model,
         )
         self._cache_set(key, text)
         return text
@@ -293,9 +476,13 @@ class OpenAICore:
         *,
         temperature: float = 0.2,
         max_output_tokens: int = 1200,
+        model_override: Optional[str] = None,
+        forced_model_selection: Optional[Any] = None,
     ) -> Dict[str, Any]:
+        model = str(model_override or self.model).strip() or self.model
         key = self._cache_key(
             mode="json",
+            model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
@@ -313,14 +500,26 @@ class OpenAICore:
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             response_format={"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
+            model_override=model,
+            forced_model_selection=forced_model_selection,
         )
+        request_metadata = dict(self._last_request_metadata)
         parsed = self._repair_json(raw_json, schema_name, schema)
+        self._last_json_metadata = request_metadata
         serialized = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
         self._cache_set(key, serialized)
         return parsed
 
     def answer_user_query_structured(self, user_query: str, profile_context: str) -> Dict[str, str]:
-        health_sensitive = self._contains_health_risk(user_query) or self._contains_health_risk(profile_context)
+        router = OpenAIModelRouter() if OpenAIModelRouter is not None else None
+        selection = router.select_model(
+            "normal_qa",
+            user_query,
+            risk_level="high" if self._contains_health_risk(user_query) else "low",
+        ) if router is not None else None
+        query_health_sensitive = self._contains_health_risk(user_query)
+        profile_health_relevant = self._contains_health_risk(profile_context) and self._is_health_adjacent_query(user_query)
+        health_sensitive = query_health_sensitive or profile_health_relevant
         safety_block = MEDICAL_SAFETY_NOTE if ENABLE_HEALTH_SAFETY_GUARD and health_sensitive else ""
         system_prompt = (
             "You are the English core answer engine for a persona-aware assistant. "
@@ -362,14 +561,27 @@ Task:
             "core_answer_result",
             schema,
             temperature=RAW_TEMPERATURE,
-            max_output_tokens=1000,
+            max_output_tokens=min(1000, selection.max_output_tokens) if selection is not None else 1000,
+            model_override=selection.model if selection is not None else None,
+            forced_model_selection=selection,
         )
+        tracked_metadata = dict(getattr(self, "_last_json_metadata", {}) or {})
         answer = str(data.get("answer", "")).strip() or self.answer_user_query(user_query, profile_context)
         return {
             "answer": answer,
             "answer_style": str(data.get("answer_style", "practical")).strip() or "practical",
             "risk_level": str(data.get("risk_level", "low")).strip() or "low",
             "safety_notes": str(data.get("safety_notes", "")).strip() or safety_block,
+            "model_used": tracked_metadata.get("model_used") or (selection.model if selection is not None else self.model),
+            "model_tier": tracked_metadata.get("model_tier") or (selection.tier if selection is not None else "standard"),
+            "model_reason": tracked_metadata.get("reason") or (selection.reason if selection is not None else "legacy_default"),
+            "estimated_input_tokens": tracked_metadata.get("estimated_input_tokens") or (selection.estimated_input_tokens if selection is not None else 0),
+            "estimated_output_tokens": tracked_metadata.get("estimated_output_tokens") or (selection.estimated_output_tokens if selection is not None else 0),
+            "estimated_cost_usd": tracked_metadata.get("estimated_cost_usd") or (selection.estimated_cost_usd if selection is not None else 0.0),
+            "actual_input_tokens": tracked_metadata.get("actual_input_tokens"),
+            "actual_output_tokens": tracked_metadata.get("actual_output_tokens"),
+            "actual_cost_usd": tracked_metadata.get("actual_cost_usd"),
+            "openai_usage_tracked": tracked_chat_completion is not None,
         }
 
     def answer_user_query(self, user_query: str, profile_context: str) -> str:
@@ -395,6 +607,8 @@ Task:
     def review_answer(self, user_query: str, answer: str, profile_context: str) -> Dict[str, str]:
         if not ENABLE_ANSWER_REVIEW:
             return {"final_answer": answer, "keep_original": "true", "review_note": "review disabled"}
+        router = OpenAIModelRouter() if OpenAIModelRouter is not None else None
+        selection = router.select_model("review", user_query) if router is not None else None
 
         schema = {
             "type": "object",
@@ -432,12 +646,25 @@ Task:
             "answer_review",
             schema,
             temperature=REVIEW_TEMPERATURE,
-            max_output_tokens=900,
+            max_output_tokens=min(900, selection.max_output_tokens) if selection is not None else 900,
+            model_override=selection.model if selection is not None else None,
+            forced_model_selection=selection,
         )
+        tracked_metadata = dict(getattr(self, "_last_json_metadata", {}) or {})
         keep_original = str(data.get("keep_original", "true")).strip().lower()
         final_answer = answer if keep_original == "true" else (str(data.get("final_answer", "")).strip() or answer)
         return {
             "final_answer": final_answer,
             "keep_original": keep_original,
             "review_note": str(data.get("review_note", "")).strip(),
+            "model_used": tracked_metadata.get("model_used") or (selection.model if selection is not None else self.model),
+            "model_tier": tracked_metadata.get("model_tier") or (selection.tier if selection is not None else "standard"),
+            "model_reason": tracked_metadata.get("reason") or (selection.reason if selection is not None else "legacy_default"),
+            "estimated_input_tokens": tracked_metadata.get("estimated_input_tokens") or (selection.estimated_input_tokens if selection is not None else 0),
+            "estimated_output_tokens": tracked_metadata.get("estimated_output_tokens") or (selection.estimated_output_tokens if selection is not None else 0),
+            "estimated_cost_usd": tracked_metadata.get("estimated_cost_usd") or (selection.estimated_cost_usd if selection is not None else 0.0),
+            "actual_input_tokens": tracked_metadata.get("actual_input_tokens"),
+            "actual_output_tokens": tracked_metadata.get("actual_output_tokens"),
+            "actual_cost_usd": tracked_metadata.get("actual_cost_usd"),
+            "openai_usage_tracked": tracked_chat_completion is not None,
         }

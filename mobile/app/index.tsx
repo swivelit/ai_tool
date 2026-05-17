@@ -64,7 +64,7 @@ export default function LandingScreen() {
             <Pressable
               onPress={() => {
                 if (user) {
-                  router.push("/(tabs)");
+                  router.push("/(chat)" as any);
                   return;
                 }
 

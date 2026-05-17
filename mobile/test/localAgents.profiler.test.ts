@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import models from "../data/config/models.json";
 import profilerSlots from "../data/config/profiler_slots.json";
 import prompts from "../data/config/prompts.json";
 
@@ -107,9 +108,25 @@ describe("local profiler", () => {
     vi.clearAllMocks();
     mockedState.files.set(
       `${dataRoot}/config/profiler_slots.json`,
-      JSON.stringify(profilerSlots, null, 2)
+      JSON.stringify(profilerSlots, null, 2),
     );
-    mockedState.files.set(`${dataRoot}/config/prompts.json`, JSON.stringify(prompts, null, 2));
+    mockedState.files.set(
+      `${dataRoot}/config/prompts.json`,
+      JSON.stringify(prompts, null, 2),
+    );
+    mockedState.files.set(
+      `${dataRoot}/config/models.json`,
+      JSON.stringify(
+        {
+          ...models,
+          runtime: { ...models.runtime, mode: "local_adapter" },
+          baseUrl: "http://192.168.1.23:10000/v1",
+          timeoutMs: 1000,
+        },
+        null,
+        2,
+      ),
+    );
   });
 
   it("starts the profiler and persists state", async () => {

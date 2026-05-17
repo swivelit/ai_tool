@@ -15,6 +15,8 @@ import requests
 from sqlmodel import Session, select
 
 from .models import Conversation, DailyRoutine, Item, User, UserProfile
+from .openai_model_router import OpenAIModelRouter
+from .openai_tracked import tracked_chat_completion
 
 try:
     from config import (
@@ -128,6 +130,20 @@ DEFAULT_MEMORY_CONFIG = {
 
 
 TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
+BAD_CACHED_ANSWER_RE = re.compile(
+    r"("
+    r"I could not fetch a reliable web result|"
+    r"I could not complete the web lookup|"
+    r"I could not fetch the weather right now|"
+    r"Internal Server Error|"
+    r"OpenAI provider/configuration error|"
+    r"requires OPENAI_API_KEY|"
+    r"local_timeout|"
+    r"You do not have any tomorrow reminders|"
+    r"You do not have any reminders scheduled for tomorrow"
+    r")",
+    re.IGNORECASE,
+)
 
 
 class AgenticService:
@@ -135,6 +151,7 @@ class AgenticService:
         self.client = openai_client
         self.local_rag_service = local_rag_service
         self.model = os.getenv("OPENAI_AGENT_MODEL", os.getenv("OPENAI_JSON_MODEL", OPENAI_MODEL))
+        self.model_router = OpenAIModelRouter()
         self.enabled = bool(AGENTIC_MODE_ENABLED)
         self._stage_translator = None
         self._ensure_dirs()
@@ -203,8 +220,10 @@ class AgenticService:
             return ""
 
     def _llm_json(self, system_prompt: str, user_content: str, temperature: float = 0.2) -> Dict[str, Any]:
-        response = self.client.chat.completions.create(
-            model=self.model,
+        response = tracked_chat_completion(
+            self.client,
+            task="json",
+            route="agentic_json",
             messages=[
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": user_content.strip()},
@@ -212,11 +231,20 @@ class AgenticService:
             temperature=temperature,
             response_format={"type": "json_object"},
         )
-        return json.loads(self._extract_response_text(response))
+        text = self._extract_response_text(response)
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     def _llm_text(self, system_prompt: str, user_content: str, temperature: float = 0.2) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
+        response = tracked_chat_completion(
+            self.client,
+            task="simple_fallback",
+            route="agentic_text",
             messages=[
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": user_content.strip()},
@@ -300,8 +328,10 @@ class AgenticService:
                 temperature: float = 0.2,
                 max_output_tokens: int = 900,
             ) -> str:
-                response = self.outer.client.chat.completions.create(
-                    model=self.outer.model,
+                response = tracked_chat_completion(
+                    self.outer.client,
+                    task="translation",
+                    route="agentic_stage_translation",
                     messages=[
                         {"role": "system", "content": system_prompt.strip()},
                         {"role": "user", "content": user_prompt.strip()},
@@ -464,6 +494,64 @@ class AgenticService:
     def _route_config(self) -> Dict[str, Any]:
         return self._read_json(Path(AGENT_ORCHESTRATOR_CONFIG_PATH), DEFAULT_ORCHESTRATOR_CONFIG)
 
+    @staticmethod
+    def _route_keywords(routes: Dict[str, Any], route_name: str) -> List[str]:
+        mobile_shape_keys = {
+            "fast_greeting": ("fastGreetingKeywords", "smallTalkKeywords"),
+            "calendar": ("calendarKeywords", "reminderKeywords"),
+            "weather": ("weatherKeywords",),
+            "web_search": ("liveDataKeywords",),
+        }
+        builtins = {
+            "fast_greeting": [
+                "hi",
+                "hello",
+                "hey",
+                "thanks",
+                "thank you",
+                "how are you",
+                "what's up",
+                "whats up",
+            ],
+            "calendar": ["schedule", "calendar", "reminder", "task", "todo", "to do"],
+            "weather": ["weather", "forecast", "rain", "temperature"],
+            "web_search": [
+                "latest",
+                "news",
+                "current",
+                "today",
+                "live",
+                "score",
+                "election",
+                "internet",
+                "browse",
+                "search online",
+            ],
+        }
+
+        keywords: List[str] = []
+        internal_route = routes.get(route_name)
+        if isinstance(internal_route, dict):
+            raw_keywords = internal_route.get("keywords")
+            if isinstance(raw_keywords, list):
+                keywords.extend(str(item) for item in raw_keywords)
+
+        for key in mobile_shape_keys.get(route_name, ()):
+            raw_keywords = routes.get(key)
+            if isinstance(raw_keywords, list):
+                keywords.extend(str(item) for item in raw_keywords)
+
+        keywords.extend(builtins.get(route_name, []))
+        seen: set[str] = set()
+        out: List[str] = []
+        for keyword in keywords:
+            normalized = " ".join(str(keyword or "").split()).strip()
+            lookup = normalized.lower()
+            if normalized and lookup not in seen:
+                seen.add(lookup)
+                out.append(normalized)
+        return out
+
     def _alignment_config(self) -> Dict[str, Any]:
         return self._read_json(Path(AGENT_ALIGNMENT_CONFIG_PATH), DEFAULT_ALIGNMENT_RULES)
 
@@ -608,10 +696,6 @@ Return plain text only.
 
         profile.updated_at = _utc_now()
         session.add(profile)
-        session.commit()
-        session.refresh(profile)
-
-        snapshot = self.persist_profile_snapshot(session, user_id)
 
         if completed and profile.profile_summary:
             session.add(
@@ -627,7 +711,11 @@ Return plain text only.
                     created_at=_utc_now(),
                 )
             )
-            session.commit()
+
+        session.commit()
+        session.refresh(profile)
+
+        snapshot = self.persist_profile_snapshot(session, user_id)
 
         return {"answers": merged, "summary": profile.profile_summary, "snapshot": snapshot}
 
@@ -792,17 +880,55 @@ Return ONLY JSON:
     # -----------------------------
     # orchestrator + tools
     # -----------------------------
+    def _matches_route_keyword(self, normalized_message: str, routes: Dict[str, Any], route_name: str) -> bool:
+        padded = f" {normalized_message} "
+        for keyword in self._route_keywords(routes, route_name):
+            normalized_keyword = self._normalize_lookup_text(keyword)
+            if normalized_keyword and (
+                normalized_message == normalized_keyword or f" {normalized_keyword} " in padded
+            ):
+                return True
+        return False
+
+    def _should_route_web_search(self, normalized_message: str, routes: Dict[str, Any]) -> bool:
+        if re.search(r"\b(latest|news|current|live|score|election|internet|browse|breaking)\b", normalized_message):
+            return True
+        if "search online" in normalized_message:
+            return True
+        if re.search(r"\b(today|tonight)\b", normalized_message) and re.search(
+            r"\b(score|result|news|election|stock|price|rate)\b", normalized_message
+        ):
+            return True
+
+        # Older internal configs treated generic "what is" questions as web
+        # lookups. Keep those on the normal pipeline unless the question clearly
+        # needs current public data.
+        generic_web_keywords = {"what is", "who is"}
+        for keyword in self._route_keywords(routes, "web_search"):
+            normalized_keyword = self._normalize_lookup_text(keyword)
+            if normalized_keyword in generic_web_keywords:
+                continue
+            if normalized_keyword and (
+                normalized_message == normalized_keyword or f" {normalized_keyword} " in f" {normalized_message} "
+            ):
+                return True
+        return False
+
     def _quick_route(self, message: str) -> Optional[str]:
         normalized = self._normalize_lookup_text(message)
-        routes = (self._route_config().get("routes") or {})
-        for route_name in ("fast_greeting", "calendar", "weather"):
-            for keyword in list((routes.get(route_name) or {}).get("keywords") or []):
-                k = self._normalize_lookup_text(keyword)
-                if k and (normalized == k or f" {k} " in f" {normalized} "):
-                    return route_name
+        route_config = self._route_config()
+        routes = route_config.get("routes") if isinstance(route_config, dict) else {}
+        routes = routes if isinstance(routes, dict) else {}
 
-        if re.search(r"\b(latest|news|current|search|internet)\b", normalized):
+        if self._matches_route_keyword(normalized, routes, "fast_greeting"):
+            return "fast_greeting"
+        if self._matches_route_keyword(normalized, routes, "weather"):
+            return "weather"
+
+        if self._should_route_web_search(normalized, routes):
             return "web_search"
+        if self._matches_route_keyword(normalized, routes, "calendar"):
+            return "calendar"
         return None
 
     def _classify_route(self, user: Optional[User], message: str, reply_language: str) -> Dict[str, Any]:
@@ -823,6 +949,7 @@ Return ONLY JSON:
 You are the Orchestrator Agent for a personal assistant app.
 
 Choose exactly one route:
+- fast_greeting
 - weather
 - web_search
 - calendar
@@ -898,11 +1025,39 @@ Return ONLY JSON:
         tz = self._get_user_timezone(user)
         now_local = datetime.now(tz)
         normalized = self._normalize_lookup_text(message)
+        create_intent = bool(
+            re.search(
+                r"\b(create|set|add|schedule|make|new)\s+(?:a\s+)?(?:reminder|task|todo)\b",
+                normalized,
+            )
+            or re.search(r"\bremind\s+me\b", normalized)
+            or "dont let me forget" in normalized
+            or "don't let me forget" in str(message or "").lower()
+        )
         scope = "upcoming"
         if "today" in normalized or "இன்று" in message:
             scope = "today"
         elif "tomorrow" in normalized or "நாளை" in message:
             scope = "tomorrow"
+
+        if create_intent:
+            content_probe = normalized
+            content_probe = re.sub(
+                r"\b(create|set|add|schedule|make|new)\s+(?:a\s+)?(?:reminder|task|todo)\b",
+                " ",
+                content_probe,
+            )
+            content_probe = re.sub(r"\bremind\s+me\b", " ", content_probe)
+            content_probe = re.sub(
+                r"\b(?:for|on|at|by|in|this|next|today|tomorrow|morning|afternoon|evening|night|am|pm)\b",
+                " ",
+                content_probe,
+            )
+            content_probe = re.sub(r"\b\d{1,2}(?::\d{2})?\b", " ", content_probe)
+            content_probe = re.sub(r"\s+", " ", content_probe).strip()
+            if len(content_probe) < 3:
+                when = "tomorrow morning" if "tomorrow" in normalized and "morning" in normalized else "that time"
+                return f"What should I remind you about {when}?"
 
         items = list(
             session.exec(
@@ -1033,6 +1188,22 @@ Keep it very short and actionable.
         query = str(message or "").strip()
         if not query:
             return "I need a search query first."
+        normalized = self._normalize_lookup_text(query)
+
+        if "election" in normalized and not re.search(
+            r"\b(india|indian|tamil nadu|usa|u s|united states|uk|canada|state|country|parliament|assembly|presidential|lok sabha)\b",
+            normalized,
+        ):
+            return "Which election and location do you mean? Share the country, state, or election name and I can look up the latest details."
+
+        if re.search(r"\b(?:ipl|indian premier league)\b", normalized) and re.search(
+            r"\b(?:latest|live|today|score|scores|match)\b", normalized
+        ):
+            return (
+                "Live IPL score lookup needs a configured live sports data provider. "
+                "The backend does not have a reliable live sports provider configured right now, "
+                "so I cannot verify today's score safely."
+            )
 
         try:
             ddg_resp = requests.get(
@@ -1175,6 +1346,12 @@ Return ONLY JSON:
 
         threshold = float((self._memory_config() or {}).get("semantic_cache_threshold", 0.95) or 0.95)
         route_taken = str(result.get("route_taken", "")).strip()
+        answer_text = " ".join(
+            str(result.get(key) or "").strip()
+            for key in ("raw_english", "remodeled_english", "tamil_text", "theni_tamil_text")
+        )
+        if BAD_CACHED_ANSWER_RE.search(answer_text):
+            return None
 
         if score >= threshold or route_taken in {"cached_answer", "local_schedule_rag", "local_routine_rag"}:
             return result
@@ -1345,8 +1522,6 @@ Return ONLY JSON:
     ) -> Dict[str, Any]:
         if not self.enabled:
             return pipeline_runner(session, user_id, message, reply_language)
-        if onboarding_profile:
-            message = f"{message}\n\n[User Onboarding Data]\n{json.dumps(onboarding_profile, ensure_ascii=False)}"
         total_start = time.perf_counter()
         user, profile, routine = self._get_user_bundle(session, int(user_id)) if user_id else (None, None, None)
         resolved_lang = self._normalize_reply_language(
@@ -1363,6 +1538,8 @@ Return ONLY JSON:
         route = str(classification.get("route", "pipeline")).strip() or "pipeline"
         draft_english = ""
         tool_meta = {"classification": classification}
+        if onboarding_profile:
+            tool_meta["onboarding_profile"] = onboarding_profile
 
         if route == "fast_greeting":
             try:
@@ -1397,16 +1574,26 @@ Return ONLY JSON:
             self.maybe_sync_memory(session, user_id, force=False)
             return pipeline_result
 
-        aligned = self._align_answer(
-            user=user,
-            profile=profile,
-            routine=routine,
-            user_message=message,
-            draft_answer=draft_english,
-            reply_language=resolved_lang,
-            route=route,
-            tool_meta=tool_meta,
-        )
+        lower_draft = draft_english.lower()
+        skip_alignment = route == "web_search" and "live sports data provider" in lower_draft
+        if skip_alignment:
+            aligned = {
+                "english_answer": draft_english,
+                "final_answer": draft_english,
+                "style_applied": ["alignment_skipped_for_infra_status"],
+                "code_switch": False,
+            }
+        else:
+            aligned = self._align_answer(
+                user=user,
+                profile=profile,
+                routine=routine,
+                user_message=message,
+                draft_answer=draft_english,
+                reply_language=resolved_lang,
+                route=route,
+                tool_meta=tool_meta,
+            )
         english_answer = str(aligned.get("english_answer", draft_english)).strip() or draft_english
         final_answer = str(aligned.get("final_answer", english_answer)).strip() or english_answer
 

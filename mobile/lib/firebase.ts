@@ -1,7 +1,7 @@
 import Constants from "expo-constants";
 import { Platform } from "react-native";
-import { initializeApp, getApp, getApps } from "firebase/app";
-import { getAuth, initializeAuth } from "firebase/auth";
+import { initializeApp, getApp, getApps, type FirebaseApp } from "firebase/app";
+import * as FirebaseAuth from "firebase/auth";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
@@ -20,37 +20,48 @@ const missingKeys = Object.entries(firebaseConfig)
   .filter(([, value]) => !value)
   .map(([key]) => key);
 
-if (missingKeys.length) {
-  throw new Error(
-    `Missing Firebase config: ${missingKeys.join(", ")}. Add the EXPO_PUBLIC_FIREBASE_* values to your .env file.`
-  );
-}
+export const firebaseConfigStatus: {
+  configured: boolean;
+  missingKeys: string[];
+  message?: string;
+} = missingKeys.length
+  ? {
+      configured: false,
+      missingKeys,
+      message: `Missing Firebase config: ${missingKeys.join(
+        ", "
+      )}. Add EXPO_PUBLIC_FIREBASE_* values before building.`,
+    }
+  : {
+      configured: true,
+      missingKeys: [],
+    };
 
-export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
+export const firebaseApp: FirebaseApp | null = firebaseConfigStatus.configured
+  ? getApps().length
+    ? getApp()
+    : initializeApp(firebaseConfig)
+  : null;
 
-type NativeInitializeAuthOptions = NonNullable<Parameters<typeof initializeAuth>[1]>;
+type NativeInitializeAuthOptions = NonNullable<Parameters<typeof FirebaseAuth.initializeAuth>[1]>;
 type NativePersistenceValue = NonNullable<NativeInitializeAuthOptions["persistence"]>;
 type GetPersistenceFactory = (storage: typeof AsyncStorage) => NativePersistenceValue;
+
+type FirebaseAuthModuleWithReactNativePersistence = typeof FirebaseAuth & {
+  getReactNativePersistence?: GetPersistenceFactory;
+};
+
+const firebaseAuthModule = FirebaseAuth as FirebaseAuthModuleWithReactNativePersistence;
 
 export function createNativePersistence(getPersistenceFactory?: GetPersistenceFactory) {
   if (getPersistenceFactory) {
     return getPersistenceFactory(AsyncStorage);
   }
 
-  const moduleIds = ["firebase/auth/react-native", "firebase/auth"];
+  const getReactNativePersistence = firebaseAuthModule.getReactNativePersistence;
 
-  for (const moduleId of moduleIds) {
-    try {
-      const firebaseAuthModule = require(moduleId) as {
-        getReactNativePersistence?: GetPersistenceFactory;
-      };
-
-      if (typeof firebaseAuthModule.getReactNativePersistence === "function") {
-        return firebaseAuthModule.getReactNativePersistence(AsyncStorage);
-      }
-    } catch {
-      // Try the next Firebase Auth entrypoint.
-    }
+  if (typeof getReactNativePersistence === "function") {
+    return getReactNativePersistence(AsyncStorage);
   }
 
   return undefined;
@@ -75,18 +86,29 @@ export function getInitializeAuthOptions(
   };
 }
 
-function buildAuth() {
+function buildAuth(app: FirebaseApp) {
   const options = getInitializeAuthOptions(Platform.OS);
 
   if (!options) {
-    return getAuth(firebaseApp);
+    return FirebaseAuth.getAuth(app);
   }
 
   try {
-    return initializeAuth(firebaseApp, options);
+    return FirebaseAuth.initializeAuth(app, options);
   } catch {
-    return getAuth(firebaseApp);
+    return FirebaseAuth.getAuth(app);
   }
 }
 
-export const auth = buildAuth();
+export const auth: FirebaseAuth.Auth | null = firebaseApp ? buildAuth(firebaseApp) : null;
+
+export function requireFirebaseAuth(): FirebaseAuth.Auth {
+  if (auth) {
+    return auth;
+  }
+
+  throw new Error(
+    firebaseConfigStatus.message ||
+      "Firebase Auth is not configured. Add EXPO_PUBLIC_FIREBASE_* values before building."
+  );
+}

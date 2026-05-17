@@ -1,21 +1,282 @@
 {
-  "version": 1,
+  "version": 8,
   "runtime": {
     "primary": "backend",
-    "backendRole": "mirror_support_openai_fallback"
+    "mode": "native_on_device",
+    "productionMode": "native_on_device",
+    "developmentMode": "local_adapter",
+    "backendRole": "primary",
+    "backendPolicy": "Backend AI router is the primary public chat and voice runtime; local models are optional fallback/development paths.",
+    "openAiPolicy": "backend_controlled",
+    "localRuntimeInterface": "LocalModelRuntime",
+    "nativeRuntime": "NativeOnDeviceModelRuntime",
+    "nativeImplementationStatus": "native_build_verified_by_native_verify_llama_llama_cpp_linkable_production_gguf_runtime_target_device_gguf_generation_required",
+    "nativeBackend": "llama_cpp",
+    "nativeModuleName": "JaiOnDeviceModel",
+    "adapterRuntime": "OpenAiCompatibleLocalAdapterRuntime",
+    "adapterDevelopmentOnly": true,
+    "adapterContract": "Development-only /chat/completions and /embeddings adapter contract. Production runtime.mode is native_on_device with downloaded GGUF model files in app-private storage.",
+    "adapterLocation": "external_lan",
+    "allowDeviceLoopback": false
   },
   "baseUrl": "",
-  "apiKey": "local-phone",
-  "timeoutMs": 45000,
+  "apiKey": "",
+  "timeoutMs": 120000,
+  "native": {
+    "backend": "llama_cpp",
+    "bridgeModuleName": "JaiOnDeviceModel",
+    "modelRoot": "document://models",
+    "requiresDevClient": true,
+    "assetPolicy": "Production downloads quantized GGUF files into app-private storage on first launch/chat. bundled_assets remains an optional development/build-time mode via plugins/withJaiOnDeviceModelAssets.js.",
+    "models": {
+      "google/gemma-3-4b-it": {
+        "id": "google/gemma-3-4b-it",
+        "roles": [
+          "profiler",
+          "orchestrator_lite",
+          "memory_summarizer",
+          "alignment"
+        ],
+        "backend": "llama_cpp",
+        "format": "gguf",
+        "quantization": "Q4_K_M",
+        "chatTemplate": "gemma3",
+        "fileName": "gemma-3-4b-it-q4_k_m.gguf",
+        "modelPath": "models/gemma-3-4b-it-q4_k_m.gguf",
+        "contextSize": 4096,
+        "batchSize": 512,
+        "threads": 4,
+        "gpuLayers": 0,
+        "useMmap": true,
+        "useMetal": false,
+        "useGpu": false,
+        "acceleration": "cpu_only",
+        "description": "Lite chat, profiler, summarizer, and alignment model. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; in production this path is replaced at runtime with the downloaded file:// GGUF path."
+      },
+      "Qwen/Qwen3-8B": {
+        "id": "Qwen/Qwen3-8B",
+        "roles": [
+          "orchestrator_medium",
+          "memory_summarizer"
+        ],
+        "backend": "llama_cpp",
+        "format": "gguf",
+        "quantization": "Q4_K_M",
+        "chatTemplate": "qwen3",
+        "fileName": "qwen3-8b-q4_k_m.gguf",
+        "modelPath": "models/qwen3-8b-q4_k_m.gguf",
+        "contextSize": 8192,
+        "batchSize": 512,
+        "threads": 4,
+        "gpuLayers": 0,
+        "useMmap": true,
+        "useMetal": false,
+        "useGpu": false,
+        "acceleration": "cpu_only",
+        "description": "Standard tier orchestrator. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; in production this path is replaced at runtime with the downloaded file:// GGUF path."
+      },
+      "Qwen/Qwen3-14B": {
+        "id": "Qwen/Qwen3-14B",
+        "roles": [
+          "orchestrator_pro"
+        ],
+        "backend": "llama_cpp",
+        "format": "gguf",
+        "quantization": "Q4_K_M",
+        "chatTemplate": "qwen3",
+        "fileName": "qwen3-14b-q4_k_m.gguf",
+        "modelPath": "models/qwen3-14b-q4_k_m.gguf",
+        "contextSize": 8192,
+        "batchSize": 512,
+        "threads": 4,
+        "gpuLayers": 0,
+        "useMmap": true,
+        "useMetal": false,
+        "useGpu": false,
+        "acceleration": "cpu_only",
+        "description": "Pro tier 14B orchestrator for high-RAM devices or explicit opt-in. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; in production this path is replaced at runtime with the downloaded file:// GGUF path."
+      },
+      "Qwen/Qwen3-Embedding-0.6B": {
+        "id": "Qwen/Qwen3-Embedding-0.6B",
+        "roles": [
+          "memory_embedding"
+        ],
+        "backend": "llama_cpp",
+        "format": "gguf",
+        "quantization": "Q8_0",
+        "promptFormat": "embedding",
+        "fileName": "qwen3-embedding-0.6b-q8_0.gguf",
+        "modelPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
+        "contextSize": 4096,
+        "batchSize": 512,
+        "threads": 4,
+        "gpuLayers": 0,
+        "useMmap": true,
+        "useMetal": false,
+        "useGpu": false,
+        "acceleration": "cpu_only",
+        "embedding": true,
+        "description": "Semantic cache and memory embedding model. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; production native_on_device mode must use this downloaded GGUF file; hash embeddings are disabled."
+      }
+    }
+  },
   "models": {
     "profiler": "google/gemma-3-4b-it",
-    "orchestratorMedium": "Qwen/Qwen3-8B",
-    "orchestratorLarge": "Qwen/Qwen3-14B",
+    "orchestratorMedium": "google/gemma-3-4b-it",
+    "orchestratorLarge": "Qwen/Qwen3-8B",
+    "orchestratorPro": "Qwen/Qwen3-14B",
     "aligner": "google/gemma-3-4b-it",
-    "embedding": "Qwen/Qwen3-Embedding-0.6B"
+    "embedding": "Qwen/Qwen3-Embedding-0.6B",
+    "summarizer": "google/gemma-3-4b-it"
   },
   "thresholds": {
     "semanticCache": 0.95,
     "largeModelQuestionChars": 180
+  },
+  "modelDelivery": {
+    "mode": "download_on_first_launch",
+    "storageRoot": "document://models",
+    "wifiRecommended": true,
+    "maxRetries": 2,
+    "defaultTier": "lite",
+    "modelTiers": {
+      "lite": {
+        "id": "lite",
+        "label": "Lite",
+        "description": "Phone-safe first-launch pack for basic local chat and memory.",
+        "requiredModelIds": [
+          "google/gemma-3-4b-it",
+          "Qwen/Qwen3-Embedding-0.6B"
+        ],
+        "optionalModelIds": [
+          "Qwen/Qwen3-8B"
+        ]
+      },
+      "standard": {
+        "id": "standard",
+        "label": "Standard",
+        "description": "7B/8B class chat pack for capable devices.",
+        "requiredModelIds": [
+          "Qwen/Qwen3-8B",
+          "Qwen/Qwen3-Embedding-0.6B"
+        ],
+        "optionalModelIds": [
+          "google/gemma-3-4b-it"
+        ],
+        "minRamBytes": 8589934592,
+        "minFreeStorageBytes": 8589934592
+      },
+      "pro": {
+        "id": "pro",
+        "label": "Pro",
+        "description": "14B model pack for high-RAM devices or explicit opt-in.",
+        "requiredModelIds": [
+          "Qwen/Qwen3-14B",
+          "Qwen/Qwen3-Embedding-0.6B"
+        ],
+        "optionalModelIds": [
+          "Qwen/Qwen3-8B",
+          "google/gemma-3-4b-it"
+        ],
+        "minRamBytes": 17179869184,
+        "minFreeStorageBytes": 17179869184
+      }
+    },
+    "notes": "Production downloads quantized GGUF files into app-private storage as tiered packs. First launch/basic chat uses the Lite pack only. Configure either EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL for public CDN paths or per-model EXPO_PUBLIC_LOCAL_MODEL_URL_* values for public/release-generated signed URLs. Do not hardcode secrets. Production native_on_device builds must provide exact EXPO_PUBLIC_LOCAL_MODEL_BYTES_* and EXPO_PUBLIC_LOCAL_MODEL_SHA256_* metadata; setup/build fails clearly when URL or integrity metadata is missing.",
+    "models": [
+      {
+        "id": "google/gemma-3-4b-it",
+        "fileName": "gemma-3-4b-it-q4_k_m.gguf",
+        "downloadUrl": "cdn://models/gemma-3-4b-it-q4_k_m.gguf",
+        "expectedBytes": null,
+        "sha256": null,
+        "localPath": "models/gemma-3-4b-it-q4_k_m.gguf",
+        "required": true,
+        "requiredForTiers": [
+          "lite"
+        ],
+        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B",
+        "downloadPath": "models/gemma-3-4b-it-q4_k_m.gguf",
+        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B",
+        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B"
+      },
+      {
+        "id": "Qwen/Qwen3-8B",
+        "fileName": "qwen3-8b-q4_k_m.gguf",
+        "downloadUrl": "cdn://models/qwen3-8b-q4_k_m.gguf",
+        "expectedBytes": null,
+        "sha256": null,
+        "localPath": "models/qwen3-8b-q4_k_m.gguf",
+        "required": false,
+        "requiredForTiers": [
+          "standard"
+        ],
+        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B",
+        "downloadPath": "models/qwen3-8b-q4_k_m.gguf",
+        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B",
+        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B"
+      },
+      {
+        "id": "Qwen/Qwen3-14B",
+        "fileName": "qwen3-14b-q4_k_m.gguf",
+        "downloadUrl": "cdn://models/qwen3-14b-q4_k_m.gguf",
+        "expectedBytes": null,
+        "sha256": null,
+        "localPath": "models/qwen3-14b-q4_k_m.gguf",
+        "required": false,
+        "requiredForTiers": [
+          "pro"
+        ],
+        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B",
+        "downloadPath": "models/qwen3-14b-q4_k_m.gguf",
+        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B",
+        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B"
+      },
+      {
+        "id": "Qwen/Qwen3-Embedding-0.6B",
+        "fileName": "qwen3-embedding-0.6b-q8_0.gguf",
+        "downloadUrl": "cdn://models/qwen3-embedding-0.6b-q8_0.gguf",
+        "expectedBytes": null,
+        "sha256": null,
+        "localPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
+        "required": true,
+        "requiredForTiers": [
+          "lite",
+          "standard",
+          "pro"
+        ],
+        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED",
+        "downloadPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
+        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED",
+        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED"
+      }
+    ],
+    "developmentModes": {
+      "bundled_assets": "Optional build-time mode. Put GGUF files in mobile/models/ and keep plugins/withJaiOnDeviceModelAssets.js enabled before prebuild.",
+      "local_adapter_dev": "Development-only adapter mode for /chat/completions and /embeddings contracts. Do not use in production."
+    },
+    "requireIntegrityMetadataInProduction": true,
+    "cdnBaseUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL",
+    "productionEnv": {
+      "cdnBaseUrl": "EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL",
+      "perModelUrls": [
+        "EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B",
+        "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B",
+        "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B",
+        "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED"
+      ],
+      "expectedBytes": [
+        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B",
+        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B",
+        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B",
+        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED"
+      ],
+      "sha256": [
+        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B",
+        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B",
+        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B",
+        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED"
+      ]
+    }
   }
 }

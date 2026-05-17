@@ -4,7 +4,7 @@ orchestrator_task.py — v3.1 (Emergency Enhanced)
 The "Traffic Cop" of the Assistant. 
 Analyzes user intent and routes to specialized agents (Greeting, Tool, or General).
 
-Updated: Added Medical Emergency detection for dog bites, broken bones, and bleeding.
+Updated: Added precise Medical Emergency detection for bites, severe injury, bleeding, breathing trouble, and self-harm.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ import json
 import re
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
+
+from .openai_tracked import tracked_chat_completion
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -37,7 +39,7 @@ VALID_NEXT_ACTIONS = {
 VALID_TOOLS = {"weather", "web_search", "calendar", "none"}
 VALID_PRIORITIES = {"low", "medium", "high"}
 
-# ── Keywords ────────────────────────────────────────────────────────────────
+# ── Keywords / Patterns ─────────────────────────────────────────────────────
 
 _GREETING_KWS: set = {"hi", "hey", "hello", "vanakkam", "வணக்கம்", "ஹாய்", "hai", "ello", "helo", "vanakam"}
 _GREETING_STARTS: Tuple[str, ...] = ("good morning", "good evening", "good afternoon", "good night")
@@ -46,14 +48,129 @@ _SMALLTALK_KWS: set = {
     "how are you", "how r u", "epdi iruka", "எப்படி இருக்கீங்க", 
     "thanks", "thank you", "nandri", "நன்றி", "thx", "ok", "cool",
 }
+_SMALLTALK_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = tuple(
+    (
+        keyword,
+        re.compile(
+            rf"(?<![a-z0-9_\u0B80-\u0BFF]){re.escape(keyword)}(?![a-z0-9_\u0B80-\u0BFF])"
+        ),
+    )
+    for keyword in sorted(_SMALLTALK_KWS, key=len, reverse=True)
+)
 
-_PROFILE_KWS: set = {"name", "place", "location", "who am i", "where do i live"}
+_PROFILE_PHRASES: Tuple[str, ...] = (
+    "my name",
+    "my place",
+    "my location",
+    "who am i",
+    "where do i live",
+    "what is my name",
+    "what is my location",
+)
 
-_ASSISTANT_KWS: set = {"who are you", "help", "what can you do", "assistant name"}
+_ASSISTANT_EXACT_PHRASES: set = {"help"}
+_ASSISTANT_PHRASES: Tuple[str, ...] = ("who are you", "what can you do", "assistant name")
 
-_EMERGENCY_KWS: Tuple[str, ...] = (
-    "help me", "danger", "accident", "ambulance", "sos", "emergency", "உதவி", "ஆபத்து",
-    "bite", "bit", "broken", "bleeding", "snake", "dog", "கடி", "உடை", "காயம்", "இரத்தம்"
+
+def _compile_phrase_patterns(phrases: Tuple[str, ...]) -> Tuple[Tuple[str, re.Pattern[str]], ...]:
+    boundary = r"[a-z0-9_\u0B80-\u0BFF]"
+    return tuple(
+        (
+            phrase,
+            re.compile(rf"(?<!{boundary}){re.escape(phrase)}(?!{boundary})"),
+        )
+        for phrase in sorted(set(phrases), key=len, reverse=True)
+    )
+
+
+_PROFILE_PATTERNS = _compile_phrase_patterns(_PROFILE_PHRASES)
+_ASSISTANT_PATTERNS = _compile_phrase_patterns(_ASSISTANT_PHRASES)
+
+_EMERGENCY_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
+    (
+        "dog bite",
+        re.compile(
+            r"\b(?:"
+            r"dog\s+bites?|"
+            r"dog\s+bit\s+(?:me|my|us|someone|child|kid|friend|him|her|them)|"
+            r"bit(?:ten)?\s+by\s+(?:a\s+)?dog"
+            r")\b"
+        ),
+    ),
+    (
+        "snake bite",
+        re.compile(
+            r"\b(?:"
+            r"snake\s+bites?|"
+            r"snake\s+bit\s+(?:me|my|us|someone|child|kid|friend|him|her|them)|"
+            r"bit(?:ten)?\s+by\s+(?:a\s+)?snake"
+            r")\b"
+        ),
+    ),
+    (
+        "severe bleeding",
+        re.compile(
+            r"\b(?:"
+            r"i\s+(?:am|m)\s+bleeding|"
+            r"(?:heavy|severe|bad|badly|heavy|heavily|uncontrolled|uncontrollable)\s+bleeding|"
+            r"bleeding\s+(?:badly|heavily|a\s+lot|too\s+much|won\s+t\s+stop|does\s+not\s+stop)|"
+            r"blood\s+(?:won\s+t|will\s+not|does\s+not|doesn\s+t)\s+stop|"
+            r"losing\s+(?:a\s+lot\s+of\s+)?blood"
+            r")\b"
+        ),
+    ),
+    (
+        "chest pain or breathing trouble",
+        re.compile(
+            r"\b(?:"
+            r"chest\s+pain|heart\s+attack|"
+            r"(?:cannot|cant|can\s+t)\s+breathe|"
+            r"not\s+breathing|difficulty\s+breathing|trouble\s+breathing|"
+            r"shortness\s+of\s+breath|choking"
+            r")\b"
+        ),
+    ),
+    (
+        "accident",
+        re.compile(
+            r"\b(?:"
+            r"accident|emergency|ambulance|sos|"
+            r"car\s+crash|bike\s+crash|road\s+crash|road\s+accident|"
+            r"hit\s+by\s+(?:a\s+)?(?:car|bus|truck|bike|motorcycle)"
+            r")\b"
+        ),
+    ),
+    (
+        "broken bone",
+        re.compile(
+            r"\b(?:"
+            r"broken\s+(?:bone|leg|arm|wrist|ankle|hand|finger|toe|rib|neck|back)|"
+            r"fractured\s+(?:bone|leg|arm|wrist|ankle|hand|finger|toe|rib|neck|back)"
+            r")\b"
+        ),
+    ),
+    (
+        "self harm",
+        re.compile(
+            r"\b(?:"
+            r"suicidal|suicide|self\s+harm|"
+            r"(?:want\s+to\s+|going\s+to\s+|might\s+|will\s+)?(?:harm|hurt|kill)\s+myself|"
+            r"end\s+my\s+life|take\s+my\s+life|want\s+to\s+die|"
+            r"cut\s+myself|overdose(?:d)?"
+            r")\b"
+        ),
+    ),
+    (
+        "urgent tamil safety",
+        re.compile(
+            r"(?:"
+            r"ஆபத்து|அவசர|ஆம்புலன்ஸ்|"
+            r"நாய்\s+கடி|நாய்\s+கடித்த|பாம்பு\s+கடி|பாம்பு\s+கடித்த|"
+            r"மார்பு\s+வலி|மூச்சு\s+விட\s+முடியவில்லை|"
+            r"இரத்தம்\s+வருகிறது|தற்கொலை"
+            r")"
+        ),
+    ),
 )
 
 _WEATHER_KWS: Tuple[str, ...] = ("weather", "rain", "forecast", "வெயில்", "மழை", "வானிலை")
@@ -69,6 +186,29 @@ def _normalize(text: str) -> str:
     text = text.strip().lower()
     text = re.sub(r"[^\w\s\u0B80-\u0BFF]", " ", text) # Tamil-aware
     return re.sub(r"\s+", " ", text).strip()
+
+def _match_emergency(norm: str) -> str:
+    for label, pattern in _EMERGENCY_PATTERNS:
+        if pattern.search(norm):
+            return label
+    return ""
+
+def _match_smalltalk(norm: str) -> str:
+    for label, pattern in _SMALLTALK_PATTERNS:
+        if pattern.search(norm):
+            return label
+    return ""
+
+def _match_phrase(norm: str, patterns: Tuple[Tuple[str, re.Pattern[str]], ...]) -> str:
+    for label, pattern in patterns:
+        if pattern.search(norm):
+            return label
+    return ""
+
+def _match_assistant(norm: str) -> str:
+    if norm in _ASSISTANT_EXACT_PHRASES:
+        return norm
+    return _match_phrase(norm, _ASSISTANT_PATTERNS)
 
 def _make_result(
     *,
@@ -104,23 +244,46 @@ def _rule_classify(message: str) -> Optional[Dict[str, Any]]:
         )
 
     # 1. EMERGENCY (Signaling high priority)
-    for kw in _EMERGENCY_KWS:
-        if kw in norm:
-            return _make_result(intent="EMERGENCY", next_action="Emergency Agent", priority="high", matched_keyword=kw)
+    emergency_match = _match_emergency(norm)
+    if emergency_match:
+        return _make_result(
+            intent="EMERGENCY",
+            next_action="Emergency Agent",
+            priority="high",
+            matched_keyword=emergency_match,
+        )
 
     # 2. GREETINGS
     if norm in _GREETING_KWS or any(norm.startswith(s) for s in _GREETING_STARTS):
         return _make_result(intent="GREETING", next_action="Greeting Agent", priority="low", matched_keyword=norm)
 
     # 3. SMALLTALK / THANKS
-    if any(kw in norm for kw in _SMALLTALK_KWS):
-        return _make_result(intent="SMALLTALK", next_action="Greeting Agent", priority="low")
+    smalltalk_match = _match_smalltalk(norm)
+    if smalltalk_match:
+        return _make_result(
+            intent="SMALLTALK",
+            next_action="Greeting Agent",
+            priority="low",
+            matched_keyword=smalltalk_match,
+        )
 
     # 4. PROFILE / ASSISTANT INFO
-    if any(kw in norm for kw in _PROFILE_KWS):
-        return _make_result(intent="PROFILE", next_action="Greeting Agent", priority="low")
-    if any(kw in norm for kw in _ASSISTANT_KWS):
-        return _make_result(intent="IDENTITY", next_action="Greeting Agent", priority="low")
+    profile_match = _match_phrase(norm, _PROFILE_PATTERNS)
+    if profile_match:
+        return _make_result(
+            intent="PROFILE",
+            next_action="Greeting Agent",
+            priority="low",
+            matched_keyword=profile_match,
+        )
+    assistant_match = _match_assistant(norm)
+    if assistant_match:
+        return _make_result(
+            intent="IDENTITY",
+            next_action="Greeting Agent",
+            priority="low",
+            matched_keyword=assistant_match,
+        )
 
     # 5. TOOLS
     if any(kw in norm for kw in _WEATHER_KWS):
@@ -136,13 +299,15 @@ def _call_llm(client: Any, message: str) -> Dict[str, Any]:
         prompt = """You are an AI Orchestrator. Analyzes the intent and decides what to do next.
 Intents: GREETING, SMALLTALK, PROFILE, IDENTITY, TOOL, EMERGENCY, AMBIGUOUS, GENERAL.
 - If it's a simple greeting, use GREETING.
-- If the query is about medical emergency, dog bites, broken bones, bleeding, or accidents, use EMERGENCY.
+- Use EMERGENCY only for current urgent safety needs: dog/snake bite, severe bleeding, chest pain, breathing trouble, accidents, broken bones, suicidal intent, or self-harm. Do not classify harmless mentions like dog stories, snake games, broken code, or computing bits as EMERGENCY.
 - If the query is ambiguous or a fragment, use AMBIGUOUS and generate a specific clarifying question.
 - If it requires external data (weather, calendar, web search), use TOOL.
 Return JSON ONLY: {"intent": "...", "priority": "low|medium|high", "tool": "weather|calendar|web_search|none", "clarification_question": "optional text"}"""
         
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = tracked_chat_completion(
+            client,
+            task="routing",
+            route="orchestrator_routing",
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": message}
@@ -182,3 +347,10 @@ def run_orchestrator(client: Any, message: str) -> Dict[str, Any]:
     # 🧠 Semantic AI (Online check)
     return _call_llm(client, message)
 
+
+def run_rule_orchestrator(message: str) -> Dict[str, Any]:
+    """Deterministic routing only; never calls OpenAI."""
+    result = _rule_classify(message)
+    if result:
+        return result
+    return _make_result(intent="GENERAL", next_action="General Agent", priority="low", confidence=0.0, fast_path=True)

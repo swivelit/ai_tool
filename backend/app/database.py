@@ -1,13 +1,17 @@
+import logging
 import os
 from pathlib import Path
 from typing import Generator
 
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, create_engine
 from dotenv import load_dotenv
-
+from fastapi import HTTPException
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SQLITE_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "db" / "ai_tool.sqlite3"
@@ -65,6 +69,13 @@ engine = create_engine(
     **engine_kwargs,
 )
 
+if IS_SQLITE:
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
 SessionLocal = sessionmaker(
     bind=engine,
     class_=Session,
@@ -73,10 +84,17 @@ SessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 
-
-def get_session() -> Generator[Session, None, None]:
+def get_session():
     session = SessionLocal()
     try:
         yield session
+        session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception:
+        session.rollback()
+        logger.exception("DB session rolled back")
+        raise
     finally:
         session.close()

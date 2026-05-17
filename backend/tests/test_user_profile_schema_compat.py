@@ -5,45 +5,12 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import SQLModel, delete
 
 import app.agentic_service as agentic_service_module
 import app.main as main_module
 from app.agentic_service import AgenticService
 from app.database import SessionLocal, engine
-from app.main import app, _get_job_queue
-from app.models import DailyRoutine, Job, RagEmbedding, User, UserProfile
-
-
-@pytest.fixture(autouse=True)
-def clean_db():
-    SQLModel.metadata.create_all(engine)
-    queue = _get_job_queue()
-    queue.stop()
-    with SessionLocal() as session:
-        session.exec(delete(Job))
-        session.exec(delete(RagEmbedding))
-        session.exec(delete(DailyRoutine))
-        session.exec(delete(UserProfile))
-        session.exec(delete(User))
-        session.commit()
-    yield
-    queue.stop()
-    with SessionLocal() as session:
-        session.exec(delete(Job))
-        session.exec(delete(RagEmbedding))
-        session.exec(delete(DailyRoutine))
-        session.exec(delete(UserProfile))
-        session.exec(delete(User))
-        session.commit()
-
-
-@pytest.fixture()
-def client(monkeypatch):
-    monkeypatch.setattr("app.main._async_jobs_available", lambda: True)
-    with TestClient(app) as test_client:
-        _get_job_queue().stop()
-        yield test_client
+from app.models import User, UserProfile
 
 
 @pytest.fixture()
@@ -92,6 +59,7 @@ def test_create_user_does_not_crash_with_array_shaped_profiler_schema(
 
     response = client.post(
         "/users",
+        headers={"Authorization": "Bearer dev:legacy-signup-user:legacy@example.com"},
         json={
             "firebase_uid": "legacy-signup-user",
             "email": "legacy@example.com",

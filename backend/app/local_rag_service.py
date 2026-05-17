@@ -20,6 +20,7 @@ from sqlmodel import Session, select
 
 from .database import engine
 from .models import Conversation, DailyRoutine, Item, QACache, RagEmbedding, User, UserProfile
+from .openai_tracked import OpenAIBudgetExceededError, tracked_embedding
 from .vector_store import VectorStore
 
 try:
@@ -119,6 +120,29 @@ FAST_RAG_STRONG_MATCH_THRESHOLD = _env_float("FAST_RAG_STRONG_MATCH_THRESHOLD", 
 FAST_RAG_PREFIX_MATCH_THRESHOLD = _env_float("FAST_RAG_PREFIX_MATCH_THRESHOLD", 0.965)
 FAST_RAG_CACHE_MATCH_THRESHOLD = _env_float("FAST_RAG_CACHE_MATCH_THRESHOLD", 0.94)
 FAST_RAG_MAX_CACHE_ROWS = max(5, _env_int("FAST_RAG_MAX_CACHE_ROWS", 40))
+BAD_CACHED_ANSWER_RE = re.compile(
+    r"("
+    r"I could not fetch a reliable web result|"
+    r"I could not complete the web lookup|"
+    r"I could not fetch the weather right now|"
+    r"Internal Server Error|"
+    r"OpenAI provider/configuration error|"
+    r"requires OPENAI_API_KEY|"
+    r"local_timeout|"
+    r"You do not have any tomorrow reminders|"
+    r"You do not have any reminders scheduled for tomorrow"
+    r")",
+    re.IGNORECASE,
+)
+LIVE_CURRENT_QUERY_RE = re.compile(
+    r"\b(latest|current|live|score|scores|news|election|breaking)\b",
+    re.IGNORECASE,
+)
+TODAY_LIVE_QUERY_RE = re.compile(
+    r"\btoday\b.*\b(score|scores|news|election|result|results|stock|price|rate)\b|"
+    r"\b(score|scores|news|election|result|results|stock|price|rate)\b.*\btoday\b",
+    re.IGNORECASE,
+)
 
 
 def _utc_now() -> datetime:
@@ -532,13 +556,26 @@ class LocalRAGService:
         while len(self._embed_cache) > int(RAG_EMBED_CACHE_SIZE or 4096):
             self._embed_cache.popitem(last=False)
 
-    def _openai_embed(self, texts: List[str]) -> List[List[float]]:
+    def _openai_embed(
+        self,
+        texts: List[str],
+        *,
+        session: Optional[Session] = None,
+        user_id: Optional[int] = None,
+    ) -> List[List[float]]:
         if not self._semantic_enabled or self._openai is None or not texts:
             return []
         
         client = self._openai
         try:
-            resp = client.embeddings.create(model=self._embedding_model, input=texts)
+            resp = tracked_embedding(
+                client,
+                input=texts,
+                model=self._embedding_model,
+                route="rag_embedding",
+                session=session,
+                user_id=user_id,
+            )
             data = getattr(resp, "data", None)
             if data is None and isinstance(resp, dict):
                 data = resp.get("data")
@@ -549,10 +586,18 @@ class LocalRAGService:
                     emb = item.get("embedding")
                 vectors.append([float(x) for x in (emb or [])])
             return vectors
+        except OpenAIBudgetExceededError:
+            return []
         except Exception:
             return []
 
-    def _embed_query(self, text: str) -> Optional[Tuple[List[float], float]]:
+    def _embed_query(
+        self,
+        text: str,
+        *,
+        session: Optional[Session] = None,
+        user_id: Optional[int] = None,
+    ) -> Optional[Tuple[List[float], float]]:
         clean = str(text or "").strip()
         if not clean:
             return None
@@ -560,7 +605,7 @@ class LocalRAGService:
         cached = self._lru_get(key)
         if cached is not None:
             return cached
-        vectors = self._openai_embed([clean])
+        vectors = self._openai_embed([clean], session=session, user_id=user_id)
         if not vectors:
             return None
         vec = vectors[0]
@@ -608,7 +653,7 @@ class LocalRAGService:
                 self._lru_set(content_hash, vec, norm)
                 return vec, norm, content_hash
 
-        vectors = self._openai_embed([content_text])
+        vectors = self._openai_embed([content_text], session=session, user_id=user_id)
         if not vectors:
             return None
         vec = vectors[0]
@@ -901,6 +946,12 @@ class LocalRAGService:
         schedule_tokens = {"schedule", "reminder", "reminders", "task", "tasks", "todo", "plan", "plans", "upcoming", "நினைவூட்டல்", "நினைவூட்டல்கள்", "அட்டவணை"}
         if not any(tok in normalized_query.split() or tok in normalized_query for tok in schedule_tokens):
             return None
+        if (
+            re.search(r"\b(create|set|add|schedule|make|new)\s+(?:a\s+)?(?:reminder|task|todo)\b", normalized_query)
+            or re.search(r"\bremind\s+me\b", normalized_query)
+            or "dont let me forget" in normalized_query
+        ):
+            return None
         scope = "upcoming"
         label_en = "upcoming"
         label_ta = "வரவிருக்கும்"
@@ -1102,7 +1153,7 @@ class LocalRAGService:
 
         q_tokens = set(self._tokens(normalized_query))
         exp_q = self._expand_tokens(q_tokens)
-        query_embedding = self._embed_query(normalized_query) if self._semantic_enabled else None
+        query_embedding = self._embed_query(normalized_query, session=session, user_id=int(user_id)) if self._semantic_enabled else None
 
         t_fetch = time.perf_counter()
         candidates: List[RagSnippet] = []
@@ -1281,6 +1332,9 @@ class LocalRAGService:
         normalized = self.normalize_lookup_text(message)
         if not normalized:
             return None
+        is_live_current_query = bool(
+            LIVE_CURRENT_QUERY_RE.search(normalized) or TODAY_LIVE_QUERY_RE.search(normalized)
+        )
 
         user = session.get(User, user_id) if user_id else None
 
@@ -1314,6 +1368,13 @@ class LocalRAGService:
             # This prevents fallback-to-user-message mirroring.
             if not (raw_english or remodeled_english or tamil_text or theni_tamil_text):
                 return None
+            combined_answer = " ".join(
+                value
+                for value in (raw_english, remodeled_english, tamil_text, theni_tamil_text)
+                if value
+            )
+            if BAD_CACHED_ANSWER_RE.search(combined_answer):
+                return None
 
             return {
                 "raw_english": raw_english,
@@ -1338,11 +1399,13 @@ class LocalRAGService:
             if routine_answer is not None:
                 return routine_answer
 
-            cache_rows = list(
-                session.exec(
-                    select(QACache).where(QACache.user_id == int(user_id)).order_by(QACache.updated_at.desc())
-                ).all()
-            )[: int(FAST_RAG_MAX_CACHE_ROWS)]
+            cache_rows = []
+            if not is_live_current_query:
+                cache_rows = list(
+                    session.exec(
+                        select(QACache).where(QACache.user_id == int(user_id)).order_by(QACache.updated_at.desc())
+                    ).all()
+                )[: int(FAST_RAG_MAX_CACHE_ROWS)]
 
             best_payload: Optional[Dict[str, Any]] = None
             best_score = 0.0

@@ -1,13 +1,22 @@
 {
-  "version": 2,
+  "version": 6,
   "runtime": {
-    "primary": "phone_local",
-    "backendRole": "mirror_support_openai_fallback"
+    "primary": "backend",
+    "mode": "native_on_device",
+    "backendRole": "primary",
+    "openAiPolicy": "backend_controlled",
+    "backendPolicy": "Backend AI router is primary; local agents are optional fallback/development paths.",
+    "localRuntimeInterface": "LocalModelRuntime",
+    "nativeRuntime": "NativeOnDeviceModelRuntime",
+    "nativeBackend": "llama_cpp",
+    "nativeModuleName": "JaiOnDeviceModel",
+    "nativeImplementationStatus": "native_build_verified_by_native_verify_llama_llama_cpp_linkable_production_gguf_runtime_target_device_gguf_generation_required"
   },
   "agents": {
     "profiler": {
       "enabled": true,
       "modelKey": "profiler",
+      "runtime": "phone_local",
       "description": "Natural onboarding and profile extraction",
       "trainingFile": "training/seed/profiler.jsonl"
     },
@@ -15,19 +24,22 @@
       "enabled": true,
       "mediumModelKey": "orchestratorMedium",
       "largeModelKey": "orchestratorLarge",
+      "runtime": "phone_local",
       "description": "Route user intent, tool choice, and local-vs-backend fallback decisions",
       "trainingFile": "training/seed/orchestrator.jsonl"
     },
     "alignment": {
       "enabled": true,
       "modelKey": "aligner",
+      "runtime": "phone_local",
       "description": "Rewrite answers to match the user's tone and language",
       "trainingFile": "training/seed/alignment.jsonl"
     },
     "memory": {
       "enabled": true,
       "embeddingModelKey": "embedding",
-      "summarizerModelKey": "orchestratorMedium",
+      "summarizerModelKey": "summarizer",
+      "runtime": "phone_local",
       "description": "Semantic cache and long-term profile updates",
       "trainingFile": "training/seed/memory.jsonl"
     },

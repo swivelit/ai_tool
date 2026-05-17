@@ -1,0 +1,130 @@
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+group = 'com.harishajahan.jai.ondevice'
+version = '0.1.0'
+
+def jaiLlamaCppDir = (findProperty('JAI_LLAMA_CPP_DIR') ?: System.getenv('JAI_LLAMA_CPP_DIR') ?: '').toString().trim()
+def vendoredLlamaCppDir = new File(projectDir, '../vendor/llama.cpp').canonicalFile
+def configuredLlamaCppDir = jaiLlamaCppDir ? file(jaiLlamaCppDir).canonicalFile : vendoredLlamaCppDir
+def hasLlamaCpp = new File(configuredLlamaCppDir, 'CMakeLists.txt').exists() && new File(configuredLlamaCppDir, 'include/llama.h').exists()
+
+def normalizedEnv = { value ->
+  (value ?: '').toString().trim().toLowerCase(Locale.ROOT)
+}
+def truthyEnv = { value ->
+  ['1', 'true', 'yes', 'y', 'on'].contains(normalizedEnv(value))
+}
+
+def easBuildProfile = normalizedEnv(System.getenv('EAS_BUILD_PROFILE'))
+def jaiBuildProfile = normalizedEnv(System.getenv('JAI_BUILD_PROFILE'))
+def jaiBuildType = normalizedEnv(System.getenv('JAI_BUILD_TYPE') ?: System.getenv('BUILD_TYPE'))
+def runtimeMode = normalizedEnv(System.getenv('EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE') ?: 'native_on_device')
+def requestedGradleTasks = gradle.startParameter.taskNames.join(' ').toLowerCase(Locale.ROOT)
+def requestedReleaseTask = requestedGradleTasks.contains('release')
+def explicitRequireLlamaCpp = truthyEnv(findProperty('JAI_REQUIRE_LLAMA_CPP') ?: System.getenv('JAI_REQUIRE_LLAMA_CPP'))
+def productionOrReleaseBuild =
+  easBuildProfile in ['production', 'release'] ||
+    jaiBuildProfile in ['production', 'release'] ||
+    jaiBuildType == 'release' ||
+    requestedReleaseTask ||
+    explicitRequireLlamaCpp
+def requireLlamaCpp = runtimeMode == 'native_on_device' && productionOrReleaseBuild
+
+if (runtimeMode == 'local_adapter' && productionOrReleaseBuild) {
+  throw new GradleException(
+    'local_adapter is development-only. Release/production Android builds must use ' +
+      'EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device.'
+  )
+}
+
+if (requireLlamaCpp && !hasLlamaCpp) {
+  throw new GradleException(
+    'Release/production native_on_device Android build requires llama.cpp at ' + vendoredLlamaCppDir +
+      ' (or JAI_LLAMA_CPP_DIR). Run `npm run native:sync-llama` from mobile/ or ' +
+      '`git submodule update --init --recursive` before building. Refusing to compile with JAI_LLAMA_CPP_AVAILABLE=0.'
+  )
+}
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+def supportedAndroidAbis = ['arm64-v8a', 'x86_64']
+def parseAndroidAbis = { value ->
+  def rawValue = (value ?: '').toString().trim()
+  if (!rawValue) {
+    return ['arm64-v8a']
+  }
+
+  def selectedAbis = []
+  rawValue.split(/[,\s;]+/).each { abi ->
+    if (abi) {
+      if (!supportedAndroidAbis.contains(abi)) {
+        throw new GradleException(
+          "Unsupported JAI Android ABI '${abi}'. Supported ABIs: ${supportedAndroidAbis.join(', ')}."
+        )
+      }
+      if (!selectedAbis.contains(abi)) {
+        selectedAbis.add(abi)
+      }
+    }
+  }
+
+  selectedAbis ?: ['arm64-v8a']
+}
+
+def jaiAndroidAbis = parseAndroidAbis(
+  findProperty('JAI_ANDROID_ABIS') ?:
+    System.getenv('JAI_ANDROID_ABIS') ?:
+    findProperty('ANDROID_ABIS') ?:
+    System.getenv('ANDROID_ABIS') ?:
+    findProperty('reactNativeArchitectures') ?:
+    ''
+)
+
+try {
+  def expoModulesCorePlugin = new File(project(':expo-modules-core').projectDir.absolutePath, 'ExpoModulesCorePlugin.gradle')
+  apply from: expoModulesCorePlugin
+  applyKotlinExpoModulesCorePlugin()
+  useCoreDependencies()
+  useDefaultAndroidSdkVersions()
+} catch (Throwable ignored) {
+  android {
+    compileSdkVersion safeExtGet('compileSdkVersion', 35)
+    defaultConfig {
+      minSdkVersion safeExtGet('minSdkVersion', 23)
+      targetSdkVersion safeExtGet('targetSdkVersion', 35)
+    }
+  }
+  dependencies {
+    implementation project(':expo-modules-core')
+  }
+}
+
+android {
+  namespace 'com.harishajahan.jai.ondevice'
+
+  defaultConfig {
+    ndk {
+      abiFilters(*jaiAndroidAbis)
+    }
+
+    externalNativeBuild {
+      cmake {
+        cppFlags '-std=c++17'
+        arguments "-DJAI_REQUIRE_LLAMA_CPP=${requireLlamaCpp ? 'ON' : 'OFF'}",
+          "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+        if (jaiLlamaCppDir) {
+          arguments "-DJAI_LLAMA_CPP_DIR=${configuredLlamaCppDir.absolutePath}"
+        }
+      }
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path 'src/main/cpp/CMakeLists.txt'
+    }
+  }
+}

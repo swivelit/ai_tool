@@ -1,6 +1,14 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { apiDelete, apiGet, apiPost } from "./api";
+import { apiDelete, apiGet, apiPost, getApiErrorDetails } from "./api";
+
+let SecureStore: any = null;
+try {
+  // Optional at test/runtime startup; add expo-secure-store to dependencies for encrypted storage.
+  SecureStore = require("expo-secure-store");
+} catch {
+  SecureStore = null;
+}
 
 const KEY = "user_profile_v1";
 const BACKUP_KEY = "user_profile_v1_backup";
@@ -20,6 +28,7 @@ export type UserProfile = {
   authProvider?: "password" | "google";
   questionnaireCompleted?: boolean;
   replyLanguage?: "en" | "ta";
+  restoreFailed?: boolean;
 };
 
 export type PersonalityQuestion = {
@@ -36,6 +45,105 @@ type BackendResolvedUserResponse = {
   found?: boolean;
   user?: any;
 };
+
+export class BackendProfileRestoreError extends Error {
+  constructor(message = "We could not restore your profile. Check your connection and try again.") {
+    super(message);
+    this.name = "BackendProfileRestoreError";
+  }
+}
+
+export type BackendProfileErrorKind = "auth_error" | "backend_error" | "offline";
+
+export type BackendProfileErrorDetails = ReturnType<typeof getApiErrorDetails> & {
+  kind: BackendProfileErrorKind;
+  debugMessage: string;
+  userMessage: string;
+};
+
+export type ProfileRestoreResult =
+  | { status: "ok"; profile: UserProfile }
+  | { status: "not_found" }
+  | {
+      status: "offline";
+      error: BackendProfileErrorDetails;
+      cachedProfile?: UserProfile;
+    }
+  | {
+      status: "auth_error";
+      error: BackendProfileErrorDetails;
+      cachedProfile?: UserProfile;
+    }
+  | {
+      status: "backend_error";
+      error: BackendProfileErrorDetails;
+      cachedProfile?: UserProfile;
+    };
+
+function statusLabel(status?: number) {
+  if (status === 408) return "timeout";
+  if (status === 0 || typeof status === "undefined") return "network error";
+  return String(status);
+}
+
+export function classifyBackendProfileError(
+  error: unknown,
+  fallback: { method: string; path: string },
+  operation = "Backend profile restore failed"
+): BackendProfileErrorDetails {
+  const details = getApiErrorDetails(error, fallback);
+  const status = details.status;
+  const kind: BackendProfileErrorKind =
+    status === 401 || status === 403
+      ? "auth_error"
+      : status === 408 || status === 0 || typeof status === "undefined"
+        ? "offline"
+        : "backend_error";
+  const method = details.method || fallback.method;
+  const path = details.path || fallback.path;
+  const debugMessage = `${operation}: ${method} ${path} returned ${statusLabel(status)}.`;
+  const userMessage =
+    kind === "auth_error"
+      ? "We could not verify your login with the backend. Please retry, or sign in again if it continues."
+      : kind === "offline"
+        ? "We could not reach the backend. Check your connection and try again."
+        : "The backend could not restore your profile right now. Please try again.";
+
+  return {
+    ...details,
+    kind,
+    method,
+    path,
+    debugMessage,
+    userMessage,
+  };
+}
+
+async function secureSet(key: string, value: string) {
+  if (SecureStore?.setItemAsync) {
+    await SecureStore.setItemAsync(key, value);
+    await AsyncStorage.removeItem(key).catch(() => undefined);
+    return;
+  }
+  await AsyncStorage.setItem(key, value);
+}
+
+async function secureGet(key: string) {
+  if (SecureStore?.getItemAsync) {
+    const secureValue = await SecureStore.getItemAsync(key);
+    if (secureValue !== null && typeof secureValue !== "undefined") {
+      return secureValue;
+    }
+  }
+  return AsyncStorage.getItem(key);
+}
+
+async function secureDelete(key: string) {
+  await Promise.all([
+    SecureStore?.deleteItemAsync ? SecureStore.deleteItemAsync(key).catch(() => undefined) : Promise.resolve(),
+    AsyncStorage.removeItem(key),
+  ]);
+}
 
 function normalizeEmail(email?: string | null) {
   const value = (email || "").trim().toLowerCase();
@@ -87,19 +195,7 @@ async function resolveProfileFromBackendByAuth(
     return null;
   }
 
-  const query = new URLSearchParams();
-
-  if (normalizedUid) {
-    query.set("firebase_uid", normalizedUid);
-  }
-
-  if (normalizedEmail) {
-    query.set("email", normalizedEmail);
-  }
-
-  const response = await apiGet<BackendResolvedUserResponse>(
-    `/users/resolve?${query.toString()}`
-  );
+  const response = await apiGet<BackendResolvedUserResponse>("/users/resolve");
 
   if (!response?.found || !response.user) {
     return null;
@@ -118,6 +214,22 @@ function safeParseProfile(raw: string | null): UserProfile | null {
   } catch {
     return null;
   }
+}
+
+function stripRuntimeProfileFlags(profile: UserProfile): UserProfile {
+  const sanitized: UserProfile = { ...profile };
+  delete sanitized.restoreFailed;
+  return sanitized;
+}
+
+function normalizeCachedProfile(profile: UserProfile | null): UserProfile | null {
+  if (!profile) return null;
+
+  if (profile.restoreFailed && !profile.userId) {
+    return null;
+  }
+
+  return stripRuntimeProfileFlags(profile);
 }
 
 function toPositiveNumber(value: any): number | undefined {
@@ -312,44 +424,61 @@ function getAuthMatchKind(
 
 async function clearCachedProfileKeys() {
   await Promise.all([
-    AsyncStorage.removeItem(KEY),
-    AsyncStorage.removeItem(BACKUP_KEY),
-    AsyncStorage.removeItem(LAST_USER_ID_KEY),
-    AsyncStorage.removeItem(LAST_FIREBASE_UID_KEY),
+    secureDelete(KEY),
+    secureDelete(BACKUP_KEY),
+    secureDelete(LAST_USER_ID_KEY),
+    secureDelete(LAST_FIREBASE_UID_KEY),
   ]);
 }
 
 async function writeProfileCache(profile: UserProfile) {
+  const cacheableProfile = stripRuntimeProfileFlags(profile);
   const writes: Promise<any>[] = [
-    AsyncStorage.setItem(KEY, JSON.stringify(profile)),
-    AsyncStorage.setItem(BACKUP_KEY, JSON.stringify(profile)),
+    secureSet(KEY, JSON.stringify(cacheableProfile)),
+    secureSet(BACKUP_KEY, JSON.stringify(cacheableProfile)),
   ];
 
-  if (profile.userId) {
-    writes.push(AsyncStorage.setItem(LAST_USER_ID_KEY, String(profile.userId)));
+  if (cacheableProfile.userId) {
+    writes.push(secureSet(LAST_USER_ID_KEY, String(cacheableProfile.userId)));
   }
 
-  if (profile.firebaseUid) {
-    writes.push(AsyncStorage.setItem(LAST_FIREBASE_UID_KEY, profile.firebaseUid));
+  if (cacheableProfile.firebaseUid) {
+    writes.push(secureSet(LAST_FIREBASE_UID_KEY, cacheableProfile.firebaseUid));
   }
 
   await Promise.all(writes);
 }
 
 async function readCachedProfile(): Promise<UserProfile | null> {
-  const raw = await AsyncStorage.getItem(KEY);
+  const raw = await secureGet(KEY);
   const parsed = safeParseProfile(raw);
+  const normalized = normalizeCachedProfile(parsed);
 
-  if (parsed) {
-    return parsed;
+  if (normalized) {
+    if (parsed?.restoreFailed) {
+      await secureSet(KEY, JSON.stringify(normalized));
+    }
+    return normalized;
   }
 
-  const backupRaw = await AsyncStorage.getItem(BACKUP_KEY);
-  const backup = safeParseProfile(backupRaw);
+  if (parsed?.restoreFailed) {
+    await secureDelete(KEY);
+  }
 
-  if (backup) {
-    await AsyncStorage.setItem(KEY, JSON.stringify(backup));
-    return backup;
+  const backupRaw = await secureGet(BACKUP_KEY);
+  const backup = safeParseProfile(backupRaw);
+  const normalizedBackup = normalizeCachedProfile(backup);
+
+  if (normalizedBackup) {
+    await secureSet(KEY, JSON.stringify(normalizedBackup));
+    if (backup?.restoreFailed) {
+      await secureSet(BACKUP_KEY, JSON.stringify(normalizedBackup));
+    }
+    return normalizedBackup;
+  }
+
+  if (backup?.restoreFailed) {
+    await secureDelete(BACKUP_KEY);
   }
 
   return null;
@@ -359,14 +488,16 @@ export async function getProfile(): Promise<UserProfile | null> {
   return readCachedProfile();
 }
 
-export async function getProfileForFirebaseUid(
+export async function restoreProfileForFirebaseUid(
   firebaseUid?: string | null,
   email?: string | null
-) {
+): Promise<ProfileRestoreResult> {
   const normalizedUid = (firebaseUid || "").trim();
   const normalizedEmail = normalizeEmail(email);
 
-  if (!normalizedUid && !normalizedEmail) return null;
+  if (!normalizedUid && !normalizedEmail) {
+    return { status: "not_found" };
+  }
 
   const cachedProfile = await readCachedProfile();
   const cachedMatch = cachedProfile
@@ -375,16 +506,7 @@ export async function getProfileForFirebaseUid(
   const matchedCachedProfile = cachedProfile && cachedMatch ? cachedProfile : null;
 
   if (cachedProfile && !matchedCachedProfile) {
-    console.warn(
-      "[account] Cached profile belongs to a different auth identity. Clearing stale local profile.",
-      safeStringify({
-        cachedUserId: cachedProfile.userId,
-        cachedFirebaseUid: cachedProfile.firebaseUid || null,
-        cachedEmail: normalizeEmail(cachedProfile.email) || null,
-        authFirebaseUid: normalizedUid || null,
-        authEmail: normalizedEmail || null,
-      })
-    );
+    console.warn("[account] Cached profile belongs to a different auth identity. Clearing stale local profile.");
 
     await clearCachedProfileKeys();
   }
@@ -402,10 +524,29 @@ export async function getProfileForFirebaseUid(
       };
 
       await writeProfileCache(merged);
-      return merged;
+      return { status: "ok", profile: merged };
     }
   } catch (error) {
-    console.warn("[account] Failed to resolve profile from backend:", error);
+    const details = classifyBackendProfileError(
+      error,
+      { method: "GET", path: "/users/resolve" },
+      "Backend profile restore failed"
+    );
+    console.warn("[account] Failed to resolve profile from backend.", details);
+
+    const patchedCachedProfile = matchedCachedProfile
+      ? mergeProfileWithAuth(matchedCachedProfile, normalizedUid, normalizedEmail)
+      : undefined;
+
+    if (patchedCachedProfile) {
+      await writeProfileCache(patchedCachedProfile);
+    }
+
+    return {
+      status: details.kind,
+      error: details,
+      cachedProfile: patchedCachedProfile,
+    };
   }
 
   if (matchedCachedProfile) {
@@ -416,7 +557,24 @@ export async function getProfileForFirebaseUid(
     );
 
     await writeProfileCache(patched);
-    return patched;
+    return { status: "ok", profile: patched };
+  }
+
+  return { status: "not_found" };
+}
+
+export async function getProfileForFirebaseUid(
+  firebaseUid?: string | null,
+  email?: string | null
+) {
+  const result = await restoreProfileForFirebaseUid(firebaseUid, email);
+
+  if (result.status === "ok") {
+    return result.profile;
+  }
+
+  if ("cachedProfile" in result && result.cachedProfile) {
+    return result.cachedProfile;
   }
 
   return null;
@@ -431,51 +589,56 @@ export async function clearProfile() {
 }
 
 export async function createProfileOnBackend(profile: UserProfile) {
+  const profileForRequest = stripRuntimeProfileFlags(profile);
   const requestBody = {
-    user_id: profile.userId && profile.firebaseUid ? profile.userId : undefined,
-    firebase_uid: profile.firebaseUid,
-    email: normalizeEmail(profile.email) || undefined,
-    name: profile.name,
-    place: profile.place,
-    timezone: profile.timezone || "Asia/Kolkata",
-    assistant_name: profile.assistantName || "Elli",
-    reply_language: profile.replyLanguage === "en" ? "en" : "ta",
+    firebase_uid: profileForRequest.firebaseUid,
+    email: normalizeEmail(profileForRequest.email) || undefined,
+    name: profileForRequest.name,
+    place: profileForRequest.place,
+    timezone: profileForRequest.timezone || "Asia/Kolkata",
+    assistant_name: profileForRequest.assistantName || "Elli",
+    reply_language: profileForRequest.replyLanguage === "en" ? "en" : "ta",
   };
 
-  console.log("[account] POST /users request:", safeStringify(requestBody));
-
-  const user = await apiPost<any>("/users", requestBody);
-
-  console.log("[account] POST /users raw response:", safeStringify(user));
+  let user: any;
+  try {
+    user = await apiPost<any>("/users", requestBody);
+  } catch (error) {
+    console.warn(
+      "[account] Failed to create or update profile on backend.",
+      classifyBackendProfileError(
+        error,
+        { method: "POST", path: "/users" },
+        "Backend profile sync failed"
+      )
+    );
+    throw error;
+  }
 
   const resolvedUserId = normalizeUserId(user);
 
-  console.log("[account] POST /users resolved userId:", resolvedUserId);
-
   if (!resolvedUserId) {
     throw new Error(
-      `Backend user id was missing in /users response. Raw response: ${safeStringify(user)}`
+      "Backend user id was missing in /users response."
     );
   }
 
   const backendProfile = mapBackendUserToProfile(user) || null;
 
   const merged: UserProfile = {
-    ...profile,
+    ...profileForRequest,
     ...backendProfile,
     userId: resolvedUserId,
-    firebaseUid: profile.firebaseUid || backendProfile?.firebaseUid,
-    email: normalizeEmail(profile.email) || backendProfile?.email,
+    firebaseUid: profileForRequest.firebaseUid || backendProfile?.firebaseUid,
+    email: normalizeEmail(profileForRequest.email) || backendProfile?.email,
     questionnaireCompleted: resolveQuestionnaireCompleted(
       undefined,
       backendProfile?.questionnaireCompleted
     ),
-    replyLanguage: backendProfile?.replyLanguage || profile.replyLanguage || "ta",
+    replyLanguage: backendProfile?.replyLanguage || profileForRequest.replyLanguage || "ta",
   };
 
   await saveProfile(merged);
-
-  console.log("[account] Saved profile:", safeStringify(merged));
 
   return merged;
 }
@@ -492,9 +655,11 @@ export async function savePersonalityAnswers(
   const normalized = Object.fromEntries(
     Object.entries(answers).map(([key, value]) => [
       key,
-      Array.isArray(value) ? value.join(", ") : String(value ?? ""),
+      Array.isArray(value)
+        ? value.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+        : String(value ?? ""),
     ])
-  ) as Record<string, string>;
+  ) as PersonalityAnswers;
 
   return apiPost(`/users/${userId}/personality`, { answers: normalized });
 }

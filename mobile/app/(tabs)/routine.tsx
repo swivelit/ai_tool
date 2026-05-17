@@ -23,7 +23,7 @@ import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
-import { API_BASE, apiGet } from "@/lib/api";
+import { apiGet, apiPut } from "@/lib/api";
 import { getProfileForFirebaseUid } from "@/lib/account";
 
 type Routine = {
@@ -135,7 +135,6 @@ export default function RoutineScreen() {
   const [notice, setNotice] = useState<NoticeState>(null);
 
   const isSmallPhone = width < 370 || height < 760;
-  const isVerySmallPhone = width < 345 || height < 700;
   const isCompactSettingsLayout = width < 390;
   const horizontalPadding = isSmallPhone ? 14 : 18;
   const topPadding = insets.top + (isSmallPhone ? 6 : 10);
@@ -410,16 +409,7 @@ export default function RoutineScreen() {
         daily_habits: routine.daily_habits?.trim() || null,
       };
 
-      const res = await fetch(`${API_BASE}/users/${resolvedUserId}/daily-routine`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || "Could not save routine");
-      }
+      await apiPut(`/users/${resolvedUserId}/daily-routine`, payload);
 
       await refresh();
       showNotice("Routine saved", "Your daily routine was updated successfully.");
@@ -455,7 +445,7 @@ export default function RoutineScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.topBar}>
-            <Pressable style={styles.topIconBtn} onPress={() => router.replace("/(tabs)")}>
+            <Pressable style={styles.topIconBtn} onPress={() => router.replace("/(chat)" as any)}>
               <Ionicons name="sparkles-outline" size={18} color={Brand.cocoa} />
             </Pressable>
 
@@ -949,39 +939,6 @@ function StatusChip({
         {label}
       </Text>
     </View>
-  );
-}
-
-function ChoiceCard({
-  label,
-  helper,
-  icon,
-  active,
-  onPress,
-}: {
-  label: string;
-  helper: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.choiceCard,
-        active && styles.choiceCardActive,
-        pressed && styles.pressed,
-      ]}
-    >
-      <View style={styles.choiceCardIconWrap}>
-        <Ionicons name={icon} size={16} color={active ? Brand.ink : Brand.bronze} />
-      </View>
-      <Text style={[styles.choiceCardTitle, active && styles.choiceCardTitleActive]}>
-        {label}
-      </Text>
-      <Text style={styles.choiceCardHelper}>{helper}</Text>
-    </Pressable>
   );
 }
 
