@@ -10,36 +10,49 @@ describe("reply playback policy", () => {
     expect(shouldAutoSpeakReply({ source: "text" })).toBe(false);
   });
 
-  it("keeps normal recorded voice silent by default", () => {
-    expect(shouldAutoSpeakReply({ source: "voice" })).toBe(false);
-  });
+  it("auto speaks voice replies when enabled", () => {
+  expect(
+    shouldAutoSpeakReply({
+      source: "voice",
+      autoSpeakReplies: true,
+      handsFreeMode: "off",
+    }),
+  ).toBe(true);
 
-  it("keeps hands-free silent by default", () => {
-    expect(
-      shouldAutoSpeakReply({
-        source: "handsfree",
-        handsFreeMode: "wake",
-      }),
-    ).toBe(false);
-  });
+  expect(
+    shouldAutoSpeakReply({
+      source: "voice",
+      autoSpeakReplies: false,
+      handsFreeMode: "off",
+    }),
+  ).toBe(false);
+});
 
-  it("allows hands-free auto-speak only with an explicit setting", () => {
-    expect(
-      shouldAutoSpeakReply({
-        source: "handsfree",
-        handsFreeMode: "wake",
-        autoSpeakReplies: true,
-      }),
-    ).toBe(true);
+  it("always auto speaks hands-free replies", () => {
+  expect(
+    shouldAutoSpeakReply({
+      source: "handsfree",
+      handsFreeMode: "wake",
+      autoSpeakReplies: false,
+    }),
+  ).toBe(true);
 
-    expect(
-      shouldAutoSpeakReply({
-        source: "handsfree",
-        handsFreeMode: "off",
-        autoSpeakReplies: true,
-      }),
-    ).toBe(false);
-  });
+  expect(
+    shouldAutoSpeakReply({
+      source: "handsfree",
+      handsFreeMode: "command",
+      autoSpeakReplies: false,
+    }),
+  ).toBe(true);
+
+  expect(
+    shouldAutoSpeakReply({
+      source: "handsfree",
+      handsFreeMode: "off",
+      autoSpeakReplies: true,
+    }),
+  ).toBe(false);
+});
 
   it("supports english reply language", () => {
     expect(normalizeReplyLanguage("english")).toBe("english");

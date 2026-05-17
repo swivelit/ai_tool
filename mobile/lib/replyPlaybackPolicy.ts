@@ -34,15 +34,27 @@ export function normalizeReplyLanguage(
 
   return "auto";
 }
-export function shouldAutoSpeakReply(input: ReplyPlaybackPolicyInput = {}) {
-  const source = String(input.source || "").trim().toLowerCase();
+export function shouldAutoSpeakReply(
+  input: ReplyPlaybackPolicyInput = {},
+) {
+  const source = String(input.source || "")
+    .trim()
+    .toLowerCase();
+
   const handsFreeMode = String(input.handsFreeMode || "off")
     .trim()
     .toLowerCase();
 
-  if (input.autoSpeakReplies !== true) {
-    return false;
+  // Hands-free assistant should always auto-speak
+  if (source === "handsfree" && handsFreeMode !== "off") {
+    return true;
   }
 
-  return source === "handsfree" && handsFreeMode !== "off";
+  // Voice interactions may auto-speak if enabled
+  if (source === "voice") {
+    return input.autoSpeakReplies === true;
+  }
+
+  // Normal typed text chat should never auto-play
+  return false;
 }

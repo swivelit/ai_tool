@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import golden from "../data/evals/golden_assistant.json";
+import { shouldAutoSpeakReply } from "../lib/replyPlaybackPolicy";
 
 type GoldenCase = {
   id: string;
@@ -149,6 +150,44 @@ describe("golden voice eval", () => {
     vi.resetModules();
 
     vi.unstubAllGlobals();
+  });
+
+    it("enforces reply auto-play policy correctly", () => {
+    // Normal text chat should NEVER auto-play
+    expect(
+      shouldAutoSpeakReply({
+        source: "text",
+        autoSpeakReplies: true,
+        handsFreeMode: "off",
+      }),
+    ).toBe(false);
+
+    // Voice chat may auto-play when enabled
+    expect(
+      shouldAutoSpeakReply({
+        source: "voice",
+        autoSpeakReplies: true,
+        handsFreeMode: "off",
+      }),
+    ).toBe(true);
+
+    // Voice chat stays silent when disabled
+    expect(
+      shouldAutoSpeakReply({
+        source: "voice",
+        autoSpeakReplies: false,
+        handsFreeMode: "off",
+      }),
+    ).toBe(false);
+
+    // Hands-free mode should always auto-play
+    expect(
+      shouldAutoSpeakReply({
+        source: "handsfree",
+        autoSpeakReplies: false,
+        handsFreeMode: "wake",
+      }),
+    ).toBe(true);
   });
 
   it("returns structured unavailable state when native STT is missing", async () => {
