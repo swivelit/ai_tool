@@ -27,6 +27,11 @@ const releaseVerifierPath = path.join(
   "scripts",
   "verify-release-backend-first-config.js",
 );
+const ensureGoogleServicesPath = path.join(
+  mobileRoot,
+  "scripts",
+  "ensure-google-services-json.js",
+);
 const ENV_KEYS_USED_BY_APP_CONFIG = [
   "BUILD_TYPE",
   "EAS_BUILD_PROFILE",
@@ -188,6 +193,25 @@ function runReleaseVerifierWithMockLlama(
   } finally {
     fs.rmSync(llamaDir, { recursive: true, force: true });
   }
+}
+
+function runEnsureGoogleServicesJson(env: Record<string, string | undefined>) {
+  const mergedEnv = { ...process.env };
+  for (const key of ENV_KEYS_USED_BY_APP_CONFIG) {
+    delete mergedEnv[key];
+  }
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) {
+      delete mergedEnv[key];
+    } else {
+      mergedEnv[key] = value;
+    }
+  }
+  return spawnSync(process.execPath, [ensureGoogleServicesPath, "--mode", "release"], {
+    cwd: mobileRoot,
+    env: mergedEnv,
+    encoding: "utf8",
+  });
 }
 
 function createNativeStatusFixture(localAgentsContent: string) {
@@ -503,7 +527,7 @@ export const runtime = {
     try {
       const result = spawnSync(
         process.execPath,
-        ["scripts/ensure-google-services-json.js", "--mode", "release"],
+        [ensureGoogleServicesPath, "--mode", "release"],
         {
           cwd: mobileRoot,
           env: {
@@ -518,12 +542,119 @@ export const runtime = {
 
       expect(result.status).toBe(0);
       expect(fs.existsSync(googleServicesPath)).toBe(true);
+      expect(fs.statSync(googleServicesPath).mode & 0o777).toBe(0o600);
       expect(result.stdout + result.stderr).toContain("GOOGLE_SERVICES_JSON_BASE64");
       expect(result.stdout + result.stderr).not.toContain(secretProjectId);
     } finally {
       fs.rmSync(googleServicesPath, { force: true });
       if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
     }
+  });
+
+  it("ensure-google-services-json synthesizes Android config from public Firebase env", () => {
+    const googleServicesPath = path.join(mobileRoot, "google-services.json");
+    const backup = fs.existsSync(googleServicesPath)
+      ? fs.readFileSync(googleServicesPath, "utf8")
+      : null;
+    fs.rmSync(googleServicesPath, { force: true });
+    const secretApiKey = "public-api-key-not-printed";
+    try {
+      const result = runEnsureGoogleServicesJson({
+        ...validReleaseFirebaseEnv,
+        GOOGLE_SERVICES_JSON_BASE64: undefined,
+        EXPO_PUBLIC_FIREBASE_API_KEY: secretApiKey,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout + result.stderr).toContain("EXPO_PUBLIC_FIREBASE_*");
+      expect(result.stdout + result.stderr).toContain("com.harishajahan.tamilai");
+      expect(result.stdout + result.stderr).not.toContain(secretApiKey);
+      expect(fs.statSync(googleServicesPath).mode & 0o777).toBe(0o600);
+
+      const parsed = JSON.parse(fs.readFileSync(googleServicesPath, "utf8"));
+      expect(parsed).toEqual({
+        project_info: {
+          project_number: "1234567890",
+          project_id: "firebase-project",
+          storage_bucket: "firebase-project.appspot.com",
+        },
+        client: [
+          {
+            client_info: {
+              mobilesdk_app_id: "1:1234567890:android:abcdef",
+              android_client_info: {
+                package_name: "com.harishajahan.tamilai",
+              },
+            },
+            oauth_client: [],
+            api_key: [
+              {
+                current_key: secretApiKey,
+              },
+            ],
+            services: {
+              appinvite_service: {
+                other_platform_oauth_client: [],
+              },
+            },
+          },
+        ],
+        configuration_version: "1",
+      });
+    } finally {
+      fs.rmSync(googleServicesPath, { force: true });
+      if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
+    }
+  });
+
+  it("ensure-google-services-json release mode fails without JSON source or complete Firebase env", () => {
+    const googleServicesPath = path.join(mobileRoot, "google-services.json");
+    const backup = fs.existsSync(googleServicesPath)
+      ? fs.readFileSync(googleServicesPath, "utf8")
+      : null;
+    fs.rmSync(googleServicesPath, { force: true });
+    try {
+      const result = runEnsureGoogleServicesJson({
+        BUILD_TYPE: "release",
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout + result.stderr).toContain("EXPO_PUBLIC_FIREBASE_API_KEY");
+      expect(result.stdout + result.stderr).toContain("EXPO_PUBLIC_FIREBASE_APP_ID");
+      expect(result.stdout + result.stderr).toContain("Do not commit mobile/google-services.json");
+    } finally {
+      if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
+    }
+  });
+
+  it("ensure-google-services-json reports missing Firebase variables by name only", () => {
+    const googleServicesPath = path.join(mobileRoot, "google-services.json");
+    const backup = fs.existsSync(googleServicesPath)
+      ? fs.readFileSync(googleServicesPath, "utf8")
+      : null;
+    fs.rmSync(googleServicesPath, { force: true });
+    const secretLikeValue = "do-not-print-this-public-firebase-value";
+    try {
+      const result = runEnsureGoogleServicesJson({
+        BUILD_TYPE: "release",
+        ...validReleaseFirebaseEnv,
+        GOOGLE_SERVICES_JSON_BASE64: undefined,
+        EXPO_PUBLIC_FIREBASE_PROJECT_ID: undefined,
+        EXPO_PUBLIC_FIREBASE_API_KEY: secretLikeValue,
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout + result.stderr).toContain("EXPO_PUBLIC_FIREBASE_PROJECT_ID");
+      expect(result.stdout + result.stderr).not.toContain(secretLikeValue);
+    } finally {
+      if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
+    }
+  });
+
+  it("keeps mobile/google-services.json gitignored", () => {
+    const gitignore = readRepo(".gitignore");
+
+    expect(gitignore).toMatch(/^mobile\/google-services\.json$/m);
   });
 
   it("keys model delivery validation to production/release native_on_device download_on_first_launch builds", () => {
@@ -779,7 +910,7 @@ export const runtime = {
     expect(result.stdout + result.stderr).not.toContain(secretLikeValue);
   });
 
-  it("release verifier rejects missing google-services source clearly", () => {
+  it("release verifier accepts public Firebase env as google-services synthesis source", () => {
     const {
       GOOGLE_SERVICES_JSON_BASE64: _missingGoogleServices,
       ...firebaseWithoutGoogleServices
@@ -799,9 +930,10 @@ export const runtime = {
         ...firebaseWithoutGoogleServices,
       });
 
-      expect(result.status).not.toBe(0);
-      expect(result.stdout + result.stderr).toContain("GOOGLE_SERVICES_JSON_BASE64");
-      expect(result.stdout + result.stderr).toContain("Do not commit mobile/google-services.json");
+      expect(result.status).toBe(0);
+      expect(result.stdout + result.stderr).toContain(
+        "release env can synthesize Firebase Android google-services config from public Firebase env",
+      );
     } finally {
       if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
     }

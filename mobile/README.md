@@ -48,16 +48,32 @@ EXPO_PUBLIC_E2E_MOCK_AUTH=1 ./launch-debug_apk.sh
 # JAI_DEBUG_LITE=1 also allows the missing file for emulator smoke work.
 ```
 
-Release/EAS builds must provide a real Firebase Android config source:
+Release/EAS builds must use one of these real Firebase Android config paths:
 
 ```bash
+# A. Keep the downloaded Firebase file locally. Do not commit it.
+mobile/google-services.json
+
+# B. Provide the JSON through a secret env var.
 GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json>
 # or GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON
+
+# C. Provide all six public Firebase env values below; the preflight script
+#    synthesizes mobile/google-services.json locally with package
+#    com.harishajahan.tamilai.
+EXPO_PUBLIC_FIREBASE_API_KEY=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_APP_ID=<firebase-public-value>
 ```
 
-`mobile/scripts/ensure-google-services-json.js` decodes those values before
-prebuild/build and never prints the JSON content. Release verification also
-requires the backend API base and Firebase public `EXPO_PUBLIC_FIREBASE_*` values.
+`mobile/scripts/ensure-google-services-json.js` decodes or synthesizes the file
+before prebuild/build and never prints Firebase values or JSON content. Release
+verification also requires the backend API base and complete Firebase public
+`EXPO_PUBLIC_FIREBASE_*` values. `mobile/google-services.json` is ignored by git
+and must not be committed.
 
 ## Backend chat smoke test
 
@@ -232,13 +248,16 @@ EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false
 EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false
 EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false
 EXPO_PUBLIC_API_BASE=https://<your-render-service>
-GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json>
 EXPO_PUBLIC_FIREBASE_API_KEY=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_PROJECT_ID=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_APP_ID=<firebase-public-value>
+
+# Optional if you prefer JSON-secret input instead of synthesis from public env.
+GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json>
+# or GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON
 ```
 
 Explicit local fallback release additionally needs llama.cpp and GGUF delivery metadata.

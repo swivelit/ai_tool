@@ -4,6 +4,16 @@ const path = require("node:path");
 
 const mobileRoot = path.resolve(__dirname, "..");
 const googleServicesFile = path.join(mobileRoot, "google-services.json");
+const ANDROID_PACKAGE_NAME = "com.harishajahan.tamilai";
+
+const FIREBASE_PUBLIC_ENV_NAMES = [
+  "EXPO_PUBLIC_FIREBASE_API_KEY",
+  "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN",
+  "EXPO_PUBLIC_FIREBASE_PROJECT_ID",
+  "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET",
+  "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
+  "EXPO_PUBLIC_FIREBASE_APP_ID",
+];
 
 function normalize(value) {
   return String(value || "").trim().toLowerCase();
@@ -35,6 +45,10 @@ function fail(message) {
   process.exit(1);
 }
 
+function missingFirebasePublicEnvNames() {
+  return FIREBASE_PUBLIC_ENV_NAMES.filter((name) => !String(process.env[name] || "").trim());
+}
+
 function writeJsonFromEnv(name, value, { base64 = false } = {}) {
   let content = "";
   try {
@@ -45,6 +59,49 @@ function writeJsonFromEnv(name, value, { base64 = false } = {}) {
   }
   fs.writeFileSync(googleServicesFile, `${content.trim()}\n`, { mode: 0o600 });
   console.log(`[ensure-google-services-json] Wrote mobile/google-services.json from ${name}. JSON content was not printed.`);
+}
+
+function synthesizeGoogleServicesJsonFromPublicEnv() {
+  const missing = missingFirebasePublicEnvNames();
+  if (missing.length) {
+    return missing;
+  }
+
+  const content = {
+    project_info: {
+      project_number: String(process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "").trim(),
+      project_id: String(process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || "").trim(),
+      storage_bucket: String(process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || "").trim(),
+    },
+    client: [
+      {
+        client_info: {
+          mobilesdk_app_id: String(process.env.EXPO_PUBLIC_FIREBASE_APP_ID || "").trim(),
+          android_client_info: {
+            package_name: ANDROID_PACKAGE_NAME,
+          },
+        },
+        oauth_client: [],
+        api_key: [
+          {
+            current_key: String(process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "").trim(),
+          },
+        ],
+        services: {
+          appinvite_service: {
+            other_platform_oauth_client: [],
+          },
+        },
+      },
+    ],
+    configuration_version: "1",
+  };
+
+  fs.writeFileSync(googleServicesFile, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 });
+  console.log(
+    `[ensure-google-services-json] Wrote mobile/google-services.json from complete EXPO_PUBLIC_FIREBASE_* environment for ${ANDROID_PACKAGE_NAME}. JSON content was not printed.`,
+  );
+  return [];
 }
 
 const mode = modeFromArgs();
@@ -69,6 +126,11 @@ if (process.env.FIREBASE_GOOGLE_SERVICES_JSON) {
   process.exit(0);
 }
 
+const missingPublicFirebaseEnv = synthesizeGoogleServicesJsonFromPublicEnv();
+if (missingPublicFirebaseEnv.length === 0) {
+  process.exit(0);
+}
+
 if (!isReleaseLike(mode) && (isTruthy(process.env.EXPO_PUBLIC_E2E_MOCK_AUTH) || isTruthy(process.env.JAI_DEBUG_LITE))) {
   console.log(
     "[ensure-google-services-json] Missing mobile/google-services.json; continuing because debug mock auth/debug-lite is enabled.",
@@ -78,7 +140,11 @@ if (!isReleaseLike(mode) && (isTruthy(process.env.EXPO_PUBLIC_E2E_MOCK_AUTH) || 
 
 if (isReleaseLike(mode)) {
   fail(
-    "Release/production builds require mobile/google-services.json or one of GOOGLE_SERVICES_JSON_BASE64, GOOGLE_SERVICES_JSON, FIREBASE_GOOGLE_SERVICES_JSON. Configure this as an EAS/CI secret; do not commit the JSON file.",
+    [
+      "Release/production builds require mobile/google-services.json, one of GOOGLE_SERVICES_JSON_BASE64 / GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON, or complete EXPO_PUBLIC_FIREBASE_* values that can synthesize the Android config.",
+      `Missing Firebase public variable name(s): ${missingPublicFirebaseEnv.join(", ")}`,
+      "Do not commit mobile/google-services.json.",
+    ].join("\n"),
   );
 }
 

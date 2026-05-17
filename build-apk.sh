@@ -408,6 +408,40 @@ cat > android/local.properties <<LOCALPROPS
 sdk.dir=${ANDROID_SDK//\\/\\\\}
 LOCALPROPS
 
+configure_gradle_jvmargs() {
+  local gradle_properties="android/gradle.properties"
+  local desired_jvmargs="${JAI_GRADLE_JVMARGS:--Xmx4096m -XX:MaxMetaspaceSize=1536m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8}"
+  local tmp_file
+
+  if [[ ! -f "$gradle_properties" ]]; then
+    printf "org.gradle.jvmargs=%s\n" "$desired_jvmargs" > "$gradle_properties"
+    info "Configured Gradle JVM args for APK build"
+    return 0
+  fi
+
+  tmp_file="$(mktemp)"
+  awk -v replacement="org.gradle.jvmargs=${desired_jvmargs}" '
+    BEGIN { replaced = 0 }
+    /^org\.gradle\.jvmargs=/ {
+      if (!replaced) {
+        print replacement
+        replaced = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!replaced) {
+        print replacement
+      }
+    }
+  ' "$gradle_properties" > "$tmp_file"
+  mv "$tmp_file" "$gradle_properties"
+  info "Configured Gradle JVM args for APK build"
+}
+
+configure_gradle_jvmargs
+
 if [[ "$BUILD_TYPE" == "debug" ]]; then
   GRADLE_TASK="assembleDebug"
   SOURCE_APK="android/app/build/outputs/apk/debug/app-debug.apk"

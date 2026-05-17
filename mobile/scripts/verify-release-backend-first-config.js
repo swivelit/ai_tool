@@ -222,16 +222,21 @@ function verifyReleaseEnvironment() {
     String(process.env.GOOGLE_SERVICES_JSON_BASE64 || '').trim() ||
     String(process.env.GOOGLE_SERVICES_JSON || '').trim() ||
     String(process.env.FIREBASE_GOOGLE_SERVICES_JSON || '').trim();
-  if (!hasGoogleServicesSource) {
+  if (!hasGoogleServicesSource && missingFirebaseEnvNames.length) {
     fail(
       'Release builds are missing Firebase Android google-services config',
       [
-        'Provide mobile/google-services.json locally or set GOOGLE_SERVICES_JSON_BASE64, GOOGLE_SERVICES_JSON, or FIREBASE_GOOGLE_SERVICES_JSON in CI/EAS.',
+        'Provide mobile/google-services.json locally, set GOOGLE_SERVICES_JSON_BASE64 / GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON, or set all EXPO_PUBLIC_FIREBASE_* values so the preflight can synthesize the ignored local file.',
+        `Missing Firebase public variable name(s): ${missingFirebaseEnvNames.join(', ')}`,
         'Do not commit mobile/google-services.json; it is intentionally gitignored.',
       ].join('\n'),
     );
   }
-  pass('release env has Firebase Android google-services config source');
+  pass(
+    hasGoogleServicesSource
+      ? 'release env has Firebase Android google-services config source'
+      : 'release env can synthesize Firebase Android google-services config from public Firebase env',
+  );
   verifyExplicitLocalFallbackReleaseEnvironment();
 }
 
