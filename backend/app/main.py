@@ -52,7 +52,7 @@ from .auth import (
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
-from .models import Conversation, DailyRoutine, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
+from .models import Conversation, DailyRoutine, DocumentArtifact, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
 from .time_utils import utc_now as _utc_now
 from .observability import (
     APP_RELEASE,
@@ -841,9 +841,9 @@ def _require_async_jobs_available() -> None:
 
 def _validate_export_format(export_format: str) -> str:
     normalized = str(export_format or "").strip().lower()
-    if normalized not in {"pdf", "excel", "ppt", "docx"}:
+    if normalized not in {"pdf", "excel", "xlsx", "ppt", "pptx", "docx"}:
         raise HTTPException(400, "Unsupported export format")
-    return normalized
+    return _document_format_key(normalized)
 
 
 def _job_handle_export(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -852,16 +852,14 @@ def _job_handle_export(session: Session, payload: Dict[str, Any]) -> Dict[str, A
     item = session.get(Item, item_id)
     if not item:
         raise RuntimeError("Item not found")
-    generators = {
-        "pdf": generate_pdf,
-        "excel": generate_excel,
-        "ppt": generate_ppt,
-        "docx": generate_docx,
-    }
-    generator = generators.get(export_format)
-    if generator is None:
-        raise RuntimeError(f"Unsupported export format: {export_format}")
-    return _build_download_payload(generator(item), item=item)
+    artifact, path = _create_document_artifact(
+        session,
+        item=item,
+        format_key=export_format,
+        source_text=item.raw_text,
+        metadata={"source": "export_job"},
+    )
+    return _build_download_payload(path, item=item, artifact=artifact)
 
 
 def _job_handle_chat(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1274,6 +1272,13 @@ class ChatAPIRequest(BaseModel):
     client_local_budget_ms: Optional[int] = None
     client_original_route: Optional[str] = None
     admin_email: Optional[str] = None
+
+
+class FileSearchRequest(BaseModel):
+    query: str = ""
+    category: Optional[str] = None
+    date: Optional[str] = None
+    limit: int = 10
 
 
 class AIModelProbeRequest(BaseModel):
@@ -2083,6 +2088,34 @@ def _fast_fallback_metadata_for_item(text: str, answer: str) -> Dict[str, Any]:
     }
 
 
+def _dict_from_possible_json(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _document_request_from_pipeline(pipeline_result: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    request = dict(meta or {})
+    core_meta = _dict_from_possible_json(pipeline_result.get("core_meta"))
+    raw = _dict_from_possible_json(core_meta.get("raw"))
+    if isinstance(raw.get("item_metadata"), dict):
+        request.update(raw["item_metadata"])
+    if str(request.get("intent") or "").lower() != "document":
+        return {}
+    formats = request.get("document_formats")
+    if not isinstance(formats, list):
+        formats = ["pdf"]
+    normalized_formats = [_document_format_key(str(fmt)) for fmt in formats if str(fmt or "").strip()]
+    request["document_formats"] = normalized_formats or ["pdf"]
+    return request
+
+
 def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
     def _maybe(value: Any, default: Any):
         if isinstance(value, str):
@@ -2128,6 +2161,38 @@ def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "client_local_budget_ms": result.get("client_local_budget_ms"),
         "client_original_route": result.get("client_original_route"),
     }
+
+
+def _materialize_document_request(
+    session: Session,
+    *,
+    item: Item,
+    pipeline_result: Dict[str, Any],
+    meta: Dict[str, Any],
+) -> list[Dict[str, Any]]:
+    request = _document_request_from_pipeline(pipeline_result, meta)
+    if not request:
+        return []
+    artifacts: list[Dict[str, Any]] = []
+    source_text = str(request.get("source_text") or item.raw_text or "")
+    for format_key in request.get("document_formats") or ["pdf"]:
+        artifact, path = _create_document_artifact(
+            session,
+            item=item,
+            format_key=str(format_key),
+            source_text=source_text,
+            metadata={"source": "voice_or_chat_command"},
+        )
+        artifacts.append(
+            {
+                "id": artifact.id,
+                "format": artifact.format,
+                "category": artifact.category,
+                "relative_path": artifact.relative_path,
+                "download": _build_download_payload(path, item=item, artifact=artifact),
+            }
+        )
+    return artifacts
 
 
 def _assistant_text_from_pipeline(
@@ -2177,6 +2242,15 @@ def _save_item_from_pipeline(
     session.add(item)
     session.commit()
     session.refresh(item)
+
+    artifacts = _materialize_document_request(
+        session,
+        item=item,
+        pipeline_result=pipeline_result,
+        meta=meta,
+    )
+    if artifacts:
+        meta["artifacts"] = artifacts
 
     if not skip_expensive_side_effects:
         try:
@@ -2422,8 +2496,39 @@ def _extract_sarvam_transcript(payload: Any) -> str:
     return ""
 
 
-def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> str:
-    return _get_sarvam_provider().stt_file(file_path, language)
+def _transcribe_audio_file(
+    file_path: str,
+    language: Optional[str] = None,
+    *,
+    content_type: Optional[str] = None,
+    filename: Optional[str] = None,
+) -> str:
+    return _get_sarvam_provider().stt_file(
+        file_path,
+        language,
+        content_type=content_type,
+        filename=filename,
+    )
+
+
+def _invoke_transcribe_audio_file(
+    file_path: str,
+    language: Optional[str] = None,
+    *,
+    content_type: Optional[str] = None,
+    filename: Optional[str] = None,
+) -> str:
+    try:
+        return _transcribe_audio_file(
+            file_path,
+            language,
+            content_type=content_type,
+            filename=filename,
+        )
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        return _transcribe_audio_file(file_path, language)
 
 
 @app.post("/parse-datetime")
@@ -4456,7 +4561,8 @@ async def _transcribe_and_analyze_upload(
     if user_id is not None:
         assert_owner(int(user_id), user)
     set_request_context(user_id=str(user.id))
-    reply_language = reply_language or getattr(user, "reply_language", None)
+    reply_language = _normalize_reply_language(reply_language) if reply_language else "ta"
+    speech_language = speech_language or "ta-IN"
 
     content_type = str(file.content_type or "").split(";")[0].strip().lower()
     filename = file.filename or "audio.m4a"
@@ -4494,7 +4600,12 @@ async def _transcribe_and_analyze_upload(
             admin_email=auth_user.email,
         )
         enforce_provider_budget(session, "sarvam", currency="INR")
-        transcript_text = _transcribe_audio_file(tmp_path, speech_language)
+        transcript_text = _invoke_transcribe_audio_file(
+            tmp_path,
+            speech_language,
+            content_type=content_type,
+            filename=filename,
+        )
         record_ai_usage_event(
             session,
             AIProviderResponse(
@@ -4666,7 +4777,12 @@ async def transcribe_wake_phrase(
         tmp_path = tmp.name
 
     try:
-        transcript_text = _transcribe_audio_file(tmp_path, language or locale)
+        transcript_text = _invoke_transcribe_audio_file(
+            tmp_path,
+            language or locale,
+            content_type=str(file.content_type or "").split(";")[0].strip().lower(),
+            filename=file.filename,
+        )
         return {
             "ok": True,
             "transcript": transcript_text,
@@ -4807,8 +4923,8 @@ def delete_item(
 
 DOCS_BASE_DIR = Path(GENERATED_DOCS_DIR).resolve()
 PDF_BASE_DIR = DOCS_BASE_DIR / "pdf"
-EXCEL_BASE_DIR = DOCS_BASE_DIR / "excel"
-PPT_BASE_DIR = DOCS_BASE_DIR / "ppt"
+EXCEL_BASE_DIR = DOCS_BASE_DIR / "xlsx"
+PPT_BASE_DIR = DOCS_BASE_DIR / "pptx"
 DOCX_BASE_DIR = DOCS_BASE_DIR / "docx"
 
 
@@ -4821,11 +4937,20 @@ def _safe_export_segment(value: Optional[str], *, default: str) -> str:
     return cleaned or default
 
 
-def _category_export_dir(base_dir: Path, category: Optional[str]) -> Path:
+def _category_export_dir(base_dir: Path, category: Optional[str], created_at: Optional[datetime] = None) -> Path:
     ensure_dir(base_dir)
     category_dir = base_dir / _safe_export_segment(category, default="Other")
     ensure_dir(category_dir)
-    return category_dir
+    date_value = (created_at or _utc_now()).date().isoformat()
+    dated_dir = category_dir / date_value
+    ensure_dir(dated_dir)
+    return dated_dir
+
+
+def _export_path_for_item(base_dir: Path, item: Item, extension: str) -> Path:
+    category_dir = _category_export_dir(base_dir, item.category, item.created_at)
+    title = _safe_export_segment(item.title or item.raw_text, default=f"item_{item.id}")
+    return category_dir / f"{title or f'item_{item.id}'}.{extension}"
 
 
 def _sign_download_payload(payload: Dict[str, Any]) -> str:
@@ -4853,7 +4978,7 @@ def _verify_download_token(token: str) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _build_download_payload(path: Path, *, item: Item) -> Dict[str, Any]:
+def _build_download_payload(path: Path, *, item: Item, artifact: Optional[DocumentArtifact] = None) -> Dict[str, Any]:
     resolved = path.resolve()
     relative_path = resolved.relative_to(DOCS_BASE_DIR).as_posix()
     token = _sign_download_payload(
@@ -4861,6 +4986,7 @@ def _build_download_payload(path: Path, *, item: Item) -> Dict[str, Any]:
             "path": relative_path,
             "user_id": int(item.user_id),
             "item_id": int(item.id),
+            "artifact_id": int(artifact.id) if artifact and artifact.id is not None else None,
             "exp": int(time.time()) + DOWNLOAD_TOKEN_TTL_SECONDS,
         }
     )
@@ -4884,11 +5010,69 @@ def _resolve_generated_doc_path(raw_path: str) -> Path:
     return candidate
 
 
+def _pdf_safe_text(value: Any, unicode_font_available: bool) -> str:
+    text = str(value or "")
+    if unicode_font_available:
+        return text
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def _draw_pdf_wrapped_line(
+    pdf: Any,
+    text: str,
+    x: float,
+    y: float,
+    max_width: float,
+    font_name: str,
+    font_size: int,
+    page_height: float,
+    margin: float,
+) -> float:
+    from reportlab.pdfbase import pdfmetrics
+
+    line_height = font_size + 5
+    words = str(text or "").split()
+    if not words:
+        words = [""]
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if pdfmetrics.stringWidth(candidate, font_name, font_size) <= max_width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        if pdfmetrics.stringWidth(word, font_name, font_size) <= max_width:
+            current = word
+        else:
+            chunk = ""
+            for char in word:
+                candidate_chunk = f"{chunk}{char}"
+                if pdfmetrics.stringWidth(candidate_chunk, font_name, font_size) <= max_width:
+                    chunk = candidate_chunk
+                else:
+                    if chunk:
+                        lines.append(chunk)
+                    chunk = char
+            current = chunk
+    if current:
+        lines.append(current)
+
+    for line in lines:
+        if y < margin:
+            pdf.showPage()
+            pdf.setFont(font_name, font_size)
+            y = page_height - margin
+        pdf.drawString(x, y, line)
+        y -= line_height
+    return y
+
+
 def generate_docx(item: Item) -> Path:
     from docx import Document
 
-    category_dir = _category_export_dir(DOCX_BASE_DIR, item.category)
-    path = category_dir / f"item_{item.id}.docx"
+    path = _export_path_for_item(DOCX_BASE_DIR, item, "docx")
     doc = Document()
     doc.add_heading(item.title or f"Item {item.id}", level=1)
     doc.add_paragraph(f"Intent: {item.intent}")
@@ -4901,44 +5085,93 @@ def generate_docx(item: Item) -> Path:
 
 
 def generate_pdf(item: Item) -> Path:
-    from fpdf import FPDF
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen import canvas
 
-    category_dir = _category_export_dir(PDF_BASE_DIR, item.category)
-    path = category_dir / f"item_{item.id}.pdf"
-
-    pdf = FPDF()
-    pdf.add_page()
+    path = _export_path_for_item(PDF_BASE_DIR, item, "pdf")
 
     font_candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/NotoSansTamil-Regular.ttf",
     ]
     font_path = next((p for p in font_candidates if os.path.exists(p)), None)
-
+    font_name = "Helvetica"
     if font_path:
-        pdf.add_font("DejaVu", "", font_path, uni=True)
-        pdf.set_font("DejaVu", size=14)
-    else:
-        pdf.set_font("Arial", size=12)
+        font_name = "GeneratedDocFont"
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+        except Exception:
+            font_name = "Helvetica"
+            font_path = None
 
-    pdf.cell(0, 10, txt=item.title or f"Item {item.id}", ln=True)
-    pdf.set_font_size(11)
-    pdf.multi_cell(0, 8, txt=f"Intent: {item.intent}")
-    pdf.multi_cell(0, 8, txt=f"Category: {item.category}")
+    page_width, page_height = letter
+    margin = 54
+    y = page_height - margin
+    pdf = canvas.Canvas(str(path), pagesize=letter)
+    pdf.setFont(font_name, 15)
+    y = _draw_pdf_wrapped_line(
+        pdf,
+        _pdf_safe_text(item.title or f"Item {item.id}", bool(font_path)),
+        margin,
+        y,
+        page_width - (margin * 2),
+        font_name,
+        15,
+        page_height,
+        margin,
+    )
+    y -= 10
+    pdf.setFont(font_name, 11)
+    for line in (f"Intent: {item.intent}", f"Category: {item.category}"):
+        y = _draw_pdf_wrapped_line(
+            pdf,
+            _pdf_safe_text(line, bool(font_path)),
+            margin,
+            y,
+            page_width - (margin * 2),
+            font_name,
+            11,
+            page_height,
+            margin,
+        )
     if item.datetime_str:
-        pdf.multi_cell(0, 8, txt=f"When: {item.datetime_str}")
-    pdf.ln(2)
-    pdf.multi_cell(0, 8, txt=item.details or item.raw_text)
+        y = _draw_pdf_wrapped_line(
+            pdf,
+            _pdf_safe_text(f"When: {item.datetime_str}", bool(font_path)),
+            margin,
+            y,
+            page_width - (margin * 2),
+            font_name,
+            11,
+            page_height,
+            margin,
+        )
+    y -= 8
+    y = _draw_pdf_wrapped_line(
+        pdf,
+        _pdf_safe_text(item.details or item.raw_text, bool(font_path)),
+        margin,
+        y,
+        page_width - (margin * 2),
+        font_name,
+        11,
+        page_height,
+        margin,
+    )
 
-    pdf.output(str(path))
+    pdf.save()
     return path
 
 
 def generate_excel(item: Item) -> Path:
     from openpyxl import Workbook
 
-    category_dir = _category_export_dir(EXCEL_BASE_DIR, item.category)
-    path = category_dir / f"item_{item.id}.xlsx"
+    path = _export_path_for_item(EXCEL_BASE_DIR, item, "xlsx")
     wb = Workbook()
     ws = wb.active
     ws.title = "Item"
@@ -4960,8 +5193,7 @@ def generate_excel(item: Item) -> Path:
 def generate_ppt(item: Item) -> Path:
     from pptx import Presentation
 
-    category_dir = _category_export_dir(PPT_BASE_DIR, item.category)
-    path = category_dir / f"item_{item.id}.pptx"
+    path = _export_path_for_item(PPT_BASE_DIR, item, "pptx")
 
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[1])
@@ -4974,6 +5206,77 @@ def generate_ppt(item: Item) -> Path:
 
     prs.save(str(path))
     return path
+
+
+def _document_format_key(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"excel", "xls"}:
+        return "xlsx"
+    if normalized in {"ppt", "powerpoint"}:
+        return "pptx"
+    if normalized in {"word", "document"}:
+        return "docx"
+    return normalized if normalized in {"pdf", "docx", "xlsx", "pptx"} else "pdf"
+
+
+def _generator_for_document_format(format_key: str):
+    return {
+        "pdf": generate_pdf,
+        "docx": generate_docx,
+        "xlsx": generate_excel,
+        "pptx": generate_ppt,
+    }.get(_document_format_key(format_key))
+
+
+def _record_document_artifact(
+    session: Session,
+    *,
+    item: Item,
+    path: Path,
+    format_key: str,
+    source_text: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> DocumentArtifact:
+    resolved = path.resolve()
+    relative_path = resolved.relative_to(DOCS_BASE_DIR).as_posix()
+    artifact = DocumentArtifact(
+        user_id=int(item.user_id),
+        item_id=int(item.id) if item.id is not None else None,
+        title=item.title or f"Item {item.id}",
+        format=_document_format_key(format_key),
+        category=normalize_category(item.category),
+        relative_path=relative_path,
+        source_text=str(source_text or item.raw_text or ""),
+        metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
+        created_at=_utc_now(),
+    )
+    session.add(artifact)
+    session.commit()
+    session.refresh(artifact)
+    return artifact
+
+
+def _create_document_artifact(
+    session: Session,
+    *,
+    item: Item,
+    format_key: str,
+    source_text: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> tuple[DocumentArtifact, Path]:
+    generator = _generator_for_document_format(format_key)
+    if generator is None:
+        raise HTTPException(400, "Unsupported export format")
+    path = generator(item)
+    artifact = _record_document_artifact(
+        session,
+        item=item,
+        path=path,
+        format_key=format_key,
+        source_text=source_text,
+        metadata=metadata,
+    )
+    return artifact, path
 
 
 def _enqueue_export_job(
@@ -5018,8 +5321,8 @@ def item_generate_pdf(
     if background:
         return _enqueue_export_job(session, item_id=item_id, export_format="pdf", user=user)
     item = _get_owned_item(session, item_id, int(user.id))
-    path = generate_pdf(item)
-    return _build_download_payload(path, item=item)
+    artifact, path = _create_document_artifact(session, item=item, format_key="pdf", source_text=item.raw_text)
+    return _build_download_payload(path, item=item, artifact=artifact)
 
 
 @app.post("/items/{item_id}/generate-excel")
@@ -5033,8 +5336,8 @@ def item_generate_excel(
     if background:
         return _enqueue_export_job(session, item_id=item_id, export_format="excel", user=user)
     item = _get_owned_item(session, item_id, int(user.id))
-    path = generate_excel(item)
-    return _build_download_payload(path, item=item)
+    artifact, path = _create_document_artifact(session, item=item, format_key="xlsx", source_text=item.raw_text)
+    return _build_download_payload(path, item=item, artifact=artifact)
 
 
 @app.post("/items/{item_id}/generate-ppt")
@@ -5048,8 +5351,8 @@ def item_generate_ppt(
     if background:
         return _enqueue_export_job(session, item_id=item_id, export_format="ppt", user=user)
     item = _get_owned_item(session, item_id, int(user.id))
-    path = generate_ppt(item)
-    return _build_download_payload(path, item=item)
+    artifact, path = _create_document_artifact(session, item=item, format_key="pptx", source_text=item.raw_text)
+    return _build_download_payload(path, item=item, artifact=artifact)
 
 
 @app.post("/items/{item_id}/generate-docx")
@@ -5063,8 +5366,8 @@ def item_generate_docx(
     if background:
         return _enqueue_export_job(session, item_id=item_id, export_format="docx", user=user)
     item = _get_owned_item(session, item_id, int(user.id))
-    path = generate_docx(item)
-    return _build_download_payload(path, item=item)
+    artifact, path = _create_document_artifact(session, item=item, format_key="docx", source_text=item.raw_text)
+    return _build_download_payload(path, item=item, artifact=artifact)
 
 
 @app.get("/download/{download_id}")
@@ -5095,3 +5398,108 @@ def download_generated(
     if not download_id:
         raise HTTPException(400, "download_id is required")
     return download_generated_by_token(download_id, session, auth_user)
+
+
+def _serialize_document_artifact_for_user(session: Session, artifact: DocumentArtifact, user: User) -> Dict[str, Any]:
+    item = session.get(Item, int(artifact.item_id)) if artifact.item_id is not None else None
+    download: Dict[str, Any] = {}
+    if item is not None and int(item.user_id) == int(user.id):
+        path = _resolve_generated_doc_path(artifact.relative_path)
+        download = _build_download_payload(path, item=item, artifact=artifact)
+    return {
+        "id": artifact.id,
+        "item_id": artifact.item_id,
+        "title": artifact.title,
+        "format": artifact.format,
+        "category": artifact.category,
+        "relative_path": artifact.relative_path,
+        "source_text": artifact.source_text,
+        "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
+        "download_url": download.get("download_url"),
+        "download_id": download.get("download_id"),
+    }
+
+
+def _search_document_artifact_rows(
+    session: Session,
+    *,
+    user_id: int,
+    query: str = "",
+    category: Optional[str] = None,
+    date_value: Optional[str] = None,
+    limit: int = 10,
+) -> list[DocumentArtifact]:
+    rows = list(
+        session.exec(
+            select(DocumentArtifact)
+            .where(DocumentArtifact.user_id == int(user_id))
+            .order_by(DocumentArtifact.created_at.desc())
+        ).all()
+    )
+    normalized_category = normalize_category(category) if category else ""
+    parsed_date = None
+    if date_value:
+        try:
+            parsed_date = datetime.fromisoformat(str(date_value)).date()
+        except Exception:
+            parsed_date = None
+    tokens = re.findall(r"[a-z0-9\u0B80-\u0BFF]+", str(query or "").lower())
+    matches: list[DocumentArtifact] = []
+    for row in rows:
+        if normalized_category and row.category != normalized_category:
+            continue
+        if parsed_date is not None and row.created_at.date() != parsed_date:
+            continue
+        if tokens:
+            haystack = f"{row.title} {row.source_text} {row.relative_path}".lower()
+            if not all(token in haystack for token in tokens if token not in {"file", "files", "notes", "note"}):
+                continue
+        matches.append(row)
+        if len(matches) >= max(1, min(limit, 50)):
+            break
+    return matches
+
+
+@app.get("/api/files/search")
+def api_files_search(
+    q: str = Query(default=""),
+    category: Optional[str] = Query(default=None),
+    date_value: Optional[str] = Query(default=None, alias="date"),
+    limit: int = Query(default=10),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    rows = _search_document_artifact_rows(
+        session,
+        user_id=int(user.id),
+        query=q,
+        category=category,
+        date_value=date_value,
+        limit=limit,
+    )
+    return {
+        "ok": True,
+        "files": [_serialize_document_artifact_for_user(session, row, user) for row in rows],
+    }
+
+
+@app.post("/api/files/search")
+def api_files_search_post(
+    payload: FileSearchRequest,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    rows = _search_document_artifact_rows(
+        session,
+        user_id=int(user.id),
+        query=payload.query,
+        category=payload.category,
+        date_value=payload.date,
+        limit=payload.limit,
+    )
+    return {
+        "ok": True,
+        "files": [_serialize_document_artifact_for_user(session, row, user) for row in rows],
+    }

@@ -364,6 +364,7 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordingPreparing, setRecordingPreparing] = useState(false);
+  const [recordingStopping, setRecordingStopping] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -578,19 +579,23 @@ export default function Home() {
 
   const placeholder = recordingPreparing
     ? "Preparing microphone..."
+    : recordingStopping
+      ? "Sending voice message..."
     : listening
-      ? "Recording... stop to send"
+      ? "Recording..."
       : `Ask ${assistantLabel}`;
 
   const handsFreeSummaryText = recordingPreparing && activeSurface === "live"
-    ? "Tap stop if you need to cancel."
+    ? "Preparing microphone..."
+    : recordingStopping && activeSurface === "live"
+    ? "Sending..."
     : listening && activeSurface === "live"
-      ? "Tap stop when done."
+      ? "Listening..."
       : handsFreeMode === "command"
       ? "Listening for your request…"
       : settings.handsFreeEnabled
         ? `Say "${handsFreeWakePhrase}" or tap the orb.`
-        : "Tap the orb to start. Tap stop when done.";
+        : "Hold the orb to talk.";
 
   const drawerTranslateX = drawerProgress.interpolate({
     inputRange: [0, 1],
@@ -2068,6 +2073,7 @@ export default function Home() {
     voiceRecordingStartedAtRef.current = null;
     setRecording(null);
     setRecordingPreparing(false);
+    setRecordingStopping(false);
     setListening(false);
     setActiveSurface(null);
     await resetAudioMode();
@@ -2107,6 +2113,7 @@ export default function Home() {
       recordingStartCancelledRef.current = false;
       setActiveSurface(surface);
       setRecordingPreparing(true);
+      setRecordingStopping(false);
       setListening(false);
       logVoiceTelemetry("client_voice_prepare_started", {
         route_taken: "voice_prepare",
@@ -2157,6 +2164,9 @@ export default function Home() {
       setRecording(nextRecording);
       recordingPhaseRef.current = "recording";
       setRecordingPreparing(false);
+      if (!stopWhenReadyRef.current) {
+        setRecordingStopping(false);
+      }
       setListening(true);
       const prepareDurationMs = voicePrepareStartedAtRef.current
         ? Date.now() - voicePrepareStartedAtRef.current
@@ -2209,15 +2219,26 @@ export default function Home() {
 
   async function stopAndAnalyze() {
     if (recordingPhaseRef.current === "starting") {
-      logVoiceTelemetry("client_voice_prepare_failed", {
-        route_taken: "voice_prepare",
-        voice_phase: "startup_cancelled",
-        duration_ms: voicePrepareStartedAtRef.current
-          ? Date.now() - voicePrepareStartedAtRef.current
-          : undefined,
-        error_type: "startup_cancelled",
-      });
-      await cleanupVoiceRecordingState({ cancelStartup: true });
+      if (!stopWhenReadyRef.current) {
+        logVoiceTelemetry("client_voice_release_queued", {
+          route_taken: "voice_prepare",
+          voice_phase: "stop_when_ready",
+          duration_ms: voicePrepareStartedAtRef.current
+            ? Date.now() - voicePrepareStartedAtRef.current
+            : undefined,
+        });
+      }
+      stopWhenReadyRef.current = true;
+      setRecordingPreparing(false);
+      setRecordingStopping(true);
+      return;
+    }
+
+    if (recordingPhaseRef.current === "stopping") {
+      return;
+    }
+
+    if (stopWhenReadyRef.current && recordingPhaseRef.current !== "recording") {
       return;
     }
 
@@ -2242,6 +2263,7 @@ export default function Home() {
     try {
       recordingPhaseRef.current = "stopping";
       stopWhenReadyRef.current = false;
+      setRecordingStopping(true);
       setBusy(true);
       setPendingChatTurn({
         requestId,
@@ -2296,8 +2318,8 @@ export default function Home() {
       const res = await withLocalTimeout(
         apiPostForm<BackendChatResponse | ChatHistoryItem>(
           `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
-            settings.languageMode
-          }`,
+            settings.languageMode === "en" ? "en" : "ta"
+          }&speech_language=ta-IN`,
           form,
         ),
         timeoutMs,
@@ -2379,31 +2401,29 @@ export default function Home() {
     setVoiceSheetOpen(false);
   }
 
-  async function handleQuickMicPress() {
-    if (busy) return;
-
-    if (
-      recordingPhaseRef.current === "starting" ||
-      recordingPhaseRef.current === "recording"
-    ) {
-      await stopAndAnalyze();
-      return;
-    }
-
+  async function handleQuickMicPressIn() {
+    if (busy || activeSurface === "live") return;
     await startRecording("quick");
   }
 
-  async function handleLiveOrbPress() {
-    if (busy && recordingPhaseRef.current === "idle") return;
-    if (
-      recordingPhaseRef.current === "starting" ||
-      recordingPhaseRef.current === "recording"
-    ) {
-      await stopAndAnalyze();
-      return;
-    }
+  async function handleQuickMicPressOut() {
+    if (activeSurface !== "quick" && recordingPhaseRef.current === "idle") return;
+    await stopAndAnalyze();
+  }
 
+  async function handleLiveOrbPressIn() {
+    if (busy && recordingPhaseRef.current === "idle") return;
+    if (activeSurface === "quick") return;
     await startRecording("live");
+  }
+
+  async function handleLiveOrbPressOut() {
+    if (activeSurface !== "live" && recordingPhaseRef.current === "idle") return;
+    await stopAndAnalyze();
+  }
+
+  async function handleVoiceStopPress() {
+    await stopAndAnalyze();
   }
 
   async function confirmScheduleReminder() {
@@ -2657,16 +2677,16 @@ export default function Home() {
                 </View>
               ) : null}
 
-              {activeSurface === "quick" && (recordingPreparing || listening) ? (
+              {activeSurface === "quick" && (recordingPreparing || listening || recordingStopping) ? (
                 <GlassCard style={styles.quickRecorderCard}>
                   <View style={styles.quickRecorderHeader}>
                     <View style={styles.recordingDot} />
-                    <Text style={styles.quickRecorderTitle}>{recordingPreparing ? "Preparing microphone" : "Recording voice message"}</Text>
+                    <Text style={styles.quickRecorderTitle}>{recordingStopping ? "Sending voice message" : recordingPreparing ? "Preparing microphone" : "Recording voice message"}</Text>
                   </View>
 
                   <View style={styles.quickRecorderBody}>
                     <Waveform active={listening} />
-                    <Pressable onPress={handleQuickMicPress} style={styles.stopButton}>
+                    <Pressable onPress={handleVoiceStopPress} style={styles.stopButton}>
                       <Ionicons name="stop" size={18} color={Brand.cream} />
                     </Pressable>
                   </View>
@@ -2717,20 +2737,25 @@ export default function Home() {
 
                   <View style={styles.composerInlineActions}>
                     <Pressable
-                      onPress={handleQuickMicPress}
+                      onPressIn={() => {
+                        void handleQuickMicPressIn();
+                      }}
+                      onPressOut={() => {
+                        void handleQuickMicPressOut();
+                      }}
                       disabled={busy && !listening}
                       testID="chat-mic-button"
                       accessibilityLabel="chat-mic-button"
                       accessibilityRole="button"
                       style={[
                         styles.roundAction,
-                        (recordingPreparing || listening) && activeSurface === "quick" && styles.roundActionActive,
+                        (recordingPreparing || listening || recordingStopping) && activeSurface === "quick" && styles.roundActionActive,
                         busy && !listening && styles.iconButtonDisabled,
                       ]}
                     >
                       <Ionicons
                         name={
-                          (recordingPreparing || listening) && activeSurface === "quick" ? "stop" : "mic-outline"
+                          (recordingPreparing || listening || recordingStopping) && activeSurface === "quick" ? "stop" : "mic-outline"
                         }
                         size={18}
                         color={Brand.cocoa}
@@ -2757,9 +2782,13 @@ export default function Home() {
                   </View>
                 </View>
 
-                {recordingPreparing ? (
+                {recordingStopping ? (
                   <Text style={styles.composerHintText}>
-                    Preparing microphone... tap stop to cancel
+                    Sending voice message...
+                  </Text>
+                ) : recordingPreparing ? (
+                  <Text style={styles.composerHintText}>
+                    Preparing microphone...
                   </Text>
                 ) : listening ? (
                   <Text style={styles.composerHintText}>
@@ -2965,18 +2994,25 @@ export default function Home() {
             <View pointerEvents="none" style={styles.voiceOrbGlow} />
             <Orb
               listening={listening && activeSurface === "live"}
-              onPress={handleLiveOrbPress}
+              onPressIn={() => {
+                void handleLiveOrbPressIn();
+              }}
+              onPressOut={() => {
+                void handleLiveOrbPressOut();
+              }}
               size={orbSize}
             />
 
             <Text style={styles.voiceTitle}>
-              {recordingPreparing && activeSurface === "live"
+              {recordingStopping && activeSurface === "live"
+                ? "Sending..."
+                : recordingPreparing && activeSurface === "live"
                 ? "Preparing microphone..."
                 : listening && activeSurface === "live"
                   ? "Listening..."
                   : handsFreeActive
                     ? "Hands-free ready"
-                    : "Start Talking"}
+                    : "Hold to Talk"}
             </Text>
             <Text style={styles.voiceSubtitle}>{handsFreeSummaryText}</Text>
 
@@ -2999,7 +3035,7 @@ export default function Home() {
               </Text>
             ) : null}
 
-            {(recordingPreparing || listening) && activeSurface === "live" ? (
+            {(recordingPreparing || listening || recordingStopping) && activeSurface === "live" ? (
               <View style={styles.voiceWaveWrap}>
                 <Waveform active={listening} />
               </View>
@@ -3038,7 +3074,7 @@ export default function Home() {
                 style={styles.voiceDockButtonDanger}
               >
                 <Ionicons
-                  name={(recordingPreparing || listening) && activeSurface === "live" ? "stop" : "close"}
+                  name={(recordingPreparing || listening || recordingStopping) && activeSurface === "live" ? "stop" : "close"}
                   size={16}
                   color={Brand.cream}
                 />

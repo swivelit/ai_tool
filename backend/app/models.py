@@ -204,6 +204,21 @@ class AIUsageEvent(SQLModel, table=True):
     metadata_json: str = Field(default="{}")
 
 
+class DocumentArtifact(SQLModel, table=True):
+    __tablename__ = "document_artifact"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True, foreign_key="user.id")
+    item_id: Optional[int] = Field(default=None, index=True, foreign_key="item.id")
+    title: str = Field(index=True)
+    format: str = Field(index=True)
+    category: str = Field(default="Other", index=True)
+    relative_path: str
+    source_text: str = ""
+    metadata_json: str = Field(default="{}")
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 # --------------------
 # Daily Routine (editable)
 # --------------------

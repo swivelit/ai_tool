@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from app.ai.providers.sarvam_provider import SarvamProvider
+from app.ai.providers.sarvam_provider import SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES, SarvamProvider
 from app.ai.types import AIRequest, AIRoute
 
 
@@ -107,9 +107,49 @@ def test_sarvam_stt_extracts_transcript(monkeypatch, tmp_path):
         calls.append((args, kwargs))
         return Response()
 
-    transcript = SarvamProvider(http_post=fake_post).stt_file(str(audio_file), "ta")
+    transcript = SarvamProvider(http_post=fake_post).stt_file(
+        str(audio_file),
+        "ta",
+        content_type="audio/m4a",
+        filename="audio.m4a",
+    )
 
     assert transcript == "voice hello"
     assert calls[0][1]["data"]["model"] == "saaras:v3"
     assert calls[0][1]["data"]["mode"] == "transcribe"
     assert calls[0][1]["data"]["language_code"] == "ta-IN"
+    file_tuple = calls[0][1]["files"]["file"]
+    assert len(file_tuple) == 3
+    assert file_tuple[0].endswith(".m4a")
+    assert file_tuple[2] is not None
+    assert file_tuple[2] in SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES
+
+
+def test_sarvam_stt_unknown_mobile_audio_gets_octet_stream(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    audio_file = tmp_path / "mobile-upload.bin"
+    audio_file.write_bytes(b"audio")
+    calls = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"transcript": "voice hello"}
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Response()
+
+    transcript = SarvamProvider(http_post=fake_post).stt_file(
+        str(audio_file),
+        "ta",
+        content_type=None,
+        filename="audio",
+    )
+
+    assert transcript == "voice hello"
+    file_tuple = calls[0][1]["files"]["file"]
+    assert len(file_tuple) == 3
+    assert file_tuple[2] == "application/octet-stream"

@@ -20,6 +20,21 @@ from .base import AIProvider
 
 SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
 SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
+SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES = {
+    "application/octet-stream",
+    "audio/aac",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/webm",
+}
+_MOBILE_AUDIO_UPLOAD_MIME_TYPES = {
+    "",
+    "audio/m4a",
+    "audio/mp4",
+    "audio/x-m4a",
+    "application/mp4",
+}
 
 
 class SarvamProvider(AIProvider):
@@ -97,7 +112,14 @@ class SarvamProvider(AIProvider):
             return create(model=model, messages=messages, max_tokens=max_tokens, temperature=0.2)
         raise HTTPException(status_code=503, detail="Sarvam chat client does not expose chat.completions.")
 
-    def stt_file(self, file_path: str, language: Optional[str] = None) -> str:
+    def stt_file(
+        self,
+        file_path: str,
+        language: Optional[str] = None,
+        *,
+        content_type: Optional[str] = None,
+        filename: Optional[str] = None,
+    ) -> str:
         api_key = self._api_key()
         if not api_key:
             raise HTTPException(503, "SARVAM_API_KEY is not configured.")
@@ -105,6 +127,9 @@ class SarvamProvider(AIProvider):
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 0:
             raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
 
+        safe_filename = normalize_stt_upload_filename(file_path, filename)
+        provider_content_type = normalize_stt_upload_mime_type(file_path, content_type)
+        file_size = os.path.getsize(file_path)
         normalized_language = normalize_audio_language(language)
         model = os.getenv("SARVAM_STT_MODEL", "saaras:v3").strip() or "saaras:v3"
         mode = os.getenv("SARVAM_STT_MODE", "transcribe").strip() or "transcribe"
@@ -112,13 +137,21 @@ class SarvamProvider(AIProvider):
         if normalized_language:
             form_data["language_code"] = normalized_language
         started = time.perf_counter()
+        _log_sarvam_event(
+            "sarvam_stt_upload_prepared",
+            started=started,
+            original_content_type=_clean_upload_mime_type(content_type),
+            provider_content_type=provider_content_type,
+            safe_filename=safe_filename,
+            file_size=file_size,
+        )
 
         try:
             with open(file_path, "rb") as audio_file:
                 response = self._http_post(
                     SARVAM_STT_URL,
                     headers={"api-subscription-key": api_key},
-                    files={"file": (Path(file_path).name, audio_file)},
+                    files={"file": (safe_filename, audio_file, provider_content_type)},
                     data=form_data,
                     timeout=(5, 60),
                 )
@@ -362,6 +395,32 @@ def normalize_audio_language(language: Optional[str]) -> Optional[str]:
     if value.startswith("en"):
         return "en-IN"
     return None
+
+
+def normalize_stt_upload_mime_type(file_path: str, content_type: Optional[str] = None) -> str:
+    original = _clean_upload_mime_type(content_type)
+    suffix = Path(file_path).suffix.lower()
+    if original in SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES and suffix != ".m4a":
+        return original
+    if suffix == ".m4a" or original in _MOBILE_AUDIO_UPLOAD_MIME_TYPES or original.startswith("audio/"):
+        return "application/octet-stream"
+    return "application/octet-stream"
+
+
+def normalize_stt_upload_filename(file_path: str, filename: Optional[str] = None) -> str:
+    fallback = Path(file_path).name or "audio.m4a"
+    raw_name = Path(str(filename or fallback)).name
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_name).strip("._-")
+    if not safe_name:
+        safe_name = fallback
+    if "." not in safe_name:
+        suffix = Path(file_path).suffix or ".m4a"
+        safe_name = f"{safe_name}{suffix}"
+    return safe_name
+
+
+def _clean_upload_mime_type(content_type: Optional[str] = None) -> str:
+    return str(content_type or "").split(";", 1)[0].strip().lower()
 
 
 def redact_sarvam_provider_message(message: str, api_key: str = "") -> str:
