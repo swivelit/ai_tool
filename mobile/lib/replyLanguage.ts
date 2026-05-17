@@ -1,6 +1,10 @@
-export type ReplyLanguage = "en" | "ta";
+export type ReplyLanguage =
+  | "english"
+  | "tamil"
+  | "tanglish"
+  | "auto";
 
-export const PRODUCT_DEFAULT_REPLY_LANGUAGE: ReplyLanguage = "ta";
+export const PRODUCT_DEFAULT_REPLY_LANGUAGE: ReplyLanguage = "auto";
 
 const TAMIL_SCRIPT_RE = /[\u0B80-\u0BFF]/;
 const LATIN_LETTER_RE = /[a-z]/i;
@@ -22,19 +26,40 @@ export function normalizeReplyLanguage(value: unknown): ReplyLanguage | null {
     .replace(/[_-]+/g, " ");
 
   if (!normalized) return null;
-  if (normalized === "en" || normalized === "english") return "en";
-  if (normalized === "ta" || normalized === "tamil" || normalized === "தமிழ்") {
-    return "ta";
+  if (normalized === "en" || normalized === "english") {
+    return "english";
+  }
+
+  if (
+    normalized === "ta" ||
+    normalized === "tamil" ||
+    normalized === "தமிழ்"
+  ) {
+    return "tamil";
+  }
+
+  if (
+    normalized === "tanglish" ||
+    normalized === "mixed"
+  ) {
+    return "tanglish";
+  }
+
+  if (
+    normalized === "auto" ||
+    normalized === "detect"
+  ) {
+    return "auto";
   }
   return null;
-}
+  }
 
 export function detectExplicitReplyLanguage(message: unknown): ReplyLanguage | null {
   const text = String(message || "").trim();
   if (!text) return null;
 
-  if (ENGLISH_REQUEST_RE.test(text)) return "en";
-  if (TAMIL_REQUEST_RE.test(text)) return "ta";
+  if (ENGLISH_REQUEST_RE.test(text)) return "english";
+if (TAMIL_REQUEST_RE.test(text)) return "tamil";
   return null;
 }
 
@@ -45,8 +70,8 @@ export function detectMessageReplyLanguage(message: unknown): ReplyLanguage | nu
   const explicit = detectExplicitReplyLanguage(text);
   if (explicit) return explicit;
 
-  if (TAMIL_SCRIPT_RE.test(text)) return "ta";
-  if (TANGLISH_RE.test(text)) return null;
+  if (TAMIL_SCRIPT_RE.test(text)) return "tamil";
+  if (TANGLISH_RE.test(text)) return "tanglish";
 
   const latinLetters = (text.match(/[a-z]/gi) || []).length;
   const nonLatinLetters = (text.match(NON_LATIN_LETTER_RE) || []).filter(
@@ -54,14 +79,14 @@ export function detectMessageReplyLanguage(message: unknown): ReplyLanguage | nu
   ).length;
 
   if (latinLetters > 0 && latinLetters >= Math.max(3, nonLatinLetters * 2)) {
-    return "en";
+    return "english";
   }
 
   if (LATIN_LETTER_RE.test(text) && !nonLatinLetters) {
-    return "en";
+    return "english";
   }
 
-  return null;
+  return "auto";
 }
 
 export function resolveReplyLanguage(opts: {

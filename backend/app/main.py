@@ -415,11 +415,20 @@ def _get_safety_filter() -> Optional[BehaviouralRAGFilter]:
 
 def _normalize_reply_language(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
+
     if normalized in {"en", "english"}:
-        return "en"
-    if normalized in {"ta", "tamil", "mixed", "tanglish"}:
-        return "ta"
-    return "ta"
+        return "english"
+
+    if normalized in {"ta", "tamil"}:
+        return "tamil"
+
+    if normalized in {"mixed", "tanglish"}:
+        return "tanglish"
+
+    if normalized in {"auto", "detect"}:
+        return "auto"
+
+    return "auto"
 
 
 def _normalize_lookup_text(text: str) -> str:

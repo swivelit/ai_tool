@@ -29,7 +29,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-
+import { ReplyLanguage } from "@/lib/replyLanguage";
 import { GlassCard } from "@/components/Glass";
 import { Orb } from "@/components/Orb";
 import { Waveform } from "@/components/Waveform";
@@ -309,9 +309,12 @@ export default function Home() {
   const { signOutUser } = useAuth();
 
   const [text, setText] = useState("");
+  const [selectedLanguage, setSelectedLanguage] =
+  useState<"english" | "tamil" | "tanglish" | "auto">("auto");
   const [composerInputHeight, setComposerInputHeight] =
     useState(MIN_INPUT_HEIGHT);
   const [composerHeight, setComposerHeight] = useState(0);
+  
   const [keyboardState, setKeyboardState] = useState({
     visible: false,
     height: 0,
@@ -1658,7 +1661,7 @@ export default function Home() {
         apiPost<BackendChatResponse>("/api/chat", {
           user_id: profile.userId,
           message: cleaned,
-          reply_language: settings.languageMode,
+          reply_language: selectedLanguage,
         }),
         timeoutMs,
         {
@@ -1836,8 +1839,7 @@ export default function Home() {
       const timeoutMs = await getChatTurnTimeoutMs("voice");
       const res = await withLocalTimeout(
         apiPostForm<BackendChatResponse | ChatHistoryItem>(
-          `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
-            settings.languageMode
+          `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${selectedLanguage}
           }`,
           form,
         ),

@@ -26,6 +26,12 @@ import {
   resolveReplyLanguage,
 } from "./replyLanguage";
 
+export type SupportedReplyLanguage =
+  | "english"
+  | "tamil"
+  | "tanglish"
+  | "auto";
+
 const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, any>;
 
 export class ApiError extends Error {

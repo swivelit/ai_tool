@@ -121,6 +121,29 @@ OPENAI_API_KEY = _env_str("OPENAI_API_KEY", "")
 SARVAM_API_KEY = _env_str("SARVAM_API_KEY", "")
 OPENAI_MODEL = _env_str("OPENAI_MODEL", "gpt-4.1-mini")
 OPENAI_TIMEOUT = _env_int("OPENAI_TIMEOUT", 60, minimum=5)
+SUPPORTED_REPLY_LANGUAGES = [
+    "english",
+    "tamil",
+    "tanglish",
+    "auto",
+]
+
+DEFAULT_REPLY_LANGUAGE = _env_str(
+    "DEFAULT_REPLY_LANGUAGE",
+    "auto",
+)
+
+ENABLE_LANGUAGE_AUTODETECT = _env_bool(
+    "ENABLE_LANGUAGE_AUTODETECT",
+    True,
+)
+
+LANGUAGE_CODE_MAP = {
+    "english": "en-IN",
+    "tamil": "ta-IN",
+    "tanglish": "ta-IN",
+    "auto": "auto",
+}
 OPENAI_MAX_RETRIES = _env_int("OPENAI_MAX_RETRIES", 3, minimum=1)
 OPENAI_BACKOFF_BASE_SECONDS = _env_float("OPENAI_BACKOFF_BASE_SECONDS", 0.8, minimum=0.1)
 OPENAI_CACHE_SIZE = _env_int("OPENAI_CACHE_SIZE", 128, minimum=8)

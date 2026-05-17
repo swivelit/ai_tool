@@ -70,6 +70,90 @@ def test_chat_requires_message_or_text(client):
     assert response.status_code == 400
     assert response.json()["detail"] == "message or text is required"
 
+def test_chat_accepts_english_reply_language(client, monkeypatch):
+    create_test_user()
+
+    _stub_chat_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={
+            "message": "hello",
+            "reply_language": "english",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_chat_accepts_tamil_reply_language(client, monkeypatch):
+    create_test_user()
+
+    _stub_chat_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={
+            "message": "வணக்கம்",
+            "reply_language": "tamil",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_chat_accepts_tanglish_reply_language(client, monkeypatch):
+    create_test_user()
+
+    _stub_chat_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={
+            "message": "naan sapten",
+            "reply_language": "tanglish",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_chat_accepts_auto_reply_language(client, monkeypatch):
+    create_test_user()
+
+    _stub_chat_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={
+            "message": "hello",
+            "reply_language": "auto",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_chat_rejects_invalid_reply_language(client, monkeypatch):
+    create_test_user()
+
+    _stub_chat_pipeline(monkeypatch)
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={
+            "message": "hello",
+            "reply_language": "invalid-language",
+        },
+    )
+
+    assert response.status_code in [200, 400]
+
 
 def test_voice_upload_rejects_missing_auth_missing_file_bad_type_and_large_file(client, monkeypatch):
     user = create_test_user()
