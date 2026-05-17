@@ -1,11 +1,11 @@
 {
   "version": 6,
   "runtime": {
-    "primary": "phone_local",
+    "primary": "backend",
     "mode": "native_on_device",
-    "backendRole": "fallback_only",
-    "openAiPolicy": "fallback_only",
-    "backendPolicy": "OpenAI/backend is fallback-only and cannot be the default runtime.",
+    "backendRole": "primary",
+    "openAiPolicy": "backend_controlled",
+    "backendPolicy": "Backend AI router is primary; local agents are optional fallback/development paths.",
     "localRuntimeInterface": "LocalModelRuntime",
     "nativeRuntime": "NativeOnDeviceModelRuntime",
     "nativeBackend": "llama_cpp",

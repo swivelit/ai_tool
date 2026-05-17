@@ -644,14 +644,13 @@ describe("API client contracts", () => {
     expect(payload.meta.stt.endpoint).toBe("JaiOnDeviceModel.transcribeAudio");
   });
 
-  it("routes normal chat into the local agent pipeline by default before backend", async () => {
+  it("posts normal chat to the backend by default", async () => {
     mockCachedProfile(null);
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
-            USE_LOCAL_CHAT_PIPELINE: false,
           },
         },
       },
@@ -690,17 +689,11 @@ describe("API client contracts", () => {
       reply_language: "en",
     });
 
-    expect(getClientRoutingDefaults().chat).toBe("local");
-    expect(runLocalAssistantTurn).toHaveBeenCalledTimes(1);
-    expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 7,
-      message: "Explain recursion",
-      replyLanguage: "en",
-      userAllowedCloudFallback: true,
-    }));
-    expect(backendChatCalls(fetchMock)).toHaveLength(0);
-    expect(payload.assistant.text).toBe("Local answer first.");
-    expect(payload.meta.source).toBe("local_chat_proxy");
+    expect(getClientRoutingDefaults().chat).toBe("backend");
+    expect(getClientRoutingDefaults().backendRole).toBe("primary");
+    expect(runLocalAssistantTurn).not.toHaveBeenCalled();
+    expect(backendChatCalls(fetchMock)).toHaveLength(1);
+    expect(payload.assistant.text).toBe("Backend should not be called.");
   });
 
   it("answers simple chat through the local quick-reply fast path", async () => {
@@ -709,6 +702,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -756,6 +750,7 @@ describe("API client contracts", () => {
           version: "9.8.7",
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: false,
           },
         },
       },
@@ -781,7 +776,7 @@ describe("API client contracts", () => {
     expect(startup).toBeTruthy();
     expect(startup.api_base).toBe("https://api.example.test");
     expect(startup.app_version).toBe("9.8.7");
-    expect(startup.chat_routing).toBe("local");
+    expect(startup.chat_routing).toBe("backend");
     expect(startup.voice_routing).toBe("backend");
   });
 
@@ -791,6 +786,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -836,6 +832,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -872,6 +869,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -925,6 +923,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -969,6 +968,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1014,6 +1014,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1064,6 +1065,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1117,6 +1119,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1165,6 +1168,7 @@ describe("API client contracts", () => {
         expoConfig: {
           extra: {
             API_BASE: "https://api.example.test",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1290,6 +1294,7 @@ describe("API client contracts", () => {
           extra: {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1350,6 +1355,7 @@ describe("API client contracts", () => {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
             LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1404,6 +1410,7 @@ describe("API client contracts", () => {
           extra: {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1459,6 +1466,7 @@ describe("API client contracts", () => {
           extra: {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1536,6 +1544,7 @@ describe("API client contracts", () => {
           extra: {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },
@@ -1584,6 +1593,7 @@ describe("API client contracts", () => {
           extra: {
             API_BASE: "https://api.example.test",
             LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+            USE_LOCAL_CHAT_PIPELINE: true,
           },
         },
       },

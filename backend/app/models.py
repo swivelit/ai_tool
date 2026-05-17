@@ -181,6 +181,29 @@ class OpenAIUsageLog(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class AIUsageEvent(SQLModel, table=True):
+    __tablename__ = "ai_usage_events"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    request_id: Optional[str] = Field(default=None, index=True)
+    user_id_hash: Optional[str] = Field(default=None, index=True)
+    provider: str = Field(index=True)
+    model: Optional[str] = Field(default=None, index=True)
+    route: str = Field(index=True)
+    intent: str = Field(index=True)
+    language: str = Field(index=True)
+    input_tokens: int = Field(default=0)
+    output_tokens: int = Field(default=0)
+    audio_seconds: float = Field(default=0.0)
+    characters: int = Field(default=0)
+    estimated_cost_amount: float = Field(default=0.0)
+    estimated_cost_currency: str = Field(default="")
+    cache_hit: bool = Field(default=False, index=True)
+    latency_ms: Optional[int] = Field(default=None)
+    metadata_json: str = Field(default="{}")
+
+
 # --------------------
 # Daily Routine (editable)
 # --------------------

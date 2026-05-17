@@ -3,10 +3,10 @@
   "seedVersion": "2026-04-27-native-module-scaffolded",
   "description": "Phone-local agent workspace seed manifest",
   "architecture": {
-    "primaryRuntime": "phone_local_agents",
-    "backendRole": "fallback_only",
-    "openAiPolicy": "fallback_only",
-    "stableContract": "/api/chat remains unchanged; production uses native_on_device. /chat/completions and /embeddings are development-only local adapter contracts."
+    "primaryRuntime": "backend_ai_router",
+    "backendRole": "primary",
+    "openAiPolicy": "backend_controlled",
+    "stableContract": "/api/chat remains unchanged; backend AI router is primary. /chat/completions and /embeddings remain development-only local adapter contracts."
   },
   "checkedInSeedFolders": [
     "config",
@@ -43,13 +43,13 @@
     "rag/seed/local_rag_synonyms.csv"
   ],
   "runtime": {
-    "primary": "phone_local",
+    "primary": "backend",
     "mode": "native_on_device",
     "productionMode": "native_on_device",
     "developmentMode": "local_adapter",
-    "backendRole": "fallback_only",
-    "backendPolicy": "fallback_only",
-    "openAiPolicy": "fallback_only",
+    "backendRole": "primary",
+    "backendPolicy": "backend_ai_router_primary",
+    "openAiPolicy": "backend_controlled",
     "localRuntimeInterface": "LocalModelRuntime",
     "nativeRuntime": "NativeOnDeviceModelRuntime",
     "nativeImplementationStatus": "native_build_verified_by_native_verify_llama_llama_cpp_linkable_production_gguf_runtime_target_device_gguf_generation_required",

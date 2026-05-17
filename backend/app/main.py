@@ -81,6 +81,20 @@ from .global_qa_cache import (
 )
 from .openai_model_router import OpenAIConfigurationError, OpenAIModelRouter, record_openai_usage
 from .openai_tracked import OpenAIBudgetExceededError, get_tracked_chat_completion_metadata, tracked_chat_completion
+from .ai.budget import enforce_free_voice_quota, enforce_provider_budget
+from .ai.orchestrator import run_text_turn
+from .ai.providers.sarvam_provider import (
+    SarvamProvider,
+    estimate_stt_cost,
+    estimate_tts_cost,
+    extract_sarvam_transcript,
+    normalize_audio_language,
+    redact_sarvam_provider_message,
+    sarvam_provider_error_detail,
+)
+from .ai.response_adapter import ai_response_to_pipeline
+from .ai.types import AIProviderResponse, AIRequest
+from .ai.usage import record_ai_usage_event
 
 
 bootstrap_observability()
@@ -390,6 +404,7 @@ STAGE_REMODELER: Optional[EnglishRemodeler] = None
 STAGE_TRANSLATOR: Optional[StageTranslator] = None
 AGENTIC_SERVICE: Optional[AgenticService] = None
 SAFETY_FILTER: Optional[BehaviouralRAGFilter] = None
+SARVAM_PROVIDER: Optional[SarvamProvider] = None
 STAGE_CACHE = ThreadSafeLRUCache(max_size=128)
 
 
@@ -530,6 +545,20 @@ def _get_safety_filter() -> Optional[BehaviouralRAGFilter]:
             return None
 
     return SAFETY_FILTER
+
+
+def _get_sarvam_provider() -> SarvamProvider:
+    global SARVAM_PROVIDER
+    SARVAM_PROVIDER = SarvamProvider(http_post=requests.post, api_key_getter=_sarvam_api_key)
+    return SARVAM_PROVIDER
+
+
+def _ai_router_enabled() -> bool:
+    return os.getenv("AI_ROUTER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _legacy_pipeline_enabled() -> bool:
+    return os.getenv("AI_LEGACY_PIPELINE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _normalize_reply_language(value: Optional[str]) -> str:
@@ -1241,6 +1270,7 @@ class ChatAPIRequest(BaseModel):
     client_fallback_reason: Optional[str] = None
     client_local_budget_ms: Optional[int] = None
     client_original_route: Optional[str] = None
+    admin_email: Optional[str] = None
 
 
 class ClientTurnLogRequest(BaseModel):
@@ -2024,6 +2054,9 @@ def _normalized_pipeline_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "model_used": result.get("model_used"),
         "model_tier": result.get("model_tier"),
         "model_reason": result.get("model_reason"),
+        "provider": result.get("provider"),
+        "cost_estimate": result.get("cost_estimate"),
+        "cost_currency": result.get("cost_currency"),
         "openai_usage_tracked": bool(result.get("openai_usage_tracked")),
         "fallback_reason": result.get("fallback_reason"),
         "client_fallback_reason": result.get("client_fallback_reason"),
@@ -2325,121 +2358,7 @@ def _extract_sarvam_transcript(payload: Any) -> str:
 
 
 def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> str:
-    api_key = _sarvam_api_key()
-    if not api_key:
-        raise HTTPException(503, "SARVAM_API_KEY is not configured.")
-
-    normalized_language = _normalize_audio_language(language)
-    model = os.getenv("SARVAM_STT_MODEL", "saaras:v3").strip() or "saaras:v3"
-    mode = os.getenv("SARVAM_STT_MODE", "transcribe").strip() or "transcribe"
-    started = time.perf_counter()
-
-    try:
-        if not os.path.exists(file_path) or os.path.getsize(file_path) <= 0:
-            raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
-
-        form_data: Dict[str, str] = {
-            "model": model,
-            "mode": mode,
-        }
-        if normalized_language:
-            form_data["language_code"] = normalized_language
-
-        logger.info(
-            "sarvam_stt_started",
-            extra=chat_log_payload(
-                event="sarvam_stt_started",
-                model=model,
-                mode=mode,
-                language_code=normalized_language,
-            ),
-        )
-        with open(file_path, "rb") as audio_file:
-            response = requests.post(
-                SARVAM_STT_URL,
-                headers={"api-subscription-key": api_key},
-                files={"file": (Path(file_path).name, audio_file)},
-                data=form_data,
-                timeout=(5, 60),
-            )
-    except HTTPException:
-        raise
-    except requests.Timeout as exc:
-        logger.info(
-            "sarvam_stt_failed",
-            extra=chat_log_payload(
-                event="sarvam_stt_failed",
-                status_code=504,
-                safe_provider_error="timeout",
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            ),
-        )
-        raise HTTPException(504, "STT provider timed out.") from exc
-    except requests.RequestException as exc:
-        detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
-        logger.info(
-            "sarvam_stt_failed",
-            extra=chat_log_payload(
-                event="sarvam_stt_failed",
-                status_code=502,
-                safe_provider_error=detail,
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            ),
-        )
-        raise HTTPException(502, f"STT provider error: {detail}") from exc
-
-    if response.status_code != 200:
-        safe_detail = _sarvam_provider_error_detail(response, "STT provider")
-        logger.info(
-            "sarvam_stt_failed",
-            extra=chat_log_payload(
-                event="sarvam_stt_failed",
-                status_code=response.status_code,
-                safe_provider_error=safe_detail,
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            ),
-        )
-        raise HTTPException(
-            response.status_code,
-            safe_detail,
-        )
-
-    try:
-        response_payload = response.json()
-    except ValueError as exc:
-        logger.info(
-            "sarvam_stt_failed",
-            extra=chat_log_payload(
-                event="sarvam_stt_failed",
-                status_code=502,
-                safe_provider_error="invalid_json",
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            ),
-        )
-        raise HTTPException(502, "STT provider returned invalid JSON.") from exc
-
-    text = _extract_sarvam_transcript(response_payload)
-    if not text:
-        logger.info(
-            "sarvam_stt_failed",
-            extra=chat_log_payload(
-                event="sarvam_stt_failed",
-                status_code=400,
-                safe_provider_error="empty_transcript",
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            ),
-        )
-        raise HTTPException(400, "Failed to transcribe audio")
-    logger.info(
-        "sarvam_stt_completed",
-        extra=chat_log_payload(
-            event="sarvam_stt_completed",
-            status_code=response.status_code,
-            transcript=text,
-            duration_ms=round((time.perf_counter() - started) * 1000, 2),
-        ),
-    )
-    return text
+    return _get_sarvam_provider().stt_file(file_path, language)
 
 
 @app.post("/parse-datetime")
@@ -3359,7 +3278,84 @@ def _run_chat_logic(
     return result
 
 
+def _metadata_for_ai_response(text: str, response: AIProviderResponse) -> Dict[str, Any]:
+    clean_text = " ".join(str(text or "").strip().split())
+    intent = "assistant"
+    if response.intent in {"reminder", "routine", "profile", "settings"}:
+        intent = response.intent
+    return {
+        "intent": intent,
+        "category": "Other",
+        "datetime": None,
+        "title": (clean_text[:60] + "...") if len(clean_text) > 60 else clean_text or "Chat",
+        "details": response.text,
+    }
+
+
+def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
+    text = _resolve_chat_text(payload)
+    request_id = payload.request_id or get_request_id()
+    ai_response = run_text_turn(
+        session,
+        AIRequest(
+            user_id=payload.user_id,
+            message=text,
+            reply_language=payload.reply_language,
+            channel="text",
+            request_id=request_id,
+            metadata={
+                "admin_email": getattr(payload, "admin_email", None),
+                "client_fallback_reason": payload.client_fallback_reason,
+                "client_local_budget_ms": payload.client_local_budget_ms,
+                "client_original_route": payload.client_original_route,
+            },
+        ),
+        existing_context={
+            "local_rag_service": LOCAL_RAG_SERVICE,
+            "sarvam_provider": _get_sarvam_provider(),
+        },
+    )
+    pipeline_result = ai_response_to_pipeline(ai_response)
+    item, meta, normalized_pipeline = _save_item_from_pipeline(
+        session,
+        user_id=payload.user_id,
+        source="text",
+        raw_text=text,
+        transcript=None,
+        pipeline_result=pipeline_result,
+        reply_language=payload.reply_language,
+        metadata_override=_metadata_for_ai_response(text, ai_response),
+        skip_expensive_side_effects=True,
+    )
+    response = _build_chat_response(item, meta, normalized_pipeline)
+    response_meta = response.get("meta") if isinstance(response, dict) else {}
+    if isinstance(response_meta, dict):
+        response_meta.setdefault("request_id", request_id)
+        response_meta.setdefault("route", ai_response.route)
+        response_meta.setdefault("source", ai_response.provider)
+        response_meta.setdefault("provider", ai_response.provider)
+        response_meta.setdefault("model_used", ai_response.model)
+        response_meta.setdefault("model_tier", normalized_pipeline.get("model_tier"))
+        response_meta.setdefault("ai_router_enabled", True)
+        response_meta.setdefault("cost_estimate", ai_response.estimated_cost_amount)
+        response_meta.setdefault("cost_currency", ai_response.estimated_cost_currency)
+        if payload.client_fallback_reason:
+            response_meta.setdefault("fallback_reason", payload.client_fallback_reason)
+            response_meta.setdefault("client_fallback_reason", payload.client_fallback_reason)
+        if payload.client_local_budget_ms is not None:
+            response_meta.setdefault("client_local_budget_ms", payload.client_local_budget_ms)
+        if payload.client_original_route:
+            response_meta.setdefault("original_route", payload.client_original_route)
+            response_meta.setdefault("client_original_route", payload.client_original_route)
+    return response
+
+
 def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
+    if _ai_router_enabled():
+        return _run_ai_router_chat_request(session, payload)
+    if not _legacy_pipeline_enabled():
+        raise HTTPException(503, "AI router is disabled and the legacy pipeline is not enabled.")
+
     text = _resolve_chat_text(payload)
     stage_timings: Dict[str, Any] = {}
     pipeline_result = _run_chat_logic(session, payload, text, stage_timings)
@@ -3753,7 +3749,13 @@ def api_chat(
     auth_user: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth_user)
-    payload = payload.model_copy(update={"user_id": int(user.id)})
+    payload = payload.model_copy(
+        update={
+            "user_id": int(user.id),
+            "reply_language": payload.reply_language or getattr(user, "reply_language", None),
+            "admin_email": auth_user.email,
+        }
+    )
     text = _resolve_chat_text(payload)
     started = time.perf_counter()
     set_request_context(request_id=payload.request_id or get_request_id() or new_request_id(), user_id=str(user.id))
@@ -3937,7 +3939,13 @@ async def api_chat_stream(
     auth_user: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth_user)
-    payload = payload.model_copy(update={"user_id": int(user.id)})
+    payload = payload.model_copy(
+        update={
+            "user_id": int(user.id),
+            "reply_language": payload.reply_language or getattr(user, "reply_language", None),
+            "admin_email": auth_user.email,
+        }
+    )
     chunk_size = max(12, int(os.getenv("STREAM_CHUNK_SIZE", "32") or 32))
 
     async def event_generator():
@@ -4020,142 +4028,57 @@ def get_feature_flags():
 @app.post("/api/tts")
 def api_tts(
     payload: TTSRequest,
+    session: Session = Depends(get_session),
     auth_user: AuthUser = Depends(get_current_user),
 ):
-    api_key = _sarvam_api_key()
-    if not api_key:
-        raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
-
     text = str(payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required.")
-
-    headers = {
-        "api-subscription-key": api_key,
-    }
-
+    user = get_owned_user(session, auth_user)
+    enforce_provider_budget(session, "sarvam", currency="INR")
     started = time.perf_counter()
-    req_payload = {
-        "text": text,
-        "target_language_code": (
-            payload.target_language_code
-            or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN")
-            or "ta-IN"
-        ),
-        "speaker": payload.speaker or os.getenv("SARVAM_TTS_SPEAKER", "shubh") or "shubh",
-        "model": os.getenv("SARVAM_TTS_MODEL", "bulbul:v3") or "bulbul:v3",
-        "pace": 0.85,
-    }
+    premium = str(os.getenv("SARVAM_TTS_PREMIUM", "false")).strip().lower() in {"1", "true", "yes", "on"}
+    model = (
+        os.getenv("SARVAM_TTS_MODEL_PREMIUM", "bulbul:v3")
+        if premium
+        else os.getenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    ).strip() or ("bulbul:v3" if premium else "bulbul:v2")
     logger.info(
         "tts_started",
         extra=chat_log_payload(
             event="tts_started",
-            target_language_code=req_payload["target_language_code"],
-            speaker=req_payload["speaker"],
-            model=req_payload["model"],
+            target_language_code=payload.target_language_code or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN") or "ta-IN",
+            speaker=payload.speaker or os.getenv("SARVAM_TTS_SPEAKER", "shubh") or "shubh",
+            model=model,
             text=text,
         ),
     )
-
-    try:
-        response = requests.post(
-            SARVAM_TTS_URL,
-            headers=headers,
-            json=req_payload,
-            timeout=(5, 30),
-        )
-    except requests.Timeout:
-        logger.info(
-            "tts_failed",
-            extra=chat_log_payload(
-                event="tts_failed",
-                status_code=504,
-                safe_provider_error="timeout",
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            ),
-        )
-        raise HTTPException(status_code=504, detail="TTS provider timed out.")
-    except requests.RequestException as exc:
-        detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
-        logger.info(
-            "tts_failed",
-            extra=chat_log_payload(
-                event="tts_failed",
-                status_code=502,
-                safe_provider_error=detail,
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            ),
-        )
-        raise HTTPException(status_code=502, detail=f"TTS provider error: {detail}")
-    if response.status_code in [422, 400]:
-        legacy_payload = {
-            **req_payload,
-            "inputs": [text],
-        }
-        legacy_payload.pop("text", None)
-        try:
-            response = requests.post(
-                SARVAM_TTS_URL,
-                headers=headers,
-                json=legacy_payload,
-                timeout=(5, 30),
-            )
-        except requests.Timeout:
-            logger.info(
-                "tts_failed",
-                extra=chat_log_payload(
-                    event="tts_failed",
-                    status_code=504,
-                    safe_provider_error="retry_timeout",
-                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
-                ),
-            )
-            raise HTTPException(status_code=504, detail="TTS retry timed out.")
-        except requests.RequestException as exc:
-            detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
-            logger.info(
-                "tts_failed",
-                extra=chat_log_payload(
-                    event="tts_failed",
-                    status_code=502,
-                    safe_provider_error=detail,
-                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
-                ),
-            )
-            raise HTTPException(status_code=502, detail=f"TTS retry failed: {detail}")
-
-    if response.status_code == 200:
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise HTTPException(status_code=502, detail="TTS provider returned invalid JSON.") from exc
-        if isinstance(data, dict) and isinstance(data.get("audios"), list) and len(data["audios"]) > 0:
-            logger.info(
-                "tts_completed",
-                extra=chat_log_payload(
-                    event="tts_completed",
-                    audio_count=len(data["audios"]),
-                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
-                ),
-            )
-            return {"audio_base64": data["audios"][0]}
-
-        raise HTTPException(status_code=502, detail="TTS provider response did not contain audio.")
-
-    safe_detail = _sarvam_provider_error_detail(response, "TTS provider")
-    logger.info(
-        "tts_failed",
-        extra=chat_log_payload(
-            event="tts_failed",
-            status_code=response.status_code,
-            safe_provider_error=safe_detail,
-            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+    audio_base64 = _get_sarvam_provider().tts(
+        text,
+        target_language_code=payload.target_language_code,
+        speaker=payload.speaker,
+        premium=premium,
+    )
+    record_ai_usage_event(
+        session,
+        AIProviderResponse(
+            text="",
+            provider="sarvam",
+            model=model,
+            route="sarvam_tts",
+            reason="tts_endpoint",
+            language=str(payload.target_language_code or "ta-IN"),
+            intent="tts",
+            characters=len(text),
+            estimated_cost_amount=estimate_tts_cost(text, model),
+            estimated_cost_currency="INR",
         ),
+        user_id=int(user.id),
+        request_id=get_request_id(),
+        latency_ms=int(round((time.perf_counter() - started) * 1000)),
+        metadata={"text_length": len(text)},
     )
-    raise HTTPException(
-        status_code=response.status_code,
-        detail=safe_detail,
-    )
+    return {"audio_base64": audio_base64}
 
 
 @app.post("/users/{user_id}/questionnaire")
@@ -4367,6 +4290,7 @@ async def _transcribe_and_analyze_upload(
     if user_id is not None:
         assert_owner(int(user_id), user)
     set_request_context(user_id=str(user.id))
+    reply_language = reply_language or getattr(user, "reply_language", None)
 
     content_type = str(file.content_type or "").split(";")[0].strip().lower()
     filename = file.filename or "audio.m4a"
@@ -4386,6 +4310,8 @@ async def _transcribe_and_analyze_upload(
     )
     if len(upload_bytes) <= 0:
         raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
+    enforce_free_voice_quota(session, int(user.id), additional_seconds=0.0, admin_email=auth_user.email)
+    enforce_provider_budget(session, "sarvam", currency="INR")
     suffix = os.path.splitext(file.filename or "")[-1] or ".m4a"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(upload_bytes)
@@ -4393,13 +4319,58 @@ async def _transcribe_and_analyze_upload(
 
     try:
         transcript_text = _transcribe_audio_file(tmp_path, speech_language)
-
-        pipeline_result = _run_agentic_or_pipeline(
+        record_ai_usage_event(
             session,
-            int(user.id),
-            transcript_text,
-            reply_language,
+            AIProviderResponse(
+                text=transcript_text,
+                provider="sarvam",
+                model=os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
+                route="sarvam_stt",
+                reason="voice_upload_stt",
+                language=normalize_audio_language(speech_language) or "auto",
+                intent="stt",
+                audio_seconds=0.0,
+                characters=len(transcript_text),
+                estimated_cost_amount=estimate_stt_cost(0.0),
+                estimated_cost_currency="INR",
+            ),
+            user_id=int(user.id),
+            request_id=get_request_id(),
+            latency_ms=int(round((time.perf_counter() - started) * 1000)),
+            metadata={"file_size": len(upload_bytes), "content_type": content_type, "filename": filename},
         )
+
+        use_ai_router = _ai_router_enabled()
+        if use_ai_router:
+            ai_response = run_text_turn(
+                session,
+                AIRequest(
+                    user_id=int(user.id),
+                    message=transcript_text,
+                    reply_language=reply_language,
+                    channel="voice",
+                    request_id=get_request_id(),
+                    metadata={"admin_email": auth_user.email, "file_size": len(upload_bytes)},
+                ),
+                existing_context={
+                    "local_rag_service": LOCAL_RAG_SERVICE,
+                    "sarvam_provider": _get_sarvam_provider(),
+                },
+            )
+            pipeline_result = ai_response_to_pipeline(ai_response)
+            metadata_override = _metadata_for_ai_response(transcript_text, ai_response)
+            skip_expensive_side_effects = True
+        elif _legacy_pipeline_enabled():
+            pipeline_result = _run_agentic_or_pipeline(
+                session,
+                int(user.id),
+                transcript_text,
+                reply_language,
+            )
+            metadata_override = None
+            skip_expensive_side_effects = False
+        else:
+            raise HTTPException(503, "AI router is disabled and the legacy pipeline is not enabled.")
 
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
@@ -4409,8 +4380,17 @@ async def _transcribe_and_analyze_upload(
             transcript=transcript_text,
             pipeline_result=pipeline_result,
             reply_language=reply_language,
+            metadata_override=metadata_override,
+            skip_expensive_side_effects=skip_expensive_side_effects,
         )
         response = _build_chat_response(item, meta, normalized_pipeline)
+        response_meta = response.get("meta") if isinstance(response, dict) else {}
+        if isinstance(response_meta, dict) and use_ai_router:
+            response_meta.setdefault("provider", normalized_pipeline.get("provider"))
+            response_meta.setdefault("model_used", normalized_pipeline.get("model_used"))
+            response_meta.setdefault("model_tier", normalized_pipeline.get("model_tier"))
+            response_meta.setdefault("route", normalized_pipeline.get("route_taken"))
+            response_meta.setdefault("ai_router_enabled", True)
         if CHAT_TURN_SUMMARY_LOGS_ENABLED:
             assistant = response.get("assistant") if isinstance(response, dict) else {}
             answer = ""

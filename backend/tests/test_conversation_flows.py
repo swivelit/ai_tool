@@ -12,6 +12,12 @@ from app.models import Item, QACache
 from conftest import auth_headers, create_test_user
 
 
+@pytest.fixture(autouse=True)
+def legacy_pipeline_default(monkeypatch):
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "false")
+    monkeypatch.setenv("AI_LEGACY_PIPELINE_ENABLED", "true")
+
+
 @pytest.fixture()
 def pipeline_stub(monkeypatch):
     # Keep chat-flow tests deterministic and offline. Without this, greetings can

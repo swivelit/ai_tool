@@ -11,6 +11,7 @@ import app.main as main_module
 import app.observability as observability
 from app.database import SessionLocal
 from app.models import Conversation, Item, QACache, RagEmbedding
+from app.ai.types import AIProviderResponse
 from conftest import auth_headers, create_test_user
 
 
@@ -22,6 +23,8 @@ def _stub_chat_pipeline(
     title: str = "Assistant",
     datetime: str | None = None,
 ):
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "false")
+    monkeypatch.setenv("AI_LEGACY_PIPELINE_ENABLED", "true")
     monkeypatch.setattr(
         main_module,
         "run_orchestrator",
@@ -77,6 +80,77 @@ def test_chat_requires_message_or_text(client):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "message or text is required"
+
+
+def test_chat_contract_uses_ai_router_when_enabled(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        assert ai_request.message == "What is a compiler?"
+        return AIProviderResponse(
+            text="A compiler translates source code into another form.",
+            provider="openai",
+            model="gpt-5-nano",
+            route="openai_general",
+            reason="unit_test",
+            language="en",
+            intent="general",
+            estimated_cost_amount=0.0001,
+            estimated_cost_currency="USD",
+        )
+
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        "/api/chat",
+        headers=headers,
+        json={"message": "What is a compiler?", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload.keys()) == {"ok", "item", "assistant", "pipeline", "meta"}
+    assert payload["assistant"]["text"].startswith("A compiler")
+    assert payload["pipeline"]["provider"] == "openai"
+    assert payload["meta"]["provider"] == "openai"
+    assert payload["meta"]["model_used"] == "gpt-5-nano"
+    assert payload["meta"]["ai_router_enabled"] is True
+
+
+def test_voice_contract_uses_sarvam_stt_and_ai_router(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    monkeypatch.setattr(main_module, "_transcribe_audio_file", lambda *args, **kwargs: "voice hello")
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        assert ai_request.channel == "voice"
+        assert ai_request.message == "voice hello"
+        return AIProviderResponse(
+            text="Voice answer",
+            provider="sarvam",
+            model="sarvam-30b",
+            route="sarvam_general",
+            reason="unit_test",
+            language="en",
+            intent="general",
+        )
+
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
+        headers=headers,
+        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["item"]["raw_text"] == "voice hello"
+    assert payload["assistant"]["text"] == "Voice answer"
+    assert payload["meta"]["provider"] == "sarvam"
 
 
 def test_observability_config_endpoint(client):
@@ -428,6 +502,8 @@ def test_client_turn_log_emits_client_turn_summary(client, caplog):
 
 
 def test_local_timeout_general_chat_uses_backend_fast_fallback(client, monkeypatch, caplog):
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "false")
+    monkeypatch.setenv("AI_LEGACY_PIPELINE_ENABLED", "true")
     create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
     calls = []
@@ -777,7 +853,7 @@ def test_tts_uses_modern_text_payload_and_returns_audio(client, monkeypatch):
     assert calls[0]["json"]["text"] == "hello"
     assert calls[0]["json"]["target_language_code"] == "en-IN"
     assert calls[0]["json"]["speaker"] == "shubh"
-    assert calls[0]["json"]["model"] == "bulbul:v3"
+    assert calls[0]["json"]["model"] == "bulbul:v2"
     assert "inputs" not in calls[0]["json"]
     assert calls[0]["timeout"] == (5, 30)
 

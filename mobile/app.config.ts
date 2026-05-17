@@ -8,7 +8,7 @@ const LOCAL_MODEL_BASE_URL = (
 ).trim();
 
 const USE_LOCAL_CHAT_PIPELINE =
-  process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ?? "true";
+  process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ?? "false";
 
 const USE_LOCAL_VOICE_PIPELINE =
   process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ?? "false";
@@ -326,23 +326,24 @@ export default {
         "https://ai-tool-rrau.onrender.com",
 
       // phone-local runtime
-      // Chat enters the local agent pipeline first. Runtime mode is explicit:
+      // Backend AI router is primary. Local runtime mode remains explicit for
+      // optional fallback/development paths:
       // - native_on_device is the intended production path. It requires a
       //   custom Expo dev client/prebuild with the native llama.cpp bridge.
       // - local_adapter is development-only and keeps /chat/completions and
-      //   /embeddings as local adapter contracts, not OpenAI/backend primary paths.
+      //   /embeddings as local adapter contracts.
       LOCAL_MODEL_BASE_URL,
       LOCAL_MODEL_RUNTIME_MODE,
       LOCAL_MODEL_ADAPTER_LOCATION,
       LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK,
-      LOCAL_MODEL_OPENAI_POLICY: "fallback_only",
-      LOCAL_MODEL_BACKEND_ROLE: "fallback_only",
+      LOCAL_MODEL_OPENAI_POLICY: "backend_controlled",
+      LOCAL_MODEL_BACKEND_ROLE: "primary",
       LOCAL_ON_DEVICE_BACKEND,
       LOCAL_ON_DEVICE_NATIVE_MODULE,
       LOCAL_ON_DEVICE_MODEL_ROOT,
       LOCAL_MODEL_DELIVERY_MODE,
       ...modelDeliveryExtra,
-      // Kept for diagnostics/legacy config only; api.ts forces normal chat local-first.
+      // Local chat interception is optional fallback/dev only.
       USE_LOCAL_CHAT_PIPELINE,
       // Recorded voice defaults to the authenticated backend; set this true
       // only for explicit development of phone-local STT.

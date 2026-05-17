@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 _USAGE_SCHEMA_COMPAT_LOCK = threading.Lock()
 _USAGE_SCHEMA_COMPAT_READY = False
-OPENAI_SAFE_DEFAULT_MODEL = "gpt-4o-mini"
+OPENAI_SAFE_DEFAULT_MODEL = "gpt-5-nano"
 
 
 class OpenAIConfigurationError(RuntimeError):
@@ -133,8 +133,8 @@ class OpenAIModelRouter:
         }
         self.disable_highest = _env_bool("OPENAI_DISABLE_HIGHEST_MODEL", True)
         self.daily_budget_usd = _env_float("OPENAI_DAILY_BUDGET_USD", 0.0)
-        self.max_output_default = _env_int("OPENAI_MAX_OUTPUT_TOKENS_DEFAULT", 900, minimum=1)
-        self.max_output_hard = _env_int("OPENAI_MAX_OUTPUT_TOKENS_HARD", 1600, minimum=1)
+        self.max_output_default = _env_int("OPENAI_MAX_OUTPUT_TOKENS_DEFAULT", 450, minimum=1)
+        self.max_output_hard = _env_int("OPENAI_MAX_OUTPUT_TOKENS_HARD", 900, minimum=1)
         self.high_allowlist = {
             item.strip().lower()
             for item in _env_str("OPENAI_HIGH_MODEL_ALLOWLIST", "").split(",")
@@ -143,6 +143,20 @@ class OpenAIModelRouter:
 
     @staticmethod
     def _resolve_model(tier_env_name: str) -> str:
+        if tier_env_name == "OPENAI_MODEL_REASONING":
+            model = _first_non_empty(
+                _env_str(tier_env_name),
+                "gpt-5-mini",
+                _env_str("OPENAI_JSON_MODEL"),
+                _env_str("OPENAI_MODEL"),
+                CONFIG_OPENAI_MODEL_DEFAULT,
+                OPENAI_SAFE_DEFAULT_MODEL,
+            )
+            if not model:
+                raise OpenAIConfigurationError(
+                    "OpenAI model is not configured. Set OPENAI_MODEL or OPENAI_JSON_MODEL."
+                )
+            return model
         model = _first_non_empty(
             _env_str(tier_env_name),
             _env_str("OPENAI_JSON_MODEL"),

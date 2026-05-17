@@ -228,6 +228,10 @@ if [[ -z "${EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE:-}" ]]; then
   export EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE="download_on_first_launch"
 fi
 
+if [[ -z "${EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE:-}" ]]; then
+  export EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE="false"
+fi
+
 RUNTIME_MODE="$(runtime_mode_normalized "${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}")"
 SHOULD_SYNC_LLAMA_CPP=0
 if [[ "$BUILD_TYPE" == "release" || "$RUNTIME_MODE" == "native_on_device" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]] || is_truthy "${JAI_REQUIRE_LLAMA_CPP:-}"; then
@@ -313,6 +317,11 @@ info "NODE_ENV: ${NODE_ENV:-<unset>}"
 info "Android ABIs: $JAI_ANDROID_ABIS"
 info "Runtime mode: ${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}"
 info "Model delivery mode: ${EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE:-download_on_first_launch}"
+if is_truthy "${EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE:-}"; then
+  info "Chat routing: local model fallback/dev opt-in"
+else
+  info "Chat routing: backend AI router (primary)"
+fi
 if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
   if [[ "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
     warn "Voice routing: local/native STT (explicit release override; experimental/development-style)"
@@ -358,11 +367,11 @@ if [[ "$SHOULD_SYNC_LLAMA_CPP" == "1" ]]; then
 fi
 
 if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
-  info "Verifying local-first release configuration"
-  if npm run release:verify-local-first; then
-    info "Local-first release configuration verified"
+  info "Verifying backend-first release configuration"
+  if npm run release:verify-backend-first; then
+    info "Backend-first release configuration verified"
   else
-    fail "Local-first release verification failed. Configure llama.cpp, the native module, GGUF model URLs, exact byte sizes, and SHA-256 hashes. Recorded voice uses backend Sarvam by default; set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true only for development local/native STT testing."
+    fail "Backend-first release verification failed. Keep EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false and EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false for release builds, and configure Firebase public env values."
   fi
 
   info "Verifying native llama.cpp build/runtime wiring"

@@ -5,7 +5,7 @@
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
-    "native:prepare": "npm run native:sync-llama && npm run native:verify-llama && npm run release:verify-local-first",
+    "native:prepare": "npm run native:sync-llama && npm run native:verify-llama && npm run release:verify-backend-first",
     "android": "npm run native:prepare && expo run:android",
     "ios": "npm run native:prepare && expo run:ios",
     "web": "expo start --web",
@@ -19,8 +19,8 @@
     "eas-build-pre-install": "node ./scripts/sync-llama-cpp.js",
     "native:sync-llama": "node ./scripts/sync-llama-cpp.js",
     "native:verify-llama": "node ./scripts/verify-native-llama-runtime.js",
-    "release": "npm run release:verify-local-first",
-    "release:verify-local-first": "node ./scripts/verify-release-local-first-config.js",
+    "release": "npm run release:verify-backend-first",
+    "release:verify-backend-first": "node ./scripts/verify-release-backend-first-config.js",
     "smoke:chat": "node ./scripts/smoke-chat-10.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

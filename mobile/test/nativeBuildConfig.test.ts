@@ -25,7 +25,7 @@ const appConfigUrl = pathToFileURL(path.join(mobileRoot, "app.config.ts")).href;
 const releaseVerifierPath = path.join(
   mobileRoot,
   "scripts",
-  "verify-release-local-first-config.js",
+  "verify-release-backend-first-config.js",
 );
 const ENV_KEYS_USED_BY_APP_CONFIG = [
   "BUILD_TYPE",
@@ -260,7 +260,7 @@ describe("native llama.cpp production build config", () => {
     const verifyScript = read("scripts/verify-native-llama-runtime.js");
 
     expect(packageJson.scripts["native:prepare"]).toBe(
-      "npm run native:sync-llama && npm run native:verify-llama && npm run release:verify-local-first",
+      "npm run native:sync-llama && npm run native:verify-llama && npm run release:verify-backend-first",
     );
     expect(packageJson.scripts.prebuild).toBe(
       "npm run native:prepare && expo prebuild",
@@ -271,7 +271,10 @@ describe("native llama.cpp production build config", () => {
     expect(packageJson.scripts["native:verify-llama"]).toBe(
       "node ./scripts/verify-native-llama-runtime.js",
     );
-    expect(packageJson.scripts.release).toBe("npm run release:verify-local-first");
+    expect(packageJson.scripts.release).toBe("npm run release:verify-backend-first");
+    expect(packageJson.scripts["release:verify-backend-first"]).toBe(
+      "node ./scripts/verify-release-backend-first-config.js",
+    );
     expect(verifyScript).toContain("JAI_REQUIRE_LLAMA_CPP=ON");
     expect(verifyScript).toContain("JAI_LLAMA_CPP_AVAILABLE=1");
     expect(verifyScript).toContain("verifyAndroidCMakeCompile");
@@ -413,7 +416,7 @@ export const runtime = {
     expect(verifyIndex).toBeLessThan(prebuildIndex);
   });
 
-  it("marks local release APK builds as llama.cpp-required without making backend primary", () => {
+  it("marks release APK builds as backend-primary while preserving local model verification", () => {
     const buildApk = readRepo("build-apk.sh");
 
     expect(buildApk).toContain('export JAI_BUILD_TYPE="release"');
@@ -423,7 +426,7 @@ export const runtime = {
     expect(buildApk).toContain('EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE="download_on_first_launch"');
     expect(buildApk).toContain("llama.cpp is required for this production/release native build");
     expect(buildApk).toContain("JAI_LLAMA_CPP_BACKEND_MISSING");
-    expect(buildApk).not.toContain("EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false");
+    expect(buildApk).toContain("EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE");
   });
 
   it("sets NODE_ENV from the resolved APK build type when unset", () => {
@@ -645,7 +648,7 @@ export const runtime = {
     ).rejects.toThrow(/EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED/);
   });
 
-  it("release verification fails when llama.cpp is missing", () => {
+  it("release verification does not require llama.cpp for backend-first chat", () => {
     const result = runReleaseVerifier({
       BUILD_TYPE: "release",
       JAI_LLAMA_CPP_DIR: path.join(os.tmpdir(), "jai-missing-llama-cpp"),
@@ -656,9 +659,8 @@ export const runtime = {
       ...validReleaseFirebaseEnv,
     });
 
-    expect(result.status).not.toBe(0);
-    expect(result.stdout + result.stderr).toMatch(/llama\.cpp checkout is missing/);
-    expect(result.stdout + result.stderr).toMatch(/native:sync-llama/);
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/Backend-first release configuration verified/);
   });
 
   it("release verifier rejects missing Firebase env without printing values", () => {
@@ -685,7 +687,7 @@ export const runtime = {
     expect(result.stdout + result.stderr).not.toContain(secretLikeValue);
   });
 
-  it("release verification rejects local_adapter and requires native_on_device", () => {
+  it("release verification does not require native_on_device for optional local fallback", () => {
     const result = runReleaseVerifierWithMockLlama({
       BUILD_TYPE: "release",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "local_adapter",
@@ -695,13 +697,11 @@ export const runtime = {
       ...validReleaseFirebaseEnv,
     });
 
-    expect(result.status).not.toBe(0);
-    expect(result.stdout + result.stderr).toMatch(
-      /EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device/,
-    );
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/Backend-first release configuration verified/);
   });
 
-  it("release verification fails when model URLs are unresolved placeholders", () => {
+  it("release verification does not require optional local model URLs", () => {
     const { EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL: _unused, ...metadataWithoutBase } = validReleaseModelMetadata;
     const result = runReleaseVerifierWithMockLlama({
       BUILD_TYPE: "release",
@@ -716,11 +716,11 @@ export const runtime = {
       EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED: "https://models.example.test/embed.gguf",
     });
 
-    expect(result.status).not.toBe(0);
-    expect(result.stdout + result.stderr).toMatch(/YOUR_MODEL_CDN placeholder/);
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/Backend-first release configuration verified/);
   });
 
-  it("release verification fails when expectedBytes are missing", () => {
+  it("release verification does not require optional local model byte metadata", () => {
     const { EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B: _unused, ...metadataWithoutBytes } = validReleaseModelMetadata;
     const result = runReleaseVerifierWithMockLlama({
       BUILD_TYPE: "release",
@@ -731,11 +731,11 @@ export const runtime = {
       ...validReleaseFirebaseEnv,
     });
 
-    expect(result.status).not.toBe(0);
-    expect(result.stdout + result.stderr).toMatch(/EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B/);
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/Backend-first release configuration verified/);
   });
 
-  it("release verification fails when sha256 hashes are missing", () => {
+  it("release verification does not require optional local model sha256 metadata", () => {
     const { EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED: _unused, ...metadataWithoutSha } = validReleaseModelMetadata;
     const result = runReleaseVerifierWithMockLlama({
       BUILD_TYPE: "release",
@@ -746,8 +746,8 @@ export const runtime = {
       ...validReleaseFirebaseEnv,
     });
 
-    expect(result.status).not.toBe(0);
-    expect(result.stdout + result.stderr).toMatch(/EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED/);
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/Backend-first release configuration verified/);
   });
 
   it("release verification allows backend recorded voice routing", () => {

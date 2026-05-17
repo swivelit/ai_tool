@@ -130,12 +130,12 @@ function unitEmbedding() {
 const dataRoot = "file:///mock/data";
 
 describe("phone-local agent configuration", () => {
-  it("configures all primary agents as phone-local with fallback-only backend policy", () => {
-    expect(models.runtime.primary).toBe("phone_local");
+  it("configures local agents as optional fallback under backend-primary policy", () => {
+    expect(models.runtime.primary).toBe("backend");
     expect(models.runtime.mode).toBe("native_on_device");
-    expect(models.runtime.backendRole).toBe("fallback_only");
-    expect(models.runtime.openAiPolicy).toBe("fallback_only");
-    expect(models.runtime.backendPolicy).toContain("never primary");
+    expect(models.runtime.backendRole).toBe("primary");
+    expect(models.runtime.openAiPolicy).toBe("backend_controlled");
+    expect(models.runtime.backendPolicy).toContain("primary");
     expect(models.runtime.nativeRuntime).toBe("NativeOnDeviceModelRuntime");
     expect(models.runtime.nativeImplementationStatus).toMatch(
       /native_build_wired|native_build_verified_by_native_verify_llama/,
@@ -151,10 +151,10 @@ describe("phone-local agent configuration", () => {
     expect(models.native.bridgeModuleName).toBe("JaiOnDeviceModel");
     expect(models.native.models["google/gemma-3-4b-it"].modelPath).toContain(".gguf");
     expect(models.runtime.adapterRuntime).toBe("OpenAiCompatibleLocalAdapterRuntime");
-    expect(agentRegistry.runtime.primary).toBe("phone_local");
+    expect(agentRegistry.runtime.primary).toBe("backend");
     expect(agentRegistry.runtime.mode).toBe("native_on_device");
-    expect(agentRegistry.runtime.backendRole).toBe("fallback_only");
-    expect(agentRegistry.runtime.openAiPolicy).toBe("fallback_only");
+    expect(agentRegistry.runtime.backendRole).toBe("primary");
+    expect(agentRegistry.runtime.openAiPolicy).toBe("backend_controlled");
     expect(models.models.profiler).toBe("google/gemma-3-4b-it");
     expect(models.models.orchestratorMedium).toBe("google/gemma-3-4b-it");
     expect(models.models.orchestratorLarge).toBe("Qwen/Qwen3-8B");

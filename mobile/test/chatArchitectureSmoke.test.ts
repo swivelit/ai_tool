@@ -70,6 +70,7 @@ function setupArchitectureHarness() {
         extra: {
           API_BASE: "https://api.example.test",
           LOCAL_TO_BACKEND_FALLBACK_MS: 15_000,
+          USE_LOCAL_CHAT_PIPELINE: true,
         },
       },
     },

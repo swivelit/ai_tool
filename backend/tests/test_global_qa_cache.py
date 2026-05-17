@@ -21,6 +21,8 @@ from sqlmodel import SQLModel, select
 
 
 def _stub_openai_pipeline(monkeypatch, calls: list[str]):
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "false")
+    monkeypatch.setenv("AI_LEGACY_PIPELINE_ENABLED", "true")
     monkeypatch.setattr(
         main_module,
         "run_orchestrator",

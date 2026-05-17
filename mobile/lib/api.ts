@@ -433,7 +433,7 @@ function getLocalModelConfigError(featureName: string) {
     {
       primary: "phone_local",
       mode: LOCAL_MODEL_RUNTIME_MODE,
-      backendRole: "fallback_only",
+      backendRole: "primary",
       openAiPolicy: LOCAL_MODEL_OPENAI_POLICY,
       baseUrl: LOCAL_MODEL_BASE_URL,
       allowDeviceLoopback: LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK_FLAG.value,
@@ -479,7 +479,7 @@ const LOCAL_MODEL_RUNTIME_MODE: string = String(
 const LOCAL_MODEL_OPENAI_POLICY: string = String(
   extra.LOCAL_MODEL_OPENAI_POLICY ||
     process.env.EXPO_PUBLIC_LOCAL_MODEL_OPENAI_POLICY ||
-    "fallback_only",
+    "backend_controlled",
 );
 
 const LOCAL_MODEL_ADAPTER_LOCATION: string = String(
@@ -529,7 +529,7 @@ const LOCAL_STT_MODEL: string =
 const LOCAL_CHAT_PIPELINE_FLAG = resolveBooleanFlag(
   extra.USE_LOCAL_CHAT_PIPELINE,
   process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE,
-  true,
+  false,
 );
 
 const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
@@ -538,9 +538,9 @@ const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
   false,
 );
 
-// Normal chat is local-first by product policy. The legacy flag is kept
-// for diagnostics, but it must not make backend/OpenAI the primary runtime.
-const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = true;
+// Backend AI router is the primary runtime. Local chat remains an explicit
+// fallback/dev path only when EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=true.
+const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = false;
 const CANONICAL_VOICE_ANALYZE_PATH = "/api/transcribe-and-analyze";
 
 let localChatInterceptionDepth = 0;
@@ -548,20 +548,18 @@ let routingBannerLogged = false;
 
 export function getClientRoutingDefaults() {
   return {
-    chat: (USE_LOCAL_CHAT_PIPELINE_DEFAULT
+    chat: (LOCAL_CHAT_PIPELINE_FLAG.value
       ? "local"
       : "backend") as ClientRoutingMode,
     voice: (LOCAL_VOICE_PIPELINE_FLAG.value
       ? "local"
       : "backend") as ClientRoutingMode,
-    chatSource: LOCAL_CHAT_PIPELINE_FLAG.value
-      ? LOCAL_CHAT_PIPELINE_FLAG.source
-      : "forced",
+    chatSource: LOCAL_CHAT_PIPELINE_FLAG.source,
     voiceSource: LOCAL_VOICE_PIPELINE_FLAG.source,
     apiBase: API_BASE,
     localModelBaseUrl: LOCAL_MODEL_BASE_URL,
     localRuntimeMode: LOCAL_MODEL_RUNTIME_MODE,
-    backendRole: "fallback_only",
+    backendRole: "primary",
     openAiPolicy: LOCAL_MODEL_OPENAI_POLICY,
     nativeBackend: LOCAL_ON_DEVICE_BACKEND,
     nativeModuleName: LOCAL_ON_DEVICE_NATIVE_MODULE,
@@ -1843,10 +1841,7 @@ function isChatPath(path: string) {
 async function shouldUseLocalChatPipeline() {
   logClientRoutingBanner();
 
-  // Normal chat must enter the phone-local agent pipeline first. A missing
-  // model adapter is handled inside LocalModelRuntime, not by silently making
-  // backend/OpenAI the primary runtime.
-  return USE_LOCAL_CHAT_PIPELINE_DEFAULT;
+  return LOCAL_CHAT_PIPELINE_FLAG.value;
 }
 
 async function loadCachedProfileForQuickReply(userId: number) {

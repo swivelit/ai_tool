@@ -31,7 +31,7 @@ def test_model_router_uses_safe_default_when_env_models_are_missing(monkeypatch)
 
     selected = router.select_model("normal_qa", "What is a compiler?")
 
-    assert selected.model == "gpt-4o-mini"
+    assert selected.model == "gpt-5-nano"
     assert selected.model.strip()
 
 
@@ -121,6 +121,23 @@ def test_highest_model_disabled_even_for_high_task(monkeypatch):
 
     assert selected.model != "high-model"
     assert selected.tier == "reasoning"
+
+
+def test_gpt5_defaults_route_simple_and_coding_without_highest(monkeypatch):
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_MODEL_HIGH", "gpt-5")
+    monkeypatch.setenv("OPENAI_DISABLE_HIGHEST_MODEL", "true")
+    router = OpenAIModelRouter()
+
+    simple = router.select_model("normal_qa", "What is a compiler?")
+    coding = router.select_model("normal_qa", "Debug this React Native architecture.")
+    high = router.select_model("highest", "Use the flagship model.", route="highest")
+
+    assert simple.model == "gpt-5-nano"
+    assert coding.model == "gpt-5-mini"
+    assert high.model != "gpt-5"
+    assert simple.max_output_tokens <= 450
+    assert coding.max_output_tokens <= 450
 
 
 def test_openai_usage_log_records_model_and_estimated_cost(monkeypatch):
@@ -323,7 +340,7 @@ def test_daily_budget_blocks_call_that_would_cross_budget(monkeypatch):
 
 def test_daily_budget_safety_margin_blocks_near_limit_call(monkeypatch):
     monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-budget")
-    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "0.00055")
+    monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "0.00029")
     monkeypatch.setenv("OPENAI_BUDGET_SAFETY_MARGIN_RATIO", "0.10")
     client = _FakeClient()
 
