@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import time
+import re
 from typing import Any, Optional
 
 from fastapi import HTTPException
 from sqlmodel import Session
 
 from .budget import enforce_free_text_quota, enforce_provider_budget
+from .openai_catalog import get_model_spec
 from .providers.openai_provider import OpenAIProvider
 from .providers.sarvam_provider import SarvamProvider
 from .router import AIProviderRouter
@@ -40,13 +42,15 @@ def run_text_turn(
 
     cached = _try_global_cache(session, ai_request, context)
     if cached is not None:
-        return _record(session, cached, ai_request, started, cache_hit=True)
+        return _record(session, cached, ai_request, started, cache_hit=True, metadata={"embedding_calls": context.get("embedding_calls", 0)})
 
-    local = _try_local_rag(session, ai_request, context)
+    local = _try_local_rag(session, ai_request, route, context)
     if local is not None:
-        return _record(session, local, ai_request, started, cache_hit=True)
+        return _record(session, local, ai_request, started, cache_hit=True, metadata={"embedding_calls": context.get("embedding_calls", 0)})
 
     response, metadata = _complete_with_controlled_fallback(session, ai_request, route, context)
+    metadata.setdefault("embedding_calls", context.get("embedding_calls", 0))
+    response.raw.setdefault("embedding_calls", metadata.get("embedding_calls", 0))
     return _record(session, response, ai_request, started, metadata=metadata)
 
 
@@ -105,15 +109,17 @@ def _complete_with_controlled_fallback(
             raise
         primary_error_type = _provider_error_type(exc)
         fallback_route = _fallback_route(route, request, context)
+        error_metadata = _exception_metadata(exc)
         metadata = {
             "primary_provider": route.provider,
             "primary_model": route.model,
             "primary_error_type": primary_error_type,
             "fallback_attempted": fallback_route is not None,
             "fallback_provider": fallback_route.provider if fallback_route else "",
+            **error_metadata,
         }
         if fallback_route is None:
-            return _provider_unavailable_response(route, primary_error_type), metadata
+            return _provider_unavailable_response(route, primary_error_type, error_metadata), metadata
         try:
             response = _call_provider(session, request_for_provider, fallback_route, context)
             response.reason = f"{response.reason}:fallback_after_{route.provider}_{primary_error_type}"
@@ -123,7 +129,8 @@ def _complete_with_controlled_fallback(
             if _is_budget_or_quota_exception(fallback_exc):
                 raise
             metadata["fallback_error_type"] = _provider_error_type(fallback_exc)
-            return _provider_unavailable_response(route, primary_error_type), metadata
+            metadata.update(_exception_metadata(fallback_exc))
+            return _provider_unavailable_response(route, primary_error_type, metadata), metadata
 
 
 def _call_provider(
@@ -143,15 +150,21 @@ def _fallback_route(route: AIRoute, request: AIRequest, context: dict[str, Any])
         return None
     if route.provider == "sarvam":
         model = "gpt-5-mini" if route.intent in {"coding", "complex_reasoning"} else "gpt-5-nano"
+        from ..openai_model_router import OpenAIModelRouter
+
+        task = "coding" if route.intent in {"coding", "complex_reasoning"} else "normal_qa"
+        selections = OpenAIModelRouter().select_candidates(task, request.message, route=route.route)
         return AIRoute(
             provider="openai",
-            model=model,
+            model=selections[0].model if selections else model,
             route=f"openai_fallback_for_{route.intent}",
             reason=f"sarvam_failed_fallback_to_openai_answer_in_{request.reply_language or route.language}",
             language=route.language,
             intent=route.intent,
             max_output_tokens=route.max_output_tokens,
             needs_voice_output=route.needs_voice_output,
+            model_candidates=[selection.model for selection in selections] or [model],
+            provider_endpoint_candidates=[selection.endpoint for selection in selections] or [get_model_spec(model).endpoint],
         )
     if route.provider == "openai":
         if route.intent in {"coding", "complex_reasoning"} and not _env_bool("AI_ALLOW_SARVAM_COMPLEX_FALLBACK", False):
@@ -173,7 +186,11 @@ def _fallback_route(route: AIRoute, request: AIRequest, context: dict[str, Any])
     return None
 
 
-def _provider_unavailable_response(route: AIRoute, error_type: str) -> AIProviderResponse:
+def _provider_unavailable_response(
+    route: AIRoute,
+    error_type: str,
+    error_metadata: Optional[dict[str, Any]] = None,
+) -> AIProviderResponse:
     text = "The selected AI provider is temporarily unavailable. Please try again shortly."
     if route.provider == "openai" and route.intent in {"coding", "complex_reasoning"}:
         text = "The reasoning provider is temporarily unavailable. Please try again shortly."
@@ -186,17 +203,46 @@ def _provider_unavailable_response(route: AIRoute, error_type: str) -> AIProvide
         language=route.language,
         intent=route.intent,
         characters=len(text),
-        raw={"primary_provider": route.provider, "primary_model": route.model, "primary_error_type": error_type},
+        raw={
+            "primary_provider": route.provider,
+            "primary_model": route.model,
+            "primary_error_type": error_type,
+            "provider_error_type": (error_metadata or {}).get("provider_error_type") or error_type,
+            "model_candidates": route.model_candidates,
+            **dict(error_metadata or {}),
+        },
     )
 
 
 def _provider_error_type(exc: Exception) -> str:
     if isinstance(exc, HTTPException):
         return f"http_{exc.status_code}"
+    metadata = getattr(exc, "metadata", None)
+    if isinstance(metadata, dict) and metadata.get("provider_error_type"):
+        return str(metadata.get("provider_error_type"))
     return exc.__class__.__name__
 
 
+def _exception_metadata(exc: Exception) -> dict[str, Any]:
+    metadata = getattr(exc, "metadata", None)
+    if not isinstance(metadata, dict):
+        return {}
+    safe: dict[str, Any] = {}
+    for key in (
+        "attempted_models",
+        "model_candidates",
+        "provider_error_type",
+        "fallback_attempted",
+        "errors",
+    ):
+        if key in metadata:
+            safe[key] = metadata[key]
+    return safe
+
+
 def _is_budget_or_quota_exception(exc: Exception) -> bool:
+    if exc.__class__.__name__ == "OpenAIBudgetExceededError":
+        return True
     if not isinstance(exc, HTTPException):
         return False
     detail = str(exc.detail or "").lower()
@@ -267,10 +313,21 @@ def _try_global_cache(session: Session, request: AIRequest, context: dict[str, A
     )
 
 
-def _try_local_rag(session: Session, request: AIRequest, context: dict[str, Any]) -> Optional[AIProviderResponse]:
+def _try_local_rag(
+    session: Session,
+    request: AIRequest,
+    route: AIRoute,
+    context: dict[str, Any],
+) -> Optional[AIProviderResponse]:
+    if not _should_run_local_rag(request, route, context):
+        context["embedding_calls"] = int(context.get("embedding_calls") or 0)
+        return None
     service = context.get("local_rag_service")
     if service is None:
         return None
+    if int(context.get("embedding_calls") or 0) >= _max_embedding_calls_per_turn():
+        return None
+    context["embedding_calls"] = int(context.get("embedding_calls") or 0) + 1
     try:
         hit = service.try_answer(session, request.user_id, request.message)
     except Exception:
@@ -293,8 +350,41 @@ def _try_local_rag(session: Session, request: AIRequest, context: dict[str, Any]
         language="ta" if hit.get("tamil_text") or hit.get("theni_tamil_text") else "en",
         intent=str(hit.get("predicted_label") or "general"),
         characters=len(text),
-        raw={"source": hit.get("direct_answer_source"), "confidence": confidence},
+        raw={"source": hit.get("direct_answer_source"), "confidence": confidence, "embedding_calls": context.get("embedding_calls", 0)},
     )
+
+
+def _should_run_local_rag(request: AIRequest, route: AIRoute, context: dict[str, Any]) -> bool:
+    if not _env_bool("AI_SEMANTIC_CACHE_LOOKUP_ENABLED", True):
+        return False
+    if context.get("force_rag_lookup"):
+        return True
+    if _env_bool("AI_EMBEDDINGS_ON_EVERY_TURN", False):
+        return True
+    message = str(request.message or "").lower()
+    simple = route.provider == "openai" and route.intent in {"general", "greeting"}
+    rag_terms = bool(
+        re.search(
+            r"\b(saved|memory|profile|document|documents|doc|docs|file|files|pdf|note|notes|knowledge|"
+            r"according to|what did i|my previous|my saved|uploaded)\b",
+            message,
+        )
+    )
+    if simple and not rag_terms:
+        return _env_bool("AI_RAG_LOOKUP_FOR_SIMPLE_CHAT", False) or _env_bool(
+            "AI_SEMANTIC_CACHE_LOOKUP_FOR_SIMPLE_CHAT",
+            False,
+        )
+    return rag_terms
+
+
+def _max_embedding_calls_per_turn() -> int:
+    import os
+
+    try:
+        return max(0, int(str(os.getenv("AI_MAX_EMBEDDING_CALLS_PER_TURN", "1")).strip()))
+    except Exception:
+        return 1
 
 
 def _blocked_response(request: AIRequest, route: AIRoute) -> AIProviderResponse:

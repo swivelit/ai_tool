@@ -51,6 +51,7 @@ def test_english_simple_routes_to_gpt5_nano(monkeypatch):
 
     assert route.provider == "openai"
     assert route.model == "gpt-5-nano"
+    assert route.model_candidates[:3] == ["gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"]
 
 
 def test_english_coding_routes_to_gpt5_mini(monkeypatch):
@@ -59,6 +60,7 @@ def test_english_coding_routes_to_gpt5_mini(monkeypatch):
 
     assert route.provider == "openai"
     assert route.model == "gpt-5-mini"
+    assert "gpt-4.1-mini" in route.model_candidates
 
 
 def test_reminder_uses_backend_tool_without_model():
@@ -122,6 +124,8 @@ class _StaticProvider:
 
 def test_sarvam_failure_falls_back_once_to_openai_for_safe_indic(monkeypatch):
     monkeypatch.setenv("AI_MAX_PROVIDER_CALLS_PER_TURN_HARD", "2")
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP_PRIMARY", "gpt-5-nano")
+    monkeypatch.setenv("OPENAI_MODEL_CHEAP_FALLBACKS", "gpt-4.1-nano,gpt-4o-mini")
     sarvam = _FailingProvider()
     openai = _StaticProvider("openai", "gpt-5-nano")
     with SessionLocal() as session:

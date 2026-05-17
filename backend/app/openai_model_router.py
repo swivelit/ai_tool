@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 
 from .models import OpenAIUsageLog
 from .time_utils import utc_now
+from .ai.openai_catalog import estimate_model_cost, get_model_spec, get_openai_model_catalog
 
 try:
     from config import OPENAI_MODEL as CONFIG_OPENAI_MODEL_DEFAULT
@@ -38,6 +39,7 @@ class ModelSelection:
     tier: str
     reason: str
     max_output_tokens: int
+    endpoint: str = "chat_completions"
     estimated_input_tokens: int = 0
     estimated_output_tokens: int = 0
     estimated_cost_usd: float = 0.0
@@ -119,12 +121,16 @@ class OpenAIModelRouter:
     """
 
     cheap_tier = "cheap"
+    cheap_fallback_tier = "cheap_fallback"
     standard_tier = "standard"
+    reasoning_light_tier = "reasoning_light"
     reasoning_tier = "reasoning"
+    hard_reasoning_tier = "hard_reasoning"
     high_tier = "high"
 
     def __init__(self) -> None:
         self._explicit_high_model = _env_str("OPENAI_MODEL_HIGH")
+        self.catalog = get_openai_model_catalog()
         self.models = {
             self.cheap_tier: self._resolve_model("OPENAI_MODEL_CHEAP"),
             self.standard_tier: self._resolve_model("OPENAI_MODEL_STANDARD"),
@@ -138,6 +144,11 @@ class OpenAIModelRouter:
         self.high_allowlist = {
             item.strip().lower()
             for item in _env_str("OPENAI_HIGH_MODEL_ALLOWLIST", "").split(",")
+            if item.strip()
+        }
+        self.disabled_models = {
+            item.strip()
+            for item in _env_str("OPENAI_DISABLED_MODELS", "").split(",")
             if item.strip()
         }
 
@@ -198,7 +209,21 @@ class OpenAIModelRouter:
             return "live_data"
         if str(risk_level or "").strip().lower() in {"high", "critical"}:
             return "high_risk_review"
-        if re.search(r"\b(code|coding|program|debug|refactor|algorithm|architecture|multi[- ]?step|plan|strategy|analyze|tradeoff|design)\b", normalized):
+
+        has_code_block = "```" in str(message or "")
+        strong_coding = bool(
+            has_code_block
+            or re.search(
+                r"\b(debug|stack trace|traceback|exception|error log|refactor|architecture|system design|"
+                r"backend architecture|frontend architecture|react native bug|sql schema|schema migration|"
+                r"api implementation|backend implementation|frontend implementation|implement (?:a|the)|"
+                r"write (?:a|the)?\s*(?:function|class|component)|fix (?:this|the) bug)\b",
+                normalized,
+            )
+        )
+        if strong_coding:
+            return "complex_reasoning"
+        if re.search(r"\b(multi[- ]?step|trade[- ]?off|deep analysis|reason through|migration plan)\b", normalized):
             return "complex_reasoning"
         if estimated_tokens > 700 or len(normalized) > 2400:
             return "complex_reasoning"
@@ -219,6 +244,80 @@ class OpenAIModelRouter:
         if task_key == "live_data":
             return self.standard_tier, "live_data_uses_standard"
         return self.standard_tier if _env_bool("OPENAI_NORMAL_QA_USE_STANDARD", False) else self.cheap_tier, "normal_qa_cost_optimized"
+
+    def select_candidates(
+        self,
+        task: str,
+        message: str,
+        route: Optional[Any] = None,
+        risk_level: Optional[str] = None,
+        needs_live_data: bool = False,
+        user_tier: Optional[str] = None,
+    ) -> list[ModelSelection]:
+        route_key = self._route_key(route)
+        task_key = str(task or "normal_qa").strip().lower()
+        if task_key not in {"highest", "high", "hard_reasoning"}:
+            task_key = self.classify_task(
+                message,
+                route=route_key or task,
+                risk_level=risk_level,
+                needs_live_data=needs_live_data,
+            )
+
+        if task_key in {"complex_reasoning", "coding", "complex_planning", "high_risk_review"}:
+            names = self._reasoning_ladder(message)
+            reason = f"{task_key}_uses_reasoning_ladder"
+            ladder_kind = "reasoning"
+        elif task_key in {"highest", "high", "hard_reasoning"}:
+            names = self._hard_reasoning_ladder(user_tier=user_tier, route=route_key or task_key)
+            reason = "hard_reasoning_ladder"
+            ladder_kind = "hard_reasoning"
+        elif task_key == "live_data":
+            names = self._cheap_ladder()
+            reason = "live_data_cost_guarded_ladder"
+            ladder_kind = "cheap"
+        else:
+            names = self._cheap_ladder()
+            reason = f"{task_key}_uses_cheap_ladder"
+            ladder_kind = "cheap"
+
+        input_tokens = self.estimate_tokens(message)
+        output_tokens = min(self.max_output_default, self.max_output_hard)
+        selections: list[ModelSelection] = []
+        seen: set[str] = set()
+        for index, model in enumerate(names):
+            model = str(model or "").strip()
+            if not model or model in seen:
+                continue
+            seen.add(model)
+            if not self._model_allowed(model, user_tier=user_tier, task=task_key, route=route_key):
+                continue
+            spec = get_model_spec(model)
+            tier = self._candidate_tier(model, index=index, ladder_kind=ladder_kind, message=message, spec_tier=spec.tier)
+            selections.append(
+                ModelSelection(
+                    model=model,
+                    tier=tier,
+                    reason=reason if index == 0 else f"{reason}:candidate_{index}",
+                    max_output_tokens=output_tokens,
+                    endpoint=spec.endpoint,
+                    estimated_input_tokens=input_tokens,
+                    estimated_output_tokens=output_tokens,
+                    estimated_cost_usd=self.estimate_cost(model, input_tokens, output_tokens),
+                )
+            )
+        if selections:
+            logger.info(
+                "openai_model_ladder_selected",
+                extra={
+                    "event": "openai_model_ladder_selected",
+                    "route": route_key,
+                    "task": task_key,
+                    "models": [selection.model for selection in selections],
+                    "tiers": [selection.tier for selection in selections],
+                },
+            )
+        return selections
 
     def _daily_budget_available(self) -> bool:
         # This is a conservative selector guard. Precise spend aggregation is
@@ -254,6 +353,29 @@ class OpenAIModelRouter:
                 risk_level=risk_level,
                 needs_live_data=needs_live_data,
             )
+        candidates = self.select_candidates(
+            task_key,
+            message,
+            risk_level=risk_level,
+            needs_live_data=needs_live_data,
+            route=route,
+        )
+        if candidates:
+            selected = candidates[0]
+            logger.info(
+                "openai_model_selected",
+                extra={
+                    "event": "openai_model_selected",
+                    "model_used": selected.model,
+                    "model_tier": selected.tier,
+                    "reason": selected.reason,
+                    "estimated_input_tokens": selected.estimated_input_tokens,
+                    "estimated_output_tokens": selected.estimated_output_tokens,
+                    "estimated_cost_usd": round(selected.estimated_cost_usd, 8),
+                },
+            )
+            return selected
+
         tier, reason = self._tier_for_task(task_key)
 
         if tier == self.high_tier and not self._highest_allowed(task_key, route):
@@ -279,6 +401,7 @@ class OpenAIModelRouter:
             tier=tier,
             reason=reason,
             max_output_tokens=output_tokens,
+            endpoint=get_model_spec(model).endpoint,
             estimated_input_tokens=input_tokens,
             estimated_output_tokens=output_tokens,
             estimated_cost_usd=cost,
@@ -298,10 +421,105 @@ class OpenAIModelRouter:
         return selected
 
     def estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        safe_model = str(model or "unknown").upper().replace("-", "_").replace(".", "_")
-        input_rate = _env_float(f"OPENAI_PRICE_{safe_model}_INPUT_PER_1M", 0.15)
-        output_rate = _env_float(f"OPENAI_PRICE_{safe_model}_OUTPUT_PER_1M", 0.60)
-        return (max(0, input_tokens) / 1_000_000.0) * input_rate + (max(0, output_tokens) / 1_000_000.0) * output_rate
+        return estimate_model_cost(model, input_tokens, output_tokens)
+
+    def _cheap_ladder(self) -> list[str]:
+        primary = _env_str("OPENAI_MODEL_CHEAP_PRIMARY", "") or _env_str("OPENAI_MODEL_CHEAP", "") or "gpt-5-nano"
+        fallbacks = _env_str("OPENAI_MODEL_CHEAP_FALLBACKS", "gpt-4.1-nano,gpt-4o-mini")
+        names = [primary, *self._split_models(fallbacks)]
+        if _env_bool("OPENAI_ENABLE_GPT35_EMERGENCY_FALLBACK", False):
+            names.append("gpt-3.5-turbo-0125")
+        return names
+
+    def _reasoning_ladder(self, message: str) -> list[str]:
+        hard = self._is_hard_reasoning_message(message)
+        if hard:
+            primary = _env_str("OPENAI_MODEL_REASONING_PRIMARY", "") or _env_str("OPENAI_MODEL_REASONING", "") or "gpt-5-mini"
+            fallbacks = _env_str("OPENAI_MODEL_REASONING_FALLBACKS", "gpt-4.1-mini,gpt-4o-mini")
+            return [primary, *self._split_models(fallbacks)]
+        primary = _env_str("OPENAI_MODEL_REASONING_LIGHT_PRIMARY", "gpt-4.1-mini")
+        reasoning = _env_str("OPENAI_MODEL_REASONING_PRIMARY", "") or _env_str("OPENAI_MODEL_REASONING", "") or "gpt-5-mini"
+        fallbacks = self._split_models(_env_str("OPENAI_MODEL_REASONING_FALLBACKS", "gpt-4.1-mini,gpt-4o-mini"))
+        return [primary, reasoning, *fallbacks]
+
+    def _hard_reasoning_ladder(self, *, user_tier: Optional[str], route: str = "") -> list[str]:
+        names: list[str] = []
+        if self._explicit_high_model and self._highest_allowed("highest", route or "highest"):
+            names.append(self._explicit_high_model)
+        if _env_bool("OPENAI_ENABLE_O_SERIES_FOR_FREE", False) or str(user_tier or "").lower() in {"admin", "internal"}:
+            names.append(_env_str("OPENAI_MODEL_HARD_REASONING", "o4-mini"))
+        names.extend(self._reasoning_ladder("architecture debug stack trace multi-step"))
+        return names
+
+    def _candidate_tier(
+        self,
+        model: str,
+        *,
+        index: int,
+        ladder_kind: str,
+        message: str,
+        spec_tier: str,
+    ) -> str:
+        if model == self._explicit_high_model and self._explicit_high_model:
+            return self.high_tier
+        if ladder_kind == "cheap":
+            return self.cheap_tier if index == 0 else self.cheap_fallback_tier
+        if ladder_kind == "hard_reasoning":
+            return self.hard_reasoning_tier if model == _env_str("OPENAI_MODEL_HARD_REASONING", "o4-mini") else self.reasoning_tier
+        if ladder_kind == "reasoning":
+            light_primary = _env_str("OPENAI_MODEL_REASONING_LIGHT_PRIMARY", "gpt-4.1-mini")
+            if index == 0 and model == light_primary and not self._is_hard_reasoning_message(message):
+                return self.reasoning_light_tier
+            if spec_tier in {self.cheap_fallback_tier, self.cheap_tier} and index > 0:
+                return spec_tier
+            return self.reasoning_tier if spec_tier == "custom" else spec_tier
+        return spec_tier
+
+    def _model_allowed(self, model: str, *, user_tier: Optional[str], task: str, route: str) -> bool:
+        normalized = str(model or "").strip()
+        if not normalized:
+            return False
+        if normalized in self.disabled_models:
+            return False
+        lowered = normalized.lower()
+        if re.search(r"^(gpt-5\.(?:5|4)|gpt-5-pro|gpt-5\.5-pro|o1-pro|o3-pro)", lowered):
+            return False
+        if lowered in {"babbage-002", "davinci-002"}:
+            return False
+        if lowered in {"gpt-5", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"} and self.disable_highest:
+            return False
+        if normalized == self._explicit_high_model and not self._highest_allowed(task, route):
+            return False
+        spec = get_model_spec(normalized)
+        if not spec.enabled_by_default and normalized != self._explicit_high_model:
+            return False
+        tier = str(user_tier or "free").strip().lower()
+        if tier not in {"admin", "internal"}:
+            if spec.admin_only or not spec.free_user_allowed:
+                return False
+        return True
+
+    @staticmethod
+    def _is_hard_reasoning_message(message: str) -> bool:
+        normalized = str(message or "").lower()
+        return bool(
+            "```" in str(message or "")
+            or re.search(
+                r"\b(debug|stack trace|traceback|architecture|system design|refactor|migration|"
+                r"backend|frontend|react native|fastapi|sql|schema|implementation|multi[- ]?step)\b",
+                normalized,
+            )
+        )
+
+    @staticmethod
+    def _split_models(raw: str) -> list[str]:
+        return [item.strip() for item in str(raw or "").split(",") if item.strip()]
+
+    @staticmethod
+    def _route_key(route: Optional[Any]) -> str:
+        if route is None:
+            return ""
+        return str(getattr(route, "route", route) or "").strip().lower()
 
 
 def record_openai_usage(

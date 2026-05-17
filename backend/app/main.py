@@ -80,7 +80,9 @@ from .global_qa_cache import (
     record_backend_openai_answer,
 )
 from .openai_model_router import OpenAIConfigurationError, OpenAIModelRouter, record_openai_usage
-from .openai_tracked import OpenAIBudgetExceededError, get_tracked_chat_completion_metadata, tracked_chat_completion
+from .openai_tracked import OpenAIBudgetExceededError, get_tracked_chat_completion_metadata, tracked_chat_completion, tracked_openai_generation
+from .ai.model_health import clear_model_health, model_health_snapshot
+from .ai.openai_catalog import get_model_spec, get_openai_model_catalog
 from .ai.budget import enforce_free_voice_quota, enforce_provider_budget
 from .ai.orchestrator import run_text_turn
 from .ai.providers.sarvam_provider import (
@@ -1272,6 +1274,10 @@ class ChatAPIRequest(BaseModel):
     client_local_budget_ms: Optional[int] = None
     client_original_route: Optional[str] = None
     admin_email: Optional[str] = None
+
+
+class AIModelProbeRequest(BaseModel):
+    models: Optional[List[str]] = None
 
 
 class ClientTurnLogRequest(BaseModel):
@@ -3341,6 +3347,16 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
         response_meta.setdefault("provider", ai_response.provider)
         response_meta.setdefault("model_used", ai_response.model)
         response_meta.setdefault("model_tier", normalized_pipeline.get("model_tier"))
+        if isinstance(ai_response.raw, dict):
+            response_meta.setdefault("model_candidates", ai_response.raw.get("model_candidates") or [])
+            response_meta.setdefault("endpoint", ai_response.raw.get("endpoint") or "")
+            response_meta.setdefault("openai_attempted_models", ai_response.raw.get("openai_attempted_models") or ai_response.raw.get("attempted_models") or [])
+            response_meta.setdefault("fallback_attempted", bool(ai_response.raw.get("fallback_attempted")))
+            if ai_response.raw.get("fallback_reason"):
+                response_meta.setdefault("fallback_reason", ai_response.raw.get("fallback_reason"))
+            if ai_response.raw.get("provider_error_type"):
+                response_meta.setdefault("provider_error_type", ai_response.raw.get("provider_error_type"))
+            response_meta.setdefault("embedding_calls", int(ai_response.raw.get("embedding_calls") or 0))
         response_meta.setdefault("ai_router_enabled", True)
         response_meta.setdefault("cost_estimate", ai_response.estimated_cost_amount)
         response_meta.setdefault("cost_currency", ai_response.estimated_cost_currency)
@@ -3639,6 +3655,87 @@ def api_debug_schema_status(
         },
         "alembic": _alembic_revision_status(session),
     }
+
+
+def _admin_ai_probe_enabled() -> bool:
+    return str(os.getenv("ENABLE_ADMIN_AI_PROBE", "false")).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+@app.get("/api/admin/ai/provider-health")
+def api_admin_ai_provider_health(
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    if not _admin_ai_probe_enabled():
+        raise HTTPException(status_code=403, detail="Admin AI probe is disabled")
+    return {"ok": True, "models": model_health_snapshot()}
+
+
+@app.post("/api/admin/ai/model-probe")
+def api_admin_ai_model_probe(
+    payload: AIModelProbeRequest,
+    session: Session = Depends(get_session),
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    if not _admin_ai_probe_enabled():
+        raise HTTPException(status_code=403, detail="Admin AI probe is disabled")
+    catalog = get_openai_model_catalog()
+    requested_models = [str(model or "").strip() for model in (payload.models or []) if str(model or "").strip()]
+    models = requested_models or [
+        name
+        for name, spec in catalog.items()
+        if spec.enabled_by_default and (spec.free_user_allowed or not spec.admin_only)
+    ]
+    client = _get_openai_client()
+    rows: list[dict[str, Any]] = []
+    for model in models:
+        spec = get_model_spec(model)
+        clear_model_health("openai", model)
+        started = time.perf_counter()
+        try:
+            response = tracked_openai_generation(
+                client,
+                messages=[{"role": "user", "content": "Say ok in one short sentence."}],
+                input_text="Say ok in one short sentence.",
+                instructions="Return a one-sentence health probe answer. Do not include secrets.",
+                task="normal_qa",
+                route="admin_model_probe",
+                candidates=[
+                    {
+                        "model": model,
+                        "tier": spec.tier,
+                        "endpoint": spec.endpoint,
+                        "reason": "admin_probe",
+                        "max_output_tokens": 16,
+                    }
+                ],
+                session=session,
+                request_id=get_request_id(),
+                max_output_tokens=16,
+            )
+            metadata = get_tracked_chat_completion_metadata(response)
+            rows.append(
+                {
+                    "provider": "openai",
+                    "model": model,
+                    "endpoint": metadata.get("endpoint") or spec.endpoint,
+                    "ok": True,
+                    "error_type": "",
+                    "latency_ms": int(round((time.perf_counter() - started) * 1000)),
+                }
+            )
+        except Exception as exc:
+            rows.append(
+                {
+                    "provider": "openai",
+                    "model": model,
+                    "endpoint": spec.endpoint,
+                    "ok": False,
+                    "error_type": exc.__class__.__name__,
+                    "error_message_sanitized": sanitize_log_text(str(exc), 160),
+                    "latency_ms": int(round((time.perf_counter() - started) * 1000)),
+                }
+            )
+    return {"ok": True, "results": rows}
 
 
 @app.get("/api/debug/global-qa-cache")

@@ -10,6 +10,12 @@ from app.openai_tracked import OpenAIBudgetExceededError, get_tracked_chat_compl
 
 
 MODEL_ENV_VARS = (
+    "OPENAI_MODEL_CHEAP_PRIMARY",
+    "OPENAI_MODEL_CHEAP_FALLBACKS",
+    "OPENAI_MODEL_REASONING_LIGHT_PRIMARY",
+    "OPENAI_MODEL_REASONING_PRIMARY",
+    "OPENAI_MODEL_REASONING_FALLBACKS",
+    "OPENAI_MODEL_HARD_REASONING",
     "OPENAI_MODEL_CHEAP",
     "OPENAI_MODEL_STANDARD",
     "OPENAI_MODEL_REASONING",
@@ -47,7 +53,7 @@ def test_model_router_respects_explicit_env_models(monkeypatch):
     router = OpenAIModelRouter()
 
     assert router.select_model("classification", "classify this").model == "cheap-env-model"
-    assert router.select_model("normal_qa", "latest news", needs_live_data=True).model == "standard-env-model"
+    assert router.select_model("normal_qa", "latest news", needs_live_data=True).model == "cheap-env-model"
     assert (
         router.select_model("normal_qa", "Design a multi-step coding architecture.").model
         == "reasoning-env-model"
@@ -90,8 +96,8 @@ def test_model_router_uses_cheap_or_standard_for_simple_qa(monkeypatch):
 
     selected = router.select_model("normal_qa", "What is a compiler?")
 
-    assert selected.model in {"cheap-model", "standard-model"}
-    assert selected.tier in {"cheap", "standard"}
+    assert selected.model == "cheap-model"
+    assert selected.tier == "cheap"
 
 
 def test_model_router_uses_reasoning_for_complex_coding(monkeypatch):
@@ -138,6 +144,28 @@ def test_gpt5_defaults_route_simple_and_coding_without_highest(monkeypatch):
     assert high.model != "gpt-5"
     assert simple.max_output_tokens <= 450
     assert coding.max_output_tokens <= 450
+
+
+def test_select_candidates_simple_ladder(monkeypatch):
+    _clear_model_env(monkeypatch)
+    router = OpenAIModelRouter()
+
+    selections = router.select_candidates("normal_qa", "What is a compiler?")
+
+    assert [selection.model for selection in selections[:3]] == ["gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"]
+    assert selections[0].endpoint == "responses"
+
+
+def test_select_candidates_reasoning_ladder(monkeypatch):
+    _clear_model_env(monkeypatch)
+    router = OpenAIModelRouter()
+
+    selections = router.select_candidates("normal_qa", "Debug this React Native stack trace: TypeError")
+
+    models = [selection.model for selection in selections]
+    assert "gpt-5-mini" in models
+    assert "gpt-4.1-mini" in models
+    assert "o4-mini" not in models
 
 
 def test_openai_usage_log_records_model_and_estimated_cost(monkeypatch):
@@ -426,3 +454,25 @@ def test_tracked_embedding_writes_usage_and_respects_budget(monkeypatch):
 
         assert raised is True
         assert blocked_client.embeddings.calls == []
+
+
+def test_tracked_embedding_reuses_duplicate_request_text(monkeypatch):
+    monkeypatch.setenv("RAG_EMBEDDING_MODEL", "embedding-model")
+    monkeypatch.delenv("OPENAI_DAILY_BUDGET_USD", raising=False)
+    client = _FakeClient()
+
+    first = tracked_embedding(
+        client,
+        route="rag_embedding",
+        request_id="same-turn",
+        input=["hello world"],
+    )
+    second = tracked_embedding(
+        client,
+        route="rag_embedding",
+        request_id="same-turn",
+        input=["hello world"],
+    )
+
+    assert first is second
+    assert len(client.embeddings.calls) == 1

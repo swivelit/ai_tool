@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import hashlib
+import time
 from typing import Any, Iterable, Optional
 
 from sqlmodel import Session
 
+from .ai.model_health import is_model_temporarily_unavailable, mark_model_unavailable
+from .ai.openai_catalog import OpenAIModelSpec, get_model_spec
 from .openai_model_router import (
     ModelSelection,
     OpenAIModelRouter,
@@ -22,7 +27,18 @@ class OpenAIBudgetExceededError(RuntimeError):
     status_code = 503
 
 
+class OpenAIProviderUnavailableError(RuntimeError):
+    """Raised after all allowed OpenAI generation candidates fail."""
+
+    status_code = 503
+
+    def __init__(self, message: str, *, metadata: Optional[dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.metadata = dict(metadata or {})
+
+
 TRACKED_METADATA_ATTR = "_openai_tracked_metadata"
+_EMBEDDING_TURN_CACHE: dict[tuple[str, str, str], tuple[float, Any]] = {}
 
 
 def get_tracked_chat_completion_metadata(response: Any) -> dict[str, Any]:
@@ -144,6 +160,362 @@ def _attach_metadata(response: Any, metadata: dict[str, Any]) -> Any:
     except Exception:
         logger.debug("Could not attach OpenAI tracking metadata to response", exc_info=True)
     return response
+
+
+def _sanitize_openai_error_message(value: Any, *, limit: int = 240) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"sk-[A-Za-z0-9_-]+", "[REDACTED]", text)
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)(api[_-]?key\s*[:=]\s*)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
+    return text[:limit]
+
+
+def _error_status_code(exc: Exception) -> Optional[int]:
+    for name in ("status_code", "status"):
+        value = getattr(exc, name, None)
+        if value is not None:
+            try:
+                return int(value)
+            except Exception:
+                pass
+    response = getattr(exc, "response", None)
+    value = getattr(response, "status_code", None)
+    if value is not None:
+        try:
+            return int(value)
+        except Exception:
+            pass
+    return None
+
+
+def _error_code(exc: Exception) -> str:
+    code = getattr(exc, "code", None)
+    if code:
+        return str(code)
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict) and err.get("code"):
+            return str(err.get("code"))
+    return ""
+
+
+def _error_type(exc: Exception) -> str:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict) and err.get("type"):
+            return str(err.get("type"))
+    return exc.__class__.__name__
+
+
+def _is_budget_exception(exc: Exception) -> bool:
+    return isinstance(exc, OpenAIBudgetExceededError)
+
+
+def _health_ttl_for_error(exc: Exception) -> Optional[int]:
+    status = _error_status_code(exc)
+    if status == 400 or status == 404 or status == 403:
+        try:
+            return max(1, int(str(os.getenv("OPENAI_MODEL_PROBE_CACHE_TTL_SECONDS", "900")).strip()))
+        except Exception:
+            return 900
+    if status in {429, 500, 502, 503, 504}:
+        return 60
+    return None
+
+
+def _candidate_from_any(value: Any, router: OpenAIModelRouter, prompt_text: str, max_output_tokens: Optional[int]) -> ModelSelection:
+    if isinstance(value, ModelSelection):
+        return value
+    if isinstance(value, dict):
+        model = str(value.get("model") or "").strip()
+        tier = str(value.get("tier") or get_model_spec(model).tier)
+        endpoint = str(value.get("endpoint") or get_model_spec(model).endpoint)
+        output_tokens = int(value.get("max_output_tokens") or max_output_tokens or router.max_output_default)
+        input_tokens = router.estimate_tokens(prompt_text)
+        return ModelSelection(
+            model=model,
+            tier=tier,
+            reason=str(value.get("reason") or "explicit_candidate"),
+            max_output_tokens=min(output_tokens, router.max_output_hard),
+            endpoint=endpoint,
+            estimated_input_tokens=input_tokens,
+            estimated_output_tokens=min(output_tokens, router.max_output_hard),
+            estimated_cost_usd=router.estimate_cost(model, input_tokens, min(output_tokens, router.max_output_hard)),
+        )
+    model = str(value or "").strip()
+    spec = get_model_spec(model)
+    output_tokens = int(max_output_tokens or router.max_output_default)
+    input_tokens = router.estimate_tokens(prompt_text)
+    return ModelSelection(
+        model=model,
+        tier=spec.tier,
+        reason="explicit_candidate",
+        max_output_tokens=min(output_tokens, router.max_output_hard),
+        endpoint=spec.endpoint,
+        estimated_input_tokens=input_tokens,
+        estimated_output_tokens=min(output_tokens, router.max_output_hard),
+        estimated_cost_usd=router.estimate_cost(model, input_tokens, min(output_tokens, router.max_output_hard)),
+    )
+
+
+def _response_output_text(response: Any) -> str:
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return str(output_text).strip()
+    output = getattr(response, "output", None)
+    if output is None and isinstance(response, dict):
+        output = response.get("output")
+    parts: list[str] = []
+    for item in output or []:
+        content = getattr(item, "content", None)
+        if content is None and isinstance(item, dict):
+            content = item.get("content")
+        for block in content or []:
+            text = getattr(block, "text", None)
+            if text is None and isinstance(block, dict):
+                text = block.get("text")
+            if text:
+                parts.append(str(text))
+    return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+
+
+def _chat_output_text(response: Any) -> str:
+    try:
+        if hasattr(response, "choices") and response.choices:
+            return str(response.choices[0].message.content or "").strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _build_responses_input(messages: list[dict[str, Any]], input_text: Optional[str]) -> str:
+    if input_text is not None:
+        return str(input_text or "")
+    parts: list[str] = []
+    for message in messages:
+        role = str(message.get("role") or "user")
+        if role in {"system", "developer"}:
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content_text = " ".join(str(item.get("text") if isinstance(item, dict) else item) for item in content)
+        else:
+            content_text = str(content or "")
+        if content_text.strip():
+            parts.append(content_text.strip())
+    return "\n".join(parts).strip()
+
+
+def _build_instructions(messages: list[dict[str, Any]], instructions: Optional[str]) -> str:
+    if instructions:
+        return str(instructions or "")
+    parts: list[str] = []
+    for message in messages:
+        if str(message.get("role") or "") in {"system", "developer"}:
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                parts.append(content.strip())
+    return "\n\n".join(parts)
+
+
+def tracked_openai_generation(
+    client: Any,
+    *,
+    messages: list[dict[str, Any]],
+    input_text: Optional[str] = None,
+    instructions: Optional[str] = None,
+    task: str,
+    route: str,
+    candidates: Optional[list[Any]] = None,
+    session: Optional[Session] = None,
+    user_id: Any = None,
+    request_id: Optional[str] = None,
+    risk_level: Optional[str] = None,
+    needs_live_data: bool = False,
+    max_output_tokens: Optional[int] = None,
+    response_format: Optional[dict[str, Any]] = None,
+    temperature: Optional[float] = None,
+    **extra: Any,
+) -> Any:
+    """Generate text with Responses or Chat Completions using an ordered ladder."""
+
+    router = OpenAIModelRouter()
+    prompt_text = input_text if input_text is not None else _messages_text(messages)
+    if candidates:
+        selections = [_candidate_from_any(candidate, router, prompt_text, max_output_tokens) for candidate in candidates]
+    else:
+        selections = router.select_candidates(
+            task,
+            prompt_text,
+            risk_level=risk_level,
+            needs_live_data=needs_live_data,
+            route=route,
+        )
+    selections = [selection for selection in selections if selection.model]
+    if not selections:
+        selections = [router.select_model(task, prompt_text, risk_level=risk_level, needs_live_data=needs_live_data, route=route)]
+
+    owned_session, usage_session = _session_context(session)
+    attempted_models: list[str] = []
+    errors: list[dict[str, Any]] = []
+    try:
+        for index, selection in enumerate(selections):
+            spec = get_model_spec(selection.model)
+            endpoint = str(selection.endpoint or spec.endpoint)
+            if is_model_temporarily_unavailable("openai", selection.model, endpoint):
+                errors.append(
+                    {
+                        "model": selection.model,
+                        "endpoint": endpoint,
+                        "error_type": "model_health_skip",
+                        "status_code": None,
+                    }
+                )
+                continue
+
+            output_tokens = min(
+                int(max_output_tokens or selection.max_output_tokens),
+                int(selection.max_output_tokens),
+                int(router.max_output_hard),
+            )
+            input_tokens = router.estimate_tokens(prompt_text)
+            estimated_cost = router.estimate_cost(selection.model, input_tokens, output_tokens)
+            _check_budget_or_raise(
+                usage_session,
+                route=route,
+                model_used=selection.model,
+                model_tier=selection.tier,
+                estimated_cost=estimated_cost,
+            )
+            attempted_models.append(selection.model)
+            try:
+                if endpoint == "responses":
+                    request_kwargs: dict[str, Any] = {
+                        "model": selection.model,
+                        "input": _build_responses_input(messages, input_text),
+                        "instructions": _build_instructions(messages, instructions),
+                        "max_output_tokens": output_tokens,
+                        "store": False,
+                    }
+                    if spec.supports_reasoning_effort and selection.tier in {"reasoning", "hard_reasoning"}:
+                        request_kwargs["reasoning"] = {"effort": "low"}
+                    if temperature is not None and spec.supports_temperature:
+                        request_kwargs["temperature"] = temperature
+                    response = client.responses.create(**request_kwargs)
+                else:
+                    request_kwargs = {
+                        "model": selection.model,
+                        "messages": messages,
+                        "store": False,
+                    }
+                    token_param = "max_completion_tokens" if selection.model.startswith(("gpt-5", "o")) else "max_tokens"
+                    request_kwargs[token_param] = output_tokens
+                    if temperature is not None and spec.supports_temperature:
+                        request_kwargs["temperature"] = temperature
+                    if response_format is not None and spec.supports_response_format:
+                        request_kwargs["response_format"] = response_format
+                    response = client.chat.completions.create(**request_kwargs)
+            except Exception as exc:
+                if _is_budget_exception(exc):
+                    raise
+                status_code = _error_status_code(exc)
+                error_type = _error_type(exc)
+                error_code = _error_code(exc)
+                error_message = _sanitize_openai_error_message(exc)
+                logger.warning(
+                    "openai_provider_error",
+                    extra={
+                        "event": "openai_provider_error",
+                        "status_code": status_code,
+                        "error_type": error_type,
+                        "error_code": error_code,
+                        "error_message_sanitized": error_message,
+                        "model": selection.model,
+                        "endpoint": endpoint,
+                        "request_id": request_id,
+                    },
+                )
+                ttl = _health_ttl_for_error(exc)
+                if ttl:
+                    mark_model_unavailable("openai", selection.model, endpoint, error_type, ttl)
+                errors.append(
+                    {
+                        "model": selection.model,
+                        "endpoint": endpoint,
+                        "status_code": status_code,
+                        "error_type": error_type,
+                        "error_code": error_code,
+                        "error_message_sanitized": error_message,
+                    }
+                )
+                continue
+
+            actual_metadata = _usage_metadata(router, selection.model, response)
+            actual_input = actual_metadata.get("actual_input_tokens")
+            actual_output = actual_metadata.get("actual_output_tokens")
+            actual_cost = actual_metadata.get("actual_cost_usd")
+            metadata = {
+                "model_used": selection.model,
+                "model_tier": selection.tier,
+                "endpoint": endpoint,
+                "reason": selection.reason,
+                "candidate_index": index,
+                "fallback_attempted": index > 0,
+                "attempted_models": list(attempted_models),
+                "model_candidates": [candidate.model for candidate in selections],
+                "estimated_input_tokens": input_tokens,
+                "estimated_output_tokens": output_tokens,
+                "estimated_cost_usd": estimated_cost,
+                **actual_metadata,
+            }
+            record_openai_usage(
+                usage_session,
+                user_id=user_id,
+                request_id=request_id,
+                route=route,
+                selection=selection,
+                estimated_input_tokens=input_tokens,
+                estimated_output_tokens=output_tokens,
+                estimated_cost_usd=estimated_cost,
+                actual_input_tokens=actual_input,
+                actual_output_tokens=actual_output,
+                actual_cost_usd=actual_cost,
+                cache_hit=False,
+            )
+            logger.info(
+                "openai_usage_tracked",
+                extra={
+                    "event": "openai_usage_tracked",
+                    "route": route,
+                    "model_used": selection.model,
+                    "model_tier": selection.tier,
+                    "endpoint": endpoint,
+                    "reason": selection.reason,
+                    "estimated_input_tokens": input_tokens,
+                    "estimated_output_tokens": output_tokens,
+                    "estimated_cost_usd": round(estimated_cost, 8),
+                    "actual_input_tokens": actual_input,
+                    "actual_output_tokens": actual_output,
+                    "actual_cost_usd": round(float(actual_cost or 0.0), 8) if actual_cost is not None else None,
+                },
+            )
+            return _attach_metadata(response, metadata)
+    finally:
+        if owned_session is not None:
+            owned_session.close()
+
+    raise OpenAIProviderUnavailableError(
+        "OpenAI generation failed for all allowed candidates.",
+        metadata={
+            "attempted_models": attempted_models,
+            "model_candidates": [selection.model for selection in selections],
+            "errors": errors,
+            "provider_error_type": errors[-1]["error_type"] if errors else "no_candidate_available",
+            "fallback_attempted": len(attempted_models) > 1 or any(e.get("error_type") == "model_health_skip" for e in errors),
+        },
+    )
 
 
 def tracked_chat_completion(
@@ -280,6 +652,15 @@ def tracked_embedding(
     )
     texts = input if isinstance(input, list) else [str(input or "")]
     prompt_text = "\n".join(str(text or "") for text in texts)
+    if request_id:
+        cache_key = (
+            str(request_id),
+            embedding_model,
+            hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
+        )
+        cached = _EMBEDDING_TURN_CACHE.get(cache_key)
+        if cached and (time.time() - cached[0]) <= 300:
+            return cached[1]
     input_tokens = router.estimate_tokens(prompt_text)
     estimated_cost = router.estimate_cost(embedding_model, input_tokens, 0)
 
@@ -293,6 +674,11 @@ def tracked_embedding(
             estimated_cost=estimated_cost,
         )
         response = client.embeddings.create(model=embedding_model, input=input, **extra)
+        if request_id:
+            _EMBEDDING_TURN_CACHE[cache_key] = (time.time(), response)
+            if len(_EMBEDDING_TURN_CACHE) > 256:
+                for old_key in list(_EMBEDDING_TURN_CACHE.keys())[:64]:
+                    _EMBEDDING_TURN_CACHE.pop(old_key, None)
         actual_metadata = _usage_metadata(router, embedding_model, response)
         record_openai_usage(
             usage_session,

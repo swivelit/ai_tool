@@ -25,6 +25,12 @@ def ai_response_to_pipeline(response: AIProviderResponse) -> dict[str, Any]:
     core_meta = {
         "provider": response.provider,
         "model_used": response.model,
+        "model_candidates": response.raw.get("model_candidates") if isinstance(response.raw, dict) else [],
+        "endpoint": response.raw.get("endpoint") if isinstance(response.raw, dict) else "",
+        "openai_attempted_models": response.raw.get("openai_attempted_models") if isinstance(response.raw, dict) else [],
+        "fallback_attempted": response.raw.get("fallback_attempted") if isinstance(response.raw, dict) else False,
+        "provider_error_type": response.raw.get("provider_error_type") if isinstance(response.raw, dict) else "",
+        "embedding_calls": response.raw.get("embedding_calls", 0) if isinstance(response.raw, dict) else 0,
         "route": response.route,
         "reason": response.reason,
         "intent": response.intent,
@@ -59,6 +65,12 @@ def ai_response_to_pipeline(response: AIProviderResponse) -> dict[str, Any]:
         "provider": response.provider,
         "cost_estimate": response.estimated_cost_amount,
         "cost_currency": response.estimated_cost_currency,
+        "endpoint": response.raw.get("endpoint") if isinstance(response.raw, dict) else "",
+        "model_candidates": response.raw.get("model_candidates") if isinstance(response.raw, dict) else [],
+        "openai_attempted_models": response.raw.get("openai_attempted_models") if isinstance(response.raw, dict) else [],
+        "fallback_attempted": response.raw.get("fallback_attempted") if isinstance(response.raw, dict) else False,
+        "provider_error_type": response.raw.get("provider_error_type") if isinstance(response.raw, dict) else "",
+        "embedding_calls": response.raw.get("embedding_calls", 0) if isinstance(response.raw, dict) else 0,
     }
     if not is_english:
         pipeline["remodeled_english"] = text
@@ -67,9 +79,11 @@ def ai_response_to_pipeline(response: AIProviderResponse) -> dict[str, Any]:
 
 def _model_tier(response: AIProviderResponse) -> str:
     if response.provider == "openai":
-        if response.model == "gpt-5-mini":
+        if isinstance(response.raw, dict) and response.raw.get("model_tier"):
+            return str(response.raw.get("model_tier"))
+        if response.model in {"gpt-5-mini", "gpt-4.1-mini", "o4-mini"}:
             return "reasoning"
-        if response.model == "gpt-5-nano":
+        if response.model in {"gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"}:
             return "cheap"
     if response.provider == "sarvam":
         if response.model == "sarvam-105b":

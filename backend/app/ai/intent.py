@@ -17,7 +17,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("routine", re.compile(r"\b(routine|schedule|wake time|sleep time|daily habit|habits|check[- ]?in)\b", re.I)),
     ("profile", re.compile(r"\b(my profile|who am i|my name|about me|my goal|my goals|my personality|what do you know about me)\b", re.I)),
     ("settings", re.compile(r"\b(settings|preference|preferences|reply language|assistant name|change language)\b", re.I)),
-    ("coding", re.compile(r"\b(code|coding|debug|bug|stack trace|typescript|python|react native|fastapi|sql|api|function|class|refactor|compiler)\b", re.I)),
+    ("coding", re.compile(r"\b(code|coding|debug|bug|stack trace|typescript|python|react native|fastapi|sql|api implementation|function implementation|class implementation|refactor)\b", re.I)),
     ("complex_reasoning", re.compile(r"\b(architecture|design a|multi[- ]?step|trade[- ]?off|deep analysis|reason through|system design|migration plan|debug this architecture)\b", re.I)),
     ("translation", re.compile(r"\b(translate|translation|transliterate|transliteration|convert (?:to|into)|in tamil|tamil la|hindi me|hinglish|tanglish)\b", re.I)),
     ("tts", re.compile(r"\b(text[- ]?to[- ]?speech|tts|speak this|read aloud|voice output)\b", re.I)),

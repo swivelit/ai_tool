@@ -101,6 +101,13 @@ def test_chat_contract_uses_ai_router_when_enabled(client, monkeypatch):
             intent="general",
             estimated_cost_amount=0.0001,
             estimated_cost_currency="USD",
+            raw={
+                "endpoint": "responses",
+                "model_candidates": ["gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"],
+                "openai_attempted_models": ["gpt-5-nano"],
+                "fallback_attempted": False,
+                "embedding_calls": 0,
+            },
         )
 
     monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
@@ -119,6 +126,10 @@ def test_chat_contract_uses_ai_router_when_enabled(client, monkeypatch):
     assert payload["pipeline"]["provider"] == "openai"
     assert payload["meta"]["provider"] == "openai"
     assert payload["meta"]["model_used"] == "gpt-5-nano"
+    assert payload["meta"]["endpoint"] == "responses"
+    assert payload["meta"]["model_candidates"] == ["gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"]
+    assert payload["meta"]["openai_attempted_models"] == ["gpt-5-nano"]
+    assert payload["meta"]["embedding_calls"] == 0
     assert payload["meta"]["ai_router_enabled"] is True
 
 

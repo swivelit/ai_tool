@@ -63,7 +63,14 @@ class AIProviderRouter:
             )
 
         openai_task = "coding" if intent.intent in {"coding", "complex_reasoning"} else "normal_qa"
-        selection = OpenAIModelRouter().select_model(openai_task, request.message, route=intent.route)
+        user_tier = str(request.metadata.get("user_tier") or request.metadata.get("tier") or "free")
+        selections = OpenAIModelRouter().select_candidates(
+            openai_task,
+            request.message,
+            route=intent.route,
+            user_tier=user_tier,
+        )
+        selection = selections[0] if selections else OpenAIModelRouter().select_model(openai_task, request.message, route=intent.route)
         return AIRoute(
             provider="openai",
             model=selection.model,
@@ -73,6 +80,9 @@ class AIProviderRouter:
             intent=intent.intent,
             max_output_tokens=selection.max_output_tokens,
             needs_voice_output=request.channel == "voice",
+            model_candidates=[candidate.model for candidate in selections] or [selection.model],
+            provider_endpoint_candidates=[candidate.endpoint for candidate in selections] or [selection.endpoint],
+            metadata={"model_tier": selection.tier},
         )
 
 

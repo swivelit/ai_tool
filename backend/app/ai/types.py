@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,9 @@ class AIRoute:
     intent: str
     max_output_tokens: int
     needs_voice_output: bool = False
+    model_candidates: list[str] = field(default_factory=list)
+    provider_endpoint_candidates: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
