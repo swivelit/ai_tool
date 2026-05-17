@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 /*
- * Release guard for the local-first mobile runtime.
+ * LEGACY ONLY: release guard for the old local-first mobile runtime.
  *
- * This script is intentionally metadata-focused and runs before Expo prebuild in
- * release builds. It complements native:verify-llama, which performs the native
- * CMake/NDK/podspec compile/link checks.
+ * Public release verification must use verify-release-backend-first-config.js.
+ * This script is retained for old local-model experiments and refuses to run
+ * unless explicitly allowed.
  */
+if (process.env.JAI_ALLOW_LEGACY_LOCAL_FIRST_VERIFY !== '1') {
+  console.error('[verify-release-local-first-config] Legacy local-first release verification is disabled. Use npm run release:verify-backend-first.');
+  process.exit(1);
+}
 const fs = require('node:fs');
 const path = require('node:path');
 

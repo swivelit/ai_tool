@@ -85,6 +85,7 @@ from .ai.budget import enforce_free_voice_quota, enforce_provider_budget
 from .ai.orchestrator import run_text_turn
 from .ai.providers.sarvam_provider import (
     SarvamProvider,
+    estimate_audio_duration_details,
     estimate_stt_cost,
     estimate_tts_cost,
     extract_sarvam_transcript,
@@ -1424,6 +1425,8 @@ def normalize_category(raw: str) -> str:
         return "Home"
     if cr == "business":
         return "Business"
+    if cr == "reminder":
+        return "Reminder"
     return "Other"
 
 
@@ -3279,6 +3282,8 @@ def _run_chat_logic(
 
 
 def _metadata_for_ai_response(text: str, response: AIProviderResponse) -> Dict[str, Any]:
+    if isinstance(response.raw, dict) and isinstance(response.raw.get("item_metadata"), dict):
+        return dict(response.raw["item_metadata"])
     clean_text = " ".join(str(text or "").strip().split())
     intent = "assistant"
     if response.intent in {"reminder", "routine", "profile", "settings"}:
@@ -4310,14 +4315,24 @@ async def _transcribe_and_analyze_upload(
     )
     if len(upload_bytes) <= 0:
         raise HTTPException(400, "Audio file is empty. Please record for a moment and try again.")
-    enforce_free_voice_quota(session, int(user.id), additional_seconds=0.0, admin_email=auth_user.email)
-    enforce_provider_budget(session, "sarvam", currency="INR")
     suffix = os.path.splitext(file.filename or "")[-1] or ".m4a"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(upload_bytes)
         tmp_path = tmp.name
 
     try:
+        estimated_audio_seconds, duration_estimation_method = estimate_audio_duration_details(
+            tmp_path,
+            content_type,
+            len(upload_bytes),
+        )
+        enforce_free_voice_quota(
+            session,
+            int(user.id),
+            additional_seconds=estimated_audio_seconds,
+            admin_email=auth_user.email,
+        )
+        enforce_provider_budget(session, "sarvam", currency="INR")
         transcript_text = _transcribe_audio_file(tmp_path, speech_language)
         record_ai_usage_event(
             session,
@@ -4329,15 +4344,20 @@ async def _transcribe_and_analyze_upload(
                 reason="voice_upload_stt",
                 language=normalize_audio_language(speech_language) or "auto",
                 intent="stt",
-                audio_seconds=0.0,
+                audio_seconds=estimated_audio_seconds,
                 characters=len(transcript_text),
-                estimated_cost_amount=estimate_stt_cost(0.0),
+                estimated_cost_amount=estimate_stt_cost(estimated_audio_seconds),
                 estimated_cost_currency="INR",
             ),
             user_id=int(user.id),
             request_id=get_request_id(),
             latency_ms=int(round((time.perf_counter() - started) * 1000)),
-            metadata={"file_size": len(upload_bytes), "content_type": content_type, "filename": filename},
+            metadata={
+                "file_size": len(upload_bytes),
+                "content_type": content_type,
+                "filename": filename,
+                "duration_estimation_method": duration_estimation_method,
+            },
         )
 
         use_ai_router = _ai_router_enabled()
@@ -4350,7 +4370,12 @@ async def _transcribe_and_analyze_upload(
                     reply_language=reply_language,
                     channel="voice",
                     request_id=get_request_id(),
-                    metadata={"admin_email": auth_user.email, "file_size": len(upload_bytes)},
+                    metadata={
+                        "admin_email": auth_user.email,
+                        "file_size": len(upload_bytes),
+                        "audio_seconds": estimated_audio_seconds,
+                        "duration_estimation_method": duration_estimation_method,
+                    },
                 ),
                 existing_context={
                     "local_rag_service": LOCAL_RAG_SERVICE,

@@ -211,13 +211,14 @@ if is_truthy "${JAI_DEBUG_LITE:-}"; then
 fi
 
 if [[ "$BUILD_TYPE" == "release" ]]; then
-  # Local release APKs are production-like for the native runtime even when they
-  # are not running on EAS. Gradle/CMake/app.config use these explicit guards to
-  # refuse JAI_LLAMA_CPP_AVAILABLE=0 and unresolved GGUF CDN/integrity metadata.
+  # Local release APKs are production-like for backend/Firebase checks. Native
+  # local models remain optional and are required only when explicit fallback is
+  # enabled below.
   export JAI_BUILD_TYPE="release"
-  export JAI_REQUIRE_LLAMA_CPP="1"
-  export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256="true"
-  export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_INTEGRITY_METADATA="true"
+fi
+
+if [[ -z "${EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK:-}" ]]; then
+  export EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK="false"
 fi
 
 if [[ -z "${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-}" ]]; then
@@ -233,8 +234,16 @@ if [[ -z "${EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE:-}" ]]; then
 fi
 
 RUNTIME_MODE="$(runtime_mode_normalized "${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}")"
+LOCAL_MODEL_FALLBACK_REQUIRED=0
+if is_truthy "${EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK:-}" || is_truthy "${EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE:-}" || is_truthy "${JAI_REQUIRE_LLAMA_CPP:-}"; then
+  LOCAL_MODEL_FALLBACK_REQUIRED=1
+fi
+if [[ "$LOCAL_MODEL_FALLBACK_REQUIRED" == "1" && "$BUILD_TYPE" == "release" ]]; then
+  export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256="${EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256:-true}"
+  export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_INTEGRITY_METADATA="${EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_INTEGRITY_METADATA:-true}"
+fi
 SHOULD_SYNC_LLAMA_CPP=0
-if [[ "$BUILD_TYPE" == "release" || "$RUNTIME_MODE" == "native_on_device" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]] || is_truthy "${JAI_REQUIRE_LLAMA_CPP:-}"; then
+if [[ "$LOCAL_MODEL_FALLBACK_REQUIRED" == "1" && "$RUNTIME_MODE" == "native_on_device" ]] || is_truthy "${JAI_REQUIRE_LLAMA_CPP:-}"; then
   SHOULD_SYNC_LLAMA_CPP=1
 fi
 
@@ -317,6 +326,7 @@ info "NODE_ENV: ${NODE_ENV:-<unset>}"
 info "Android ABIs: $JAI_ANDROID_ABIS"
 info "Runtime mode: ${EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE:-native_on_device}"
 info "Model delivery mode: ${EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE:-download_on_first_launch}"
+info "Local model fallback enabled: ${EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK:-false}"
 if is_truthy "${EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE:-}"; then
   info "Chat routing: local model fallback/dev opt-in"
 else
@@ -332,7 +342,7 @@ else
   info "Voice routing: backend Sarvam (default)"
 fi
 if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" ]]; then
-  info "llama.cpp required: yes (production/release native build guard enabled)"
+  info "llama.cpp required: yes (explicit native local model guard enabled)"
 fi
 [[ -n "${API_BASE_URL:-}" ]] && info "API base: $API_BASE_URL"
 
@@ -359,14 +369,14 @@ if [[ "$SHOULD_SYNC_LLAMA_CPP" == "1" ]]; then
   info "Ensuring llama.cpp native backend is available"
   if npm run native:sync-llama; then
     info "llama.cpp native backend is ready"
-  elif [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
-    fail "llama.cpp is required for this production/release native build. Run npm run native:sync-llama or git submodule update --init --recursive before building."
+  elif [[ "$LOCAL_MODEL_FALLBACK_REQUIRED" == "1" || "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" ]]; then
+    fail "llama.cpp is required for this explicit local model fallback build. Run npm run native:sync-llama or git submodule update --init --recursive before building."
   else
     warn "llama.cpp sync failed. Continuing because this is not a production/release-required build; native calls will fail clearly with JAI_LLAMA_CPP_BACKEND_MISSING."
   fi
 fi
 
-if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" || "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
+if [[ "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
   info "Verifying backend-first release configuration"
   if npm run release:verify-backend-first; then
     info "Backend-first release configuration verified"
@@ -374,11 +384,13 @@ if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" || "$IS_PRODUCTION_OR_RELEASE_BUILD" =
     fail "Backend-first release verification failed. Keep EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false and EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false for release builds, and configure Firebase public env values."
   fi
 
-  info "Verifying native llama.cpp build/runtime wiring"
-  if npm run native:verify-llama; then
-    info "Native llama.cpp build/runtime wiring verified"
-  else
-    fail "Native llama.cpp verification failed. Run npm run native:sync-llama, then npm run native:verify-llama from mobile/ and fix the reported native build guard/linkage issue."
+  if [[ "$LOCAL_MODEL_FALLBACK_REQUIRED" == "1" || "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" ]]; then
+    info "Verifying native llama.cpp build/runtime wiring"
+    if npm run native:verify-llama; then
+      info "Native llama.cpp build/runtime wiring verified"
+    else
+      fail "Native llama.cpp verification failed. Run npm run native:sync-llama, then npm run native:verify-llama from mobile/ and fix the reported native build guard/linkage issue."
+    fi
   fi
 fi
 
@@ -434,7 +446,7 @@ validate_apk_native_libraries() {
       missing=1
     fi
 
-    if ! is_truthy "${JAI_ANDROID_SKIP_JAI_RUNTIME_APK_VALIDATION:-}"; then
+    if [[ "$LOCAL_MODEL_FALLBACK_REQUIRED" == "1" ]] && ! is_truthy "${JAI_ANDROID_SKIP_JAI_RUNTIME_APK_VALIDATION:-}"; then
       if ! grep -Eq "[[:space:]]lib/${abi}/libjai_llama_runtime\\.so$" "$listing_file"; then
         printf "Missing lib/%s/libjai_llama_runtime.so in %s\n" "$abi" "$apk_path" >&2
         missing=1
@@ -462,7 +474,9 @@ validate_apk_native_libraries() {
     fail "APK native library validation failed. Rebuild with a consistent JAI_ANDROID_ABIS value."
   fi
 
-  if is_truthy "${JAI_ANDROID_SKIP_JAI_RUNTIME_APK_VALIDATION:-}"; then
+  if [[ "$LOCAL_MODEL_FALLBACK_REQUIRED" != "1" ]]; then
+    warn "Skipped libjai_llama_runtime.so APK validation because local model fallback is disabled."
+  elif is_truthy "${JAI_ANDROID_SKIP_JAI_RUNTIME_APK_VALIDATION:-}"; then
     warn "Skipped libjai_llama_runtime.so APK validation because JAI_ANDROID_SKIP_JAI_RUNTIME_APK_VALIDATION is truthy."
   fi
 }

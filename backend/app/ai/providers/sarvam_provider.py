@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import time
+import wave
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -254,6 +256,105 @@ def estimate_tts_cost(text: str, model: str) -> float:
 def estimate_stt_cost(audio_seconds: float) -> float:
     rate = _env_float("SARVAM_PRICE_STT_INR_PER_HOUR", 30.0)
     return (max(0.0, float(audio_seconds or 0.0)) / 3600.0) * rate
+
+
+def estimate_audio_duration_seconds(
+    file_path: str,
+    content_type: str = "",
+    file_size: Optional[int] = None,
+) -> float:
+    seconds, _method = estimate_audio_duration_details(file_path, content_type, file_size)
+    return seconds
+
+
+def estimate_audio_duration_details(
+    file_path: str,
+    content_type: str = "",
+    file_size: Optional[int] = None,
+) -> tuple[float, str]:
+    size = _safe_file_size(file_path, file_size)
+    if size <= 0:
+        return 0.0, "empty"
+
+    ffprobe_seconds = _ffprobe_duration(file_path)
+    if ffprobe_seconds and ffprobe_seconds > 0:
+        return max(1.0, ffprobe_seconds), "ffprobe"
+
+    suffix = Path(file_path).suffix.lower()
+    mime = str(content_type or "").lower()
+    if suffix == ".wav" or "wav" in mime:
+        seconds = _wave_duration(file_path)
+        if seconds and seconds > 0:
+            return max(1.0, seconds), "wave"
+    if suffix in {".aif", ".aiff", ".aifc"} or "aiff" in mime or "aifc" in mime:
+        seconds = _aiff_duration(file_path)
+        if seconds and seconds > 0:
+            return max(1.0, seconds), "aifc"
+
+    # Conservative compressed-audio fallback. 16 kbps tends to over-estimate
+    # short voice-note duration, which protects free quota from undercounting.
+    seconds = (size * 8.0) / 16_000.0
+    return max(1.0, seconds), "file_size_16kbps_floor"
+
+
+def _safe_file_size(file_path: str, file_size: Optional[int]) -> int:
+    if file_size is not None:
+        try:
+            return max(0, int(file_size))
+        except Exception:
+            return 0
+    try:
+        return max(0, int(os.path.getsize(file_path)))
+    except Exception:
+        return 0
+
+
+def _ffprobe_duration(file_path: str) -> Optional[float]:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        value = float(str(result.stdout or "").strip())
+        return value if value > 0 else None
+    except Exception:
+        return None
+
+
+def _wave_duration(file_path: str) -> Optional[float]:
+    try:
+        with wave.open(file_path, "rb") as audio:
+            frames = audio.getnframes()
+            rate = audio.getframerate()
+            return frames / float(rate) if rate > 0 else None
+    except Exception:
+        return None
+
+
+def _aiff_duration(file_path: str) -> Optional[float]:
+    try:
+        import aifc
+
+        with aifc.open(file_path, "rb") as audio:
+            frames = audio.getnframes()
+            rate = audio.getframerate()
+            return frames / float(rate) if rate > 0 else None
+    except Exception:
+        return None
 
 
 def normalize_audio_language(language: Optional[str]) -> Optional[str]:

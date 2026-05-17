@@ -13,6 +13,9 @@ const USE_LOCAL_CHAT_PIPELINE =
 const USE_LOCAL_VOICE_PIPELINE =
   process.env.EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE ?? "false";
 
+const ENABLE_LOCAL_MODEL_FALLBACK =
+  process.env.EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK ?? "false";
+
 const E2E_MOCK_AUTH = process.env.EXPO_PUBLIC_E2E_MOCK_AUTH || "";
 const E2E_SKIP_MODEL_SETUP =
   process.env.EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP || "";
@@ -87,14 +90,20 @@ const isProductionOrReleaseBuild =
   normalizedEasProfile === "release" ||
   normalizedJaiBuildProfile === "production" ||
   normalizedJaiBuildProfile === "release" ||
-  normalizedJaiBuildType === "release" ||
+  normalizedJaiBuildType === "release";
+const isLocalModelFallbackEnabled =
+  isTruthyEnv(ENABLE_LOCAL_MODEL_FALLBACK) ||
+  isTruthyEnv(USE_LOCAL_CHAT_PIPELINE) ||
   isTruthyEnv(process.env.JAI_REQUIRE_LLAMA_CPP);
+const shouldRequireNativeLocalModel =
+  isTruthyEnv(process.env.JAI_REQUIRE_LLAMA_CPP) ||
+  (isProductionOrReleaseBuild && isLocalModelFallbackEnabled);
 
 const isProductionNativeOnDeviceBuild =
-  isProductionOrReleaseBuild && isNativeOnDeviceRuntime;
+  shouldRequireNativeLocalModel && isNativeOnDeviceRuntime;
 const normalizedModelDeliveryMode = normalizeEnvFlag(LOCAL_MODEL_DELIVERY_MODE);
 const isProductionNativeDownloadBuild =
-  isProductionOrReleaseBuild &&
+  shouldRequireNativeLocalModel &&
   isNativeOnDeviceRuntime &&
   normalizedModelDeliveryMode === "download_on_first_launch";
 const isReleaseLocalVoicePipelineAllowed = isTruthyEnv(
@@ -146,10 +155,10 @@ const LOCAL_MODEL_REQUIRE_SHA256 = isProductionNativeDownloadBuild
     process.env.EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_INTEGRITY_METADATA ||
     "false";
 
-if (isProductionOrReleaseBuild && normalizedRuntimeMode === "local_adapter") {
+if (isProductionOrReleaseBuild && isLocalModelFallbackEnabled && normalizedRuntimeMode === "local_adapter") {
   throw new Error(
-    "Production/release builds cannot use runtime.mode=local_adapter. " +
-      "local_adapter is development-only; use EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device.",
+    "Production/release local model fallback builds cannot use runtime.mode=local_adapter. " +
+      "local_adapter is development-only; use EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=native_on_device for explicit local fallback releases.",
   );
 }
 
@@ -325,7 +334,7 @@ export default {
         process.env.EXPO_PUBLIC_API_BASE ||
         "https://ai-tool-rrau.onrender.com",
 
-      // phone-local runtime
+      // optional local runtime
       // Backend AI router is primary. Local runtime mode remains explicit for
       // optional fallback/development paths:
       // - native_on_device is the intended production path. It requires a
@@ -338,6 +347,8 @@ export default {
       LOCAL_MODEL_ALLOW_DEVICE_LOOPBACK,
       LOCAL_MODEL_OPENAI_POLICY: "backend_controlled",
       LOCAL_MODEL_BACKEND_ROLE: "primary",
+      ENABLE_LOCAL_MODEL_FALLBACK,
+      EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK: ENABLE_LOCAL_MODEL_FALLBACK,
       LOCAL_ON_DEVICE_BACKEND,
       LOCAL_ON_DEVICE_NATIVE_MODULE,
       LOCAL_ON_DEVICE_MODEL_ROOT,
@@ -346,7 +357,7 @@ export default {
       // Local chat interception is optional fallback/dev only.
       USE_LOCAL_CHAT_PIPELINE,
       // Recorded voice defaults to the authenticated backend; set this true
-      // only for explicit development of phone-local STT.
+      // only for explicit development of local native STT fallback.
       USE_LOCAL_VOICE_PIPELINE,
       E2E_MOCK_AUTH,
       E2E_SKIP_MODEL_SETUP,

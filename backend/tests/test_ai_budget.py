@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
-from app.ai.budget import enforce_free_text_quota, enforce_provider_budget
+from app.ai.budget import enforce_free_text_quota, enforce_free_voice_quota, enforce_provider_budget
 from app.ai.types import AIProviderResponse
 from app.ai.usage import record_ai_usage_event
 from app.database import SessionLocal
@@ -62,3 +62,28 @@ def test_provider_budget_returns_503(monkeypatch):
 
     assert exc.value.status_code == 503
     assert "Sarvam daily budget exceeded" in exc.value.detail
+
+
+def test_free_daily_voice_quota_counts_audio_seconds(monkeypatch):
+    monkeypatch.setenv("FREE_DAILY_VOICE_SECONDS", "1")
+    with SessionLocal() as session:
+        record_ai_usage_event(
+            session,
+            AIProviderResponse(
+                text="voice",
+                provider="sarvam",
+                model="saaras:v3",
+                route="sarvam_stt",
+                reason="test",
+                language="en-IN",
+                intent="stt",
+                audio_seconds=1.0,
+            ),
+            user_id=123,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            enforce_free_voice_quota(session, 123, additional_seconds=1.0)
+
+    assert exc.value.status_code == 429
+    assert "Daily free voice limit" in exc.value.detail

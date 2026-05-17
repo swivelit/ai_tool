@@ -108,8 +108,12 @@ describe("Android native ABI filters", () => {
     expect(buildApk.indexOf('export EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE="local_adapter"')).toBeLessThan(
       buildApk.indexOf("SHOULD_SYNC_LLAMA_CPP=0"),
     );
+    expect(buildApk).toContain('LOCAL_MODEL_FALLBACK_REQUIRED=0');
+    expect(buildApk).toContain(
+      'if [[ "$LOCAL_MODEL_FALLBACK_REQUIRED" == "1" && "$BUILD_TYPE" == "release" ]]; then',
+    );
     expect(buildApk.indexOf('export JAI_BUILD_TYPE="release"')).toBeLessThan(
-      buildApk.indexOf('export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256="true"'),
+      buildApk.indexOf('export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256="${EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256:-true}"'),
     );
   });
 

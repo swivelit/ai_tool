@@ -1,30 +1,35 @@
 # J AI mobile app
 
-This Expo/React Native app is configured so normal chat enters the phone-local agent pipeline first:
+This Expo/React Native app is configured so normal public chat and recorded
+voice enter the authenticated backend AI router first:
 
 ```text
 apiPost("/api/chat")
-  -> handleLocalChat()
-  -> runLocalAssistantTurn()
-  -> Profiler Agent when profile facts/onboarding gaps are detected
-  -> Memory & Cache Agent
-  -> Orchestrator Agent
-  -> Native on-device Gemma/Qwen runtime
-  -> Alignment Agent
+  -> Firebase bearer token
+  -> backend /api/chat
+  -> backend AI router
+  -> Sarvam for Indic/Tanglish or speech-language paths
+  -> OpenAI gpt-5-nano for cheap English/general
+  -> OpenAI gpt-5-mini for controlled coding/complex reasoning
   -> reply
 ```
 
-Backend/OpenAI remains available only through the explicit fallback path:
+Phone-local models are optional fallback/development only:
 
 ```text
-local pipeline explicitly decides fallback is required
-  -> apiPostBackendOnly("/api/chat")
-  -> backend/OpenAI
-  -> optional local alignment
+EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=true
+  or EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=true
+  -> local setup/llama.cpp/GGUF validation
+  -> local pipeline may intercept selected turns
+  -> backend remains the public primary path
   -> reply
 ```
 
-Do not change normal `/api/chat` into a backend-primary path. Missing model files, failed downloads, checksum mismatches, missing native bridge code, or missing llama.cpp bindings must fail clearly and must not silently call backend/OpenAI.
+Default release/public builds keep `EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false`,
+`EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false`, and
+`EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false`. Missing local model files,
+llama.cpp, GGUF CDN URLs, byte sizes, or SHA hashes must not block a backend-first
+release unless local fallback is explicitly enabled.
 
 ## Backend chat smoke test
 
@@ -78,14 +83,17 @@ Common failures:
 
 ## Runtime modes
 
-- `runtime.mode = "native_on_device"` is the intended production mode.
-- `modelDelivery.mode = "download_on_first_launch"` is the production model delivery mode.
+- Backend AI router is the production/public primary runtime.
+- `EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false` disables local model release requirements.
+- `runtime.mode = "native_on_device"` is available for explicit local fallback builds.
 - `runtime.mode = "local_adapter"` is development-only and keeps `/chat/completions` and `/embeddings` as local adapter contracts.
+- `modelDelivery.mode = "download_on_first_launch"` is used only when explicit native local fallback is enabled.
 - `modelDelivery.mode = "bundled_assets"` is optional developer/build-time mode only.
 
-The native Android/iOS bridge now has production llama.cpp build wiring and production guards. Production `native_on_device` builds refuse to compile if llama.cpp is missing instead of shipping with `JAI_LLAMA_CPP_AVAILABLE=0`. The native verifier now performs an Android NDK compile/link probe for `jai_llama_runtime` and compiles the iOS Objective-C++ bridge on macOS.
-
-This zip does not include the llama.cpp checkout itself, so release machines must still run `npm run native:sync-llama`. Do not claim true target-device Gemma/Qwen on-device inference is complete until a native app build with the synced llama.cpp checkout loads downloaded GGUF `file://` paths and returns generated text/vectors on physical devices. Use `npm run native:verify-llama -- --smoke --model /path/to/tiny.gguf` for an optional host GGUF smoke test that calls `completeChat` and `embedTexts`.
+The native Android/iOS bridge still has llama.cpp build wiring and guards for
+explicit local fallback builds. Backend-first release builds do not require
+llama.cpp. If local fallback is enabled, release machines must run
+`npm run native:sync-llama` and `npm run native:verify-llama`.
 
 ## llama.cpp setup
 
@@ -114,20 +122,31 @@ JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run ios:native
 
 For reproducible production builds, commit the submodule pointer or set `JAI_LLAMA_CPP_REF=<tag-or-commit>` when using the clone fallback in `npm run native:sync-llama`.
 
-## CI/release native verification order
+## CI/release verification order
 
-Release CI must prove llama.cpp is present and linkable before Expo prebuild generates native projects:
+Backend-first release CI does not need llama.cpp or GGUF metadata:
 
 ```bash
 cd mobile
 npm ci
+npm run typecheck
+npm test
+npm run release:verify-backend-first
+```
+
+Explicit local fallback release CI must also prove llama.cpp is present and linkable before Expo prebuild generates native projects:
+
+```bash
+cd mobile
+npm ci
+EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=true
 npm run native:sync-llama
 npm run native:verify-llama
 npx expo prebuild --platform android --clean
 # then run the platform build, for example ./gradlew assembleRelease from android/
 ```
 
-`npm run native:verify-llama` checks the vendored `include/llama.h` and `CMakeLists.txt`, configures Android CMake with `JAI_REQUIRE_LLAMA_CPP=ON`, compiles and links `jai_llama_runtime` with the Android NDK, verifies Android/iOS `JAI_LLAMA_CPP_AVAILABLE=1` wiring, compiles `JaiLlamaCppBridge.mm` on macOS, verifies production/release missing-llama guards, and updates `nativeImplementationStatus` only after those checks pass. On non-macOS hosts it clearly reports that iOS compile verification was skipped while keeping podspec structural checks; macOS CI/release builds must run the same verifier on macOS.
+`npm run native:verify-llama` checks the vendored `include/llama.h` and `CMakeLists.txt`, configures Android CMake with `JAI_REQUIRE_LLAMA_CPP=ON`, compiles and links `jai_llama_runtime` with the Android NDK, verifies Android/iOS `JAI_LLAMA_CPP_AVAILABLE=1` wiring, compiles `JaiLlamaCppBridge.mm` on macOS, verifies explicit local-fallback missing-llama guards, and updates `nativeImplementationStatus` only after those checks pass. On non-macOS hosts it clearly reports that iOS compile verification was skipped while keeping podspec structural checks; explicit local fallback macOS CI/release builds must run the same verifier on macOS.
 
 Optional GGUF smoke test:
 
@@ -139,11 +158,13 @@ npm run native:verify-llama -- --smoke --model /path/to/tiny-chat.gguf --embeddi
 
 The smoke mode builds a small host probe against llama.cpp, loads the supplied GGUF, and calls `completeChat` plus `embedTexts`. It still does not replace real target-device Gemma/Qwen validation in the mobile app with downloaded `file://` model paths.
 
-## Production model delivery
+## Optional local model delivery
 
-Production users do **not** manually place GGUF files in `mobile/models/`.
+Backend-first production users do **not** need GGUF files. When explicit local
+fallback is enabled, users do **not** manually place GGUF files in
+`mobile/models/`.
 
-Production startup/setup flow:
+Optional local fallback startup/setup flow:
 
 ```text
 App launches
@@ -174,7 +195,24 @@ qwen3-14b-q4_k_m.gguf
 
 `mobile/data/config/models.json` defaults `modelDelivery.defaultTier` to `lite`, so first launch/basic chat requires only Gemma 4B plus the Qwen embedding model. Qwen 8B and Qwen 14B are downloaded only when the selected tier requires them, or when a release configuration deliberately validates metadata for all production model entries.
 
-## Required production environment values
+## Required EAS/mobile environment values
+
+Backend-first release:
+
+```bash
+EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false
+EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false
+EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false
+EXPO_PUBLIC_API_BASE=https://<your-render-service>
+EXPO_PUBLIC_FIREBASE_API_KEY=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_APP_ID=<firebase-public-value>
+```
+
+Explicit local fallback release additionally needs llama.cpp and GGUF delivery metadata.
 
 Use either one public CDN base URL or per-model public/signed URLs. Do not put long-lived secrets in `EXPO_PUBLIC_*` values because they are bundled into the app.
 
@@ -201,9 +239,11 @@ EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B=<64-hex-sha256>
 EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED=<64-hex-sha256>
 ```
 
-For production EAS builds with `runtime.mode=native_on_device` and `modelDelivery.mode=download_on_first_launch`, `mobile/app.config.ts` fails the build clearly when the CDN URL path or integrity metadata is missing.
-
-For any production EAS build with `runtime.mode=native_on_device`, `mobile/app.config.ts`, Android Gradle/CMake, and the iOS podspec fail clearly when llama.cpp is missing.
+When `EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=true` with
+`runtime.mode=native_on_device` and `modelDelivery.mode=download_on_first_launch`,
+`mobile/app.config.ts` fails the build clearly when the CDN URL path or
+integrity metadata is missing. Explicit local fallback builds also fail clearly
+when llama.cpp is missing.
 
 ## Local APK builds
 
@@ -215,14 +255,14 @@ From the repo root, `./build-apk.sh` builds a local Android APK and automaticall
 
 Local APK builds load `mobile/.env` first and `mobile/.env.local` second. Values already exported in the shell take highest priority, so command-specific overrides such as `BUILD_TYPE=debug ./build-apk.sh` are preserved. The script logs only the loaded file names and precedence, never environment values.
 
-Release APK builds default to `arm64-v8a`, which is the intended target for the on-device llama.cpp runtime on Android phones. Debug APK builds use the same `JAI_ANDROID_ABIS` source of truth across React Native, app Gradle, and the Jai native module. `./launch-debug_apk.sh` reads the connected device ABI with adb and builds a matching debug APK, including `x86_64` for supported emulators. You can override explicitly with:
+Release APK builds default to `arm64-v8a`, which is the intended Android phone target and also the required target for explicit on-device llama.cpp fallback builds. Debug APK builds use the same `JAI_ANDROID_ABIS` source of truth across React Native, app Gradle, and the Jai native module. `./launch-debug_apk.sh` reads the connected device ABI with adb and builds a matching debug APK, including `x86_64` for supported emulators. You can override explicitly with:
 
 ```bash
 JAI_ANDROID_ABIS=x86_64 BUILD_TYPE=debug ./build-apk.sh
 JAI_ANDROID_ABIS=arm64-v8a ./build-apk.sh
 ```
 
-After Gradle finishes, `./build-apk.sh` validates the APK native libraries and fails before install if `libreactnative.so` or `libjai_llama_runtime.so` is missing for any selected ABI, or if the APK contains native libraries for an unselected ABI.
+After Gradle finishes, `./build-apk.sh` validates the APK native libraries and fails before install if required React Native libraries are missing for any selected ABI, or if the APK contains native libraries for an unselected ABI. It only requires `libjai_llama_runtime.so` when explicit local model fallback is enabled.
 
 Android 15 introduced devices and emulator images with 16 KB memory pages. Apps that package native `.so` files must have uncompressed APK entries aligned for 16 KB loading and every ELF `LOAD` segment aligned to at least `0x4000`; otherwise Android 15+/Android 16-style 16 KB devices can show the Android App Compatibility warning or refuse to load the native code in future releases. [Android's guidance](https://developer.android.com/guide/practices/page-sizes) says NDK r28+ emits 16 KB-aligned shared libraries by default, while NDK r27 requires `-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON` or explicit linker flags. Expo SDK 54 / React Native 0.81.5 currently pins NDK `27.1.12297006` in `react-native/gradle/libs.versions.toml`, and the local SDK used by this repo has NDK r27 installed, so this project keeps r27 and applies the documented r27 flags instead of overriding Expo/RN to r28.
 
@@ -255,7 +295,7 @@ zipalign -c -P 16 -v 4 dist/tamil-ai-debug.apk
 
 `./launch-debug_apk.sh` prints `16 KB page-size emulator detected; APK must pass 16 KB native library validation.` when `adb shell getconf PAGE_SIZE` returns `16384`, and stops before install if validation fails unless the explicit debug escape hatch above is set.
 
-For EAS/cloud builds, set the same `EXPO_PUBLIC_LOCAL_MODEL_*`, `EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE`, and llama.cpp-related values as EAS environment variables or CI secrets. EAS/cloud builders do not receive your local `mobile/.env` or `mobile/.env.local` unless you explicitly provide those values to the build environment.
+For EAS/cloud backend-first builds, set Firebase public values, `EXPO_PUBLIC_API_BASE`, and the backend-first routing flags shown above. Set `EXPO_PUBLIC_LOCAL_MODEL_*` and llama.cpp-related values only for explicit local fallback builds. EAS/cloud builders do not receive your local `mobile/.env` or `mobile/.env.local` unless you explicitly provide those values to the build environment.
 
 ## Optional developer bundled-assets mode
 
@@ -276,9 +316,9 @@ EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE=bundled_assets
 
 The Expo config plugin copies non-empty files from `mobile/models/` into native assets during prebuild. This is not the real-user production flow.
 
-## Native app build path
+## Explicit Local Native Build Path
 
-Expo Go cannot load custom native inference code. Use a custom development build or prebuild/bare React Native workflow.
+Expo Go cannot load custom native inference code. Use this path only when intentionally developing the optional local model fallback in a custom development build or prebuild/bare React Native workflow.
 
 ```bash
 npm install

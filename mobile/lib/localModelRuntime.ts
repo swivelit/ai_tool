@@ -35,6 +35,7 @@ export type LocalAdapterLocation =
   | "unspecified";
 
 export type LocalRuntimeConfig = {
+  enabled?: boolean;
   /**
    * The stable product policy. This must stay phone_local for normal chat.
    */
@@ -87,7 +88,7 @@ export type LocalRuntimeConfig = {
 };
 
 export type LocalRuntimeInfo = {
-  kind: "native_on_device" | "openai_compatible_local_adapter";
+  kind: "native_on_device" | "openai_compatible_local_adapter" | "disabled";
   mode: LocalRuntimeMode;
   primary: "phone_local";
   configured: boolean;
@@ -107,7 +108,7 @@ export type LocalRuntimeInfo = {
 };
 
 export interface LocalModelRuntime {
-  readonly kind: "native_on_device" | "openai_compatible_local_adapter";
+  readonly kind: "native_on_device" | "openai_compatible_local_adapter" | "disabled";
   isConfigured(): boolean;
   describe(): LocalRuntimeInfo;
   completeChat(input: {
@@ -808,9 +809,47 @@ export class OpenAiCompatibleLocalAdapterRuntime implements LocalModelRuntime {
 export const OpenAiCompatibleLocalModelRuntime =
   OpenAiCompatibleLocalAdapterRuntime;
 
+export class DisabledLocalModelRuntime implements LocalModelRuntime {
+  readonly kind = "disabled" as const;
+
+  isConfigured() {
+    return false;
+  }
+
+  describe(): LocalRuntimeInfo {
+    return {
+      kind: this.kind,
+      mode: "native_on_device",
+      primary: "phone_local",
+      configured: false,
+      backendRole: "fallback_only",
+      openAiPolicy: "disabled",
+      allowDeviceLoopback: false,
+      adapterLocation: "unspecified",
+      developmentOnly: false,
+      note: "Local model runtime is disabled. Backend AI router is the primary public runtime.",
+    };
+  }
+
+  async completeChat(): Promise<any> {
+    throw new NativeOnDeviceRuntimeUnavailableError(
+      "Local model runtime is disabled; use the backend AI router.",
+    );
+  }
+
+  async embedTexts(): Promise<number[][]> {
+    throw new NativeOnDeviceRuntimeUnavailableError(
+      "Local model runtime is disabled; use backend-controlled embeddings/search.",
+    );
+  }
+}
+
 export function createLocalModelRuntime(
   config: LocalRuntimeConfig,
 ): LocalModelRuntime {
+  if (config.enabled === false) {
+    return new DisabledLocalModelRuntime();
+  }
   const mode = normalizeLocalRuntimeMode(config.mode);
   if (mode === "native_on_device") {
     return new NativeOnDeviceModelRuntime({

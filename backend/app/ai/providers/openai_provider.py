@@ -43,7 +43,8 @@ class OpenAIProvider(AIProvider):
                     "role": "system",
                     "content": (
                         "You are a concise backend-controlled assistant. Answer directly. "
-                        "Do not claim access to live/current data unless it was provided."
+                        "Do not claim access to live/current data unless it was provided. "
+                        f"If the requested reply language is {request.reply_language or route.language}, answer in that language."
                     ),
                 },
                 {"role": "user", "content": request.message},

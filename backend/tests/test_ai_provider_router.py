@@ -1,13 +1,21 @@
+import json
+
+from fastapi import HTTPException
+from sqlmodel import select
+
+from app.ai.orchestrator import run_text_turn
 from app.ai.router import AIProviderRouter
-from app.ai.types import AIRequest
+from app.ai.types import AIProviderResponse, AIRequest
+from app.database import SessionLocal
+from app.models import AIUsageEvent
 
 
-def _request(message: str, reply_language: str | None = "en") -> AIRequest:
+def _request(message: str, reply_language: str | None = "en", channel: str = "text") -> AIRequest:
     return AIRequest(
         user_id=1,
         message=message,
         reply_language=reply_language,
-        channel="text",
+        channel=channel,
         request_id="router-test",
         metadata={},
     )
@@ -66,3 +74,124 @@ def test_live_data_is_blocked_when_web_search_disabled(monkeypatch):
 
     assert route.provider == "blocked"
     assert route.route == "live_data_disabled"
+
+
+def test_voice_transcript_routes_like_text_after_stt(monkeypatch):
+    monkeypatch.delenv("OPENAI_MODEL_CHEAP", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_REASONING", raising=False)
+    simple = AIProviderRouter().select_route(_request("What is a compiler?", channel="voice"))
+    complex_route = AIProviderRouter().select_route(_request("Design this backend architecture", channel="voice"))
+    tanglish = AIProviderRouter().select_route(_request("Tamil la explain pannunga", None, channel="voice"))
+
+    assert simple.provider == "openai"
+    assert simple.model == "gpt-5-nano"
+    assert simple.needs_voice_output is True
+    assert complex_route.provider == "openai"
+    assert complex_route.model == "gpt-5-mini"
+    assert tanglish.provider == "sarvam"
+
+
+class _FailingProvider:
+    def __init__(self, detail: str = "provider down"):
+        self.calls = 0
+        self.detail = detail
+
+    def complete(self, request, route):
+        self.calls += 1
+        raise HTTPException(502, self.detail)
+
+
+class _StaticProvider:
+    def __init__(self, provider: str, model: str):
+        self.provider = provider
+        self.model = model
+        self.calls = 0
+
+    def complete(self, request, route):
+        self.calls += 1
+        return AIProviderResponse(
+            text="fallback answer",
+            provider=self.provider,
+            model=route.model or self.model,
+            route=route.route,
+            reason=route.reason,
+            language=route.language,
+            intent=route.intent,
+        )
+
+
+def test_sarvam_failure_falls_back_once_to_openai_for_safe_indic(monkeypatch):
+    monkeypatch.setenv("AI_MAX_PROVIDER_CALLS_PER_TURN_HARD", "2")
+    sarvam = _FailingProvider()
+    openai = _StaticProvider("openai", "gpt-5-nano")
+    with SessionLocal() as session:
+        response = run_text_turn(
+            session,
+            _request("Tamil la explain pannunga", None),
+            existing_context={"sarvam_provider": sarvam, "openai_provider": openai},
+        )
+        event = session.exec(select(AIUsageEvent)).one()
+
+    assert response.provider == "openai"
+    assert response.model == "gpt-5-nano"
+    assert sarvam.calls == 1
+    assert openai.calls == 1
+    metadata = json.loads(event.metadata_json)
+    assert metadata["primary_provider"] == "sarvam"
+    assert metadata["fallback_provider"] == "openai"
+    assert metadata["fallback_attempted"] is True
+
+
+def test_openai_failure_returns_controlled_unavailable_without_low_quality_fallback(monkeypatch):
+    monkeypatch.setenv("AI_MAX_PROVIDER_CALLS_PER_TURN_HARD", "2")
+    openai = _FailingProvider()
+    sarvam = _StaticProvider("sarvam", "sarvam-30b")
+    with SessionLocal() as session:
+        response = run_text_turn(
+            session,
+            _request("What is a compiler?"),
+            existing_context={"openai_provider": openai, "sarvam_provider": sarvam},
+        )
+
+    assert response.provider == "blocked"
+    assert response.route == "openai_provider_unavailable"
+    assert openai.calls == 1
+    assert sarvam.calls == 0
+
+
+def test_no_fallback_for_safety_block():
+    with SessionLocal() as session:
+        response = run_text_turn(
+            session,
+            _request("I want to harm myself"),
+            existing_context={"global_cache_lookup": lambda *_args: {"answer": "unsafe cached answer"}},
+        )
+
+    assert response.provider == "blocked"
+    assert response.route == "safety_block"
+
+
+def test_no_fallback_for_live_data_disabled(monkeypatch):
+    monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "false")
+    with SessionLocal() as session:
+        response = run_text_turn(session, _request("latest IPL score today"))
+
+    assert response.provider == "blocked"
+    assert response.route == "live_data_disabled"
+
+
+def test_fallback_respects_hard_call_limit(monkeypatch):
+    monkeypatch.setenv("AI_MAX_PROVIDER_CALLS_PER_TURN_HARD", "1")
+    sarvam = _FailingProvider()
+    openai = _StaticProvider("openai", "gpt-5-nano")
+    with SessionLocal() as session:
+        response = run_text_turn(
+            session,
+            _request("Tamil la explain pannunga", None),
+            existing_context={"sarvam_provider": sarvam, "openai_provider": openai},
+        )
+
+    assert response.provider == "blocked"
+    assert response.route == "sarvam_provider_unavailable"
+    assert sarvam.calls == 1
+    assert openai.calls == 0

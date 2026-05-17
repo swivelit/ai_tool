@@ -691,6 +691,7 @@ describe("API client contracts", () => {
 
     expect(getClientRoutingDefaults().chat).toBe("backend");
     expect(getClientRoutingDefaults().backendRole).toBe("primary");
+    expect(getClientRoutingDefaults().enableLocalModelFallback).toBe(false);
     expect(runLocalAssistantTurn).not.toHaveBeenCalled();
     expect(backendChatCalls(fetchMock)).toHaveLength(1);
     expect(payload.assistant.text).toBe("Backend should not be called.");

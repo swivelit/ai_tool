@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import logging
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlmodel import select
 
 import app.main as main_module
 import app.observability as observability
 from app.database import SessionLocal
-from app.models import Conversation, Item, QACache, RagEmbedding
+from app.models import AIUsageEvent, Conversation, Item, QACache, RagEmbedding
 from app.ai.types import AIProviderResponse
+from app.ai.usage import record_ai_usage_event
 from conftest import auth_headers, create_test_user
 
 
@@ -749,6 +752,45 @@ def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatc
     assert getattr(stt_record, "status_code") == 200
     assert getattr(stt_record, "transcript_hash")
     assert getattr(stt_record, "transcript_length") == len("voice hello")
+    with SessionLocal() as session:
+        stt_usage = session.exec(select(AIUsageEvent).where(AIUsageEvent.route == "sarvam_stt")).one()
+    assert stt_usage.audio_seconds > 0
+    metadata = json.loads(stt_usage.metadata_json)
+    assert metadata["file_size"] > 0
+    assert metadata["duration_estimation_method"]
+
+
+def test_voice_quota_blocks_before_stt_provider_call(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setenv("FREE_DAILY_VOICE_SECONDS", "1")
+    transcribe = Mock(return_value="should not run")
+    monkeypatch.setattr(main_module, "_transcribe_audio_file", transcribe)
+    with SessionLocal() as session:
+        record_ai_usage_event(
+            session,
+            AIProviderResponse(
+                text="voice",
+                provider="sarvam",
+                model="saaras:v3",
+                route="sarvam_stt",
+                reason="test",
+                language="en-IN",
+                intent="stt",
+                audio_seconds=1.0,
+            ),
+            user_id=int(user.id),
+        )
+
+    response = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
+        headers=headers,
+        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+    )
+
+    assert response.status_code == 429
+    assert "Daily free voice limit" in response.json()["detail"]
+    transcribe.assert_not_called()
 
 
 def test_sarvam_stt_missing_key_returns_503(client, monkeypatch):

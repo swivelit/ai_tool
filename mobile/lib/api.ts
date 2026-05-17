@@ -538,6 +538,12 @@ const LOCAL_VOICE_PIPELINE_FLAG = resolveBooleanFlag(
   false,
 );
 
+const LOCAL_MODEL_FALLBACK_FLAG = resolveBooleanFlag(
+  extra.ENABLE_LOCAL_MODEL_FALLBACK,
+  process.env.EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK,
+  false,
+);
+
 // Backend AI router is the primary runtime. Local chat remains an explicit
 // fallback/dev path only when EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=true.
 const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = false;
@@ -559,6 +565,7 @@ export function getClientRoutingDefaults() {
     apiBase: API_BASE,
     localModelBaseUrl: LOCAL_MODEL_BASE_URL,
     localRuntimeMode: LOCAL_MODEL_RUNTIME_MODE,
+    enableLocalModelFallback: LOCAL_MODEL_FALLBACK_FLAG.value,
     backendRole: "primary",
     openAiPolicy: LOCAL_MODEL_OPENAI_POLICY,
     nativeBackend: LOCAL_ON_DEVICE_BACKEND,

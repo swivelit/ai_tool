@@ -24,6 +24,24 @@ const FIREBASE_ENV_NAMES = [
   'EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID',
   'EXPO_PUBLIC_FIREBASE_APP_ID',
 ];
+const LOCAL_MODEL_BYTE_ENV_NAMES = [
+  'EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B',
+  'EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B',
+  'EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B',
+  'EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED',
+];
+const LOCAL_MODEL_SHA_ENV_NAMES = [
+  'EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B',
+  'EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B',
+  'EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B',
+  'EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED',
+];
+const LOCAL_MODEL_URL_ENV_NAMES = [
+  'EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B',
+  'EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B',
+  'EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B',
+  'EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED',
+];
 
 function rel(file) {
   return path.relative(repoRoot, file);
@@ -84,6 +102,10 @@ function isTruthy(value) {
   return ['1', 'true', 'yes', 'y', 'on'].includes(normalize(value));
 }
 
+function hasUsableLlamaCppCheckout(dir) {
+  return fs.existsSync(path.join(dir, 'CMakeLists.txt')) && fs.existsSync(path.join(dir, 'include', 'llama.h'));
+}
+
 function isReleaseLike() {
   return (
     normalize(process.env.BUILD_TYPE) === 'release' ||
@@ -102,9 +124,11 @@ function verifyStaticBackendFirstConfig() {
   const agentRegistry = readJson(agentRegistryFile);
 
   requireContains(appConfigFile, appConfig, 'process.env.EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE ?? "false"', 'Expo config defaults chat to backend');
+  requireContains(appConfigFile, appConfig, 'process.env.EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK ?? "false"', 'Expo config defaults local model fallback off');
   requireContains(appConfigFile, appConfig, 'LOCAL_MODEL_BACKEND_ROLE: "primary"', 'Expo config marks backend as primary');
   requireContains(apiFile, api, 'const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = false', 'API client default local chat flag is false');
   requireContains(apiFile, api, 'backendRole: "primary"', 'API routing banner reports backend primary');
+  requireContains(envExampleFile, envExample, 'EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false', '.env.example defaults local model fallback off');
   requireContains(envExampleFile, envExample, 'EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false', '.env.example defaults chat to backend');
   requireContains(envExampleFile, envExample, 'EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false', '.env.example defaults voice to backend');
 
@@ -121,6 +145,42 @@ function verifyStaticBackendFirstConfig() {
     fail('agent_registry.json runtime.openAiPolicy must be backend_controlled');
   }
   pass('local model configs mark backend AI router as primary');
+}
+
+function verifyExplicitLocalFallbackReleaseEnvironment() {
+  const localFallbackEnabled =
+    isTruthy(process.env.EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK) ||
+    isTruthy(process.env.JAI_REQUIRE_LLAMA_CPP);
+  if (!localFallbackEnabled) {
+    pass('release local model fallback remains disabled');
+    return;
+  }
+
+  const llamaDir = process.env.JAI_LLAMA_CPP_DIR
+    ? path.resolve(mobileRoot, process.env.JAI_LLAMA_CPP_DIR)
+    : path.join(mobileRoot, 'modules', 'jai-on-device-model', 'vendor', 'llama.cpp');
+  if (!hasUsableLlamaCppCheckout(llamaDir)) {
+    fail(
+      'Explicit local model fallback release requires a usable llama.cpp checkout',
+      'Set JAI_LLAMA_CPP_DIR or run npm run native:sync-llama. Only variable names are shown here; values are intentionally omitted.',
+    );
+  }
+
+  const missingBytes = LOCAL_MODEL_BYTE_ENV_NAMES.filter((name) => !String(process.env[name] || '').trim());
+  const missingSha = LOCAL_MODEL_SHA_ENV_NAMES.filter((name) => !String(process.env[name] || '').trim());
+  const hasCdnBase = String(process.env.EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL || process.env.EXPO_PUBLIC_MODEL_CDN_BASE_URL || '').trim();
+  const missingUrls = hasCdnBase ? [] : LOCAL_MODEL_URL_ENV_NAMES.filter((name) => !String(process.env[name] || '').trim());
+  const missing = [...missingUrls, ...missingBytes, ...missingSha];
+  if (missing.length) {
+    fail(
+      'Explicit local model fallback release is missing GGUF delivery metadata',
+      [
+        'Only variable names are shown here; values are intentionally omitted.',
+        `Missing variable name(s): ${missing.join(', ')}`,
+      ].join('\n'),
+    );
+  }
+  pass('explicit local model fallback release has llama.cpp and GGUF delivery metadata');
 }
 
 function verifyReleaseEnvironment() {
@@ -155,6 +215,7 @@ function verifyReleaseEnvironment() {
     );
   }
   pass('release env has Firebase public config required by Firebase Auth');
+  verifyExplicitLocalFallbackReleaseEnvironment();
 }
 
 verifyNoPublicEnvTypos();

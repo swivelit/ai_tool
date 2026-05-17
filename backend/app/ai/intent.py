@@ -12,7 +12,7 @@ class IntentDecision:
 
 
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("unsafe_or_sensitive", re.compile(r"\b(suicide|self[- ]?harm|kill myself|hurt myself|emergency|cannot breathe|can't breathe|chest pain|overdose|bleeding|medical advice|diagnos(?:e|is)|prescription|dosage|legal advice|lawsuit|tax advice|investment advice|stock tip)\b", re.I)),
+    ("unsafe_or_sensitive", re.compile(r"\b(suicide|self[- ]?harm|kill myself|hurt myself|harm myself|emergency|cannot breathe|can't breathe|chest pain|overdose|bleeding|medical advice|diagnos(?:e|is)|prescription|dosage|legal advice|lawsuit|tax advice|investment advice|stock tip)\b", re.I)),
     ("reminder", re.compile(r"\b(remind|reminder|alarm|todo|to-do|task|appointment|calendar)\b", re.I)),
     ("routine", re.compile(r"\b(routine|schedule|wake time|sleep time|daily habit|habits|check[- ]?in)\b", re.I)),
     ("profile", re.compile(r"\b(my profile|who am i|my name|about me|my goal|my goals|my personality|what do you know about me)\b", re.I)),
@@ -23,7 +23,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("tts", re.compile(r"\b(text[- ]?to[- ]?speech|tts|speak this|read aloud|voice output)\b", re.I)),
     ("stt", re.compile(r"\b(speech[- ]?to[- ]?text|stt|transcribe|transcription|voice upload)\b", re.I)),
     ("weather", re.compile(r"\b(weather|forecast|rain|temperature|humidity)\b", re.I)),
-    ("live_data", re.compile(r"\b(latest|current|live|breaking|today|now|news|score|scores|stock|price|sports score|ipl score|election result|exchange rate|gold rate)\b", re.I)),
+    ("live_data", re.compile(r"\b(latest news|breaking news|live score|sports score|ipl score|stock price|crypto price|gold rate|exchange rate|election result|election results|current (?:stock|crypto|gold|exchange|weather)|(?:stock|crypto) price|score today|latest .*score|latest .*news)\b", re.I)),
     ("greeting", re.compile(r"^\s*(hi|hello|hey|vanakkam|namaste|good morning|good evening)\b", re.I)),
 )
 

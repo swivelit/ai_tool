@@ -36,6 +36,8 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE",
   "JAI_SKIP_LOCAL_ENV_FILES",
   "JAI_LLAMA_CPP_DIR",
+  "EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK",
+  "EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE",
   "EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE",
   "EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE",
   "EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE",
@@ -259,9 +261,7 @@ describe("native llama.cpp production build config", () => {
     const packageJson = JSON.parse(read("package.json"));
     const verifyScript = read("scripts/verify-native-llama-runtime.js");
 
-    expect(packageJson.scripts["native:prepare"]).toBe(
-      "npm run native:sync-llama && npm run native:verify-llama && npm run release:verify-backend-first",
-    );
+    expect(packageJson.scripts["native:prepare"]).toBe("npm run release:verify-backend-first");
     expect(packageJson.scripts.prebuild).toBe(
       "npm run native:prepare && expo prebuild",
     );
@@ -420,11 +420,12 @@ export const runtime = {
     const buildApk = readRepo("build-apk.sh");
 
     expect(buildApk).toContain('export JAI_BUILD_TYPE="release"');
-    expect(buildApk).toContain('export JAI_REQUIRE_LLAMA_CPP="1"');
-    expect(buildApk).toContain('export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256="true"');
-    expect(buildApk).toContain('export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_INTEGRITY_METADATA="true"');
+    expect(buildApk).not.toContain('export JAI_REQUIRE_LLAMA_CPP="1"');
+    expect(buildApk).toContain('EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK="false"');
+    expect(buildApk).toContain("LOCAL_MODEL_FALLBACK_REQUIRED=0");
+    expect(buildApk).toContain('export EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256="${EXPO_PUBLIC_LOCAL_MODEL_REQUIRE_SHA256:-true}"');
     expect(buildApk).toContain('EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE="download_on_first_launch"');
-    expect(buildApk).toContain("llama.cpp is required for this production/release native build");
+    expect(buildApk).toContain("llama.cpp is required for this explicit local model fallback build");
     expect(buildApk).toContain("JAI_LLAMA_CPP_BACKEND_MISSING");
     expect(buildApk).toContain("EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE");
   });
@@ -468,18 +469,32 @@ export const runtime = {
   it("keys model delivery validation to production/release native_on_device download_on_first_launch builds", () => {
     const appConfig = read("app.config.ts");
 
-    expect(appConfig).toContain("isProductionOrReleaseBuild &&");
+    expect(appConfig).toContain("shouldRequireNativeLocalModel &&");
     expect(appConfig).toContain("isProductionNativeDownloadBuild");
+    expect(appConfig).toContain("isLocalModelFallbackEnabled");
     expect(appConfig).toContain("normalizedModelDeliveryMode");
     expect(appConfig).toContain('normalizedModelDeliveryMode === "download_on_first_launch"');
     expect(appConfig).toContain('const LOCAL_MODEL_REQUIRE_SHA256 = isProductionNativeDownloadBuild');
     expect(appConfig).not.toContain('process.env.EAS_BUILD_PROFILE === "production" ? "true" : "false"');
   });
 
-  it("fails local release APK app.config when model CDN/integrity metadata is missing", async () => {
+  it("allows backend-first release app.config without local model metadata", async () => {
+    const appConfig = await importAppConfigWithEnv({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      ...validReleaseFirebaseEnv,
+    });
+
+    expect(appConfig.expo.extra.ENABLE_LOCAL_MODEL_FALLBACK).toBe("false");
+    expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("false");
+  });
+
+  it("fails explicit local fallback release app.config when model CDN/integrity metadata is missing", async () => {
     await expect(
       importAppConfigWithEnv({
         BUILD_TYPE: "release",
+        EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK: "true",
         EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
         EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
         ...validReleaseFirebaseEnv,
@@ -504,16 +519,29 @@ export const runtime = {
     ).rejects.toThrow(/EXPO_PUBLIC_FIREBASE_PROJECT_ID/);
   });
 
-  it("rejects release app.config when runtime mode is local_adapter", async () => {
+  it("allows backend-first release app.config when local_adapter is disabled", async () => {
+    const appConfig = await importAppConfigWithEnv({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "local_adapter",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "local_adapter_dev",
+      ...validReleaseFirebaseEnv,
+    });
+
+    expect(appConfig.expo.extra.LOCAL_MODEL_RUNTIME_MODE).toBe("local_adapter");
+    expect(appConfig.expo.extra.ENABLE_LOCAL_MODEL_FALLBACK).toBe("false");
+  });
+
+  it("rejects explicit local fallback release app.config when runtime mode is local_adapter", async () => {
     await expect(
       importAppConfigWithEnv({
         BUILD_TYPE: "release",
+        EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK: "true",
         EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "local_adapter",
         EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "local_adapter_dev",
         ...validReleaseModelMetadata,
         ...validReleaseFirebaseEnv,
       }),
-    ).rejects.toThrow(/Production\/release builds cannot use runtime\.mode=local_adapter/);
+    ).rejects.toThrow(/Production\/release local model fallback builds cannot use runtime\.mode=local_adapter/);
   });
 
   it("allows debug app.config to omit release CDN metadata", async () => {
@@ -587,9 +615,10 @@ export const runtime = {
     expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("false");
   });
 
-  it("accepts local release app.config only when CDN base, expectedBytes, and sha256 are present", async () => {
+  it("accepts explicit local fallback release app.config only when CDN base, expectedBytes, and sha256 are present", async () => {
     const appConfig = await importAppConfigWithEnv({
       BUILD_TYPE: "release",
+      EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK: "true",
       EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
       EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
       ...validReleaseModelMetadata,
@@ -608,6 +637,7 @@ export const runtime = {
     await expect(
       importAppConfigWithEnv({
         BUILD_TYPE: "release",
+        EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK: "true",
         EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
         EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
         ...metadataWithoutBase,
@@ -626,6 +656,7 @@ export const runtime = {
     await expect(
       importAppConfigWithEnv({
         BUILD_TYPE: "release",
+        EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK: "true",
         EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
         EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
         ...metadataWithoutBytes,
@@ -640,6 +671,7 @@ export const runtime = {
     await expect(
       importAppConfigWithEnv({
         BUILD_TYPE: "release",
+        EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK: "true",
         EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
         EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
         ...metadataWithoutSha,
@@ -748,6 +780,33 @@ export const runtime = {
 
     expect(result.status).toBe(0);
     expect(result.stdout + result.stderr).toMatch(/Backend-first release configuration verified/);
+  });
+
+  it("release verification requires llama.cpp and GGUF metadata for explicit local fallback", () => {
+    const result = runReleaseVerifier({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK: "true",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      ...validReleaseFirebaseEnv,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/Explicit local model fallback release/);
+  });
+
+  it("release verification accepts explicit local fallback with llama.cpp and GGUF metadata", () => {
+    const result = runReleaseVerifierWithMockLlama({
+      BUILD_TYPE: "release",
+      EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK: "true",
+      EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE: "native_on_device",
+      EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE: "download_on_first_launch",
+      ...validReleaseModelMetadata,
+      ...validReleaseFirebaseEnv,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/explicit local model fallback release has llama\.cpp and GGUF delivery metadata/);
   });
 
   it("release verification allows backend recorded voice routing", () => {

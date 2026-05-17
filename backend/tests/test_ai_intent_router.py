@@ -20,6 +20,19 @@ def test_live_data_is_not_general_chat():
     assert decision.route == "blocked_live_data"
 
 
+def test_today_now_current_are_not_live_data_without_domain():
+    assert classify_intent("What should I eat today?").intent == "general"
+    assert classify_intent("What should I do now?").intent == "general"
+    assert classify_intent("Plan my day today").intent in {"general", "complex_reasoning"}
+    assert classify_intent("Plan my day today").intent != "live_data"
+
+
+def test_live_data_requires_live_domain():
+    assert classify_intent("latest IPL score today").intent == "live_data"
+    assert classify_intent("What is the current stock price of Apple?").intent == "live_data"
+    assert classify_intent("What is the weather tomorrow?").intent == "weather"
+
+
 def test_speech_translation_and_safety_intents():
     assert classify_intent("Translate this to Tamil").intent == "translation"
     assert classify_intent("read aloud this sentence").intent == "tts"

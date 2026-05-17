@@ -49,7 +49,7 @@ class AIProviderRouter:
                 max_output_tokens=0,
             )
 
-        if request.channel == "voice" or language.prefer_provider == "sarvam" or intent.intent in {"translation", "tts", "stt"}:
+        if language.prefer_provider == "sarvam" or intent.intent in {"translation", "tts", "stt"}:
             model = chat_model_for_intent(intent.intent)
             return AIRoute(
                 provider="sarvam",
@@ -72,6 +72,7 @@ class AIProviderRouter:
             language=language.language,
             intent=intent.intent,
             max_output_tokens=selection.max_output_tokens,
+            needs_voice_output=request.channel == "voice",
         )
 
 

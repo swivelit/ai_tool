@@ -25,7 +25,11 @@ APP_NAME = os.getenv("APP_NAME", "j-ai-backend").strip() or "j-ai-backend"
 APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).strip() or "development"
 APP_RELEASE = os.getenv("APP_RELEASE", os.getenv("RENDER_GIT_COMMIT", "dev")).strip() or "dev"
 
-_DEFAULT_LOG_CHAT_CONTENT = "false" if APP_ENV.lower() in {"test", "testing", "ci"} else "true"
+_DEFAULT_LOG_CHAT_CONTENT = (
+    "false"
+    if APP_ENV.lower() in {"production", "prod", "staging", "stage", "test", "testing", "ci"}
+    else "true"
+)
 LOG_CHAT_CONTENT = (
     os.getenv("LOG_CHAT_CONTENT", _DEFAULT_LOG_CHAT_CONTENT).strip().lower()
     in {"1", "true", "yes", "on"}

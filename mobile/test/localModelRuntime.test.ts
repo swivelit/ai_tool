@@ -36,6 +36,17 @@ describe("local model runtime architecture", () => {
     vi.restoreAllMocks();
   });
 
+  it("supports disabled backend-only local runtime mode", async () => {
+    const runtime = createLocalModelRuntime({ enabled: false });
+
+    expect(runtime.kind).toBe("disabled");
+    expect(runtime.isConfigured()).toBe(false);
+    expect(runtime.describe().openAiPolicy).toBe("disabled");
+    await expect(
+      runtime.completeChat({ model: "google/gemma-3-4b-it", messages: [] }),
+    ).rejects.toThrow(/disabled/);
+  });
+
   it("rejects loopback for an external LAN adapter", () => {
     const runtime = createLocalModelRuntime({
       mode: "local_adapter",
