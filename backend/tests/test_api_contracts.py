@@ -92,7 +92,7 @@ def test_voice_upload_rejects_missing_auth_missing_file_bad_type_and_large_file(
         headers=headers,
         files={"file": ("audio.txt", b"audio", "text/plain")},
     )
-    assert bad_type.status_code == 415
+    assert bad_type.status_code == 400
 
     monkeypatch.setattr(main_module, "MAX_UPLOAD_BYTES", 8)
     too_large = client.post(
@@ -258,7 +258,7 @@ def test_tts_uses_modern_text_payload_and_returns_audio(client, monkeypatch):
 
     def fake_post(*args, **kwargs):
         calls.append({**kwargs, "json": dict(kwargs.get("json") or {})})
-        return DummyResponse(200, {"audios": ["base64-audio"]})
+        return DummyResponse(200, {"audios": ["YWJj"]})
 
     monkeypatch.setattr(main_module.requests, "post", fake_post)
 
@@ -269,13 +269,226 @@ def test_tts_uses_modern_text_payload_and_returns_audio(client, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["audio_base64"] == "base64-audio"
+    assert response.json()["audio_base64"] ==  "YWJj"
     assert calls[0]["json"]["text"] == "hello"
     assert calls[0]["json"]["target_language_code"] == "en-IN"
     assert calls[0]["json"]["speaker"] == "shubh"
     assert calls[0]["json"]["model"] == "bulbul:v3"
     assert "inputs" not in calls[0]["json"]
     assert calls[0]["timeout"] == (5, 30)
+
+def test_tts_accepts_audio_field(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "audio": "YWJj"
+            }
+
+    monkeypatch.setattr(
+        main_module.requests,
+        "post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "audio_base64": "YWJj"
+    }
+
+
+def test_tts_accepts_audio_base64_field(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "audio_base64": "YWJj"
+            }
+
+    monkeypatch.setattr(
+        main_module.requests,
+        "post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "audio_base64": "YWJj"
+    }
+
+
+def test_tts_accepts_nested_audio_field(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "data": {
+                    "audio": "YWJj"
+                }
+            }
+
+    monkeypatch.setattr(
+        main_module.requests,
+        "post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "audio_base64": "YWJj"
+    }
+
+def test_tts_invalid_json_returns_502(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    class DummyResponse:
+        status_code = 200
+        text = "invalid"
+
+        def json(self):
+            raise ValueError("bad json")
+
+    monkeypatch.setattr(
+        main_module.requests,
+        "post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "TTS provider returned invalid JSON."
+
+def test_tts_missing_audio_returns_502(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "audios": []
+            }
+
+    monkeypatch.setattr(
+        main_module.requests,
+        "post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "TTS provider response did not contain audio."
+
+def test_tts_invalid_base64_returns_502(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "audio": "%%%invalid%%%"
+            }
+
+    monkeypatch.setattr(
+        main_module.requests,
+        "post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "TTS provider returned invalid audio encoding."
+
+def test_tts_timeout_returns_504(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    def fake_post(*args, **kwargs):
+        raise main_module.requests.Timeout("slow provider")
+
+    monkeypatch.setattr(
+        main_module.requests,
+        "post",
+        fake_post,
+    )
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 504
+    assert response.json()["detail"] == "TTS provider timed out."
+
 
 
 def test_rag_embedding_failure_is_logged_and_does_not_rollback_saved_item(client, monkeypatch, caplog):

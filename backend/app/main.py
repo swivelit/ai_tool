@@ -12,6 +12,7 @@ import secrets
 import sys
 import tempfile
 import threading
+import base64
 from collections import OrderedDict
 
 import requests
@@ -2010,6 +2011,41 @@ def _extract_sarvam_transcript(payload: Any) -> str:
 
     return ""
 
+def _extract_tts_audio(payload: Any) -> Optional[str]:
+    if isinstance(payload, str):
+        value = payload.strip()
+        return value or None
+
+    if not isinstance(payload, dict):
+        return None
+
+    direct_keys = ("audio", "audio_base64")
+
+    for key in direct_keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    audios = payload.get("audios")
+    if isinstance(audios, list):
+        for item in audios:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+
+    data = payload.get("data")
+    if isinstance(data, dict):
+        nested_audio = _extract_tts_audio(data)
+        if nested_audio:
+            return nested_audio
+
+    return None
+
+def _is_valid_base64(value: str) -> bool:
+    try:
+        base64.b64decode(value, validate=True)
+        return True
+    except Exception:
+        return False
 
 def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> str:
     api_key = _sarvam_api_key()
@@ -2588,7 +2624,7 @@ def api_tts(
         raise HTTPException(status_code=400, detail="text is required.")
 
     headers = {
-        "api-subscription-key": api_key,
+        "api-subscription-key": SARVAM_API_KEY,
     }
 
     req_payload = {
@@ -2610,7 +2646,12 @@ def api_tts(
             json=req_payload,
             timeout=(5, 30),
         )
-    except requests.Timeout:
+    except  (
+        requests.Timeout,
+        requests.ConnectTimeout,
+        requests.ReadTimeout,
+    ):
+        logger.warning("Sarvam TTS retry request timed out.")
         raise HTTPException(status_code=504, detail="TTS provider timed out.")
     except requests.RequestException as exc:
         detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
@@ -2628,7 +2669,12 @@ def api_tts(
                 json=legacy_payload,
                 timeout=(5, 30),
             )
-        except requests.Timeout:
+        except (
+            requests.Timeout,
+            requests.ConnectTimeout,
+            requests.ReadTimeout,
+            ):
+            logger.warning("Sarvam TTS request timed out.")
             raise HTTPException(status_code=504, detail="TTS retry timed out.")
         except requests.RequestException as exc:
             detail = _redact_sarvam_provider_message(str(exc)) or "request failed."
@@ -2638,11 +2684,32 @@ def api_tts(
         try:
             data = response.json()
         except ValueError as exc:
-            raise HTTPException(status_code=502, detail="TTS provider returned invalid JSON.") from exc
-        if isinstance(data, dict) and isinstance(data.get("audios"), list) and len(data["audios"]) > 0:
-            return {"audio_base64": data["audios"][0]}
-
-        raise HTTPException(status_code=502, detail="TTS provider response did not contain audio.")
+            logger.warning("Sarvam TTS returned invalid JSON.",)
+            raise HTTPException(
+                status_code=502,
+                detail="TTS provider returned invalid JSON.",
+            ) from exc
+        audio_base64 = _extract_tts_audio(data)
+        if not audio_base64:
+            logger.warning(
+                "Sarvam TTS response missing audio payload.",
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="TTS provider response did not contain audio.",
+            )
+        
+        if not _is_valid_base64(audio_base64):
+            logger.warning(
+                "Sarvam TTS returned invalid base64 audio.",
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="TTS provider returned invalid audio encoding.",
+            )
+        return {
+        "audio_base64": audio_base64,
+        }
 
     raise HTTPException(
         status_code=response.status_code,
