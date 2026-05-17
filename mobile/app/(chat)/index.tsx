@@ -99,6 +99,14 @@ type PendingChatTurn = {
   createdAt: string;
 };
 
+type VoiceProcessState =
+  | "idle"
+  | "recording"
+  | "uploading"
+  | "transcribing"
+  | "thinking"
+  | "failed";
+
 const MIN_INPUT_HEIGHT = 24;
 const MAX_INPUT_HEIGHT = 130;
 const RECORDING_STARTUP_SETTLE_MS = Platform.OS === "android" ? 320 : 160;
@@ -320,6 +328,8 @@ export default function Home() {
     height: 0,
   });
   const [busy, setBusy] = useState(false);
+  const [voiceState, setVoiceState] =
+  useState<VoiceProcessState>("idle");
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordingPreparing, setRecordingPreparing] = useState(false);
   const [listening, setListening] = useState(false);
@@ -1639,6 +1649,7 @@ export default function Home() {
     activeChatRequestIdRef.current = requestId;
 
     try {
+      setVoiceState("thinking");
       setBusy(true);
       setPendingChatTurn({
         requestId,
@@ -1728,6 +1739,7 @@ export default function Home() {
     if (busy || recordingPhaseRef.current !== "idle") return;
 
     try {
+      setVoiceState("idle");
       await abortHandsFreeRecognizer(false);
       await releaseReplySound();
       recordingPhaseRef.current = "starting";
@@ -1735,6 +1747,7 @@ export default function Home() {
       setActiveSurface(surface);
       setRecordingPreparing(true);
       setListening(false);
+      setVoiceState("recording");
 
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
@@ -1772,6 +1785,7 @@ export default function Home() {
         await stopAndAnalyze();
       }
     } catch (error: unknown) {
+      setVoiceState("failed");
       recordingPhaseRef.current = "idle";
       stopWhenReadyRef.current = false;
       recordingRef.current = null;
@@ -1780,6 +1794,7 @@ export default function Home() {
       setListening(false);
       setActiveSurface(null);
       await resetAudioMode();
+      
       const message =
         error instanceof Error ? error.message : "Could not start recording.";
       Alert.alert("Error", message);
@@ -1804,6 +1819,7 @@ export default function Home() {
     try {
       recordingPhaseRef.current = "stopping";
       stopWhenReadyRef.current = false;
+      setVoiceState("uploading");
       setBusy(true);
       setPendingChatTurn({
         requestId,
@@ -1825,6 +1841,8 @@ export default function Home() {
 
       const uri = activeRecording.getURI();
       if (!uri) throw new Error("No audio file URI");
+      
+      setVoiceState("transcribing");
 
       const form = new FormData();
       form.append(
@@ -1853,6 +1871,7 @@ export default function Home() {
       if (!isActiveChatRequest(requestId)) {
         return;
       }
+      setVoiceState("thinking");
 
       const nextItem = normalizeChatTurnPayload(res);
       clearPendingAssistant(requestId);
@@ -1880,6 +1899,9 @@ export default function Home() {
         setConfirmOpen(true);
       }
     } catch (error: unknown) {
+
+      setVoiceState("failed");
+
       if (isActiveChatRequest(requestId)) {
         const message = VOICE_UNAVAILABLE_MESSAGE;
         showPendingAssistantError(requestId, message, "Voice message", "voice");
@@ -1895,6 +1917,7 @@ export default function Home() {
       if (isActiveChatRequest(requestId)) {
         activeChatRequestIdRef.current = null;
         setBusy(false);
+        setVoiceState("idle");
       }
       setActiveSurface(null);
       await resetAudioMode();
@@ -2162,7 +2185,15 @@ export default function Home() {
                             {activePendingChatTurn.status === "thinking" ? (
                               <>
                                 <ActivityIndicator size="small" color={Brand.cocoa} />
-                                <Text style={styles.typingText}>Thinking…</Text>
+                                <Text style={styles.typingText}>
+                                  {voiceState === "uploading"
+                                  ? "Uploading audio..."
+                                  : voiceState === "transcribing"
+                                  ? "Transcribing speech..."
+                                  : voiceState === "thinking"
+                                  ? "AI is thinking..."
+                                  : "Thinking..."}
+                                </Text>
                               </>
                             ) : (
                               <Text style={[styles.messageText, styles.assistantMessageText]}>
@@ -2278,13 +2309,25 @@ export default function Home() {
                   </View>
                 </View>
 
-                {recordingPreparing ? (
+                {voiceState === "recording" ? (
                   <Text style={styles.composerHintText}>
-                    Preparing microphone... keep holding and start speaking when recording begins
+                    Recording voice...
                   </Text>
-                ) : listening ? (
+                ) : voiceState === "uploading" ? (
                   <Text style={styles.composerHintText}>
-                    Recording in progress... tap stop or release the orb
+                      Uploading audio...
+                  </Text>
+                ) : voiceState === "transcribing" ? (
+                  <Text style={styles.composerHintText}>
+                      Transcribing speech...
+                  </Text>
+                ) : voiceState === "thinking" ? (
+                  <Text style={styles.composerHintText}>
+                    AI is thinking...
+                  </Text>
+                ) : voiceState === "failed" ? (
+                  <Text style={styles.composerHintText}>
+                      Voice request failed. Try again.
                   </Text>
                 ) : null}
               </View>
