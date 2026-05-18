@@ -226,6 +226,46 @@ it("allows playback after retry succeeds with new reply id", async () => {
   expect(second).toBe(true);
 });
 
+it("handles voice unavailable state correctly", () => {
+  const result = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    voiceAvailable: false,
+  });
+
+  expect(result).toBe(false);
+});
+
+it("allows cloud voice playback when enabled", () => {
+  const result = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    cloudVoiceEnabled: true,
+  });
+
+  expect(result).toBe(true);
+});
+
+it("blocks hands-free playback when disabled", () => {
+  const result = shouldAutoSpeakReply({
+    source: "handsfree",
+    autoSpeakReplies: true,
+    handsFreeMode: "off",
+  });
+
+  expect(result).toBe(false);
+});
+
+it("allows hands-free playback when wake mode is enabled", () => {
+  const result = shouldAutoSpeakReply({
+    source: "handsfree",
+    autoSpeakReplies: true,
+    handsFreeMode: "wake",
+  });
+
+  expect(result).toBe(true);
+});
+
   it("returns structured unavailable state when native STT is missing", async () => {
     const cases = (golden.cases as GoldenCase[]).filter(
       (row) => row.surface === "mobile_voice",

@@ -12,6 +12,9 @@ export type ReplyPlaybackPolicyInput = {
   handsFreeMode?: "off" | "wake" | "command" | string | null;
   replyLanguage?: ReplyLanguage | null;
   replyId?: string | null;
+
+  voiceAvailable?: boolean | null;
+  cloudVoiceEnabled?: boolean | null;
 };
 
 export function normalizeReplyLanguage(
@@ -47,24 +50,20 @@ export function shouldAutoSpeakReply(
     .toLowerCase();
   const replyId = String(input.replyId || "").trim();
 
+  if (input.voiceAvailable === false) {
+    return false;
+  }
+
+  if (input.cloudVoiceEnabled === true) {
+    return true;
+  }
+
   if (replyId && lastPlayedReplyId === replyId) {
     return false;
   }
+
   // Hands-free assistant should always auto-speak
   if (source === "handsfree" && handsFreeMode !== "off") {
-
-  if (replyId) {
-    lastPlayedReplyId = replyId;
-  }
-
-  return true;
-  }
-
-  // Voice interactions may auto-speak if enabled
-  if (source === "voice") {
-
-  if (input.autoSpeakReplies === true) {
-
     if (replyId) {
       lastPlayedReplyId = replyId;
     }
@@ -72,8 +71,18 @@ export function shouldAutoSpeakReply(
     return true;
   }
 
-  return false;
-}
+  // Voice interactions may auto-speak if enabled
+  if (source === "voice") {
+    if (input.autoSpeakReplies === true) {
+      if (replyId) {
+        lastPlayedReplyId = replyId;
+      }
+
+      return true;
+    }
+
+    return false;
+  }
 
   // Normal typed text chat should never auto-play
   return false;
