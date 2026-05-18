@@ -679,6 +679,7 @@ export const runtime = {
 
     expect(appConfig.expo.extra.ENABLE_LOCAL_MODEL_FALLBACK).toBe("false");
     expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("false");
+    expect(appConfig.expo.extra.VOICE_ONLY_MODE).toBe("true");
   });
 
   it("fails explicit local fallback release app.config when model CDN/integrity metadata is missing", async () => {
@@ -745,6 +746,7 @@ export const runtime = {
     expect(appConfig.expo.extra.LOCAL_MODEL_RUNTIME_MODE).toBe("native_on_device");
     expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("false");
     expect(appConfig.expo.extra.USE_LOCAL_VOICE_PIPELINE).toBe("false");
+    expect(appConfig.expo.extra.VOICE_ONLY_MODE).toBe("false");
   });
 
   it("rejects release app.config local voice routing without explicit override", async () => {

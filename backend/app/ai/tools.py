@@ -170,7 +170,11 @@ def _handle_document(request: AIRequest, route: AIRoute) -> AIProviderResponse:
     source_text = _strip_document_command(message)
     title = _title_from_reminder(source_text) or "Voice document"
     format_label = ", ".join(fmt.upper() for fmt in formats)
-    text = f"Created {format_label}: {title}."
+    text = (
+        f"{format_label} கோப்பு உருவாக்கப்பட்டது: {title}."
+        if _prefers_tamil(request, route)
+        else f"Created {format_label}: {title}."
+    )
     metadata = {
         "intent": "document",
         "category": category,
@@ -187,9 +191,17 @@ def _handle_file_retrieval(session: Session, request: AIRequest, route: AIRoute)
     files = search_document_artifacts(session, request.user_id, request.message)
     if files:
         first = files[0]
-        text = f"Found {len(files)} file(s). Opening {first['title']}."
+        text = (
+            f"{len(files)} கோப்பு கிடைத்தது. {first['title']} திறக்கிறேன்."
+            if _prefers_tamil(request, route)
+            else f"Found {len(files)} file(s). Opening {first['title']}."
+        )
     else:
-        text = "I could not find a matching generated file."
+        text = (
+            "பொருந்தும் generated file கிடைக்கவில்லை."
+            if _prefers_tamil(request, route)
+            else "I could not find a matching generated file."
+        )
     metadata = _assistant_metadata(request.message, text)
     metadata["files"] = files
     metadata["status"] = "found" if files else "not_found"
@@ -199,16 +211,18 @@ def _handle_file_retrieval(session: Session, request: AIRequest, route: AIRoute)
 def _handle_creative_tool(request: AIRequest, route: AIRoute) -> AIProviderResponse:
     kind = _creative_tool_kind(request.message)
     capability = get_tool_capability(kind)
-    if capability.configured:
-        text = f"{kind.title()} tooling is configured, but no execution adapter is registered yet."
-    else:
-        text = f"{kind.title()} tooling is not configured. I cannot claim this was created or edited."
+    text = (
+        f"{kind.title()} adapter is not configured. I cannot claim this was created or edited."
+        if capability.configured
+        else f"{kind.title()} tooling is not configured. I cannot claim this was created or edited."
+    )
     metadata = _assistant_metadata(request.message, text)
     metadata["tool"] = {
         "kind": kind,
         "status": "not_configured",
         "provider": capability.provider or "",
         "provider_env": capability.provider_env,
+        "reason": "adapter_not_configured" if capability.configured else "provider_not_configured",
     }
     return _tool_response(text, request, route, item_metadata=metadata, action="tool_not_configured")
 
@@ -346,6 +360,7 @@ def _extract_reminder_text(message: str) -> str:
     text = re.sub(r"\bin\s+\d+\s+(?:minutes?|mins?|hours?|hrs?)\b", "", text, flags=re.I).strip()
     text = re.sub(r"\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", "", text, flags=re.I).strip()
     text = re.sub(r"\b(?:tomorrow|today|naalaikku|nalai|kaalai|morning)\b", "", text, flags=re.I).strip()
+    text = re.sub(r"\b(?:reminder|remind)\b", "", text, flags=re.I).strip()
     text = re.sub(r"\b(?:panna|pannu|save|podu|vechidu)\b|(?:பண்ணு|பண்ணுங்க|வை|சேமி)", "", text, flags=re.I).strip()
     text = re.sub(r"^(?:for|to|about)\s+", "", text, flags=re.I).strip()
     ambiguous = {"", "me", "reminder", "alarm", "todo", "to-do", "task", "appointment"}
@@ -477,12 +492,35 @@ def _prefers_tamil(request: AIRequest, route: AIRoute) -> bool:
 
 def classify_folder_category(message: str) -> str:
     text = str(message or "").lower()
-    if re.search(r"\b(business|biz|client|customer|sales|marketing|invoice|startup)\b|வியாபாரம்|தொழில்", text):
-        return "Business"
-    if re.search(r"\b(work|office|project|meeting|standup|team|job)\b|வேலை|ஆபீஸ்", text):
-        return "Work"
-    if re.search(r"\b(home|house|family|amma|appa|eb bill|electricity bill)\b|வீட்டு|வீடு|அம்மா|அப்பா", text):
-        return "Home"
+    keyword_sets = {
+        "Business": (
+            r"\b(business|biz|lead|leads|client|clients|customer|customers|sales|marketing|invoice|payment|follow[- ]?up|proposal|startup|deal|vendor|retainer)\b",
+            r"வியாபாரம்|தொழில்|கஸ்டமர்|வாடிக்கையாளர்|பணம்|கட்டணம்|இன்வாய்ஸ்|விற்பனை",
+        ),
+        "Work": (
+            r"\b(work|office|project|meeting|meeting points|standup|team|manager|deadline|sprint|report|job|task|review|deployment|roadmap)\b",
+            r"வேலை|ஆபீஸ்|அலுவலக|மீட்டிங்|ப்ராஜெக்ட்|டீம்|மேனேஜர்|ரிப்போர்ட்",
+        ),
+        "Home": (
+            r"\b(home|house|family|personal|bill|bills|expense|expenses|rent|grocery|groceries|medicine|school|amma|appa|mom|dad|mother|father|eb bill|electricity bill|milk)\b",
+            r"வீட்டு|வீடு|குடும்ப|அம்மா|அப்பா|மருந்து|பில்|வாடகை|மளிகை|பால்|ஸ்கூல்",
+        ),
+    }
+    scores: dict[str, int] = {category: 0 for category in keyword_sets}
+    for category, patterns in keyword_sets.items():
+        for pattern in patterns:
+            scores[category] += len(re.findall(pattern, text, flags=re.I)) * 2
+    if re.search(r"\b(?:business|work|home)\s+folder\b|\b(?:business|work|home)\s+folder\s+la\b|folder\s+ல", text, flags=re.I):
+        for category in scores:
+            if re.search(rf"\b{category.lower()}\b", text, flags=re.I):
+                scores[category] += 3
+    if max(scores.values()) <= 0:
+        return "Other"
+    # Deterministic tie-breakers preserve business-critical filing first, then
+    # office work, then home/personal context.
+    for category in ("Business", "Work", "Home"):
+        if scores[category] == max(scores.values()):
+            return category
     return "Other"
 
 
@@ -507,9 +545,9 @@ def _extract_document_formats(message: str) -> list[str]:
     text = str(message or "").lower()
     formats: list[str] = []
     checks = (
-        ("pdf", r"\bpdf\b"),
-        ("docx", r"\b(docx|word document|word file)\b"),
-        ("xlsx", r"\b(xlsx|excel|spreadsheet)\b"),
+        ("pdf", r"\bpdf\b|pdf\s*(?:ஆக்கி|aakki|akki|pannu|பண்ணு)"),
+        ("docx", r"\b(docx|word|word document|word file|document)\b"),
+        ("xlsx", r"\b(xlsx|excel|spreadsheet|sheet)\b"),
         ("pptx", r"\b(pptx|ppt|powerpoint|slides?)\b"),
     )
     for value, pattern in checks:
@@ -520,12 +558,13 @@ def _extract_document_formats(message: str) -> list[str]:
 
 def _strip_document_command(message: str) -> str:
     text = _clean(message)
-    text = re.sub(r"\b(?:make|create|generate|save|turn|convert)\b", " ", text, flags=re.I)
-    text = re.sub(r"\b(?:as|into|to|file|document)\b", " ", text, flags=re.I)
-    text = re.sub(r"\b(?:pdf|docx|word document|word file|xlsx|excel|spreadsheet|pptx|ppt|powerpoint|slides?)\b", " ", text, flags=re.I)
-    text = re.sub(r"\b(?:work|home|business|other)\s+folder\s+(?:ல\s+)?(?:save|வை|put)?\b", " ", text, flags=re.I)
-    text = re.sub(r"(?:ஆக்கி|aakki|akki|folder|ல|la|வை|சேமி|பண்ணு|pannu)", " ", text, flags=re.I)
-    text = re.sub(r"^\s*இந்த\s+", "", text)
+    text = re.sub(r"^\s*(?:இந்த|intha|this)\s+", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:make|create|generate|save|turn|convert|put)\b", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:as|into|to|file)\b", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:pdf|docx|word document|word file|word|document|xlsx|excel|spreadsheet|sheet|pptx|ppt|powerpoint|slides?)\b", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:work|home|business|other)\s+folder\s*(?:ல|la)?\s*(?:save|வை|put|pannu|பண்ணு)?\b", " ", text, flags=re.I)
+    text = re.sub(r"\bfolder\s*(?:ல|la)?\b", " ", text, flags=re.I)
+    text = re.sub(r"(?:ஆக்கி|aakki|akki|வை|சேமி|பண்ணு|pannu|pannunga|எல்லாம்)", " ", text, flags=re.I)
     return _clean(text)
 
 
@@ -568,7 +607,7 @@ def search_document_artifacts(session: Session, user_id: Optional[int], message:
     query_tokens = {
         token
         for token in re.findall(r"[a-z0-9\u0b80-\u0bff]+", str(message or "").lower())
-        if token not in {"open", "find", "show", "get", "retrieve", "the", "i", "told", "you", "yesterday", "notes", "note", "file", "files", "folder", "business", "work", "home", "other", "நேத்து", "நேற்று", "சொன்ன"}
+        if token not in {"open", "find", "show", "get", "retrieve", "the", "i", "told", "you", "yesterday", "today", "nethu", "naethu", "inniku", "notes", "note", "file", "files", "folder", "business", "work", "home", "other", "pannu", "நேத்து", "நேற்று", "இன்று", "சொன்ன", "காட்டு", "திற"}
     }
 
     scored: list[tuple[int, DocumentArtifact]] = []
@@ -578,8 +617,14 @@ def search_document_artifacts(session: Session, user_id: Optional[int], message:
             score += 4
         elif category != "Other":
             continue
-        if date_filter is not None and row.created_at.date() != date_filter:
-            continue
+        if date_filter is not None:
+            row_date = row.created_at.date()
+            if isinstance(date_filter, tuple):
+                start_date, end_date = date_filter
+                if not (start_date <= row_date <= end_date):
+                    continue
+            elif row_date != date_filter:
+                continue
         haystack = f"{row.title or ''} {row.source_text or ''} {row.relative_path or ''}".lower()
         score += sum(1 for token in query_tokens if token in haystack)
         if score > 0 or category != "Other" or date_filter is not None:
@@ -604,8 +649,11 @@ def _artifact_payload(row: DocumentArtifact) -> dict[str, Any]:
 def _artifact_date_filter(message: str):
     text = str(message or "").lower()
     now = utc_now()
-    if re.search(r"\b(yesterday|நேத்து|நேற்று)\b", text):
+    if re.search(r"\b(yesterday|nethu|naethu|நேத்து|நேற்று)\b", text):
         return (now - timedelta(days=1)).date()
-    if re.search(r"\b(today|இன்று)\b", text):
+    if re.search(r"\b(today|inniku|இன்று)\b", text):
         return now.date()
+    if re.search(r"\blast\s+week\b", text):
+        end_date = (now - timedelta(days=1)).date()
+        return ((now - timedelta(days=7)).date(), end_date)
     return None

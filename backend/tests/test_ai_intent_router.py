@@ -38,3 +38,44 @@ def test_speech_translation_and_safety_intents():
     assert classify_intent("read aloud this sentence").intent == "tts"
     assert classify_intent("transcribe this voice upload").intent == "stt"
     assert classify_intent("I have chest pain, what dosage should I take?").intent == "unsafe_or_sensitive"
+
+
+def test_tamil_tanglish_document_intents_route_to_backend_tool():
+    cases = [
+        "இந்த points PDF ஆக்கி work folder ல வை",
+        "meeting notes Word document ஆக்கி save பண்ணு",
+        "sales data Excel sheet பண்ணு",
+        "project update PPT ஆக்கி வை",
+    ]
+
+    for message in cases:
+        decision = classify_intent(message)
+        assert decision.intent == "document"
+        assert decision.route == "backend_tool"
+
+
+def test_tamil_tanglish_file_retrieval_routes_to_backend_tool():
+    cases = [
+        "நேத்து சொன்ன business notes open பண்ணு",
+        "yesterday work pdf open pannu",
+        "home bill file show பண்ணு",
+    ]
+
+    for message in cases:
+        decision = classify_intent(message)
+        assert decision.intent == "file_retrieval"
+        assert decision.route == "backend_tool"
+
+
+def test_tamil_tanglish_reminder_note_task_routes_to_backend_tool():
+    cases = [
+        ("அம்மா medicine நாளைக்கு காலை remind பண்ணு", "reminder"),
+        ("EB bill tomorrow reminder save pannu", "reminder"),
+        ("client follow up note save பண்ணு", "note"),
+        ("office meeting task add பண்ணு", "task"),
+    ]
+
+    for message, expected_intent in cases:
+        decision = classify_intent(message)
+        assert decision.intent == expected_intent
+        assert decision.route == "backend_tool"

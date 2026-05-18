@@ -13,7 +13,8 @@ _TAMIL_RE = re.compile(r"[\u0b80-\u0bff]")
 _TANGLISH_RE = re.compile(
     r"\b(?:enna|ennaikku|epdi|eppadi|iruka|irukka|iruku|venum|vena|pannu|pannunga|"
     r"sollu|sollunga|pesu|pesunga|theriyala|seri|sapadu|saapadu|nan|naan|unga|"
-    r"ungalukku|ennoda|naalaikku|nalai|kaalai|maalai|padam|aakki|akki|vai)\b",
+    r"ungalukku|ennoda|naalaikku|nalai|nethu|naethu|inniku|kaalai|maalai|padam|"
+    r"aakki|akki|vai|folder\s+la|save\s+pannu)\b",
     re.I,
 )
 _GENERAL_KNOWLEDGE_RE = re.compile(

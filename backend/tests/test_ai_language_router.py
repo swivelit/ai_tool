@@ -31,3 +31,19 @@ def test_reply_language_ta_prefers_sarvam_for_english_message():
 
     assert decision.language == "ta"
     assert decision.prefer_provider == "sarvam"
+
+
+def test_expanded_tanglish_daily_command_prefers_sarvam():
+    decision = detect_language("nethu business notes folder la save pannu")
+
+    assert decision.language == "ta"
+    assert decision.code_mixed is True
+    assert decision.prefer_provider == "sarvam"
+
+
+def test_tanglish_reply_language_aliases_prefer_indic_provider():
+    for reply_language in ["tamil", "tanglish", "mixed"]:
+        decision = detect_language("office meeting client lead save pannu", reply_language=reply_language)
+
+        assert decision.is_indic is True
+        assert decision.prefer_provider == "sarvam"

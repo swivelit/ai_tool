@@ -107,12 +107,16 @@ bootstrap_observability()
 patch_openai_client()
 
 from config import (
+    DEFAULT_REPLY_LANGUAGE,
+    DEFAULT_SPEECH_LANGUAGE,
     GENERATED_DOCS_DIR,
+    AI_TEXT_CHAT_ENABLED,
     LOGS_DIR,
     PIPELINE_VERSION,
     RAG_CONTEXT_HEADER,
     RAG_CONTEXT_INCLUDE_IN_STAGE_CONTEXT,
     RAG_CONTEXT_MAX_SNIPPETS,
+    VOICE_ONLY_PUBLIC_MODE,
 )  # noqa: E402
 from stage_behaviour_questions import BehaviourQuestionnaire, QUESTIONS as PIPELINE_QUESTIONS  # noqa: E402
 from stage_english_remodel import EnglishRemodeler  # noqa: E402
@@ -2189,13 +2193,46 @@ def _materialize_document_request(
         artifacts.append(
             {
                 "id": artifact.id,
+                "title": artifact.title,
                 "format": artifact.format,
                 "category": artifact.category,
                 "relative_path": artifact.relative_path,
-                "download": _build_download_payload(path, item=item, artifact=artifact),
+                "source_text": artifact.source_text,
+                **_build_download_payload(path, item=item, artifact=artifact),
             }
         )
     return artifacts
+
+
+def _hydrate_tool_file_metadata(session: Session, *, user_id: Optional[int], files: Any) -> list[Dict[str, Any]]:
+    if user_id is None or not isinstance(files, list):
+        return files if isinstance(files, list) else []
+    hydrated: list[Dict[str, Any]] = []
+    for file_row in files:
+        if not isinstance(file_row, dict):
+            continue
+        payload = dict(file_row)
+        artifact_id = payload.get("id")
+        try:
+            artifact = session.get(DocumentArtifact, int(artifact_id)) if artifact_id is not None else None
+        except Exception:
+            session.rollback()
+            artifact = None
+        if artifact is not None and int(artifact.user_id) == int(user_id):
+            payload.setdefault("item_id", artifact.item_id)
+            payload.setdefault("title", artifact.title)
+            payload.setdefault("format", artifact.format)
+            payload.setdefault("category", artifact.category)
+            payload.setdefault("relative_path", artifact.relative_path)
+            payload.setdefault("source_text", artifact.source_text)
+            try:
+                path = _resolve_generated_doc_path(artifact.relative_path)
+                item = session.get(Item, int(artifact.item_id)) if artifact.item_id is not None else None
+                payload.update(_build_download_payload(path, item=item, artifact=artifact))
+            except HTTPException:
+                pass
+        hydrated.append(payload)
+    return hydrated
 
 
 def _assistant_text_from_pipeline(
@@ -2254,6 +2291,8 @@ def _save_item_from_pipeline(
     )
     if artifacts:
         meta["artifacts"] = artifacts
+    if isinstance(meta.get("files"), list):
+        meta["files"] = _hydrate_tool_file_metadata(session, user_id=user_id, files=meta.get("files"))
 
     if not skip_expensive_side_effects:
         try:
@@ -3849,6 +3888,8 @@ def _active_model_routing_config() -> Dict[str, Any]:
             "sarvam_chat_model": os.getenv("SARVAM_CHAT_MODEL", "sarvam-30b") or "sarvam-30b",
             "sarvam_reasoning_model": os.getenv("SARVAM_CHAT_MODEL_REASONING", "sarvam-105b") or "sarvam-105b",
             "sarvam_stt_model": os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
+            "default_speech_language": DEFAULT_SPEECH_LANGUAGE,
+            "default_reply_language": DEFAULT_REPLY_LANGUAGE,
         }
     except Exception as exc:
         return {"error": sanitize_log_text(str(exc), 160)}
@@ -3869,6 +3910,8 @@ def api_version(session: Session = Depends(get_session)):
         "alembic": _alembic_revision_status(session),
         "AI_ROUTER_ENABLED": _ai_router_enabled(),
         "AGENTIC_MODE_ENABLED": agentic_mode_enabled(),
+        "VOICE_ONLY_PUBLIC_MODE": VOICE_ONLY_PUBLIC_MODE,
+        "AI_TEXT_CHAT_ENABLED": AI_TEXT_CHAT_ENABLED,
         "model_routing": _active_model_routing_config(),
         "providers": {
             "sarvam_configured": bool(_sarvam_api_key()),
@@ -4641,8 +4684,8 @@ async def _transcribe_and_analyze_upload(
     if user_id is not None:
         assert_owner(int(user_id), user)
     set_request_context(user_id=str(user.id))
-    reply_language = _normalize_reply_language(reply_language) if reply_language else "ta"
-    speech_language = speech_language or "ta-IN"
+    reply_language = _normalize_reply_language(reply_language) if reply_language else DEFAULT_REPLY_LANGUAGE
+    speech_language = speech_language or DEFAULT_SPEECH_LANGUAGE
 
     content_type = str(file.content_type or "").split(";")[0].strip().lower()
     filename = file.filename or "audio.m4a"
@@ -5062,14 +5105,20 @@ def _verify_download_token(token: str) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _build_download_payload(path: Path, *, item: Item, artifact: Optional[DocumentArtifact] = None) -> Dict[str, Any]:
+def _build_download_payload(path: Path, *, item: Optional[Item] = None, artifact: Optional[DocumentArtifact] = None) -> Dict[str, Any]:
     resolved = path.resolve()
     relative_path = resolved.relative_to(DOCS_BASE_DIR).as_posix()
+    user_id = int(item.user_id) if item is not None else int(getattr(artifact, "user_id", 0) or 0)
+    item_id = int(item.id) if item is not None and item.id is not None else (
+        int(artifact.item_id) if artifact is not None and artifact.item_id is not None else None
+    )
+    if user_id <= 0:
+        raise HTTPException(404, "File not found")
     token = _sign_download_payload(
         {
             "path": relative_path,
-            "user_id": int(item.user_id),
-            "item_id": int(item.id),
+            "user_id": user_id,
+            "item_id": item_id,
             "artifact_id": int(artifact.id) if artifact and artifact.id is not None else None,
             "exp": int(time.time()) + DOWNLOAD_TOKEN_TTL_SECONDS,
         }
@@ -5153,22 +5202,43 @@ def _draw_pdf_wrapped_line(
     return y
 
 
-def generate_docx(item: Item) -> Path:
+def _document_body_for_item(item: Item, source_text: str = "") -> str:
+    body = " ".join(str(source_text or "").strip().split())
+    if not body:
+        body = " ".join(str(item.raw_text or "").strip().split())
+    if re.match(r"^created\s+(?:pdf|docx|xlsx|pptx|word|excel|powerpoint)", body, flags=re.I):
+        body = " ".join(str(item.raw_text or "").strip().split())
+    return body or str(item.title or f"Item {item.id}")
+
+
+def _document_metadata_lines(item: Item, source_text: str = "") -> list[tuple[str, str]]:
+    created = item.created_at.isoformat() if item.created_at else _utc_now().isoformat()
+    return [
+        ("Title", str(item.title or f"Item {item.id}")),
+        ("Category", str(item.category or "Other")),
+        ("Created", created),
+        ("Body", _document_body_for_item(item, source_text)),
+    ]
+
+
+def generate_docx(item: Item, *, source_text: str = "") -> Path:
     from docx import Document
 
     path = _export_path_for_item(DOCX_BASE_DIR, item, "docx")
     doc = Document()
     doc.add_heading(item.title or f"Item {item.id}", level=1)
-    doc.add_paragraph(f"Intent: {item.intent}")
-    doc.add_paragraph(f"Category: {item.category}")
+    for label, value in _document_metadata_lines(item, source_text):
+        if label == "Body":
+            continue
+        doc.add_paragraph(f"{label}: {value}")
     if item.datetime_str:
         doc.add_paragraph(f"When: {item.datetime_str}")
-    doc.add_paragraph(item.details or item.raw_text)
+    doc.add_paragraph(_document_body_for_item(item, source_text))
     doc.save(str(path))
     return path
 
 
-def generate_pdf(item: Item) -> Path:
+def generate_pdf(item: Item, *, source_text: str = "") -> Path:
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -5196,7 +5266,7 @@ def generate_pdf(item: Item) -> Path:
     page_width, page_height = letter
     margin = 54
     y = page_height - margin
-    pdf = canvas.Canvas(str(path), pagesize=letter)
+    pdf = canvas.Canvas(str(path), pagesize=letter, pageCompression=0)
     pdf.setFont(font_name, 15)
     y = _draw_pdf_wrapped_line(
         pdf,
@@ -5211,7 +5281,10 @@ def generate_pdf(item: Item) -> Path:
     )
     y -= 10
     pdf.setFont(font_name, 11)
-    for line in (f"Intent: {item.intent}", f"Category: {item.category}"):
+    for label, value in _document_metadata_lines(item, source_text):
+        if label == "Body":
+            continue
+        line = f"{label}: {value}"
         y = _draw_pdf_wrapped_line(
             pdf,
             _pdf_safe_text(line, bool(font_path)),
@@ -5238,7 +5311,7 @@ def generate_pdf(item: Item) -> Path:
     y -= 8
     y = _draw_pdf_wrapped_line(
         pdf,
-        _pdf_safe_text(item.details or item.raw_text, bool(font_path)),
+        _pdf_safe_text(_document_body_for_item(item, source_text), bool(font_path)),
         margin,
         y,
         page_width - (margin * 2),
@@ -5252,21 +5325,15 @@ def generate_pdf(item: Item) -> Path:
     return path
 
 
-def generate_excel(item: Item) -> Path:
+def generate_excel(item: Item, *, source_text: str = "") -> Path:
     from openpyxl import Workbook
 
     path = _export_path_for_item(EXCEL_BASE_DIR, item, "xlsx")
     wb = Workbook()
     ws = wb.active
     ws.title = "Item"
-    rows = [
-        ("ID", item.id),
-        ("Title", item.title),
-        ("Intent", item.intent),
-        ("Category", item.category),
-        ("When", item.datetime_str),
-        ("Details", item.details or item.raw_text),
-    ]
+    rows = [("ID", item.id), ("Intent", item.intent), ("When", item.datetime_str)]
+    rows.extend(_document_metadata_lines(item, source_text))
     for i, (k, v) in enumerate(rows, start=1):
         ws.cell(row=i, column=1, value=k)
         ws.cell(row=i, column=2, value=v)
@@ -5274,7 +5341,7 @@ def generate_excel(item: Item) -> Path:
     return path
 
 
-def generate_ppt(item: Item) -> Path:
+def generate_ppt(item: Item, *, source_text: str = "") -> Path:
     from pptx import Presentation
 
     path = _export_path_for_item(PPT_BASE_DIR, item, "pptx")
@@ -5283,10 +5350,10 @@ def generate_ppt(item: Item) -> Path:
     slide = prs.slides.add_slide(prs.slide_layouts[1])
     slide.shapes.title.text = item.title or f"Item {item.id}"
     tf = slide.placeholders[1].text_frame
-    tf.text = f"Intent: {item.intent}\nCategory: {item.category}"
+    tf.text = f"Category: {item.category}\nCreated: {item.created_at.isoformat() if item.created_at else _utc_now().isoformat()}"
     if item.datetime_str:
         tf.add_paragraph().text = f"When: {item.datetime_str}"
-    tf.add_paragraph().text = item.details or item.raw_text
+    tf.add_paragraph().text = _document_body_for_item(item, source_text)
 
     prs.save(str(path))
     return path
@@ -5351,7 +5418,10 @@ def _create_document_artifact(
     generator = _generator_for_document_format(format_key)
     if generator is None:
         raise HTTPException(400, "Unsupported export format")
-    path = generator(item)
+    try:
+        path = generator(item, source_text=source_text)
+    except TypeError:
+        path = generator(item)
     artifact = _record_document_artifact(
         session,
         item=item,
@@ -5465,7 +5535,15 @@ def download_generated_by_token(
     if int(payload.get("user_id") or 0) != int(user.id):
         raise HTTPException(404, "File not found")
     item_id = int(payload.get("item_id") or 0)
-    _get_owned_item(session, item_id, int(user.id))
+    artifact_id = int(payload.get("artifact_id") or 0)
+    if item_id:
+        _get_owned_item(session, item_id, int(user.id))
+    elif artifact_id:
+        artifact = session.get(DocumentArtifact, artifact_id)
+        if artifact is None or int(artifact.user_id) != int(user.id):
+            raise HTTPException(404, "File not found")
+    else:
+        raise HTTPException(404, "File not found")
     resolved_path = _resolve_generated_doc_path(str(payload.get("path") or ""))
     return FileResponse(str(resolved_path), filename=resolved_path.name)
 

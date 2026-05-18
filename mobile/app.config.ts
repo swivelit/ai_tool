@@ -120,6 +120,15 @@ const isProductionOrReleaseBuild =
   normalizedJaiBuildProfile === "production" ||
   normalizedJaiBuildProfile === "release" ||
   normalizedJaiBuildType === "release";
+const isPublicBuild =
+  isProductionOrReleaseBuild ||
+  isTruthyEnv(process.env.EXPO_PUBLIC_PUBLIC_BUILD) ||
+  isTruthyEnv(process.env.PUBLIC_BUILD);
+const VOICE_ONLY_MODE = firstNonEmpty(
+  process.env.EXPO_PUBLIC_VOICE_ONLY_MODE,
+  process.env.VOICE_ONLY_MODE,
+  isPublicBuild ? "true" : "false",
+);
 const isLocalModelFallbackEnabled =
   isTruthyEnv(ENABLE_LOCAL_MODEL_FALLBACK) ||
   isTruthyEnv(USE_LOCAL_CHAT_PIPELINE) ||
@@ -403,8 +412,8 @@ export default {
       gitSha: MOBILE_GIT_SHA,
       EXPO_PUBLIC_MOBILE_BUILD_ID: MOBILE_BUILD_ID,
       EXPO_PUBLIC_GIT_SHA: MOBILE_GIT_SHA,
-      VOICE_ONLY_MODE: process.env.EXPO_PUBLIC_VOICE_ONLY_MODE || "false",
-      EXPO_PUBLIC_VOICE_ONLY_MODE: process.env.EXPO_PUBLIC_VOICE_ONLY_MODE || "false",
+      VOICE_ONLY_MODE,
+      EXPO_PUBLIC_VOICE_ONLY_MODE: VOICE_ONLY_MODE,
 
       // optional local runtime
       // Backend AI router is primary. Local runtime mode remains explicit for

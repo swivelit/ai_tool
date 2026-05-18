@@ -8,6 +8,7 @@ import {
   Easing,
   Keyboard,
   LayoutChangeEvent,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -38,6 +39,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 import {
   BACKEND_CHAT_FALLBACK_TIMEOUT_MS,
+  API_BASE,
   apiDelete,
   apiGet,
   apiPost,
@@ -248,6 +250,27 @@ function getHistoryPreview(item: ChatHistoryItem) {
   if (raw) return raw;
 
   return "Assistant response";
+}
+
+function absoluteDownloadUrl(url?: string | null) {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith("/")) return `${API_BASE.replace(/\/$/, "")}${value}`;
+  return value;
+}
+
+function firstOpenableFile(item: ChatHistoryItem, source: "files" | "any" = "any") {
+  const files = source === "files" ? item.files || [] : [...(item.files || []), ...(item.artifacts || [])];
+  return files.find((file) => absoluteDownloadUrl(file.download_url || file.download?.download_url));
+}
+
+function openReturnedFile(file: ReturnType<typeof firstOpenableFile>) {
+  const url = absoluteDownloadUrl(file?.download_url || file?.download?.download_url);
+  if (!url) return;
+  Linking.openURL(url).catch(() => {
+    Alert.alert("File", "Could not open this file link.");
+  });
 }
 
 function sessionTimeValue(value?: string | null) {
@@ -1854,6 +1877,7 @@ export default function Home() {
       clearPendingAssistant(requestId);
       const mergedHistory = await refreshHistoryAndSessions([nextItem]);
       await attachItemToCurrentChat(nextItem, mergedHistory);
+      openReturnedFile(firstOpenableFile(nextItem, "files"));
       maybePromptModelSetup(response);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       logClientTurn({
@@ -1956,6 +1980,7 @@ export default function Home() {
               clearPendingAssistant(requestId);
               const mergedHistory = await refreshHistoryAndSessions([nextItem]);
               await attachItemToCurrentChat(nextItem, mergedHistory);
+              openReturnedFile(firstOpenableFile(nextItem, "files"));
               maybePromptModelSetup(backendResponse);
               logClientTurn({
                 event: "client_backend_fallback_completed",
@@ -2345,6 +2370,7 @@ export default function Home() {
       clearPendingAssistant(requestId);
       const mergedHistory = await refreshHistoryAndSessions([nextItem]);
       await attachItemToCurrentChat(nextItem, mergedHistory);
+      openReturnedFile(firstOpenableFile(nextItem, "files"));
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       if (
@@ -2619,6 +2645,18 @@ export default function Home() {
                                   {assistantMessage}
                                 </Text>
                               </View>
+                              {firstOpenableFile(item) ? (
+                                <Pressable
+                                  testID="chat-open-file-button"
+                                  accessibilityLabel="chat-open-file-button"
+                                  accessibilityRole="button"
+                                  onPress={() => openReturnedFile(firstOpenableFile(item))}
+                                  style={styles.fileActionButton}
+                                >
+                                  <Ionicons name="document-attach-outline" size={16} color={Brand.cocoa} />
+                                  <Text style={styles.fileActionText}>Open file</Text>
+                                </Pressable>
+                              ) : null}
                               <Text style={styles.messageMeta}>{timeLabel}</Text>
                             </View>
                           </View>
@@ -3342,6 +3380,26 @@ const styles = StyleSheet.create({
     color: Brand.textMuted,
     fontSize: 11,
     fontWeight: "700",
+  },
+
+  fileActionButton: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+    backgroundColor: Brand.soft,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+
+  fileActionText: {
+    color: Brand.cocoa,
+    fontSize: 13,
+    fontWeight: "800",
   },
 
   typingBubble: {

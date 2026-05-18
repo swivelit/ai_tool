@@ -41,7 +41,7 @@ def test_clear_reminder_creates_reminder_item_through_chat_contract(client, monk
     payload = response.json()
     assert set(payload.keys()) == {"ok", "item", "assistant", "pipeline", "meta"}
     assert payload["item"]["intent"] == "reminder"
-    assert payload["item"]["category"] == "Reminder"
+    assert payload["item"]["category"] == "Home"
     assert payload["item"]["title"] == "call mom"
     assert payload["item"]["datetime"]
     assert "Reminder saved" in payload["assistant"]["text"]

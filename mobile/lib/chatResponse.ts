@@ -1,4 +1,4 @@
-import { Item } from "./types";
+import { GeneratedFileMetadata, Item } from "./types";
 
 export type ChatHistoryItem = Item & {
   created_at?: string | null;
@@ -18,6 +18,25 @@ export type BackendChatResponse = Partial<ChatHistoryItem> & {
   } | null;
   meta?: Record<string, any> | null;
 };
+
+function normalizeFileList(value: unknown): GeneratedFileMetadata[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is Record<string, any> => Boolean(entry && typeof entry === "object"))
+    .map((entry) => ({
+      id: entry.id ?? null,
+      item_id: entry.item_id ?? null,
+      title: entry.title ?? null,
+      format: entry.format ?? null,
+      category: entry.category ?? null,
+      relative_path: entry.relative_path ?? null,
+      source_text: entry.source_text ?? null,
+      created_at: entry.created_at ?? null,
+      download_url: entry.download_url ?? entry.download?.download_url ?? null,
+      download_id: entry.download_id ?? entry.download?.download_id ?? null,
+      download: entry.download ?? null,
+    }));
+}
 
 function inferChatHistoryOrigin(payload: BackendChatResponse): ChatHistoryItem["__origin"] {
   const explicitOrigin = payload.__origin || (payload.item as ChatHistoryItem | null)?.__origin;
@@ -51,6 +70,8 @@ export function normalizeChatResponse(
       ? payload
       : null;
   const item = nestedItem || legacyFlatItem;
+  const files = normalizeFileList(payload?.meta?.files ?? (item as any)?.files);
+  const artifacts = normalizeFileList(payload?.meta?.artifacts ?? (item as any)?.artifacts);
 
   if (item && typeof item === "object") {
     return {
@@ -71,6 +92,9 @@ export function normalizeChatResponse(
         fallbackRawText,
       created_at: item.created_at ?? new Date().toISOString(),
       source: item.source ?? "text",
+      files,
+      artifacts,
+      meta: payload.meta ?? (item as any).meta ?? null,
       ...(origin ? { __origin: origin } : {}),
     };
   }
@@ -91,6 +115,9 @@ export function normalizeChatResponse(
       fallbackRawText,
     created_at: new Date().toISOString(),
     source: "text",
+    files,
+    artifacts,
+    meta: payload.meta ?? null,
     ...(origin ? { __origin: origin } : {}),
   };
 }

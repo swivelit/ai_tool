@@ -27,7 +27,9 @@ _ROMANIZED_INDIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"\b("
             r"tamil|tanglish|vanakkam|nandri|enna|eppadi|sapadu|saapadu|"
             r"sollu|sollunga|pannu|pannunga|venum|irukku|illa|seri|romba|"
-            r"naan|unga|ungal|namma|thambi|akka|anna|theni|kovai|madurai"
+            r"naan|unga|ungal|namma|thambi|akka|anna|theni|kovai|madurai|"
+            r"naethu|nethu|inniku|naalaikku|nalai|kaalai|maalai|veedu|"
+            r"office|meeting|client|lead|business|folder\s+la|save\s+pannu"
             r")\b",
             re.IGNORECASE,
         ),

@@ -2,9 +2,15 @@ import pytest
 from fastapi import HTTPException
 
 from app.ai.budget import enforce_free_text_quota, enforce_free_voice_quota, enforce_provider_budget
-from app.ai.types import AIProviderResponse
+from app.ai.orchestrator import run_text_turn
+from app.ai.types import AIProviderResponse, AIRequest
 from app.ai.usage import record_ai_usage_event
 from app.database import SessionLocal
+
+
+class _ExplodingProvider:
+    def complete(self, *_args, **_kwargs):
+        raise AssertionError("deterministic tool workflow must not call providers")
 
 
 def test_free_daily_text_quota_returns_429(monkeypatch):
@@ -87,3 +93,33 @@ def test_free_daily_voice_quota_counts_audio_seconds(monkeypatch):
 
     assert exc.value.status_code == 429
     assert "Daily free voice limit" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "client follow up note save பண்ணு",
+        "office meeting task add பண்ணு",
+        "அம்மா medicine நாளைக்கு காலை remind பண்ணு",
+        "இந்த meeting points எல்லாம் PDF ஆக்கி Work Folder ல வை",
+        "நேத்து சொன்ன business notes open பண்ணு",
+    ],
+)
+def test_backend_tool_workflows_have_zero_provider_cost_after_stt(message):
+    with SessionLocal() as session:
+        response = run_text_turn(
+            session,
+            AIRequest(
+                user_id=123,
+                message=message,
+                reply_language="ta",
+                channel="voice",
+                request_id="budget-tool-test",
+                metadata={},
+            ),
+            existing_context={"openai_provider": _ExplodingProvider(), "sarvam_provider": _ExplodingProvider()},
+        )
+
+    assert response.provider == "backend_tool"
+    assert response.estimated_cost_amount == 0
+    assert response.estimated_cost_currency == ""

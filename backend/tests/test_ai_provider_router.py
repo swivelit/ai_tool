@@ -81,6 +81,24 @@ def test_reminder_uses_backend_tool_without_model():
     assert route.model is None
 
 
+def test_voice_tool_workflows_route_to_backend_tool_without_model():
+    cases = [
+        ("client follow up note save பண்ணு", "note"),
+        ("office meeting task add பண்ணு", "task"),
+        ("அம்மா medicine நாளைக்கு காலை remind பண்ணு", "reminder"),
+        ("இந்த meeting points எல்லாம் PDF ஆக்கி Work Folder ல வை", "document"),
+        ("நேத்து சொன்ன business notes open பண்ணு", "file_retrieval"),
+    ]
+
+    for message, expected_intent in cases:
+        route = AIProviderRouter().select_route(_request(message, reply_language="ta", channel="voice"))
+
+        assert route.provider == "backend_tool"
+        assert route.model is None
+        assert route.intent == expected_intent
+        assert route.max_output_tokens == 0
+
+
 def test_live_data_is_blocked_when_web_search_disabled(monkeypatch):
     monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "false")
     route = AIProviderRouter().select_route(_request("latest IPL score today"))

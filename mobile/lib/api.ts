@@ -1471,6 +1471,15 @@ function normalizeVoiceAnalyzePath(path: string) {
   return normalized;
 }
 
+function withTamilVoiceDefaults(path: string) {
+  const [rawBase, rawQuery = ""] = String(path || CANONICAL_VOICE_ANALYZE_PATH).split("?");
+  const params = new URLSearchParams(rawQuery);
+  if (!params.has("reply_language")) params.set("reply_language", "ta");
+  if (!params.has("speech_language")) params.set("speech_language", "ta-IN");
+  const query = params.toString();
+  return `${rawBase}${query ? `?${query}` : ""}`;
+}
+
 function formatIntentLabel(value?: string | null) {
   const source = (value || "assistant").replace(/[_-]+/g, " ").trim();
   if (!source) return "Assistant";
@@ -2459,9 +2468,9 @@ export async function apiPostBackendOnly<T>(
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
-  const useLocalVoicePipeline =
-    isTranscribeAndAnalyzePath(path) && (await shouldUseLocalVoicePipeline());
-  const resolvedPath = useLocalVoicePipeline ? normalizeVoiceAnalyzePath(path) : path;
+  const isVoiceAnalyze = isTranscribeAndAnalyzePath(path);
+  const useLocalVoicePipeline = isVoiceAnalyze && (await shouldUseLocalVoicePipeline());
+  const resolvedPath = isVoiceAnalyze ? withTamilVoiceDefaults(normalizeVoiceAnalyzePath(path)) : path;
 
   if (useLocalVoicePipeline) {
     return (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;

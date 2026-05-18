@@ -194,11 +194,11 @@ describe("API client contracts", () => {
     expect(payload.assistant.text).toBe("Hello.");
     const voiceCalls = fetchCallsEndingWith(
       fetchMock,
-      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
     );
     expect(voiceCalls).toHaveLength(1);
     expect(String(voiceCalls[0][0])).toBe(
-      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
     );
   });
 
@@ -262,11 +262,11 @@ describe("API client contracts", () => {
 
     const voiceCalls = fetchCallsEndingWith(
       fetchMock,
-      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
     );
     expect(voiceCalls).toHaveLength(1);
     expect(String(voiceCalls[0][0])).toBe(
-      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
     );
   });
 
@@ -414,11 +414,11 @@ describe("API client contracts", () => {
     expect(payload.assistant.text).toBe("Backend voice answer.");
     const voiceCalls = fetchCallsEndingWith(
       fetchMock,
-      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
     );
     expect(voiceCalls).toHaveLength(1);
     expect(String(voiceCalls[0][0])).toBe(
-      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
     );
   });
 
@@ -482,11 +482,11 @@ describe("API client contracts", () => {
 
     const voiceCalls = fetchCallsEndingWith(
       fetchMock,
-      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
     );
     expect(voiceCalls).toHaveLength(1);
     expect(String((voiceCalls[0] as any[])[0])).toBe(
-      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
     );
     expect(payload.assistant.text).toBe("Cloud voice answer.");
     expect(payload.meta.cloudFallback.kind).toBe("cloud_voice_fallback");
@@ -631,7 +631,7 @@ describe("API client contracts", () => {
     expect(transcribeAudio).toHaveBeenCalledWith({
       fileUri: "file:///tmp/audio.m4a",
       model: "whisper",
-      language: "en",
+      language: "ta",
     });
     expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
