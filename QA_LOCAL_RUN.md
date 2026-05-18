@@ -94,5 +94,3 @@ Before every release build, ensure:
 - [ ] `crash-markers.log` is empty.
 
 ---
-*Maintained by QA Automation Team*
-*Last updated: 2026-05-15*
