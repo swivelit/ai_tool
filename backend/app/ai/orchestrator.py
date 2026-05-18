@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import time
 import re
+from dataclasses import replace
 from typing import Any, Optional
 
 from fastapi import HTTPException
 from sqlmodel import Session
 
 from .budget import enforce_free_text_quota, enforce_provider_budget
+from .agent_runtime import AgentRuntime, agentic_mode_enabled
 from .intent import classify_contextual_followup
 from .openai_catalog import get_model_spec
 from .providers.openai_provider import OpenAIProvider
@@ -32,8 +34,22 @@ def run_text_turn(
         admin_email=str(ai_request.metadata.get("admin_email") or ""),
     )
 
+    agent_result = None
+    if agentic_mode_enabled():
+        agent_result = AgentRuntime().run(session, ai_request)
+        ai_request.metadata.setdefault("agent_run_id", agent_result.run_id)
+        if agent_result.response is not None:
+            return _record(
+                session,
+                agent_result.response,
+                ai_request,
+                started,
+                metadata={"agent_run_id": agent_result.run_id, "agentic_mode": True},
+            )
+
     pending_reminder = try_handle_pending_reminder(session, ai_request)
     if pending_reminder is not None:
+        pending_reminder.route = "agent_tool_reminder" if agentic_mode_enabled() else pending_reminder.route
         return _record(session, pending_reminder, ai_request, started)
 
     contextual = _prepare_contextual_followup(ai_request)
@@ -43,6 +59,15 @@ def run_text_turn(
             return _record(session, contextual[1], ai_request, started)
 
     route = context.get("router", AIProviderRouter()).select_route(ai_request)
+    if agent_result is not None and agent_result.plan.action == "provider_qa" and route.provider in {"openai", "sarvam"}:
+        route = replace(
+            route,
+            route=agent_result.plan.route,
+            reason=f"{route.reason}:{agent_result.plan.reason}",
+            intent=agent_result.plan.intent,
+            language=agent_result.plan.language or route.language,
+            metadata={**route.metadata, "agent_run_id": agent_result.run_id},
+        )
     if route.provider == "blocked":
         response = _blocked_response(ai_request, route)
         return _record(session, response, ai_request, started)

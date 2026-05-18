@@ -16,8 +16,18 @@ function positiveMs(value: unknown, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function boolFlag(value: unknown) {
+  return ["1", "true", "yes", "y", "on"].includes(
+    String(value ?? "").trim().toLowerCase(),
+  );
+}
+
+function isReleaseRuntime() {
+  return boolFlag(process.env.EXPO_PUBLIC_RELEASE_BUILD) || boolFlag(extra.RELEASE_BUILD);
+}
+
 export function getMobileBuildInfo() {
-  return {
+  const info = {
     mobile_build_id: firstNonEmpty(
       [
         process.env.EXPO_PUBLIC_MOBILE_BUILD_ID,
@@ -43,5 +53,12 @@ export function getMobileBuildInfo() {
         extra.localToBackendFallbackMs,
       DEFAULT_LOCAL_TO_BACKEND_FALLBACK_MS,
     ),
+    voice_only_mode: boolFlag(
+      process.env.EXPO_PUBLIC_VOICE_ONLY_MODE ?? extra.EXPO_PUBLIC_VOICE_ONLY_MODE ?? extra.VOICE_ONLY_MODE,
+    ),
   };
+  if (isReleaseRuntime() && (info.mobile_build_id === "unknown" || info.mobile_git_sha === "unknown")) {
+    throw new Error("Release telemetry requires real mobile build identifiers.");
+  }
+  return info;
 }

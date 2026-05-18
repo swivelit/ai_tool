@@ -1,12 +1,13 @@
 from datetime import timedelta
 
+import pytest
 from sqlmodel import select
 
 from app.time_utils import utc_now
 from app.ai.orchestrator import run_text_turn
 from app.ai.types import AIProviderResponse, AIRequest
 from app.database import SessionLocal
-from app.models import DailyRoutine, DocumentArtifact, Item, UserProfile
+from app.models import AgentRun, DailyRoutine, DocumentArtifact, Item, UserProfile
 from conftest import auth_headers, create_test_user
 
 
@@ -184,6 +185,46 @@ def test_dhoom_movie_after_pending_reminder_does_not_create_reminder(client, mon
     assert reminders == []
 
 
+def test_dhoom_movie_after_stale_reminder_context_is_never_reminder():
+    user = create_test_user()
+
+    class _StaticProvider:
+        def complete(self, request, route):
+            return AIProviderResponse(
+                text="Dhoom is an Indian action movie franchise.",
+                provider="openai",
+                model=route.model,
+                route=route.route,
+                reason=route.reason,
+                language=route.language,
+                intent=route.intent,
+            )
+
+    stale_context = [
+        {"user": "Remind me tomorrow morning", "assistant": "What should I remind you about?"},
+        {"user": "hello", "assistant": "Hi. How can I help?"},
+    ]
+    with SessionLocal() as session:
+        response = run_text_turn(
+            session,
+            AIRequest(
+                user_id=int(user.id),
+                message="Tell me about dhoom movie",
+                reply_language="en",
+                channel="text",
+                request_id="stale-dhoom-test",
+                metadata={},
+                context_turns=stale_context,
+            ),
+            existing_context={"openai_provider": _StaticProvider(), "sarvam_provider": _ExplodingProvider()},
+        )
+        reminders = session.exec(select(Item).where(Item.user_id == user.id, Item.intent == "reminder")).all()
+
+    assert response.intent == "general"
+    assert response.route == "agent_provider_qa"
+    assert reminders == []
+
+
 def test_greeting_is_local_and_does_not_call_openai():
     user = create_test_user()
     with SessionLocal() as session:
@@ -195,7 +236,31 @@ def test_greeting_is_local_and_does_not_call_openai():
 
     assert response.provider == "backend_tool"
     assert response.intent == "greeting"
-    assert response.route == "backend_tool_greeting"
+    assert response.route == "agent_local_greeting"
+    with SessionLocal() as session:
+        run = session.exec(select(AgentRun).where(AgentRun.user_id == user.id)).one()
+    assert run.final_route == "agent_local_greeting"
+    assert run.provider_calls == 0
+
+
+def test_low_cost_gate_blocks_providers_for_simple_local_commands():
+    user = create_test_user()
+    cases = [
+        ("thanks", "thanks"),
+        ("what can you do", "capabilities"),
+        ("remember buy milk", "note"),
+        ("add task file quarterly taxes", "task"),
+    ]
+    with SessionLocal() as session:
+        for message, expected_intent in cases:
+            response = run_text_turn(
+                session,
+                _request(message, int(user.id)),
+                existing_context={"openai_provider": _ExplodingProvider(), "sarvam_provider": _ExplodingProvider()},
+            )
+            assert response.provider == "backend_tool"
+            assert response.intent == expected_intent
+            assert response.route.startswith(("agent_local_", "agent_tool_"))
 
 
 def test_profile_and_routine_tools_read_saved_data_without_provider_calls():
@@ -295,6 +360,56 @@ def test_voice_document_command_creates_generated_file_under_category_date(clien
     assert artifact.category == "Work"
     assert f"pdf/Work/{artifact.created_at.date().isoformat()}/" in artifact.relative_path
     assert (tmp_path / artifact.relative_path).is_file()
+    search = client.get(
+        "/api/files/search?q=meeting&category=Work",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+    assert search.status_code == 200
+    files = search.json()["files"]
+    assert files[0]["download_id"]
+    download = client.get(files[0]["download_url"], headers=auth_headers("test-uid", "test@example.com"))
+    assert download.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_format", "expected_category"),
+    [
+        ("இந்த points Excel sheet ஆக்கி Business folder ல வை", "xlsx", "Business"),
+        ("இந்த ideas PPT ஆக்கி Work folder ல save பண்ணு", "pptx", "Work"),
+        ("meeting minutes DOCX ஆக்கி Work folder ல save பண்ணு", "docx", "Work"),
+    ],
+)
+def test_voice_document_commands_create_all_supported_artifact_formats(
+    client,
+    monkeypatch,
+    tmp_path,
+    message,
+    expected_format,
+    expected_category,
+):
+    import app.main as main_module
+
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    monkeypatch.setattr(main_module, "DOCS_BASE_DIR", tmp_path.resolve())
+    monkeypatch.setattr(main_module, "PDF_BASE_DIR", tmp_path.resolve() / "pdf")
+    monkeypatch.setattr(main_module, "DOCX_BASE_DIR", tmp_path.resolve() / "docx")
+    monkeypatch.setattr(main_module, "EXCEL_BASE_DIR", tmp_path.resolve() / "xlsx")
+    monkeypatch.setattr(main_module, "PPT_BASE_DIR", tmp_path.resolve() / "pptx")
+    user = create_test_user()
+
+    response = client.post(
+        "/api/chat",
+        headers=auth_headers("test-uid", "test@example.com"),
+        json={"message": message, "reply_language": "ta"},
+    )
+
+    assert response.status_code == 200
+    with SessionLocal() as session:
+        artifact = session.exec(select(DocumentArtifact).where(DocumentArtifact.user_id == user.id)).one()
+    assert artifact.format == expected_format
+    assert artifact.category == expected_category
+    assert f"{expected_format}/{expected_category}/{artifact.created_at.date().isoformat()}/" in artifact.relative_path
+    assert (tmp_path / artifact.relative_path).is_file()
 
 
 def test_voice_file_retrieval_finds_yesterday_business_artifact():
@@ -341,12 +456,69 @@ def test_voice_file_retrieval_finds_yesterday_business_artifact():
     assert response.raw["item_metadata"]["files"][0]["title"] == "business notes"
 
 
-def test_unsupported_creative_tool_returns_not_configured_without_success():
+def test_files_search_is_scoped_to_authenticated_user():
+    user_a = create_test_user("uid-a", "a@example.com")
+    user_b = create_test_user("uid-b", "b@example.com")
+    with SessionLocal() as session:
+        item = Item(
+            intent="document",
+            category="Business",
+            raw_text="private business notes",
+            title="business notes",
+            details="Business notes",
+            source="voice",
+            user_id=user_b.id,
+        )
+        session.add(item)
+        session.commit()
+        session.refresh(item)
+        session.add(
+            DocumentArtifact(
+                user_id=int(user_b.id),
+                item_id=int(item.id),
+                title="business notes",
+                format="pdf",
+                category="Business",
+                relative_path=f"pdf/Business/{utc_now().date().isoformat()}/business_notes.pdf",
+                source_text="business notes",
+            )
+        )
+        session.commit()
+
+    response_a = client_get_files_for_user("uid-a", "a@example.com")
+    response_b = client_get_files_for_user("uid-b", "b@example.com")
+    assert user_a.id != user_b.id
+    assert response_a["files"] == []
+    assert response_b["files"][0]["title"] == "business notes"
+
+
+def client_get_files_for_user(uid: str, email: str) -> dict:
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as test_client:
+        response = test_client.get(
+            "/api/files/search?q=business&category=Business",
+            headers=auth_headers(uid, email),
+        )
+    assert response.status_code == 200
+    return response.json()
+
+
+@pytest.mark.parametrize(
+    ("message", "tool_kind"),
+    [
+        ("Create a poster image for my shop", "image"),
+        ("Edit this video clip for Instagram", "video"),
+        ("Clean up this audio recording", "audio"),
+    ],
+)
+def test_unsupported_creative_tool_returns_not_configured_without_success(message, tool_kind):
     user = create_test_user()
     with SessionLocal() as session:
         response = run_text_turn(
             session,
-            _request("Create a poster image for my shop", int(user.id)),
+            _request(message, int(user.id)),
             existing_context={"openai_provider": _ExplodingProvider(), "sarvam_provider": _ExplodingProvider()},
         )
 
@@ -354,4 +526,5 @@ def test_unsupported_creative_tool_returns_not_configured_without_success():
     assert response.intent == "creative_tool"
     tool = response.raw["item_metadata"]["tool"]
     assert tool["status"] == "not_configured"
+    assert tool["kind"] == tool_kind
     assert "cannot claim" in response.text.lower() or "not configured" in response.text.lower()

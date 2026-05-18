@@ -135,6 +135,28 @@ describe("chat telemetry queue", () => {
     expect(body.cloud_fallback_enabled).toBe(true);
   });
 
+  it("fails release build telemetry when build identifiers are unknown", async () => {
+    vi.resetModules();
+    vi.stubEnv("EXPO_PUBLIC_RELEASE_BUILD", "true");
+    vi.stubEnv("EXPO_PUBLIC_MOBILE_BUILD_ID", "");
+    vi.stubEnv("EXPO_PUBLIC_GIT_SHA", "");
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            RELEASE_BUILD: "true",
+            MOBILE_BUILD_ID: "",
+            GIT_SHA: "",
+          },
+        },
+      },
+    }));
+
+    const { getMobileBuildInfo } = await import("../lib/mobileBuildInfo");
+
+    expect(() => getMobileBuildInfo()).toThrow(/real mobile build identifiers/i);
+  });
+
   it("keeps failed telemetry queued for retry", async () => {
     const storage = setupTelemetryMocks();
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ ok: false }, 503)));

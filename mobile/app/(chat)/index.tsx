@@ -67,6 +67,7 @@ import {
 } from "@/lib/chatHistory";
 import { parseDatetime } from "@/lib/datetime";
 import { saveScheduledTask } from "@/lib/localTaskStore";
+import { getMobileBuildInfo } from "@/lib/mobileBuildInfo";
 import {
   friendlyLocalTimeoutMessage,
   getLocalToBackendFallbackMs,
@@ -352,6 +353,7 @@ export default function Home() {
   const { width, height } = useWindowDimensions();
   const { name, settings, profile } = useAssistant();
   const { signOutUser } = useAuth();
+  const voiceOnlyMode = useMemo(() => getMobileBuildInfo().voice_only_mode, []);
 
   const [text, setText] = useState("");
   const [composerInputHeight, setComposerInputHeight] =
@@ -413,6 +415,7 @@ export default function Home() {
   const handsFreeBlockedRef = useRef(false);
   const activeChatRequestIdRef = useRef<string | null>(null);
   const modelSetupAlertLastShownAtRef = useRef(0);
+  const voiceOnlyInitialOpenRef = useRef(false);
   const historyItemsRef = useRef<ChatHistoryItem[]>([]);
   const chatSessionsRef = useRef<ChatSessionRecord[]>([]);
   const handsFreeRuntimeRef = useRef({
@@ -884,6 +887,13 @@ export default function Home() {
       queueHandsFreeRestart("wake", 500);
     }
   });
+
+  useEffect(() => {
+    if (voiceOnlyMode && !voiceOnlyInitialOpenRef.current && !voiceSheetOpen) {
+      voiceOnlyInitialOpenRef.current = true;
+      setVoiceSheetOpen(true);
+    }
+  }, [voiceOnlyMode, voiceSheetOpen]);
 
   useEffect(() => {
     if (handsFreeForegroundEnabled) {
@@ -2317,9 +2327,7 @@ export default function Home() {
       });
       const res = await withLocalTimeout(
         apiPostForm<BackendChatResponse | ChatHistoryItem>(
-          `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${
-            settings.languageMode === "en" ? "en" : "ta"
-          }&speech_language=ta-IN`,
+          `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=ta&speech_language=ta-IN`,
           form,
         ),
         timeoutMs,
@@ -2708,32 +2716,42 @@ export default function Home() {
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
               <View style={styles.composerCard} onLayout={handleComposerLayout}>
                 <View style={styles.composerMainRow}>
-                  <TextInput
-                    value={text}
-                    testID="chat-input"
-                    accessibilityLabel="chat-input"
-                    onChangeText={setText}
-                    placeholder={placeholder}
-                    placeholderTextColor="rgba(124, 99, 80, 0.58)"
-                    multiline
-                    scrollEnabled={composerInputHeight >= MAX_INPUT_HEIGHT}
-                    textAlignVertical="center"
-                    onContentSizeChange={(event) => {
-                      const measuredHeight = Math.ceil(
-                        event.nativeEvent.contentSize.height
-                      );
-                      const nextHeight = clamp(
-                        measuredHeight,
-                        MIN_INPUT_HEIGHT,
-                        MAX_INPUT_HEIGHT
-                      );
-                      setComposerInputHeight(nextHeight);
-                    }}
-                    style={[
-                      styles.composerInput,
-                      { minHeight: Math.max(composerInputHeight, 36), height: Math.max(composerInputHeight, 36) },
-                    ]}
-                  />
+                  {!voiceOnlyMode ? (
+                    <TextInput
+                      value={text}
+                      testID="chat-input"
+                      accessibilityLabel="chat-input"
+                      onChangeText={setText}
+                      placeholder={placeholder}
+                      placeholderTextColor="rgba(124, 99, 80, 0.58)"
+                      multiline
+                      scrollEnabled={composerInputHeight >= MAX_INPUT_HEIGHT}
+                      textAlignVertical="center"
+                      onContentSizeChange={(event) => {
+                        const measuredHeight = Math.ceil(
+                          event.nativeEvent.contentSize.height
+                        );
+                        const nextHeight = clamp(
+                          measuredHeight,
+                          MIN_INPUT_HEIGHT,
+                          MAX_INPUT_HEIGHT
+                        );
+                        setComposerInputHeight(nextHeight);
+                      }}
+                      style={[
+                        styles.composerInput,
+                        { minHeight: Math.max(composerInputHeight, 36), height: Math.max(composerInputHeight, 36) },
+                      ]}
+                    />
+                  ) : (
+                    <View
+                      testID="voice-only-composer-placeholder"
+                      accessibilityLabel="voice-only-composer-placeholder"
+                      style={[styles.composerInput, styles.voiceOnlyComposerPlaceholder]}
+                    >
+                      <Text style={styles.composerHintText}>Hold the mic to talk</Text>
+                    </View>
+                  )}
 
                   <View style={styles.composerInlineActions}>
                     <Pressable
@@ -2762,23 +2780,25 @@ export default function Home() {
                       />
                     </Pressable>
 
-                    <Pressable
-                      onPress={handleChatSend}
-                      disabled={!text.trim() || busy || listening}
-                      testID="chat-send-button"
-                      accessibilityLabel="chat-send-button"
-                      accessibilityRole="button"
-                      style={[
-                        styles.sendButton,
-                        (!text.trim() || busy || listening) && styles.iconButtonDisabled,
-                      ]}
-                    >
-                      {busy && !listening ? (
-                        <ActivityIndicator size="small" color={Brand.cocoa} />
-                      ) : (
-                        <Ionicons name="arrow-up" size={18} color={Brand.cocoa} />
-                      )}
-                    </Pressable>
+                    {!voiceOnlyMode ? (
+                      <Pressable
+                        onPress={handleChatSend}
+                        disabled={!text.trim() || busy || listening}
+                        testID="chat-send-button"
+                        accessibilityLabel="chat-send-button"
+                        accessibilityRole="button"
+                        style={[
+                          styles.sendButton,
+                          (!text.trim() || busy || listening) && styles.iconButtonDisabled,
+                        ]}
+                      >
+                        {busy && !listening ? (
+                          <ActivityIndicator size="small" color={Brand.cocoa} />
+                        ) : (
+                          <Ionicons name="arrow-up" size={18} color={Brand.cocoa} />
+                        )}
+                      </Pressable>
+                    ) : null}
                   </View>
                 </View>
 
@@ -3423,6 +3443,10 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 0,
     paddingHorizontal: 8,
+  },
+
+  voiceOnlyComposerPlaceholder: {
+    justifyContent: "center",
   },
 
   sendButton: {

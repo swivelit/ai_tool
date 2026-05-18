@@ -489,6 +489,7 @@ def classify_folder_category(message: str) -> str:
 def _strip_note_command(message: str) -> str:
     text = _clean(message)
     text = re.sub(r"\b(?:save|remember|add|create)\s+(?:this\s+)?(?:note|notes?)\b", "", text, flags=re.I)
+    text = re.sub(r"^\s*(?:save|remember)\s+", "", text, flags=re.I)
     text = re.sub(r"\bnotes?\b", "", text, flags=re.I)
     text = re.sub(r"\b(?:work|home|business|other)\s+folder\s+(?:ல\s+)?(?:வை|save|put)?\b", "", text, flags=re.I)
     text = re.sub(r"\b(?:folder|ல|la|save|வை|சேமி)\b", "", text, flags=re.I)

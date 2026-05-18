@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import sys
 import tempfile
 import threading
@@ -52,7 +53,7 @@ from .auth import (
 from .database import SessionLocal, engine, get_session
 from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
-from .models import Conversation, DailyRoutine, DocumentArtifact, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
+from .models import AgentRun, AgentStep, Conversation, DailyRoutine, DocumentArtifact, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
 from .time_utils import utc_now as _utc_now
 from .observability import (
     APP_RELEASE,
@@ -92,9 +93,11 @@ from .ai.providers.sarvam_provider import (
     estimate_tts_cost,
     extract_sarvam_transcript,
     normalize_audio_language,
+    normalize_stt_upload_mime_type,
     redact_sarvam_provider_message,
     sarvam_provider_error_detail,
 )
+from .ai.agent_runtime import agentic_mode_enabled, fetch_agent_run_for_user
 from .ai.response_adapter import ai_response_to_pipeline
 from .ai.types import AIProviderResponse, AIRequest
 from .ai.usage import record_ai_usage_event
@@ -3810,6 +3813,83 @@ def _alembic_revision_status(session: Session) -> Dict[str, Any]:
         }
 
 
+def _backend_release_sha() -> str:
+    for name in ("APP_RELEASE_SHA", "RENDER_GIT_COMMIT", "GIT_SHA", "SOURCE_VERSION"):
+        value = str(os.getenv(name) or "").strip()
+        if value:
+            return value
+    release = str(APP_RELEASE or "").strip()
+    if release and release != "dev":
+        return release
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=BACKEND_ROOT.parent,
+            text=True,
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+        value = str(result.stdout or "").strip()
+        if result.returncode == 0 and value:
+            return value
+    except Exception:
+        pass
+    return "dev"
+
+
+def _active_model_routing_config() -> Dict[str, Any]:
+    try:
+        router = OpenAIModelRouter()
+        return {
+            "openai_models": dict(router.models),
+            "max_output_default": router.max_output_default,
+            "max_output_hard": router.max_output_hard,
+            "disabled_models": sorted(router.disabled_models),
+            "sarvam_chat_model": os.getenv("SARVAM_CHAT_MODEL", "sarvam-30b") or "sarvam-30b",
+            "sarvam_reasoning_model": os.getenv("SARVAM_CHAT_MODEL_REASONING", "sarvam-105b") or "sarvam-105b",
+            "sarvam_stt_model": os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
+        }
+    except Exception as exc:
+        return {"error": sanitize_log_text(str(exc), 160)}
+
+
+@app.get("/api/version")
+def api_version(session: Session = Depends(get_session)):
+    return {
+        "ok": True,
+        "backend_release_sha": _backend_release_sha(),
+        "app_release": APP_RELEASE,
+        "release_timestamp": (
+            os.getenv("APP_RELEASE_TIMESTAMP")
+            or os.getenv("RELEASE_TIMESTAMP")
+            or os.getenv("BUILD_TIMESTAMP")
+            or ""
+        ),
+        "alembic": _alembic_revision_status(session),
+        "AI_ROUTER_ENABLED": _ai_router_enabled(),
+        "AGENTIC_MODE_ENABLED": agentic_mode_enabled(),
+        "model_routing": _active_model_routing_config(),
+        "providers": {
+            "sarvam_configured": bool(_sarvam_api_key()),
+            "openai_configured": bool(str(os.getenv("OPENAI_API_KEY") or "").strip()),
+        },
+    }
+
+
+@app.get("/api/agent/runs/{run_id}")
+def api_agent_run(
+    run_id: int,
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth_user)
+    payload = fetch_agent_run_for_user(session, int(run_id), int(user.id))
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return {"ok": True, "run": payload}
+
+
 @app.get("/api/debug/schema-status")
 def api_debug_schema_status(
     session: Session = Depends(get_session),
@@ -4588,6 +4668,7 @@ async def _transcribe_and_analyze_upload(
         tmp_path = tmp.name
 
     try:
+        provider_content_type = normalize_stt_upload_mime_type(tmp_path, content_type)
         estimated_audio_seconds, duration_estimation_method = estimate_audio_duration_details(
             tmp_path,
             content_type,
@@ -4627,6 +4708,7 @@ async def _transcribe_and_analyze_upload(
             metadata={
                 "file_size": len(upload_bytes),
                 "content_type": content_type,
+                "provider_content_type": provider_content_type,
                 "filename": filename,
                 "duration_estimation_method": duration_estimation_method,
             },
@@ -4646,6 +4728,8 @@ async def _transcribe_and_analyze_upload(
                     metadata={
                         "admin_email": auth_user.email,
                         "file_size": len(upload_bytes),
+                        "content_type": content_type,
+                        "provider_content_type": provider_content_type,
                         "audio_seconds": estimated_audio_seconds,
                         "duration_estimation_method": duration_estimation_method,
                         "context_turn_count": len(context_turns),
@@ -5404,8 +5488,11 @@ def _serialize_document_artifact_for_user(session: Session, artifact: DocumentAr
     item = session.get(Item, int(artifact.item_id)) if artifact.item_id is not None else None
     download: Dict[str, Any] = {}
     if item is not None and int(item.user_id) == int(user.id):
-        path = _resolve_generated_doc_path(artifact.relative_path)
-        download = _build_download_payload(path, item=item, artifact=artifact)
+        try:
+            path = _resolve_generated_doc_path(artifact.relative_path)
+            download = _build_download_payload(path, item=item, artifact=artifact)
+        except HTTPException:
+            download = {}
     return {
         "id": artifact.id,
         "item_id": artifact.item_id,

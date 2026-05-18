@@ -246,6 +246,26 @@ def test_observability_config_endpoint(client):
     assert "Bearer" not in response.text
 
 
+def test_version_endpoint_exposes_release_and_safe_provider_config(client, monkeypatch):
+    monkeypatch.setenv("APP_RELEASE_SHA", "release-sha-test")
+    monkeypatch.setenv("APP_RELEASE_TIMESTAMP", "2026-05-18T00:00:00Z")
+    monkeypatch.setenv("SARVAM_API_KEY", "sarvam-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+
+    response = client.get("/api/version")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["backend_release_sha"] == "release-sha-test"
+    assert payload["release_timestamp"] == "2026-05-18T00:00:00Z"
+    assert payload["AI_ROUTER_ENABLED"] is True
+    assert payload["AGENTIC_MODE_ENABLED"] is True
+    assert payload["providers"] == {"sarvam_configured": True, "openai_configured": True}
+    dumped = json.dumps(payload)
+    assert "sarvam-secret" not in dumped
+    assert "openai-secret" not in dumped
+
+
 def test_global_qa_cache_debug_endpoint_is_admin_only(client, monkeypatch):
     monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
     monkeypatch.setenv("DEBUG_ADMIN_TOKEN", "debug-secret")
@@ -827,6 +847,66 @@ def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatc
     metadata = json.loads(stt_usage.metadata_json)
     assert metadata["file_size"] > 0
     assert metadata["duration_estimation_method"]
+
+
+def test_voice_route_preserves_mobile_mime_and_defaults_tamil(client, monkeypatch, caplog):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    calls: list[dict[str, str | None]] = []
+
+    class FakeSarvamProvider:
+        def stt_file(self, file_path, language=None, *, content_type=None, filename=None):
+            calls.append(
+                {
+                    "file_path": file_path,
+                    "language": language,
+                    "content_type": content_type,
+                    "filename": filename,
+                }
+            )
+            return "voice hello"
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        assert ai_request.channel == "voice"
+        assert ai_request.reply_language == "ta"
+        assert ai_request.metadata["content_type"] == "audio/m4a"
+        assert ai_request.metadata["provider_content_type"] == "application/octet-stream"
+        return AIProviderResponse(
+            text="குரல் பதில்",
+            provider="backend_tool",
+            model=None,
+            route="agent_local_voice_test",
+            reason="unit_test",
+            language="ta",
+            intent="general",
+        )
+
+    monkeypatch.setattr(main_module, "_get_sarvam_provider", lambda: FakeSarvamProvider())
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            f"/api/transcribe-and-analyze?user_id={user.id}",
+            headers=headers,
+            files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+        )
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["language"] == "ta-IN"
+    assert calls[0]["content_type"] == "audio/m4a"
+    assert calls[0]["filename"] == "audio.m4a"
+    assert response.json()["assistant"]["text"] == "குரல் பதில்"
+    upload_record = [r for r in caplog.records if getattr(r, "event", "") == "voice_upload_received"][-1]
+    assert getattr(upload_record, "reply_language") == "ta"
+    assert getattr(upload_record, "speech_language") == "ta-IN"
+    with SessionLocal() as session:
+        stt_usage = session.exec(select(AIUsageEvent).where(AIUsageEvent.route == "sarvam_stt")).one()
+    metadata = json.loads(stt_usage.metadata_json)
+    assert metadata["content_type"] == "audio/m4a"
+    assert metadata["provider_content_type"] == "application/octet-stream"
+    assert metadata["filename"] == "audio.m4a"
 
 
 def test_voice_quota_blocks_before_stt_provider_call(client, monkeypatch):

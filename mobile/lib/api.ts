@@ -34,6 +34,7 @@ import {
 import {
   PRODUCT_DEFAULT_REPLY_LANGUAGE,
   ReplyLanguage,
+  detectExplicitReplyLanguage,
   normalizeReplyLanguage,
   resolveReplyLanguage,
 } from "./replyLanguage";
@@ -1710,15 +1711,10 @@ async function handleLocalTranscribeAndAnalyze(
   const userAllowedCloudFallback = await loadCloudFallbackConsent();
   const explicitReplyLanguage = normalizeReplyLanguage(replyLanguageRaw);
   const initialReplyLanguage: ReplyLanguage =
-    explicitReplyLanguage ||
-    cachedProfile?.replyLanguage ||
-    PRODUCT_DEFAULT_REPLY_LANGUAGE;
+    explicitReplyLanguage || PRODUCT_DEFAULT_REPLY_LANGUAGE;
   const requestedSpeechLanguage = normalizeSpeechLanguage(speechLanguageRaw);
   const resolvedSpeechLanguage: SpeechLanguage =
-    requestedSpeechLanguage ||
-    explicitReplyLanguage ||
-    cachedProfile?.replyLanguage ||
-    null;
+    requestedSpeechLanguage || explicitReplyLanguage || PRODUCT_DEFAULT_REPLY_LANGUAGE;
 
   let transcript: LocalVoiceTranscription;
   try {
@@ -1767,12 +1763,10 @@ async function handleLocalTranscribeAndAnalyze(
     );
   }
 
-  const replyLanguage = resolveReplyLanguage({
-    explicit: replyLanguageRaw,
-    profile: cachedProfile?.replyLanguage,
-    message: normalizedTranscriptText,
-    productDefault: initialReplyLanguage,
-  });
+  const replyLanguage =
+    explicitReplyLanguage ||
+    detectExplicitReplyLanguage(normalizedTranscriptText) ||
+    PRODUCT_DEFAULT_REPLY_LANGUAGE;
   const userProfile = withResolvedReplyLanguage(cachedProfile, replyLanguage);
   const deviceInfo = await getCachedDeviceCapabilities();
 

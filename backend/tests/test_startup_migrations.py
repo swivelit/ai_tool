@@ -13,6 +13,9 @@ import start_render
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_GLOBAL_QA_TABLES = {
+    "agent_run",
+    "agent_step",
+    "document_artifact",
     "global_qa_cache",
     "global_qa_observation",
     "global_qa_tombstone",

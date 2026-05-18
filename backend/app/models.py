@@ -204,6 +204,38 @@ class AIUsageEvent(SQLModel, table=True):
     metadata_json: str = Field(default="{}")
 
 
+class AgentRun(SQLModel, table=True):
+    __tablename__ = "agent_run"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, index=True)
+    request_id: Optional[str] = Field(default=None, index=True)
+    channel: str = Field(default="text", index=True)
+    message_hash: str = Field(index=True)
+    message_preview: str = ""
+    final_route: str = Field(index=True)
+    final_intent: str = Field(index=True)
+    confidence: float = Field(default=0.0, index=True)
+    provider_calls: int = Field(default=0)
+    estimated_cost_amount: float = Field(default=0.0)
+    estimated_cost_currency: str = ""
+    metadata_json: str = Field(default="{}")
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class AgentStep(SQLModel, table=True):
+    __tablename__ = "agent_step"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: int = Field(index=True, foreign_key="agent_run.id")
+    step_name: str = Field(index=True)
+    input_json: str = Field(default="{}")
+    output_json: str = Field(default="{}")
+    confidence: float = Field(default=0.0, index=True)
+    duration_ms: int = Field(default=0)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class DocumentArtifact(SQLModel, table=True):
     __tablename__ = "document_artifact"
 

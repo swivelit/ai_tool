@@ -1,7 +1,30 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
 
 const APP_SCHEME = "com.harishajahan.tamilai";
+
+function firstNonEmpty(...values: unknown[]) {
+  for (const value of values) {
+    const normalized = String(value ?? "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function readGitSha() {
+  try {
+    return execSync("git rev-parse --short=12 HEAD", {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2000,
+    })
+      .toString()
+      .trim();
+  } catch {
+    return "";
+  }
+}
 
 const LOCAL_MODEL_BASE_URL = (
   process.env.EXPO_PUBLIC_LOCAL_MODEL_BASE_URL || ""
@@ -115,6 +138,20 @@ const isProductionNativeDownloadBuild =
 const isReleaseLocalVoicePipelineAllowed = isTruthyEnv(
   process.env.JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE,
 );
+const MOBILE_GIT_SHA = firstNonEmpty(
+  process.env.EXPO_PUBLIC_GIT_SHA,
+  process.env.GIT_SHA,
+  process.env.EAS_BUILD_GIT_COMMIT_HASH,
+  process.env.RENDER_GIT_COMMIT,
+  readGitSha(),
+);
+const MOBILE_BUILD_ID = firstNonEmpty(
+  process.env.EXPO_PUBLIC_MOBILE_BUILD_ID,
+  process.env.EAS_BUILD_ID,
+  process.env.GITHUB_RUN_ID,
+  process.env.BUILD_ID,
+  MOBILE_GIT_SHA ? `local-${MOBILE_GIT_SHA}` : "",
+);
 
 const enabledE2eEnvNames = [
   ["EXPO_PUBLIC_E2E_MOCK_AUTH", E2E_MOCK_AUTH],
@@ -128,6 +165,12 @@ if (isProductionOrReleaseBuild && enabledE2eEnvNames.length) {
     `Release/production builds cannot enable debug E2E flags: ${enabledE2eEnvNames.join(
       ", ",
     )}. Disable mock auth/model setup bypass before building a release APK.`,
+  );
+}
+
+if (isProductionOrReleaseBuild && (!MOBILE_GIT_SHA || !MOBILE_BUILD_ID)) {
+  throw new Error(
+    "Release/production builds require real mobile build identifiers. Set EXPO_PUBLIC_GIT_SHA and EXPO_PUBLIC_MOBILE_BUILD_ID, or run from a git checkout with EAS_BUILD_ID/GITHUB_RUN_ID.",
   );
 }
 
@@ -354,6 +397,14 @@ export default {
         process.env.EXPO_PUBLIC_API_URL ||
         process.env.EXPO_PUBLIC_API_BASE ||
         "https://ai-tool-rrau.onrender.com",
+      MOBILE_BUILD_ID,
+      GIT_SHA: MOBILE_GIT_SHA,
+      mobileBuildId: MOBILE_BUILD_ID,
+      gitSha: MOBILE_GIT_SHA,
+      EXPO_PUBLIC_MOBILE_BUILD_ID: MOBILE_BUILD_ID,
+      EXPO_PUBLIC_GIT_SHA: MOBILE_GIT_SHA,
+      VOICE_ONLY_MODE: process.env.EXPO_PUBLIC_VOICE_ONLY_MODE || "false",
+      EXPO_PUBLIC_VOICE_ONLY_MODE: process.env.EXPO_PUBLIC_VOICE_ONLY_MODE || "false",
 
       // optional local runtime
       // Backend AI router is primary. Local runtime mode remains explicit for

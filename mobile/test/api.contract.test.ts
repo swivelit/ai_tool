@@ -1270,18 +1270,18 @@ describe("API client contracts", () => {
     expect(transcribeAudio).toHaveBeenCalledWith({
       fileUri: "file:///tmp/audio.m4a",
       model: "whisper",
-      language: "en",
+      language: "ta",
     });
     expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "what is the weather",
-      replyLanguage: "en",
+      replyLanguage: "ta",
       userAllowedCloudFallback: true,
       userProfile: {
         name: "Hari",
         place: "Madurai",
         assistantName: "Elli",
-        replyLanguage: "en",
+        replyLanguage: "ta",
       },
     }));
   });
