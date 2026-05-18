@@ -32,13 +32,27 @@ export type BootPhaseRecord = {
  
 export type BootTimeline = {
   createdAtMs: number;
-  phases: Map<BootPhase, BootPhaseRecord>;
+  createdMs: number;
+  phases: Record<BootPhase, BootPhaseRecord>;
 };
  
 export function createBootTimeline(): BootTimeline {
+  const now = Date.now();
   return {
-    createdAtMs: Date.now(),
-    phases: new Map(),
+    createdAtMs: now,
+    createdMs: now,
+    phases: BOOT_PHASE_ORDER.reduce(
+      (recordMap, phase) => ({
+        ...recordMap,
+        [phase]: {
+          phase,
+          startMs: now,
+          endMs: null,
+          status: "pending",
+        },
+      }),
+      {} as Record<BootPhase, BootPhaseRecord>,
+    ),
   };
 }
  
@@ -48,48 +62,42 @@ export function recordBootPhase(
   status: BootPhaseRecord["status"],
 ): void {
   const now = Date.now();
-  const existing = timeline.phases.get(phase);
+  const existing = timeline.phases[phase];
  
-  if (!existing) {
-    timeline.phases.set(phase, {
+  if (status === "pending") {
+    timeline.phases[phase] = {
       phase,
       startMs: now,
-      endMs: status === "pending" ? null : now,
+      endMs: null,
       status,
-    });
+    };
     return;
   }
  
-  if (status !== "pending") {
-    timeline.phases.set(phase, {
-      ...existing,
-      endMs: now,
-      status,
-    });
-  }
+  timeline.phases[phase] = {
+    ...existing,
+    endMs: now,
+    status,
+  };
 }
  
 export function getBootSummary(timeline: BootTimeline) {
-  const totalMs = Date.now() - timeline.createdAtMs;
-  const phases: {
-    phase: BootPhase;
-    durationMs: number | null;
-    status: string;
-  }[] = [];
+  const totalMs = Date.now() - timeline.createdMs;
+  const phases: string[] = [];
  
   for (const phase of BOOT_PHASE_ORDER) {
-    const record = timeline.phases.get(phase);
+    const record = timeline.phases[phase];
     if (!record) {
-      phases.push({ phase, durationMs: null, status: "skipped" });
+      phases.push(`${phase}=skipped`);
       continue;
     }
  
-    phases.push({
-      phase,
-      durationMs:
-        record.endMs != null ? record.endMs - record.startMs : null,
-      status: record.status,
-    });
+    const durationMs =
+      record.endMs != null ? record.endMs - record.startMs : null;
+    const durationLabel = durationMs != null && durationMs > 0 ? `(${durationMs}ms)` : "";
+    phases.push(
+      `${record.phase}=${record.status}${durationLabel}`,
+    );
   }
  
   return { totalMs, phases };
@@ -111,7 +119,7 @@ export function perfLog(
   durationMs?: number | null,
   meta?: Record<string, unknown>,
 ) {
-  const parts = [`[perf:${category}] ${label}`];
+  const parts = [`[perf:${category}]`, label];
  
   if (durationMs != null) {
     parts.push(`${Math.round(durationMs)}ms`);

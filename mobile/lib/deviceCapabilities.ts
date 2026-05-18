@@ -113,11 +113,7 @@ async function getNativeCapabilities(
   if (typeof bridge?.getDeviceCapabilities !== "function") {
     return {};
   }
-  try {
-    return normalizeNativeSnapshot(await bridge.getDeviceCapabilities());
-  } catch {
-    return {};
-  }
+  return normalizeNativeSnapshot(await bridge.getDeviceCapabilities());
 }
  
 async function getFreeStorageBytes(fs: CapabilityFileSystem) {
@@ -197,9 +193,10 @@ export async function getCachedDeviceCapabilities(
   } catch (error) {
     // Return stale cache instead of crashing on refresh failure
     if (cachedSnapshot) {
-      perfLog("device", "refresh failed; returning stale cache", null, {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      console.warn(
+        "[perf:device] capability refresh failed, returning stale cache",
+        error,
+      );
       return cachedSnapshot.value;
     }
  

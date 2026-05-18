@@ -185,17 +185,13 @@ export function enqueueLocalIdleJob(
 }
  
 export function getQueueSnapshot() {
-  return {
-    running,
-    pendingCount: queue.length + (running ? 1 : 0),
-    jobs: queue.map((job) => ({
-      id: job.id,
-      label: job.label,
-      priority: job.priority,
-      delayMs: job.delayMs,
-      createdAt: job.createdAt,
-    })),
-  };
+  return queue.map((job) => ({
+    id: job.id,
+    label: job.label,
+    priority: job.priority,
+    delayMs: job.delayMs,
+    createdAt: job.createdAt,
+  }));
 }
  
 export const __idleQueueTestUtils = {
