@@ -1698,6 +1698,7 @@ export default function Home() {
           source,
           autoSpeakReplies: settings.autoSpeakReplies,
           handsFreeMode,
+          replyId: String(nextItem.id),
         })
       ) {
         void playAgentReply(nextItem.details);
@@ -1885,6 +1886,7 @@ export default function Home() {
           source: "voice",
           autoSpeakReplies: settings.autoSpeakReplies,
           handsFreeMode,
+          replyId: String(nextItem.id),
         })
       ) {
         void playAgentReply(nextItem.details);

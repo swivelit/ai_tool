@@ -22,7 +22,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from zoneinfo import ZoneInfo
-from config import SARVAM_API_KEY
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -73,6 +72,9 @@ from config import (
     RAG_CONTEXT_HEADER,
     RAG_CONTEXT_INCLUDE_IN_STAGE_CONTEXT,
     RAG_CONTEXT_MAX_SNIPPETS,
+    SARVAM_MAX_RETRIES,
+    SARVAM_RETRY_DELAY,
+    SARVAM_TIMEOUT,
 )  # noqa: E402
 from stage_behaviour_questions import BehaviourQuestionnaire, QUESTIONS as PIPELINE_QUESTIONS  # noqa: E402
 from stage_english_remodel import EnglishRemodeler  # noqa: E402
@@ -88,6 +90,14 @@ else:
     OPENWAKEWORD_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
+
+RETRYABLE_SARVAM_STATUS_CODES = {
+    429,
+    500,
+    502,
+    503,
+    504,
+}
 
 REQUIRED_PROFILE_SLOTS = {
     "preferred_language",
@@ -833,7 +843,7 @@ def startup_runtime_services() -> None:
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    request_id = request.headers.get("x-request-id") or new_request_id()
+    request_id = request.headers.get("x-request-id") or new_request_id() or str(uuid4())
     start = time.perf_counter()
     set_request_context(request_id=request_id, route=request.url.path)
     try:
@@ -1262,6 +1272,37 @@ def upsert_qa_cache(session: Session, user_id: Optional[int], question: str, ans
 # -----------------------------
 # 🔹 ADD YOUR FUNCTION HERE
 # -----------------------------
+
+async def retry_sarvam_request(request_func):
+    last_exception = None
+
+    for attempt in range(SARVAM_MAX_RETRIES):
+        try:
+            return await request_func()
+
+        except asyncio.TimeoutError as exc:
+            last_exception = exc
+
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None)
+
+            if status_code not in RETRYABLE_SARVAM_STATUS_CODES:
+                raise
+
+            last_exception = exc
+
+        if attempt < SARVAM_MAX_RETRIES - 1:
+            logger.warning(
+                f"Sarvam retry attempt {attempt + 1}"
+            )
+
+            await asyncio.sleep(
+                SARVAM_RETRY_DELAY * (attempt + 1)
+            )
+
+    logger.error("Sarvam request failed after retries")
+
+    raise last_exception
 
 def load_onboarding_profile(session: Session, user_id: Union[int, str]) -> Dict[str, Any]:
     """Load onboarding/personality context from the database.
@@ -1990,6 +2031,37 @@ def _sarvam_provider_error_detail(response: requests.Response, label: str) -> st
 
     return f"{label} returned {response.status_code}{f': {message}' if message else ''}"
 
+async def retry_sarvam_request(request_func):
+    last_exception = None
+
+    for attempt in range(SARVAM_MAX_RETRIES):
+        try:
+            return await request_func()
+
+        except asyncio.TimeoutError as exc:
+            last_exception = exc
+
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None)
+
+            if status_code not in RETRYABLE_SARVAM_STATUS_CODES:
+                raise
+
+            last_exception = exc
+
+        if attempt < SARVAM_MAX_RETRIES - 1:
+            logger.warning(
+                f"Sarvam retry attempt {attempt + 1}"
+            )
+
+            await asyncio.sleep(
+                SARVAM_RETRY_DELAY * (attempt + 1)
+            )
+
+    logger.error("Sarvam request failed after retries")
+
+    raise last_exception
+
 
 def _extract_sarvam_transcript(payload: Any) -> str:
     if isinstance(payload, str):
@@ -2549,7 +2621,7 @@ async def api_chat_stream(
         yield _sse_event("status", {"phase": "running"})
         await asyncio.sleep(0)
 
-        response = await asyncio.to_thread(_run_chat_payload, payload)
+        asyncio.to_thread(_run_chat_payload, payload)
         assistant_text = str((((response or {}).get("assistant") or {}).get("text")) or "")
         for index in range(0, len(assistant_text), chunk_size):
             yield _sse_event(
@@ -2630,7 +2702,7 @@ def api_tts(
 
     text = str(payload.text or "").strip()
     if not text:
-        raise HTTPException(status_code=400, detail="text is required.")
+        raise HTTresponse = await PException(status_code=400, detail="text is required.")
 
     headers = {
         "api-subscription-key": SARVAM_API_KEY,
@@ -2649,11 +2721,14 @@ def api_tts(
     }
 
     try:
-        response = requests.post(
-            SARVAM_TTS_URL,
-            headers={"api-subscription-key": SARVAM_API_KEY},
-            json=req_payload,
-            timeout=(5, 30),
+        response = await retry_sarvam_request(
+            lambda: asyncio.to_thread(
+                requests.post,
+                SARVAM_TTS_URL,
+                headers=headers,
+                json=req_payload,
+                timeout=SARVAM_TIMEOUT,
+            )
         )
     except  (
         requests.Timeout,

@@ -69,4 +69,51 @@ describe("reply playback policy", () => {
   it("defaults invalid language to auto", () => {
     expect(normalizeReplyLanguage("invalid")).toBe("auto");
   });
+
+  it("prevents duplicate playback for same replyId", () => {
+
+  const first = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    replyId: "reply-1",
+  });
+
+  const second = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    replyId: "reply-1",
+  });
+
+  expect(first).toBe(true);
+  expect(second).toBe(false);
+});
+
+it("allows playback for different replyIds", () => {
+
+  const first = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    replyId: "reply-1",
+  });
+
+  const second = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    replyId: "reply-2",
+  });
+
+  expect(first).toBe(true);
+  expect(second).toBe(true);
+});
+
+it("does not auto-play normal text chat", () => {
+
+  const result = shouldAutoSpeakReply({
+    source: "text",
+    autoSpeakReplies: true,
+    replyId: "reply-3",
+  });
+
+  expect(result).toBe(false);
+});
 });

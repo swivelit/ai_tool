@@ -190,6 +190,42 @@ describe("golden voice eval", () => {
     ).toBe(true);
   });
 
+  it("does not replay duplicate assistant audio after retry", async () => {
+
+  const first = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    replyId: "retry-reply",
+  });
+
+  const second = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    replyId: "retry-reply",
+  });
+
+  expect(first).toBe(true);
+  expect(second).toBe(false);
+});
+
+it("allows playback after retry succeeds with new reply id", async () => {
+
+  const first = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    replyId: "reply-1",
+  });
+
+  const second = shouldAutoSpeakReply({
+    source: "voice",
+    autoSpeakReplies: true,
+    replyId: "reply-2",
+  });
+
+  expect(first).toBe(true);
+  expect(second).toBe(true);
+});
+
   it("returns structured unavailable state when native STT is missing", async () => {
     const cases = (golden.cases as GoldenCase[]).filter(
       (row) => row.surface === "mobile_voice",

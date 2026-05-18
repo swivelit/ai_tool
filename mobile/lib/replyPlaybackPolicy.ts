@@ -5,12 +5,13 @@ export type ReplyLanguage =
   | "tamil"
   | "tanglish"
   | "auto";
-
+let lastPlayedReplyId: string | null = null;
 export type ReplyPlaybackPolicyInput = {
   source?: ReplySource | null;
   autoSpeakReplies?: boolean | null;
   handsFreeMode?: "off" | "wake" | "command" | string | null;
   replyLanguage?: ReplyLanguage | null;
+  replyId?: string | null;
 };
 
 export function normalizeReplyLanguage(
@@ -44,16 +45,35 @@ export function shouldAutoSpeakReply(
   const handsFreeMode = String(input.handsFreeMode || "off")
     .trim()
     .toLowerCase();
+  const replyId = String(input.replyId || "").trim();
 
+  if (replyId && lastPlayedReplyId === replyId) {
+    return false;
+  }
   // Hands-free assistant should always auto-speak
   if (source === "handsfree" && handsFreeMode !== "off") {
-    return true;
+
+  if (replyId) {
+    lastPlayedReplyId = replyId;
+  }
+
+  return true;
   }
 
   // Voice interactions may auto-speak if enabled
   if (source === "voice") {
-    return input.autoSpeakReplies === true;
+
+  if (input.autoSpeakReplies === true) {
+
+    if (replyId) {
+      lastPlayedReplyId = replyId;
+    }
+
+    return true;
   }
+
+  return false;
+}
 
   // Normal typed text chat should never auto-play
   return false;

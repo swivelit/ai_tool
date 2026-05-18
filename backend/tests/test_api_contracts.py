@@ -573,6 +573,93 @@ def test_tts_timeout_returns_504(client, monkeypatch):
     assert response.status_code == 504
     assert response.json()["detail"] == "TTS provider timed out."
 
+def test_sarvam_retry_success(
+    client,
+    monkeypatch,
+):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    monkeypatch.setattr(
+        main_module,
+        "SARVAM_API_KEY",
+        "test-key",
+    )
+
+    call_count = {"count": 0}
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "audio": "YWJj"
+            }
+
+    def fake_post(*args, **kwargs):
+        call_count["count"] += 1
+
+        if call_count["count"] < 2:
+            raise main_module.requests.Timeout(
+                "temporary timeout"
+            )
+
+        return DummyResponse()
+
+    monkeypatch.setattr(
+        main_module.requests,
+        "post",
+        fake_post,
+    )
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["audio_base64"] == "YWJj"
+    assert call_count["count"] == 2
+
+def test_sarvam_retry_failure(
+    client,
+    monkeypatch,
+):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    monkeypatch.setattr(
+        main_module,
+        "SARVAM_API_KEY",
+        "test-key",
+    )
+
+    call_count = {"count": 0}
+
+    def fake_post(*args, **kwargs):
+        call_count["count"] += 1
+
+        raise main_module.requests.Timeout(
+            "persistent timeout"
+        )
+
+    monkeypatch.setattr(
+        main_module.requests,
+        "post",
+        fake_post,
+    )
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 504
+    assert call_count["count"] > 1
+
 
 
 def test_rag_embedding_failure_is_logged_and_does_not_rollback_saved_item(client, monkeypatch, caplog):

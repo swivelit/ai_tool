@@ -864,16 +864,16 @@ function buildVoiceUnavailableResponse(
     assistant: {
       text: userMessage,
       english: userMessage,
-      tamil: options.replyLanguage === "ta" ? userMessage : undefined,
-      theni_tamil: options.replyLanguage === "ta" ? userMessage : undefined,
+      tamil: options.replyLanguage === "tamil" ? userMessage : undefined,
+      theni_tamil: options.replyLanguage === "tamil" ? userMessage : undefined,
     },
     pipeline: {
       route_taken: state.kind,
       predicted_label: "assistant",
       raw_english: "",
       remodeled_english: userMessage,
-      tamil_text: options.replyLanguage === "ta" ? userMessage : "",
-      theni_tamil_text: options.replyLanguage === "ta" ? userMessage : "",
+      tamil_text: options.replyLanguage === "tamil" ? userMessage : "",
+      theni_tamil_text: options.replyLanguage === "tamil" ? userMessage : "",
       direct_answer_source: "local_rules",
       meta: {
         voice: state,
@@ -1318,16 +1318,16 @@ async function handleLocalTranscribeAndAnalyze(
     assistant: {
       text: turn.assistantText,
       english: turn.englishText || turn.assistantText,
-      tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
-      theni_tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
+      tamil: replyLanguage === "tamil" ? turn.assistantText : undefined,
+      theni_tamil: replyLanguage === "tamil" ? turn.assistantText : undefined,
     },
     pipeline: {
       route_taken: turn.route,
       predicted_label: item.intent,
       raw_english: turn.englishText || normalizedTranscriptText,
       remodeled_english: turn.englishText || turn.assistantText,
-      tamil_text: replyLanguage === "ta" ? turn.assistantText : "",
-      theni_tamil_text: replyLanguage === "ta" ? turn.assistantText : "",
+      tamil_text: replyLanguage === "tamil" ? turn.assistantText : "",
+      theni_tamil_text: replyLanguage === "tamil" ? turn.assistantText : "",
       direct_answer_source: turn.source,
       meta: turn.meta || {},
     },
@@ -1443,18 +1443,18 @@ async function handleLocalChat(
       assistant: {
         text: quick.assistantText,
         english: quick.englishText,
-        tamil: quickLanguage === "ta" ? quick.assistantText : undefined,
+        tamil: quickLanguage === "tamil" ? quick.assistantText : undefined,
         theni_tamil:
-          quickLanguage === "ta" ? quick.assistantText : undefined,
+          quickLanguage === "tamil" ? quick.assistantText : undefined,
       },
       pipeline: {
         route_taken: quick.route,
         predicted_label: "assistant",
         raw_english: quick.englishText || message,
         remodeled_english: quick.englishText || quick.assistantText,
-        tamil_text: quickLanguage === "ta" ? quick.assistantText : "",
+        tamil_text: quickLanguage === "tamil" ? quick.assistantText : "",
         theni_tamil_text:
-          quickLanguage === "ta" ? quick.assistantText : "",
+          quickLanguage === "tamil" ? quick.assistantText : "",
         direct_answer_source: "local_rules",
         meta: {
           source: quick.source,
@@ -1533,16 +1533,16 @@ async function handleLocalChat(
     assistant: {
       text: turn.assistantText,
       english: turn.englishText || turn.assistantText,
-      tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
-      theni_tamil: replyLanguage === "ta" ? turn.assistantText : undefined,
+      tamil: replyLanguage === "tamil" ? turn.assistantText : undefined,
+      theni_tamil: replyLanguage === "tamil" ? turn.assistantText : undefined,
     },
     pipeline: {
       route_taken: turn.route,
       predicted_label: normalizedIntent,
       raw_english: turn.englishText || message,
       remodeled_english: turn.englishText || turn.assistantText,
-      tamil_text: replyLanguage === "ta" ? turn.assistantText : "",
-      theni_tamil_text: replyLanguage === "ta" ? turn.assistantText : "",
+      tamil_text: replyLanguage === "tamil" ? turn.assistantText : "",
+      theni_tamil_text: replyLanguage === "tamil" ? turn.assistantText : "",
       direct_answer_source: turn.source,
       profile_summary: turn.profileSummary || null,
       meta: {
@@ -1599,44 +1599,72 @@ export async function apiGet<T>(path: string): Promise<T> {
   return normalizeBackendDates((await res.json()) as T);
 }
 
-export async function apiPost<T>(path: string, body?: any): Promise<T> {
-  if (isTranscribeAndAnalyzePath(path)) {
-    if (isFormDataPayload(body)) {
-      return apiPostForm<T>(path, body);
-    }
+let activeRequest = false;
 
-    if (await shouldUseLocalVoicePipeline()) {
-      throw new Error(
-        "Local recorded voice routing requires FormData with a file part. " +
-          "Use apiPostForm('/api/transcribe-and-analyze', formData) or pass FormData to apiPost; " +
-          "backend Sarvam fallback cannot run when audio input is missing.",
-      );
-    }
-  }
-
-  if (
-    localChatInterceptionDepth === 0 &&
-    isChatPath(path) &&
-    (await shouldUseLocalChatPipeline())
-  ) {
-    localChatInterceptionDepth += 1;
-    try {
-      return (await handleLocalChat(path, body)) as T;
-    } finally {
-      localChatInterceptionDepth = Math.max(0, localChatInterceptionDepth - 1);
-    }
-  }
-
-  return apiPostBackendOnly<T>(path, body);
-}
-
-export async function apiPostBackendOnly<T>(
+export async function apiPost<T>(
   path: string,
   body?: any,
 ): Promise<T> {
+
+  if (activeRequest) {
+    throw new Error("Another request is already in progress.");
+  }
+
+  activeRequest = true;
+  const requestId = crypto.randomUUID();
+
+  try {
+
+    if (isTranscribeAndAnalyzePath(path)) {
+      if (isFormDataPayload(body)) {
+        return apiPostForm<T>(path, body);
+      }
+
+      if (await shouldUseLocalVoicePipeline()) {
+        throw new Error(
+          "Local recorded voice routing requires FormData with a file part. " +
+            "Use apiPostForm('/api/transcribe-and-analyze', formData) or pass FormData to apiPost; " +
+            "backend Sarvam fallback cannot run when audio input is missing.",
+        );
+      }
+    }
+
+    if (
+      localChatInterceptionDepth === 0 &&
+      isChatPath(path) &&
+      (await shouldUseLocalChatPipeline())
+    ) {
+      localChatInterceptionDepth += 1;
+
+      try {
+        return (await handleLocalChat(path, body)) as T;
+
+      } finally {
+        localChatInterceptionDepth = Math.max(
+          0,
+          localChatInterceptionDepth - 1
+        );
+      }
+    }
+
+    return apiPostBackendOnly<T>(path, body,requestId);
+
+
+  } finally {
+    activeRequest = false;
+  }
+}
+export async function apiPostBackendOnly<T>(
+  path: string,
+  body?: any,
+  requestId?: string,
+): Promise<T> {
   const res = await fetchBackend(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+  "Content-Type": "application/json",
+  ...(requestId ? { "X-Request-ID": requestId } : {}),
+},
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
