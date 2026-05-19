@@ -27,6 +27,7 @@ export type ClientTurnLogPayload = {
   route_taken?: string | null;
   fallback_reason?: string | null;
   duration_ms?: number;
+  min_duration_ms?: number | null;
   local_duration_ms?: number;
   backend_duration_ms?: number;
   total_duration_ms?: number;

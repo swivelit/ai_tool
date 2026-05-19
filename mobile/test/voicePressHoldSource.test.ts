@@ -39,6 +39,8 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain('recordingPhaseRef.current === "starting"');
     expect(source).toContain("stopWhenReadyRef.current = true");
     expect(source).toContain("client_voice_release_queued");
+    expect(source).toContain("assertMinimumVoiceRecordingDuration");
+    expect(source).toContain("client_voice_recording_too_short");
     expect(source).toContain("recordingPhaseRef.current === \"stopping\"");
     expect(source).toContain("reply_language=ta&speech_language=ta-IN");
   });

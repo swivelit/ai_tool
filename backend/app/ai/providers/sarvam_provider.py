@@ -20,6 +20,9 @@ from .base import AIProvider
 
 SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
 SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
+SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL = (
+    "No speech was detected in the uploaded audio. Hold the mic until recording starts, then speak for at least a second."
+)
 SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES = {
     "application/octet-stream",
     "audio/aac",
@@ -175,8 +178,8 @@ class SarvamProvider(AIProvider):
             raise HTTPException(502, "STT provider returned invalid JSON.") from exc
         text = extract_sarvam_transcript(payload)
         if not text:
-            _log_sarvam_event("sarvam_stt_failed", status_code=400, safe_provider_error="empty_transcript", started=started)
-            raise HTTPException(400, "Failed to transcribe audio")
+            _log_sarvam_event("sarvam_stt_failed", status_code=422, safe_provider_error="empty_transcript", started=started)
+            raise HTTPException(422, SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL)
         _log_sarvam_event("sarvam_stt_completed", status_code=response.status_code, transcript=text, started=started)
         return text
 

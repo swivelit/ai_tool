@@ -83,9 +83,13 @@ import { shouldAutoSpeakReply } from "@/lib/replyPlaybackPolicy";
 import { ensureNotificationsReady, scheduleReminder } from "@/lib/reminders";
 import {
   EMPTY_AUDIO_MESSAGE,
+  MIN_VOICE_RECORDING_MS,
   MIC_START_TIMEOUT_MESSAGE,
   RecordingStartCancelledError,
   RecordingStartTimeoutError,
+  TOO_SHORT_AUDIO_MESSAGE,
+  VoiceRecordingTooShortError,
+  assertMinimumVoiceRecordingDuration,
   assertUsableAudioFile,
   withRecordingStartTimeout,
 } from "@/lib/voiceRecording";
@@ -1629,6 +1633,19 @@ export default function Home() {
     return fallback;
   }
 
+  function isTooShortAudioError(error: unknown) {
+    if (error instanceof VoiceRecordingTooShortError) {
+      return true;
+    }
+    const message = error instanceof Error ? error.message : String(error || "");
+    const normalizedMessage = message.toLowerCase();
+    return (
+      normalizedMessage.includes("no speech was detected") ||
+      normalizedMessage.includes("empty_transcript") ||
+      normalizedMessage.includes("failed to transcribe audio")
+    );
+  }
+
   function logVoiceTelemetry(
     event: string,
     details: Partial<Parameters<typeof sendClientTurnLog>[0]> = {},
@@ -2331,6 +2348,23 @@ export default function Home() {
         mime_type: "audio/m4a",
       });
 
+      try {
+        assertMinimumVoiceRecordingDuration(recordingDurationMs);
+      } catch (error) {
+        if (error instanceof VoiceRecordingTooShortError) {
+          logVoiceTelemetry("client_voice_recording_too_short", {
+            request_id: requestId,
+            route_taken: "voice_file_validation",
+            voice_phase: "too_short",
+            duration_ms: recordingDurationMs,
+            min_duration_ms: MIN_VOICE_RECORDING_MS,
+            file_size: audioFileSize,
+            mime_type: "audio/m4a",
+          });
+        }
+        throw error;
+      }
+
       const form = new FormData();
       form.append(
         "file",
@@ -2393,22 +2427,32 @@ export default function Home() {
         setConfirmOpen(true);
       }
     } catch (error: unknown) {
+      const tooShortAudio = isTooShortAudioError(error);
+      const emptyAudio =
+        error instanceof Error && error.message === EMPTY_AUDIO_MESSAGE;
+      const errorType = emptyAudio
+        ? "empty_audio"
+        : tooShortAudio
+          ? "too_short_audio"
+          : safeVoiceErrorType(
+              error,
+              uploadStarted
+                ? "voice_upload_failed"
+                : "voice_file_validation_failed",
+            );
       logVoiceTelemetry("client_voice_upload_failed", {
         request_id: requestId,
         route_taken: uploadStarted ? "voice_upload" : "voice_file_validation",
         voice_phase: uploadStarted ? "upload_failed" : "file_validation_failed",
         file_size: audioFileSize,
         mime_type: "audio/m4a",
-        error_type:
-          error instanceof Error && error.message === EMPTY_AUDIO_MESSAGE
-            ? "empty_audio"
-            : safeVoiceErrorType(error, uploadStarted ? "voice_upload_failed" : "voice_file_validation_failed"),
+        error_type: errorType,
       });
       if (isActiveChatRequest(requestId)) {
-        const rawMessage = error instanceof Error ? error.message : "";
-        const message =
-          rawMessage === EMPTY_AUDIO_MESSAGE
-            ? EMPTY_AUDIO_MESSAGE
+        const message = emptyAudio
+          ? EMPTY_AUDIO_MESSAGE
+          : tooShortAudio
+            ? TOO_SHORT_AUDIO_MESSAGE
             : VOICE_UNAVAILABLE_MESSAGE;
         showPendingAssistantError(requestId, message, "Voice message", "voice");
         warnChatFailure(error, requestId, "voice");

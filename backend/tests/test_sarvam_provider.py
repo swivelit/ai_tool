@@ -3,7 +3,11 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from app.ai.providers.sarvam_provider import SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES, SarvamProvider
+from app.ai.providers.sarvam_provider import (
+    SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES,
+    SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL,
+    SarvamProvider,
+)
 from app.ai.types import AIRequest, AIRoute
 
 
@@ -123,6 +127,33 @@ def test_sarvam_stt_extracts_transcript(monkeypatch, tmp_path):
     assert file_tuple[0].endswith(".m4a")
     assert file_tuple[2] is not None
     assert file_tuple[2] in SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES
+
+
+def test_sarvam_stt_empty_transcript_raises_actionable_422(monkeypatch, tmp_path):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    audio_file = tmp_path / "audio.m4a"
+    audio_file.write_bytes(b"audio")
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"transcript": ""}
+
+    def fake_post(*args, **kwargs):
+        return Response()
+
+    with pytest.raises(HTTPException) as exc:
+        SarvamProvider(http_post=fake_post).stt_file(
+            str(audio_file),
+            "ta",
+            content_type="audio/m4a",
+            filename="audio.m4a",
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL
 
 
 def test_sarvam_stt_unknown_mobile_audio_gets_octet_stream(monkeypatch, tmp_path):

@@ -2,8 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   EMPTY_AUDIO_MESSAGE,
+  MIN_VOICE_RECORDING_MS,
   MIC_START_TIMEOUT_MESSAGE,
   RecordingStartTimeoutError,
+  TOO_SHORT_AUDIO_MESSAGE,
+  VoiceRecordingTooShortError,
+  assertMinimumVoiceRecordingDuration,
   assertUsableAudioFile,
   withRecordingStartTimeout,
 } from "@/lib/voiceRecording";
@@ -41,5 +45,20 @@ describe("voice recording helpers", () => {
     await expect(
       assertUsableAudioFile("file:///tmp/audio.m4a", fileSystem as any),
     ).resolves.toEqual({ exists: true, size: 42 });
+  });
+
+  it("rejects recordings shorter than the voice minimum", () => {
+    expect(() => assertMinimumVoiceRecordingDuration(12)).toThrow(
+      TOO_SHORT_AUDIO_MESSAGE,
+    );
+    expect(() => assertMinimumVoiceRecordingDuration(12)).toThrow(
+      VoiceRecordingTooShortError,
+    );
+  });
+
+  it("accepts recordings at the voice minimum", () => {
+    expect(assertMinimumVoiceRecordingDuration(MIN_VOICE_RECORDING_MS)).toBe(
+      MIN_VOICE_RECORDING_MS,
+    );
   });
 });
