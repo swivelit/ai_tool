@@ -303,3 +303,14 @@ pip install -r requirements.txt
 ```bash
 BUILD_TYPE=release ./build-apk.sh
 ```
+## Release Documentation
+
+See:
+- docs/release/environment-matrix.md
+- docs/release/android-release-checklist.md
+- docs/release/ios-release-checklist.md
+- docs/release/render-env-checklist.md
+- docs/release/rollback-guide.md
+- docs/release/versioning.md
+- docs/release/release-notes-template.md
+- docs/release/new-developer-setup.md

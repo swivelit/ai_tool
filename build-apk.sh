@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env bashelse
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -336,7 +336,7 @@ if [[ "${JAI_REQUIRE_LLAMA_CPP:-}" == "1" || "$IS_PRODUCTION_OR_RELEASE_BUILD" =
   if npm run release:verify-local-first; then
     info "Local-first release configuration verified"
   else
-    fail "Local-first release verification failed. Configure llama.cpp, the native module, GGUF model URLs, exact byte sizes, and SHA-256 hashes. Recorded voice uses backend Sarvam by default; set EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=true only for development local/native STT testing."
+    fail "Release validation failed. Missing or invalid production configuration detected. Verify Firebase configuration, llama.cpp setup, model CDN URLs, GGUF metadata, byte sizes, and SHA-256 values before building release APK." 
   fi
 
   info "Verifying native llama.cpp build/runtime wiring"
