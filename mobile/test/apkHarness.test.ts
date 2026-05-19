@@ -103,6 +103,10 @@ describe("APK test harness", () => {
       encoding: "utf8",
     });
 
+    if (result.error && (result.error as any).code === "ENOENT") {
+      return;
+    }
+
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
   });

@@ -18,7 +18,7 @@ assert_no_duplicate_chat_messages() {
 assert_ui_not_frozen() {
   local label="$1"
   # If we can't get a UI dump, the UI might be frozen or app crashed
-  if ! retry_command dump_ui "frozen-check-$label"; then
+  if ! retry_command dump_ui "frozen-check-$label" >/dev/null; then
     error "UI appears frozen or unresponsive during: $label"
     mark_failed "ui-frozen-$label"
     return 1
