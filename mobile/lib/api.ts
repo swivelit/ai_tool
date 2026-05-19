@@ -575,7 +575,7 @@ type FeatureFlagPayload = {
 let featureFlagsCache: FeatureFlagPayload["flags"] | null = null;
 let featureFlagsFetchedAt = 0;
 
-type SpeechLanguage = "en" | "ta" | null;
+type SpeechLanguage = "english" | "tamil" | null;
 
 type LocalVoiceTranscription = {
   text: string;
@@ -997,8 +997,8 @@ function normalizeSpeechLanguage(value: unknown): SpeechLanguage {
   if (["auto", "detect", "auto-detect", "autodetect"].includes(normalized)) {
     return null;
   }
-  if (normalized.startsWith("ta")) return "ta";
-  if (normalized.startsWith("en")) return "en";
+  if (normalized.startsWith("ta")) return "tamil";
+  if (normalized.startsWith("en")) return "english";
 
   return null;
 }

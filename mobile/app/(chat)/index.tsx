@@ -1428,7 +1428,9 @@ export default function Home() {
   }
 
   function nextChatRequestId(source: ChatRequestSource) {
-    return `${source}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    return `local_${source}_${Date.now()}_${Math.random()
+  .toString(36)
+  .slice(2, 8)}`;
   }
 
   function isActiveChatRequest(requestId: string) {

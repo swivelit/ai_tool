@@ -5,16 +5,20 @@ export type ChatHistoryOrigin = "backend" | "local";
 export type ChatHistoryDeletionGroups = {
   backendItems: ChatHistoryItem[];
   localItems: ChatHistoryItem[];
-  backendItemIds: number[];
-  localItemIds: number[];
-  allItemIds: number[];
+  backendItemIds: string[];
+  localItemIds: string[];
+  allItemIds: string[];
 };
 
 export const LOCAL_CHAT_ITEMS_STORAGE_PREFIX = "chat_local_items_v1";
 
-function toFiniteItemId(value: unknown): number | null {
-  const itemId = Number(value);
-  return Number.isFinite(itemId) ? itemId : null;
+function toFiniteItemId(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const itemId = String(value).trim();
+  return itemId ? itemId : null;
 }
 
 export function localChatItemsStorageKey(userId?: number | string | null) {
@@ -22,12 +26,12 @@ export function localChatItemsStorageKey(userId?: number | string | null) {
   return `${LOCAL_CHAT_ITEMS_STORAGE_PREFIX}:${normalizedUserId}`;
 }
 
-export function uniqueNumberList(values: unknown[]) {
+export function uniqueItemIdList(values: unknown[]) {
   return Array.from(
     new Set(
       values
-        .map((value) => Number(value))
-        .filter((value) => Number.isFinite(value)),
+        .map((value) => String(value).trim())
+        .filter(Boolean),
     ),
   );
 }
@@ -53,7 +57,7 @@ export function filterLocalChatHistoryItems(items: ChatHistoryItem[]) {
 
 export function filterHistoryItemsByHiddenItemIds(
   items: ChatHistoryItem[],
-  hiddenItemIdSet: Set<number>,
+  hiddenItemIdSet: Set<string>,
 ) {
   if (!hiddenItemIdSet.size) return items;
 
@@ -64,7 +68,7 @@ export function filterHistoryItemsByHiddenItemIds(
 }
 
 export function mergeChatHistoryItems(...groups: ChatHistoryItem[][]) {
-  const map = new Map<number, ChatHistoryItem>();
+  const map = new Map<string, ChatHistoryItem>();
 
   groups.flat().forEach((item) => {
     const itemId = toFiniteItemId(item?.id);
@@ -80,7 +84,7 @@ export function mergeChatHistoryItems(...groups: ChatHistoryItem[][]) {
     } as ChatHistoryItem);
   });
 
-  return Array.from(map.values()).sort((a, b) => Number(b.id) - Number(a.id));
+ return Array.from(map.values());
 }
 
 export function classifyChatHistoryItemsForDeletion(
@@ -97,15 +101,15 @@ export function classifyChatHistoryItemsForDeletion(
     }
   });
 
-  const backendItemIds = uniqueNumberList(backendItems.map((item) => item.id));
-  const localItemIds = uniqueNumberList(localItems.map((item) => item.id));
+  const backendItemIds = uniqueItemIdList(backendItems.map((item) => item.id));
+  const localItemIds = uniqueItemIdList(localItems.map((item) => item.id));
 
   return {
     backendItems,
     localItems,
     backendItemIds,
     localItemIds,
-    allItemIds: uniqueNumberList([...backendItemIds, ...localItemIds]),
+    allItemIds: uniqueItemIdList([...backendItemIds, ...localItemIds]),
   };
 }
 

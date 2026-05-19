@@ -8,7 +8,7 @@ describe("chat response normalization", () => {
       {
         ok: true,
         item: {
-          id: 42,
+          id: "42",
           intent: "reminder",
           category: "Work",
           raw_text: "remind me about standup",
@@ -36,7 +36,7 @@ describe("chat response normalization", () => {
   it("keeps legacy flat voice payloads usable", () => {
     const normalized = normalizeChatTurnPayload(
       {
-        id: 7,
+        id: "7",
         intent: "reminder",
         category: "Other",
         raw_text: "remind me to drink water",
@@ -76,7 +76,7 @@ describe("chat response normalization", () => {
       {
         ok: true,
         item: {
-          id: 99,
+          id: "99",
           intent: "assistant",
           category: "Other",
           raw_text: "hello",
@@ -90,5 +90,29 @@ describe("chat response normalization", () => {
     );
 
     expect(normalized.__origin).toBe("local");
+
+  it("keeps backend ids unchanged", () => {
+  const result = normalizeChatResponse(
+    {
+      item: {
+        id: "123",
+        raw_text: "hello",
+      },
+    } as any,
+    "hello"
+  );
+
+  expect(result.id).toBe("123");
+  });
+
+  it("creates local fallback ids safely", () => {
+  const result = normalizeChatResponse(
+    {} as any,
+    "hello"
+  );
+
+  expect(String(result.id).startsWith("local_")).toBe(true);
+  });
+
   });
 });

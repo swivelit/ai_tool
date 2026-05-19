@@ -9,8 +9,9 @@ import {
 } from "@/lib/chatHistory";
 import { ChatHistoryItem } from "@/lib/chatResponse";
 
+
 function item(
-  id: number,
+  id: string,
   rawText: string,
   origin: ChatHistoryItem["__origin"],
 ): ChatHistoryItem {
@@ -28,8 +29,8 @@ function item(
 
 describe("chat history merge", () => {
   it("preserves existing local-only turns when backend items are empty and a second local turn is added", () => {
-    const firstLocal = item(1001, "first question", "local");
-    const secondLocal = item(1002, "second question", "local");
+    const firstLocal = item("1001", "first question", "local");
+    const secondLocal = item("1002", "second question", "local");
 
     const merged = mergeChatHistoryItems([firstLocal], [firstLocal], [], [secondLocal]);
 
@@ -45,18 +46,42 @@ describe("chat history merge", () => {
 
   it("marks backend API items with backend origin", () => {
     const [backendItem] = markChatHistoryItemsOrigin(
-      [item(7, "saved question", undefined)],
+      [item("7", "saved question", undefined)],
       "backend",
     );
 
     expect(backendItem.__origin).toBe("backend");
+
+  it("supports local message ids without collisions", () => {
+  const items = [
+    {
+      id: "local_text_123abc",
+      raw_text: "hello",
+      details: "hi",
+      __origin: "local",
+    },
+    {
+      id: "123",
+      raw_text: "server",
+      details: "response",
+      __origin: "backend",
+    },
+  ];
+
+  const result = mergeChatHistoryItems(items as any);
+
+  expect(result).toHaveLength(2);
+
+  expect(result[0].id).toBe("local_text_123abc");
+  expect(result[1].id).toBe("123");
+});
   });
 });
 
 describe("chat deletion classification", () => {
   it("removes local-only items locally without calling backend delete", () => {
     const apiDelete = vi.fn();
-    const selectedItems = [item(2001, "local only", "local")];
+    const selectedItems = [item("2001", "local only", "local")];
     const groups = classifyChatHistoryItemsForDeletion(selectedItems);
     const remaining = filterHistoryItemsByHiddenItemIds(selectedItems, new Set(groups.allItemIds));
 
@@ -71,8 +96,8 @@ describe("chat deletion classification", () => {
   it("calls backend delete only for backend-origin items", () => {
     const apiDelete = vi.fn();
     const groups = classifyChatHistoryItemsForDeletion([
-      item(3001, "backend", "backend"),
-      item(3002, "local", "local"),
+      item("3001", "backend", "backend"),
+      item("3002", "local", "local"),
     ]);
 
     groups.backendItemIds.forEach((itemId) => apiDelete(`/items/${itemId}`));
@@ -84,10 +109,13 @@ describe("chat deletion classification", () => {
   });
 
   it("hidden IDs prevent deleted local items from rehydrating", () => {
-    const storedLocal = item(4001, "deleted local", "local");
-    const currentLocal = item(4002, "visible local", "local");
+    const storedLocal = item("4001", "deleted local", "local");
+    const currentLocal = item("4002", "visible local", "local");
     const merged = mergeChatHistoryItems([currentLocal], [storedLocal], [], []);
-    const visible = filterHistoryItemsByHiddenItemIds(merged, new Set([4001]));
+    const visible = filterHistoryItemsByHiddenItemIds(
+  merged,
+  new Set(["4001"])
+);
 
     expect(visible.map((entry) => entry.id)).toEqual([4002]);
   });

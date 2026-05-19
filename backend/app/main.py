@@ -843,7 +843,7 @@ def startup_runtime_services() -> None:
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    request_id = request.headers.get("x-request-id") or new_request_id() or str(uuid4())
+    request_id = request.headers.get("x-request-id") or new_request_id()
     start = time.perf_counter()
     set_request_context(request_id=request_id, route=request.url.path)
     try:

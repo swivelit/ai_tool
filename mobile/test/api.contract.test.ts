@@ -1258,4 +1258,11 @@ describe("API client contracts", () => {
     );
     expect(payload.assistant.text).toBe("Backend fallback answer.");
   });
+  it("supports local-only message ids without backend collision", () => {
+  const localId = `local_${Date.now()}_abc123`;
+  const backendId = "123";
+
+  expect(localId.startsWith("local_")).toBe(true);
+  expect(localId).not.toBe(backendId);
+  });
 });

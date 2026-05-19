@@ -1,5 +1,5 @@
 export type Item = {
-  id: number;
+  id: string;
   intent: string;
   category: string;
   raw_text: string;

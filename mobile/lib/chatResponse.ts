@@ -54,7 +54,9 @@ export function normalizeChatResponse(
 
   if (item && typeof item === "object") {
     return {
-      id: Number(item.id || Date.now()),
+      id: item.id || `local_${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2, 8)}`,
       intent: String(item.intent || "assistant"),
       category: String(item.category || "Other"),
       raw_text: String(item.raw_text || fallbackRawText || ""),
@@ -76,7 +78,9 @@ export function normalizeChatResponse(
   }
 
   return {
-    id: Date.now(),
+    id: `local_${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2, 8)}`,
     intent: "assistant",
     category: "Other",
     raw_text: fallbackRawText,
