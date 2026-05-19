@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # --- Regression & Assertion Helpers (Task 9) ---
 
 assert_no_duplicate_chat_messages() {
@@ -220,6 +221,12 @@ declare -a RESPONSE_TIMINGS=()
 declare -a CRASH_MARKERS=()
 
 mkdir -p "$ARTIFACT_DIR"
+
+banner() {
+  printf "\n========================================\n"
+  printf "  %s\n" "$1"
+  printf "========================================\n\n"
+}
 
 info() {
   printf "\n> %s\n" "$1"
