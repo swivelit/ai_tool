@@ -202,6 +202,59 @@ describe("API client contracts", () => {
     );
   });
 
+  it("uses the debug E2E voice mock without backend fetches", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            EXPO_PUBLIC_E2E_MOCK_VOICE_TURN: "1",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () => {
+      throw new Error("backend should not be called for E2E voice mock");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost, apiPostForm } = await import("../lib/api");
+    const form = {
+      _parts: [
+        [
+          "file",
+          {
+            uri: "file:///tmp/audio.m4a",
+            name: "audio.m4a",
+            type: "audio/m4a",
+          },
+        ],
+      ],
+    } as unknown as FormData;
+
+    const voicePayload = await apiPostForm<any>(
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      form,
+    );
+    const ttsPayload = await apiPost<any>("/api/tts", {
+      text: "E2E voice reply ready.",
+    });
+
+    expect(voicePayload.item.raw_text).toBe("e2e voice question");
+    expect(voicePayload.item.details).toBe("E2E voice reply ready.");
+    expect(voicePayload.item.source).toBe("voice");
+    expect(voicePayload.assistant.text).toBe("E2E voice reply ready.");
+    expect(voicePayload.meta.source).toBe("e2e_voice_mock");
+    expect(ttsPayload.audio_base64).toMatch(/^UklGR/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("does not activate local recorded voice route unless USE_LOCAL_VOICE_PIPELINE is true", async () => {
     vi.doMock("expo-constants", () => ({
       default: {

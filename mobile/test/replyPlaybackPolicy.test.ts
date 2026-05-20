@@ -8,7 +8,31 @@ describe("reply playback policy", () => {
   });
 
   it("keeps normal recorded voice silent by default", () => {
-    expect(shouldAutoSpeakReply({ source: "voice" })).toBe(false);
+    expect(shouldAutoSpeakReply({ source: "voice", voiceSurface: "quick" })).toBe(false);
+  });
+
+  it("speaks live voice replies by default", () => {
+    expect(shouldAutoSpeakReply({ source: "voice", voiceSurface: "live" })).toBe(true);
+  });
+
+  it("speaks recorded voice replies in voice-only mode by default", () => {
+    expect(
+      shouldAutoSpeakReply({
+        source: "voice",
+        voiceSurface: "quick",
+        voiceOnlyMode: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("speaks quick recorded voice when auto-speak replies is enabled", () => {
+    expect(
+      shouldAutoSpeakReply({
+        source: "voice",
+        voiceSurface: "quick",
+        autoSpeakReplies: true,
+      }),
+    ).toBe(true);
   });
 
   it("keeps hands-free silent by default", () => {

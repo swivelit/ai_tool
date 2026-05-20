@@ -7,6 +7,7 @@ import {
   type ClientTurnLogPayload,
 } from "./chatTelemetry";
 import { getCachedDeviceCapabilities } from "./deviceCapabilities";
+import { isE2eMockVoiceTurnEnabled } from "./e2eMode";
 import { auth } from "./firebase";
 import {
   getLocalRuntimeConfigError,
@@ -549,6 +550,8 @@ const LOCAL_MODEL_FALLBACK_FLAG = resolveBooleanFlag(
 // fallback/dev path only when EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=true.
 const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = false;
 const CANONICAL_VOICE_ANALYZE_PATH = "/api/transcribe-and-analyze";
+const E2E_TINY_WAV_BASE64 =
+  "UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
 
 let localChatInterceptionDepth = 0;
 let routingBannerLogged = false;
@@ -1385,6 +1388,47 @@ function buildVoiceUnavailableResponse(
   };
 }
 
+function buildE2eMockVoiceTurnResponse(): LocalChatProxyResponse {
+  const createdAt = new Date().toISOString();
+  return {
+    ok: true,
+    kind: "assistant_turn",
+    item: {
+      id: Date.now(),
+      intent: "assistant",
+      category: "Voice",
+      raw_text: "e2e voice question",
+      transcript: "e2e voice question",
+      datetime: null,
+      title: "E2E voice",
+      details: "E2E voice reply ready.",
+      created_at: createdAt,
+      source: "voice",
+      __origin: "local",
+    },
+    assistant: {
+      text: "E2E voice reply ready.",
+      english: "E2E voice reply ready.",
+    },
+    pipeline: {
+      route_taken: "e2e_voice_mock",
+      predicted_label: "assistant",
+      raw_english: "e2e voice question",
+      remodeled_english: "E2E voice reply ready.",
+      direct_answer_source: "e2e_voice_mock",
+      meta: {
+        source: "e2e_voice_mock",
+      },
+    },
+    meta: {
+      source: "e2e_voice_mock",
+      route: "e2e_voice_mock",
+      cacheHit: false,
+      created_at: createdAt,
+    },
+  };
+}
+
 function getFormFilePart(form: FormData) {
   const internal = (form as any)?._parts;
   if (!Array.isArray(internal)) return null;
@@ -1448,6 +1492,11 @@ function isTranscribeAndAnalyzePath(path: string) {
     normalized.startsWith("/transcribe-and-analyze") ||
     normalized.startsWith("/api/transcribe-and-analyze")
   );
+}
+
+function isTtsPath(path: string) {
+  const normalized = String(path || "");
+  return normalized === "/api/tts" || normalized.startsWith("/api/tts?");
 }
 
 function normalizeVoiceAnalyzePath(path: string) {
@@ -2411,6 +2460,11 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
+  if (isE2eMockVoiceTurnEnabled() && isTtsPath(path)) {
+    console.info("[e2e_voice_mock] /api/tts");
+    return { audio_base64: E2E_TINY_WAV_BASE64 } as T;
+  }
+
   if (isTranscribeAndAnalyzePath(path)) {
     if (isFormDataPayload(body)) {
       return apiPostForm<T>(path, body);
@@ -2469,6 +2523,11 @@ export async function apiPostBackendOnly<T>(
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
   const isVoiceAnalyze = isTranscribeAndAnalyzePath(path);
+  if (isVoiceAnalyze && isE2eMockVoiceTurnEnabled()) {
+    console.info("[e2e_voice_mock] /api/transcribe-and-analyze");
+    return buildE2eMockVoiceTurnResponse() as T;
+  }
+
   const useLocalVoicePipeline = isVoiceAnalyze && (await shouldUseLocalVoicePipeline());
   const resolvedPath = isVoiceAnalyze ? withTamilVoiceDefaults(normalizeVoiceAnalyzePath(path)) : path;
 

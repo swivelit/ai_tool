@@ -71,6 +71,10 @@ export type ClientTurnLogPayload = {
   telemetry_delivery?: string | null;
   file_size?: number | null;
   mime_type?: string | null;
+  reply_audio_bytes?: number | null;
+  reply_playback_phase?: string | null;
+  voice_surface?: string | null;
+  playback_uri_scheme?: string | null;
   chat_routing?: string | null;
   voice_routing?: string | null;
   native_safety_status?: Record<string, any> | null;

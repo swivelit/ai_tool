@@ -74,6 +74,7 @@ start_metro() {
   nohup env EXPO_NO_TELEMETRY=1 \
     EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-}" \
     EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}" \
+    EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-}" \
     EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-}" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-}" \
@@ -136,13 +137,21 @@ print_debug_env() {
   info "Debug APK environment"
   printf "EXPO_PUBLIC_E2E_MOCK_AUTH=%s\n" "${EXPO_PUBLIC_E2E_MOCK_AUTH:-}"
   printf "EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=%s\n" "${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}"
+  printf "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=%s\n" "${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-}"
   printf "EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=%s\n" "${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-}"
   printf "EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=%s\n" "${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-}"
   printf "JAI_DEBUG_LITE=%s\n" "${JAI_DEBUG_LITE:-}"
   printf "JAI_ANDROID_ABIS=%s\n" "${JAI_ANDROID_ABIS:-}"
 }
 
-command -v adb >/dev/null 2>&1 || fail "adb is required but was not found in PATH."
+if ! command -v adb >/dev/null 2>&1; then
+  if is_truthy "${RUN_APK_TESTS:-}"; then
+    warn "adb is required for APK install/UI automation but was not found. Delegating to test_apk.sh so non-device tests still run and the skip reason is recorded."
+    RUN_APK_TESTS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh
+    exit $?
+  fi
+  fail "adb is required but was not found in PATH."
+fi
 command -v node >/dev/null 2>&1 || fail "Node.js is required but was not found in PATH."
 command -v npm >/dev/null 2>&1 || fail "npm is required but was not found in PATH."
 
@@ -166,7 +175,14 @@ fi
 cd "$ROOT_DIR"
 
 info "Checking Android device/emulator"
-adb get-state >/dev/null 2>&1 || fail "No Android device/emulator detected. Run: adb devices"
+if ! adb get-state >/dev/null 2>&1; then
+  if is_truthy "${RUN_APK_TESTS:-}"; then
+    warn "No Android device/emulator detected. Delegating to test_apk.sh so non-device tests still run and the skip reason is recorded."
+    RUN_APK_TESTS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh
+    exit $?
+  fi
+  fail "No Android device/emulator detected. Run: adb devices"
+fi
 
 DEVICE_PAGE_SIZE="$(adb shell getconf PAGE_SIZE 2>/dev/null | tr -d '\r' | tr -d '[:space:]' || true)"
 DEVICE_REQUIRES_16KB_APK=0
@@ -222,9 +238,10 @@ fi
 if is_truthy "${RUN_APK_TESTS:-}"; then
   export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
   export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
+  export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
   export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
   export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
-  info "APK test mode: E2E mock auth/model setup enabled; unverified native inference disabled"
+  info "APK test mode: E2E mock auth/model setup/voice turn enabled; unverified native inference disabled"
 fi
 
 info "Checking Firebase Android config for debug APK"

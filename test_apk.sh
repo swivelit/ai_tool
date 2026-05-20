@@ -451,6 +451,25 @@ scan_general_question_route_markers() {
   return 1
 }
 
+scan_voice_reply_markers() {
+  local start_line="${1:-0}"
+  local log_file="$ARTIFACT_DIR/logcat-full.log"
+  local markers_file="$ARTIFACT_DIR/voice-markers.log"
+
+  : > "$markers_file"
+  [[ -f "$log_file" ]] || return 1
+
+  local recent
+  recent="$(tail -n "+$((start_line + 1))" "$log_file" 2>/dev/null || true)"
+  printf "%s\n" "$recent" | grep -E "client_voice_upload_started|e2e_voice_mock" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_started" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_completed" >> "$markers_file" 2>/dev/null || true
+
+  grep -E "client_voice_upload_started|e2e_voice_mock" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "client_voice_reply_tts_started" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "client_voice_reply_tts_completed" "$markers_file" >/dev/null 2>&1
+}
+
 start_logcat() {
   adb logcat -c > "$ARTIFACT_DIR/logcat-clear.log" 2>&1 || true
   adb logcat -v threadtime > "$ARTIFACT_DIR/logcat-full.log" 2>&1 &
@@ -537,7 +556,7 @@ trap finish EXIT
 
 write_ui_helper
 
-for tool in adb node npm curl python3; do
+for tool in node npm curl python3; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     mark_failed "missing-tool:$tool"
   fi
@@ -581,7 +600,7 @@ fi
 if ! is_truthy "${SKIP_PRECHECKS:-}"; then
   run_step "mobile-typecheck" bash -lc "cd '$MOBILE_DIR' && npm run typecheck"
   run_step "mobile-tests" bash -lc "cd '$MOBILE_DIR' && npm test -- --run"
-  run_step "mobile-release-verify-local-first" bash -lc "cd '$MOBILE_DIR' && npm run release:verify-local-first"
+  run_step "mobile-release-verify-backend-first" bash -lc "cd '$MOBILE_DIR' && npm run release:verify-backend-first"
   run_step "bash-n-build-apk" bash -n "$ROOT_DIR/build-apk.sh"
   run_step "bash-n-launch-debug-apk" bash -n "$ROOT_DIR/launch-debug_apk.sh"
   run_step "bash-n-test-apk" bash -n "$ROOT_DIR/test_apk.sh"
@@ -590,6 +609,12 @@ else
 fi
 
 info "Checking Android device/emulator"
+if ! command -v adb >/dev/null 2>&1; then
+  mark_failed "missing-tool:adb"
+  record_skip "APK install/UI automation skipped because adb was not found in PATH"
+  exit "$RESULT"
+fi
+
 if ! adb get-state > "$ARTIFACT_DIR/adb-get-state.log" 2>&1; then
   mark_failed "no-android-device"
   record_skip "APK install/UI automation skipped because adb did not detect a device"
@@ -635,6 +660,7 @@ fi
 
 export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
 export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
+export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
 export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
@@ -686,6 +712,8 @@ else
   run_step "adb-install-debug-apk" adb install -r "$APK_PATH"
 fi
 
+adb shell pm grant "$PACKAGE_NAME" android.permission.RECORD_AUDIO > "$ARTIFACT_DIR/grant-record-audio.log" 2>&1 || true
+
 if curl -fsS "http://127.0.0.1:${METRO_PORT}/status" > "$ARTIFACT_DIR/metro-status.log" 2>&1; then
   record_skip "Metro already running on port $METRO_PORT"
 else
@@ -695,6 +723,7 @@ else
     EXPO_NO_TELEMETRY=1 \
     EXPO_PUBLIC_E2E_MOCK_AUTH="$EXPO_PUBLIC_E2E_MOCK_AUTH" \
     EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="$EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP" \
+    EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN" \
     EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="$EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS" \
@@ -743,6 +772,76 @@ else
   fi
   exit "$RESULT"
 fi
+
+voice_log_start_line=0
+if [[ -f "$ARTIFACT_DIR/logcat-full.log" ]]; then
+  voice_log_start_line="$(wc -l < "$ARTIFACT_DIR/logcat-full.log" | tr -d '[:space:]')"
+fi
+
+capture_step "voice-before"
+if ! tap_desc "chat-voice-button"; then
+  mark_failed "tap-chat-voice-button"
+else
+  if ! wait_for_text "Hold to Talk" 10 && ! wait_for_desc "Hold the orb to record" 5; then
+    mark_failed "voice-sheet-not-ready"
+    capture_step "voice-sheet-not-ready"
+  else
+    orb_center=""
+    if ! orb_center="$(find_ui_center desc "Hold the orb to record" "voice-orb")"; then
+      mark_failed "voice-orb-not-found"
+      capture_step "voice-orb-not-found"
+    else
+      read -r orb_x orb_y <<< "$orb_center"
+      adb shell input swipe "$orb_x" "$orb_y" "$orb_x" "$orb_y" 2200 >/dev/null 2>&1 || mark_failed "voice-orb-long-press"
+
+      voice_reply_seen=0
+      deadline=$((SECONDS + 60))
+      while [[ "$SECONDS" -lt "$deadline" ]]; do
+        if ! assert_app_alive "during-voice-test"; then
+          break
+        fi
+        if wait_for_desc "voice-last-reply" 1 || wait_for_text "E2E voice reply ready." 1; then
+          voice_reply_seen=1
+          break
+        fi
+        sleep 1
+      done
+      if [[ "$voice_reply_seen" != "1" ]]; then
+        mark_failed "voice-last-reply-not-visible"
+      fi
+
+      voice_status_seen=0
+      deadline=$((SECONDS + 35))
+      while [[ "$SECONDS" -lt "$deadline" ]]; do
+        if wait_for_text "Speaking reply" 1 || wait_for_text "Reply ready" 1; then
+          voice_status_seen=1
+          break
+        fi
+        sleep 1
+      done
+      if [[ "$voice_status_seen" != "1" ]]; then
+        mark_failed "voice-reply-status-not-ready"
+      fi
+
+      voice_markers_seen=0
+      deadline=$((SECONDS + 25))
+      while [[ "$SECONDS" -lt "$deadline" ]]; do
+        if scan_voice_reply_markers "$voice_log_start_line"; then
+          voice_markers_seen=1
+          break
+        fi
+        sleep 1
+      done
+      if [[ "$voice_markers_seen" != "1" ]]; then
+        mark_failed "voice-telemetry-markers-missing"
+      fi
+      capture_step "voice-after"
+    fi
+  fi
+fi
+
+adb shell input keyevent 4 >/dev/null 2>&1 || true
+wait_for_desc "chat-input" 10 || true
 
 for message in "hello" "what can you do" "tell me about solo leveling"; do
   label="$(printf '%s' "$message" | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]')"

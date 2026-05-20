@@ -41,6 +41,15 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("client_voice_release_queued");
     expect(source).toContain("assertMinimumVoiceRecordingDuration");
     expect(source).toContain("client_voice_recording_too_short");
+    expect(source).toContain("voiceSurface: requestVoiceSurface");
+    expect(source).toContain("voiceOnlyMode");
+    expect(source).toContain("client_voice_reply_tts_started");
+    expect(source).toContain("client_voice_reply_tts_completed");
+    expect(source).toContain("client_voice_reply_tts_failed");
+    expect(source).toContain("FileSystem.writeAsStringAsync");
+    expect(source).toContain("FileSystem.EncodingType.Base64");
+    expect(source).toContain("voice-last-reply");
+    expect(source).toContain("voice-reply-status");
     expect(source).toContain("recordingPhaseRef.current === \"stopping\"");
     expect(source).toContain("reply_language=ta&speech_language=ta-IN");
   });

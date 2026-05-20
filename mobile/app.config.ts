@@ -42,6 +42,8 @@ const ENABLE_LOCAL_MODEL_FALLBACK =
 const E2E_MOCK_AUTH = process.env.EXPO_PUBLIC_E2E_MOCK_AUTH || "";
 const E2E_SKIP_MODEL_SETUP =
   process.env.EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP || "";
+const E2E_MOCK_VOICE_TURN =
+  process.env.EXPO_PUBLIC_E2E_MOCK_VOICE_TURN || "";
 
 const LOCAL_MODEL_RUNTIME_MODE =
   process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE || "native_on_device";
@@ -165,6 +167,7 @@ const MOBILE_BUILD_ID = firstNonEmpty(
 const enabledE2eEnvNames = [
   ["EXPO_PUBLIC_E2E_MOCK_AUTH", E2E_MOCK_AUTH],
   ["EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP", E2E_SKIP_MODEL_SETUP],
+  ["EXPO_PUBLIC_E2E_MOCK_VOICE_TURN", E2E_MOCK_VOICE_TURN],
 ]
   .filter(([, value]) => isTruthyEnv(value))
   .map(([name]) => name);
@@ -442,8 +445,10 @@ export default {
       USE_LOCAL_VOICE_PIPELINE,
       E2E_MOCK_AUTH,
       E2E_SKIP_MODEL_SETUP,
+      E2E_MOCK_VOICE_TURN,
       EXPO_PUBLIC_E2E_MOCK_AUTH: E2E_MOCK_AUTH,
       EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP: E2E_SKIP_MODEL_SETUP,
+      EXPO_PUBLIC_E2E_MOCK_VOICE_TURN: E2E_MOCK_VOICE_TURN,
 
       // Do not bundle a bearer token into the mobile app. EXPO_PUBLIC_* values are public.
       // Use Firebase-authenticated backend proxying or a short-lived pairing token instead.

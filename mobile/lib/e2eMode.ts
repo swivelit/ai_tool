@@ -28,14 +28,15 @@ function isDevOrTestRuntime() {
 export function isAnyE2eEnvEnabled() {
   return (
     isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_AUTH")) ||
-    isTruthy(publicEnv("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP"))
+    isTruthy(publicEnv("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP")) ||
+    isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN"))
   );
 }
 
 export function assertE2eModeAllowed() {
   if (isAnyE2eEnvEnabled() && !isDevOrTestRuntime()) {
     throw new Error(
-      "E2E mock auth/model setup flags are debug/dev-only. Disable EXPO_PUBLIC_E2E_MOCK_AUTH and EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP for release/production builds.",
+      "E2E mock auth/model setup/voice flags are debug/dev-only. Disable EXPO_PUBLIC_E2E_MOCK_AUTH, EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP, and EXPO_PUBLIC_E2E_MOCK_VOICE_TURN for release/production builds.",
     );
   }
 }
@@ -48,6 +49,11 @@ export function isE2eMockAuthEnabled() {
 export function isE2eSkipModelSetupEnabled() {
   assertE2eModeAllowed();
   return isTruthy(publicEnv("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP"));
+}
+
+export function isE2eMockVoiceTurnEnabled() {
+  assertE2eModeAllowed();
+  return isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN"));
 }
 
 export function getE2eMockUserProfile(): UserProfile {

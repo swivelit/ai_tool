@@ -1049,6 +1049,30 @@ def test_tts_uses_modern_text_payload_and_returns_audio(client, monkeypatch):
     assert calls[0]["timeout"] == (5, 30)
 
 
+def test_tts_provider_missing_audio_returns_readable_failure(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"audios": []}
+
+    monkeypatch.setattr(main_module.requests, "post", lambda *args, **kwargs: DummyResponse())
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello", "target_language_code": "en-IN"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "TTS provider response did not contain audio."
+
+
 def test_rag_embedding_failure_is_logged_and_does_not_rollback_saved_item(client, monkeypatch, caplog):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")

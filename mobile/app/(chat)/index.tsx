@@ -21,6 +21,7 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system/legacy";
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
@@ -116,6 +117,11 @@ type PendingReminder = {
 };
 
 type RecorderSurface = "quick" | "live";
+type AgentReplyPlaybackContext = {
+  requestId?: string;
+  source?: ChatRequestSource;
+  voiceSurface?: RecorderSurface | null;
+};
 
 type ChatRequestSource = "text" | "handsfree" | "voice";
 
@@ -406,6 +412,8 @@ export default function Home() {
   const [activeSurface, setActiveSurface] = useState<RecorderSurface | null>(
     null
   );
+  const [voiceLastReplyText, setVoiceLastReplyText] = useState("");
+  const [voiceReplyStatus, setVoiceReplyStatus] = useState("");
   const [historySearch, setHistorySearch] = useState("");
   const [hiddenChatSessionIds, setHiddenChatSessionIds] = useState<string[]>([]);
   const [hiddenChatItemIds, setHiddenChatItemIds] = useState<number[]>([]);
@@ -421,7 +429,9 @@ export default function Home() {
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const replySoundRef = useRef<Audio.Sound | null>(null);
+  const replyAudioUriRef = useRef<string | null>(null);
   const replyPlaybackTokenRef = useRef(0);
+  const activeSurfaceRef = useRef<RecorderSurface | null>(null);
   const recordingPhaseRef = useRef<"idle" | "starting" | "recording" | "stopping">(
     "idle"
   );
@@ -769,12 +779,26 @@ export default function Home() {
     }
   }, [clearHandsFreeRestartTimer]);
 
+  const deleteReplyAudioFile = useCallback(async (uri?: string | null) => {
+    if (!uri) return;
+    try {
+      await FileSystem.deleteAsync(uri, { idempotent: true });
+    } catch {
+      // Cache cleanup should not affect the visible reply state.
+    }
+  }, []);
+
   const releaseReplySound = useCallback(async (soundToRelease?: Audio.Sound | null) => {
     const target = soundToRelease ?? replySoundRef.current;
     if (!target) return;
+    const cachedUri =
+      !soundToRelease || replySoundRef.current === target
+        ? replyAudioUriRef.current
+        : null;
 
     if (!soundToRelease || replySoundRef.current === target) {
       replySoundRef.current = null;
+      replyAudioUriRef.current = null;
     }
 
     try {
@@ -799,13 +823,15 @@ export default function Home() {
       replySoundRef.current = null;
     }
 
+    await deleteReplyAudioFile(cachedUri);
+
     if (
       handsFreeRuntimeRef.current.foreground &&
       handsFreeDesiredModeRef.current !== "off"
     ) {
       queueHandsFreeRestart("wake", 320);
     }
-  }, [queueHandsFreeRestart]);
+  }, [deleteReplyAudioFile, queueHandsFreeRestart]);
 
   useSpeechRecognitionEvent("start", () => {
     if (handsFreeDesiredModeRef.current === "off") return;
@@ -1646,18 +1672,38 @@ export default function Home() {
     );
   }
 
+  function base64DecodedByteLength(value: string) {
+    const normalized = value.replace(/\s/g, "");
+    if (!normalized) return 0;
+    const padding = normalized.endsWith("==")
+      ? 2
+      : normalized.endsWith("=")
+        ? 1
+        : 0;
+    return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding);
+  }
+
+  function uriScheme(value?: string | null) {
+    const match = String(value || "").match(/^([A-Za-z][A-Za-z0-9+.-]*):/);
+    return match?.[1]?.toLowerCase() || null;
+  }
+
   function logVoiceTelemetry(
     event: string,
     details: Partial<Parameters<typeof sendClientTurnLog>[0]> = {},
   ) {
-    logClientTurn({
-      event,
+    const payload: Parameters<typeof sendClientTurnLog>[0] = {
       user_id: profile?.userId,
-      channel: "voice",
-      agent_source: "mobile",
       route_taken: "voice",
       ...details,
-    });
+      event,
+      channel: "voice",
+      agent_source: "mobile",
+    };
+    logClientTurn(payload);
+    if (__DEV__) {
+      console.info("[voice-telemetry]", payload);
+    }
   }
 
   function clearPendingAssistant(requestId: string) {
@@ -1731,27 +1777,61 @@ export default function Home() {
     router.push("/modal");
   }
 
-  async function playAgentReply(textValue: string) {
+  async function playAgentReply(
+    textValue: string,
+    context: AgentReplyPlaybackContext = {},
+  ) {
     if (!textValue) return;
 
     const playbackToken = replyPlaybackTokenRef.current + 1;
     replyPlaybackTokenRef.current = playbackToken;
+    const isVoiceReply = context.source === "voice";
+    let cachedUri: string | null = null;
+    let sound: Audio.Sound | null = null;
 
     await abortHandsFreeRecognizer(false);
     await releaseReplySound();
 
     try {
+      if (isVoiceReply) {
+        setVoiceReplyStatus("Preparing reply...");
+      }
+      logVoiceTelemetry("client_voice_reply_tts_started", {
+        request_id: context.requestId,
+        route_taken: "voice_reply_tts",
+        voice_phase: "tts_started",
+        reply_playback_phase: "tts_request",
+        voice_surface: context.voiceSurface || null,
+      });
+
       const data = await apiPost<{ audio_base64?: string }>("/api/tts", {
         text: textValue,
         target_language_code: settings.languageMode === "ta" ? "ta-IN" : "en-IN",
       });
 
-      if (!data.audio_base64 || replyPlaybackTokenRef.current !== playbackToken) {
+      if (!data.audio_base64) {
+        throw new Error("TTS response did not include audio.");
+      }
+
+      if (replyPlaybackTokenRef.current !== playbackToken) {
         return;
       }
 
-      const uri = `data:audio/wav;base64,${data.audio_base64}`;
-      const sound = new Audio.Sound();
+      if (!FileSystem.cacheDirectory) {
+        throw new Error("Audio cache directory is unavailable.");
+      }
+
+      cachedUri = `${FileSystem.cacheDirectory}voice-reply-${Date.now()}-${playbackToken}.wav`;
+      await FileSystem.writeAsStringAsync(cachedUri, data.audio_base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      if (replyPlaybackTokenRef.current !== playbackToken) {
+        await deleteReplyAudioFile(cachedUri);
+        return;
+      }
+
+      sound = new Audio.Sound();
 
       sound.setOnPlaybackStatusUpdate((status) => {
         if (!status.isLoaded) {
@@ -1762,26 +1842,64 @@ export default function Home() {
         }
 
         if (status.didJustFinish) {
+          if (replySoundRef.current === sound && isVoiceReply) {
+            setVoiceReplyStatus("Reply ready");
+          }
           void releaseReplySound(sound);
         }
       });
 
-      await sound.loadAsync(
-        { uri },
+      const status = await sound.loadAsync(
+        { uri: cachedUri },
         {
           shouldPlay: true,
           progressUpdateIntervalMillis: 250,
         }
       );
+      if (!status.isLoaded) {
+        throw new Error("TTS audio could not be loaded.");
+      }
 
       if (replyPlaybackTokenRef.current !== playbackToken) {
         await releaseReplySound(sound);
+        await deleteReplyAudioFile(cachedUri);
         return;
       }
 
       replySoundRef.current = sound;
-    } catch {
-      // ignore playback failures
+      replyAudioUriRef.current = cachedUri;
+      if (isVoiceReply) {
+        setVoiceReplyStatus("Speaking reply...");
+      }
+      logVoiceTelemetry("client_voice_reply_tts_completed", {
+        request_id: context.requestId,
+        route_taken: "voice_reply_tts",
+        voice_phase: "tts_completed",
+        reply_playback_phase: "loaded",
+        voice_surface: context.voiceSurface || null,
+        reply_audio_bytes: base64DecodedByteLength(data.audio_base64),
+        playback_uri_scheme: uriScheme(cachedUri),
+      });
+    } catch (error: unknown) {
+      if (sound) {
+        await releaseReplySound(sound);
+      }
+      if (cachedUri && replyAudioUriRef.current !== cachedUri) {
+        await deleteReplyAudioFile(cachedUri);
+      }
+      if (isVoiceReply) {
+        setVoiceReplyStatus("Reply received, but voice playback failed.");
+      }
+      logVoiceTelemetry("client_voice_reply_tts_failed", {
+        request_id: context.requestId,
+        route_taken: "voice_reply_tts",
+        voice_phase: "tts_failed",
+        reply_playback_phase: "failed",
+        voice_surface: context.voiceSurface || null,
+        playback_uri_scheme: uriScheme(cachedUri),
+        error_type: safeVoiceErrorType(error, "voice_reply_tts_failed"),
+        error_message: error instanceof Error ? error.message : String(error || ""),
+      });
     }
   }
 
@@ -1925,7 +2043,7 @@ export default function Home() {
           handsFreeMode,
         })
       ) {
-        void playAgentReply(nextItem.details);
+        void playAgentReply(nextItem.details, { requestId, source });
       }
 
       if (nextItem.intent === "reminder" && nextItem.datetime) {
@@ -2127,6 +2245,7 @@ export default function Home() {
     setRecordingPreparing(false);
     setRecordingStopping(false);
     setListening(false);
+    activeSurfaceRef.current = null;
     setActiveSurface(null);
     await resetAudioMode();
   }
@@ -2163,6 +2282,7 @@ export default function Home() {
       voicePrepareStartedAtRef.current = Date.now();
       stopWhenReadyRef.current = false;
       recordingStartCancelledRef.current = false;
+      activeSurfaceRef.current = surface;
       setActiveSurface(surface);
       setRecordingPreparing(true);
       setRecordingStopping(false);
@@ -2308,6 +2428,7 @@ export default function Home() {
     voiceBusyRequestIdRef.current = requestId;
     let uploadStarted = false;
     let audioFileSize: number | undefined;
+    const requestVoiceSurface = activeSurfaceRef.current ?? activeSurface;
     const recordingDurationMs = voiceRecordingStartedAtRef.current
       ? Date.now() - voiceRecordingStartedAtRef.current
       : undefined;
@@ -2401,6 +2522,10 @@ export default function Home() {
       }
 
       const nextItem = normalizeChatTurnPayload(res);
+      const assistantReplyText = String(nextItem.details || "").trim();
+      if (assistantReplyText) {
+        setVoiceLastReplyText(assistantReplyText);
+      }
       clearPendingAssistant(requestId);
       const mergedHistory = await refreshHistoryAndSessions([nextItem]);
       await attachItemToCurrentChat(nextItem, mergedHistory);
@@ -2408,14 +2533,22 @@ export default function Home() {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       if (
-        nextItem.details &&
+        assistantReplyText &&
         shouldAutoSpeakReply({
           source: "voice",
           autoSpeakReplies: settings.autoSpeakReplies,
           handsFreeMode,
+          voiceSurface: requestVoiceSurface,
+          voiceOnlyMode,
         })
       ) {
-        void playAgentReply(nextItem.details);
+        void playAgentReply(assistantReplyText, {
+          requestId,
+          source: "voice",
+          voiceSurface: requestVoiceSurface,
+        });
+      } else if (assistantReplyText) {
+        setVoiceReplyStatus("Reply ready");
       }
 
       if (nextItem.intent === "reminder" && nextItem.datetime) {
@@ -3135,6 +3268,30 @@ export default function Home() {
               <Text numberOfLines={2} style={styles.handsFreeTranscript}>
                 {handsFreeTranscript}
               </Text>
+            ) : null}
+
+            {voiceReplyStatus || voiceLastReplyText ? (
+              <View style={styles.voiceReplyPanel}>
+                {voiceReplyStatus ? (
+                  <Text
+                    testID="voice-reply-status"
+                    accessibilityLabel="voice-reply-status"
+                    style={styles.voiceReplyStatus}
+                  >
+                    {voiceReplyStatus}
+                  </Text>
+                ) : null}
+                {voiceLastReplyText ? (
+                  <Text
+                    testID="voice-last-reply"
+                    accessibilityLabel="voice-last-reply"
+                    numberOfLines={4}
+                    style={styles.voiceLastReply}
+                  >
+                    {voiceLastReplyText}
+                  </Text>
+                ) : null}
+              </View>
             ) : null}
 
             {(recordingPreparing || listening || recordingStopping) && activeSurface === "live" ? (
@@ -4011,6 +4168,33 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textAlign: "center",
     maxWidth: 310,
+  },
+
+  voiceReplyPanel: {
+    marginTop: 16,
+    width: "100%",
+    maxWidth: 340,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Brand.line,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+
+  voiceReplyStatus: {
+    color: Brand.cocoa,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "900",
+  },
+
+  voiceLastReply: {
+    marginTop: 6,
+    color: Brand.ink,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "700",
   },
 
   voiceWaveWrap: {

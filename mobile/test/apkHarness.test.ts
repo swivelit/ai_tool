@@ -164,6 +164,9 @@ describe("APK test harness", () => {
       'export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"',
     );
     expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"',
+    );
+    expect(source).toContain(
       'export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"',
     );
     expect(source).toContain(
@@ -178,6 +181,7 @@ describe("APK test harness", () => {
     for (const source of [launchDebug, testApk]) {
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_AUTH=");
       expect(source).toContain("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=");
       expect(source).toContain("EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=");
@@ -199,12 +203,39 @@ describe("APK test harness", () => {
     }
   });
 
+  it("APK harness exercises the live voice reply path with the E2E mock", () => {
+    const source = readRepo("test_apk.sh");
+
+    expect(source).toContain("android.permission.RECORD_AUDIO");
+    expect(source).toContain("chat-voice-button");
+    expect(source).toContain("Hold the orb to record");
+    expect(source).toContain("input swipe");
+    expect(source).toContain("voice-last-reply");
+    expect(source).toContain("E2E voice reply ready.");
+    expect(source).toContain("voice-reply-status");
+    expect(source).toContain("Speaking reply");
+    expect(source).toContain("Reply ready");
+    expect(source).toContain("client_voice_reply_tts_started");
+    expect(source).toContain("client_voice_reply_tts_completed");
+    expect(source).toContain("e2e_voice_mock");
+    expect(source).toContain("voice-markers.log");
+  });
+
   it("release app config rejects E2E mock auth env", async () => {
     vi.stubEnv("JAI_BUILD_TYPE", "release");
     vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_AUTH", "1");
 
     await expect(import("../app.config")).rejects.toThrow(
       /Release\/production builds cannot enable debug E2E flags/,
+    );
+  });
+
+  it("release app config rejects E2E mock voice turns", async () => {
+    vi.stubEnv("JAI_BUILD_TYPE", "release");
+    vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN", "1");
+
+    await expect(import("../app.config")).rejects.toThrow(
+      /EXPO_PUBLIC_E2E_MOCK_VOICE_TURN/,
     );
   });
 
