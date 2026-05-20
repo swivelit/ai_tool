@@ -582,6 +582,16 @@ def _normalize_reply_language(value: Optional[str]) -> str:
     return "ta"
 
 
+def _normalize_speech_language_query(value: Optional[str]) -> Optional[str]:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    if lowered in {"auto", "detect", "auto-detect", "autodetect", "unknown"}:
+        return None
+    return normalized
+
+
 def _normalize_lookup_text(text: str) -> str:
     parts = re.findall(r"[a-z0-9_\u0B80-\u0BFF]+", str(text or "").lower())
     return " ".join(parts)
@@ -1623,6 +1633,63 @@ def load_onboarding_profile(session: Session, user_id: Union[int, str]) -> Dict[
         "questionnaire_completed": _questionnaire_completed(profile),
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
     }
+
+
+def _compact_profile_value(value: Any, limit: int = 800) -> Any:
+    if isinstance(value, str):
+        text = re.sub(r"\s+", " ", value).strip()
+        return text[:limit]
+    if isinstance(value, list):
+        return [_compact_profile_value(item, limit=240) for item in value[:12]]
+    if isinstance(value, dict):
+        return {
+            str(key)[:80]: _compact_profile_value(entry, limit=240)
+            for key, entry in list(value.items())[:24]
+            if not any(
+                marker in str(key).lower()
+                for marker in ("firebase_uid", "email", "auth", "token", "secret", "api_key", "password")
+            )
+        }
+    return value
+
+
+def build_profile_prompt_context(session: Session, user_id: Optional[int]) -> Dict[str, Any]:
+    if not user_id:
+        return {}
+
+    user = session.get(User, int(user_id))
+    profile = session.exec(select(UserProfile).where(UserProfile.user_id == int(user_id))).first()
+    onboarding = load_onboarding_profile(session, int(user_id))
+    answers = onboarding.get("answers") if isinstance(onboarding, dict) else {}
+    answers = answers if isinstance(answers, dict) else {}
+
+    profile_summary = ""
+    if profile and profile.profile_summary:
+        profile_summary = str(profile.profile_summary).strip()
+    elif isinstance(onboarding, dict):
+        profile_summary = str(onboarding.get("profile_summary") or "").strip()
+
+    return {
+        "user": {
+            "name": user.name if user else "",
+            "place": user.place if user else "",
+            "timezone": user.timezone if user else "Asia/Kolkata",
+            "assistant_name": user.assistant_name if user else "Elli",
+            "reply_language": _normalize_reply_language(user.reply_language if user else DEFAULT_REPLY_LANGUAGE),
+        },
+        "questionnaire_completed": bool(onboarding.get("questionnaire_completed")) if isinstance(onboarding, dict) else False,
+        "profile_summary": _compact_profile_value(profile_summary, 1200),
+        "communication_tone": _compact_profile_value(answers.get("communication_tone") or _infer_tone(profile_summary), 120),
+        "answer_length": _compact_profile_value(answers.get("answer_length") or "medium", 80),
+        "tamil_style": _compact_profile_value(answers.get("tamil_style") or "chennai_conversational", 120),
+        "onboarding_answers": _compact_profile_value(answers, 240),
+    }
+
+
+def _profile_prompt_context_text(profile_context: Dict[str, Any]) -> str:
+    if not profile_context:
+        return ""
+    return json.dumps(profile_context, ensure_ascii=False, sort_keys=True)
 
 
 def build_user_context(session: Session, user_id: int) -> dict:
@@ -3512,6 +3579,8 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
     text = _resolve_chat_text(payload)
     request_id = payload.request_id or get_request_id()
     context_turns = _recent_ai_context_turns(session, payload.user_id, limit=6)
+    profile_context = build_profile_prompt_context(session, payload.user_id)
+    profile_prompt_context = _profile_prompt_context_text(profile_context)
     ai_response = run_text_turn(
         session,
         AIRequest(
@@ -3526,6 +3595,8 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
                 "client_local_budget_ms": payload.client_local_budget_ms,
                 "client_original_route": payload.client_original_route,
                 "context_turn_count": len(context_turns),
+                "profile_context": profile_context,
+                "profile_prompt_context": profile_prompt_context,
             },
             context_turns=context_turns,
         ),
@@ -4689,8 +4760,10 @@ async def _transcribe_and_analyze_upload(
     if user_id is not None:
         assert_owner(int(user_id), user)
     set_request_context(user_id=str(user.id))
-    reply_language = _normalize_reply_language(reply_language) if reply_language else DEFAULT_REPLY_LANGUAGE
-    speech_language = speech_language or DEFAULT_SPEECH_LANGUAGE
+    reply_language = _normalize_reply_language(
+        reply_language if reply_language else (getattr(user, "reply_language", None) or DEFAULT_REPLY_LANGUAGE)
+    )
+    speech_language = _normalize_speech_language_query(speech_language)
 
     content_type = str(file.content_type or "").split(";")[0].strip().lower()
     filename = file.filename or "audio.m4a"
@@ -4765,6 +4838,8 @@ async def _transcribe_and_analyze_upload(
         use_ai_router = _ai_router_enabled()
         if use_ai_router:
             context_turns = _recent_ai_context_turns(session, int(user.id), limit=6)
+            profile_context = build_profile_prompt_context(session, int(user.id))
+            profile_prompt_context = _profile_prompt_context_text(profile_context)
             ai_response = run_text_turn(
                 session,
                 AIRequest(
@@ -4781,6 +4856,8 @@ async def _transcribe_and_analyze_upload(
                         "audio_seconds": estimated_audio_seconds,
                         "duration_estimation_method": duration_estimation_method,
                         "context_turn_count": len(context_turns),
+                        "profile_context": profile_context,
+                        "profile_prompt_context": profile_prompt_context,
                     },
                     context_turns=context_turns,
                 ),

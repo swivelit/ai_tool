@@ -13,6 +13,11 @@ from .types import AIRequest, AIRoute
 class AIProviderRouter:
     def select_route(self, request: AIRequest) -> AIRoute:
         language = detect_language(request.message, request.reply_language)
+        language_metadata = {
+            "input_language": language.input_language,
+            "reply_language": language.reply_language or request.reply_language or language.language,
+            "provider_preference": language.provider_preference or language.prefer_provider,
+        }
         forced_contextual = str(request.metadata.get("contextual_intent") or "").strip()
         intent = (
             IntentDecision(
@@ -34,6 +39,7 @@ class AIProviderRouter:
                 language=language.language,
                 intent=intent.intent,
                 max_output_tokens=0,
+                metadata=language_metadata,
             )
 
         if intent.intent in {"weather", "live_data"}:
@@ -46,6 +52,7 @@ class AIProviderRouter:
                     language=language.language,
                     intent=intent.intent,
                     max_output_tokens=0,
+                    metadata=language_metadata,
                 )
 
         if intent.route == "backend_tool":
@@ -57,6 +64,7 @@ class AIProviderRouter:
                 language=language.language,
                 intent=intent.intent,
                 max_output_tokens=0,
+                metadata=language_metadata,
             )
 
         if language.prefer_provider == "sarvam" or intent.intent in {"translation", "tts", "stt", "contextual_translate", "contextual_explain"}:
@@ -70,6 +78,7 @@ class AIProviderRouter:
                 intent=intent.intent,
                 max_output_tokens=max_output_tokens,
                 needs_voice_output=request.channel == "voice",
+                metadata=language_metadata,
             )
 
         openai_task = "coding" if intent.intent in {"coding", "complex_reasoning"} else "normal_qa"
@@ -95,6 +104,7 @@ class AIProviderRouter:
             model_candidates=[candidate.model for candidate in selections] or [selection.model],
             provider_endpoint_candidates=[candidate.endpoint for candidate in selections] or [selection.endpoint],
             metadata={
+                **language_metadata,
                 "model_tier": selection.tier,
                 "primary_model_candidate": selection_meta.get("primary_model_candidate") or selection.model,
                 "selected_model_reason": selection_meta.get("selected_model_reason") or "cost_optimizer_choice",

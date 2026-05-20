@@ -19,9 +19,12 @@ describe("voice-only file handling", () => {
     expect(chatSource).toContain("!voiceOnlyMode ? (");
   });
 
-  it("uses canonical Tamil voice upload defaults", () => {
+  it("uses resolved voice language params instead of hard-coded Tamil defaults", () => {
     expect(chatSource).toContain("/api/transcribe-and-analyze");
-    expect(chatSource).toContain("reply_language=ta&speech_language=ta-IN");
+    expect(chatSource).toContain("resolveVoiceLanguageParams");
+    expect(chatSource).toContain("voiceLanguage.replyLanguage");
+    expect(chatSource).toContain("voiceLanguage.speechLanguage");
+    expect(chatSource).not.toContain("reply_language=ta&speech_language=ta-IN");
   });
 
   it("preserves files and artifacts with signed download metadata", () => {

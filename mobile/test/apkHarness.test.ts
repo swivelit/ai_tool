@@ -152,7 +152,7 @@ describe("APK test harness", () => {
     const source = readRepo("launch-debug_apk.sh");
     const envIndex = source.indexOf('if is_truthy "${RUN_APK_TESTS:-}"');
     const buildIndex = source.indexOf("BUILD_TYPE=debug ./build-apk.sh");
-    const testIndex = source.indexOf("REUSE_APK=1 SKIP_PRECHECKS=1");
+    const testIndex = source.lastIndexOf("run_apk_harness_scenario");
 
     expect(envIndex).toBeGreaterThanOrEqual(0);
     expect(envIndex).toBeLessThan(buildIndex);
@@ -182,6 +182,8 @@ describe("APK test harness", () => {
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_AUTH=");
       expect(source).toContain("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=");
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_REPLY_LANGUAGE=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_TAMIL_STYLE=");
       expect(source).toContain("EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=");
@@ -212,9 +214,16 @@ describe("APK test harness", () => {
     expect(source).toContain("input swipe");
     expect(source).toContain("voice-last-reply");
     expect(source).toContain("E2E voice reply ready.");
+    expect(source).toContain("Seri, unga voice reply ready.");
     expect(source).toContain("voice-reply-status");
     expect(source).toContain("Speaking reply");
     expect(source).toContain("Reply ready");
+    expect(source).toContain("Scenario 1: English Settings");
+    expect(source).toContain("Scenario 2: Tamil Settings");
+    expect(source).toContain("requested_reply_language");
+    expect(source).toContain("tts_language_code");
+    expect(source).toContain("en-IN");
+    expect(source).toContain("ta-IN");
     expect(source).toContain("client_voice_reply_tts_started");
     expect(source).toContain("client_voice_reply_tts_completed");
     expect(source).toContain("client_voice_reply_tts_failed");

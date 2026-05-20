@@ -29,14 +29,16 @@ export function isAnyE2eEnvEnabled() {
   return (
     isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_AUTH")) ||
     isTruthy(publicEnv("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP")) ||
-    isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN"))
+    isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN")) ||
+    Boolean(normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_REPLY_LANGUAGE"))) ||
+    Boolean(normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_TAMIL_STYLE")))
   );
 }
 
 export function assertE2eModeAllowed() {
   if (isAnyE2eEnvEnabled() && !isDevOrTestRuntime()) {
     throw new Error(
-      "E2E mock auth/model setup/voice flags are debug/dev-only. Disable EXPO_PUBLIC_E2E_MOCK_AUTH, EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP, and EXPO_PUBLIC_E2E_MOCK_VOICE_TURN for release/production builds.",
+      "E2E mock auth/model setup/voice flags are debug/dev-only. Disable EXPO_PUBLIC_E2E_MOCK_AUTH, EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP, EXPO_PUBLIC_E2E_MOCK_VOICE_TURN, EXPO_PUBLIC_E2E_REPLY_LANGUAGE, and EXPO_PUBLIC_E2E_TAMIL_STYLE for release/production builds.",
     );
   }
 }
@@ -56,8 +58,21 @@ export function isE2eMockVoiceTurnEnabled() {
   return isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN"));
 }
 
+export function getE2eReplyLanguage(): "en" | "ta" {
+  assertE2eModeAllowed();
+  return normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_REPLY_LANGUAGE")) === "ta"
+    ? "ta"
+    : "en";
+}
+
+export function getE2eTamilStyle() {
+  assertE2eModeAllowed();
+  return normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_TAMIL_STYLE")) || "chennai_conversational";
+}
+
 export function getE2eMockUserProfile(): UserProfile {
   assertE2eModeAllowed();
+  const replyLanguage = getE2eReplyLanguage();
   return {
     userId: E2E_MOCK_USER_ID,
     firebaseUid: E2E_MOCK_USER_UID,
@@ -69,7 +84,8 @@ export function getE2eMockUserProfile(): UserProfile {
     email: E2E_MOCK_USER_EMAIL,
     authProvider: "password",
     questionnaireCompleted: true,
-    replyLanguage: "en",
+    replyLanguage,
+    tamilStyle: getE2eTamilStyle(),
   };
 }
 

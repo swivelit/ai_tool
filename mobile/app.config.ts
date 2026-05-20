@@ -44,6 +44,10 @@ const E2E_SKIP_MODEL_SETUP =
   process.env.EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP || "";
 const E2E_MOCK_VOICE_TURN =
   process.env.EXPO_PUBLIC_E2E_MOCK_VOICE_TURN || "";
+const E2E_REPLY_LANGUAGE =
+  process.env.EXPO_PUBLIC_E2E_REPLY_LANGUAGE || "";
+const E2E_TAMIL_STYLE =
+  process.env.EXPO_PUBLIC_E2E_TAMIL_STYLE || "";
 
 const LOCAL_MODEL_RUNTIME_MODE =
   process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE || "native_on_device";
@@ -168,6 +172,8 @@ const enabledE2eEnvNames = [
   ["EXPO_PUBLIC_E2E_MOCK_AUTH", E2E_MOCK_AUTH],
   ["EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP", E2E_SKIP_MODEL_SETUP],
   ["EXPO_PUBLIC_E2E_MOCK_VOICE_TURN", E2E_MOCK_VOICE_TURN],
+  ["EXPO_PUBLIC_E2E_REPLY_LANGUAGE", E2E_REPLY_LANGUAGE],
+  ["EXPO_PUBLIC_E2E_TAMIL_STYLE", E2E_TAMIL_STYLE],
 ]
   .filter(([, value]) => isTruthyEnv(value))
   .map(([name]) => name);
@@ -176,7 +182,7 @@ if (isProductionOrReleaseBuild && enabledE2eEnvNames.length) {
   throw new Error(
     `Release/production builds cannot enable debug E2E flags: ${enabledE2eEnvNames.join(
       ", ",
-    )}. Disable mock auth/model setup bypass before building a release APK.`,
+    )}. Disable mock auth/model setup/voice language bypass before building a release APK.`,
   );
 }
 
@@ -446,9 +452,13 @@ export default {
       E2E_MOCK_AUTH,
       E2E_SKIP_MODEL_SETUP,
       E2E_MOCK_VOICE_TURN,
+      E2E_REPLY_LANGUAGE,
+      E2E_TAMIL_STYLE,
       EXPO_PUBLIC_E2E_MOCK_AUTH: E2E_MOCK_AUTH,
       EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP: E2E_SKIP_MODEL_SETUP,
       EXPO_PUBLIC_E2E_MOCK_VOICE_TURN: E2E_MOCK_VOICE_TURN,
+      EXPO_PUBLIC_E2E_REPLY_LANGUAGE: E2E_REPLY_LANGUAGE,
+      EXPO_PUBLIC_E2E_TAMIL_STYLE: E2E_TAMIL_STYLE,
 
       // Do not bundle a bearer token into the mobile app. EXPO_PUBLIC_* values are public.
       // Use Firebase-authenticated backend proxying or a short-lived pairing token instead.

@@ -9,6 +9,7 @@ PACKAGE_NAME="com.harishajahan.tamilai"
 METRO_PORT="${METRO_PORT:-8081}"
 METRO_LOG="$DIST_DIR/launch-debug-metro-${METRO_PORT}.log"
 METRO_PID_FILE="/tmp/tamil-ai-metro-${METRO_PORT}.pid"
+REQUESTED_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-}"
 
 LOG_CMD="adb logcat | grep --line-buffered -E 'ReactNativeJS|AndroidRuntime|FATAL EXCEPTION|Expo|tamilai|harishajahan|${PACKAGE_NAME}'"
 
@@ -75,6 +76,8 @@ start_metro() {
     EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-}" \
     EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}" \
     EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-}" \
+    EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-}" \
+    EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-}" \
     EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-}" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-}" \
@@ -108,6 +111,17 @@ wait_for_metro() {
   fail "Metro did not start on port ${METRO_PORT}"
 }
 
+run_apk_harness_scenario() {
+  local reply_language="$1"
+  local label="$2"
+  export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="$reply_language"
+  export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conversational}"
+
+  info "Running APK test harness (${label})"
+  print_debug_env
+  REUSE_APK=1 SKIP_PRECHECKS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh
+}
+
 open_logs_terminal() {
   info "Opening Android debug logs"
 
@@ -138,6 +152,8 @@ print_debug_env() {
   printf "EXPO_PUBLIC_E2E_MOCK_AUTH=%s\n" "${EXPO_PUBLIC_E2E_MOCK_AUTH:-}"
   printf "EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=%s\n" "${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}"
   printf "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=%s\n" "${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-}"
+  printf "EXPO_PUBLIC_E2E_REPLY_LANGUAGE=%s\n" "${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-}"
+  printf "EXPO_PUBLIC_E2E_TAMIL_STYLE=%s\n" "${EXPO_PUBLIC_E2E_TAMIL_STYLE:-}"
   printf "EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=%s\n" "${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-}"
   printf "EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=%s\n" "${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-}"
   printf "JAI_DEBUG_LITE=%s\n" "${JAI_DEBUG_LITE:-}"
@@ -239,11 +255,15 @@ if is_truthy "${RUN_APK_TESTS:-}"; then
   export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
   export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
   export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
+  export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-en}"
+  export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conversational}"
   export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
   export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
   # APK E2E mock validates mobile voice UI, mic gesture, cached playback, and telemetry.
   # Backend tests validate real Sarvam TTS speaker/model compatibility; do not rely
   # on this APK mock as the only regression coverage for provider configuration.
+  # Run once with EXPO_PUBLIC_E2E_REPLY_LANGUAGE=en and once with =ta to validate
+  # both English Settings and Chennai Tamil Settings scenarios.
   info "APK test mode: E2E mock auth/model setup/voice turn enabled; unverified native inference disabled"
 fi
 
@@ -283,8 +303,22 @@ info "Forwarding device port ${METRO_PORT} to Metro"
 adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
 
 if is_truthy "${RUN_APK_TESTS:-}"; then
-  info "Running APK test harness"
-  REUSE_APK=1 SKIP_PRECHECKS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh
+  if [[ -n "${REQUESTED_E2E_REPLY_LANGUAGE//[[:space:]]/}" ]]; then
+    run_apk_harness_scenario "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" "requested ${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
+  else
+    scenario_status=0
+    if ! run_apk_harness_scenario "en" "English Settings"; then
+      scenario_status=1
+    fi
+    stop_old_metro
+    start_metro
+    wait_for_metro
+    adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
+    if ! run_apk_harness_scenario "ta" "Tamil Settings"; then
+      scenario_status=1
+    fi
+    exit "$scenario_status"
+  fi
 else
   open_logs_terminal
 

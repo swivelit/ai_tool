@@ -1,4 +1,5 @@
 export type ReplyLanguage = "en" | "ta";
+export type SpeechLanguageCode = "auto" | "en-IN" | "ta-IN";
 
 export const PRODUCT_DEFAULT_REPLY_LANGUAGE: ReplyLanguage = "ta";
 
@@ -66,16 +67,50 @@ export function detectMessageReplyLanguage(message: unknown): ReplyLanguage | nu
 
 export function resolveReplyLanguage(opts: {
   explicit?: unknown;
+  settings?: unknown;
   profile?: unknown;
   message?: unknown;
   productDefault?: ReplyLanguage;
 }): ReplyLanguage {
   return (
-    normalizeReplyLanguage(opts.explicit) ||
     detectExplicitReplyLanguage(opts.message) ||
+    normalizeReplyLanguage(opts.explicit) ||
+    normalizeReplyLanguage(opts.settings) ||
     normalizeReplyLanguage(opts.profile) ||
     detectMessageReplyLanguage(opts.message) ||
     opts.productDefault ||
     PRODUCT_DEFAULT_REPLY_LANGUAGE
   );
+}
+
+export type VoiceLanguageParams = {
+  replyLanguage: ReplyLanguage;
+  speechLanguage: SpeechLanguageCode;
+  ttsLanguageCode: "en-IN" | "ta-IN";
+};
+
+export function resolveVoiceLanguageParams(input: {
+  settingsLanguageMode?: ReplyLanguage | null;
+  profileReplyLanguage?: ReplyLanguage | null;
+  explicitReplyLanguage?: unknown;
+  speechLanguageMode?: "auto" | "settings" | null;
+}): VoiceLanguageParams {
+  const replyLanguage =
+    normalizeReplyLanguage(input.explicitReplyLanguage) ||
+    normalizeReplyLanguage(input.settingsLanguageMode) ||
+    normalizeReplyLanguage(input.profileReplyLanguage) ||
+    PRODUCT_DEFAULT_REPLY_LANGUAGE;
+
+  const speechLanguage =
+    input.speechLanguageMode === "settings"
+      ? replyLanguage === "en"
+        ? "en-IN"
+        : "ta-IN"
+      : "auto";
+
+  return {
+    replyLanguage,
+    speechLanguage,
+    ttsLanguageCode: replyLanguage === "en" ? "en-IN" : "ta-IN",
+  };
 }

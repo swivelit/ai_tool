@@ -81,6 +81,7 @@ import {
 } from "@/lib/localTurnTimeouts";
 import { loadCloudFallbackConsent } from "@/lib/localAssistantSettings";
 import { shouldAutoSpeakReply } from "@/lib/replyPlaybackPolicy";
+import { resolveVoiceLanguageParams, type VoiceLanguageParams } from "@/lib/replyLanguage";
 import { ensureNotificationsReady, scheduleReminder } from "@/lib/reminders";
 import {
   EMPTY_AUDIO_MESSAGE,
@@ -121,6 +122,7 @@ type AgentReplyPlaybackContext = {
   requestId?: string;
   source?: ChatRequestSource;
   voiceSurface?: RecorderSurface | null;
+  voiceLanguage?: VoiceLanguageParams | null;
 };
 
 type ChatRequestSource = "text" | "handsfree" | "voice";
@@ -1665,7 +1667,7 @@ export default function Home() {
     return (
       normalizedMessage.includes("speaker") &&
       normalizedMessage.includes("not compatible") &&
-      message.includes("TTS provider returned 400")
+      normalizedMessage.includes("tts provider returned 400")
     );
   }
 
@@ -1803,6 +1805,12 @@ export default function Home() {
     await releaseReplySound();
 
     try {
+      const voiceLanguage =
+        context.voiceLanguage ||
+        resolveVoiceLanguageParams({
+          settingsLanguageMode: settings.languageMode,
+          profileReplyLanguage: profile?.replyLanguage || null,
+        });
       if (isVoiceReply) {
         setVoiceReplyStatus("Preparing reply...");
       }
@@ -1812,11 +1820,16 @@ export default function Home() {
         voice_phase: "tts_started",
         reply_playback_phase: "tts_request",
         voice_surface: context.voiceSurface || null,
+        requested_reply_language: isVoiceReply ? voiceLanguage.replyLanguage : undefined,
+        requested_speech_language: isVoiceReply ? voiceLanguage.speechLanguage : undefined,
+        tts_language_code: isVoiceReply ? voiceLanguage.ttsLanguageCode : undefined,
+        settings_language_mode: isVoiceReply ? settings.languageMode : undefined,
       });
 
       const data = await apiPost<{ audio_base64?: string }>("/api/tts", {
         text: textValue,
-        target_language_code: settings.languageMode === "ta" ? "ta-IN" : "en-IN",
+        target_language_code:
+          isVoiceReply ? voiceLanguage.ttsLanguageCode : settings.languageMode === "ta" ? "ta-IN" : "en-IN",
       });
 
       if (!data.audio_base64) {
@@ -1887,6 +1900,8 @@ export default function Home() {
         voice_phase: "tts_completed",
         reply_playback_phase: "loaded",
         voice_surface: context.voiceSurface || null,
+        requested_reply_language: isVoiceReply ? voiceLanguage.replyLanguage : undefined,
+        tts_language_code: isVoiceReply ? voiceLanguage.ttsLanguageCode : undefined,
         reply_audio_bytes: base64DecodedByteLength(data.audio_base64),
         playback_uri_scheme: uriScheme(cachedUri),
       });
@@ -2511,6 +2526,10 @@ export default function Home() {
       );
 
       const timeoutMs = await getChatTurnTimeoutMs("voice");
+      const voiceLanguage = resolveVoiceLanguageParams({
+        settingsLanguageMode: settings.languageMode,
+        profileReplyLanguage: profile?.replyLanguage || null,
+      });
       uploadStarted = true;
       logVoiceTelemetry("client_voice_upload_started", {
         request_id: requestId,
@@ -2518,10 +2537,14 @@ export default function Home() {
         voice_phase: "uploading",
         file_size: audioFileSize,
         mime_type: "audio/m4a",
+        requested_reply_language: voiceLanguage.replyLanguage,
+        requested_speech_language: voiceLanguage.speechLanguage,
+        tts_language_code: voiceLanguage.ttsLanguageCode,
+        settings_language_mode: settings.languageMode,
       });
       const res = await withLocalTimeout(
         apiPostForm<BackendChatResponse | ChatHistoryItem>(
-          `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=ta&speech_language=ta-IN`,
+          `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${voiceLanguage.replyLanguage}&speech_language=${voiceLanguage.speechLanguage}`,
           form,
         ),
         timeoutMs,
@@ -2560,6 +2583,7 @@ export default function Home() {
           requestId,
           source: "voice",
           voiceSurface: requestVoiceSurface,
+          voiceLanguage,
         });
       } else if (assistantReplyText) {
         setVoiceReplyStatus("Reply ready");

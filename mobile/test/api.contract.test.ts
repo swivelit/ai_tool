@@ -195,12 +195,72 @@ describe("API client contracts", () => {
     expect(payload.assistant.text).toBe("Hello.");
     const voiceCalls = fetchCallsEndingWith(
       fetchMock,
-      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=auto",
     );
     expect(voiceCalls).toHaveLength(1);
     expect(String(voiceCalls[0][0])).toBe(
-      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=auto",
     );
+  });
+
+  it("preserves explicit voice reply and speech language query params", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        item: {
+          id: 19,
+          intent: "assistant",
+          category: "Other",
+          raw_text: "hello",
+          details: "Hello.",
+          source: "voice",
+        },
+        assistant: { text: "Hello.", english: "Hello." },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPostForm } = await import("../lib/api");
+    const form = {
+      _parts: [
+        [
+          "file",
+          {
+            uri: "file:///tmp/audio.m4a",
+            name: "audio.m4a",
+            type: "audio/m4a",
+          },
+        ],
+      ],
+    } as unknown as FormData;
+
+    await apiPostForm<any>(
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=en-IN",
+      form,
+    );
+
+    const voiceCalls = fetchCallsEndingWith(
+      fetchMock,
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=en-IN",
+    );
+    expect(voiceCalls).toHaveLength(1);
   });
 
   it("uses the debug E2E voice mock without backend fetches", async () => {
@@ -253,6 +313,54 @@ describe("API client contracts", () => {
     expect(voicePayload.assistant.text).toBe("E2E voice reply ready.");
     expect(voicePayload.meta.source).toBe("e2e_voice_mock");
     expect(ttsPayload.audio_base64).toMatch(/^UklGR/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns a Chennai Tamil debug E2E voice mock when Tamil is requested", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            EXPO_PUBLIC_E2E_MOCK_VOICE_TURN: "1",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () => {
+      throw new Error("backend should not be called for E2E voice mock");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPostForm } = await import("../lib/api");
+    const form = {
+      _parts: [
+        [
+          "file",
+          {
+            uri: "file:///tmp/audio.m4a",
+            name: "audio.m4a",
+            type: "audio/m4a",
+          },
+        ],
+      ],
+    } as unknown as FormData;
+
+    const voicePayload = await apiPostForm<any>(
+      "/api/transcribe-and-analyze?user_id=7&reply_language=ta",
+      form,
+    );
+
+    expect(voicePayload.item.raw_text).toBe("e2e voice question");
+    expect(voicePayload.item.details).toBe("Seri, unga voice reply ready.");
+    expect(voicePayload.assistant.text).toBe("Seri, unga voice reply ready.");
+    expect(voicePayload.meta.language).toBe("ta");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -363,11 +471,11 @@ describe("API client contracts", () => {
 
     const voiceCalls = fetchCallsEndingWith(
       fetchMock,
-      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=auto",
     );
     expect(voiceCalls).toHaveLength(1);
     expect(String(voiceCalls[0][0])).toBe(
-      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=auto",
     );
   });
 
@@ -515,11 +623,11 @@ describe("API client contracts", () => {
     expect(payload.assistant.text).toBe("Backend voice answer.");
     const voiceCalls = fetchCallsEndingWith(
       fetchMock,
-      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=auto",
     );
     expect(voiceCalls).toHaveLength(1);
     expect(String(voiceCalls[0][0])).toBe(
-      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=auto",
     );
   });
 
@@ -583,11 +691,11 @@ describe("API client contracts", () => {
 
     const voiceCalls = fetchCallsEndingWith(
       fetchMock,
-      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=auto",
     );
     expect(voiceCalls).toHaveLength(1);
     expect(String((voiceCalls[0] as any[])[0])).toBe(
-      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=ta-IN",
+      "https://api.example.test/api/transcribe-and-analyze?user_id=7&reply_language=en&speech_language=auto",
     );
     expect(payload.assistant.text).toBe("Cloud voice answer.");
     expect(payload.meta.cloudFallback.kind).toBe("cloud_voice_fallback");
@@ -732,7 +840,7 @@ describe("API client contracts", () => {
     expect(transcribeAudio).toHaveBeenCalledWith({
       fileUri: "file:///tmp/audio.m4a",
       model: "whisper",
-      language: "ta",
+      language: null,
     });
     expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
@@ -1371,18 +1479,18 @@ describe("API client contracts", () => {
     expect(transcribeAudio).toHaveBeenCalledWith({
       fileUri: "file:///tmp/audio.m4a",
       model: "whisper",
-      language: "ta",
+      language: null,
     });
     expect(runLocalAssistantTurn).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7,
       message: "what is the weather",
-      replyLanguage: "ta",
+      replyLanguage: "en",
       userAllowedCloudFallback: true,
       userProfile: {
         name: "Hari",
         place: "Madurai",
         assistantName: "Elli",
-        replyLanguage: "ta",
+        replyLanguage: "en",
       },
     }));
   });

@@ -74,6 +74,10 @@ export type ClientTurnLogPayload = {
   reply_audio_bytes?: number | null;
   reply_playback_phase?: string | null;
   voice_surface?: string | null;
+  requested_reply_language?: "en" | "ta" | string | null;
+  requested_speech_language?: "auto" | "en-IN" | "ta-IN" | string | null;
+  tts_language_code?: "en-IN" | "ta-IN" | string | null;
+  settings_language_mode?: "en" | "ta" | string | null;
   playback_uri_scheme?: string | null;
   chat_routing?: string | null;
   voice_routing?: string | null;

@@ -159,7 +159,12 @@ class SarvamProvider(AIProvider):
             characters=len(text or ""),
             estimated_cost_amount=cost,
             estimated_cost_currency="INR",
-            raw={"sdk_response_type": raw.__class__.__name__},
+            raw={
+                "sdk_response_type": raw.__class__.__name__,
+                "reply_language": request.reply_language or route.language,
+                "input_language": route.metadata.get("input_language") or request.metadata.get("input_language") or "",
+                "profile_context_included": bool(request.metadata.get("profile_prompt_context")),
+            },
         )
 
     def _call_chat(self, client: Any, model: str, messages: list[dict[str, str]], max_tokens: int) -> Any:

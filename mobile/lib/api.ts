@@ -1388,8 +1388,12 @@ function buildVoiceUnavailableResponse(
   };
 }
 
-function buildE2eMockVoiceTurnResponse(): LocalChatProxyResponse {
+function buildE2eMockVoiceTurnResponse(replyLanguage: ReplyLanguage = PRODUCT_DEFAULT_REPLY_LANGUAGE): LocalChatProxyResponse {
   const createdAt = new Date().toISOString();
+  const assistantText =
+    replyLanguage === "en"
+      ? "E2E voice reply ready."
+      : "Seri, unga voice reply ready.";
   return {
     ok: true,
     kind: "assistant_turn",
@@ -1401,28 +1405,35 @@ function buildE2eMockVoiceTurnResponse(): LocalChatProxyResponse {
       transcript: "e2e voice question",
       datetime: null,
       title: "E2E voice",
-      details: "E2E voice reply ready.",
+      details: assistantText,
       created_at: createdAt,
       source: "voice",
       __origin: "local",
     },
     assistant: {
-      text: "E2E voice reply ready.",
-      english: "E2E voice reply ready.",
+      text: assistantText,
+      english: replyLanguage === "en" ? assistantText : "",
+      tamil: replyLanguage === "ta" ? assistantText : undefined,
+      theni_tamil: replyLanguage === "ta" ? assistantText : undefined,
     },
     pipeline: {
       route_taken: "e2e_voice_mock",
       predicted_label: "assistant",
       raw_english: "e2e voice question",
-      remodeled_english: "E2E voice reply ready.",
+      remodeled_english: replyLanguage === "en" ? assistantText : "",
+      tamil_text: replyLanguage === "ta" ? assistantText : "",
+      theni_tamil_text: replyLanguage === "ta" ? assistantText : "",
       direct_answer_source: "e2e_voice_mock",
       meta: {
         source: "e2e_voice_mock",
+        requested_reply_language: replyLanguage,
       },
     },
     meta: {
       source: "e2e_voice_mock",
       route: "e2e_voice_mock",
+      language: replyLanguage,
+      requested_reply_language: replyLanguage,
       cacheHit: false,
       created_at: createdAt,
     },
@@ -1520,11 +1531,22 @@ function normalizeVoiceAnalyzePath(path: string) {
   return normalized;
 }
 
-function withTamilVoiceDefaults(path: string) {
+async function withVoiceLanguageDefaults(path: string, defaults: { replyLanguage?: ReplyLanguage; speechLanguage?: "auto" | "en-IN" | "ta-IN" } = {}) {
   const [rawBase, rawQuery = ""] = String(path || CANONICAL_VOICE_ANALYZE_PATH).split("?");
   const params = new URLSearchParams(rawQuery);
-  if (!params.has("reply_language")) params.set("reply_language", "ta");
-  if (!params.has("speech_language")) params.set("speech_language", "ta-IN");
+  if (!params.has("reply_language")) {
+    const userId = Number(params.get("user_id") || 0);
+    const cachedProfile = Number.isFinite(userId) && userId > 0
+      ? await loadCachedLocalAssistantProfile(userId)
+      : await loadCachedLocalAssistantProfile();
+    params.set(
+      "reply_language",
+      defaults.replyLanguage || cachedProfile?.replyLanguage || PRODUCT_DEFAULT_REPLY_LANGUAGE,
+    );
+  }
+  if (!params.has("speech_language")) {
+    params.set("speech_language", defaults.speechLanguage || "auto");
+  }
   const query = params.toString();
   return `${rawBase}${query ? `?${query}` : ""}`;
 }
@@ -1769,10 +1791,9 @@ async function handleLocalTranscribeAndAnalyze(
   const userAllowedCloudFallback = await loadCloudFallbackConsent();
   const explicitReplyLanguage = normalizeReplyLanguage(replyLanguageRaw);
   const initialReplyLanguage: ReplyLanguage =
-    explicitReplyLanguage || PRODUCT_DEFAULT_REPLY_LANGUAGE;
+    explicitReplyLanguage || cachedProfile?.replyLanguage || PRODUCT_DEFAULT_REPLY_LANGUAGE;
   const requestedSpeechLanguage = normalizeSpeechLanguage(speechLanguageRaw);
-  const resolvedSpeechLanguage: SpeechLanguage =
-    requestedSpeechLanguage || explicitReplyLanguage || PRODUCT_DEFAULT_REPLY_LANGUAGE;
+  const resolvedSpeechLanguage: SpeechLanguage = requestedSpeechLanguage;
 
   let transcript: LocalVoiceTranscription;
   try {
@@ -1824,6 +1845,7 @@ async function handleLocalTranscribeAndAnalyze(
   const replyLanguage =
     explicitReplyLanguage ||
     detectExplicitReplyLanguage(normalizedTranscriptText) ||
+    cachedProfile?.replyLanguage ||
     PRODUCT_DEFAULT_REPLY_LANGUAGE;
   const userProfile = withResolvedReplyLanguage(cachedProfile, replyLanguage);
   const deviceInfo = await getCachedDeviceCapabilities();
@@ -2523,13 +2545,15 @@ export async function apiPostBackendOnly<T>(
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
   const isVoiceAnalyze = isTranscribeAndAnalyzePath(path);
+  const resolvedPath = isVoiceAnalyze ? await withVoiceLanguageDefaults(normalizeVoiceAnalyzePath(path)) : path;
   if (isVoiceAnalyze && isE2eMockVoiceTurnEnabled()) {
     console.info("[e2e_voice_mock] /api/transcribe-and-analyze");
-    return buildE2eMockVoiceTurnResponse() as T;
+    return buildE2eMockVoiceTurnResponse(
+      normalizeReplyLanguage(parseQueryParam(resolvedPath, "reply_language")) || PRODUCT_DEFAULT_REPLY_LANGUAGE,
+    ) as T;
   }
 
   const useLocalVoicePipeline = isVoiceAnalyze && (await shouldUseLocalVoicePipeline());
-  const resolvedPath = isVoiceAnalyze ? withTamilVoiceDefaults(normalizeVoiceAnalyzePath(path)) : path;
 
   if (useLocalVoicePipeline) {
     return (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;

@@ -297,10 +297,17 @@ class StageTranslator:
         )
         return str(self._tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]).strip()
 
-    def _translate_chunk(self, english_text: str, tone: str, answer_length: str) -> str:
+    def _translate_chunk(self, english_text: str, tone: str, answer_length: str, tamil_style: str = "chennai_conversational") -> str:
+        if tamil_style == "formal":
+            style_instruction = "Produce clear formal Tamil because formal Tamil was explicitly requested."
+        else:
+            style_instruction = (
+                "Produce natural light Chennai Tamil/Tanglish, not formal textbook Tamil and not rural dialect. "
+                "Use simple local conversational phrasing only where natural; do not overdo slang."
+            )
         system_prompt = (
-            "You are a high-quality English to Tamil translator. Produce natural standard Tamil, not dialect Tamil. "
-            "Preserve meaning, keep it fluent, and do not explain the translation."
+            "You are a high-quality English to Tamil translator. "
+            f"{style_instruction} Preserve meaning, facts, and safety-critical wording. Do not explain the translation."
         )
         user_prompt = f"""
 English text:
@@ -308,9 +315,10 @@ English text:
 
 Requested tone: {tone}
 Requested answer length: {answer_length}
+Tamil style: {tamil_style}
 
 Task:
-- Translate to clear, natural Tamil.
+- Translate to clear, natural Tamil in the requested style.
 - Keep names and technical terms readable.
 - Output only Tamil text.
 """.strip()
@@ -338,13 +346,20 @@ Task:
             )
         )
 
-    def _refine_combined_tamil(self, tamil_text: str, tone: str, answer_length: str) -> str:
+    def _refine_combined_tamil(self, tamil_text: str, tone: str, answer_length: str, tamil_style: str = "chennai_conversational") -> str:
         if not ENABLE_TRANSLATION_REFINEMENT or len(tamil_text) > TRANSLATION_REFINEMENT_MAX_CHARS:
             return tamil_text
 
+        if tamil_style == "formal":
+            style_instruction = "Keep the output in formal Tamil."
+        else:
+            style_instruction = (
+                "Polish into natural, friendly, light Chennai Tamil/Tanglish. "
+                "Do not make it rural, caricatured, or slang-heavy."
+            )
         system_prompt = (
             "You are a Tamil editor. Improve fluency and consistency while preserving meaning. "
-            "Keep the output in standard Tamil only."
+            f"{style_instruction}"
         )
         user_prompt = f"""
 Tamil draft:
@@ -352,6 +367,7 @@ Tamil draft:
 
 Requested tone: {tone}
 Requested answer length: {answer_length}
+Tamil style: {tamil_style}
 
 Task:
 - Improve fluency and readability.
@@ -384,13 +400,20 @@ Task:
         profile_card = profile.get("profile_card", {}) if isinstance(profile, dict) else {}
         tone = str(profile_card.get("tone", "warm")).strip() or "warm"
         answer_length = str(profile_card.get("answer_length", "balanced")).strip() or "balanced"
+        tamil_style = str(
+            profile_card.get("tamil_style")
+            or profile.get("tamil_style", "")
+            or "chennai_conversational"
+        ).strip() or "chennai_conversational"
+        if tamil_style not in {"formal", "chennai_conversational"}:
+            tamil_style = "chennai_conversational"
 
         chunks = self._split_into_chunks(english_text)
         tamil_chunks: List[str] = []
         retry_count = 0
 
         for chunk in chunks:
-            translated = self._translate_chunk(chunk, tone, answer_length)
+            translated = self._translate_chunk(chunk, tone, answer_length, tamil_style)
 
             if TRANSLATION_RETRY_ON_NON_TAMIL and not self._looks_like_valid_tamil_output(translated):
                 for _ in range(TRANSLATION_MAX_RETRIES):
@@ -402,13 +425,14 @@ Task:
             tamil_chunks.append(translated)
 
         combined = self._cleanup_tamil(" ".join(tamil_chunks))
-        refined = self._refine_combined_tamil(combined, tone, answer_length)
+        refined = self._refine_combined_tamil(combined, tone, answer_length, tamil_style)
 
         return {
             "tamil_text": refined,
             "chunks": len(chunks),
             "tone": tone,
             "answer_length": answer_length,
+            "tamil_style": tamil_style,
             "retry_count": retry_count,
             "valid_tamil": self._looks_like_valid_tamil_output(refined),
         }

@@ -62,6 +62,9 @@ class OpenAIProvider(AIProvider):
         output_tokens = int(metadata.get("actual_output_tokens") or metadata.get("estimated_output_tokens") or router.estimate_tokens(text))
         estimated_cost = float(metadata.get("actual_cost_usd") if metadata.get("actual_cost_usd") is not None else metadata.get("estimated_cost_usd") or router.estimate_cost(route.model or "", input_tokens, output_tokens))
         raw = {
+            "reply_language": request.reply_language or route.language,
+            "input_language": route.metadata.get("input_language") or request.metadata.get("input_language") or "",
+            "profile_context_included": bool(request.metadata.get("profile_prompt_context")),
             "model_tier": metadata.get("model_tier"),
             "endpoint": metadata.get("endpoint"),
             "model_candidates": metadata.get("model_candidates") or candidates,

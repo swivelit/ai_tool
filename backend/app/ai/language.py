@@ -64,6 +64,9 @@ class LanguageDecision:
     code_mixed: bool
     prefer_provider: str
     reason: str
+    input_language: str = "en"
+    reply_language: Optional[str] = None
+    provider_preference: str = ""
 
 
 def _normalized_reply_language(reply_language: Optional[str]) -> str:
@@ -88,6 +91,24 @@ def _romanized_language(message: str) -> Optional[str]:
 
 def detect_language(message: str, reply_language: Optional[str] = None) -> LanguageDecision:
     reply = _normalized_reply_language(reply_language)
+    script_language = _script_language(message)
+    romanized_language = _romanized_language(message) if not script_language else None
+    input_language = script_language or romanized_language or "en"
+    input_is_indic = bool(script_language or romanized_language)
+
+    if reply in {"en", "english"}:
+        provider = "sarvam" if input_is_indic else "openai"
+        return LanguageDecision(
+            language="en",
+            is_indic=input_is_indic,
+            code_mixed=bool(romanized_language),
+            prefer_provider=provider,
+            reason="reply_language_english_preserved",
+            input_language=input_language,
+            reply_language="en",
+            provider_preference=provider,
+        )
+
     if reply in INDIC_REPLY_LANGUAGE_ALIASES:
         language = "ta" if reply != "mixed" else "mixed"
         return LanguageDecision(
@@ -96,9 +117,11 @@ def detect_language(message: str, reply_language: Optional[str] = None) -> Langu
             code_mixed=reply in {"mixed", "tanglish"},
             prefer_provider="sarvam",
             reason="reply_language_prefers_indic",
+            input_language=input_language,
+            reply_language="ta",
+            provider_preference="sarvam",
         )
 
-    script_language = _script_language(message)
     if script_language:
         return LanguageDecision(
             language=script_language,
@@ -106,9 +129,11 @@ def detect_language(message: str, reply_language: Optional[str] = None) -> Langu
             code_mixed=False,
             prefer_provider="sarvam",
             reason="indic_unicode_script",
+            input_language=script_language,
+            reply_language=None,
+            provider_preference="sarvam",
         )
 
-    romanized_language = _romanized_language(message)
     if romanized_language:
         return LanguageDecision(
             language=romanized_language,
@@ -116,6 +141,9 @@ def detect_language(message: str, reply_language: Optional[str] = None) -> Langu
             code_mixed=True,
             prefer_provider="sarvam",
             reason="romanized_or_code_mixed_indic",
+            input_language=romanized_language,
+            reply_language=None,
+            provider_preference="sarvam",
         )
 
     return LanguageDecision(
@@ -124,6 +152,9 @@ def detect_language(message: str, reply_language: Optional[str] = None) -> Langu
         code_mixed=False,
         prefer_provider="openai",
         reason="default_english",
+        input_language="en",
+        reply_language=None,
+        provider_preference="openai",
     )
 
 

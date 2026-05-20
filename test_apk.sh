@@ -464,10 +464,18 @@ scan_voice_reply_markers() {
   printf "%s\n" "$recent" | grep -E "client_voice_upload_started|e2e_voice_mock" >> "$markers_file" 2>/dev/null || true
   printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_started" >> "$markers_file" 2>/dev/null || true
   printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_completed" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" >> "$markers_file" 2>/dev/null || true
+  if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
+    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+ta-IN|target_language_code['\": ]+ta-IN" >> "$markers_file" 2>/dev/null || true
+  else
+    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+en-IN|target_language_code['\": ]+en-IN" >> "$markers_file" 2>/dev/null || true
+  fi
 
   grep -E "client_voice_upload_started|e2e_voice_mock" "$markers_file" >/dev/null 2>&1 &&
     grep -E "client_voice_reply_tts_started" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "client_voice_reply_tts_completed" "$markers_file" >/dev/null 2>&1
+    grep -E "client_voice_reply_tts_completed" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "tts_language_code['\": ]+(en-IN|ta-IN)|target_language_code['\": ]+(en-IN|ta-IN)" "$markers_file" >/dev/null 2>&1
 }
 
 start_logcat() {
@@ -661,13 +669,30 @@ fi
 export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
 export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
 export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
+export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-en}"
+export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conversational}"
 export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
 
+{
+  printf "EXPO_PUBLIC_E2E_MOCK_AUTH=%s\n" "$EXPO_PUBLIC_E2E_MOCK_AUTH"
+  printf "EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=%s\n" "$EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP"
+  printf "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=%s\n" "$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN"
+  printf "EXPO_PUBLIC_E2E_REPLY_LANGUAGE=%s\n" "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE"
+  printf "EXPO_PUBLIC_E2E_TAMIL_STYLE=%s\n" "$EXPO_PUBLIC_E2E_TAMIL_STYLE"
+} > "$ARTIFACT_DIR/e2e-env.log"
+
 # APK E2E mock validates mobile voice UI, mic gesture, assistant reply visibility,
 # cached playback, and telemetry. Backend tests validate real Sarvam TTS speaker
 # compatibility, so this mock must not be the only coverage for provider bugs.
+# Language scenarios are explicit: English expects "E2E voice reply ready." with
+# requested_reply_language 'en' and target en-IN; Tamil expects Chennai-style
+# "Seri, unga voice reply ready." with requested_reply_language 'ta' and ta-IN.
+# Scenario 1: English Settings -> voice-last-reply contains English mock text,
+# no Tamil script, requested_reply_language: 'en', TTS target en-IN.
+# Scenario 2: Tamil Settings -> voice-last-reply contains Chennai Tamil mock
+# text ("Seri"), requested_reply_language: 'ta', TTS target ta-IN.
 if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
   info "Debug APK voice routing: local/native STT (manual development opt-in)"
 else
@@ -727,6 +752,8 @@ else
     EXPO_PUBLIC_E2E_MOCK_AUTH="$EXPO_PUBLIC_E2E_MOCK_AUTH" \
     EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="$EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP" \
     EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN" \
+    EXPO_PUBLIC_E2E_REPLY_LANGUAGE="$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" \
+    EXPO_PUBLIC_E2E_TAMIL_STYLE="$EXPO_PUBLIC_E2E_TAMIL_STYLE" \
     EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="$EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS" \
@@ -780,6 +807,10 @@ voice_log_start_line=0
 if [[ -f "$ARTIFACT_DIR/logcat-full.log" ]]; then
   voice_log_start_line="$(wc -l < "$ARTIFACT_DIR/logcat-full.log" | tr -d '[:space:]')"
 fi
+voice_expected_reply="E2E voice reply ready."
+if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
+  voice_expected_reply="Seri, unga voice reply ready."
+fi
 
 capture_step "voice-before"
 if ! tap_desc "chat-voice-button"; then
@@ -803,7 +834,7 @@ else
         if ! assert_app_alive "during-voice-test"; then
           break
         fi
-        if wait_for_desc "voice-last-reply" 1 || wait_for_text "E2E voice reply ready." 1; then
+        if wait_for_desc "voice-last-reply" 1 || wait_for_text "$voice_expected_reply" 1; then
           voice_reply_seen=1
           break
         fi
@@ -811,6 +842,15 @@ else
       done
       if [[ "$voice_reply_seen" != "1" ]]; then
         mark_failed "voice-last-reply-not-visible"
+      fi
+      if ! wait_for_text "$voice_expected_reply" 2; then
+        mark_failed "voice-reply-language-mismatch-${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
+      fi
+      if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "en" ]]; then
+        xml_path="$(dump_ui "voice-language-english")"
+        if [[ -s "$xml_path" ]] && grep -Eq "[\x{0B80}-\x{0BFF}]" "$xml_path" 2>/dev/null; then
+          mark_failed "voice-english-reply-contained-tamil-script"
+        fi
       fi
 
       voice_status_seen=0

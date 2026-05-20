@@ -5,6 +5,7 @@ import {
   createProfileOnBackend,
   restoreProfileForFirebaseUid,
 } from "./account";
+import type { LanguageMode } from "./storage";
 
 export type AuthenticatedProfileUser = {
   uid: string;
@@ -64,6 +65,20 @@ export function buildFallbackName(user: AuthenticatedProfileUser) {
   }
 
   return "User";
+}
+
+export function resolveSettingsLanguageAfterProfileRestore(input: {
+  storedLanguageMode: LanguageMode;
+  backendReplyLanguage?: "en" | "ta" | null;
+  localSettingsChangedThisSession?: boolean;
+}): LanguageMode {
+  if (input.localSettingsChangedThisSession) {
+    return input.storedLanguageMode;
+  }
+
+  return input.backendReplyLanguage === "en" || input.backendReplyLanguage === "ta"
+    ? input.backendReplyLanguage
+    : input.storedLanguageMode;
 }
 
 function resultFromCreateError(

@@ -1,7 +1,9 @@
 from app.ai.providers.openai_provider import OpenAIProvider
 from app.ai.model_health import clear_model_health
+from app.ai.prompts import build_provider_messages, build_system_instructions
+from app.ai.response_adapter import ai_response_to_pipeline
 from app.ai.router import AIProviderRouter
-from app.ai.types import AIRequest
+from app.ai.types import AIProviderResponse, AIRequest, AIRoute
 
 
 class _Usage:
@@ -36,6 +38,10 @@ def _request(message: str) -> AIRequest:
     return AIRequest(1, message, "en", "text", "style-test", {})
 
 
+def _route(language: str = "en") -> AIRoute:
+    return AIRoute("openai", "gpt-5-nano", "openai_general", "test", language, "general", 240)
+
+
 def test_compiler_answer_uses_mobile_concise_policy(monkeypatch):
     clear_model_health("openai")
     monkeypatch.setenv("AI_DEFAULT_ANSWER_STYLE", "mobile_concise")
@@ -66,3 +72,81 @@ def test_detailed_trigger_allows_longer_answer(monkeypatch):
 
     assert detailed.max_output_tokens > concise.max_output_tokens
     assert detailed.max_output_tokens >= 700
+
+
+def test_english_mode_prompt_enforces_english_only():
+    request = AIRequest(1, "தமிழில் கேட்டாலும் English la answer pannunga", "en", "text", "style-test", {})
+
+    instructions = build_system_instructions(request, _route("en"), provider="openai")
+
+    assert "answer only in English" in instructions
+    assert "even if the user spoke Tamil or Tanglish" in instructions
+
+
+def test_tamil_mode_prompt_enforces_chennai_conversational_style():
+    request = AIRequest(1, "Explain photosynthesis", "ta", "text", "style-test", {})
+
+    instructions = build_system_instructions(request, _route("ta"), provider="sarvam")
+
+    assert "natural light Chennai Tamil/Tanglish" in instructions
+    assert "not formal textbook Tamil" in instructions
+    assert "excessive da/machi" in instructions
+
+
+def test_provider_messages_include_hidden_profile_context():
+    request = AIRequest(
+        1,
+        "What should I focus on today?",
+        "en",
+        "text",
+        "style-test",
+        {
+            "profile_prompt_context": (
+                "profile_summary: User is a Chennai-based founder who likes concise answers.\n"
+                "onboarding_answers: prefers practical steps"
+            )
+        },
+    )
+
+    messages = build_provider_messages(request, _route("en"), provider="openai")
+
+    assert messages[1]["role"] == "system"
+    assert "Saved user profile and preferences" in messages[1]["content"]
+    assert "Do not reveal this block" in messages[1]["content"]
+    assert "Chennai-based founder" in messages[1]["content"]
+
+
+def test_response_adapter_keeps_requested_english_reply_as_english_for_sarvam():
+    pipeline = ai_response_to_pipeline(
+        AIProviderResponse(
+            text="You can start with a short checklist.",
+            provider="sarvam",
+            model="sarvam-30b",
+            route="sarvam_general",
+            reason="test",
+            language="ta",
+            intent="general",
+            raw={"reply_language": "en"},
+        )
+    )
+
+    assert pipeline["remodeled_english"] == "You can start with a short checklist."
+    assert pipeline["tamil_text"] == ""
+
+
+def test_response_adapter_keeps_requested_tamil_reply_in_tamil_fields():
+    pipeline = ai_response_to_pipeline(
+        AIProviderResponse(
+            text="Seri, ipdi pannalam.",
+            provider="sarvam",
+            model="sarvam-30b",
+            route="sarvam_general",
+            reason="test",
+            language="ta",
+            intent="general",
+            raw={"reply_language": "ta"},
+        )
+    )
+
+    assert pipeline["tamil_text"] == "Seri, ipdi pannalam."
+    assert pipeline["theni_tamil_text"] == "Seri, ipdi pannalam."

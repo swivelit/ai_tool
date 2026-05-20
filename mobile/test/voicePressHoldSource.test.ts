@@ -43,6 +43,10 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("client_voice_recording_too_short");
     expect(source).toContain("voiceSurface: requestVoiceSurface");
     expect(source).toContain("voiceOnlyMode");
+    expect(source).toContain("resolveVoiceLanguageParams");
+    expect(source).toContain("requested_reply_language");
+    expect(source).toContain("requested_speech_language");
+    expect(source).toContain("tts_language_code");
     expect(source).toContain("client_voice_reply_tts_started");
     expect(source).toContain("client_voice_reply_tts_completed");
     expect(source).toContain("client_voice_reply_tts_failed");
@@ -54,7 +58,8 @@ describe("chat voice press-and-hold source", () => {
     expect(source).not.toContain('speaker: "shubh"');
     expect(source).not.toContain("speaker: 'shubh'");
     expect(source).toContain("recordingPhaseRef.current === \"stopping\"");
-    expect(source).toContain("reply_language=ta&speech_language=ta-IN");
+    expect(source).not.toContain("reply_language=ta&speech_language=ta-IN");
+    expect(source).toContain("voiceLanguage.ttsLanguageCode");
   });
 
   it("supports voice-only mode by hiding the typed send path", () => {

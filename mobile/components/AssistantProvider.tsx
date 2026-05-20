@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -19,6 +20,7 @@ import {
   getE2eMockUserProfile,
   isE2eMockAuthEnabled,
 } from "@/lib/e2eMode";
+import { resolveSettingsLanguageAfterProfileRestore } from "@/lib/profileSync";
 import {
   AssistantSettings,
   DEFAULTS,
@@ -58,6 +60,7 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettingsState] = useState<AssistantSettings>(DEFAULTS.settings);
   const [profile, setProfileState] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const localSettingsChangedThisSessionRef = useRef(false);
 
   const refresh = useCallback(async () => {
     if (isE2eMockAuthEnabled()) {
@@ -98,15 +101,22 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
 
     const resolvedSettings: AssistantSettings = {
       ...normalizedStoredSettings,
-      languageMode:
-        nextProfile?.replyLanguage === "en" || nextProfile?.replyLanguage === "ta"
-          ? nextProfile.replyLanguage
-          : normalizedStoredSettings.languageMode,
+      languageMode: resolveSettingsLanguageAfterProfileRestore({
+        storedLanguageMode: normalizedStoredSettings.languageMode,
+        backendReplyLanguage: nextProfile?.replyLanguage,
+        localSettingsChangedThisSession: localSettingsChangedThisSessionRef.current,
+      }),
     };
+    const resolvedProfile = nextProfile
+      ? {
+          ...nextProfile,
+          replyLanguage: resolvedSettings.languageMode,
+        }
+      : null;
 
     setNameState(resolvedName);
     setSettingsState(resolvedSettings);
-    setProfileState(nextProfile);
+    setProfileState(resolvedProfile);
 
     if (resolvedName !== normalizedStoredName) {
       await setAssistantName(resolvedName);
@@ -129,8 +139,11 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
     if (settingsChanged) {
       await setSettings(resolvedSettings);
     }
+    if (resolvedProfile && resolvedProfile.replyLanguage !== nextProfile?.replyLanguage) {
+      await saveProfile(resolvedProfile);
+    }
 
-    return nextProfile;
+    return resolvedProfile;
   }, [user?.email, user?.uid]);
 
   useEffect(() => {
@@ -188,6 +201,12 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
         ...settings,
         ...nextSettings,
       });
+      const languageChanged =
+        typeof nextSettings.languageMode !== "undefined" &&
+        resolvedSettings.languageMode !== settings.languageMode;
+      if (languageChanged) {
+        localSettingsChangedThisSessionRef.current = true;
+      }
 
       await setSettings(resolvedSettings);
       setSettingsState(resolvedSettings);
@@ -206,7 +225,10 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
 
       try {
         const syncedProfile = await createProfileOnBackend(updatedProfile);
-        setProfileState(syncedProfile);
+        setProfileState({
+          ...syncedProfile,
+          replyLanguage: resolvedSettings.languageMode,
+        });
       } catch (error) {
         console.warn("[assistant] Failed to sync assistant settings to backend:", error);
       }

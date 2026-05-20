@@ -16,29 +16,32 @@ def _json(value: Any) -> str:
 
 
 def ai_response_to_pipeline(response: AIProviderResponse) -> dict[str, Any]:
-    language = str(response.language or "en").lower()
+    raw = response.raw if isinstance(response.raw, dict) else {}
+    requested_reply_language = str(raw.get("reply_language") or response.language or "en").lower()
+    language = "en" if requested_reply_language in {"en", "english"} else str(response.language or "en").lower()
     text = str(response.text or "").strip()
-    is_english = language == "en" and response.provider != "sarvam"
+    is_english = language == "en"
     direct_source = response.provider
     if isinstance(response.raw, dict) and response.raw.get("source"):
         direct_source = str(response.raw["source"])
     core_meta = {
         "provider": response.provider,
         "model_used": response.model,
-        "model_candidates": response.raw.get("model_candidates") if isinstance(response.raw, dict) else [],
-        "endpoint": response.raw.get("endpoint") if isinstance(response.raw, dict) else "",
-        "openai_attempted_models": response.raw.get("openai_attempted_models") if isinstance(response.raw, dict) else [],
-        "fallback_attempted": response.raw.get("fallback_attempted") if isinstance(response.raw, dict) else False,
-        "primary_model_candidate": response.raw.get("primary_model_candidate") if isinstance(response.raw, dict) else "",
-        "selected_model_reason": response.raw.get("selected_model_reason") if isinstance(response.raw, dict) else "",
-        "skipped_models": response.raw.get("skipped_models") if isinstance(response.raw, dict) else [],
-        "model_health_skip_reason": response.raw.get("model_health_skip_reason") if isinstance(response.raw, dict) else "",
-        "provider_error_type": response.raw.get("provider_error_type") if isinstance(response.raw, dict) else "",
-        "embedding_calls": response.raw.get("embedding_calls", 0) if isinstance(response.raw, dict) else 0,
+        "model_candidates": raw.get("model_candidates") if isinstance(response.raw, dict) else [],
+        "endpoint": raw.get("endpoint") if isinstance(response.raw, dict) else "",
+        "openai_attempted_models": raw.get("openai_attempted_models") if isinstance(response.raw, dict) else [],
+        "fallback_attempted": raw.get("fallback_attempted") if isinstance(response.raw, dict) else False,
+        "primary_model_candidate": raw.get("primary_model_candidate") if isinstance(response.raw, dict) else "",
+        "selected_model_reason": raw.get("selected_model_reason") if isinstance(response.raw, dict) else "",
+        "skipped_models": raw.get("skipped_models") if isinstance(response.raw, dict) else [],
+        "model_health_skip_reason": raw.get("model_health_skip_reason") if isinstance(response.raw, dict) else "",
+        "provider_error_type": raw.get("provider_error_type") if isinstance(response.raw, dict) else "",
+        "embedding_calls": raw.get("embedding_calls", 0) if isinstance(response.raw, dict) else 0,
         "route": response.route,
         "reason": response.reason,
         "intent": response.intent,
         "language": response.language,
+        "reply_language": requested_reply_language,
         "estimated_cost_amount": response.estimated_cost_amount,
         "estimated_cost_currency": response.estimated_cost_currency,
     }
@@ -69,16 +72,16 @@ def ai_response_to_pipeline(response: AIProviderResponse) -> dict[str, Any]:
         "provider": response.provider,
         "cost_estimate": response.estimated_cost_amount,
         "cost_currency": response.estimated_cost_currency,
-        "endpoint": response.raw.get("endpoint") if isinstance(response.raw, dict) else "",
-        "model_candidates": response.raw.get("model_candidates") if isinstance(response.raw, dict) else [],
-        "openai_attempted_models": response.raw.get("openai_attempted_models") if isinstance(response.raw, dict) else [],
-        "fallback_attempted": response.raw.get("fallback_attempted") if isinstance(response.raw, dict) else False,
-        "primary_model_candidate": response.raw.get("primary_model_candidate") if isinstance(response.raw, dict) else "",
-        "selected_model_reason": response.raw.get("selected_model_reason") if isinstance(response.raw, dict) else "",
-        "skipped_models": response.raw.get("skipped_models") if isinstance(response.raw, dict) else [],
-        "model_health_skip_reason": response.raw.get("model_health_skip_reason") if isinstance(response.raw, dict) else "",
-        "provider_error_type": response.raw.get("provider_error_type") if isinstance(response.raw, dict) else "",
-        "embedding_calls": response.raw.get("embedding_calls", 0) if isinstance(response.raw, dict) else 0,
+        "endpoint": raw.get("endpoint") if isinstance(response.raw, dict) else "",
+        "model_candidates": raw.get("model_candidates") if isinstance(response.raw, dict) else [],
+        "openai_attempted_models": raw.get("openai_attempted_models") if isinstance(response.raw, dict) else [],
+        "fallback_attempted": raw.get("fallback_attempted") if isinstance(response.raw, dict) else False,
+        "primary_model_candidate": raw.get("primary_model_candidate") if isinstance(response.raw, dict) else "",
+        "selected_model_reason": raw.get("selected_model_reason") if isinstance(response.raw, dict) else "",
+        "skipped_models": raw.get("skipped_models") if isinstance(response.raw, dict) else [],
+        "model_health_skip_reason": raw.get("model_health_skip_reason") if isinstance(response.raw, dict) else "",
+        "provider_error_type": raw.get("provider_error_type") if isinstance(response.raw, dict) else "",
+        "embedding_calls": raw.get("embedding_calls", 0) if isinstance(response.raw, dict) else 0,
     }
     if not is_english:
         pipeline["remodeled_english"] = text

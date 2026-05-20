@@ -12,7 +12,7 @@ from sqlmodel import select
 import app.main as main_module
 import app.observability as observability
 from app.database import SessionLocal
-from app.models import AIUsageEvent, Conversation, Item, QACache, RagEmbedding
+from app.models import AIUsageEvent, Conversation, Item, QACache, RagEmbedding, UserProfile
 from app.ai.types import AIProviderResponse
 from app.ai.usage import record_ai_usage_event
 from conftest import auth_headers, create_test_user
@@ -142,6 +142,58 @@ def test_chat_contract_uses_ai_router_when_enabled(client, monkeypatch):
     assert payload["meta"]["ai_router_enabled"] is True
 
 
+def test_chat_ai_request_includes_saved_profile_context(client, monkeypatch):
+    user = create_test_user(name="Hari")
+    headers = auth_headers("test-uid", "test@example.com")
+    with SessionLocal() as session:
+        session.add(
+            UserProfile(
+                user_id=int(user.id),
+                answers_json=json.dumps(
+                    {
+                        "communication_tone": "direct",
+                        "answer_length": "short",
+                        "tamil_style": "chennai_conversational",
+                        "goal": "ship faster",
+                    }
+                ),
+                profile_summary="Hari likes concise implementation-focused answers.",
+                questions_version=1,
+            )
+        )
+        session.commit()
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        profile_context = ai_request.metadata["profile_context"]
+        profile_prompt_context = ai_request.metadata["profile_prompt_context"]
+        assert profile_context["profile_summary"] == "Hari likes concise implementation-focused answers."
+        assert profile_context["communication_tone"] == "direct"
+        assert profile_context["onboarding_answers"]["goal"] == "ship faster"
+        assert "Hari likes concise" in profile_prompt_context
+        return AIProviderResponse(
+            text="Focus on the next implementation step.",
+            provider="openai",
+            model="gpt-5-nano",
+            route="openai_general",
+            reason="unit_test",
+            language="en",
+            intent="general",
+            raw={"reply_language": "en"},
+        )
+
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        "/api/chat",
+        headers=headers,
+        json={"message": "What should I do next?", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assistant"]["text"] == "Focus on the next implementation step."
+
+
 def test_chat_contract_passes_recent_context_to_ai_router(client, monkeypatch):
     create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
@@ -195,11 +247,18 @@ def test_voice_contract_uses_sarvam_stt_and_ai_router(client, monkeypatch):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
     monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
-    monkeypatch.setattr(main_module, "_transcribe_audio_file", lambda *args, **kwargs: "voice hello")
+    stt_calls = []
+
+    def fake_transcribe(*args, **kwargs):
+        stt_calls.append((args, kwargs))
+        return "voice hello"
+
+    monkeypatch.setattr(main_module, "_transcribe_audio_file", fake_transcribe)
 
     def fake_run_text_turn(session, ai_request, *, existing_context=None):
         assert ai_request.channel == "voice"
         assert ai_request.message == "voice hello"
+        assert ai_request.reply_language == "en"
         return AIProviderResponse(
             text="Voice answer",
             provider="sarvam",
@@ -221,8 +280,48 @@ def test_voice_contract_uses_sarvam_stt_and_ai_router(client, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["item"]["raw_text"] == "voice hello"
+    assert payload["item"]["details"] == "Voice answer"
     assert payload["assistant"]["text"] == "Voice answer"
     assert payload["meta"]["provider"] == "sarvam"
+    assert stt_calls[0][0][1] is None
+
+
+def test_voice_contract_respects_tamil_reply_query_and_autodetects_speech(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    stt_calls = []
+
+    def fake_transcribe(*args, **kwargs):
+        stt_calls.append((args, kwargs))
+        return "voice hello"
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        assert ai_request.reply_language == "ta"
+        return AIProviderResponse(
+            text="Seri, unga voice answer ready.",
+            provider="sarvam",
+            model="sarvam-30b",
+            route="sarvam_general",
+            reason="unit_test",
+            language="ta",
+            intent="general",
+        )
+
+    monkeypatch.setattr(main_module, "_transcribe_audio_file", fake_transcribe)
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=ta&speech_language=auto",
+        headers=headers,
+        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+    )
+
+    assert response.status_code == 200
+    assert stt_calls[0][0][1] is None
+    payload = response.json()
+    assert payload["item"]["details"] == "Seri, unga voice answer ready."
+    assert payload["assistant"]["text"] == "Seri, unga voice answer ready."
 
 
 def test_observability_config_endpoint(client):
@@ -849,7 +948,7 @@ def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatc
     assert metadata["duration_estimation_method"]
 
 
-def test_voice_route_preserves_mobile_mime_and_defaults_tamil(client, monkeypatch, caplog):
+def test_voice_route_preserves_mobile_mime_uses_profile_language_and_autodetects_speech(client, monkeypatch, caplog):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
     monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
@@ -869,16 +968,16 @@ def test_voice_route_preserves_mobile_mime_and_defaults_tamil(client, monkeypatc
 
     def fake_run_text_turn(session, ai_request, *, existing_context=None):
         assert ai_request.channel == "voice"
-        assert ai_request.reply_language == "ta"
+        assert ai_request.reply_language == "en"
         assert ai_request.metadata["content_type"] == "audio/m4a"
         assert ai_request.metadata["provider_content_type"] == "application/octet-stream"
         return AIProviderResponse(
-            text="குரல் பதில்",
+            text="Voice answer",
             provider="backend_tool",
             model=None,
             route="agent_local_voice_test",
             reason="unit_test",
-            language="ta",
+            language="en",
             intent="general",
         )
 
@@ -894,13 +993,13 @@ def test_voice_route_preserves_mobile_mime_and_defaults_tamil(client, monkeypatc
 
     assert response.status_code == 200
     assert len(calls) == 1
-    assert calls[0]["language"] == "ta-IN"
+    assert calls[0]["language"] is None
     assert calls[0]["content_type"] == "audio/m4a"
     assert calls[0]["filename"] == "audio.m4a"
-    assert response.json()["assistant"]["text"] == "குரல் பதில்"
+    assert response.json()["assistant"]["text"] == "Voice answer"
     upload_record = [r for r in caplog.records if getattr(r, "event", "") == "voice_upload_received"][-1]
-    assert getattr(upload_record, "reply_language") == "ta"
-    assert getattr(upload_record, "speech_language") == "ta-IN"
+    assert getattr(upload_record, "reply_language") == "en"
+    assert getattr(upload_record, "speech_language", None) is None
     with SessionLocal() as session:
         stt_usage = session.exec(select(AIUsageEvent).where(AIUsageEvent.route == "sarvam_stt")).one()
     metadata = json.loads(stt_usage.metadata_json)

@@ -44,6 +44,38 @@ def test_sarvam_chat_uses_sdk_client_without_real_network(monkeypatch):
     assert completions.calls[0]["messages"][1]["content"] == "வணக்கம்"
 
 
+def test_sarvam_chat_gets_english_only_instruction_for_english_reply(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    completions = _FakeCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    provider = SarvamProvider(client=client)
+
+    provider.complete(
+        AIRequest(1, "நாளைக்கு என்ன செய்யலாம்?", "en", "text", "sarvam-test", {}),
+        AIRoute("sarvam", "sarvam-30b", "sarvam_general", "test", "en", "general", 100),
+    )
+
+    system_prompt = completions.calls[0]["messages"][0]["content"]
+    assert "understand the Tamil/Tanglish user input but answer only in English" in system_prompt
+    assert "answer only in English" in system_prompt
+
+
+def test_sarvam_chat_gets_chennai_tamil_style_instruction_for_tamil_reply(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    completions = _FakeCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    provider = SarvamProvider(client=client)
+
+    provider.complete(
+        AIRequest(1, "Explain photosynthesis", "ta", "text", "sarvam-test", {}),
+        AIRoute("sarvam", "sarvam-30b", "sarvam_general", "test", "ta", "general", 100),
+    )
+
+    system_prompt = completions.calls[0]["messages"][0]["content"]
+    assert "natural light Chennai Tamil/Tanglish" in system_prompt
+    assert "not formal textbook Tamil" in system_prompt
+
+
 def test_sarvam_chat_missing_key_is_sanitized(monkeypatch):
     monkeypatch.delenv("SARVAM_API_KEY", raising=False)
     provider = SarvamProvider()

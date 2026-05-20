@@ -28,6 +28,11 @@ export type UserProfile = {
   authProvider?: "password" | "google";
   questionnaireCompleted?: boolean;
   replyLanguage?: "en" | "ta";
+  profileSummary?: string;
+  communicationTone?: string;
+  answerLength?: string;
+  tamilStyle?: string;
+  onboardingAnswers?: Record<string, unknown>;
   restoreFailed?: boolean;
 };
 
@@ -181,6 +186,28 @@ function mapBackendUserToProfile(user: any): UserProfile | null {
     email: normalizeEmail(user.email) || undefined,
     questionnaireCompleted: parsedQuestionnaireCompleted,
     replyLanguage: user.reply_language === "en" ? "en" : "ta",
+    profileSummary:
+      typeof (user.profile_summary ?? user.profileSummary) === "string"
+        ? user.profile_summary ?? user.profileSummary
+        : undefined,
+    communicationTone:
+      typeof (user.communication_tone ?? user.communicationTone) === "string"
+        ? user.communication_tone ?? user.communicationTone
+        : undefined,
+    answerLength:
+      typeof (user.answer_length ?? user.answerLength) === "string"
+        ? user.answer_length ?? user.answerLength
+        : undefined,
+    tamilStyle:
+      typeof (user.tamil_style ?? user.tamilStyle) === "string"
+        ? user.tamil_style ?? user.tamilStyle
+        : undefined,
+    onboardingAnswers:
+      user.onboarding_answers && typeof user.onboarding_answers === "object"
+        ? user.onboarding_answers
+        : user.onboardingAnswers && typeof user.onboardingAnswers === "object"
+          ? user.onboardingAnswers
+          : undefined,
   };
 }
 
@@ -635,7 +662,7 @@ export async function createProfileOnBackend(profile: UserProfile) {
       undefined,
       backendProfile?.questionnaireCompleted
     ),
-    replyLanguage: backendProfile?.replyLanguage || profileForRequest.replyLanguage || "ta",
+    replyLanguage: profileForRequest.replyLanguage || backendProfile?.replyLanguage || "ta",
   };
 
   await saveProfile(merged);

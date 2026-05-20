@@ -1,4 +1,6 @@
 from app.ai.language import detect_language, should_prefer_sarvam
+from app.ai.router import AIProviderRouter
+from app.ai.types import AIRequest
 
 
 def test_tamil_script_prefers_sarvam():
@@ -30,7 +32,31 @@ def test_reply_language_ta_prefers_sarvam_for_english_message():
     decision = detect_language("Explain photosynthesis", reply_language="ta")
 
     assert decision.language == "ta"
+    assert decision.reply_language == "ta"
+    assert decision.input_language == "en"
     assert decision.prefer_provider == "sarvam"
+
+
+def test_reply_language_en_preserves_english_final_language_for_tamil_message():
+    decision = detect_language("நாளைக்கு என்ன செய்யலாம்?", reply_language="en")
+
+    assert decision.language == "en"
+    assert decision.input_language == "ta"
+    assert decision.reply_language == "en"
+    assert decision.prefer_provider == "sarvam"
+    assert decision.provider_preference == "sarvam"
+    assert decision.reason == "reply_language_english_preserved"
+
+
+def test_route_metadata_distinguishes_input_and_reply_language():
+    route = AIProviderRouter().select_route(
+        AIRequest(1, "நாளைக்கு என்ன செய்யலாம்?", "en", "voice", "language-test", {})
+    )
+
+    assert route.language == "en"
+    assert route.metadata["input_language"] == "ta"
+    assert route.metadata["reply_language"] == "en"
+    assert route.metadata["provider_preference"] == "sarvam"
 
 
 def test_expanded_tanglish_daily_command_prefers_sarvam():

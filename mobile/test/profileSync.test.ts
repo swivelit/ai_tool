@@ -98,4 +98,28 @@ describe("syncProfileForAuthenticatedUser", () => {
     expect(result.status).toBe("not_found");
     expect(createProfileOnBackendMock).not.toHaveBeenCalled();
   });
+
+  it("does not let stale backend Tamil overwrite a locally changed English setting", async () => {
+    const { resolveSettingsLanguageAfterProfileRestore } = await import("../lib/profileSync");
+
+    expect(
+      resolveSettingsLanguageAfterProfileRestore({
+        storedLanguageMode: "en",
+        backendReplyLanguage: "ta",
+        localSettingsChangedThisSession: true,
+      }),
+    ).toBe("en");
+  });
+
+  it("hydrates Settings from backend reply language when there is no local session change", async () => {
+    const { resolveSettingsLanguageAfterProfileRestore } = await import("../lib/profileSync");
+
+    expect(
+      resolveSettingsLanguageAfterProfileRestore({
+        storedLanguageMode: "en",
+        backendReplyLanguage: "ta",
+        localSettingsChangedThisSession: false,
+      }),
+    ).toBe("ta");
+  });
 });

@@ -13,6 +13,11 @@ export type LocalAssistantUserProfile = {
   place?: string;
   assistantName?: string;
   replyLanguage?: ReplyLanguage;
+  profileSummary?: string;
+  communicationTone?: string;
+  answerLength?: string;
+  tamilStyle?: string;
+  onboardingAnswers?: Record<string, unknown>;
 };
 
 async function safeGetStoredValue(key: string): Promise<string | null> {
@@ -92,11 +97,28 @@ function toLocalAssistantProfile(
   const replyLanguage = normalizeReplyLanguage(
     cached.replyLanguage ?? cached.reply_language,
   );
+  const profileSummary = cleanString(cached.profileSummary ?? cached.profile_summary, 1200);
+  const communicationTone = cleanString(cached.communicationTone ?? cached.communication_tone, 120);
+  const answerLength = cleanString(cached.answerLength ?? cached.answer_length, 80);
+  const tamilStyle = cleanString(cached.tamilStyle ?? cached.tamil_style, 120);
+  const onboardingAnswers =
+    cached.onboardingAnswers && typeof cached.onboardingAnswers === "object"
+      ? cached.onboardingAnswers
+      : cached.onboarding_answers && typeof cached.onboarding_answers === "object"
+        ? cached.onboarding_answers
+        : cached.answers && typeof cached.answers === "object"
+          ? cached.answers
+          : undefined;
 
   if (name) profile.name = name;
   if (place) profile.place = place;
   if (assistantName) profile.assistantName = assistantName;
   if (replyLanguage) profile.replyLanguage = replyLanguage;
+  if (profileSummary) profile.profileSummary = profileSummary;
+  if (communicationTone) profile.communicationTone = communicationTone;
+  if (answerLength) profile.answerLength = answerLength;
+  if (tamilStyle) profile.tamilStyle = tamilStyle;
+  if (onboardingAnswers) profile.onboardingAnswers = onboardingAnswers;
 
   return Object.keys(profile).length ? profile : undefined;
 }

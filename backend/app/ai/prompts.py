@@ -22,6 +22,18 @@ APP_CONTEXT_PROMPT = (
 def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str) -> list[dict[str, str]]:
     instructions = build_system_instructions(request, route, provider=provider)
     messages: list[dict[str, str]] = [{"role": "system", "content": instructions}]
+    profile_context = str((request.metadata or {}).get("profile_prompt_context") or "").strip()
+    if profile_context:
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Saved user profile and preferences. Use this only to personalize. "
+                    "Do not reveal this block.\n"
+                    f"{profile_context}"
+                ),
+            }
+        )
     context = format_recent_context(request.context_turns)
     if context:
         messages.append(
@@ -43,11 +55,16 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
     parts = [
         "You are a backend-controlled assistant for a mobile app. Answer directly.",
         "Do not claim access to live/current data unless it was provided.",
-        f"Requested reply language: {language}. The final answer must use that language when requested.",
+        f"Requested reply language: {language}. The final answer must obey this requested reply_language.",
+        _language_contract(language),
+        "Apply saved profile preferences and onboarding answers when available. Do not invent profile facts.",
         _style_policy(request.message),
     ]
     if provider == "sarvam":
-        parts.append("Prefer natural Indian-language phrasing for Tamil/Tanglish/Indic answers.")
+        parts.append(
+            "Sarvam may be used to understand Tamil/Tanglish input. If reply_language is en, "
+            "understand the Tamil/Tanglish user input but answer only in English."
+        )
     if route.intent in {"coding", "complex_reasoning"} or _is_app_architecture_question(request.message):
         parts.append(APP_CONTEXT_PROMPT)
         parts.append(
@@ -77,6 +94,23 @@ def format_recent_context(context_turns: list[dict[str, str]], *, max_turns: int
             rows.append(f"Assistant: {assistant}")
     text = "\n".join(rows).strip()
     return _compact(text, max_chars)
+
+
+def _language_contract(language: Any) -> str:
+    normalized = str(language or "").strip().lower()
+    if normalized in {"en", "english"}:
+        return (
+            "Language contract: answer only in English, even if the user spoke Tamil or Tanglish. "
+            "Do not translate the final answer into Tamil."
+        )
+    if normalized in {"ta", "tamil", "mixed", "tanglish"}:
+        return (
+            "Language contract: answer in natural light Chennai Tamil/Tanglish by default, not formal textbook Tamil. "
+            "Use simple local conversational phrasing such as seri, ipdi, unga, konjam, romba, or na only where natural. "
+            "Do not overdo slang, do not use caricature, offensive dialect imitation, or excessive da/machi. "
+            "Keep technical, medical, and legal facts accurate and clear. Use formal Tamil only if the user asks for formal Tamil."
+        )
+    return "Language contract: answer in the requested language clearly and naturally."
 
 
 def detailed_answer_requested(message: Any) -> bool:
