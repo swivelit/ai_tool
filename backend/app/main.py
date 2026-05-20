@@ -12,18 +12,20 @@ import secrets
 import sys
 import tempfile
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 import requests
 import time
 import openai
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Tuple
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -318,6 +320,104 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def _format_error_response(status_code: int, message: str, details: Any = None) -> JSONResponse:
+    code_map = {
+        400: "BAD_REQUEST",
+        401: "UNAUTHORIZED",
+        403: "FORBIDDEN",
+        404: "NOT_FOUND",
+        405: "METHOD_NOT_ALLOWED",
+        409: "CONFLICT",
+        413: "PAYLOAD_TOO_LARGE",
+        415: "UNSUPPORTED_MEDIA_TYPE",
+        422: "VALIDATION_ERROR",
+        429: "TOO_MANY_REQUESTS",
+        500: "INTERNAL_SERVER_ERROR",
+        503: "SERVICE_UNAVAILABLE",
+        504: "GATEWAY_TIMEOUT",
+    }
+    error_code = code_map.get(status_code, "UNKNOWN_ERROR")
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "detail": message,
+            "error": {
+                "code": error_code,
+                "message": message,
+                "safe_details": details or {},
+            }
+        }
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code >= 500:
+        logger.error("HTTP error occurred: %d %s", exc.status_code, exc.detail)
+    return _format_error_response(exc.status_code, str(exc.detail))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.warning("Validation error occurred: %s", exc.errors())
+    return _format_error_response(422, "Validation error occurred", {"errors": exc.errors()})
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    start = getattr(request.state, "start_time", None)
+    duration_ms = round((time.perf_counter() - start) * 1000, 2) if start else 0.0
+    logger.error(
+        "request_failed_exception",
+        extra={
+            "event": "request_failed_exception",
+            "method": request.method,
+            "path": request.url.path,
+            "exception_class": exc.__class__.__name__,
+            "exception_message": sanitize_log_text(str(exc), 240),
+            "duration_ms": duration_ms,
+        },
+    )
+    return _format_error_response(500, "An unexpected error occurred. Please try again later.")
+
+
+class SlidingWindowRateLimiter:
+    def __init__(self, limit: int, window_seconds: int):
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self.history = defaultdict(list)
+        self.enabled = os.getenv("APP_ENV") != "test"
+
+    def is_rate_limited(self, user_key: str) -> bool:
+        if not self.enabled:
+            return False
+        now = time.time()
+        user_history = self.history[user_key]
+        cutoff = now - self.window_seconds
+        updated_history = [t for t in user_history if t > cutoff]
+        self.history[user_key] = updated_history
+        if len(updated_history) >= self.limit:
+            return True
+        self.history[user_key].append(now)
+        return False
+
+
+CHAT_LIMIT_PER_MIN = int(os.getenv("CHAT_LIMIT_PER_MIN", "20"))
+STT_LIMIT_PER_MIN = int(os.getenv("STT_LIMIT_PER_MIN", "10"))
+TTS_LIMIT_PER_MIN = int(os.getenv("TTS_LIMIT_PER_MIN", "20"))
+
+chat_limiter = SlidingWindowRateLimiter(CHAT_LIMIT_PER_MIN, 60)
+stt_limiter = SlidingWindowRateLimiter(STT_LIMIT_PER_MIN, 60)
+tts_limiter = SlidingWindowRateLimiter(TTS_LIMIT_PER_MIN, 60)
+
+
+def _enforce_chat_limits(user_key: str, text: str):
+    if len(text) > 5000:
+        raise HTTPException(status_code=413, detail="Message is too long")
+    if chat_limiter.is_rate_limited(user_key):
+        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
+
 
 def _include_optional_legacy_onboarding_router() -> None:
     try:
@@ -920,6 +1020,7 @@ def startup_runtime_services() -> None:
 async def log_requests(request: Request, call_next):
     request_id = request.headers.get("x-request-id") or new_request_id()
     start = time.perf_counter()
+    request.state.start_time = start
     set_request_context(request_id=request_id, route=request.url.path)
     try:
         response = await call_next(request)
@@ -967,27 +1068,60 @@ def root():
     }
 
 
+def _check_db_liveness() -> Tuple[bool, str]:
+    from sqlalchemy import text
+    try:
+        with SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+        return True, "reachable"
+    except Exception as exc:
+        return False, f"unreachable: {exc}"
+
+
 def _health_status_code(payload: Dict[str, Any]) -> int:
     return 200 if payload["status"] == "ok" else 503
 
 
 def _public_health_payload() -> Dict[str, Any]:
+    db_ok, db_msg = _check_db_liveness()
+    startup_errors = RUNTIME_STATUS.get("errors") or []
+    required_errors = [e for e in startup_errors if e.get("required")]
+    status = "ok"
+    if required_errors or not db_ok:
+        status = "degraded"
     return {
-        "status": RUNTIME_STATUS.get("status") or "starting",
+        "status": status,
         "app": "J AI",
     }
 
 
 def _debug_health_payload() -> Dict[str, Any]:
+    db_ok, db_msg = _check_db_liveness()
+    services = dict(RUNTIME_STATUS.get("services", {}))
+    services["database_liveness"] = {
+        "ok": db_ok,
+        "required": True,
+        "detail": db_msg,
+    }
+    errors = list(RUNTIME_STATUS.get("errors", []))
+    if not db_ok:
+        if not any(e.get("service") == "database_liveness" for e in errors):
+            errors.append({
+                "service": "database_liveness",
+                "detail": db_msg,
+                "required": True,
+            })
+    required_errors = [e for e in errors if e.get("required")]
+    status = "degraded" if required_errors else "ok"
     return {
-        "status": RUNTIME_STATUS.get("status") or "starting",
+        "status": status,
         "app": "J AI",
         "pipeline_version": PIPELINE_VERSION,
-        "services": RUNTIME_STATUS.get("services", {}),
+        "services": services,
         "auth": {
             "firebase": firebase_auth_runtime_status(),
         },
-        "errors": RUNTIME_STATUS.get("errors", []),
+        "errors": errors,
         "mode": PIPELINE_VERSION,
         "features": [
             "persona_context",
@@ -1548,7 +1682,7 @@ def _default_stage_answers(
 ) -> Dict[str, Any]:
     habits_text = routine.daily_habits if routine else ""
     summary = db_profile.profile_summary if db_profile and db_profile.profile_summary else ""
-    return {
+    defaults = {
         "age_group": "26-35",
         "gender_context": "prefer_not_to_say",
         "life_stage": "none_of_these",
@@ -1565,6 +1699,14 @@ def _default_stage_answers(
         "main_goal": "career_or_business",
         "family_role": "working_professional",
     }
+    if db_profile and db_profile.answers_json:
+        try:
+            profile_answers = json.loads(db_profile.answers_json)
+            if isinstance(profile_answers, dict):
+                defaults.update(profile_answers)
+        except Exception as exc:
+            logger.warning("Failed to parse db_profile.answers_json: %s", exc)
+    return defaults
 
 
 def _sync_stage_profile(session: Session, user_id: Optional[int]) -> Dict[str, Any]:
@@ -2540,7 +2682,7 @@ def resolve_user(
     # Compatibility endpoint: identity is resolved only from the verified bearer token.
     user = session.exec(select(User).where(User.firebase_uid == auth_user.firebase_uid)).first()
     if not user:
-        return {"found": False}
+        return {"found": False, "user": None}
 
     profile = _ensure_user_profile(session, int(user.id))
     return {
@@ -3382,8 +3524,9 @@ def api_chat(
     auth_user: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth_user)
-    payload = payload.model_copy(update={"user_id": int(user.id)})
     text = _resolve_chat_text(payload)
+    _enforce_chat_limits(auth_user.firebase_uid, text)
+    payload = payload.model_copy(update={"user_id": int(user.id)})
     started = time.perf_counter()
     set_request_context(request_id=payload.request_id or get_request_id() or new_request_id(), user_id=str(user.id))
     logger.info(
@@ -3529,6 +3672,8 @@ async def api_chat_stream(
     auth_user: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth_user)
+    text = _resolve_chat_text(payload)
+    _enforce_chat_limits(auth_user.firebase_uid, text)
     payload = payload.model_copy(update={"user_id": int(user.id)})
     chunk_size = max(12, int(os.getenv("STREAM_CHUNK_SIZE", "32") or 32))
 
@@ -3567,6 +3712,7 @@ def enqueue_chat_job(
     _require_async_jobs_available()
     user = get_owned_user(session, auth_user)
     text = _resolve_chat_text(payload)
+    _enforce_chat_limits(auth_user.firebase_uid, text)
     job = _get_job_queue().enqueue(
         session,
         job_type="chat",
@@ -3612,15 +3758,21 @@ def get_feature_flags():
 @app.post("/api/tts")
 def api_tts(
     payload: TTSRequest,
+    session: Session = Depends(get_session),
     auth_user: AuthUser = Depends(get_current_user),
 ):
-    api_key = _sarvam_api_key()
-    if not api_key:
-        raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
-
+    user = get_owned_user(session, auth_user)
     text = str(payload.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required.")
+    if len(text) > 1000:
+        raise HTTPException(status_code=413, detail="Text is too long")
+    if tts_limiter.is_rate_limited(auth_user.firebase_uid):
+        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
+
+    api_key = _sarvam_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="SARVAM_API_KEY is not configured.")
 
     headers = {
         "api-subscription-key": api_key,
@@ -3958,6 +4110,8 @@ async def _transcribe_and_analyze_upload(
     user = get_owned_user(session, auth_user)
     if user_id is not None:
         assert_owner(int(user_id), user)
+    if stt_limiter.is_rate_limited(auth_user.firebase_uid):
+        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
     set_request_context(user_id=str(user.id))
 
     content_type = str(file.content_type or "").split(";")[0].strip().lower()
