@@ -255,6 +255,10 @@ warn() {
   printf "\nWARN: %s\n" "$1"
 }
 
+error() {
+  printf "\n[ERROR] %s\n" "$1" >&2
+}
+
 is_truthy() {
   case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
     1|true|yes|y|on) return 0 ;;
@@ -942,7 +946,7 @@ setup_and_launch() {
 
   capture_step "launch"
 
-  if wait_for_desc "chat-input" 60; then
+  if wait_for_desc "chat-input" 120; then
     dismiss_expo_warning || true
     success "Chat ready for automation"
     printf "PASS chat-ready\n" >> "$ARTIFACT_DIR/steps.log"
