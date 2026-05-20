@@ -1184,7 +1184,7 @@ export default function SettingsModal() {
               <View style={styles.accountHeroContent}>
                 <Text style={styles.accountName}>{`Customise (${name || "Elli"})`}</Text>
                 <Text style={styles.accountMeta}>
-                  Assistant name, tone, and reply language
+                  Assistant name, tone, reply language, hands-free, and wake phrase
                 </Text>
               </View>
 

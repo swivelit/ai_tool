@@ -164,29 +164,29 @@ function describeWakeState(
 ) {
   if (state === "ready_now") {
     return supportedBaseModel
-      ? `${wakePhrase} matches the built-in phrase template ${supportedBaseModel}. It can work immediately, and any extra recordings stay on this phone.`
-      : `${wakePhrase} is accepted. Record ${MINIMUM_POSITIVE} positive and ${MINIMUM_NEGATIVE} negative clips to build the custom wake profile locally on this phone.`;
+      ? `${wakePhrase} matches the built-in phrase template ${supportedBaseModel}. The phrase is saved for foreground speech recognition, and any extra recordings stay on this phone.`
+      : `${wakePhrase} is accepted. You can record ${MINIMUM_POSITIVE} positive and ${MINIMUM_NEGATIVE} negative clips as local phrase variants on this phone.`;
   }
   if (state === "needs_training") {
-    return `${wakePhrase} has ${positiveCount}/${MINIMUM_POSITIVE} positive and ${negativeCount}/${MINIMUM_NEGATIVE} negative local clips. Finish the recordings to build the phrase profile on-device.`;
+    return `${wakePhrase} has ${positiveCount}/${MINIMUM_POSITIVE} positive and ${negativeCount}/${MINIMUM_NEGATIVE} negative local clips saved as phrase samples.`;
   }
   if (state === "training") {
-    return `${wakePhrase} is being turned into a local wake profile on this phone. No audio is sent to the backend.`;
+    return `${wakePhrase} samples are being packaged locally on this phone. No audio is sent to the backend.`;
   }
-  return `${wakePhrase} is active. The phrase profile and enrollment audio stay on this device only.`;
+  return `${wakePhrase} is saved. The phrase samples and enrollment audio stay on this device only.`;
 }
 
 function actionHint(state: WakeState) {
   if (state === "ready_now") {
-    return "The phrase is accepted. You can continue now or record local samples to improve device-side wake detection.";
+    return "The phrase is accepted. You can continue now or record local samples as recognition variants.";
   }
   if (state === "needs_training") {
-    return "Keep recording on the phone. Nothing is uploaded. Once you have enough clips, build the local profile here.";
+    return "Keep recording on the phone if you want saved phrase variants. Nothing is uploaded.";
   }
   if (state === "training") {
-    return "The phone is packaging the local wake phrase profile now.";
+    return "The phone is packaging the saved wake phrase samples now.";
   }
-  return "This phrase profile is already active on the phone and the samples stay local.";
+  return "This wake phrase is saved on the phone and the samples stay local.";
 }
 
 function finalizeButtonLabel(state: WakeState) {
@@ -390,7 +390,7 @@ export default function Setup() {
   const [finalizing, setFinalizing] = useState(false);
   const [recordingKind, setRecordingKind] = useState<SampleKind | null>(null);
   const [message, setMessage] = useState(
-    "Custom wake phrase enrollment now stays on-device. Record samples here and build the phrase locally on the phone."
+    "Custom wake phrase samples stay on-device. Record optional variants here, then save the phrase for foreground hands-free recognition."
   );
   const [error, setError] = useState("");
 
@@ -615,7 +615,7 @@ export default function Setup() {
         wake_state: "training",
       });
       setStatus(manifestToStatus(trainingManifest));
-      setMessage(`Building the wake phrase profile for “${normalizedWakePhrase}” locally on this phone…`);
+      setMessage(`Packaging the wake phrase samples for “${normalizedWakePhrase}” locally on this phone…`);
 
       const finishedAt = new Date().toISOString();
       const activeManifest = normalizeManifest(normalizedWakePhrase, {
@@ -633,7 +633,7 @@ export default function Setup() {
         wakeTrainingSamples: uniqueStrings([normalizedWakePhrase]),
       });
       setMessage(
-        `Local wake phrase profile ready. “${normalizedWakePhrase}” is now active and its enrollment data stays on this phone.`
+        `Wake phrase samples saved. “${normalizedWakePhrase}” is ready for foreground hands-free recognition, and enrollment data stays on this phone.`
       );
     } catch (nextError: unknown) {
       const nextMessage =
@@ -691,15 +691,15 @@ export default function Setup() {
 
           <GlassCard>
             <View style={styles.heroRow}>
-              <Text style={styles.title}>Wake phrase training is now on-device.</Text>
+              <Text style={styles.title}>Wake phrase samples stay on-device.</Text>
               <View style={styles.stateChip}>
                 <Ionicons name={STATE_ICONS[wakeState]} size={14} color={Brand.bronze} />
                 <Text style={styles.stateChipText}>{wakeStateLabel}</Text>
               </View>
             </View>
             <Text style={styles.subtitle}>
-              Custom phrase recordings are stored in the phone sandbox, the local profile is built
-              here, and nothing from this screen goes to the backend.
+              Custom phrase recordings are stored in the phone sandbox as recognition variants.
+              Runtime hands-free uses the saved phrase while the app is open.
             </Text>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryTitle}>{selectedName}</Text>
@@ -769,8 +769,7 @@ export default function Setup() {
             <Text style={styles.sectionTitle}>Voice setup</Text>
             <Text style={styles.sectionBody}>
               Record {MINIMUM_POSITIVE} positive clips and {MINIMUM_NEGATIVE} negative clips. The
-              audio files are saved locally on this device and used only for local wake phrase
-              enrollment.
+              audio files are saved locally on this device as wake phrase variants.
             </Text>
 
             <View style={styles.metricsRow}>

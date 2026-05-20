@@ -167,6 +167,9 @@ describe("APK test harness", () => {
       'export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"',
     );
     expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-1}"',
+    );
+    expect(source).toContain(
       'export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"',
     );
     expect(source).toContain(
@@ -174,6 +177,12 @@ describe("APK test harness", () => {
     );
     expect(source).toContain(
       'export EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="${EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT:-1}"',
+    );
+    expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE="${EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE:-Hey Elli}"',
+    );
+    expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND="${EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND:-tell me about Spitzola}"',
     );
     expect(source).toContain(
       'export EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT="${EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT:-1}"',
@@ -194,17 +203,30 @@ describe("APK test harness", () => {
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_AUTH=");
       expect(source).toContain("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=");
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_REPLY_LANGUAGE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_TAMIL_STYLE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_QUERY=");
       expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_SURFACE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND=");
       expect(source).toContain("EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT=");
       expect(source).toContain("EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=");
       expect(source).toContain("npx expo start --dev-client");
     }
+  });
+
+  it("keeps APK precheck Vitest runs isolated from APK E2E env flags", () => {
+    const source = readRepo("test_apk.sh");
+
+    expect(source).toContain('run_step "mobile-tests" env');
+    expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_VOICE_TURN");
+    expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE");
+    expect(source).toContain("-u EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE");
+    expect(source).toContain("-u EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND");
   });
 
   it("debug APK scripts default voice tests to backend routing and keep manual local opt-in", () => {
@@ -278,6 +300,27 @@ describe("APK test harness", () => {
     expect(source).toContain("client_voice_reply_tts_failed");
   });
 
+  it("APK harness exercises hands-free wake phrase conversation without a composer mic", () => {
+    const source = readRepo("test_apk.sh");
+
+    expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE");
+    expect(source).toContain("EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE");
+    expect(source).toContain("EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND");
+    expect(source).toContain("e2e-hands-free-trigger-button");
+    expect(source).toContain("e2e-hands-free-stop-button");
+    expect(source).toContain("scan_hands_free_reply_markers");
+    expect(source).toContain("hands-free-before");
+    expect(source).toContain("hands-free-after-reply");
+    expect(source).toContain("hands-free-after-stop");
+    expect(source).toContain("Hands-free conversation");
+    expect(source).toContain("Listening for your next question");
+    expect(source).toContain("hands-free-listening-resumed");
+    expect(source).toContain("hands-free-telemetry-markers-missing");
+    expect(source).toContain("hands-free-tts-failed");
+    expect(source).toContain("chat-mic-button-absent-before-hands-free");
+    expect(source).toContain("chat-mic-button-absent-after-hands-free");
+  });
+
   it("APK automation rejects the removed quick composer mic", () => {
     const source = readRepo("test_apk.sh");
 
@@ -308,6 +351,15 @@ describe("APK test harness", () => {
     );
   });
 
+  it("release app config rejects E2E mock hands-free flags", async () => {
+    vi.stubEnv("JAI_BUILD_TYPE", "release");
+    vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE", "1");
+
+    await expect(import("../app.config")).rejects.toThrow(
+      /EXPO_PUBLIC_E2E_MOCK_HANDS_FREE/,
+    );
+  });
+
   it("chat screen exposes automation labels", () => {
     const source = readMobile("app/(chat)/index.tsx");
 
@@ -317,6 +369,8 @@ describe("APK test harness", () => {
       "open-voice-mode-button",
       "chat-drawer-button",
       "chat-voice-button",
+      "e2e-hands-free-trigger-button",
+      "e2e-hands-free-stop-button",
       "chat-assistant-response",
       "chat-thinking-indicator",
     ].forEach((label) => {

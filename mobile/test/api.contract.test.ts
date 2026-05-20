@@ -405,6 +405,44 @@ describe("API client contracts", () => {
     expect(voicePayload.meta.tts_language_code).toBe("en-IN");
   });
 
+  it("uses the debug E2E hands-free chat mock for hands-free source only", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            EXPO_PUBLIC_E2E_MOCK_HANDS_FREE: "1",
+            EXPO_PUBLIC_E2E_REPLY_LANGUAGE: "en",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () => {
+      throw new Error("backend should not be called for E2E hands-free mock");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    const payload = await apiPost<any>("/api/chat", {
+      message: "tell me about Spitzola",
+      reply_language: "en",
+      request_id: "handsfree-test",
+      client_source: "handsfree",
+    });
+
+    expect(payload.item.raw_text).toBe("tell me about Spitzola");
+    expect(payload.item.details).toContain("Spitzola");
+    expect(payload.item.details).toContain("not finding");
+    expect(payload.meta.source).toBe("e2e_hands_free_mock");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("uses en-IN and ta-IN TTS metadata in the E2E voice mock", async () => {
     vi.doMock("expo-constants", () => ({
       default: {
@@ -492,6 +530,15 @@ describe("API client contracts", () => {
 
     await expect(import("../app.config")).rejects.toThrow(
       /EXPO_PUBLIC_E2E_MOCK_VOICE_TURN/,
+    );
+  });
+
+  it("rejects debug E2E hands-free flags in release builds", async () => {
+    vi.stubEnv("JAI_BUILD_TYPE", "release");
+    vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE", "1");
+
+    await expect(import("../app.config")).rejects.toThrow(
+      /EXPO_PUBLIC_E2E_MOCK_HANDS_FREE/,
     );
   });
 

@@ -10,6 +10,18 @@ const transcriptSource = fs.readFileSync(
   path.join(__dirname, "..", "components", "VoiceSessionTranscript.tsx"),
   "utf8",
 );
+const customiseSource = fs.readFileSync(
+  path.join(__dirname, "..", "app", "customise.tsx"),
+  "utf8",
+);
+const setupSource = fs.readFileSync(
+  path.join(__dirname, "..", "app", "setup.tsx"),
+  "utf8",
+);
+const modalSource = fs.readFileSync(
+  path.join(__dirname, "..", "app", "modal.tsx"),
+  "utf8",
+);
 
 function sliceAround(marker: string, radius = 900) {
   const index = source.indexOf(marker);
@@ -117,5 +129,52 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("!voiceOnlyMode ? (");
     expect(source).toContain("Open voice mode");
     expect(source).not.toContain("Hold the mic to talk");
+  });
+
+  it("uses the shared hands-free wake helper and continuous conversation mode", () => {
+    expect(source).toContain('from "@/lib/handsFreeWake"');
+    expect(source).toContain("type HandsFreeRecognizerMode = \"off\" | \"wake\" | \"command\" | \"conversation\"");
+    expect(source).toContain("activateHandsFreeConversation");
+    expect(source).toContain("deactivateHandsFreeConversation");
+    expect(source).toContain("resumeHandsFreeAfterAssistantTurn");
+    expect(source).toContain("handleHandsFreeFinalTranscript");
+    expect(source).toContain("isHandsFreeStopCommand");
+    expect(source).toContain("matchWakePhrase");
+    expect(source).toContain('queueHandsFreeRestart("conversation"');
+    expect(source).toContain('setHandsFreeRecognizerMode("conversation")');
+    expect(source).toContain("source === \"handsfree\"");
+    expect(source).toContain("shouldAutoSpeakReply");
+    expect(source).toContain("replySoundRef.current");
+    expect(source).toContain("abortHandsFreeRecognizer(false)");
+    expect(source).toContain("contextualStrings");
+    expect(source).toContain("addsPunctuation: false");
+    expect(source).toContain("interimResults: true");
+    expect(source).toContain("maxAlternatives: 1");
+    expect(source).toContain("androidIntentOptions");
+    expect(source).toContain("EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS");
+  });
+
+  it("keeps hands-free E2E hooks debug-only and separate from the composer mic", () => {
+    expect(source).toContain("isE2eMockHandsFreeEnabled");
+    expect(source).toContain("getE2eHandsFreeWakePhrase");
+    expect(source).toContain("getE2eHandsFreeCommand");
+    expect(source).toContain("simulateE2eHandsFreeWakeCommand");
+    expect(source).toContain("simulateE2eHandsFreeStop");
+    expect(source).toContain('testID="e2e-hands-free-trigger-button"');
+    expect(source).toContain('testID="e2e-hands-free-stop-button"');
+    expect(source).not.toContain('testID="chat-mic-button"');
+  });
+
+  it("exposes configurable hands-free settings without overclaiming wake-word enrollment", () => {
+    expect(customiseSource).toContain("customise-hands-free-switch");
+    expect(customiseSource).toContain("customise-wake-phrase-input");
+    expect(customiseSource).toContain("customise-wake-trainer-button");
+    expect(customiseSource).toContain("customise-save-button");
+    expect(customiseSource).toContain("Works while the app is open");
+    expect(customiseSource).toContain("recognizer pauses while replies are spoken");
+    expect(modalSource).toContain("hands-free, and wake phrase");
+    expect(setupSource).toContain("foreground hands-free recognition");
+    expect(setupSource).toContain("Runtime hands-free uses the saved phrase while the app is open");
+    expect(setupSource).not.toContain("powers wake detection");
   });
 });

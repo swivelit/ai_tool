@@ -3,7 +3,7 @@ export type ReplySource = "text" | "voice" | "handsfree" | string;
 export type ReplyPlaybackPolicyInput = {
   source?: ReplySource | null;
   autoSpeakReplies?: boolean | null;
-  handsFreeMode?: "off" | "wake" | "command" | string | null;
+  handsFreeMode?: "off" | "wake" | "command" | "conversation" | string | null;
   voiceSurface?: "quick" | "live" | string | null;
   voiceOnlyMode?: boolean | null;
 };
@@ -16,7 +16,7 @@ export function shouldAutoSpeakReply(input: ReplyPlaybackPolicyInput = {}) {
   const voiceSurface = String(input.voiceSurface || "").trim().toLowerCase();
 
   if (source === "handsfree") {
-    return input.autoSpeakReplies === true && handsFreeMode !== "off";
+    return handsFreeMode !== "off";
   }
 
   if (source === "voice") {

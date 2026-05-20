@@ -870,14 +870,27 @@ export default function CustomiseScreen() {
 
           <GlassCard style={styles.card}>
             <Text style={styles.sectionTitle}>Hands free</Text>
+            <Text style={styles.helperText}>
+              Works while the app is open and in the foreground. Say the wake phrase to open live voice, then keep talking hands-free.
+            </Text>
 
             <View style={styles.switchCard}>
               <View style={{ flex: 1, paddingRight: 12 }}>
                 <Text style={styles.inputLabel}>Hands free</Text>
+                <Text style={styles.helperText}>
+                  The recognizer pauses while replies are spoken aloud.
+                </Text>
               </View>
               <Switch
                 value={handsFreeEnabled}
-                onValueChange={setHandsFreeEnabled}
+                onValueChange={(enabled) => {
+                  setHandsFreeEnabled(enabled);
+                  if (enabled && !wakePhrase.trim()) {
+                    setWakePhrase(`Hey ${displayName}`);
+                  }
+                }}
+                testID="customise-hands-free-switch"
+                accessibilityLabel="customise-hands-free-switch"
                 trackColor={{ false: "rgba(124, 99, 80, 0.18)", true: "rgba(215,154,89,0.55)" }}
                 thumbColor="#fff7ef"
               />
@@ -889,11 +902,19 @@ export default function CustomiseScreen() {
               value={wakePhrase}
               onChangeText={setWakePhrase}
               placeholder={`Hey ${displayName}`}
+              testID="customise-wake-phrase-input"
+              accessibilityLabel="customise-wake-phrase-input"
             />
 
-            <Pressable onPress={openTrainer} style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}>
+            <Pressable
+              onPress={openTrainer}
+              testID="customise-wake-trainer-button"
+              accessibilityLabel="customise-wake-trainer-button"
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
+            >
               <Ionicons name="radio-outline" size={16} color={Brand.ink} />
-              <Text style={styles.secondaryBtnText}>Open dedicated wake phrase trainer</Text>
+              <Text style={styles.secondaryBtnText}>Capture wake phrase variants</Text>
             </Pressable>
             {trainingTranscript ? (
               <View style={styles.captureCard}>
@@ -933,6 +954,9 @@ export default function CustomiseScreen() {
             <Pressable
               onPress={handleSave}
               disabled={saving || !isDirty}
+              testID="customise-save-button"
+              accessibilityLabel="customise-save-button"
+              accessibilityRole="button"
               style={({ pressed }) => [styles.primaryShell, (saving || !isDirty) && styles.disabled, pressed && styles.pressed]}
             >
               <LinearGradient colors={Brand.gradients.button} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.primaryBtn}>
@@ -1167,12 +1191,16 @@ function LabeledInput({
   value,
   onChangeText,
   placeholder,
+  testID,
+  accessibilityLabel,
 }: {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   value: string;
   onChangeText: (value: string) => void;
   placeholder: string;
+  testID?: string;
+  accessibilityLabel?: string;
 }) {
   return (
     <View style={{ marginTop: 16 }}>
@@ -1183,6 +1211,8 @@ function LabeledInput({
         </View>
         <TextInput
           value={value}
+          testID={testID}
+          accessibilityLabel={accessibilityLabel}
           onChangeText={onChangeText}
           placeholder={placeholder}
           placeholderTextColor="rgba(124, 99, 80, 0.52)"

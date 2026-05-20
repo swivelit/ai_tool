@@ -76,6 +76,17 @@ import { parseDatetime } from "@/lib/datetime";
 import { saveScheduledTask } from "@/lib/localTaskStore";
 import { getMobileBuildInfo } from "@/lib/mobileBuildInfo";
 import {
+  getE2eHandsFreeCommand,
+  getE2eHandsFreeWakePhrase,
+  isE2eMockHandsFreeEnabled,
+} from "@/lib/e2eMode";
+import {
+  buildWakePhraseCandidates,
+  cleanHandsFreeCommand,
+  isHandsFreeStopCommand,
+  matchWakePhrase,
+} from "@/lib/handsFreeWake";
+import {
   friendlyLocalTimeoutMessage,
   getLocalToBackendFallbackMs,
   getLocalTurnSoftNoticeMs,
@@ -123,6 +134,7 @@ type PendingReminder = {
 
 type RecorderSurface = "live";
 type VoiceSessionMode = "live" | null;
+type HandsFreeRecognizerMode = "off" | "wake" | "command" | "conversation";
 type AgentReplyPlaybackContext = {
   requestId?: string;
   source?: ChatRequestSource;
@@ -154,59 +166,6 @@ const VOICE_UNAVAILABLE_MESSAGE =
   "Voice is unavailable right now. Please try again.";
 const CHAT_LOCAL_SOFT_NOTICE_MESSAGE =
   "Still working...";
-
-function normalizeHandsFreeText(value?: string | null) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9஀-௿\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function uniqueHandsFreePhrases(values: string[]) {
-  return Array.from(
-    new Set(values.map((value) => normalizeHandsFreeText(value)).filter(Boolean))
-  );
-}
-
-function buildWakePhraseCandidates(
-  assistantName: string,
-  wakePhrase?: string | null,
-  trainedPhrases: string[] = []
-) {
-  const cleanName = normalizeHandsFreeText(assistantName);
-  const explicitWakePhrase = normalizeHandsFreeText(wakePhrase);
-
-  return uniqueHandsFreePhrases([
-    explicitWakePhrase,
-    ...trainedPhrases,
-    cleanName ? `hey ${cleanName}` : "",
-    cleanName ? `hi ${cleanName}` : "",
-    cleanName ? `hello ${cleanName}` : "",
-  ]);
-}
-
-function matchWakePhrase(input: string, phrases: string[]) {
-  const normalizedInput = normalizeHandsFreeText(input);
-
-  for (const phrase of phrases) {
-    const normalizedPhrase = normalizeHandsFreeText(phrase);
-    if (!normalizedPhrase) continue;
-
-    if (normalizedInput === normalizedPhrase) {
-      return { matched: true, command: "" };
-    }
-
-    if (normalizedInput.startsWith(`${normalizedPhrase} `)) {
-      return {
-        matched: true,
-        command: normalizedInput.slice(normalizedPhrase.length).trim(),
-      };
-    }
-  }
-
-  return { matched: false, command: "" };
-}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -392,9 +351,12 @@ function reconcileChatSessions(
 export default function Home() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
-  const { name, settings, profile } = useAssistant();
+  const { name, settings, profile, updateSettings } = useAssistant();
   const { signOutUser } = useAuth();
   const voiceOnlyMode = useMemo(() => getMobileBuildInfo().voice_only_mode, []);
+  const e2eHandsFreeEnabled = useMemo(() => isE2eMockHandsFreeEnabled(), []);
+  const e2eHandsFreeWakePhrase = useMemo(() => getE2eHandsFreeWakePhrase(), []);
+  const e2eHandsFreeCommand = useMemo(() => getE2eHandsFreeCommand(), []);
 
   const [text, setText] = useState("");
   const [composerInputHeight, setComposerInputHeight] =
@@ -431,8 +393,9 @@ export default function Home() {
   const [chatActionsOpen, setChatActionsOpen] = useState(false);
   const [selectedHistoryItem, setSelectedHistoryItem] =
     useState<ChatSessionListItem | null>(null);
-  const [handsFreeMode, setHandsFreeMode] = useState<"off" | "wake" | "command">("off");
+  const [handsFreeMode, setHandsFreeMode] = useState<HandsFreeRecognizerMode>("off");
   const [handsFreeActive, setHandsFreeActive] = useState(false);
+  const [handsFreeConversationActive, setHandsFreeConversationActive] = useState(false);
   const [handsFreeTranscript, setHandsFreeTranscript] = useState("");
   const [handsFreeStatus, setHandsFreeStatus] = useState("");
   const [appState, setAppState] = useState(AppState.currentState);
@@ -458,11 +421,15 @@ export default function Home() {
   const scrollViewRef = useRef<ScrollView | null>(null);
   const activeChatSessionIdRef = useRef<string | null>(null);
   const historyLongPressTriggeredRef = useRef(false);
-  const handsFreeDesiredModeRef = useRef<"off" | "wake" | "command">("off");
+  const handsFreeDesiredModeRef = useRef<HandsFreeRecognizerMode>("off");
+  const handsFreeConversationActiveRef = useRef(false);
   const handsFreeStartingRef = useRef(false);
   const handsFreeRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handsFreePermissionAlertedRef = useRef(false);
   const handsFreeBlockedRef = useRef(false);
+  const voiceSheetOpenRef = useRef(false);
+  const e2eHandsFreeConfiguredRef = useRef(false);
+  const e2eHandsFreeTriggeredRef = useRef(false);
   const activeChatRequestIdRef = useRef<string | null>(null);
   const modelSetupAlertLastShownAtRef = useRef(0);
   const voiceOnlyInitialOpenRef = useRef(false);
@@ -571,6 +538,10 @@ export default function Home() {
     activeVoiceSessionIdRef.current = activeVoiceSessionId;
   }, [activeVoiceSessionId]);
 
+  useEffect(() => {
+    voiceSheetOpenRef.current = voiceSheetOpen;
+  }, [voiceSheetOpen]);
+
   const latestHistory = useMemo(() => {
     return chatSessions
       .filter((session) => !hiddenChatSessionIdSet.has(session.id))
@@ -642,6 +613,8 @@ export default function Home() {
     ? "Sending..."
     : listening && activeSurface === "live"
       ? "Listening..."
+      : handsFreeMode === "conversation"
+      ? "Listening for your next question..."
       : handsFreeMode === "command"
       ? "Listening for your request…"
       : settings.handsFreeEnabled
@@ -665,7 +638,41 @@ export default function Home() {
     }
   }, []);
 
-  const startHandsFreeRecognizer = useCallback(async (nextMode: "wake" | "command") => {
+  const setHandsFreeRecognizerMode = useCallback((nextMode: HandsFreeRecognizerMode) => {
+    handsFreeDesiredModeRef.current = nextMode;
+    setHandsFreeMode(nextMode);
+  }, []);
+
+  const activateHandsFreeConversation = useCallback(() => {
+    const wasVoiceSheetOpen = voiceSheetOpenRef.current;
+    handsFreeConversationActiveRef.current = true;
+    voiceSheetOpenRef.current = true;
+    setHandsFreeConversationActive(true);
+    if (!wasVoiceSheetOpen) {
+      openVoiceSession();
+    } else {
+      setVoiceSheetOpen(true);
+    }
+  }, []);
+
+  const deactivateHandsFreeConversation = useCallback((options?: { closeVoiceSheet?: boolean }) => {
+    handsFreeConversationActiveRef.current = false;
+    setHandsFreeConversationActive(false);
+    setHandsFreeTranscript("");
+    if (options?.closeVoiceSheet) {
+      voiceSheetOpenRef.current = false;
+      setVoiceSheetOpen(false);
+    }
+    if (handsFreeRuntimeRef.current.foreground && !handsFreeBlockedRef.current) {
+      setHandsFreeRecognizerMode("wake");
+      setHandsFreeStatus(`Say "${handsFreeRuntimeRef.current.wakePhrase}"`);
+    } else {
+      setHandsFreeRecognizerMode("off");
+      setHandsFreeStatus("");
+    }
+  }, [setHandsFreeRecognizerMode]);
+
+  const startHandsFreeRecognizer = useCallback(async (nextMode: Exclude<HandsFreeRecognizerMode, "off">) => {
     const runtime = handsFreeRuntimeRef.current;
     if (!runtime.foreground || handsFreeBlockedRef.current) return;
     if (
@@ -681,8 +688,7 @@ export default function Home() {
 
     if (!ExpoSpeechRecognitionModule.isRecognitionAvailable()) {
       handsFreeBlockedRef.current = true;
-      handsFreeDesiredModeRef.current = "off";
-      setHandsFreeMode("off");
+      setHandsFreeRecognizerMode("off");
       setHandsFreeStatus("Speech recognition is unavailable on this device.");
       if (!handsFreePermissionAlertedRef.current) {
         handsFreePermissionAlertedRef.current = true;
@@ -700,8 +706,7 @@ export default function Home() {
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permission.granted) {
         handsFreeBlockedRef.current = true;
-        handsFreeDesiredModeRef.current = "off";
-        setHandsFreeMode("off");
+        setHandsFreeRecognizerMode("off");
         setHandsFreeStatus("Grant microphone and speech permissions in Settings to enable wake phrase mode.");
         if (!handsFreePermissionAlertedRef.current) {
           handsFreePermissionAlertedRef.current = true;
@@ -714,12 +719,23 @@ export default function Home() {
       }
 
       const latestRuntime = handsFreeRuntimeRef.current;
-      handsFreeDesiredModeRef.current = nextMode;
-      setHandsFreeMode(nextMode);
+      setHandsFreeRecognizerMode(nextMode);
       setHandsFreeStatus(
-        nextMode === "command" ? "Listening for your request…" : `Say "${latestRuntime.wakePhrase}"`
+        nextMode === "conversation"
+          ? "Listening for your next question..."
+          : nextMode === "command"
+            ? "Listening for your request..."
+            : `Say "${latestRuntime.wakePhrase}"`
       );
       setHandsFreeTranscript("");
+
+      const commandLikeMode = nextMode === "command" || nextMode === "conversation";
+      const contextualStrings = [
+        latestRuntime.wakePhrase,
+        assistantLabel,
+        ...handsFreeWakeVariants,
+        ...(settings.wakeTrainingSamples || []),
+      ].filter(Boolean);
 
       ExpoSpeechRecognitionModule.start({
         lang: latestRuntime.locale,
@@ -731,6 +747,20 @@ export default function Home() {
             : false,
         requiresOnDeviceRecognition: Platform.OS === "ios",
         addsPunctuation: false,
+        contextualStrings,
+        iosTaskHint: commandLikeMode ? "dictation" : "confirmation",
+        androidIntentOptions:
+          Platform.OS === "android"
+            ? {
+                EXTRA_LANGUAGE_MODEL: "free_form",
+                EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS:
+                  commandLikeMode ? 4200 : 2600,
+                EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS:
+                  commandLikeMode ? 2200 : 1400,
+                EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS:
+                  commandLikeMode ? 1000 : 600,
+              }
+            : undefined,
       });
     } catch (error: unknown) {
       const message =
@@ -740,42 +770,49 @@ export default function Home() {
     } finally {
       handsFreeStartingRef.current = false;
     }
-  }, [clearHandsFreeRestartTimer]);
+  }, [
+    assistantLabel,
+    clearHandsFreeRestartTimer,
+    handsFreeWakeVariants,
+    setHandsFreeRecognizerMode,
+    settings.wakeTrainingSamples,
+  ]);
 
   const queueHandsFreeRestart = useCallback((
-    nextMode: "wake" | "command" = "wake",
+    nextMode: Exclude<HandsFreeRecognizerMode, "off"> = "wake",
     delay = 350
   ) => {
     if (!handsFreeRuntimeRef.current.foreground || handsFreeBlockedRef.current) return;
 
     clearHandsFreeRestartTimer();
-    handsFreeDesiredModeRef.current = nextMode;
+    setHandsFreeRecognizerMode(nextMode);
 
     handsFreeRestartTimerRef.current = setTimeout(() => {
       void startHandsFreeRecognizer(nextMode);
     }, delay);
-  }, [clearHandsFreeRestartTimer, startHandsFreeRecognizer]);
+  }, [clearHandsFreeRestartTimer, setHandsFreeRecognizerMode, startHandsFreeRecognizer]);
 
   const abortHandsFreeRecognizer = useCallback(async (clearDesiredMode = false) => {
     clearHandsFreeRestartTimer();
 
     if (clearDesiredMode) {
-      handsFreeDesiredModeRef.current = "off";
-      setHandsFreeMode("off");
+      setHandsFreeRecognizerMode("off");
     }
+    setHandsFreeActive(false);
 
     try {
       ExpoSpeechRecognitionModule.abort();
     } catch {
       // ignore
     }
-  }, [clearHandsFreeRestartTimer]);
+  }, [clearHandsFreeRestartTimer, setHandsFreeRecognizerMode]);
 
   const shutdownHandsFree = useCallback(async (clearStatus = false) => {
     clearHandsFreeRestartTimer();
     handsFreeBlockedRef.current = false;
-    handsFreeDesiredModeRef.current = "off";
-    setHandsFreeMode("off");
+    handsFreeConversationActiveRef.current = false;
+    setHandsFreeConversationActive(false);
+    setHandsFreeRecognizerMode("off");
     setHandsFreeActive(false);
 
     if (clearStatus) {
@@ -788,7 +825,78 @@ export default function Home() {
     } catch {
       // ignore
     }
-  }, [clearHandsFreeRestartTimer]);
+  }, [clearHandsFreeRestartTimer, setHandsFreeRecognizerMode]);
+
+  const resumeHandsFreeAfterAssistantTurn = useCallback((
+    source?: ChatRequestSource | null,
+    delay = 420,
+  ) => {
+    if (!handsFreeRuntimeRef.current.foreground || handsFreeBlockedRef.current) return;
+    if (busy || listening || replySoundRef.current) return;
+
+    if (
+      source === "handsfree" &&
+      handsFreeConversationActiveRef.current &&
+      voiceSheetOpenRef.current
+    ) {
+      setHandsFreeStatus("Listening for your next question...");
+      queueHandsFreeRestart("conversation", delay);
+      return;
+    }
+
+    if (!handsFreeConversationActiveRef.current) {
+      setHandsFreeStatus(`Say "${handsFreeRuntimeRef.current.wakePhrase}"`);
+      queueHandsFreeRestart("wake", delay);
+    }
+  }, [busy, listening, queueHandsFreeRestart]);
+
+  async function handleHandsFreeFinalTranscript(rawTranscript: string) {
+    const mode = handsFreeDesiredModeRef.current;
+    if (mode === "off") return;
+
+    const transcript = cleanHandsFreeCommand(rawTranscript);
+    if (!transcript) {
+      queueHandsFreeRestart(mode === "wake" ? "wake" : "conversation", 180);
+      return;
+    }
+
+    setHandsFreeTranscript(transcript);
+
+    if (mode === "command" || mode === "conversation") {
+      if (isHandsFreeStopCommand(transcript)) {
+        setHandsFreeStatus("Hands-free paused.");
+        await abortHandsFreeRecognizer(false);
+        deactivateHandsFreeConversation({ closeVoiceSheet: true });
+        queueHandsFreeRestart("wake", 400);
+        return;
+      }
+
+      activateHandsFreeConversation();
+      setHandsFreeRecognizerMode("conversation");
+      setHandsFreeStatus("Working on it...");
+      await abortHandsFreeRecognizer(false);
+      void submitChatMessage(transcript, "handsfree");
+      return;
+    }
+
+    const matched = matchWakePhrase(transcript, handsFreeWakeVariants);
+    if (!matched.matched) return;
+
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
+    activateHandsFreeConversation();
+    await abortHandsFreeRecognizer(false);
+
+    if (matched.command) {
+      setHandsFreeRecognizerMode("conversation");
+      setHandsFreeStatus("Working on it...");
+      void submitChatMessage(matched.command, "handsfree");
+      return;
+    }
+
+    setHandsFreeRecognizerMode("command");
+    setHandsFreeStatus("Listening for your request...");
+    queueHandsFreeRestart("command", 220);
+  }
 
   const deleteReplyAudioFile = useCallback(async (uri?: string | null) => {
     if (!uri) return;
@@ -835,14 +943,7 @@ export default function Home() {
     }
 
     await deleteReplyAudioFile(cachedUri);
-
-    if (
-      handsFreeRuntimeRef.current.foreground &&
-      handsFreeDesiredModeRef.current !== "off"
-    ) {
-      queueHandsFreeRestart("wake", 320);
-    }
-  }, [deleteReplyAudioFile, queueHandsFreeRestart]);
+  }, [deleteReplyAudioFile]);
 
   useSpeechRecognitionEvent("start", () => {
     if (handsFreeDesiredModeRef.current === "off") return;
@@ -859,52 +960,23 @@ export default function Home() {
       return;
     }
 
-    queueHandsFreeRestart(nextMode, nextMode === "command" ? 180 : 450);
+    if (nextMode === "command" || nextMode === "conversation" || nextMode === "wake") {
+      queueHandsFreeRestart(nextMode, nextMode === "wake" ? 450 : 220);
+    }
   });
 
   useSpeechRecognitionEvent("result", (event: any) => {
     if (handsFreeDesiredModeRef.current === "off") return;
 
-    const transcript = String(event?.results?.[0]?.transcript || "").trim();
+    const transcript = cleanHandsFreeCommand(
+      String(event?.results?.[0]?.transcript || "")
+    );
     if (!transcript) return;
 
     setHandsFreeTranscript(transcript);
 
     if (!event?.isFinal) return;
-
-    if (handsFreeDesiredModeRef.current === "command") {
-      handsFreeDesiredModeRef.current = "wake";
-      setHandsFreeMode("wake");
-
-      if (!transcript.trim()) {
-        setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
-        queueHandsFreeRestart("wake", 180);
-        return;
-      }
-
-      void submitChatMessage(transcript, "handsfree");
-      return;
-    }
-
-    const matched = matchWakePhrase(transcript, handsFreeWakeVariants);
-    if (!matched.matched) return;
-
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
-
-    if (matched.command) {
-      setVoiceSheetOpen(true);
-      handsFreeDesiredModeRef.current = "wake";
-      setHandsFreeMode("wake");
-      setHandsFreeStatus("Working on it…");
-      void submitChatMessage(matched.command, "handsfree");
-      return;
-    }
-
-    setVoiceSheetOpen(true);
-    handsFreeDesiredModeRef.current = "command";
-    setHandsFreeMode("command");
-    setHandsFreeStatus("Listening for your request…");
-    void abortHandsFreeRecognizer(false);
+    void handleHandsFreeFinalTranscript(transcript);
   });
 
   useSpeechRecognitionEvent("error", (event: any) => {
@@ -924,8 +996,7 @@ export default function Home() {
       errorCode === "language-not-supported"
     ) {
       handsFreeBlockedRef.current = true;
-      handsFreeDesiredModeRef.current = "off";
-      setHandsFreeMode("off");
+      setHandsFreeRecognizerMode("off");
 
       if (errorCode === "not-allowed" && !handsFreePermissionAlertedRef.current) {
         handsFreePermissionAlertedRef.current = true;
@@ -943,8 +1014,14 @@ export default function Home() {
       return;
     }
 
-    handsFreeDesiredModeRef.current = "wake";
-    setHandsFreeMode("wake");
+    if (handsFreeConversationActiveRef.current && voiceSheetOpenRef.current) {
+      setHandsFreeRecognizerMode("conversation");
+      setHandsFreeStatus("Listening for your next question...");
+      queueHandsFreeRestart("conversation", 500);
+      return;
+    }
+
+    setHandsFreeRecognizerMode("wake");
     setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
 
     if (handsFreeForegroundEnabled && !busy && !listening && !replySoundRef.current) {
@@ -963,8 +1040,7 @@ export default function Home() {
     if (handsFreeForegroundEnabled) {
       handsFreeBlockedRef.current = false;
       handsFreePermissionAlertedRef.current = false;
-      handsFreeDesiredModeRef.current = "wake";
-      setHandsFreeMode("wake");
+      setHandsFreeRecognizerMode("wake");
       setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
       queueHandsFreeRestart("wake", 120);
       return;
@@ -995,7 +1071,10 @@ export default function Home() {
       !handsFreeStartingRef.current &&
       handsFreeDesiredModeRef.current !== "off"
     ) {
-      queueHandsFreeRestart(handsFreeDesiredModeRef.current, 220);
+      const nextMode = handsFreeDesiredModeRef.current;
+      if (nextMode === "wake" || nextMode === "command" || nextMode === "conversation") {
+        queueHandsFreeRestart(nextMode, 220);
+      }
     }
   }, [
     abortHandsFreeRecognizer,
@@ -1012,10 +1091,27 @@ export default function Home() {
   }, [handsFreeWakePhrase, handsFreeForegroundEnabled]);
 
   useEffect(() => {
+    if (!e2eHandsFreeEnabled || e2eHandsFreeConfiguredRef.current) return;
+    e2eHandsFreeConfiguredRef.current = true;
+    void updateSettings({
+      handsFreeEnabled: true,
+      wakePhrase: e2eHandsFreeWakePhrase,
+      wakeTrainingSamples: [e2eHandsFreeWakePhrase],
+    });
+  }, [
+    e2eHandsFreeEnabled,
+    e2eHandsFreeWakePhrase,
+    updateSettings,
+  ]);
+
+  useEffect(() => {
     if (!busy && !listening && handsFreeForegroundEnabled && !handsFreeBlockedRef.current) {
-      queueHandsFreeRestart("wake", 450);
+      resumeHandsFreeAfterAssistantTurn(
+        handsFreeConversationActiveRef.current ? "handsfree" : null,
+        450,
+      );
     }
-  }, [busy, listening, handsFreeForegroundEnabled, queueHandsFreeRestart]);
+  }, [busy, listening, handsFreeForegroundEnabled, resumeHandsFreeAfterAssistantTurn]);
 
   useEffect(() => {
     recordingRef.current = recording;
@@ -1573,6 +1669,7 @@ export default function Home() {
   function openVoiceSession() {
     const sessionId = nextVoiceSessionId();
     activeVoiceSessionIdRef.current = sessionId;
+    voiceSheetOpenRef.current = true;
     voiceSessionItemsPendingHistoryRef.current = [];
     setActiveVoiceSessionId(sessionId);
     setVoiceSessionMode("live");
@@ -1867,6 +1964,8 @@ export default function Home() {
     const playbackToken = replyPlaybackTokenRef.current + 1;
     replyPlaybackTokenRef.current = playbackToken;
     const isVoiceReply = context.source === "voice";
+    const isHandsFreeReply = context.source === "handsfree";
+    const isSpokenVoiceReply = isVoiceReply || isHandsFreeReply;
     let cachedUri: string | null = null;
     let sound: Audio.Sound | null = null;
 
@@ -1887,6 +1986,8 @@ export default function Home() {
             ttsStatus: "tts_started",
           });
         }
+      } else if (isHandsFreeReply) {
+        setHandsFreeStatus("Preparing reply...");
       }
       logVoiceTelemetry("client_voice_reply_tts_started", {
         request_id: context.requestId,
@@ -1895,15 +1996,15 @@ export default function Home() {
         reply_playback_phase: "tts_request",
         voice_surface: context.voiceSurface || null,
         voice_session_id: context.voiceSessionId || undefined,
-        requested_reply_language: isVoiceReply ? voiceLanguage.replyLanguage : undefined,
-        requested_speech_language: isVoiceReply ? voiceLanguage.speechLanguage : undefined,
-        tts_language_code: isVoiceReply ? voiceLanguage.ttsLanguageCode : undefined,
-        tts_locale_style: isVoiceReply
+        requested_reply_language: isSpokenVoiceReply ? voiceLanguage.replyLanguage : undefined,
+        requested_speech_language: isSpokenVoiceReply ? voiceLanguage.speechLanguage : undefined,
+        tts_language_code: isSpokenVoiceReply ? voiceLanguage.ttsLanguageCode : undefined,
+        tts_locale_style: isSpokenVoiceReply
           ? voiceLanguage.replyLanguage === "ta"
             ? "local_tamil"
             : "indian_english"
           : undefined,
-        settings_language_mode: isVoiceReply ? settings.languageMode : undefined,
+        settings_language_mode: isSpokenVoiceReply ? settings.languageMode : undefined,
       });
 
       const data = await apiPost<{
@@ -1914,8 +2015,9 @@ export default function Home() {
         model?: string;
       }>("/api/tts", {
         text: textValue,
-        target_language_code:
-          isVoiceReply ? voiceLanguage.ttsLanguageCode : settings.languageMode === "ta" ? "ta-IN" : "en-IN",
+        target_language_code: isSpokenVoiceReply
+          ? voiceLanguage.ttsLanguageCode
+          : settings.languageMode === "ta" ? "ta-IN" : "en-IN",
       });
 
       if (!data.audio_base64) {
@@ -1958,8 +2060,12 @@ export default function Home() {
                 ttsStatus: "reply_ready",
               });
             }
+          } else if (replySoundRef.current === sound && isHandsFreeReply) {
+            setHandsFreeStatus("Listening for your next question...");
           }
-          void releaseReplySound(sound);
+          void releaseReplySound(sound).finally(() => {
+            resumeHandsFreeAfterAssistantTurn(context.source, 320);
+          });
         }
       });
 
@@ -1989,6 +2095,8 @@ export default function Home() {
             ttsStatus: "speaking",
           });
         }
+      } else if (isHandsFreeReply) {
+        setHandsFreeStatus("Speaking reply...");
       }
       logVoiceTelemetry("client_voice_reply_tts_completed", {
         request_id: context.requestId,
@@ -1997,8 +2105,8 @@ export default function Home() {
         reply_playback_phase: "loaded",
         voice_surface: context.voiceSurface || null,
         voice_session_id: context.voiceSessionId || undefined,
-        requested_reply_language: isVoiceReply ? voiceLanguage.replyLanguage : undefined,
-        tts_language_code: data.target_language_code || (isVoiceReply ? voiceLanguage.ttsLanguageCode : undefined),
+        requested_reply_language: isSpokenVoiceReply ? voiceLanguage.replyLanguage : undefined,
+        tts_language_code: data.target_language_code || (isSpokenVoiceReply ? voiceLanguage.ttsLanguageCode : undefined),
         tts_speaker: data.speaker || undefined,
         tts_locale_style: data.locale_style || undefined,
         reply_audio_bytes: base64DecodedByteLength(data.audio_base64),
@@ -2022,6 +2130,8 @@ export default function Home() {
             ttsStatus: "tts_failed",
           });
         }
+      } else if (isHandsFreeReply) {
+        setHandsFreeStatus("Reply received, but voice playback failed.");
       }
       logVoiceTelemetry("client_voice_reply_tts_failed", {
         request_id: context.requestId,
@@ -2034,6 +2144,7 @@ export default function Home() {
         error_type: safeVoiceErrorType(error, "voice_reply_tts_failed"),
         error_message: error instanceof Error ? error.message : String(error || ""),
       });
+      resumeHandsFreeAfterAssistantTurn(context.source, 650);
     }
   }
 
@@ -2052,6 +2163,10 @@ export default function Home() {
 
     const requestId = nextChatRequestId(source);
     const currentSessionId = activeChatSessionIdRef.current;
+    const isHandsFreeTurn =
+      source === "handsfree" &&
+      handsFreeConversationActiveRef.current &&
+      voiceSheetOpenRef.current;
     activeChatRequestIdRef.current = requestId;
     const turnStartedAt = Date.now();
     let softNoticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2084,14 +2199,23 @@ export default function Home() {
         screen: "chat",
         app_state: AppState.currentState,
       });
-      setPendingChatTurn({
-        requestId,
-        sessionId: currentSessionId,
-        source,
-        userMessage: cleaned,
-        status: "thinking",
-        createdAt: new Date().toISOString(),
-      });
+      if (isHandsFreeTurn) {
+        updateVoiceSessionTurn(requestId, {
+          userText: cleaned,
+          assistantText: "",
+          status: "thinking",
+          replyLanguage: settings.languageMode,
+        });
+      } else {
+        setPendingChatTurn({
+          requestId,
+          sessionId: currentSessionId,
+          source,
+          userMessage: cleaned,
+          status: "thinking",
+          createdAt: new Date().toISOString(),
+        });
+      }
 
       if (source === "text") {
         setText("");
@@ -2120,6 +2244,11 @@ export default function Home() {
         );
         if (source === "handsfree") {
           setHandsFreeStatus(CHAT_LOCAL_SOFT_NOTICE_MESSAGE);
+          if (isHandsFreeTurn) {
+            updateVoiceSessionTurn(requestId, {
+              assistantText: CHAT_LOCAL_SOFT_NOTICE_MESSAGE,
+            });
+          }
         }
       }, Math.min(Math.max(softNoticeMs, 5_000), 8_000));
       const response = await withLocalTimeout(
@@ -2128,6 +2257,7 @@ export default function Home() {
           message: cleaned,
           reply_language: settings.languageMode,
           request_id: requestId,
+          client_source: source,
         }),
         chatTurnTimeoutMs,
         {
@@ -2144,6 +2274,14 @@ export default function Home() {
 
       const nextItem = normalizeChatTurnPayload(response, cleaned);
       clearPendingAssistant(requestId);
+      if (isHandsFreeTurn) {
+        updateVoiceSessionTurn(requestId, {
+          userText: cleaned,
+          assistantText: nextItem.details || "",
+          status: "done",
+          replyLanguage: settings.languageMode,
+        });
+      }
       const mergedHistory = await refreshHistoryAndSessions([nextItem]);
       await attachItemToCurrentChat(nextItem, mergedHistory);
       openReturnedFile(firstOpenableFile(nextItem, "files"));
@@ -2178,6 +2316,8 @@ export default function Home() {
         })
       ) {
         void playAgentReply(nextItem.details, { requestId, source });
+      } else if (source === "handsfree") {
+        resumeHandsFreeAfterAssistantTurn(source, 420);
       }
 
       if (nextItem.intent === "reminder" && nextItem.datetime) {
@@ -2235,6 +2375,7 @@ export default function Home() {
                   message: cleaned,
                   reply_language: settings.languageMode,
                   request_id: requestId,
+                  client_source: source,
                   client_fallback_reason: "local_timeout",
                   client_local_budget_ms: getLocalToBackendFallbackMs(),
                   client_original_route: "local_answer",
@@ -2247,6 +2388,14 @@ export default function Home() {
               }
               const nextItem = normalizeChatTurnPayload(backendResponse, cleaned);
               clearPendingAssistant(requestId);
+              if (isHandsFreeTurn) {
+                updateVoiceSessionTurn(requestId, {
+                  userText: cleaned,
+                  assistantText: nextItem.details || "",
+                  status: "done",
+                  replyLanguage: settings.languageMode,
+                });
+              }
               const mergedHistory = await refreshHistoryAndSessions([nextItem]);
               await attachItemToCurrentChat(nextItem, mergedHistory);
               openReturnedFile(firstOpenableFile(nextItem, "files"));
@@ -2288,6 +2437,18 @@ export default function Home() {
                 app_state: AppState.currentState,
               });
               await clearActiveWorkflow(requestId).catch(() => undefined);
+              if (
+                nextItem.details &&
+                shouldAutoSpeakReply({
+                  source,
+                  autoSpeakReplies: settings.autoSpeakReplies,
+                  handsFreeMode,
+                })
+              ) {
+                void playAgentReply(nextItem.details, { requestId, source });
+              } else if (source === "handsfree") {
+                resumeHandsFreeAfterAssistantTurn(source, 420);
+              }
               return;
             } catch (fallbackError) {
               backendFallbackError = fallbackError;
@@ -2304,6 +2465,18 @@ export default function Home() {
             cleaned,
             source,
           );
+          if (isHandsFreeTurn) {
+            updateVoiceSessionTurn(requestId, {
+              userText: cleaned,
+              assistantText: backendFallbackError
+                ? assistantFailureMessage(backendFallbackError, {
+                    backendFallbackAttempted: true,
+                  })
+                : friendlyLocalTimeoutMessage(),
+              status: "error",
+            });
+            setHandsFreeStatus("Something went wrong. Listening again...");
+          }
           logClientTurn({
             event: "client_chat_turn_failed",
             user_id: profile.userId,
@@ -2322,10 +2495,21 @@ export default function Home() {
             app_state: AppState.currentState,
           });
           await clearActiveWorkflow(requestId).catch(() => undefined);
+          if (source === "handsfree") {
+            resumeHandsFreeAfterAssistantTurn(source, 650);
+          }
           return;
         }
         const message = assistantFailureMessage(error);
         showPendingAssistantError(requestId, message, cleaned, source);
+        if (isHandsFreeTurn) {
+          updateVoiceSessionTurn(requestId, {
+            userText: cleaned,
+            assistantText: message,
+            status: "error",
+          });
+          setHandsFreeStatus("Something went wrong. Listening again...");
+        }
         logClientTurn({
           event: "client_chat_turn_failed",
           user_id: profile.userId,
@@ -2346,6 +2530,9 @@ export default function Home() {
         });
         await clearActiveWorkflow(requestId).catch(() => undefined);
         warnChatFailure(error, requestId, source);
+        if (source === "handsfree") {
+          resumeHandsFreeAfterAssistantTurn(source, 650);
+        }
       }
     } finally {
       clearProgressTimers();
@@ -2354,16 +2541,34 @@ export default function Home() {
         setBusy(false);
       }
 
-      if (handsFreeForegroundEnabled) {
-        setHandsFreeMode("wake");
-        setHandsFreeStatus(`Say "${handsFreeWakePhrase}"`);
-        queueHandsFreeRestart("wake", 520);
+      if (handsFreeForegroundEnabled && source !== "handsfree") {
+        resumeHandsFreeAfterAssistantTurn(null, 520);
       }
     }
   }
 
   async function handleChatSend() {
     await submitChatMessage(text, "text");
+  }
+
+  async function simulateE2eHandsFreeWakeCommand() {
+    if (!e2eHandsFreeEnabled || busy) return;
+    e2eHandsFreeTriggeredRef.current = true;
+    const wakePhrase = e2eHandsFreeWakePhrase || handsFreeWakePhrase;
+    const command = e2eHandsFreeCommand || "tell me about Spitzola";
+    setHandsFreeTranscript(`${wakePhrase} ${command}`);
+    activateHandsFreeConversation();
+    setHandsFreeRecognizerMode("conversation");
+    setHandsFreeStatus("Working on it...");
+    await abortHandsFreeRecognizer(false);
+    await submitChatMessage(command, "handsfree");
+  }
+
+  async function simulateE2eHandsFreeStop() {
+    if (!e2eHandsFreeEnabled) return;
+    e2eHandsFreeTriggeredRef.current = false;
+    setHandsFreeTranscript("go to sleep");
+    await handleHandsFreeFinalTranscript("go to sleep");
   }
 
   async function cleanupVoiceRecordingState(options?: { cancelStartup?: boolean }) {
@@ -2781,10 +2986,15 @@ export default function Home() {
   }
 
   async function closeVoiceSheetSafely() {
+    if (handsFreeConversationActiveRef.current) {
+      deactivateHandsFreeConversation();
+      queueHandsFreeRestart("wake", 350);
+    }
     const phase = recordingPhaseRef.current;
     if (phase === "starting" || phase === "recording") {
       await stopAndAnalyze();
     }
+    voiceSheetOpenRef.current = false;
     setVoiceSheetOpen(false);
     const pendingItems = voiceSessionItemsPendingHistoryRef.current;
     voiceSessionItemsPendingHistoryRef.current = [];
@@ -2938,6 +3148,33 @@ export default function Home() {
             <Ionicons name="sparkles-outline" size={18} color={Brand.cocoa} />
           </Pressable>
         </View>
+
+        {e2eHandsFreeEnabled ? (
+          <View style={styles.e2eHandsFreeControls}>
+            <Pressable
+              onPress={() => {
+                void simulateE2eHandsFreeWakeCommand();
+              }}
+              testID="e2e-hands-free-trigger-button"
+              accessibilityLabel="e2e-hands-free-trigger-button"
+              accessibilityRole="button"
+              style={styles.e2eHandsFreeButton}
+            >
+              <Text style={styles.e2eHandsFreeButtonText}>E2E hands-free</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                void simulateE2eHandsFreeStop();
+              }}
+              testID="e2e-hands-free-stop-button"
+              accessibilityLabel="e2e-hands-free-stop-button"
+              accessibilityRole="button"
+              style={styles.e2eHandsFreeButton}
+            >
+              <Text style={styles.e2eHandsFreeButtonText}>E2E stop</Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         <View style={styles.chatBody}>
           <ScrollView
@@ -3363,6 +3600,8 @@ export default function Home() {
                 ? "Preparing microphone..."
                 : listening && activeSurface === "live"
                   ? "Listening..."
+                  : handsFreeConversationActive
+                    ? "Hands-free conversation"
                   : handsFreeActive
                     ? "Hands-free ready"
                     : "Hold to Talk"}
@@ -3386,6 +3625,20 @@ export default function Home() {
               <Text numberOfLines={2} style={styles.handsFreeTranscript}>
                 {handsFreeTranscript}
               </Text>
+            ) : null}
+
+            {e2eHandsFreeEnabled && handsFreeConversationActive ? (
+              <Pressable
+                onPress={() => {
+                  void simulateE2eHandsFreeStop();
+                }}
+                testID="e2e-hands-free-stop-button"
+                accessibilityLabel="e2e-hands-free-stop-button"
+                accessibilityRole="button"
+                style={styles.e2eHandsFreeButton}
+              >
+                <Text style={styles.e2eHandsFreeButtonText}>E2E stop</Text>
+              </Pressable>
             ) : null}
 
             <VoiceSessionTranscript
@@ -3605,6 +3858,30 @@ const styles = StyleSheet.create({
 
   iconButtonDisabled: {
     opacity: 0.45,
+  },
+
+  e2eHandsFreeControls: {
+    alignSelf: "center",
+    flexDirection: "row",
+    gap: 8,
+    paddingBottom: 6,
+  },
+
+  e2eHandsFreeButton: {
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.84)",
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+  },
+
+  e2eHandsFreeButtonText: {
+    color: Brand.cocoa,
+    fontSize: 11,
+    fontWeight: "900",
   },
 
   chatThread: {

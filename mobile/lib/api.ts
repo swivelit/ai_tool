@@ -10,6 +10,7 @@ import { getCachedDeviceCapabilities } from "./deviceCapabilities";
 import {
   getE2eVoiceQuery,
   getE2eVoiceSurface,
+  isE2eMockHandsFreeEnabled,
   isE2eMockVoiceTurnEnabled,
 } from "./e2eMode";
 import { auth } from "./firebase";
@@ -1471,6 +1472,69 @@ function buildE2eMockVoiceTurnResponse(replyLanguage: ReplyLanguage = PRODUCT_DE
   };
 }
 
+function buildE2eMockHandsFreeChatResponse(input: {
+  message: string;
+  replyLanguage: ReplyLanguage;
+  requestId?: string | null;
+}): LocalChatProxyResponse {
+  const createdAt = new Date().toISOString();
+  const assistantText = e2eVoiceAnswerFor(input.message, input.replyLanguage);
+  const routeTaken = input.replyLanguage === "ta" ? "sarvam_general" : "openai_general";
+  const ttsLanguageCode = e2eTtsLanguageCode(input.replyLanguage);
+  return {
+    ok: true,
+    kind: "assistant_turn",
+    item: {
+      id: Date.now(),
+      intent: "assistant",
+      category: "Hands free",
+      raw_text: input.message,
+      transcript: null,
+      datetime: null,
+      title: "Hands-free",
+      details: assistantText,
+      created_at: createdAt,
+      source: "text",
+      __origin: "local",
+    },
+    assistant: {
+      text: assistantText,
+      english: input.replyLanguage === "en" ? assistantText : "",
+      tamil: input.replyLanguage === "ta" ? assistantText : undefined,
+      theni_tamil: input.replyLanguage === "ta" ? assistantText : undefined,
+    },
+    pipeline: {
+      route_taken: routeTaken,
+      predicted_label: "general",
+      raw_english: input.message,
+      remodeled_english: input.replyLanguage === "en" ? assistantText : "",
+      tamil_text: input.replyLanguage === "ta" ? assistantText : "",
+      theni_tamil_text: input.replyLanguage === "ta" ? assistantText : "",
+      direct_answer_source: "e2e_hands_free_mock",
+      meta: {
+        source: "e2e_hands_free_mock",
+        request_id: input.requestId || null,
+        requested_reply_language: input.replyLanguage,
+        tts_language_code: ttsLanguageCode,
+        target_language_code: ttsLanguageCode,
+        tts_locale_style: e2eTtsLocaleStyle(input.replyLanguage),
+      },
+    },
+    meta: {
+      source: "e2e_hands_free_mock",
+      route: routeTaken,
+      request_id: input.requestId || null,
+      language: input.replyLanguage,
+      requested_reply_language: input.replyLanguage,
+      tts_language_code: ttsLanguageCode,
+      target_language_code: ttsLanguageCode,
+      tts_locale_style: e2eTtsLocaleStyle(input.replyLanguage),
+      cacheHit: false,
+      created_at: createdAt,
+    },
+  };
+}
+
 function getFormFilePart(form: FormData) {
   const internal = (form as any)?._parts;
   if (!Array.isArray(internal)) return null;
@@ -2513,6 +2577,28 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
+  if (
+    isE2eMockHandsFreeEnabled() &&
+    isChatPath(path) &&
+    String(body?.client_source || "").trim().toLowerCase() === "handsfree"
+  ) {
+    const replyLanguage =
+      normalizeReplyLanguage(body?.reply_language) || PRODUCT_DEFAULT_REPLY_LANGUAGE;
+    const mock = buildE2eMockHandsFreeChatResponse({
+      message: String(body?.message || "tell me about Spitzola"),
+      replyLanguage,
+      requestId: body?.request_id || null,
+    }) as T;
+    console.info("[e2e_hands_free_mock] /api/chat", {
+      requested_reply_language: replyLanguage,
+      predicted_label: "general",
+      route_taken: replyLanguage === "ta" ? "sarvam_general" : "openai_general",
+      tts_language_code: e2eTtsLanguageCode(replyLanguage),
+      tts_locale_style: e2eTtsLocaleStyle(replyLanguage),
+    });
+    return mock;
+  }
+
   if (isE2eMockVoiceTurnEnabled() && isTtsPath(path)) {
     const targetLanguageCode =
       String(body?.target_language_code || "").trim() ||

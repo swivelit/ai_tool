@@ -493,6 +493,33 @@ scan_voice_reply_markers() {
     { [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" != "ta" ]] || grep -E "local_tamil|tts_locale_style['\": ]+local_tamil" "$markers_file" >/dev/null 2>&1; }
 }
 
+scan_hands_free_reply_markers() {
+  local start_line="${1:-0}"
+  local log_file="$ARTIFACT_DIR/logcat-full.log"
+  local markers_file="$ARTIFACT_DIR/hands-free-markers.log"
+
+  : > "$markers_file"
+  [[ -f "$log_file" ]] || return 1
+
+  local recent
+  recent="$(tail -n "+$((start_line + 1))" "$log_file" 2>/dev/null || true)"
+  printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_started" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_completed" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_failed" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" >> "$markers_file" 2>/dev/null || true
+  if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
+    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+ta-IN|target_language_code['\": ]+ta-IN" >> "$markers_file" 2>/dev/null || true
+  else
+    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+en-IN|target_language_code['\": ]+en-IN" >> "$markers_file" 2>/dev/null || true
+  fi
+
+  grep -E "client_voice_reply_tts_started" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "client_voice_reply_tts_completed" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "tts_language_code['\": ]+(en-IN|ta-IN)|target_language_code['\": ]+(en-IN|ta-IN)" "$markers_file" >/dev/null 2>&1 &&
+    ! grep -E "client_voice_reply_tts_failed" "$markers_file" >/dev/null 2>&1
+}
+
 start_logcat() {
   adb logcat -c > "$ARTIFACT_DIR/logcat-clear.log" 2>&1 || true
   adb logcat -v threadtime > "$ARTIFACT_DIR/logcat-full.log" 2>&1 &
@@ -622,7 +649,19 @@ fi
 
 if ! is_truthy "${SKIP_PRECHECKS:-}"; then
   run_step "mobile-typecheck" bash -lc "cd '$MOBILE_DIR' && npm run typecheck"
-  run_step "mobile-tests" bash -lc "cd '$MOBILE_DIR' && npm test -- --run"
+  run_step "mobile-tests" env \
+    -u EXPO_PUBLIC_E2E_MOCK_AUTH \
+    -u EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP \
+    -u EXPO_PUBLIC_E2E_MOCK_VOICE_TURN \
+    -u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE \
+    -u EXPO_PUBLIC_E2E_REPLY_LANGUAGE \
+    -u EXPO_PUBLIC_E2E_TAMIL_STYLE \
+    -u EXPO_PUBLIC_E2E_VOICE_QUERY \
+    -u EXPO_PUBLIC_E2E_VOICE_SURFACE \
+    -u EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT \
+    -u EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE \
+    -u EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND \
+    bash -lc "cd '$MOBILE_DIR' && npm test -- --run"
   run_step "mobile-release-verify-backend-first" bash -lc "cd '$MOBILE_DIR' && npm run release:verify-backend-first"
   run_step "bash-n-build-apk" bash -n "$ROOT_DIR/build-apk.sh"
   run_step "bash-n-launch-debug-apk" bash -n "$ROOT_DIR/launch-debug_apk.sh"
@@ -684,11 +723,14 @@ fi
 export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
 export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
 export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
+export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-1}"
 export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-en}"
 export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conversational}"
 export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"
 export EXPO_PUBLIC_E2E_VOICE_SURFACE="${EXPO_PUBLIC_E2E_VOICE_SURFACE:-live}"
 export EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="${EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT:-1}"
+export EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE="${EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE:-Hey Elli}"
+export EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND="${EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND:-tell me about Spitzola}"
 export EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT="${EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT:-1}"
 export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
@@ -698,11 +740,14 @@ export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNV
   printf "EXPO_PUBLIC_E2E_MOCK_AUTH=%s\n" "$EXPO_PUBLIC_E2E_MOCK_AUTH"
   printf "EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=%s\n" "$EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP"
   printf "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=%s\n" "$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN"
+  printf "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE=%s\n" "$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE"
   printf "EXPO_PUBLIC_E2E_REPLY_LANGUAGE=%s\n" "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE"
   printf "EXPO_PUBLIC_E2E_TAMIL_STYLE=%s\n" "$EXPO_PUBLIC_E2E_TAMIL_STYLE"
   printf "EXPO_PUBLIC_E2E_VOICE_QUERY=%s\n" "$EXPO_PUBLIC_E2E_VOICE_QUERY"
   printf "EXPO_PUBLIC_E2E_VOICE_SURFACE=%s\n" "$EXPO_PUBLIC_E2E_VOICE_SURFACE"
   printf "EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT=%s\n" "$EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT"
+  printf "EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE=%s\n" "$EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE"
+  printf "EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND=%s\n" "$EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND"
   printf "EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT=%s\n" "$EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT"
 } > "$ARTIFACT_DIR/e2e-env.log"
 
@@ -775,11 +820,14 @@ else
     EXPO_PUBLIC_E2E_MOCK_AUTH="$EXPO_PUBLIC_E2E_MOCK_AUTH" \
     EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="$EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP" \
     EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN" \
+    EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE" \
     EXPO_PUBLIC_E2E_REPLY_LANGUAGE="$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" \
     EXPO_PUBLIC_E2E_TAMIL_STYLE="$EXPO_PUBLIC_E2E_TAMIL_STYLE" \
     EXPO_PUBLIC_E2E_VOICE_QUERY="$EXPO_PUBLIC_E2E_VOICE_QUERY" \
     EXPO_PUBLIC_E2E_VOICE_SURFACE="$EXPO_PUBLIC_E2E_VOICE_SURFACE" \
     EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="$EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT" \
+    EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE="$EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE" \
+    EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND="$EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND" \
     EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT="$EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT" \
     EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="$EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT" \
@@ -962,6 +1010,100 @@ adb shell input keyevent 4 >/dev/null 2>&1 || true
 wait_for_desc "chat-input" 10 || true
 capture_step "voice-closed"
 assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-voice" || true
+
+if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
+  hands_free_log_start_line=0
+  if [[ -f "$ARTIFACT_DIR/logcat-full.log" ]]; then
+    hands_free_log_start_line="$(wc -l < "$ARTIFACT_DIR/logcat-full.log" | tr -d '[:space:]')"
+  fi
+
+  capture_step "hands-free-before"
+  assert_desc_absent "chat-mic-button" "chat-mic-button-absent-before-hands-free" || true
+
+  if ! wait_for_desc "e2e-hands-free-trigger-button" 20; then
+    mark_failed "e2e-hands-free-trigger-not-found"
+    capture_step "hands-free-trigger-not-found"
+  elif ! tap_desc "e2e-hands-free-trigger-button"; then
+    mark_failed "tap-e2e-hands-free-trigger"
+    capture_step "hands-free-trigger-tap-failed"
+  else
+    hands_free_reply_seen=0
+    deadline=$((SECONDS + 90))
+    while [[ "$SECONDS" -lt "$deadline" ]]; do
+      if ! assert_app_alive "during-hands-free-test"; then
+        break
+      fi
+      if wait_for_text "Hands-free conversation" 1 && wait_for_desc "voice-session-assistant-turn" 1; then
+        hands_free_reply_seen=1
+        break
+      fi
+      if wait_for_desc "voice-session-transcript" 1 && wait_for_text "$voice_expected_reply" 1; then
+        hands_free_reply_seen=1
+        break
+      fi
+      sleep 1
+    done
+
+    if [[ "$hands_free_reply_seen" != "1" ]]; then
+      mark_failed "hands-free-reply-not-visible"
+      capture_step "hands-free-reply-not-visible"
+    fi
+
+    wait_for_text "Hands-free conversation" 3 || mark_failed "hands-free-modal-not-open"
+    wait_for_desc "voice-session-transcript" 3 || mark_failed "hands-free-transcript-not-visible"
+    wait_for_desc "voice-session-user-turn" 3 || mark_failed "hands-free-user-turn-not-visible"
+    wait_for_desc "voice-session-assistant-turn" 3 || mark_failed "hands-free-assistant-turn-not-visible"
+    if ! wait_for_text "$voice_expected_reply" 4; then
+      mark_failed "hands-free-reply-language-mismatch-${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
+    fi
+
+    hands_free_status_seen=0
+    deadline=$((SECONDS + 35))
+    while [[ "$SECONDS" -lt "$deadline" ]]; do
+      if wait_for_text "Listening for your next question" 1; then
+        hands_free_status_seen=1
+        break
+      fi
+      sleep 1
+    done
+    if [[ "$hands_free_status_seen" != "1" ]]; then
+      mark_failed "hands-free-listening-resumed"
+    fi
+
+    hands_free_markers_seen=0
+    deadline=$((SECONDS + 25))
+    while [[ "$SECONDS" -lt "$deadline" ]]; do
+      if scan_hands_free_reply_markers "$hands_free_log_start_line"; then
+        hands_free_markers_seen=1
+        break
+      fi
+      sleep 1
+    done
+    if [[ "$hands_free_markers_seen" != "1" ]]; then
+      mark_failed "hands-free-telemetry-markers-missing"
+    fi
+    if [[ -f "$ARTIFACT_DIR/logcat-full.log" ]] && \
+      tail -n "+$((hands_free_log_start_line + 1))" "$ARTIFACT_DIR/logcat-full.log" | \
+        grep -E "client_voice_reply_tts_failed" > "$ARTIFACT_DIR/hands-free-tts-failures.log" 2>/dev/null; then
+      mark_failed "hands-free-tts-failed"
+    fi
+
+    capture_step "hands-free-after-reply"
+
+    if wait_for_desc "e2e-hands-free-stop-button" 15; then
+      tap_desc "e2e-hands-free-stop-button" || mark_failed "tap-e2e-hands-free-stop"
+      sleep 2
+      if ! wait_for_text "Say \"${EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE}\"" 8 && \
+        ! wait_for_desc "chat-input" 8; then
+        mark_failed "hands-free-stop-did-not-return-to-wake"
+      fi
+    else
+      mark_failed "e2e-hands-free-stop-not-found"
+    fi
+    capture_step "hands-free-after-stop"
+    assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-hands-free" || true
+  fi
+fi
 
 for message in "hello" "what can you do" "tell me about solo leveling"; do
   label="$(printf '%s' "$message" | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]')"

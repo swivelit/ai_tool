@@ -35,25 +35,20 @@ describe("reply playback policy", () => {
     ).toBe(false);
   });
 
-  it("keeps hands-free silent by default", () => {
+  it("speaks hands-free replies by default when active", () => {
     expect(
       shouldAutoSpeakReply({ source: "handsfree", handsFreeMode: "wake" }),
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      shouldAutoSpeakReply({ source: "handsfree", handsFreeMode: "conversation" }),
+    ).toBe(true);
   });
 
-  it("allows hands-free auto-speak only with an explicit setting", () => {
-    expect(
-      shouldAutoSpeakReply({
-        source: "handsfree",
-        handsFreeMode: "wake",
-        autoSpeakReplies: true,
-      }),
-    ).toBe(true);
+  it("keeps hands-free off silent", () => {
     expect(
       shouldAutoSpeakReply({
         source: "handsfree",
         handsFreeMode: "off",
-        autoSpeakReplies: true,
       }),
     ).toBe(false);
   });
