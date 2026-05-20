@@ -11,7 +11,6 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-
 import { GlassCard } from "@/components/Glass";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
