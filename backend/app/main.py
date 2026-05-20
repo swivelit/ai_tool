@@ -96,7 +96,7 @@ from .ai.providers.sarvam_provider import (
     normalize_sarvam_tts_model,
     normalize_stt_upload_mime_type,
     redact_sarvam_provider_message,
-    resolve_sarvam_tts_speaker,
+    resolve_sarvam_tts_voice,
     sarvam_provider_error_detail,
 )
 from .ai.agent_runtime import agentic_mode_enabled, fetch_agent_run_for_user
@@ -1364,6 +1364,15 @@ class ClientTurnLogRequest(BaseModel):
     telemetry_delivery: Optional[str] = None
     file_size: Optional[int] = None
     mime_type: Optional[str] = None
+    tts_speaker: Optional[str] = None
+    tts_language_code: Optional[str] = None
+    tts_locale_style: Optional[str] = None
+    voice_session_id: Optional[str] = None
+    voice_surface: Optional[str] = None
+    intent_before_cleanup: Optional[str] = None
+    intent_after_cleanup: Optional[str] = None
+    normalized_message_hash: Optional[str] = None
+    wake_word_stripped: Optional[bool] = None
     chat_routing: Optional[str] = None
     voice_routing: Optional[str] = None
     native_safety_status: Optional[Dict[str, Any]] = None
@@ -4509,24 +4518,29 @@ def api_tts(
         os.getenv("SARVAM_TTS_MODEL_PREMIUM") if premium else os.getenv("SARVAM_TTS_MODEL"),
         premium=premium,
     )
-    resolved_speaker = resolve_sarvam_tts_speaker(
-        model,
-        payload.speaker if payload.speaker is not None else os.getenv("SARVAM_TTS_SPEAKER"),
+    voice = resolve_sarvam_tts_voice(
+        payload.target_language_code or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN") or "ta-IN",
+        payload.speaker,
     )
+    resolved_speaker = str(voice["speaker"])
+    resolved_language_code = str(voice["target_language_code"])
+    locale_style = str(voice["style"])
     logger.info(
         "tts_started",
         extra=chat_log_payload(
             event="tts_started",
-            target_language_code=payload.target_language_code or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN") or "ta-IN",
-            speaker=resolved_speaker,
+            target_language_code=resolved_language_code,
+            tts_language_code=resolved_language_code,
+            resolved_speaker=resolved_speaker,
+            tts_locale_style=locale_style,
             model=model,
             text=text,
         ),
     )
     audio_base64 = _get_sarvam_provider().tts(
         text,
-        target_language_code=payload.target_language_code,
-        speaker=payload.speaker,
+        target_language_code=resolved_language_code,
+        speaker=resolved_speaker,
         premium=premium,
     )
     record_ai_usage_event(
@@ -4537,7 +4551,7 @@ def api_tts(
             model=model,
             route="sarvam_tts",
             reason="tts_endpoint",
-            language=str(payload.target_language_code or "ta-IN"),
+            language=resolved_language_code,
             intent="tts",
             characters=len(text),
             estimated_cost_amount=estimate_tts_cost(text, model),
@@ -4546,9 +4560,21 @@ def api_tts(
         user_id=int(user.id),
         request_id=get_request_id(),
         latency_ms=int(round((time.perf_counter() - started) * 1000)),
-        metadata={"text_length": len(text)},
+        metadata={
+            "text_length": len(text),
+            "speaker": resolved_speaker,
+            "target_language_code": resolved_language_code,
+            "locale_style": locale_style,
+            "model": model,
+        },
     )
-    return {"audio_base64": audio_base64}
+    return {
+        "audio_base64": audio_base64,
+        "speaker": resolved_speaker,
+        "target_language_code": resolved_language_code,
+        "locale_style": locale_style,
+        "model": model,
+    }
 
 
 @app.post("/users/{user_id}/questionnaire")

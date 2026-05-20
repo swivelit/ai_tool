@@ -1,6 +1,10 @@
 from app.ai.providers.openai_provider import OpenAIProvider
 from app.ai.model_health import clear_model_health
-from app.ai.prompts import build_provider_messages, build_system_instructions
+from app.ai.prompts import (
+    UNCLEAR_MEDICAL_TERM_INSTRUCTION,
+    build_provider_messages,
+    build_system_instructions,
+)
 from app.ai.response_adapter import ai_response_to_pipeline
 from app.ai.router import AIProviderRouter
 from app.ai.types import AIProviderResponse, AIRequest, AIRoute
@@ -150,3 +154,41 @@ def test_response_adapter_keeps_requested_tamil_reply_in_tamil_fields():
 
     assert pipeline["tamil_text"] == "Seri, ipdi pannalam."
     assert pipeline["theni_tamil_text"] == "Seri, ipdi pannalam."
+
+
+def test_unclear_medical_like_term_prompt_asks_for_clarification_without_hallucination():
+    request = AIRequest(
+        1,
+        "Can you tell me about Spitzola? I think it's a disease or something.",
+        "en",
+        "voice",
+        "style-test",
+        {},
+    )
+
+    instructions = build_system_instructions(request, _route("en"), provider="openai")
+
+    assert UNCLEAR_MEDICAL_TERM_INSTRUCTION in instructions
+    assert "do not invent a condition" in instructions
+    assert "misspelled or misheard" in instructions
+    assert "spelling or symptoms" in instructions
+    assert "not a diagnosis" in instructions
+
+
+def test_unclear_medical_english_response_remains_english():
+    request = AIRequest(1, "What is Spitzola disease?", "en", "voice", "style-test", {})
+
+    instructions = build_system_instructions(request, _route("en"), provider="openai")
+
+    assert "answer only in English" in instructions
+    assert "Do not translate the final answer into Tamil" in instructions
+
+
+def test_unclear_medical_tamil_response_uses_local_tanglish_contract():
+    request = AIRequest(1, "Spitzola disease pathi sollunga", "ta", "voice", "style-test", {})
+
+    instructions = build_system_instructions(request, _route("ta"), provider="sarvam")
+
+    assert "natural light Chennai Tamil/Tanglish" in instructions
+    assert "local conversational" in instructions
+    assert "qualified clinician" in instructions

@@ -6,6 +6,10 @@ const source = fs.readFileSync(
   path.join(__dirname, "..", "app", "(chat)", "index.tsx"),
   "utf8",
 );
+const transcriptSource = fs.readFileSync(
+  path.join(__dirname, "..", "components", "VoiceSessionTranscript.tsx"),
+  "utf8",
+);
 
 function sliceAround(marker: string, radius = 900) {
   const index = source.indexOf(marker);
@@ -60,6 +64,43 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("recordingPhaseRef.current === \"stopping\"");
     expect(source).not.toContain("reply_language=ta&speech_language=ta-IN");
     expect(source).toContain("voiceLanguage.ttsLanguageCode");
+  });
+
+  it("keeps live orb voice turns inside the voice-session transcript", () => {
+    expect(source).toContain("activeVoiceSessionId");
+    expect(source).toContain("voiceSessionTurns");
+    expect(source).toContain("voiceSessionMode");
+    expect(source).toContain("VoiceSessionTranscript");
+    expect(transcriptSource).toContain("voice-session-transcript");
+    expect(transcriptSource).toContain("voice-session-user-turn");
+    expect(transcriptSource).toContain("voice-session-assistant-turn");
+    expect(transcriptSource).toContain("voice-session-scroll");
+    expect(source).toContain("isLiveVoiceSession");
+    expect(source).toContain("updateVoiceSessionTurn");
+  });
+
+  it("does not only append live orb voice to the main chat while the sheet is active", () => {
+    const liveBlock = sliceAround("isLiveVoiceSession", 5200);
+
+    expect(liveBlock).toContain("voiceSessionItemsPendingHistoryRef");
+    expect(liveBlock).toContain("updateVoiceSessionTurn");
+    expect(liveBlock).toContain("refreshHistoryAndSessions([nextItem])");
+    expect(liveBlock).toContain("attachItemToCurrentChat(nextItem, mergedHistory)");
+  });
+
+  it("quick mic still uses the normal chat flow", () => {
+    const quickBlock = sliceAround("handleQuickMicPressIn", 2400);
+
+    expect(quickBlock).toContain('await startRecording("quick")');
+    expect(source).toContain("setPendingChatTurn({");
+    expect(source).toContain("await attachItemToCurrentChat(nextItem, mergedHistory)");
+  });
+
+  it("voice source logs TTS language and voice session identifiers", () => {
+    expect(source).toContain("tts_language_code");
+    expect(source).toContain("voice_session_id");
+    expect(source).toContain("tts_speaker");
+    expect(source).toContain("tts_locale_style");
   });
 
   it("supports voice-only mode by hiding the typed send path", () => {

@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 
 from ..models import DailyRoutine, DocumentArtifact, User, UserProfile
 from ..time_utils import utc_now
-from .intent import classify_intent
+from .intent import classify_intent, is_pure_greeting, looks_like_question_after_greeting
 from .tool_registry import get_tool_capability
 from .types import AIProviderResponse, AIRequest, AIRoute
 
@@ -53,6 +53,14 @@ def try_handle_pending_reminder(session: Session, request: AIRequest) -> Optiona
 
 def handle_backend_tool(session: Session, request: AIRequest, route: AIRoute) -> AIProviderResponse:
     if route.intent == "greeting":
+        if not is_pure_greeting(request.message) or looks_like_question_after_greeting(request.message):
+            return _tool_response(
+                "I should answer that as a normal question, not a greeting.",
+                request,
+                route,
+                item_metadata=_assistant_metadata(request.message, "I should answer that as a normal question, not a greeting."),
+                action="greeting_guard_fallthrough",
+            )
         return _handle_greeting(request, route)
     if route.intent == "thanks":
         return _handle_thanks(request, route)
@@ -80,6 +88,9 @@ def handle_backend_tool(session: Session, request: AIRequest, route: AIRoute) ->
 
 
 def _handle_greeting(request: AIRequest, route: AIRoute) -> AIProviderResponse:
+    if not is_pure_greeting(request.message):
+        text = "I should answer that as a normal question, not a greeting."
+        return _tool_response(text, request, route, item_metadata=_assistant_metadata(request.message, text), action="greeting_guard_fallthrough")
     text = "வணக்கம். எப்படி உதவலாம்?" if _prefers_tamil(request, route) else "Hi. How can I help?"
     return _tool_response(text, request, route, item_metadata=_assistant_metadata(request.message, text), action="local_greeting")
 
@@ -303,6 +314,7 @@ def _tool_response(
     action: str = "",
 ) -> AIProviderResponse:
     raw: dict[str, Any] = {"tool_action": action}
+    raw.update(_route_intent_metadata(route))
     if item_metadata:
         raw["item_metadata"] = item_metadata
     return AIProviderResponse(
@@ -316,6 +328,18 @@ def _tool_response(
         characters=len(text),
         raw=raw,
     )
+
+
+def _route_intent_metadata(route: AIRoute) -> dict[str, Any]:
+    metadata = route.metadata or {}
+    return {
+        "original_message": metadata.get("original_message") or "",
+        "normalized_message": metadata.get("normalized_message") or "",
+        "stripped_wake_word": bool(metadata.get("stripped_wake_word")),
+        "stripped_prefix": metadata.get("stripped_prefix") or "",
+        "intent_before_cleanup": metadata.get("intent_before_cleanup") or route.intent,
+        "intent_after_cleanup": metadata.get("intent_after_cleanup") or route.intent,
+    }
 
 
 def _get_user(session: Session, user_id: Optional[int]) -> Optional[User]:

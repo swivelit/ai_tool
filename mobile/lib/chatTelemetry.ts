@@ -76,7 +76,14 @@ export type ClientTurnLogPayload = {
   voice_surface?: string | null;
   requested_reply_language?: "en" | "ta" | string | null;
   requested_speech_language?: "auto" | "en-IN" | "ta-IN" | string | null;
+  tts_speaker?: string | null;
   tts_language_code?: "en-IN" | "ta-IN" | string | null;
+  tts_locale_style?: "indian_english" | "local_tamil" | string | null;
+  voice_session_id?: string | null;
+  intent_before_cleanup?: string | null;
+  intent_after_cleanup?: string | null;
+  normalized_message_hash?: string | null;
+  wake_word_stripped?: boolean | null;
   settings_language_mode?: "en" | "ta" | string | null;
   playback_uri_scheme?: string | null;
   chat_routing?: string | null;

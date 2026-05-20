@@ -467,6 +467,7 @@ scan_voice_reply_markers() {
   printf "%s\n" "$recent" | grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" >> "$markers_file" 2>/dev/null || true
   if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
     printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+ta-IN|target_language_code['\": ]+ta-IN" >> "$markers_file" 2>/dev/null || true
+    printf "%s\n" "$recent" | grep -E "local_tamil|tts_locale_style['\": ]+local_tamil" >> "$markers_file" 2>/dev/null || true
   else
     printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+en-IN|target_language_code['\": ]+en-IN" >> "$markers_file" 2>/dev/null || true
   fi
@@ -475,7 +476,8 @@ scan_voice_reply_markers() {
     grep -E "client_voice_reply_tts_started" "$markers_file" >/dev/null 2>&1 &&
     grep -E "client_voice_reply_tts_completed" "$markers_file" >/dev/null 2>&1 &&
     grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "tts_language_code['\": ]+(en-IN|ta-IN)|target_language_code['\": ]+(en-IN|ta-IN)" "$markers_file" >/dev/null 2>&1
+    grep -E "tts_language_code['\": ]+(en-IN|ta-IN)|target_language_code['\": ]+(en-IN|ta-IN)" "$markers_file" >/dev/null 2>&1 &&
+    { [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" != "ta" ]] || grep -E "local_tamil|tts_locale_style['\": ]+local_tamil" "$markers_file" >/dev/null 2>&1; }
 }
 
 start_logcat() {
@@ -671,6 +673,9 @@ export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
 export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
 export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-en}"
 export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conversational}"
+export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"
+export EXPO_PUBLIC_E2E_VOICE_SURFACE="${EXPO_PUBLIC_E2E_VOICE_SURFACE:-live}"
+export EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="${EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT:-1}"
 export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
@@ -681,6 +686,9 @@ export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNV
   printf "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=%s\n" "$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN"
   printf "EXPO_PUBLIC_E2E_REPLY_LANGUAGE=%s\n" "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE"
   printf "EXPO_PUBLIC_E2E_TAMIL_STYLE=%s\n" "$EXPO_PUBLIC_E2E_TAMIL_STYLE"
+  printf "EXPO_PUBLIC_E2E_VOICE_QUERY=%s\n" "$EXPO_PUBLIC_E2E_VOICE_QUERY"
+  printf "EXPO_PUBLIC_E2E_VOICE_SURFACE=%s\n" "$EXPO_PUBLIC_E2E_VOICE_SURFACE"
+  printf "EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT=%s\n" "$EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT"
 } > "$ARTIFACT_DIR/e2e-env.log"
 
 # APK E2E mock validates mobile voice UI, mic gesture, assistant reply visibility,
@@ -754,6 +762,9 @@ else
     EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN" \
     EXPO_PUBLIC_E2E_REPLY_LANGUAGE="$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" \
     EXPO_PUBLIC_E2E_TAMIL_STYLE="$EXPO_PUBLIC_E2E_TAMIL_STYLE" \
+    EXPO_PUBLIC_E2E_VOICE_QUERY="$EXPO_PUBLIC_E2E_VOICE_QUERY" \
+    EXPO_PUBLIC_E2E_VOICE_SURFACE="$EXPO_PUBLIC_E2E_VOICE_SURFACE" \
+    EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="$EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT" \
     EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="$EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS" \
@@ -811,6 +822,13 @@ voice_expected_reply="E2E voice reply ready."
 if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
   voice_expected_reply="Seri, unga voice reply ready."
 fi
+if [[ "${EXPO_PUBLIC_E2E_VOICE_QUERY,,}" == *"spitzola"* ]]; then
+  if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
+    voice_expected_reply="Spitzola"
+  else
+    voice_expected_reply="not finding"
+  fi
+fi
 
 capture_step "voice-before"
 if ! tap_desc "chat-voice-button"; then
@@ -834,6 +852,10 @@ else
         if ! assert_app_alive "during-voice-test"; then
           break
         fi
+        if wait_for_desc "voice-session-transcript" 1 && wait_for_desc "voice-session-assistant-turn" 1; then
+          voice_reply_seen=1
+          break
+        fi
         if wait_for_desc "voice-last-reply" 1 || wait_for_text "$voice_expected_reply" 1; then
           voice_reply_seen=1
           break
@@ -841,10 +863,24 @@ else
         sleep 1
       done
       if [[ "$voice_reply_seen" != "1" ]]; then
-        mark_failed "voice-last-reply-not-visible"
+        mark_failed "voice-session-assistant-turn-not-visible"
       fi
+      wait_for_desc "voice-session-transcript" 2 || mark_failed "voice-session-transcript-not-visible"
+      wait_for_desc "voice-session-user-turn" 2 || mark_failed "voice-session-user-turn-not-visible"
+      wait_for_desc "voice-session-assistant-turn" 2 || mark_failed "voice-session-assistant-turn-not-visible"
       if ! wait_for_text "$voice_expected_reply" 2; then
         mark_failed "voice-reply-language-mismatch-${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
+      fi
+      if [[ "${EXPO_PUBLIC_E2E_VOICE_QUERY,,}" == *"spitzola"* ]]; then
+        if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "en" ]]; then
+          wait_for_text "Spitzola" 2 || mark_failed "voice-spitzola-term-missing"
+          wait_for_text "misheard" 2 || wait_for_text "misspelled" 2 || mark_failed "voice-spitzola-uncertainty-missing"
+          if wait_for_text "Hi. How can I help?" 1; then
+            mark_failed "voice-spitzola-routed-to-greeting"
+          fi
+        else
+          wait_for_text "clear-aa" 2 || wait_for_text "kandupidikka" 2 || wait_for_text "nu" 2 || mark_failed "voice-tamil-local-style-missing"
+        fi
       fi
       if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "en" ]]; then
         xml_path="$(dump_ui "voice-language-english")"
@@ -883,6 +919,11 @@ else
           grep -E "client_voice_reply_tts_failed" > "$ARTIFACT_DIR/voice-tts-failures.log" 2>/dev/null; then
         mark_failed "voice-tts-failed"
       fi
+      if [[ -f "$ARTIFACT_DIR/logcat-full.log" ]] && \
+        tail -n "+$((voice_log_start_line + 1))" "$ARTIFACT_DIR/logcat-full.log" | \
+          grep -E "predicted_label['\": ]+greeting|route_taken['\": ]+agent_local_greeting|agent_local_greeting" > "$ARTIFACT_DIR/voice-greeting-misroute.log" 2>/dev/null; then
+        mark_failed "voice-greeting-misroute"
+      fi
       scan_crashes
       capture_step "voice-after"
     fi
@@ -891,6 +932,34 @@ fi
 
 adb shell input keyevent 4 >/dev/null 2>&1 || true
 wait_for_desc "chat-input" 10 || true
+
+capture_step "quick-voice-before"
+quick_before_count="$(assistant_response_count "quick-voice-before-count" || printf "0")"
+if quick_mic_center="$(find_ui_center desc "chat-mic-button" "quick-mic")"; then
+  read -r quick_mic_x quick_mic_y <<< "$quick_mic_center"
+  adb shell input swipe "$quick_mic_x" "$quick_mic_y" "$quick_mic_x" "$quick_mic_y" 2200 >/dev/null 2>&1 || mark_failed "quick-mic-long-press"
+  quick_seen=0
+  deadline=$((SECONDS + 60))
+  while [[ "$SECONDS" -lt "$deadline" ]]; do
+    if ! assert_app_alive "during-quick-voice-test"; then
+      break
+    fi
+    quick_current_count="$(assistant_response_count "quick-voice-count-${SECONDS}" || printf "0")"
+    if [[ "$quick_before_count" =~ ^[0-9]+$ ]] && \
+      [[ "$quick_current_count" =~ ^[0-9]+$ ]] && \
+      (( quick_current_count > quick_before_count )); then
+      quick_seen=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$quick_seen" != "1" ]]; then
+    mark_failed "quick-mic-normal-chat-not-visible"
+  fi
+  capture_step "quick-voice-after"
+else
+  mark_failed "quick-mic-not-found"
+fi
 
 for message in "hello" "what can you do" "tell me about solo leveling"; do
   label="$(printf '%s' "$message" | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]')"

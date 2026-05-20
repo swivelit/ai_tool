@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -9,6 +10,67 @@ class IntentDecision:
     intent: str
     route: str
     reason: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+_WAKE_PREFIXES: tuple[str, ...] = (
+    "vanakkam elli",
+    "hey elli",
+    "hi elli",
+    "hello elli",
+    "elli",
+    "vanakkam",
+    "வணக்கம் elli",
+    "வணக்கம்",
+    "hey",
+    "hi",
+    "hello",
+    "can you",
+    "could you",
+    "please",
+)
+
+_WAKE_WORD_PREFIXES = {
+    "vanakkam elli",
+    "hey elli",
+    "hi elli",
+    "hello elli",
+    "elli",
+    "vanakkam",
+    "வணக்கம் elli",
+    "வணக்கம்",
+    "hey",
+    "hi",
+    "hello",
+}
+
+_PURE_GREETING_PHRASES = {
+    "hi",
+    "hello",
+    "hey",
+    "vanakkam",
+    "வணக்கம்",
+    "namaste",
+    "good morning",
+    "good evening",
+    "elli",
+    "hi elli",
+    "hey elli",
+    "hello elli",
+    "vanakkam elli",
+    "வணக்கம் elli",
+    "elli hi",
+    "elli hello",
+    "elli hey",
+}
+
+_QUESTION_OR_SUBJECT_RE = re.compile(
+    r"(\?|"
+    r"\bwhat\b|\bwhy\b|\bhow\b|\btell\s+me\b|\bexplain\b|\babout\b|"
+    r"\bdisease\b|\bsymptoms?\b|\btreatments?\b|\bdo\s+you\s+know\b|"
+    r"\bcan\s+you\b|\bcould\s+you\b)",
+    re.I,
+)
 
 
 _CONTEXTUAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -58,13 +120,99 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+def normalize_voice_query_for_intent(message: str) -> dict[str, Any]:
+    original = str(message or "").strip()
+    cleaned = original
+    stripped_prefixes: list[str] = []
+    stripped_wake_word = False
+
+    while cleaned:
+        match = _match_leading_prefix(cleaned)
+        if not match:
+            break
+        prefix, end = match
+        stripped_prefixes.append(prefix)
+        stripped_wake_word = stripped_wake_word or prefix.lower() in _WAKE_WORD_PREFIXES
+        cleaned = cleaned[end:].strip()
+        cleaned = re.sub(r"^[\s,.:;!?،।\-–—]+", "", cleaned).strip()
+
+    return {
+        "original": original,
+        "normalized": cleaned,
+        "stripped_wake_word": stripped_wake_word,
+        "stripped_prefix": ", ".join(stripped_prefixes) if stripped_prefixes else "",
+    }
+
+
+def is_pure_greeting(message: str) -> bool:
+    original = str(message or "").strip()
+    if not original:
+        return False
+    if _QUESTION_OR_SUBJECT_RE.search(original):
+        return False
+
+    compact = _compact_phrase(original)
+    if compact in _PURE_GREETING_PHRASES:
+        return True
+
+    normalized = normalize_voice_query_for_intent(original)
+    remainder = _compact_phrase(str(normalized.get("normalized") or ""))
+    if normalized.get("stripped_wake_word") and not remainder:
+        return True
+    if normalized.get("stripped_wake_word") and remainder in _PURE_GREETING_PHRASES:
+        return True
+    return False
+
+
+def looks_like_question_after_greeting(message: str) -> bool:
+    normalized = normalize_voice_query_for_intent(message)
+    text = str(normalized.get("normalized") or "").strip()
+    if not text:
+        return False
+    if is_pure_greeting(message):
+        return False
+    return bool(_QUESTION_OR_SUBJECT_RE.search(text) or len(_compact_phrase(text).split()) > 2)
+
+
 def classify_intent(message: str) -> IntentDecision:
+    return classify_intent_with_metadata(message)
+
+
+def classify_intent_with_metadata(message: str) -> IntentDecision:
+    normalization = normalize_voice_query_for_intent(message)
+    original = str(normalization["original"])
+    normalized = str(normalization["normalized"])
+    intent_before = _classify_intent_text(original, prefix_greeting=True)
+    classify_text = normalized or original
+    intent_after = _classify_intent_text(classify_text, original_message=original, prefix_greeting=False)
+    metadata = {
+        **normalization,
+        "intent_before_cleanup": intent_before.intent,
+        "intent_after_cleanup": intent_after.intent,
+    }
+    return IntentDecision(
+        intent=intent_after.intent,
+        route=intent_after.route,
+        reason=intent_after.reason,
+        metadata=metadata,
+    )
+
+
+def _classify_intent_text(
+    message: str,
+    *,
+    original_message: str | None = None,
+    prefix_greeting: bool = False,
+) -> IntentDecision:
     text = str(message or "").strip()
     contextual = classify_contextual_followup(text)
     if contextual is not None:
         return contextual
     for intent, pattern in _PATTERNS:
         if pattern.search(text):
+            if intent == "greeting":
+                if not prefix_greeting and not is_pure_greeting(original_message or text):
+                    continue
             if intent in {"reminder", "routine", "profile", "settings", "note", "task", "document", "file_retrieval", "creative_tool", "greeting", "thanks", "capabilities"}:
                 return IntentDecision(intent=intent, route="backend_tool", reason=f"{intent}_tool_intent")
             if intent in {"weather", "live_data"}:
@@ -122,3 +270,19 @@ def _has_explicit_subject(text: str) -> bool:
     probe = re.sub(r"[^\w\u0b80-\u0bff]+", " ", probe, flags=re.I)
     words = [word for word in probe.split() if word not in {"la", "ah", "nga"}]
     return len(" ".join(words).strip()) >= 4
+
+
+def _match_leading_prefix(text: str) -> tuple[str, int] | None:
+    value = str(text or "").lstrip()
+    for prefix in sorted(_WAKE_PREFIXES, key=len, reverse=True):
+        pattern = re.compile(rf"^{re.escape(prefix)}(?=$|[\s,.:;!?،।\-–—])", re.I)
+        match = pattern.search(value)
+        if match:
+            return prefix, match.end()
+    return None
+
+
+def _compact_phrase(value: str) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^\w\s\u0b80-\u0bff]+", " ", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip()

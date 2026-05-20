@@ -48,6 +48,12 @@ const E2E_REPLY_LANGUAGE =
   process.env.EXPO_PUBLIC_E2E_REPLY_LANGUAGE || "";
 const E2E_TAMIL_STYLE =
   process.env.EXPO_PUBLIC_E2E_TAMIL_STYLE || "";
+const E2E_VOICE_QUERY =
+  process.env.EXPO_PUBLIC_E2E_VOICE_QUERY || "";
+const E2E_VOICE_SURFACE =
+  process.env.EXPO_PUBLIC_E2E_VOICE_SURFACE || "";
+const E2E_EXPECT_ORB_TRANSCRIPT =
+  process.env.EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT || "";
 
 const LOCAL_MODEL_RUNTIME_MODE =
   process.env.EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE || "native_on_device";
@@ -174,8 +180,15 @@ const enabledE2eEnvNames = [
   ["EXPO_PUBLIC_E2E_MOCK_VOICE_TURN", E2E_MOCK_VOICE_TURN],
   ["EXPO_PUBLIC_E2E_REPLY_LANGUAGE", E2E_REPLY_LANGUAGE],
   ["EXPO_PUBLIC_E2E_TAMIL_STYLE", E2E_TAMIL_STYLE],
+  ["EXPO_PUBLIC_E2E_VOICE_QUERY", E2E_VOICE_QUERY],
+  ["EXPO_PUBLIC_E2E_VOICE_SURFACE", E2E_VOICE_SURFACE],
+  ["EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT", E2E_EXPECT_ORB_TRANSCRIPT],
 ]
-  .filter(([, value]) => isTruthyEnv(value))
+  .filter(([name, value]) =>
+    name === "EXPO_PUBLIC_E2E_VOICE_QUERY" || name === "EXPO_PUBLIC_E2E_VOICE_SURFACE"
+      ? Boolean(String(value || "").trim())
+      : isTruthyEnv(value),
+  )
   .map(([name]) => name);
 
 if (isProductionOrReleaseBuild && enabledE2eEnvNames.length) {
@@ -454,11 +467,17 @@ export default {
       E2E_MOCK_VOICE_TURN,
       E2E_REPLY_LANGUAGE,
       E2E_TAMIL_STYLE,
+      E2E_VOICE_QUERY,
+      E2E_VOICE_SURFACE,
+      E2E_EXPECT_ORB_TRANSCRIPT,
       EXPO_PUBLIC_E2E_MOCK_AUTH: E2E_MOCK_AUTH,
       EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP: E2E_SKIP_MODEL_SETUP,
       EXPO_PUBLIC_E2E_MOCK_VOICE_TURN: E2E_MOCK_VOICE_TURN,
       EXPO_PUBLIC_E2E_REPLY_LANGUAGE: E2E_REPLY_LANGUAGE,
       EXPO_PUBLIC_E2E_TAMIL_STYLE: E2E_TAMIL_STYLE,
+      EXPO_PUBLIC_E2E_VOICE_QUERY: E2E_VOICE_QUERY,
+      EXPO_PUBLIC_E2E_VOICE_SURFACE: E2E_VOICE_SURFACE,
+      EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT: E2E_EXPECT_ORB_TRANSCRIPT,
 
       // Do not bundle a bearer token into the mobile app. EXPO_PUBLIC_* values are public.
       // Use Firebase-authenticated backend proxying or a short-lived pairing token instead.

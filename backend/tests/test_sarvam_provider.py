@@ -6,9 +6,11 @@ from fastapi import HTTPException
 
 import app.ai.providers.sarvam_provider as sarvam_provider_module
 from app.ai.providers.sarvam_provider import (
+    SARVAM_TTS_BULBUL_V2_SPEAKERS,
     SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES,
     SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL,
     SarvamProvider,
+    resolve_sarvam_tts_voice,
 )
 from app.ai.types import AIRequest, AIRoute
 
@@ -177,6 +179,78 @@ def test_sarvam_tts_preserves_valid_v2_speaker(monkeypatch):
     assert calls[0][1]["json"]["speaker"] == "vidya"
 
 
+def test_sarvam_tts_en_in_uses_english_voice_resolver(monkeypatch):
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    monkeypatch.delenv("SARVAM_TTS_SPEAKER", raising=False)
+    monkeypatch.delenv("SARVAM_TTS_SPEAKER_EN", raising=False)
+
+    voice = resolve_sarvam_tts_voice("en-IN")
+
+    assert voice["target_language_code"] == "en-IN"
+    assert voice["speaker"] == "anushka"
+    assert voice["speaker"] in SARVAM_TTS_BULBUL_V2_SPEAKERS
+    assert voice["style"] == "indian_english"
+    assert voice["pace"] == 0.95
+
+
+def test_sarvam_tts_ta_in_uses_tamil_voice_resolver(monkeypatch):
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    monkeypatch.delenv("SARVAM_TTS_SPEAKER", raising=False)
+    monkeypatch.delenv("SARVAM_TTS_SPEAKER_TA", raising=False)
+
+    voice = resolve_sarvam_tts_voice("ta-IN")
+
+    assert voice["target_language_code"] == "ta-IN"
+    assert voice["speaker"] == "karun"
+    assert voice["speaker"] in SARVAM_TTS_BULBUL_V2_SPEAKERS
+    assert voice["style"] == "local_tamil"
+    assert voice["pace"] == 0.9
+
+
+def test_sarvam_tts_invalid_tamil_speaker_falls_back_to_v2_compatible(monkeypatch):
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+
+    voice = resolve_sarvam_tts_voice("ta-IN", "shubh")
+
+    assert voice["speaker"] == "karun"
+    assert voice["speaker"] in SARVAM_TTS_BULBUL_V2_SPEAKERS
+
+
+def test_sarvam_tts_invalid_english_speaker_falls_back_to_v2_compatible(monkeypatch):
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+
+    voice = resolve_sarvam_tts_voice("en-IN", "shubh")
+
+    assert voice["speaker"] == "anushka"
+    assert voice["speaker"] in SARVAM_TTS_BULBUL_V2_SPEAKERS
+
+
+def test_sarvam_tts_never_sends_shubh_with_bulbul_v2(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    monkeypatch.setenv("SARVAM_TTS_SPEAKER_TA", "shubh")
+    calls = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"audios": ["audio64"]}
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Response()
+
+    audio = SarvamProvider(http_post=fake_post).tts("hello", target_language_code="ta-IN")
+
+    assert audio == "audio64"
+    assert calls[0][1]["json"]["model"] == "bulbul:v2"
+    assert calls[0][1]["json"]["speaker"] != "shubh"
+    assert calls[0][1]["json"]["speaker"] == "karun"
+    assert calls[0][1]["json"]["target_language_code"] == "ta-IN"
+
+
 def test_sarvam_tts_retries_speaker_mismatch(monkeypatch):
     monkeypatch.setenv("SARVAM_API_KEY", "test-key")
     monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
@@ -212,7 +286,7 @@ def test_sarvam_tts_retries_speaker_mismatch(monkeypatch):
     assert audio == "audio64"
     assert len(calls) == 2
     assert calls[0][1]["json"]["speaker"] == "shubh"
-    assert calls[1][1]["json"]["speaker"] == "anushka"
+    assert calls[1][1]["json"]["speaker"] == "karun"
 
 
 @pytest.mark.skipif(

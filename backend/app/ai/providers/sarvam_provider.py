@@ -20,9 +20,16 @@ from .base import AIProvider
 
 SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
 SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
-SARVAM_TTS_DEFAULT_MODEL = "bulbul:v2"
+SARVAM_TTS_MODEL_DEFAULT = "bulbul:v2"
+SARVAM_TTS_DEFAULT_MODEL = SARVAM_TTS_MODEL_DEFAULT
 SARVAM_TTS_DEFAULT_PREMIUM_MODEL = "bulbul:v3"
-SARVAM_TTS_DEFAULT_SPEAKER = "anushka"
+SARVAM_TTS_SPEAKER_EN_DEFAULT = "anushka"
+SARVAM_TTS_SPEAKER_TA_DEFAULT = "karun"
+SARVAM_TTS_PACE_EN_DEFAULT = "0.95"
+SARVAM_TTS_PACE_TA_DEFAULT = "0.9"
+SARVAM_TTS_LOCALE_STYLE_EN = "indian_english"
+SARVAM_TTS_LOCALE_STYLE_TA = "local_tamil"
+SARVAM_TTS_DEFAULT_SPEAKER = SARVAM_TTS_SPEAKER_EN_DEFAULT
 SARVAM_TTS_BULBUL_V2_SPEAKERS = {
     "anushka",
     "abhilash",
@@ -57,6 +64,75 @@ def normalize_sarvam_tts_model(model: str | None, premium: bool = False) -> str:
     if value:
         return value
     return SARVAM_TTS_DEFAULT_PREMIUM_MODEL if premium else SARVAM_TTS_DEFAULT_MODEL
+
+
+def normalize_sarvam_tts_language_code(target_language_code: str | None, *, fallback_reply_language: str | None = None) -> str:
+    value = str(target_language_code or "").strip().lower()
+    fallback = str(fallback_reply_language or "").strip().lower()
+    if value in {"ta", "ta-in", "tamil"}:
+        return "ta-IN"
+    if value in {"en", "en-in", "english"}:
+        return "en-IN"
+    if fallback in {"ta", "ta-in", "tamil", "mixed", "tanglish"}:
+        return "ta-IN"
+    return "en-IN"
+
+
+def _language_default_speaker(language_code: str) -> str:
+    if language_code == "ta-IN":
+        return (
+            os.getenv("SARVAM_TTS_SPEAKER_TA", "").strip()
+            or os.getenv("SARVAM_TTS_SPEAKER", "").strip()
+            or SARVAM_TTS_SPEAKER_TA_DEFAULT
+        )
+    return (
+        os.getenv("SARVAM_TTS_SPEAKER_EN", "").strip()
+        or os.getenv("SARVAM_TTS_SPEAKER", "").strip()
+        or SARVAM_TTS_SPEAKER_EN_DEFAULT
+    )
+
+
+def _language_fallback_speaker(language_code: str) -> str:
+    return SARVAM_TTS_SPEAKER_TA_DEFAULT if language_code == "ta-IN" else SARVAM_TTS_SPEAKER_EN_DEFAULT
+
+
+def _language_default_pace(language_code: str) -> str:
+    if language_code == "ta-IN":
+        return os.getenv("SARVAM_TTS_PACE_TA", "").strip() or SARVAM_TTS_PACE_TA_DEFAULT
+    return os.getenv("SARVAM_TTS_PACE_EN", "").strip() or SARVAM_TTS_PACE_EN_DEFAULT
+
+
+def _language_locale_style(language_code: str) -> str:
+    return SARVAM_TTS_LOCALE_STYLE_TA if language_code == "ta-IN" else SARVAM_TTS_LOCALE_STYLE_EN
+
+
+def _safe_float(value: str) -> float | None:
+    try:
+        return float(str(value).strip())
+    except Exception:
+        return None
+
+
+def resolve_sarvam_tts_voice(target_language_code: str, requested_speaker: str | None = None) -> dict[str, Any]:
+    language_code = normalize_sarvam_tts_language_code(target_language_code)
+    model = normalize_sarvam_tts_model(os.getenv("SARVAM_TTS_MODEL"), premium=False)
+    requested = str(requested_speaker or "").strip().lower() or _language_default_speaker(language_code).lower()
+    fallback = _language_fallback_speaker(language_code)
+    speaker = requested
+    if model.strip().lower() == SARVAM_TTS_MODEL_DEFAULT and speaker not in SARVAM_TTS_BULBUL_V2_SPEAKERS:
+        speaker = fallback
+    if model.strip().lower() == SARVAM_TTS_MODEL_DEFAULT and speaker not in SARVAM_TTS_BULBUL_V2_SPEAKERS:
+        speaker = SARVAM_TTS_SPEAKER_EN_DEFAULT
+
+    pace = _safe_float(_language_default_pace(language_code))
+    result: dict[str, Any] = {
+        "speaker": speaker,
+        "target_language_code": language_code,
+        "style": _language_locale_style(language_code),
+    }
+    if pace is not None:
+        result["pace"] = pace
+    return result
 
 
 def resolve_sarvam_tts_speaker(model: str, requested_speaker: str | None = None) -> str:
@@ -164,6 +240,12 @@ class SarvamProvider(AIProvider):
                 "reply_language": request.reply_language or route.language,
                 "input_language": route.metadata.get("input_language") or request.metadata.get("input_language") or "",
                 "profile_context_included": bool(request.metadata.get("profile_prompt_context")),
+                "original_message": route.metadata.get("original_message") or request.message,
+                "normalized_message": route.metadata.get("normalized_message") or request.message,
+                "stripped_wake_word": bool(route.metadata.get("stripped_wake_word")),
+                "stripped_prefix": route.metadata.get("stripped_prefix") or "",
+                "intent_before_cleanup": route.metadata.get("intent_before_cleanup") or route.intent,
+                "intent_after_cleanup": route.metadata.get("intent_after_cleanup") or route.intent,
             },
         )
 
@@ -263,15 +345,17 @@ class SarvamProvider(AIProvider):
             os.getenv("SARVAM_TTS_MODEL_PREMIUM") if premium else os.getenv("SARVAM_TTS_MODEL"),
             premium=premium,
         )
-        requested_speaker = speaker if speaker is not None else os.getenv("SARVAM_TTS_SPEAKER")
-        resolved_speaker = resolve_sarvam_tts_speaker(model, requested_speaker)
+        requested_speaker = speaker
+        voice = resolve_sarvam_tts_voice(target_language_code or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN") or "ta-IN", requested_speaker)
+        resolved_speaker = str(voice["speaker"])
         payload = {
             "text": normalized_text,
-            "target_language_code": target_language_code or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN") or "ta-IN",
+            "target_language_code": voice["target_language_code"],
             "speaker": resolved_speaker,
             "model": model,
-            "pace": 0.85,
         }
+        if "pace" in voice:
+            payload["pace"] = voice["pace"]
         started = time.perf_counter()
         requested_speaker_clean = str(requested_speaker or "").strip().lower()
         if requested_speaker_clean and requested_speaker_clean != resolved_speaker:
@@ -283,6 +367,14 @@ class SarvamProvider(AIProvider):
                 resolved_speaker=resolved_speaker,
                 reason="incompatible_speaker",
             )
+        _log_sarvam_event(
+            "tts_started",
+            started=started,
+            model=model,
+            tts_language_code=payload["target_language_code"],
+            resolved_speaker=resolved_speaker,
+            tts_locale_style=voice["style"],
+        )
 
         def post_tts(request_payload: dict[str, Any], *, retry_label: str = "") -> Any:
             try:
@@ -305,13 +397,18 @@ class SarvamProvider(AIProvider):
 
         def speaker_fallback_from_error(error_text: str) -> Optional[str]:
             available = parse_sarvam_available_speakers(error_text)
+            preferred_fallback = _language_fallback_speaker(str(voice["target_language_code"]))
+            if preferred_fallback in available:
+                return preferred_fallback
+            if str(voice["target_language_code"]) == "ta-IN" and SARVAM_TTS_SPEAKER_EN_DEFAULT in available:
+                return SARVAM_TTS_SPEAKER_EN_DEFAULT
             if SARVAM_TTS_DEFAULT_SPEAKER in available:
                 return SARVAM_TTS_DEFAULT_SPEAKER
             if str(model or "").strip().lower() == SARVAM_TTS_DEFAULT_MODEL:
                 for available_speaker in available:
                     if available_speaker in SARVAM_TTS_BULBUL_V2_SPEAKERS:
                         return available_speaker
-                return SARVAM_TTS_DEFAULT_SPEAKER
+                return preferred_fallback if preferred_fallback in SARVAM_TTS_BULBUL_V2_SPEAKERS else SARVAM_TTS_DEFAULT_SPEAKER
             return available[0] if available else None
 
         def maybe_retry_with_speaker_fallback(response: Any, request_payload: dict[str, Any], *, retry_label: str) -> tuple[Any, dict[str, Any], bool]:
@@ -365,7 +462,15 @@ class SarvamProvider(AIProvider):
             except ValueError as exc:
                 raise HTTPException(status_code=502, detail="TTS provider returned invalid JSON.") from exc
             if isinstance(data, dict) and isinstance(data.get("audios"), list) and data["audios"]:
-                _log_sarvam_event("tts_completed", audio_count=len(data["audios"]), started=started)
+                _log_sarvam_event(
+                    "tts_completed",
+                    audio_count=len(data["audios"]),
+                    started=started,
+                    model=model,
+                    tts_language_code=payload.get("target_language_code"),
+                    resolved_speaker=payload.get("speaker"),
+                    tts_locale_style=voice["style"],
+                )
                 return str(data["audios"][0])
             raise HTTPException(status_code=502, detail="TTS provider response did not contain audio.")
 

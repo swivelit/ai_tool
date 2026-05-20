@@ -31,14 +31,17 @@ export function isAnyE2eEnvEnabled() {
     isTruthy(publicEnv("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP")) ||
     isTruthy(publicEnv("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN")) ||
     Boolean(normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_REPLY_LANGUAGE"))) ||
-    Boolean(normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_TAMIL_STYLE")))
+    Boolean(normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_TAMIL_STYLE"))) ||
+    Boolean(normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_VOICE_QUERY"))) ||
+    Boolean(normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_VOICE_SURFACE"))) ||
+    Boolean(normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT")))
   );
 }
 
 export function assertE2eModeAllowed() {
   if (isAnyE2eEnvEnabled() && !isDevOrTestRuntime()) {
     throw new Error(
-      "E2E mock auth/model setup/voice flags are debug/dev-only. Disable EXPO_PUBLIC_E2E_MOCK_AUTH, EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP, EXPO_PUBLIC_E2E_MOCK_VOICE_TURN, EXPO_PUBLIC_E2E_REPLY_LANGUAGE, and EXPO_PUBLIC_E2E_TAMIL_STYLE for release/production builds.",
+      "E2E mock auth/model setup/voice flags are debug/dev-only. Disable EXPO_PUBLIC_E2E_MOCK_AUTH, EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP, EXPO_PUBLIC_E2E_MOCK_VOICE_TURN, EXPO_PUBLIC_E2E_REPLY_LANGUAGE, EXPO_PUBLIC_E2E_TAMIL_STYLE, EXPO_PUBLIC_E2E_VOICE_QUERY, EXPO_PUBLIC_E2E_VOICE_SURFACE, and EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT for release/production builds.",
     );
   }
 }
@@ -68,6 +71,22 @@ export function getE2eReplyLanguage(): "en" | "ta" {
 export function getE2eTamilStyle() {
   assertE2eModeAllowed();
   return normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_TAMIL_STYLE")) || "chennai_conversational";
+}
+
+export function getE2eVoiceQuery() {
+  assertE2eModeAllowed();
+  const raw = String(publicEnv("EXPO_PUBLIC_E2E_VOICE_QUERY") || "").trim();
+  if (raw.toLowerCase() === "spitzola") {
+    return "Hey Elli, can you tell me about Spitzola? I think it's a disease or something.";
+  }
+  return raw || "e2e voice question";
+}
+
+export function getE2eVoiceSurface(): "live" | "quick" {
+  assertE2eModeAllowed();
+  return normalizeFlag(publicEnv("EXPO_PUBLIC_E2E_VOICE_SURFACE")) === "quick"
+    ? "quick"
+    : "live";
 }
 
 export function getE2eMockUserProfile(): UserProfile {

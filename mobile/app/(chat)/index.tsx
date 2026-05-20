@@ -34,6 +34,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
 import { Orb } from "@/components/Orb";
+import {
+  VoiceSessionTranscript,
+  type VoiceSessionTurn,
+} from "@/components/VoiceSessionTranscript";
 import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
@@ -118,11 +122,13 @@ type PendingReminder = {
 };
 
 type RecorderSurface = "quick" | "live";
+type VoiceSessionMode = "live" | "quick" | null;
 type AgentReplyPlaybackContext = {
   requestId?: string;
   source?: ChatRequestSource;
   voiceSurface?: RecorderSurface | null;
   voiceLanguage?: VoiceLanguageParams | null;
+  voiceSessionId?: string | null;
 };
 
 type ChatRequestSource = "text" | "handsfree" | "voice";
@@ -414,6 +420,9 @@ export default function Home() {
   const [activeSurface, setActiveSurface] = useState<RecorderSurface | null>(
     null
   );
+  const [activeVoiceSessionId, setActiveVoiceSessionId] = useState<string | null>(null);
+  const [voiceSessionTurns, setVoiceSessionTurns] = useState<VoiceSessionTurn[]>([]);
+  const [voiceSessionMode, setVoiceSessionMode] = useState<VoiceSessionMode>(null);
   const [voiceLastReplyText, setVoiceLastReplyText] = useState("");
   const [voiceReplyStatus, setVoiceReplyStatus] = useState("");
   const [historySearch, setHistorySearch] = useState("");
@@ -434,6 +443,8 @@ export default function Home() {
   const replyAudioUriRef = useRef<string | null>(null);
   const replyPlaybackTokenRef = useRef(0);
   const activeSurfaceRef = useRef<RecorderSurface | null>(null);
+  const activeVoiceSessionIdRef = useRef<string | null>(null);
+  const voiceSessionItemsPendingHistoryRef = useRef<ChatHistoryItem[]>([]);
   const recordingPhaseRef = useRef<"idle" | "starting" | "recording" | "stopping">(
     "idle"
   );
@@ -555,6 +566,10 @@ export default function Home() {
   useEffect(() => {
     activeChatSessionIdRef.current = activeChatSessionId;
   }, [activeChatSessionId]);
+
+  useEffect(() => {
+    activeVoiceSessionIdRef.current = activeVoiceSessionId;
+  }, [activeVoiceSessionId]);
 
   const latestHistory = useMemo(() => {
     return chatSessions
@@ -946,7 +961,7 @@ export default function Home() {
   useEffect(() => {
     if (voiceOnlyMode && !voiceOnlyInitialOpenRef.current && !voiceSheetOpen) {
       voiceOnlyInitialOpenRef.current = true;
-      setVoiceSheetOpen(true);
+      openVoiceSession();
     }
   }, [voiceOnlyMode, voiceSheetOpen]);
 
@@ -1544,6 +1559,65 @@ export default function Home() {
     return `${source}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
+  function nextVoiceSessionId() {
+    return `voice_session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function ensureVoiceSession(mode: Exclude<VoiceSessionMode, null> = "live") {
+    const current = activeVoiceSessionIdRef.current;
+    if (current) {
+      setVoiceSessionMode(mode);
+      return current;
+    }
+    const sessionId = nextVoiceSessionId();
+    activeVoiceSessionIdRef.current = sessionId;
+    setActiveVoiceSessionId(sessionId);
+    setVoiceSessionMode(mode);
+    return sessionId;
+  }
+
+  function openVoiceSession() {
+    const sessionId = nextVoiceSessionId();
+    activeVoiceSessionIdRef.current = sessionId;
+    voiceSessionItemsPendingHistoryRef.current = [];
+    setActiveVoiceSessionId(sessionId);
+    setVoiceSessionMode("live");
+    setVoiceSessionTurns([]);
+    setVoiceLastReplyText("");
+    setVoiceReplyStatus("");
+    setVoiceSheetOpen(true);
+  }
+
+  function updateVoiceSessionTurn(turnId: string, patch: Partial<VoiceSessionTurn>) {
+    setVoiceSessionTurns((current) => {
+      const index = current.findIndex((turn) => turn.id === turnId);
+      if (index < 0) {
+        return [
+          ...current,
+          {
+            id: turnId,
+            userText: "",
+            assistantText: "",
+            status: "thinking",
+            ...patch,
+          },
+        ];
+      }
+      const next = [...current];
+      next[index] = { ...next[index], ...patch };
+      return next;
+    });
+  }
+
+  function voiceTextHash(value: string) {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return Math.abs(hash >>> 0).toString(16);
+  }
+
   function isActiveChatRequest(requestId: string) {
     return activeChatRequestIdRef.current === requestId;
   }
@@ -1707,6 +1781,7 @@ export default function Home() {
     const payload: Parameters<typeof sendClientTurnLog>[0] = {
       user_id: profile?.userId,
       route_taken: "voice",
+      voice_session_id: activeVoiceSessionIdRef.current || undefined,
       ...details,
       event,
       channel: "voice",
@@ -1813,6 +1888,11 @@ export default function Home() {
         });
       if (isVoiceReply) {
         setVoiceReplyStatus("Preparing reply...");
+        if (context.voiceSessionId) {
+          updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
+            ttsStatus: "tts_started",
+          });
+        }
       }
       logVoiceTelemetry("client_voice_reply_tts_started", {
         request_id: context.requestId,
@@ -1820,13 +1900,25 @@ export default function Home() {
         voice_phase: "tts_started",
         reply_playback_phase: "tts_request",
         voice_surface: context.voiceSurface || null,
+        voice_session_id: context.voiceSessionId || undefined,
         requested_reply_language: isVoiceReply ? voiceLanguage.replyLanguage : undefined,
         requested_speech_language: isVoiceReply ? voiceLanguage.speechLanguage : undefined,
         tts_language_code: isVoiceReply ? voiceLanguage.ttsLanguageCode : undefined,
+        tts_locale_style: isVoiceReply
+          ? voiceLanguage.replyLanguage === "ta"
+            ? "local_tamil"
+            : "indian_english"
+          : undefined,
         settings_language_mode: isVoiceReply ? settings.languageMode : undefined,
       });
 
-      const data = await apiPost<{ audio_base64?: string }>("/api/tts", {
+      const data = await apiPost<{
+        audio_base64?: string;
+        speaker?: string;
+        target_language_code?: string;
+        locale_style?: string;
+        model?: string;
+      }>("/api/tts", {
         text: textValue,
         target_language_code:
           isVoiceReply ? voiceLanguage.ttsLanguageCode : settings.languageMode === "ta" ? "ta-IN" : "en-IN",
@@ -1867,6 +1959,11 @@ export default function Home() {
         if (status.didJustFinish) {
           if (replySoundRef.current === sound && isVoiceReply) {
             setVoiceReplyStatus("Reply ready");
+            if (context.voiceSessionId) {
+              updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
+                ttsStatus: "reply_ready",
+              });
+            }
           }
           void releaseReplySound(sound);
         }
@@ -1893,6 +1990,11 @@ export default function Home() {
       replyAudioUriRef.current = cachedUri;
       if (isVoiceReply) {
         setVoiceReplyStatus("Speaking reply...");
+        if (context.voiceSessionId) {
+          updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
+            ttsStatus: "speaking",
+          });
+        }
       }
       logVoiceTelemetry("client_voice_reply_tts_completed", {
         request_id: context.requestId,
@@ -1900,8 +2002,11 @@ export default function Home() {
         voice_phase: "tts_completed",
         reply_playback_phase: "loaded",
         voice_surface: context.voiceSurface || null,
+        voice_session_id: context.voiceSessionId || undefined,
         requested_reply_language: isVoiceReply ? voiceLanguage.replyLanguage : undefined,
-        tts_language_code: isVoiceReply ? voiceLanguage.ttsLanguageCode : undefined,
+        tts_language_code: data.target_language_code || (isVoiceReply ? voiceLanguage.ttsLanguageCode : undefined),
+        tts_speaker: data.speaker || undefined,
+        tts_locale_style: data.locale_style || undefined,
         reply_audio_bytes: base64DecodedByteLength(data.audio_base64),
         playback_uri_scheme: uriScheme(cachedUri),
       });
@@ -1918,6 +2023,11 @@ export default function Home() {
             ? "Reply received, but voice playback failed. TTS speaker is misconfigured."
             : "Reply received, but voice playback failed.",
         );
+        if (context.voiceSessionId) {
+          updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
+            ttsStatus: "tts_failed",
+          });
+        }
       }
       logVoiceTelemetry("client_voice_reply_tts_failed", {
         request_id: context.requestId,
@@ -1925,6 +2035,7 @@ export default function Home() {
         voice_phase: "tts_failed",
         reply_playback_phase: "failed",
         voice_surface: context.voiceSurface || null,
+        voice_session_id: context.voiceSessionId || undefined,
         playback_uri_scheme: uriScheme(cachedUri),
         error_type: safeVoiceErrorType(error, "voice_reply_tts_failed"),
         error_message: error instanceof Error ? error.message : String(error || ""),
@@ -2307,6 +2418,7 @@ export default function Home() {
     try {
       await abortHandsFreeRecognizer(false);
       await releaseReplySound();
+      const voiceSessionId = surface === "live" ? ensureVoiceSession("live") : null;
       recordingPhaseRef.current = "starting";
       voicePrepareStartedAtRef.current = Date.now();
       stopWhenReadyRef.current = false;
@@ -2319,6 +2431,8 @@ export default function Home() {
       logVoiceTelemetry("client_voice_prepare_started", {
         route_taken: "voice_prepare",
         voice_phase: "preparing",
+        voice_surface: surface,
+        voice_session_id: voiceSessionId || undefined,
       });
 
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -2328,6 +2442,8 @@ export default function Home() {
         logVoiceTelemetry("client_voice_prepare_failed", {
           route_taken: "voice_prepare",
           voice_phase: "permission_denied",
+          voice_surface: surface,
+          voice_session_id: voiceSessionId || undefined,
           duration_ms: voicePrepareStartedAtRef.current
             ? Date.now() - voicePrepareStartedAtRef.current
             : undefined,
@@ -2376,11 +2492,15 @@ export default function Home() {
       logVoiceTelemetry("client_voice_prepare_completed", {
         route_taken: "voice_prepare",
         voice_phase: "ready",
+        voice_surface: surface,
+        voice_session_id: voiceSessionId || undefined,
         duration_ms: prepareDurationMs,
       });
       logVoiceTelemetry("client_voice_recording_started", {
         route_taken: "voice_recording",
         voice_phase: "recording",
+        voice_surface: surface,
+        voice_session_id: voiceSessionId || undefined,
       });
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
@@ -2399,6 +2519,8 @@ export default function Home() {
         route_taken: "voice_prepare",
         voice_phase:
           error instanceof RecordingStartTimeoutError ? "startup_timeout" : "prepare_failed",
+        voice_surface: surface,
+        voice_session_id: surface === "live" ? activeVoiceSessionIdRef.current || undefined : undefined,
         duration_ms: voicePrepareStartedAtRef.current
           ? Date.now() - voicePrepareStartedAtRef.current
           : undefined,
@@ -2458,6 +2580,8 @@ export default function Home() {
     let uploadStarted = false;
     let audioFileSize: number | undefined;
     const requestVoiceSurface = activeSurfaceRef.current ?? activeSurface;
+    const isLiveVoiceSession = requestVoiceSurface === "live";
+    const voiceSessionId = isLiveVoiceSession ? ensureVoiceSession("live") : null;
     const recordingDurationMs = voiceRecordingStartedAtRef.current
       ? Date.now() - voiceRecordingStartedAtRef.current
       : undefined;
@@ -2467,14 +2591,23 @@ export default function Home() {
       stopWhenReadyRef.current = false;
       setRecordingStopping(true);
       setBusy(true);
-      setPendingChatTurn({
-        requestId,
-        sessionId: currentSessionId,
-        source: "voice",
-        userMessage: "Voice message",
-        status: "thinking",
-        createdAt: new Date().toISOString(),
-      });
+      if (isLiveVoiceSession) {
+        updateVoiceSessionTurn(requestId, {
+          userText: "Voice message",
+          assistantText: "",
+          status: "thinking",
+          replyLanguage: settings.languageMode,
+        });
+      } else {
+        setPendingChatTurn({
+          requestId,
+          sessionId: currentSessionId,
+          source: "voice",
+          userMessage: "Voice message",
+          status: "thinking",
+          createdAt: new Date().toISOString(),
+        });
+      }
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
       recordingRef.current = null;
@@ -2493,6 +2626,8 @@ export default function Home() {
         request_id: requestId,
         route_taken: "voice_recording",
         voice_phase: "stopped",
+        voice_surface: requestVoiceSurface,
+        voice_session_id: voiceSessionId || undefined,
         duration_ms: recordingDurationMs,
         file_size: audioFileSize,
         mime_type: "audio/m4a",
@@ -2506,6 +2641,8 @@ export default function Home() {
             request_id: requestId,
             route_taken: "voice_file_validation",
             voice_phase: "too_short",
+            voice_surface: requestVoiceSurface,
+            voice_session_id: voiceSessionId || undefined,
             duration_ms: recordingDurationMs,
             min_duration_ms: MIN_VOICE_RECORDING_MS,
             file_size: audioFileSize,
@@ -2535,6 +2672,8 @@ export default function Home() {
         request_id: requestId,
         route_taken: "voice_upload",
         voice_phase: "uploading",
+        voice_surface: requestVoiceSurface,
+        voice_session_id: voiceSessionId || undefined,
         file_size: audioFileSize,
         mime_type: "audio/m4a",
         requested_reply_language: voiceLanguage.replyLanguage,
@@ -2560,12 +2699,26 @@ export default function Home() {
 
       const nextItem = normalizeChatTurnPayload(res);
       const assistantReplyText = String(nextItem.details || "").trim();
+      const userTranscript = String(nextItem.raw_text || nextItem.transcript || "Voice message").trim();
       if (assistantReplyText) {
         setVoiceLastReplyText(assistantReplyText);
       }
-      clearPendingAssistant(requestId);
-      const mergedHistory = await refreshHistoryAndSessions([nextItem]);
-      await attachItemToCurrentChat(nextItem, mergedHistory);
+      if (isLiveVoiceSession) {
+        updateVoiceSessionTurn(requestId, {
+          userText: userTranscript,
+          assistantText: assistantReplyText,
+          status: "done",
+          replyLanguage: voiceLanguage.replyLanguage,
+        });
+        voiceSessionItemsPendingHistoryRef.current = [
+          ...voiceSessionItemsPendingHistoryRef.current,
+          nextItem,
+        ];
+      } else {
+        clearPendingAssistant(requestId);
+        const mergedHistory = await refreshHistoryAndSessions([nextItem]);
+        await attachItemToCurrentChat(nextItem, mergedHistory);
+      }
       openReturnedFile(firstOpenableFile(nextItem, "files"));
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
@@ -2584,6 +2737,7 @@ export default function Home() {
           source: "voice",
           voiceSurface: requestVoiceSurface,
           voiceLanguage,
+          voiceSessionId,
         });
       } else if (assistantReplyText) {
         setVoiceReplyStatus("Reply ready");
@@ -2615,6 +2769,8 @@ export default function Home() {
         request_id: requestId,
         route_taken: uploadStarted ? "voice_upload" : "voice_file_validation",
         voice_phase: uploadStarted ? "upload_failed" : "file_validation_failed",
+        voice_surface: requestVoiceSurface,
+        voice_session_id: voiceSessionId || undefined,
         file_size: audioFileSize,
         mime_type: "audio/m4a",
         error_type: errorType,
@@ -2625,7 +2781,16 @@ export default function Home() {
           : tooShortAudio
             ? TOO_SHORT_AUDIO_MESSAGE
             : VOICE_UNAVAILABLE_MESSAGE;
-        showPendingAssistantError(requestId, message, "Voice message", "voice");
+        if (isLiveVoiceSession) {
+          updateVoiceSessionTurn(requestId, {
+            userText: "Voice message",
+            assistantText: message,
+            status: "error",
+          });
+          setVoiceReplyStatus(message);
+        } else {
+          showPendingAssistantError(requestId, message, "Voice message", "voice");
+        }
         warnChatFailure(error, requestId, "voice");
       }
     } finally {
@@ -2648,6 +2813,15 @@ export default function Home() {
       await stopAndAnalyze();
     }
     setVoiceSheetOpen(false);
+    const pendingItems = voiceSessionItemsPendingHistoryRef.current;
+    voiceSessionItemsPendingHistoryRef.current = [];
+    if (pendingItems.length) {
+      await refreshHistoryAndSessions(pendingItems);
+    }
+    activeVoiceSessionIdRef.current = null;
+    setActiveVoiceSessionId(null);
+    setVoiceSessionMode(null);
+    setVoiceSessionTurns([]);
   }
 
   async function handleQuickMicPressIn() {
@@ -2797,7 +2971,7 @@ export default function Home() {
           </View>
 
           <Pressable
-            onPress={() => setVoiceSheetOpen(true)}
+            onPress={openVoiceSession}
             style={styles.iconButton}
             testID="chat-voice-button"
             accessibilityLabel="chat-voice-button"
@@ -3308,7 +3482,13 @@ export default function Home() {
               </Text>
             ) : null}
 
-            {voiceReplyStatus || voiceLastReplyText ? (
+            <VoiceSessionTranscript
+              turns={voiceSessionMode === "live" ? voiceSessionTurns : []}
+              status={voiceReplyStatus}
+              replyLanguage={settings.languageMode}
+            />
+
+            {voiceReplyStatus || (voiceLastReplyText && voiceSessionTurns.length === 0) ? (
               <View style={styles.voiceReplyPanel}>
                 {voiceReplyStatus ? (
                   <Text
@@ -3319,7 +3499,7 @@ export default function Home() {
                     {voiceReplyStatus}
                   </Text>
                 ) : null}
-                {voiceLastReplyText ? (
+                {voiceLastReplyText && voiceSessionTurns.length === 0 ? (
                   <Text
                     testID="voice-last-reply"
                     accessibilityLabel="voice-last-reply"

@@ -18,6 +18,16 @@ APP_CONTEXT_PROMPT = (
     "GraphQL or microservice boilerplate unless the user asks for it."
 )
 
+UNCLEAR_MEDICAL_TERM_INSTRUCTION = (
+    "Unclear medical-like term policy: if the user asks about a disease, symptom, treatment, "
+    "or medical term that is unknown, ambiguous, or may have been misheard by speech-to-text, "
+    "do not invent a condition. Say clearly that the term may be misspelled or misheard, offer "
+    "only plausible alternatives when you have a good reason, ask for spelling or symptoms, and "
+    "include a short safety note that this is not a diagnosis and the user should consult a "
+    "qualified clinician for real symptoms. For reply_language=ta, use local conversational "
+    "Tamil/Tanglish while keeping the safety note clear."
+)
+
 
 def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str) -> list[dict[str, str]]:
     instructions = build_system_instructions(request, route, provider=provider)
@@ -60,6 +70,8 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
         "Apply saved profile preferences and onboarding answers when available. Do not invent profile facts.",
         _style_policy(request.message),
     ]
+    if _looks_unclear_medical_like(request.message):
+        parts.append(UNCLEAR_MEDICAL_TERM_INSTRUCTION)
     if provider == "sarvam":
         parts.append(
             "Sarvam may be used to understand Tamil/Tanglish input. If reply_language is en, "
@@ -163,6 +175,18 @@ def _requests_tamil(message: Any, language: Any) -> bool:
     return str(language or "").lower() in {"ta", "tamil", "mixed", "tanglish"} or bool(
         re.search(r"\b(tamil|tanglish|tamil la|in tamil)\b", text) or re.search(r"[\u0b80-\u0bff]", str(message or ""))
     )
+
+
+def _looks_unclear_medical_like(message: Any) -> bool:
+    text = str(message or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if re.search(r"\b(disease|symptoms?|treatments?|medical|condition|infection|doctor|clinic|health)\b", lowered):
+        return True
+    if re.search(r"\b(?:what is|tell me about|explain|do you know about)\s+[A-Za-z][A-Za-z-]{4,}\b", text, re.I):
+        return True
+    return False
 
 
 def _compact(value: Any, limit: int) -> str:

@@ -7,7 +7,11 @@ import {
   type ClientTurnLogPayload,
 } from "./chatTelemetry";
 import { getCachedDeviceCapabilities } from "./deviceCapabilities";
-import { isE2eMockVoiceTurnEnabled } from "./e2eMode";
+import {
+  getE2eVoiceQuery,
+  getE2eVoiceSurface,
+  isE2eMockVoiceTurnEnabled,
+} from "./e2eMode";
 import { auth } from "./firebase";
 import {
   getLocalRuntimeConfigError,
@@ -1388,12 +1392,31 @@ function buildVoiceUnavailableResponse(
   };
 }
 
+function e2eVoiceAnswerFor(query: string, replyLanguage: ReplyLanguage) {
+  if (/spitzola/i.test(query)) {
+    return replyLanguage === "en"
+      ? "I’m not finding a common disease called ‘Spitzola’. It may be a misheard or misspelled term. Did you mean Spitz nevus, spirochete infection, or leptospirosis?"
+      : "‘Spitzola’ nu common disease name-a clear-aa kandupidikka mudiyala. Spelling/mic transcript wrong irukkalam.";
+  }
+  return replyLanguage === "en"
+    ? "E2E voice reply ready."
+    : "Seri, unga voice reply ready.";
+}
+
+function e2eTtsLanguageCode(replyLanguage: ReplyLanguage) {
+  return replyLanguage === "ta" ? "ta-IN" : "en-IN";
+}
+
+function e2eTtsLocaleStyle(replyLanguage: ReplyLanguage) {
+  return replyLanguage === "ta" ? "local_tamil" : "indian_english";
+}
+
 function buildE2eMockVoiceTurnResponse(replyLanguage: ReplyLanguage = PRODUCT_DEFAULT_REPLY_LANGUAGE): LocalChatProxyResponse {
   const createdAt = new Date().toISOString();
-  const assistantText =
-    replyLanguage === "en"
-      ? "E2E voice reply ready."
-      : "Seri, unga voice reply ready.";
+  const voiceQuery = getE2eVoiceQuery();
+  const assistantText = e2eVoiceAnswerFor(voiceQuery, replyLanguage);
+  const routeTaken = replyLanguage === "ta" ? "sarvam_general" : "openai_general";
+  const ttsLanguageCode = e2eTtsLanguageCode(replyLanguage);
   return {
     ok: true,
     kind: "assistant_turn",
@@ -1401,8 +1424,8 @@ function buildE2eMockVoiceTurnResponse(replyLanguage: ReplyLanguage = PRODUCT_DE
       id: Date.now(),
       intent: "assistant",
       category: "Voice",
-      raw_text: "e2e voice question",
-      transcript: "e2e voice question",
+      raw_text: voiceQuery,
+      transcript: voiceQuery,
       datetime: null,
       title: "E2E voice",
       details: assistantText,
@@ -1417,9 +1440,9 @@ function buildE2eMockVoiceTurnResponse(replyLanguage: ReplyLanguage = PRODUCT_DE
       theni_tamil: replyLanguage === "ta" ? assistantText : undefined,
     },
     pipeline: {
-      route_taken: "e2e_voice_mock",
-      predicted_label: "assistant",
-      raw_english: "e2e voice question",
+      route_taken: routeTaken,
+      predicted_label: "general",
+      raw_english: voiceQuery,
       remodeled_english: replyLanguage === "en" ? assistantText : "",
       tamil_text: replyLanguage === "ta" ? assistantText : "",
       theni_tamil_text: replyLanguage === "ta" ? assistantText : "",
@@ -1427,13 +1450,21 @@ function buildE2eMockVoiceTurnResponse(replyLanguage: ReplyLanguage = PRODUCT_DE
       meta: {
         source: "e2e_voice_mock",
         requested_reply_language: replyLanguage,
+        tts_language_code: ttsLanguageCode,
+        target_language_code: ttsLanguageCode,
+        tts_locale_style: e2eTtsLocaleStyle(replyLanguage),
+        voice_surface: getE2eVoiceSurface(),
       },
     },
     meta: {
       source: "e2e_voice_mock",
-      route: "e2e_voice_mock",
+      route: routeTaken,
       language: replyLanguage,
       requested_reply_language: replyLanguage,
+      tts_language_code: ttsLanguageCode,
+      target_language_code: ttsLanguageCode,
+      tts_locale_style: e2eTtsLocaleStyle(replyLanguage),
+      voice_surface: getE2eVoiceSurface(),
       cacheHit: false,
       created_at: createdAt,
     },
@@ -2483,8 +2514,22 @@ export async function apiGet<T>(path: string): Promise<T> {
 
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
   if (isE2eMockVoiceTurnEnabled() && isTtsPath(path)) {
-    console.info("[e2e_voice_mock] /api/tts");
-    return { audio_base64: E2E_TINY_WAV_BASE64 } as T;
+    const targetLanguageCode =
+      String(body?.target_language_code || "").trim() ||
+      e2eTtsLanguageCode(normalizeReplyLanguage(process.env.EXPO_PUBLIC_E2E_REPLY_LANGUAGE) || PRODUCT_DEFAULT_REPLY_LANGUAGE);
+    const replyLanguage = targetLanguageCode.toLowerCase().startsWith("ta") ? "ta" : "en";
+    console.info("[e2e_voice_mock] /api/tts", {
+      target_language_code: targetLanguageCode,
+      tts_language_code: targetLanguageCode,
+      tts_locale_style: e2eTtsLocaleStyle(replyLanguage),
+    });
+    return {
+      audio_base64: E2E_TINY_WAV_BASE64,
+      speaker: replyLanguage === "ta" ? "karun" : "anushka",
+      target_language_code: targetLanguageCode,
+      locale_style: e2eTtsLocaleStyle(replyLanguage),
+      model: "bulbul:v2",
+    } as T;
   }
 
   if (isTranscribeAndAnalyzePath(path)) {
@@ -2547,10 +2592,19 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
   const isVoiceAnalyze = isTranscribeAndAnalyzePath(path);
   const resolvedPath = isVoiceAnalyze ? await withVoiceLanguageDefaults(normalizeVoiceAnalyzePath(path)) : path;
   if (isVoiceAnalyze && isE2eMockVoiceTurnEnabled()) {
-    console.info("[e2e_voice_mock] /api/transcribe-and-analyze");
-    return buildE2eMockVoiceTurnResponse(
-      normalizeReplyLanguage(parseQueryParam(resolvedPath, "reply_language")) || PRODUCT_DEFAULT_REPLY_LANGUAGE,
+    const replyLanguage = normalizeReplyLanguage(parseQueryParam(resolvedPath, "reply_language")) || PRODUCT_DEFAULT_REPLY_LANGUAGE;
+    const mock = buildE2eMockVoiceTurnResponse(
+      replyLanguage,
     ) as T;
+    console.info("[e2e_voice_mock] /api/transcribe-and-analyze", {
+      requested_reply_language: replyLanguage,
+      predicted_label: "general",
+      route_taken: replyLanguage === "ta" ? "sarvam_general" : "openai_general",
+      tts_language_code: e2eTtsLanguageCode(replyLanguage),
+      tts_locale_style: e2eTtsLocaleStyle(replyLanguage),
+      voice_surface: getE2eVoiceSurface(),
+    });
+    return mock;
   }
 
   const useLocalVoicePipeline = isVoiceAnalyze && (await shouldUseLocalVoicePipeline());

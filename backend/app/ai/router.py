@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 from ..openai_model_router import OpenAIModelRouter
-from .intent import IntentDecision, classify_intent
+from .intent import IntentDecision, classify_intent_with_metadata, normalize_voice_query_for_intent
 from .language import detect_language
 from .prompts import concise_max_output_tokens
 from .providers.sarvam_provider import chat_model_for_intent
@@ -18,16 +18,31 @@ class AIProviderRouter:
             "reply_language": language.reply_language or request.reply_language or language.language,
             "provider_preference": language.provider_preference or language.prefer_provider,
         }
+        intent_normalization = normalize_voice_query_for_intent(request.message)
         forced_contextual = str(request.metadata.get("contextual_intent") or "").strip()
         intent = (
             IntentDecision(
                 intent=forced_contextual,
                 route=forced_contextual,
                 reason=f"{forced_contextual}_uses_recent_context",
+                metadata={
+                    **intent_normalization,
+                    "intent_before_cleanup": forced_contextual,
+                    "intent_after_cleanup": forced_contextual,
+                },
             )
             if forced_contextual.startswith("contextual_")
-            else classify_intent(request.message)
+            else classify_intent_with_metadata(request.message)
         )
+        intent_metadata = {
+            **language_metadata,
+            "original_message": intent.metadata.get("original") or request.message,
+            "normalized_message": intent.metadata.get("normalized") or request.message,
+            "stripped_wake_word": bool(intent.metadata.get("stripped_wake_word")),
+            "stripped_prefix": intent.metadata.get("stripped_prefix") or "",
+            "intent_before_cleanup": intent.metadata.get("intent_before_cleanup") or intent.intent,
+            "intent_after_cleanup": intent.intent,
+        }
         max_output_tokens = _max_output_tokens(request.message)
 
         if intent.intent == "unsafe_or_sensitive":
@@ -39,7 +54,7 @@ class AIProviderRouter:
                 language=language.language,
                 intent=intent.intent,
                 max_output_tokens=0,
-                metadata=language_metadata,
+                metadata=intent_metadata,
             )
 
         if intent.intent in {"weather", "live_data"}:
@@ -52,7 +67,7 @@ class AIProviderRouter:
                     language=language.language,
                     intent=intent.intent,
                     max_output_tokens=0,
-                    metadata=language_metadata,
+                    metadata=intent_metadata,
                 )
 
         if intent.route == "backend_tool":
@@ -64,7 +79,7 @@ class AIProviderRouter:
                 language=language.language,
                 intent=intent.intent,
                 max_output_tokens=0,
-                metadata=language_metadata,
+                metadata=intent_metadata,
             )
 
         if language.prefer_provider == "sarvam" or intent.intent in {"translation", "tts", "stt", "contextual_translate", "contextual_explain"}:
@@ -78,7 +93,7 @@ class AIProviderRouter:
                 intent=intent.intent,
                 max_output_tokens=max_output_tokens,
                 needs_voice_output=request.channel == "voice",
-                metadata=language_metadata,
+                metadata=intent_metadata,
             )
 
         openai_task = "coding" if intent.intent in {"coding", "complex_reasoning"} else "normal_qa"
@@ -104,7 +119,7 @@ class AIProviderRouter:
             model_candidates=[candidate.model for candidate in selections] or [selection.model],
             provider_endpoint_candidates=[candidate.endpoint for candidate in selections] or [selection.endpoint],
             metadata={
-                **language_metadata,
+                **intent_metadata,
                 "model_tier": selection.tier,
                 "primary_model_candidate": selection_meta.get("primary_model_candidate") or selection.model,
                 "selected_model_reason": selection_meta.get("selected_model_reason") or "cost_optimizer_choice",

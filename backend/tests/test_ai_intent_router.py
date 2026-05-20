@@ -1,4 +1,6 @@
-from app.ai.intent import classify_intent
+from app.ai.intent import classify_intent, normalize_voice_query_for_intent
+from app.ai.router import AIProviderRouter
+from app.ai.types import AIRequest
 
 
 def test_backend_tool_intents_route_to_backend_tool():
@@ -79,3 +81,65 @@ def test_tamil_tanglish_reminder_note_task_routes_to_backend_tool():
         decision = classify_intent(message)
         assert decision.intent == expected_intent
         assert decision.route == "backend_tool"
+
+
+def test_wake_word_question_not_greeting_spitzola():
+    message = "Hey Elli, can you tell me about Spitzola? I think it's a disease or something."
+
+    decision = classify_intent(message)
+    normalized = normalize_voice_query_for_intent(message)
+
+    assert normalized["normalized"] == "tell me about Spitzola? I think it's a disease or something."
+    assert normalized["stripped_wake_word"] is True
+    assert decision.intent == "general"
+    assert decision.route != "backend_tool"
+    assert decision.metadata["intent_before_cleanup"] == "greeting"
+    assert decision.metadata["intent_after_cleanup"] == "general"
+
+
+def test_hey_elli_what_is_tamil_nadu_not_greeting():
+    decision = classify_intent("Hey Elli, what is Tamil Nadu?")
+
+    assert decision.intent == "general"
+    assert decision.route != "backend_tool"
+
+
+def test_hi_is_greeting():
+    decision = classify_intent("Hi")
+
+    assert decision.intent == "greeting"
+    assert decision.route == "backend_tool"
+
+
+def test_hi_elli_is_greeting():
+    decision = classify_intent("Hi Elli")
+
+    assert decision.intent == "greeting"
+    assert decision.route == "backend_tool"
+
+
+def test_hey_elli_do_you_know_about_fistula_not_greeting():
+    decision = classify_intent("Hey Elli, do you know about fistula?")
+
+    assert decision.intent == "general"
+    assert decision.route != "backend_tool"
+
+
+def test_normalized_message_metadata_is_recorded():
+    route = AIProviderRouter().select_route(
+        AIRequest(
+            user_id=1,
+            message="Hey Elli, what is Tamil Nadu?",
+            reply_language="en",
+            channel="voice",
+            request_id="intent-test",
+            metadata={},
+        )
+    )
+
+    assert route.metadata["original_message"] == "Hey Elli, what is Tamil Nadu?"
+    assert route.metadata["normalized_message"] == "what is Tamil Nadu?"
+    assert route.metadata["stripped_wake_word"] is True
+    assert route.metadata["stripped_prefix"] == "hey elli"
+    assert route.metadata["intent_before_cleanup"] == "greeting"
+    assert route.metadata["intent_after_cleanup"] == "general"

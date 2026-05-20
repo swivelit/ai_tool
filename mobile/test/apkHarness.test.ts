@@ -167,6 +167,15 @@ describe("APK test harness", () => {
       'export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"',
     );
     expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"',
+    );
+    expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_VOICE_SURFACE="${EXPO_PUBLIC_E2E_VOICE_SURFACE:-live}"',
+    );
+    expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="${EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT:-1}"',
+    );
+    expect(source).toContain(
       'export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"',
     );
     expect(source).toContain(
@@ -184,6 +193,9 @@ describe("APK test harness", () => {
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=");
       expect(source).toContain("EXPO_PUBLIC_E2E_REPLY_LANGUAGE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_TAMIL_STYLE=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_QUERY=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_SURFACE=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT=");
       expect(source).toContain("EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=");
@@ -213,8 +225,15 @@ describe("APK test harness", () => {
     expect(source).toContain("Hold the orb to record");
     expect(source).toContain("input swipe");
     expect(source).toContain("voice-last-reply");
+    expect(source).toContain("voice-session-transcript");
+    expect(source).toContain("voice-session-user-turn");
+    expect(source).toContain("voice-session-assistant-turn");
     expect(source).toContain("E2E voice reply ready.");
     expect(source).toContain("Seri, unga voice reply ready.");
+    expect(source).toContain("Spitzola");
+    expect(source).toContain("not finding");
+    expect(source).toContain("misheard");
+    expect(source).toContain("agent_local_greeting");
     expect(source).toContain("voice-reply-status");
     expect(source).toContain("Speaking reply");
     expect(source).toContain("Reply ready");
@@ -229,8 +248,33 @@ describe("APK test harness", () => {
     expect(source).toContain("client_voice_reply_tts_failed");
     expect(source).toContain("voice-tts-failed");
     expect(source).toContain("voice-tts-failures.log");
+    expect(source).toContain("voice-greeting-misroute.log");
     expect(source).toContain("e2e_voice_mock");
     expect(source).toContain("voice-markers.log");
+  });
+
+  it("test_apk.sh checks Spitzola orb transcript and both TTS languages", () => {
+    const source = readRepo("test_apk.sh");
+
+    expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_QUERY");
+    expect(source).toContain("voice-session-transcript");
+    expect(source).toContain("voice-session-user-turn");
+    expect(source).toContain("voice-session-assistant-turn");
+    expect(source).toContain("voice-spitzola-routed-to-greeting");
+    expect(source).toContain("voice-greeting-misroute");
+    expect(source).toContain("en-IN");
+    expect(source).toContain("ta-IN");
+    expect(source).toContain("local_tamil");
+    expect(source).toContain("client_voice_reply_tts_failed");
+  });
+
+  it("quick composer mic remains covered by APK automation", () => {
+    const source = readRepo("test_apk.sh");
+
+    expect(source).toContain("quick-mic-long-press");
+    expect(source).toContain("quick-mic-normal-chat-not-visible");
+    expect(source).toContain("chat-mic-button");
+    expect(source).toContain("assistant_response_count");
   });
 
   it("release app config rejects E2E mock auth env", async () => {

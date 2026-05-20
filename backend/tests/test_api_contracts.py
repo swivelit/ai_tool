@@ -13,6 +13,7 @@ import app.main as main_module
 import app.observability as observability
 from app.database import SessionLocal
 from app.models import AIUsageEvent, Conversation, Item, QACache, RagEmbedding, UserProfile
+from app.ai.router import AIProviderRouter
 from app.ai.types import AIProviderResponse
 from app.ai.usage import record_ai_usage_event
 from conftest import auth_headers, create_test_user
@@ -322,6 +323,52 @@ def test_voice_contract_respects_tamil_reply_query_and_autodetects_speech(client
     payload = response.json()
     assert payload["item"]["details"] == "Seri, unga voice answer ready."
     assert payload["assistant"]["text"] == "Seri, unga voice answer ready."
+
+
+def test_voice_spitzola_wake_word_question_is_not_greeting_response(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    transcript = "Hey Elli, can you tell me about Spitzola? I think it's a disease or something."
+
+    monkeypatch.setattr(main_module, "_transcribe_audio_file", lambda *args, **kwargs: transcript)
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        route = AIProviderRouter().select_route(ai_request)
+        assert route.intent != "greeting"
+        assert route.route != "backend_tool_greeting"
+        return AIProviderResponse(
+            text="I’m not finding a well-known disease called ‘Spitzola’. It may be misspelled or misheard.",
+            provider="openai",
+            model="gpt-5-nano",
+            route=route.route,
+            reason="unit_test",
+            language=route.language,
+            intent=route.intent,
+            raw={
+                "reply_language": ai_request.reply_language,
+                "intent_before_cleanup": route.metadata["intent_before_cleanup"],
+                "intent_after_cleanup": route.metadata["intent_after_cleanup"],
+                "normalized_message": route.metadata["normalized_message"],
+                "stripped_wake_word": route.metadata["stripped_wake_word"],
+            },
+        )
+
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}&reply_language=en",
+        headers=headers,
+        files={"file": ("audio.m4a", b"audio", "audio/m4a")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assistant"]["text"] != "Hi. How can I help?"
+    assert payload["pipeline"]["predicted_label"] != "greeting"
+    assert payload["pipeline"]["route_taken"] != "agent_local_greeting"
+    assert payload["pipeline"]["route_taken"] != "backend_tool_greeting"
+    assert payload["pipeline"]["predicted_label"] == "general"
 
 
 def test_observability_config_endpoint(client):

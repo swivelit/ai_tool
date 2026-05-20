@@ -364,6 +364,90 @@ describe("API client contracts", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("returns an E2E Spitzola clarification instead of a greeting", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            EXPO_PUBLIC_E2E_MOCK_VOICE_TURN: "1",
+            EXPO_PUBLIC_E2E_VOICE_QUERY: "spitzola",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("backend should not be called for E2E voice mock");
+    }));
+
+    const { apiPostForm } = await import("../lib/api");
+    const form = {
+      _parts: [["file", { uri: "file:///tmp/audio.m4a", name: "audio.m4a", type: "audio/m4a" }]],
+    } as unknown as FormData;
+
+    const voicePayload = await apiPostForm<any>(
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      form,
+    );
+
+    expect(voicePayload.item.raw_text).toContain("Spitzola");
+    expect(voicePayload.assistant.text).toContain("not finding");
+    expect(voicePayload.assistant.text).toContain("misheard");
+    expect(voicePayload.assistant.text).not.toBe("Hi. How can I help?");
+    expect(voicePayload.pipeline.predicted_label).toBe("general");
+    expect(voicePayload.pipeline.route_taken).toBe("openai_general");
+    expect(voicePayload.meta.tts_language_code).toBe("en-IN");
+  });
+
+  it("uses en-IN and ta-IN TTS metadata in the E2E voice mock", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            EXPO_PUBLIC_E2E_MOCK_VOICE_TURN: "1",
+            EXPO_PUBLIC_E2E_VOICE_QUERY: "spitzola",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("backend should not be called for E2E voice mock");
+    }));
+
+    const { apiPostForm } = await import("../lib/api");
+    const form = {
+      _parts: [["file", { uri: "file:///tmp/audio.m4a", name: "audio.m4a", type: "audio/m4a" }]],
+    } as unknown as FormData;
+
+    const english = await apiPostForm<any>(
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en",
+      form,
+    );
+    const tamil = await apiPostForm<any>(
+      "/api/transcribe-and-analyze?user_id=7&reply_language=ta",
+      form,
+    );
+
+    expect(english.meta.tts_language_code).toBe("en-IN");
+    expect(english.meta.tts_locale_style).toBe("indian_english");
+    expect(tamil.meta.tts_language_code).toBe("ta-IN");
+    expect(tamil.meta.tts_locale_style).toBe("local_tamil");
+    expect(tamil.assistant.text).toContain("clear-aa");
+  });
+
   it("posts TTS to the backend when the debug E2E voice mock is disabled", async () => {
     vi.doMock("expo-constants", () => ({
       default: {
