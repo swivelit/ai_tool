@@ -93,8 +93,10 @@ from .ai.providers.sarvam_provider import (
     estimate_tts_cost,
     extract_sarvam_transcript,
     normalize_audio_language,
+    normalize_sarvam_tts_model,
     normalize_stt_upload_mime_type,
     redact_sarvam_provider_message,
+    resolve_sarvam_tts_speaker,
     sarvam_provider_error_detail,
 )
 from .ai.agent_runtime import agentic_mode_enabled, fetch_agent_run_for_user
@@ -4432,17 +4434,20 @@ def api_tts(
     enforce_provider_budget(session, "sarvam", currency="INR")
     started = time.perf_counter()
     premium = str(os.getenv("SARVAM_TTS_PREMIUM", "false")).strip().lower() in {"1", "true", "yes", "on"}
-    model = (
-        os.getenv("SARVAM_TTS_MODEL_PREMIUM", "bulbul:v3")
-        if premium
-        else os.getenv("SARVAM_TTS_MODEL", "bulbul:v2")
-    ).strip() or ("bulbul:v3" if premium else "bulbul:v2")
+    model = normalize_sarvam_tts_model(
+        os.getenv("SARVAM_TTS_MODEL_PREMIUM") if premium else os.getenv("SARVAM_TTS_MODEL"),
+        premium=premium,
+    )
+    resolved_speaker = resolve_sarvam_tts_speaker(
+        model,
+        payload.speaker if payload.speaker is not None else os.getenv("SARVAM_TTS_SPEAKER"),
+    )
     logger.info(
         "tts_started",
         extra=chat_log_payload(
             event="tts_started",
             target_language_code=payload.target_language_code or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN") or "ta-IN",
-            speaker=payload.speaker or os.getenv("SARVAM_TTS_SPEAKER", "shubh") or "shubh",
+            speaker=resolved_speaker,
             model=model,
             text=text,
         ),

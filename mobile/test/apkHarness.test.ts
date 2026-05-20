@@ -217,6 +217,9 @@ describe("APK test harness", () => {
     expect(source).toContain("Reply ready");
     expect(source).toContain("client_voice_reply_tts_started");
     expect(source).toContain("client_voice_reply_tts_completed");
+    expect(source).toContain("client_voice_reply_tts_failed");
+    expect(source).toContain("voice-tts-failed");
+    expect(source).toContain("voice-tts-failures.log");
     expect(source).toContain("e2e_voice_mock");
     expect(source).toContain("voice-markers.log");
   });

@@ -20,6 +20,18 @@ from .base import AIProvider
 
 SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
 SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
+SARVAM_TTS_DEFAULT_MODEL = "bulbul:v2"
+SARVAM_TTS_DEFAULT_PREMIUM_MODEL = "bulbul:v3"
+SARVAM_TTS_DEFAULT_SPEAKER = "anushka"
+SARVAM_TTS_BULBUL_V2_SPEAKERS = {
+    "anushka",
+    "abhilash",
+    "manisha",
+    "vidya",
+    "arya",
+    "karun",
+    "hitesh",
+}
 SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL = (
     "No speech was detected in the uploaded audio. Hold the mic until recording starts, then speak for at least a second."
 )
@@ -38,6 +50,50 @@ _MOBILE_AUDIO_UPLOAD_MIME_TYPES = {
     "audio/x-m4a",
     "application/mp4",
 }
+
+
+def normalize_sarvam_tts_model(model: str | None, premium: bool = False) -> str:
+    value = str(model or "").strip()
+    if value:
+        return value
+    return SARVAM_TTS_DEFAULT_PREMIUM_MODEL if premium else SARVAM_TTS_DEFAULT_MODEL
+
+
+def resolve_sarvam_tts_speaker(model: str, requested_speaker: str | None = None) -> str:
+    requested = str(requested_speaker or "").strip().lower()
+    if not requested:
+        requested = SARVAM_TTS_DEFAULT_SPEAKER
+
+    if str(model or "").strip().lower() == SARVAM_TTS_DEFAULT_MODEL and requested not in SARVAM_TTS_BULBUL_V2_SPEAKERS:
+        return SARVAM_TTS_DEFAULT_SPEAKER
+
+    return requested
+
+
+def parse_sarvam_available_speakers(error_text: str) -> list[str]:
+    text = str(error_text or "")
+    match = re.search(
+        r"available speakers(?:\s+for\s+[A-Za-z0-9:._-]+)?\s*(?:are|:)\s*:?\s*([^\n.]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return []
+
+    speakers: list[str] = []
+    for raw in re.split(r",|;|/|\band\b", match.group(1), flags=re.IGNORECASE):
+        speaker = re.sub(r"[^A-Za-z0-9_-]+", "", raw.strip().lower())
+        if speaker and speaker not in speakers:
+            speakers.append(speaker)
+    return speakers
+
+
+def is_sarvam_speaker_incompatible_error(error_text: str) -> bool:
+    normalized = str(error_text or "").lower()
+    return (
+        "speaker" in normalized
+        and ("not compatible" in normalized or "incompatible" in normalized)
+    ) or ("speaker" in normalized and "available speakers" in normalized)
 
 
 class SarvamProvider(AIProvider):
@@ -198,51 +254,105 @@ class SarvamProvider(AIProvider):
         if not normalized_text:
             raise HTTPException(status_code=400, detail="text is required.")
 
-        model = (
-            os.getenv("SARVAM_TTS_MODEL_PREMIUM", "bulbul:v3")
-            if premium
-            else os.getenv("SARVAM_TTS_MODEL", "bulbul:v2")
-        ).strip() or ("bulbul:v3" if premium else "bulbul:v2")
+        model = normalize_sarvam_tts_model(
+            os.getenv("SARVAM_TTS_MODEL_PREMIUM") if premium else os.getenv("SARVAM_TTS_MODEL"),
+            premium=premium,
+        )
+        requested_speaker = speaker if speaker is not None else os.getenv("SARVAM_TTS_SPEAKER")
+        resolved_speaker = resolve_sarvam_tts_speaker(model, requested_speaker)
         payload = {
             "text": normalized_text,
             "target_language_code": target_language_code or os.getenv("SARVAM_TTS_LANGUAGE", "ta-IN") or "ta-IN",
-            "speaker": speaker or os.getenv("SARVAM_TTS_SPEAKER", "shubh") or "shubh",
+            "speaker": resolved_speaker,
             "model": model,
             "pace": 0.85,
         }
         started = time.perf_counter()
-        try:
-            response = self._http_post(
-                SARVAM_TTS_URL,
-                headers={"api-subscription-key": api_key},
-                json=payload,
-                timeout=(5, 30),
+        requested_speaker_clean = str(requested_speaker or "").strip().lower()
+        if requested_speaker_clean and requested_speaker_clean != resolved_speaker:
+            _log_sarvam_event(
+                "tts_speaker_fallback",
+                started=started,
+                model=model,
+                requested_speaker=requested_speaker_clean,
+                resolved_speaker=resolved_speaker,
+                reason="incompatible_speaker",
             )
-        except requests.Timeout as exc:
-            _log_sarvam_event("tts_failed", status_code=504, safe_provider_error="timeout", started=started)
-            raise HTTPException(status_code=504, detail="TTS provider timed out.") from exc
-        except requests.RequestException as exc:
-            detail = redact_sarvam_provider_message(str(exc), api_key) or "request failed."
-            _log_sarvam_event("tts_failed", status_code=502, safe_provider_error=detail, started=started)
-            raise HTTPException(status_code=502, detail=f"TTS provider error: {detail}") from exc
+
+        def post_tts(request_payload: dict[str, Any], *, retry_label: str = "") -> Any:
+            try:
+                return self._http_post(
+                    SARVAM_TTS_URL,
+                    headers={"api-subscription-key": api_key},
+                    json=request_payload,
+                    timeout=(5, 30),
+                )
+            except requests.Timeout as exc:
+                provider_error = f"{retry_label}_timeout" if retry_label else "timeout"
+                detail = "TTS retry timed out." if retry_label else "TTS provider timed out."
+                _log_sarvam_event("tts_failed", status_code=504, safe_provider_error=provider_error, started=started)
+                raise HTTPException(status_code=504, detail=detail) from exc
+            except requests.RequestException as exc:
+                detail = redact_sarvam_provider_message(str(exc), api_key) or "request failed."
+                _log_sarvam_event("tts_failed", status_code=502, safe_provider_error=detail, started=started)
+                prefix = "TTS retry failed" if retry_label else "TTS provider error"
+                raise HTTPException(status_code=502, detail=f"{prefix}: {detail}") from exc
+
+        def speaker_fallback_from_error(error_text: str) -> Optional[str]:
+            available = parse_sarvam_available_speakers(error_text)
+            if SARVAM_TTS_DEFAULT_SPEAKER in available:
+                return SARVAM_TTS_DEFAULT_SPEAKER
+            if str(model or "").strip().lower() == SARVAM_TTS_DEFAULT_MODEL:
+                for available_speaker in available:
+                    if available_speaker in SARVAM_TTS_BULBUL_V2_SPEAKERS:
+                        return available_speaker
+                return SARVAM_TTS_DEFAULT_SPEAKER
+            return available[0] if available else None
+
+        def maybe_retry_with_speaker_fallback(response: Any, request_payload: dict[str, Any], *, retry_label: str) -> tuple[Any, dict[str, Any], bool]:
+            if response.status_code not in {400, 422}:
+                return response, request_payload, False
+
+            detail = sarvam_provider_error_detail(response, "TTS provider", api_key)
+            if not is_sarvam_speaker_incompatible_error(detail):
+                return response, request_payload, False
+
+            fallback_speaker = speaker_fallback_from_error(detail)
+            current_speaker = str(request_payload.get("speaker") or "").strip().lower()
+            if not fallback_speaker or fallback_speaker == current_speaker:
+                return response, request_payload, False
+
+            retry_payload = {**request_payload, "speaker": fallback_speaker}
+            _log_sarvam_event(
+                "tts_speaker_fallback",
+                started=started,
+                model=model,
+                requested_speaker=current_speaker,
+                resolved_speaker=fallback_speaker,
+                reason="incompatible_speaker",
+            )
+            return post_tts(retry_payload, retry_label=retry_label), retry_payload, True
+
+        response = post_tts(payload)
+        speaker_retry_used = False
+        if response.status_code in {400, 422}:
+            response, payload, speaker_retry_used = maybe_retry_with_speaker_fallback(
+                response,
+                payload,
+                retry_label="speaker_retry",
+            )
 
         if response.status_code in {400, 422}:
             legacy_payload = {**payload, "inputs": [normalized_text]}
             legacy_payload.pop("text", None)
-            try:
-                response = self._http_post(
-                    SARVAM_TTS_URL,
-                    headers={"api-subscription-key": api_key},
-                    json=legacy_payload,
-                    timeout=(5, 30),
+            response = post_tts(legacy_payload, retry_label="legacy_retry")
+            payload = legacy_payload
+            if response.status_code in {400, 422} and not speaker_retry_used:
+                response, payload, speaker_retry_used = maybe_retry_with_speaker_fallback(
+                    response,
+                    payload,
+                    retry_label="speaker_retry",
                 )
-            except requests.Timeout as exc:
-                _log_sarvam_event("tts_failed", status_code=504, safe_provider_error="retry_timeout", started=started)
-                raise HTTPException(status_code=504, detail="TTS retry timed out.") from exc
-            except requests.RequestException as exc:
-                detail = redact_sarvam_provider_message(str(exc), api_key) or "request failed."
-                _log_sarvam_event("tts_failed", status_code=502, safe_provider_error=detail, started=started)
-                raise HTTPException(status_code=502, detail=f"TTS retry failed: {detail}") from exc
 
         if response.status_code == 200:
             try:

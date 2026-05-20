@@ -665,6 +665,9 @@ export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPEL
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
 
+# APK E2E mock validates mobile voice UI, mic gesture, assistant reply visibility,
+# cached playback, and telemetry. Backend tests validate real Sarvam TTS speaker
+# compatibility, so this mock must not be the only coverage for provider bugs.
 if is_truthy "${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-}"; then
   info "Debug APK voice routing: local/native STT (manual development opt-in)"
 else
@@ -835,6 +838,12 @@ else
       if [[ "$voice_markers_seen" != "1" ]]; then
         mark_failed "voice-telemetry-markers-missing"
       fi
+      if [[ -f "$ARTIFACT_DIR/logcat-full.log" ]] && \
+        tail -n "+$((voice_log_start_line + 1))" "$ARTIFACT_DIR/logcat-full.log" | \
+          grep -E "client_voice_reply_tts_failed" > "$ARTIFACT_DIR/voice-tts-failures.log" 2>/dev/null; then
+        mark_failed "voice-tts-failed"
+      fi
+      scan_crashes
       capture_step "voice-after"
     fi
   fi

@@ -50,6 +50,9 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("FileSystem.EncodingType.Base64");
     expect(source).toContain("voice-last-reply");
     expect(source).toContain("voice-reply-status");
+    expect(source).toContain("TTS speaker is misconfigured");
+    expect(source).not.toContain('speaker: "shubh"');
+    expect(source).not.toContain("speaker: 'shubh'");
     expect(source).toContain("recordingPhaseRef.current === \"stopping\"");
     expect(source).toContain("reply_language=ta&speech_language=ta-IN");
   });

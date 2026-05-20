@@ -77,6 +77,7 @@ describe("API client contracts", () => {
     vi.restoreAllMocks();
     vi.resetModules();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("fetches global knowledge sync from the authenticated backend", async () => {
@@ -253,6 +254,53 @@ describe("API client contracts", () => {
     expect(voicePayload.meta.source).toBe("e2e_voice_mock");
     expect(ttsPayload.audio_base64).toMatch(/^UklGR/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("posts TTS to the backend when the debug E2E voice mock is disabled", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ audio_base64: "UklGRbackend" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    const payload = await apiPost<any>("/api/tts", {
+      text: "hello",
+      target_language_code: "ta-IN",
+    });
+
+    const ttsCalls = fetchCallsEndingWith(fetchMock, "/api/tts");
+    expect(payload.audio_base64).toBe("UklGRbackend");
+    expect(ttsCalls).toHaveLength(1);
+    expect(JSON.parse(String((ttsCalls[0][1] as any).body))).toEqual({
+      text: "hello",
+      target_language_code: "ta-IN",
+    });
+  });
+
+  it("rejects the debug E2E voice mock in release builds", async () => {
+    vi.stubEnv("JAI_BUILD_TYPE", "release");
+    vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN", "1");
+
+    await expect(import("../app.config")).rejects.toThrow(
+      /EXPO_PUBLIC_E2E_MOCK_VOICE_TURN/,
+    );
   });
 
   it("does not activate local recorded voice route unless USE_LOCAL_VOICE_PIPELINE is true", async () => {

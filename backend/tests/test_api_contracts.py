@@ -1015,6 +1015,7 @@ def test_tts_uses_modern_text_payload_and_returns_audio(client, monkeypatch):
     create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
     monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+    monkeypatch.delenv("SARVAM_TTS_SPEAKER", raising=False)
 
     class DummyResponse:
         def __init__(self, status_code: int, payload: dict | None = None, text: str = ""):
@@ -1043,10 +1044,43 @@ def test_tts_uses_modern_text_payload_and_returns_audio(client, monkeypatch):
     assert response.json()["audio_base64"] == "base64-audio"
     assert calls[0]["json"]["text"] == "hello"
     assert calls[0]["json"]["target_language_code"] == "en-IN"
-    assert calls[0]["json"]["speaker"] == "shubh"
+    assert calls[0]["json"]["speaker"] == "anushka"
     assert calls[0]["json"]["model"] == "bulbul:v2"
     assert "inputs" not in calls[0]["json"]
     assert calls[0]["timeout"] == (5, 30)
+
+
+def test_tts_env_shubh_falls_back_to_anushka(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setattr(main_module, "SARVAM_API_KEY", "test-key")
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    monkeypatch.setenv("SARVAM_TTS_SPEAKER", "shubh")
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"audios": ["base64-audio"]}
+
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append({**kwargs, "json": dict(kwargs.get("json") or {})})
+        return DummyResponse()
+
+    monkeypatch.setattr(main_module.requests, "post", fake_post)
+
+    response = client.post(
+        "/api/tts",
+        headers=headers,
+        json={"text": "hello", "target_language_code": "en-IN"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["audio_base64"] == "base64-audio"
+    assert calls[0]["json"]["speaker"] == "anushka"
 
 
 def test_tts_provider_missing_audio_returns_readable_failure(client, monkeypatch):

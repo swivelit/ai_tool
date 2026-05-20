@@ -241,6 +241,9 @@ if is_truthy "${RUN_APK_TESTS:-}"; then
   export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
   export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
   export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
+  # APK E2E mock validates mobile voice UI, mic gesture, cached playback, and telemetry.
+  # Backend tests validate real Sarvam TTS speaker/model compatibility; do not rely
+  # on this APK mock as the only regression coverage for provider configuration.
   info "APK test mode: E2E mock auth/model setup/voice turn enabled; unverified native inference disabled"
 fi
 

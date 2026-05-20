@@ -1659,6 +1659,16 @@ export default function Home() {
     return fallback;
   }
 
+  function isTtsSpeakerMisconfiguredError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || "");
+    const normalizedMessage = message.toLowerCase();
+    return (
+      normalizedMessage.includes("speaker") &&
+      normalizedMessage.includes("not compatible") &&
+      message.includes("TTS provider returned 400")
+    );
+  }
+
   function isTooShortAudioError(error: unknown) {
     if (error instanceof VoiceRecordingTooShortError) {
       return true;
@@ -1888,7 +1898,11 @@ export default function Home() {
         await deleteReplyAudioFile(cachedUri);
       }
       if (isVoiceReply) {
-        setVoiceReplyStatus("Reply received, but voice playback failed.");
+        setVoiceReplyStatus(
+          isTtsSpeakerMisconfiguredError(error)
+            ? "Reply received, but voice playback failed. TTS speaker is misconfigured."
+            : "Reply received, but voice playback failed.",
+        );
       }
       logVoiceTelemetry("client_voice_reply_tts_failed", {
         request_id: context.requestId,

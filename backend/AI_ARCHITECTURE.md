@@ -54,6 +54,10 @@ Voice uploads use Sarvam Saaras for STT first. The transcript then routes like a
 normal text turn: English transcripts go to OpenAI, Indic/Tanglish transcripts go
 to Sarvam chat, and backend-tool intents use backend tools.
 
+TTS defaults to Sarvam `bulbul:v2` with speaker `anushka`. `bulbul:v2` must use
+one of `anushka`, `abhilash`, `manisha`, `vidya`, `arya`, `karun`, or `hitesh`.
+Do not use `shubh` with `bulbul:v2`; Sarvam rejects that speaker/model pair.
+
 ## Context And Product Prompts
 
 - `/api/chat` passes only the last 3-6 meaningful user/assistant turns into

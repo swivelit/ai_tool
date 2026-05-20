@@ -1,8 +1,10 @@
+import os
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
+import app.ai.providers.sarvam_provider as sarvam_provider_module
 from app.ai.providers.sarvam_provider import (
     SARVAM_STT_ACCEPTED_UPLOAD_MIME_TYPES,
     SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL,
@@ -73,6 +75,8 @@ def test_sarvam_empty_chat_response_raises_for_orchestrator_fallback(monkeypatch
 
 def test_sarvam_tts_modern_payload_and_audio(monkeypatch):
     monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    monkeypatch.delenv("SARVAM_TTS_MODEL", raising=False)
+    monkeypatch.delenv("SARVAM_TTS_SPEAKER", raising=False)
     calls = []
 
     class Response:
@@ -91,7 +95,103 @@ def test_sarvam_tts_modern_payload_and_audio(monkeypatch):
     assert audio == "audio64"
     assert calls[0][1]["json"]["text"] == "hello"
     assert calls[0][1]["json"]["model"] == "bulbul:v2"
+    assert calls[0][1]["json"]["speaker"] == "anushka"
+    assert "inputs" not in calls[0][1]["json"]
     assert calls[0][1]["headers"]["api-subscription-key"] == "test-key"
+
+
+def test_sarvam_tts_env_shubh_falls_back_for_bulbul_v2(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    monkeypatch.setenv("SARVAM_TTS_SPEAKER", "shubh")
+    calls = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"audios": ["audio64"]}
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Response()
+
+    audio = SarvamProvider(http_post=fake_post).tts("hello", target_language_code="en-IN")
+
+    assert audio == "audio64"
+    assert calls[0][1]["json"]["speaker"] == "anushka"
+
+
+def test_sarvam_tts_preserves_valid_v2_speaker(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    calls = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"audios": ["audio64"]}
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Response()
+
+    audio = SarvamProvider(http_post=fake_post).tts("hello", speaker="vidya")
+
+    assert audio == "audio64"
+    assert calls[0][1]["json"]["speaker"] == "vidya"
+
+
+def test_sarvam_tts_retries_speaker_mismatch(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    monkeypatch.setattr(
+        sarvam_provider_module,
+        "SARVAM_TTS_BULBUL_V2_SPEAKERS",
+        {*sarvam_provider_module.SARVAM_TTS_BULBUL_V2_SPEAKERS, "shubh"},
+    )
+    calls = []
+
+    class Response:
+        def __init__(self, status_code: int, payload: dict | None = None, text: str = ""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    mismatch_text = (
+        "Speaker 'shubh' is not compatible with model bulbul:v2. "
+        "Available speakers for bulbul:v2 are: anushka, abhilash, manisha, vidya, arya, karun, hitesh"
+    )
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            return Response(400, {"detail": mismatch_text}, mismatch_text)
+        return Response(200, {"audios": ["audio64"]})
+
+    audio = SarvamProvider(http_post=fake_post).tts("hello", speaker="shubh")
+
+    assert audio == "audio64"
+    assert len(calls) == 2
+    assert calls[0][1]["json"]["speaker"] == "shubh"
+    assert calls[1][1]["json"]["speaker"] == "anushka"
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_LIVE_SARVAM_TTS_TEST") != "1" or not os.getenv("SARVAM_API_KEY"),
+    reason="Set RUN_LIVE_SARVAM_TTS_TEST=1 and SARVAM_API_KEY to run the live Sarvam TTS smoke test.",
+)
+def test_live_sarvam_tts_default_v2_smoke(monkeypatch):
+    monkeypatch.setenv("SARVAM_TTS_MODEL", "bulbul:v2")
+    audio = SarvamProvider().tts("hello", target_language_code="ta-IN")
+
+    assert str(audio or "").strip()
 
 
 def test_sarvam_stt_extracts_transcript(monkeypatch, tmp_path):
