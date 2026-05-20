@@ -176,6 +176,9 @@ describe("APK test harness", () => {
       'export EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="${EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT:-1}"',
     );
     expect(source).toContain(
+      'export EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT="${EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT:-1}"',
+    );
+    expect(source).toContain(
       'export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"',
     );
     expect(source).toContain(
@@ -196,6 +199,7 @@ describe("APK test harness", () => {
       expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_QUERY=");
       expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_SURFACE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT=");
+      expect(source).toContain("EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT=");
       expect(source).toContain("EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=");
@@ -222,6 +226,7 @@ describe("APK test harness", () => {
 
     expect(source).toContain("android.permission.RECORD_AUDIO");
     expect(source).toContain("chat-voice-button");
+    expect(source).toContain("open-voice-mode-button");
     expect(source).toContain("Hold the orb to record");
     expect(source).toContain("input swipe");
     expect(source).toContain("voice-last-reply");
@@ -235,6 +240,11 @@ describe("APK test harness", () => {
     expect(source).toContain("misheard");
     expect(source).toContain("agent_local_greeting");
     expect(source).toContain("voice-reply-status");
+    expect(source).toContain("assert_desc_absent");
+    expect(source).toContain("chat-mic-button-absent-after-launch");
+    expect(source).toContain("chat-mic-button-absent-after-voice");
+    expect(source).toContain("voice-modal-open");
+    expect(source).toContain("voice-closed");
     expect(source).toContain("Speaking reply");
     expect(source).toContain("Reply ready");
     expect(source).toContain("Scenario 1: English Settings");
@@ -268,13 +278,16 @@ describe("APK test harness", () => {
     expect(source).toContain("client_voice_reply_tts_failed");
   });
 
-  it("quick composer mic remains covered by APK automation", () => {
+  it("APK automation rejects the removed quick composer mic", () => {
     const source = readRepo("test_apk.sh");
 
-    expect(source).toContain("quick-mic-long-press");
-    expect(source).toContain("quick-mic-normal-chat-not-visible");
     expect(source).toContain("chat-mic-button");
-    expect(source).toContain("assistant_response_count");
+    expect(source).toContain("assert_desc_absent");
+    expect(source).toContain("chat-mic-button-absent-after-launch");
+    expect(source).toContain("chat-mic-button-absent-after-voice");
+    expect(source).not.toContain("quick-mic-long-press");
+    expect(source).not.toContain("quick-mic-normal-chat-not-visible");
+    expect(source).not.toContain("quick-mic-not-found");
   });
 
   it("release app config rejects E2E mock auth env", async () => {
@@ -301,7 +314,7 @@ describe("APK test harness", () => {
     [
       "chat-input",
       "chat-send-button",
-      "chat-mic-button",
+      "open-voice-mode-button",
       "chat-drawer-button",
       "chat-voice-button",
       "chat-assistant-response",

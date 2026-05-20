@@ -121,8 +121,8 @@ type PendingReminder = {
   datetimeText: string;
 };
 
-type RecorderSurface = "quick" | "live";
-type VoiceSessionMode = "live" | "quick" | null;
+type RecorderSurface = "live";
+type VoiceSessionMode = "live" | null;
 type AgentReplyPlaybackContext = {
   requestId?: string;
   source?: ChatRequestSource;
@@ -634,13 +634,7 @@ export default function Home() {
     });
   }, [historySearch, latestHistory]);
 
-  const placeholder = recordingPreparing
-    ? "Preparing microphone..."
-    : recordingStopping
-      ? "Sending voice message..."
-    : listening
-      ? "Recording..."
-      : `Ask ${assistantLabel}`;
+  const composerPlaceholder = `Ask ${assistantLabel}`;
 
   const handsFreeSummaryText = recordingPreparing && activeSurface === "live"
     ? "Preparing microphone..."
@@ -2390,6 +2384,8 @@ export default function Home() {
     await resetAudioMode();
   }
 
+  // Normal chat is intentionally text-only. Audio input belongs in the live orb
+  // voice screen; do not reintroduce a composer mic without updating UX tests.
   async function startRecording(surface: RecorderSurface) {
     if (busy || recordingPhaseRef.current !== "idle") return;
     let nextRecording: Audio.Recording | null = null;
@@ -2574,14 +2570,12 @@ export default function Home() {
     }
 
     const requestId = nextChatRequestId("voice");
-    const currentSessionId = activeChatSessionIdRef.current;
     activeChatRequestIdRef.current = requestId;
     voiceBusyRequestIdRef.current = requestId;
     let uploadStarted = false;
     let audioFileSize: number | undefined;
-    const requestVoiceSurface = activeSurfaceRef.current ?? activeSurface;
-    const isLiveVoiceSession = requestVoiceSurface === "live";
-    const voiceSessionId = isLiveVoiceSession ? ensureVoiceSession("live") : null;
+    const requestVoiceSurface = activeSurfaceRef.current ?? activeSurface ?? "live";
+    const voiceSessionId = ensureVoiceSession("live");
     const recordingDurationMs = voiceRecordingStartedAtRef.current
       ? Date.now() - voiceRecordingStartedAtRef.current
       : undefined;
@@ -2591,23 +2585,12 @@ export default function Home() {
       stopWhenReadyRef.current = false;
       setRecordingStopping(true);
       setBusy(true);
-      if (isLiveVoiceSession) {
-        updateVoiceSessionTurn(requestId, {
-          userText: "Voice message",
-          assistantText: "",
-          status: "thinking",
-          replyLanguage: settings.languageMode,
-        });
-      } else {
-        setPendingChatTurn({
-          requestId,
-          sessionId: currentSessionId,
-          source: "voice",
-          userMessage: "Voice message",
-          status: "thinking",
-          createdAt: new Date().toISOString(),
-        });
-      }
+      updateVoiceSessionTurn(requestId, {
+        userText: "Voice message",
+        assistantText: "",
+        status: "thinking",
+        replyLanguage: settings.languageMode,
+      });
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
       recordingRef.current = null;
@@ -2703,22 +2686,16 @@ export default function Home() {
       if (assistantReplyText) {
         setVoiceLastReplyText(assistantReplyText);
       }
-      if (isLiveVoiceSession) {
-        updateVoiceSessionTurn(requestId, {
-          userText: userTranscript,
-          assistantText: assistantReplyText,
-          status: "done",
-          replyLanguage: voiceLanguage.replyLanguage,
-        });
-        voiceSessionItemsPendingHistoryRef.current = [
-          ...voiceSessionItemsPendingHistoryRef.current,
-          nextItem,
-        ];
-      } else {
-        clearPendingAssistant(requestId);
-        const mergedHistory = await refreshHistoryAndSessions([nextItem]);
-        await attachItemToCurrentChat(nextItem, mergedHistory);
-      }
+      updateVoiceSessionTurn(requestId, {
+        userText: userTranscript,
+        assistantText: assistantReplyText,
+        status: "done",
+        replyLanguage: voiceLanguage.replyLanguage,
+      });
+      voiceSessionItemsPendingHistoryRef.current = [
+        ...voiceSessionItemsPendingHistoryRef.current,
+        nextItem,
+      ];
       openReturnedFile(firstOpenableFile(nextItem, "files"));
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
@@ -2781,16 +2758,12 @@ export default function Home() {
           : tooShortAudio
             ? TOO_SHORT_AUDIO_MESSAGE
             : VOICE_UNAVAILABLE_MESSAGE;
-        if (isLiveVoiceSession) {
-          updateVoiceSessionTurn(requestId, {
-            userText: "Voice message",
-            assistantText: message,
-            status: "error",
-          });
-          setVoiceReplyStatus(message);
-        } else {
-          showPendingAssistantError(requestId, message, "Voice message", "voice");
-        }
+        updateVoiceSessionTurn(requestId, {
+          userText: "Voice message",
+          assistantText: message,
+          status: "error",
+        });
+        setVoiceReplyStatus(message);
         warnChatFailure(error, requestId, "voice");
       }
     } finally {
@@ -2824,28 +2797,13 @@ export default function Home() {
     setVoiceSessionTurns([]);
   }
 
-  async function handleQuickMicPressIn() {
-    if (busy || activeSurface === "live") return;
-    await startRecording("quick");
-  }
-
-  async function handleQuickMicPressOut() {
-    if (activeSurface !== "quick" && recordingPhaseRef.current === "idle") return;
-    await stopAndAnalyze();
-  }
-
   async function handleLiveOrbPressIn() {
     if (busy && recordingPhaseRef.current === "idle") return;
-    if (activeSurface === "quick") return;
     await startRecording("live");
   }
 
   async function handleLiveOrbPressOut() {
     if (activeSurface !== "live" && recordingPhaseRef.current === "idle") return;
-    await stopAndAnalyze();
-  }
-
-  async function handleVoiceStopPress() {
     await stopAndAnalyze();
   }
 
@@ -3112,21 +3070,6 @@ export default function Home() {
                 </View>
               ) : null}
 
-              {activeSurface === "quick" && (recordingPreparing || listening || recordingStopping) ? (
-                <GlassCard style={styles.quickRecorderCard}>
-                  <View style={styles.quickRecorderHeader}>
-                    <View style={styles.recordingDot} />
-                    <Text style={styles.quickRecorderTitle}>{recordingStopping ? "Sending voice message" : recordingPreparing ? "Preparing microphone" : "Recording voice message"}</Text>
-                  </View>
-
-                  <View style={styles.quickRecorderBody}>
-                    <Waveform active={listening} />
-                    <Pressable onPress={handleVoiceStopPress} style={styles.stopButton}>
-                      <Ionicons name="stop" size={18} color={Brand.cream} />
-                    </Pressable>
-                  </View>
-                </GlassCard>
-              ) : null}
             </View>
           </ScrollView>
 
@@ -3149,7 +3092,7 @@ export default function Home() {
                       testID="chat-input"
                       accessibilityLabel="chat-input"
                       onChangeText={setText}
-                      placeholder={placeholder}
+                      placeholder={composerPlaceholder}
                       placeholderTextColor="rgba(124, 99, 80, 0.58)"
                       multiline
                       scrollEnabled={composerInputHeight >= MAX_INPUT_HEIGHT}
@@ -3171,43 +3114,20 @@ export default function Home() {
                       ]}
                     />
                   ) : (
-                    <View
-                      testID="voice-only-composer-placeholder"
-                      accessibilityLabel="voice-only-composer-placeholder"
-                      style={[styles.composerInput, styles.voiceOnlyComposerPlaceholder]}
+                    <Pressable
+                      onPress={openVoiceSession}
+                      testID="open-voice-mode-button"
+                      accessibilityLabel="open-voice-mode-button"
+                      accessibilityRole="button"
+                      style={styles.openVoiceModeButton}
                     >
-                      <Text style={styles.composerHintText}>Hold the mic to talk</Text>
-                    </View>
+                      <Ionicons name="sparkles-outline" size={16} color={Brand.cocoa} />
+                      <Text style={styles.openVoiceModeText}>Open voice mode</Text>
+                    </Pressable>
                   )}
 
-                  <View style={styles.composerInlineActions}>
-                    <Pressable
-                      onPressIn={() => {
-                        void handleQuickMicPressIn();
-                      }}
-                      onPressOut={() => {
-                        void handleQuickMicPressOut();
-                      }}
-                      disabled={busy && !listening}
-                      testID="chat-mic-button"
-                      accessibilityLabel="chat-mic-button"
-                      accessibilityRole="button"
-                      style={[
-                        styles.roundAction,
-                        (recordingPreparing || listening || recordingStopping) && activeSurface === "quick" && styles.roundActionActive,
-                        busy && !listening && styles.iconButtonDisabled,
-                      ]}
-                    >
-                      <Ionicons
-                        name={
-                          (recordingPreparing || listening || recordingStopping) && activeSurface === "quick" ? "stop" : "mic-outline"
-                        }
-                        size={18}
-                        color={Brand.cocoa}
-                      />
-                    </Pressable>
-
-                    {!voiceOnlyMode ? (
+                  {!voiceOnlyMode ? (
+                    <View style={styles.composerInlineActions}>
                       <Pressable
                         onPress={handleChatSend}
                         disabled={!text.trim() || busy || listening}
@@ -3225,23 +3145,9 @@ export default function Home() {
                           <Ionicons name="arrow-up" size={18} color={Brand.cocoa} />
                         )}
                       </Pressable>
-                    ) : null}
-                  </View>
+                    </View>
+                  ) : null}
                 </View>
-
-                {recordingStopping ? (
-                  <Text style={styles.composerHintText}>
-                    Sending voice message...
-                  </Text>
-                ) : recordingPreparing ? (
-                  <Text style={styles.composerHintText}>
-                    Preparing microphone...
-                  </Text>
-                ) : listening ? (
-                  <Text style={styles.composerHintText}>
-                    Recording in progress... tap stop when done
-                  </Text>
-                ) : null}
               </View>
             </View>
           </View>
@@ -3839,48 +3745,6 @@ const styles = StyleSheet.create({
     borderColor: "rgba(180, 82, 52, 0.32)",
   },
 
-  quickRecorderCard: {
-    marginTop: 16,
-    padding: 16,
-    borderRadius: 24,
-  },
-
-  quickRecorderHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  recordingDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 999,
-    backgroundColor: "#e04f4f",
-  },
-
-  quickRecorderTitle: {
-    color: Brand.ink,
-    fontSize: 14,
-    fontWeight: "900",
-  },
-
-  quickRecorderBody: {
-    marginTop: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 14,
-  },
-
-  stopButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: Brand.caramel,
-  },
-
   composerOverlay: {
     position: "absolute",
     left: 0,
@@ -3922,10 +3786,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
 
-  voiceOnlyComposerPlaceholder: {
-    justifyContent: "center",
-  },
-
   sendButton: {
     width: 40,
     height: 40,
@@ -3938,34 +3798,29 @@ const styles = StyleSheet.create({
   },
 
 
-  composerHintText: {
-    marginTop: 6,
-    paddingHorizontal: 6,
-    color: Brand.textMuted,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: "700",
-  },
-
   composerInlineActions: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
   },
 
-  roundAction: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  openVoiceModeButton: {
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
     backgroundColor: Brand.soft,
     borderWidth: 1,
     borderColor: Brand.lineStrong,
   },
 
-  roundActionActive: {
-    backgroundColor: "rgba(255, 227, 180, 0.9)",
+  openVoiceModeText: {
+    color: Brand.cocoa,
+    fontSize: 14,
+    fontWeight: "900",
   },
 
   drawerRoot: {

@@ -20,11 +20,7 @@ export function shouldAutoSpeakReply(input: ReplyPlaybackPolicyInput = {}) {
   }
 
   if (source === "voice") {
-    return (
-      voiceSurface === "live" ||
-      input.voiceOnlyMode === true ||
-      input.autoSpeakReplies === true
-    );
+    return voiceSurface === "live";
   }
 
   return false;

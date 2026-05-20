@@ -222,6 +222,19 @@ wait_for_desc() {
   return 1
 }
 
+assert_desc_absent() {
+  local desc="$1"
+  local label="${2:-absent-${desc//[^A-Za-z0-9]/_}}"
+  local xml_path
+  xml_path="$(dump_ui "$label")"
+  [[ -s "$xml_path" ]] || return 0
+  if grep -F "$desc" "$xml_path" > "$ARTIFACT_DIR/${label}-unexpected-match.log" 2>/dev/null; then
+    mark_failed "${label}-${desc}-present"
+    return 1
+  fi
+  return 0
+}
+
 dismiss_expo_warning() {
   local xml_path center x y
   xml_path="$(dump_ui "dismiss-expo-warning")"
@@ -676,6 +689,7 @@ export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conve
 export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"
 export EXPO_PUBLIC_E2E_VOICE_SURFACE="${EXPO_PUBLIC_E2E_VOICE_SURFACE:-live}"
 export EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="${EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT:-1}"
+export EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT="${EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT:-1}"
 export EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="${EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT:-false}"
 export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS:-false}"
@@ -689,6 +703,7 @@ export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNV
   printf "EXPO_PUBLIC_E2E_VOICE_QUERY=%s\n" "$EXPO_PUBLIC_E2E_VOICE_QUERY"
   printf "EXPO_PUBLIC_E2E_VOICE_SURFACE=%s\n" "$EXPO_PUBLIC_E2E_VOICE_SURFACE"
   printf "EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT=%s\n" "$EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT"
+  printf "EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT=%s\n" "$EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT"
 } > "$ARTIFACT_DIR/e2e-env.log"
 
 # APK E2E mock validates mobile voice UI, mic gesture, assistant reply visibility,
@@ -765,6 +780,7 @@ else
     EXPO_PUBLIC_E2E_VOICE_QUERY="$EXPO_PUBLIC_E2E_VOICE_QUERY" \
     EXPO_PUBLIC_E2E_VOICE_SURFACE="$EXPO_PUBLIC_E2E_VOICE_SURFACE" \
     EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT="$EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT" \
+    EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT="$EXPO_PUBLIC_DISABLE_CHAT_AUDIO_INPUT" \
     EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE="$EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT" \
     EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="$EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS" \
@@ -799,6 +815,10 @@ capture_step "launch"
 if wait_for_desc "chat-input" 60; then
   dismiss_expo_warning || true
   capture_step "chat-ready"
+  assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-launch" || true
+  if ! wait_for_desc "chat-voice-button" 5 && ! wait_for_desc "open-voice-mode-button" 2; then
+    mark_failed "voice-entry-button-not-found"
+  fi
 else
   capture_step "auth-or-setup"
   if wait_for_desc "login-email-input" 3; then
@@ -831,13 +851,21 @@ if [[ "${EXPO_PUBLIC_E2E_VOICE_QUERY,,}" == *"spitzola"* ]]; then
 fi
 
 capture_step "voice-before"
-if ! tap_desc "chat-voice-button"; then
-  mark_failed "tap-chat-voice-button"
+voice_entry_tapped=0
+if tap_desc "chat-voice-button"; then
+  voice_entry_tapped=1
+elif tap_desc "open-voice-mode-button"; then
+  voice_entry_tapped=1
 else
+  mark_failed "tap-voice-entry-button"
+fi
+
+if [[ "$voice_entry_tapped" == "1" ]]; then
   if ! wait_for_text "Hold to Talk" 10 && ! wait_for_desc "Hold the orb to record" 5; then
     mark_failed "voice-sheet-not-ready"
     capture_step "voice-sheet-not-ready"
   else
+    capture_step "voice-modal-open"
     orb_center=""
     if ! orb_center="$(find_ui_center desc "Hold the orb to record" "voice-orb")"; then
       mark_failed "voice-orb-not-found"
@@ -932,34 +960,8 @@ fi
 
 adb shell input keyevent 4 >/dev/null 2>&1 || true
 wait_for_desc "chat-input" 10 || true
-
-capture_step "quick-voice-before"
-quick_before_count="$(assistant_response_count "quick-voice-before-count" || printf "0")"
-if quick_mic_center="$(find_ui_center desc "chat-mic-button" "quick-mic")"; then
-  read -r quick_mic_x quick_mic_y <<< "$quick_mic_center"
-  adb shell input swipe "$quick_mic_x" "$quick_mic_y" "$quick_mic_x" "$quick_mic_y" 2200 >/dev/null 2>&1 || mark_failed "quick-mic-long-press"
-  quick_seen=0
-  deadline=$((SECONDS + 60))
-  while [[ "$SECONDS" -lt "$deadline" ]]; do
-    if ! assert_app_alive "during-quick-voice-test"; then
-      break
-    fi
-    quick_current_count="$(assistant_response_count "quick-voice-count-${SECONDS}" || printf "0")"
-    if [[ "$quick_before_count" =~ ^[0-9]+$ ]] && \
-      [[ "$quick_current_count" =~ ^[0-9]+$ ]] && \
-      (( quick_current_count > quick_before_count )); then
-      quick_seen=1
-      break
-    fi
-    sleep 1
-  done
-  if [[ "$quick_seen" != "1" ]]; then
-    mark_failed "quick-mic-normal-chat-not-visible"
-  fi
-  capture_step "quick-voice-after"
-else
-  mark_failed "quick-mic-not-found"
-fi
+capture_step "voice-closed"
+assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-voice" || true
 
 for message in "hello" "what can you do" "tell me about solo leveling"; do
   label="$(printf '%s' "$message" | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]')"

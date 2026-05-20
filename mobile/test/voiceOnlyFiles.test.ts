@@ -10,10 +10,11 @@ const chatSource = fs.readFileSync(
 );
 
 describe("voice-only file handling", () => {
-  it("hides typing controls and keeps the mic in voice-only mode", () => {
+  it("hides typing controls and opens dedicated voice mode in voice-only mode", () => {
     expect(chatSource).toContain("voiceOnlyMode");
-    expect(chatSource).toContain('testID="voice-only-composer-placeholder"');
-    expect(chatSource).toContain('testID="chat-mic-button"');
+    expect(chatSource).toContain('testID="open-voice-mode-button"');
+    expect(chatSource).not.toContain('testID="chat-mic-button"');
+    expect(chatSource).not.toContain("Hold the mic to talk");
     expect(chatSource).toContain('testID="chat-input"');
     expect(chatSource).toContain('testID="chat-send-button"');
     expect(chatSource).toContain("!voiceOnlyMode ? (");

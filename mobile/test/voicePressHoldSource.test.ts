@@ -18,14 +18,23 @@ function sliceAround(marker: string, radius = 900) {
 }
 
 describe("chat voice press-and-hold source", () => {
-  it("uses press-in and press-out for the composer mic without tap toggle", () => {
-    const block = sliceAround('testID="chat-mic-button"');
+  it("keeps the normal chat composer text-only", () => {
+    [
+      'testID="chat-mic-button"',
+      'accessibilityLabel="chat-mic-button"',
+      "handleQuickMicPressIn",
+      "handleQuickMicPressOut",
+      'startRecording("quick")',
+      'activeSurface === "quick"',
+      "Recording voice message",
+      "Sending voice message",
+      "Hold the mic to talk",
+    ].forEach((forbidden) => {
+      expect(source).not.toContain(forbidden);
+    });
 
-    expect(block).toContain("onPressIn");
-    expect(block).toContain("handleQuickMicPressIn");
-    expect(block).toContain("onPressOut");
-    expect(block).toContain("handleQuickMicPressOut");
-    expect(block).not.toMatch(/\bonPress=\{/);
+    expect(source).toContain('testID="chat-input"');
+    expect(source).toContain('testID="chat-send-button"');
   });
 
   it("uses press-in and press-out for the live orb without tap toggle", () => {
@@ -39,7 +48,13 @@ describe("chat voice press-and-hold source", () => {
     expect(block).not.toContain("onPress=");
   });
 
-  it("queues quick release during microphone startup and sends Tamil voice defaults", () => {
+  it("keeps voice recording and reply playback on the live orb route", () => {
+    expect(source).toContain('testID="chat-voice-button"');
+    expect(source).toContain("openVoiceSession");
+    expect(source).toContain("<Orb");
+    expect(source).toContain("handleLiveOrbPressIn");
+    expect(source).toContain("handleLiveOrbPressOut");
+    expect(source).toContain('startRecording("live")');
     expect(source).toContain('recordingPhaseRef.current === "starting"');
     expect(source).toContain("stopWhenReadyRef.current = true");
     expect(source).toContain("client_voice_release_queued");
@@ -75,25 +90,17 @@ describe("chat voice press-and-hold source", () => {
     expect(transcriptSource).toContain("voice-session-user-turn");
     expect(transcriptSource).toContain("voice-session-assistant-turn");
     expect(transcriptSource).toContain("voice-session-scroll");
-    expect(source).toContain("isLiveVoiceSession");
+    expect(source).toContain('const voiceSessionId = ensureVoiceSession("live")');
     expect(source).toContain("updateVoiceSessionTurn");
   });
 
-  it("does not only append live orb voice to the main chat while the sheet is active", () => {
-    const liveBlock = sliceAround("isLiveVoiceSession", 5200);
+  it("keeps live orb voice out of the normal chat thread while the sheet is active", () => {
+    const liveBlock = sliceAround("async function stopAndAnalyze", 8200);
 
     expect(liveBlock).toContain("voiceSessionItemsPendingHistoryRef");
     expect(liveBlock).toContain("updateVoiceSessionTurn");
-    expect(liveBlock).toContain("refreshHistoryAndSessions([nextItem])");
-    expect(liveBlock).toContain("attachItemToCurrentChat(nextItem, mergedHistory)");
-  });
-
-  it("quick mic still uses the normal chat flow", () => {
-    const quickBlock = sliceAround("handleQuickMicPressIn", 2400);
-
-    expect(quickBlock).toContain('await startRecording("quick")');
-    expect(source).toContain("setPendingChatTurn({");
-    expect(source).toContain("await attachItemToCurrentChat(nextItem, mergedHistory)");
+    expect(liveBlock).not.toContain("attachItemToCurrentChat(nextItem, mergedHistory)");
+    expect(source).toContain("await refreshHistoryAndSessions(pendingItems)");
   });
 
   it("voice source logs TTS language and voice session identifiers", () => {
@@ -103,9 +110,12 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("tts_locale_style");
   });
 
-  it("supports voice-only mode by hiding the typed send path", () => {
+  it("supports voice-only mode with a non-recording voice-mode CTA", () => {
     expect(source).toContain("voiceOnlyMode");
-    expect(source).toContain("voice-only-composer-placeholder");
+    expect(source).toContain('testID="open-voice-mode-button"');
+    expect(source).toContain('accessibilityLabel="open-voice-mode-button"');
     expect(source).toContain("!voiceOnlyMode ? (");
+    expect(source).toContain("Open voice mode");
+    expect(source).not.toContain("Hold the mic to talk");
   });
 });

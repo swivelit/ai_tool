@@ -7,7 +7,7 @@ describe("reply playback policy", () => {
     expect(shouldAutoSpeakReply({ source: "text" })).toBe(false);
   });
 
-  it("keeps normal recorded voice silent by default", () => {
+  it("does not auto-speak non-live voice sources", () => {
     expect(shouldAutoSpeakReply({ source: "voice", voiceSurface: "quick" })).toBe(false);
   });
 
@@ -15,24 +15,24 @@ describe("reply playback policy", () => {
     expect(shouldAutoSpeakReply({ source: "voice", voiceSurface: "live" })).toBe(true);
   });
 
-  it("speaks recorded voice replies in voice-only mode by default", () => {
+  it("does not use voice-only mode to auto-speak a non-live source", () => {
     expect(
       shouldAutoSpeakReply({
         source: "voice",
         voiceSurface: "quick",
         voiceOnlyMode: true,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("speaks quick recorded voice when auto-speak replies is enabled", () => {
+  it("keeps non-live voice silent even when auto-speak replies is enabled", () => {
     expect(
       shouldAutoSpeakReply({
         source: "voice",
         voiceSurface: "quick",
         autoSpeakReplies: true,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("keeps hands-free silent by default", () => {
