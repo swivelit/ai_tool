@@ -1221,11 +1221,18 @@ async function handleLocalTranscribeAndAnalyze(
     cachedProfile?.replyLanguage ||
     PRODUCT_DEFAULT_REPLY_LANGUAGE;
   const requestedSpeechLanguage = normalizeSpeechLanguage(speechLanguageRaw);
-  const resolvedSpeechLanguage: SpeechLanguage =
-    requestedSpeechLanguage ||
+  const replyLanguage =
     explicitReplyLanguage ||
     cachedProfile?.replyLanguage ||
     null;
+
+  const resolvedSpeechLanguage: SpeechLanguage =
+    requestedSpeechLanguage ||
+    (replyLanguage === "english"
+      ? "en"
+      : replyLanguage === "tamil" || replyLanguage === "tanglish"
+      ? "ta"
+      : null);
 
   let transcript: LocalVoiceTranscription;
   try {

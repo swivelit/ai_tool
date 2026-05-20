@@ -31,6 +31,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel, Session, delete, select
+from backend.config import SARVAM_API_KEY
 
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = CURRENT_DIR.parent
@@ -843,7 +844,7 @@ def startup_runtime_services() -> None:
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    request_id = request.headers.get("x-request-id") or new_request_id() or str(uuid4())
+    request_id = request.headers.get("x-request-id") or new_request_id() 
     start = time.perf_counter()
     set_request_context(request_id=request_id, route=request.url.path)
     try:
@@ -2692,7 +2693,7 @@ def get_feature_flags():
     }
 
 @app.post("/api/tts")
-def api_tts(
+async def api_tts(
     payload: TTSRequest,
     auth_user: AuthUser = Depends(get_current_user),
 ):
@@ -2702,7 +2703,7 @@ def api_tts(
 
     text = str(payload.text or "").strip()
     if not text:
-        raise HTTresponse = await PException(status_code=400, detail="text is required.")
+       raise HTTPException(status_code=400, detail="text is required.")
 
     headers = {
         "api-subscription-key": SARVAM_API_KEY,
@@ -2747,7 +2748,8 @@ def api_tts(
         }
         legacy_payload.pop("text", None)
         try:
-            response = requests.post(
+            response = await asyncio.to_thread(
+                requests.post,
                 SARVAM_TTS_URL,
                 headers={"api-subscription-key": SARVAM_API_KEY},
                 json=legacy_payload,
