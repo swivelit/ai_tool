@@ -64,7 +64,7 @@ def test_users_resolve_returns_not_found_for_valid_auth_without_user(client: Tes
     response = client.get("/users/resolve", headers=_auth("uid-new", "new@example.com"))
 
     assert response.status_code == 200
-    assert response.json() == {"found": False}
+    assert response.json() == {"found": False, "user": None}
 
 
 def test_users_resolve_uses_verified_bearer_identity_not_query_params(client: TestClient) -> None:
