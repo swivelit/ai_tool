@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { normalizeChatResponse, normalizeChatTurnPayload } from "@/lib/chatResponse";
+import { generateLocalChatItemId, mergeChatHistoryItems } from "@/lib/chatHistory";
 
 describe("chat response normalization", () => {
   it("preserves nested backend reminder fields", () => {
@@ -90,5 +91,86 @@ describe("chat response normalization", () => {
     );
 
     expect(normalized.__origin).toBe("local");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// New: error-state and multi-turn normalization tests
+// ---------------------------------------------------------------------------
+
+describe("chat response error-state handling", () => {
+  it("failed second turn item does not overwrite first turn details in merge", () => {
+    const turn1 = normalizeChatTurnPayload(
+      {
+        ok: true,
+        item: {
+          id: 1111,
+          intent: "assistant",
+          category: "Other",
+          raw_text: "first question",
+          details: "First answer.",
+          source: "text",
+          __origin: "backend",
+        } as any,
+        assistant: { text: "First answer." },
+      },
+      "first question"
+    );
+
+    // Simulate a failed second turn: no item returned, we keep history
+    // unchanged — mergeChatHistoryItems with only turn1 must be stable.
+    const historyAfterTurn1 = mergeChatHistoryItems([turn1]);
+    const historyAfterFailedTurn2 = mergeChatHistoryItems(historyAfterTurn1);
+
+    expect(historyAfterFailedTurn2).toHaveLength(1);
+    expect(historyAfterFailedTurn2[0].details).toBe("First answer.");
+  });
+
+  it("normalizing with a pre-allocated local ID survives merge with real backend item", () => {
+    const localId = generateLocalChatItemId();
+
+    // Step 1: local placeholder with negative ID
+    const placeholder = normalizeChatTurnPayload(
+      {
+        ok: true,
+        item: {
+          id: localId,
+          intent: "assistant",
+          category: "Other",
+          raw_text: "my question",
+          details: "Thinking…",
+          source: "text",
+          __origin: "local",
+        } as any,
+        assistant: { text: "Thinking…" },
+      },
+      "my question"
+    );
+
+    // Step 2: backend resolves with a real positive ID
+    const backendItem = normalizeChatTurnPayload(
+      {
+        ok: true,
+        item: {
+          id: 99999,
+          intent: "assistant",
+          category: "Other",
+          raw_text: "my question",
+          details: "Real answer.",
+          source: "text",
+          __origin: "backend",
+        } as any,
+        assistant: { text: "Real answer." },
+      },
+      "my question"
+    );
+
+    // Merge: drop placeholder, keep real item
+    const withoutPlaceholder = [placeholder].filter((i) => i.id !== localId);
+    const merged = mergeChatHistoryItems(withoutPlaceholder, [backendItem]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].id).toBe(99999);
+    expect(merged[0].details).toBe("Real answer.");
   });
 });
