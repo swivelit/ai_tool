@@ -5,7 +5,11 @@ export type ReplyLanguage =
   | "tamil"
   | "tanglish"
   | "auto";
-let lastPlayedReplyId: string | null = null;
+let playedReplyIds = new Set<string>();
+
+export function resetPlayedReplyIds() {
+  playedReplyIds.clear();
+}
 export type ReplyPlaybackPolicyInput = {
   source?: ReplySource | null;
   autoSpeakReplies?: boolean | null;
@@ -58,14 +62,14 @@ export function shouldAutoSpeakReply(
     return true;
   }
 
-  if (replyId && lastPlayedReplyId === replyId) {
+  if (replyId && playedReplyIds.has(replyId)) {
     return false;
   }
 
   // Hands-free assistant should always auto-speak
   if (source === "handsfree" && handsFreeMode !== "off") {
     if (replyId) {
-      lastPlayedReplyId = replyId;
+      playedReplyIds.add(replyId);
     }
 
     return true;
@@ -75,7 +79,7 @@ export function shouldAutoSpeakReply(
   if (source === "voice") {
     if (input.autoSpeakReplies === true) {
       if (replyId) {
-        lastPlayedReplyId = replyId;
+        playedReplyIds.add(replyId);
       }
 
       return true;

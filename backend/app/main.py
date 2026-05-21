@@ -1281,8 +1281,19 @@ async def retry_sarvam_request(request_func):
         try:
             return await request_func()
 
-        except asyncio.TimeoutError as exc:
+        except requests.Timeout as exc:
             last_exception = exc
+
+            logger.warning(
+                "Sarvam TTS retry request timed out."
+            )
+
+            if attempt < SARVAM_MAX_RETRIES - 1:
+                await asyncio.sleep(
+                    SARVAM_RETRY_DELAY * (attempt + 1)
+                
+                )
+                continue
 
         except Exception as exc:
             status_code = getattr(exc, "status_code", None)
@@ -1292,18 +1303,14 @@ async def retry_sarvam_request(request_func):
 
             last_exception = exc
 
-        if attempt < SARVAM_MAX_RETRIES - 1:
-            logger.warning(
-                f"Sarvam retry attempt {attempt + 1}"
-            )
-
-            await asyncio.sleep(
-                SARVAM_RETRY_DELAY * (attempt + 1)
-            )
+        
 
     logger.error("Sarvam request failed after retries")
 
-    raise last_exception
+    raise HTTPException(
+        status_code=504,
+        detail="TTS provider timed out."
+    )
 
 def load_onboarding_profile(session: Session, user_id: Union[int, str]) -> Dict[str, Any]:
     """Load onboarding/personality context from the database.
@@ -2728,7 +2735,7 @@ async def api_tts(
                 SARVAM_TTS_URL,
                 headers=headers,
                 json=req_payload,
-                timeout=SARVAM_TIMEOUT,
+                timeout=(5, 30),
             )
         )
     except  (

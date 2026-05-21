@@ -1,11 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it , beforeEach} from "vitest";
 
 import {
   shouldAutoSpeakReply,
   normalizeReplyLanguage,
+  resetPlayedReplyIds,
 } from "../lib/replyPlaybackPolicy";
 
 describe("reply playback policy", () => {
+  beforeEach(() => {
+    resetPlayedReplyIds();
+  });
   it("keeps text chat silent by default", () => {
     expect(shouldAutoSpeakReply({ source: "text" })).toBe(false);
   });
