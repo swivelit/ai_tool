@@ -1327,7 +1327,14 @@ class LocalRAGService:
         }
         return {"context_text": context_text, "snippets": snippet_meta, "timings_ms": timings}
 
-    def try_answer(self, session: Session, user_id: Optional[int], message: str) -> Optional[Dict[str, Any]]:
+    def try_answer(
+        self,
+        session: Session,
+        user_id: Optional[int],
+        message: str,
+        query_embedding: Optional[Tuple[List[float], float]] = None,
+        query_embedding_kind: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         self._reload_if_needed()
         normalized = self.normalize_lookup_text(message)
         if not normalized:

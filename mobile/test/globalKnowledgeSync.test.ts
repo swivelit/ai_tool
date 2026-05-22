@@ -226,7 +226,7 @@ describe("global knowledge sync", () => {
     const hit = await lookupSyncedGlobalKnowledge("Explain compiler");
 
     expect(hit?.entry.answer).toBe("Cached compiler answer.");
-    expect(hit?.source).toBe("lexical");
+    expect(hit?.source).toBe("embedding");
   });
 
   it("does not crash on empty or malformed local cache", async () => {
@@ -265,7 +265,7 @@ describe("global knowledge sync", () => {
     const hit = await lookupSyncedGlobalKnowledge("Explain fistula", { embedTexts });
 
     expect(hit?.entry.answer).toContain("abnormal connection");
-    expect(hit?.source).toBe("lexical");
+    expect(hit?.source).toBe("embedding");
     expect(embedTexts).not.toHaveBeenCalled();
   });
 
@@ -488,7 +488,7 @@ describe("global knowledge sync", () => {
     expect(embedTexts).not.toHaveBeenCalled();
   });
 
-  it("ignores incompatible synced embedding vectors and rebuilds token-hash embeddings from safe text", async () => {
+  it("preserves supplied real synced embeddings and stores token-hash fallback fields", async () => {
     const { loadGlobalKnowledgeStore, syncGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
     apiGetMock.mockResolvedValueOnce({
       ok: true,
@@ -513,9 +513,10 @@ describe("global knowledge sync", () => {
     await syncGlobalKnowledge();
     const store = await loadGlobalKnowledgeStore();
 
-    expect(store.entries[0].embeddingKind).toBe("token_hash_v1");
-    expect(store.entries[0].embedding).toHaveLength(96);
-    expect(store.entries[0].embedding).not.toEqual([1, 0, 0]);
+    expect(store.entries[0].embeddingKind).toBe("native_qwen_embedding_v1");
+    expect(store.entries[0].embedding).toEqual([1, 0, 0]);
+    expect(store.entries[0].tokenHashEmbeddingKind).toBe("token_hash_v1");
+    expect(store.entries[0].tokenHashEmbedding).toHaveLength(96);
   });
 
   it("throttles repeated sync calls", async () => {

@@ -4,12 +4,31 @@ import json
 from datetime import timezone
 from typing import Any, Optional
 
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlmodel import Session, select
 
 from ..models import AIUsageEvent
 from ..openai_model_router import stable_user_hash
 from ..time_utils import utc_now
 from .types import AIProviderResponse
+
+
+def _ensure_usage_schema_compat(session: Session) -> None:
+    try:
+        inspector = inspect(session.get_bind())
+        if not inspector.has_table("ai_usage_events"):
+            return
+        columns = {column["name"] for column in inspector.get_columns("ai_usage_events")}
+        if "cache_hit_source" not in columns:
+            session.exec(text("ALTER TABLE ai_usage_events ADD COLUMN cache_hit_source VARCHAR"))
+        try:
+            session.exec(text("CREATE INDEX IF NOT EXISTS ix_ai_usage_events_cache_hit_source ON ai_usage_events (cache_hit_source)"))
+        except Exception:
+            pass
+        session.commit()
+    except (OperationalError, ProgrammingError):
+        session.rollback()
 
 
 def _day_bounds():
@@ -39,7 +58,19 @@ def record_ai_usage_event(
     raw_metadata = dict(metadata or {})
     if response.raw:
         raw_metadata.setdefault("provider_raw", response.raw)
+    raw = response.raw if isinstance(response.raw, dict) else {}
+    cache_hit_source = (
+        raw_metadata.get("cache_hit_source")
+        or raw_metadata.get("cache_source")
+        or raw.get("cache_hit_source")
+        or raw.get("cache_source")
+    )
+    if cache_hit_source == "global_qa_cache":
+        cache_hit_source = "L3_global_qa"
+    if response.provider == "cache" and not cache_hit_source:
+        cache_hit_source = raw.get("source") or response.route
 
+    _ensure_usage_schema_compat(session)
     row = AIUsageEvent(
         created_at=utc_now(),
         request_id=request_id,
@@ -56,6 +87,7 @@ def record_ai_usage_event(
         estimated_cost_amount=float(response.estimated_cost_amount or 0.0),
         estimated_cost_currency=str(response.estimated_cost_currency or ""),
         cache_hit=bool(cache_hit or response.provider == "cache"),
+        cache_hit_source=str(cache_hit_source or "") or None,
         latency_ms=int(latency_ms) if latency_ms is not None else None,
         metadata_json=json.dumps(raw_metadata, ensure_ascii=False),
     )

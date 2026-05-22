@@ -87,11 +87,15 @@ def test_repeated_unknown_questions_promote_and_then_hit_global_cache(client, mo
 
     with SessionLocal() as session:
         candidates = list(session.exec(select(GlobalQACache)).all())
+        global_candidates = [row for row in candidates if row.scope == "global"]
+        user_candidates = [row for row in candidates if row.scope == "user"]
         observations = list(session.exec(select(GlobalQAObservation)).all())
-        assert len(candidates) == 1
-        assert candidates[0].status == "candidate"
-        assert candidates[0].hit_count == 1
-        assert candidates[0].distinct_user_count == 1
+        assert len(global_candidates) == 1
+        assert len(user_candidates) == 1
+        assert user_candidates[0].status == "approved"
+        assert global_candidates[0].status == "candidate"
+        assert global_candidates[0].hit_count == 1
+        assert global_candidates[0].distinct_user_count == 1
         assert len(observations) == 1
         assert observations[0].user_id_hash
         assert observations[0].user_id_hash != str(user1.id)
@@ -107,7 +111,7 @@ def test_repeated_unknown_questions_promote_and_then_hit_global_cache(client, mo
     assert calls == ["What is a compiler?", "Explain compiler"]
 
     with SessionLocal() as session:
-        candidate = session.exec(select(GlobalQACache)).one()
+        candidate = session.exec(select(GlobalQACache).where(GlobalQACache.scope == "global")).one()
         assert candidate.status == "approved"
         assert candidate.distinct_user_count == 2
         assert candidate.observed_question_count == 2
@@ -589,7 +593,7 @@ def test_similar_questions_with_similar_answers_promote():
         )
         assert first["status"] == "candidate"
         assert second["promoted"] is True
-        candidate = session.exec(select(GlobalQACache)).one()
+        candidate = session.exec(select(GlobalQACache).where(GlobalQACache.scope == "global")).one()
         assert candidate.status == "approved"
 
 
@@ -609,7 +613,7 @@ def test_alias_lookup_matches_safe_abbreviation_variants():
             answer="The Indian Premier League is a professional Twenty20 cricket league in India.",
             model_used="cheap-test-model",
         )
-        approved = session.exec(select(GlobalQACache)).one()
+        approved = session.exec(select(GlobalQACache).where(GlobalQACache.scope == "global")).one()
         assert approved.status == "approved"
 
         hit = lookup_approved_global_cache(session, "Tell me about Indian Premier League", "en")
@@ -679,7 +683,7 @@ def test_similar_questions_with_conflicting_answers_do_not_promote():
             model_used="cheap-test-model",
         )
         assert second["promoted"] is False
-        candidate = session.exec(select(GlobalQACache)).one()
+        candidate = session.exec(select(GlobalQACache).where(GlobalQACache.scope == "global")).one()
         assert candidate.status == "candidate"
         observations = list(session.exec(select(GlobalQAObservation)).all())
         assert len(observations) == 2
@@ -702,7 +706,7 @@ def test_approved_answer_is_not_overwritten_by_later_different_answer():
             answer="Photosynthesis is how plants make food from light, water, and carbon dioxide.",
             model_used="cheap-test-model",
         )
-        approved = session.exec(select(GlobalQACache)).one()
+        approved = session.exec(select(GlobalQACache).where(GlobalQACache.scope == "global")).one()
         assert approved.status == "approved"
         original_answer = approved.answer
         original_hash = approved.answer_hash

@@ -6,6 +6,7 @@ import { isUnsafeForStaticCache } from "./currentDataGuards";
 export const GLOBAL_KNOWLEDGE_CACHE_KEY = "global_knowledge_cache_v1";
 export const GLOBAL_KNOWLEDGE_SYNC_META_KEY = "global_knowledge_sync_meta_v1";
 export const GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND = "token_hash_v1";
+export const GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND = "qwen3_embedding_0_6b";
 export const GLOBAL_KNOWLEDGE_SYNC_THROTTLE_MS = 5 * 60 * 1000;
 export const GLOBAL_KNOWLEDGE_FOREGROUND_STALE_MS = 6 * 60 * 60 * 1000;
 export const GLOBAL_KNOWLEDGE_SYNC_PAGE_CAP = 10;
@@ -24,6 +25,9 @@ type SyncEntryPayload = {
   embedding?: number[];
   embeddingNorm?: number;
   embeddingKind?: string;
+  tokenHashEmbedding?: number[];
+  tokenHashEmbeddingNorm?: number;
+  tokenHashEmbeddingKind?: string;
   confidence?: number;
   safetyLabel?: string;
   source?: Record<string, unknown> | string | null;
@@ -67,6 +71,9 @@ export type GlobalKnowledgeEntry = {
   source?: Record<string, unknown> | string | null;
   updatedAt: string;
   expiresAt?: string | null;
+  tokenHashEmbedding?: number[];
+  tokenHashEmbeddingNorm?: number;
+  tokenHashEmbeddingKind?: string;
 };
 
 export type GlobalKnowledgeStore = {
@@ -290,6 +297,17 @@ function vectorNorm(vector: number[]) {
   return Math.sqrt(vector.reduce((sum, value) => sum + Number(value || 0) ** 2, 0));
 }
 
+function validEmbeddingVector(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const out = value.map(Number);
+  return out.length && out.every((item) => Number.isFinite(item)) ? out : [];
+}
+
+function isRealEmbeddingKind(kind: unknown) {
+  const normalized = String(kind || "").trim();
+  return normalized && normalized !== GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND;
+}
+
 function utf8Bytes(value: string) {
   const Encoder = (globalThis as any).TextEncoder;
   if (typeof Encoder === "function") {
@@ -434,7 +452,7 @@ function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
     ? "user"
     : "global";
   const rawId = String(raw?.id ?? "").trim();
-  const id = scope === "user" && rawId && !rawId.startsWith("user:")
+  const id = scope === "user" && rawId && !rawId.startsWith("user:") && !rawId.startsWith("user-global:")
     ? `user:${rawId}`
     : rawId;
   const normalizedQuestion = normalizeGlobalKnowledgeQuestion(
@@ -443,24 +461,23 @@ function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
   const answer = String(raw?.answer || "").trim();
   if (!id || !normalizedQuestion || !answer) return null;
   const rawEmbeddingKind = String(raw.embeddingKind || "").trim();
-  const embeddingKind =
-    rawEmbeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND
-      ? GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND
-      : "";
-  const embedding = embeddingKind && Array.isArray(raw.embedding)
-    ? raw.embedding.map(Number).filter((value) => Number.isFinite(value))
-    : [];
-  const hasSuppliedEmbedding = Array.isArray(raw.embedding) && raw.embedding.length > 0;
-  const effectiveEmbedding =
-    embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND && embedding.length
-      ? embedding
-      : rawEmbeddingKind && hasSuppliedEmbedding
-        ? tokenHashEmbedding(normalizedQuestion)
-        : [];
-  const suppliedTokenHashNorm =
-    embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND && embedding.length
-      ? Number(raw.embeddingNorm || 0)
-      : 0;
+  const suppliedEmbedding = validEmbeddingVector(raw.embedding);
+  const suppliedTokenHash = validEmbeddingVector(raw.tokenHashEmbedding);
+  const fallbackTokenHash = suppliedTokenHash.length ? suppliedTokenHash : tokenHashEmbedding(normalizedQuestion);
+  const fallbackTokenHashNorm =
+    Number(raw.tokenHashEmbeddingNorm || 0) || vectorNorm(fallbackTokenHash);
+  let effectiveEmbedding: number[] = [];
+  let effectiveEmbeddingKind = "";
+  let effectiveEmbeddingNorm = 0;
+  if (suppliedEmbedding.length && rawEmbeddingKind) {
+    effectiveEmbedding = suppliedEmbedding;
+    effectiveEmbeddingKind = rawEmbeddingKind;
+    effectiveEmbeddingNorm = Number(raw.embeddingNorm || 0) || vectorNorm(effectiveEmbedding);
+  } else if (fallbackTokenHash.length) {
+    effectiveEmbedding = fallbackTokenHash;
+    effectiveEmbeddingKind = GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND;
+    effectiveEmbeddingNorm = fallbackTokenHashNorm;
+  }
   const aliases = safeVariantList([
     ...(Array.isArray(raw.aliases) ? raw.aliases : []),
     ...aliasVariants(raw.canonicalQuestion || raw.normalizedQuestion),
@@ -482,9 +499,11 @@ function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
     observedSafeQuestions,
     answerHash: String(raw.answerHash || ""),
     embedding: effectiveEmbedding,
-    embeddingNorm:
-      suppliedTokenHashNorm || (effectiveEmbedding.length ? vectorNorm(effectiveEmbedding) : 0),
-    embeddingKind: effectiveEmbedding.length ? GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND : "",
+    embeddingNorm: effectiveEmbeddingNorm,
+    embeddingKind: effectiveEmbedding.length ? effectiveEmbeddingKind : "",
+    tokenHashEmbedding: fallbackTokenHash,
+    tokenHashEmbeddingNorm: fallbackTokenHashNorm,
+    tokenHashEmbeddingKind: GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND,
     confidence: Math.max(0, Math.min(1, Number(raw.confidence || 0))),
     safetyLabel: String(raw.safetyLabel || "general"),
     source: raw.source ?? raw.scopeSource ?? null,
@@ -546,6 +565,8 @@ export async function syncGlobalKnowledge(
     force?: boolean;
     minIntervalMs?: number;
     lightweight?: boolean;
+    topicSeeds?: string[];
+    topic_seeds?: string[];
   } = {},
 ) {
   if (inFlightSync && !options.force) {
@@ -599,6 +620,17 @@ export async function syncGlobalKnowledge(
       const params = new URLSearchParams({ limit: String(limit) });
       if (cursorSince) params.set("since", cursorSince);
       if (cursorSince && cursorAfterId) params.set("afterId", cursorAfterId);
+      const topicSeeds = [
+        ...(Array.isArray(options.topicSeeds) ? options.topicSeeds : []),
+        ...(Array.isArray(options.topic_seeds) ? options.topic_seeds : []),
+      ]
+        .map((item) => normalizeGlobalKnowledgeQuestion(item))
+        .filter(Boolean)
+        .slice(0, 12);
+      if (topicSeeds.length) {
+        params.set("topicSeeds", topicSeeds.join(","));
+        params.set("topic_seeds", topicSeeds.join(","));
+      }
       let payload: SyncPayload;
       try {
         const { apiGet } = await import("./api");
@@ -828,8 +860,34 @@ export async function lookupSyncedGlobalKnowledge(
 
   const normalizedQuestion = normalizeGlobalKnowledgeQuestion(question);
   const minSimilarity = Math.max(0, Math.min(1, Number(options.minSimilarity || 0.9)));
-  const queryEmbedding = tokenHashEmbedding(normalizedQuestion);
-  const queryEmbeddingNorm = vectorNorm(queryEmbedding);
+  const hasTokenEntries = entries.some(
+    (entry) =>
+      entry.embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND ||
+      entry.tokenHashEmbeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND,
+  );
+  const queryTokenEmbedding = hasTokenEntries ? tokenHashEmbedding(normalizedQuestion) : [];
+  const queryTokenEmbeddingNorm = queryTokenEmbedding.length ? vectorNorm(queryTokenEmbedding) : 0;
+  const availableRealKinds = Array.from(
+    new Set(
+      entries
+        .map((entry) => entry.embeddingKind)
+        .filter((kind) => isRealEmbeddingKind(kind)),
+    ),
+  );
+  const requestedRealKind = String(options.nativeEmbeddingKind || "").trim();
+  const realQueryKind = requestedRealKind || availableRealKinds[0] || "";
+  let queryRealEmbedding: number[] = [];
+  let queryRealEmbeddingNorm = 0;
+  if (options.embedTexts && realQueryKind && availableRealKinds.includes(realQueryKind)) {
+    try {
+      const vectors = await options.embedTexts([normalizedQuestion]);
+      queryRealEmbedding = validEmbeddingVector(vectors?.[0]);
+      queryRealEmbeddingNorm = queryRealEmbedding.length ? vectorNorm(queryRealEmbedding) : 0;
+    } catch {
+      queryRealEmbedding = [];
+      queryRealEmbeddingNorm = 0;
+    }
+  }
 
   let bestEntry: GlobalKnowledgeEntry | null = null;
   let bestScore = 0;
@@ -847,10 +905,32 @@ export async function lookupSyncedGlobalKnowledge(
       ...variants.map((variant) => lexicalSimilarity(normalizedQuestion, variant)),
       0,
     );
-    const embeddingScore =
-      entry.embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND && entry.embedding.length
-        ? cosine(queryEmbedding, queryEmbeddingNorm, entry.embedding, entry.embeddingNorm)
-        : 0;
+    let embeddingScore = 0;
+    if (
+      queryRealEmbedding.length &&
+      entry.embeddingKind === realQueryKind &&
+      isRealEmbeddingKind(entry.embeddingKind) &&
+      entry.embedding.length
+    ) {
+      embeddingScore = Math.max(
+        embeddingScore,
+        cosine(queryRealEmbedding, queryRealEmbeddingNorm, entry.embedding, entry.embeddingNorm),
+      );
+    }
+    const tokenEntryEmbedding =
+      entry.embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND
+        ? entry.embedding
+        : entry.tokenHashEmbedding || [];
+    const tokenEntryNorm =
+      entry.embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND
+        ? entry.embeddingNorm
+        : Number(entry.tokenHashEmbeddingNorm || 0);
+    if (queryTokenEmbedding.length && tokenEntryEmbedding.length) {
+      embeddingScore = Math.max(
+        embeddingScore,
+        cosine(queryTokenEmbedding, queryTokenEmbeddingNorm, tokenEntryEmbedding, tokenEntryNorm),
+      );
+    }
     const score = Math.max(lexical, embeddingScore);
     const source = embeddingScore >= lexical && embeddingScore > 0 ? "embedding" : "lexical";
     if (!bestEntry || score > bestScore) {
@@ -861,6 +941,63 @@ export async function lookupSyncedGlobalKnowledge(
   });
   if (!bestEntry || bestScore < minSimilarity) return null;
   return { entry: bestEntry, score: bestScore, source: bestSource };
+}
+
+export async function reembedSyncedGlobalKnowledgeEntries(
+  options: {
+    embedTexts?: (texts: string[]) => Promise<number[][]>;
+    nativeEmbeddingKind?: string;
+    limit?: number;
+  } = {},
+) {
+  if (!options.embedTexts) {
+    return { ok: true, skipped: true, reason: "embedding_unavailable", updated: 0 };
+  }
+  const targetKind = String(options.nativeEmbeddingKind || GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND).trim();
+  const store = await loadGlobalKnowledgeStore();
+  const limit = Math.max(1, Math.min(Number(options.limit || 16), 64));
+  const candidates = store.entries
+    .filter(
+      (entry) =>
+        !isExpired(entry) &&
+        (!entry.embedding.length ||
+          entry.embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND),
+    )
+    .slice(0, limit);
+  if (!candidates.length) {
+    return { ok: true, skipped: true, reason: "nothing_to_reembed", updated: 0 };
+  }
+  try {
+    const texts = candidates.map((entry) => entry.normalizedQuestion || entry.canonicalQuestion);
+    const vectors = await options.embedTexts(texts);
+    let updated = 0;
+    const byId = new Map(candidates.map((entry, index) => [entry.id, { entry, index }]));
+    const entries = store.entries.map((entry) => {
+      const match = byId.get(entry.id);
+      if (!match) return entry;
+      const vector = validEmbeddingVector(vectors?.[match.index]);
+      if (!vector.length) return entry;
+      const tokenFallback = entry.tokenHashEmbedding?.length
+        ? entry.tokenHashEmbedding
+        : tokenHashEmbedding(entry.normalizedQuestion || entry.canonicalQuestion);
+      updated += 1;
+      return {
+        ...entry,
+        embedding: vector,
+        embeddingNorm: vectorNorm(vector),
+        embeddingKind: targetKind,
+        tokenHashEmbedding: tokenFallback,
+        tokenHashEmbeddingNorm: entry.tokenHashEmbeddingNorm || vectorNorm(tokenFallback),
+        tokenHashEmbeddingKind: GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND,
+      };
+    });
+    if (updated > 0) {
+      await saveGlobalKnowledgeStore({ ...store, entries, updatedAt: nowIso() });
+    }
+    return { ok: true, updated };
+  } catch {
+    return { ok: true, skipped: true, reason: "embedding_unavailable", updated: 0 };
+  }
 }
 
 export async function clearGlobalKnowledgeForTests() {

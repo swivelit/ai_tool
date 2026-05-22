@@ -3043,6 +3043,8 @@ def _build_global_cache_pipeline_result(hit: Dict[str, Any]) -> Dict[str, Any]:
             "global_cache_id": hit.get("id"),
             "answer_hash": hit.get("answer_hash"),
             "topic": hit.get("topic"),
+            "scope": hit.get("scope") or "global",
+            "cache_hit_source": hit.get("cache_hit_source") or "L3_global_qa",
         },
         timings_ms={"total_ms": 0.0},
         cache_hit="true",
@@ -3451,7 +3453,7 @@ def _run_chat_logic(
     )
     started = time.perf_counter()
     try:
-        global_hit = lookup_approved_global_cache(session, text, payload.reply_language)
+        global_hit = lookup_approved_global_cache(session, text, payload.reply_language, user_id=payload.user_id)
     except (ProgrammingError, OperationalError) as exc:
         session.rollback()
         _record_stage_timing(stage_timings, "global_cache_lookup", started)
@@ -3604,7 +3606,7 @@ def _run_ai_router_global_cache_lookup(session: Session, payload: ChatAPIRequest
     if not _ai_router_global_cache_lookup_enabled():
         return None
     try:
-        return lookup_approved_global_cache(session, text, payload.reply_language)
+        return lookup_approved_global_cache(session, text, payload.reply_language, user_id=payload.user_id)
     except Exception as exc:
         session.rollback()
         logger.warning(
@@ -3652,9 +3654,37 @@ def _build_ai_router_global_cache_response(
         response_meta.setdefault("cache_hit", True)
         response_meta.setdefault("global_cache_id", hit.get("id"))
         response_meta.setdefault("direct_answer_source", "global_qa_cache")
+        response_meta.setdefault("cache_hit_source", hit.get("cache_hit_source") or "L3_global_qa")
+        response_meta.setdefault("scope", hit.get("scope") or "global")
         response_meta.setdefault("ai_router_enabled", True)
         response_meta.setdefault("cost_estimate", 0)
         response_meta.setdefault("cost_currency", "")
+    try:
+        record_ai_usage_event(
+            session,
+            AIProviderResponse(
+                text=answer,
+                provider="cache",
+                model=None,
+                route="global_knowledge_cache",
+                reason="approved_global_cache_hit",
+                language=str(hit.get("answer_language") or "en"),
+                intent="global_knowledge",
+                characters=len(answer),
+                raw={
+                    "source": "global_qa_cache",
+                    "global_cache_id": hit.get("id"),
+                    "cache_hit_source": hit.get("cache_hit_source") or "L3_global_qa",
+                },
+            ),
+            user_id=payload.user_id,
+            request_id=request_id,
+            cache_hit=True,
+            latency_ms=0,
+            metadata={"channel": "text", "cache_hit_source": hit.get("cache_hit_source") or "L3_global_qa"},
+        )
+    except Exception:
+        session.rollback()
     return response
 
 

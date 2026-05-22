@@ -33,6 +33,33 @@ def run_text_turn(
         ai_request.user_id,
         admin_email=str(ai_request.metadata.get("admin_email") or ""),
     )
+    try:
+        from .agents.negative_cache_agent import default_negative_cache_agent
+
+        negative_hit = default_negative_cache_agent.get(ai_request.message)
+    except Exception:
+        negative_hit = None
+    if negative_hit is not None:
+        text = str(negative_hit.text or "I cannot complete that request from this route.")
+        response = AIProviderResponse(
+            text=text,
+            provider="blocked",
+            model=None,
+            route=negative_hit.route or "negative_cache",
+            reason=negative_hit.reason,
+            language=ai_request.reply_language or "en",
+            intent="blocked",
+            characters=len(text),
+            raw={"cache_hit_source": "L0_negative_cache", "source": "negative_cache"},
+        )
+        return _record(
+            session,
+            response,
+            ai_request,
+            started,
+            cache_hit=True,
+            metadata={"cache_hit_source": "L0_negative_cache"},
+        )
 
     agent_result = None
     if agentic_mode_enabled():
@@ -70,6 +97,12 @@ def run_text_turn(
         )
     if route.provider == "blocked":
         response = _blocked_response(ai_request, route)
+        try:
+            from .agents.negative_cache_agent import default_negative_cache_agent
+
+            default_negative_cache_agent.set(ai_request.message, response.reason, response.text, response.route)
+        except Exception:
+            pass
         return _record(session, response, ai_request, started)
 
     if route.provider == "backend_tool":
@@ -448,8 +481,27 @@ def _try_global_cache(session: Session, request: AIRequest, context: dict[str, A
             lookup = None
     if lookup is None:
         return None
+    lookup_message = request.message
     try:
-        hit = lookup(session, request.message, request.reply_language)
+        from .agents.query_rewriter_agent import QueryRewriterAgent
+
+        rewrite = QueryRewriterAgent().rewrite(request.message)
+        lookup_message = rewrite.canonical_question or request.message
+        if lookup_message != request.message:
+            context["global_cache_rewritten_question"] = lookup_message
+    except Exception:
+        lookup_message = request.message
+    try:
+        try:
+            hit = lookup(
+                session,
+                lookup_message,
+                request.reply_language,
+                user_id=request.user_id,
+                query_embedding=context.get("global_query_embedding"),
+            )
+        except TypeError:
+            hit = lookup(session, lookup_message, request.reply_language)
     except Exception:
         session.rollback()
         return None
@@ -467,7 +519,13 @@ def _try_global_cache(session: Session, request: AIRequest, context: dict[str, A
         language=str(hit.get("answer_language") or "en"),
         intent="general",
         characters=len(text),
-        raw={"source": "global_qa_cache", "global_cache_id": hit.get("id"), "confidence": hit.get("confidence")},
+        raw={
+            "source": "global_qa_cache",
+            "global_cache_id": hit.get("id"),
+            "confidence": hit.get("confidence"),
+            "cache_hit_source": hit.get("cache_hit_source") or "L3_global_qa",
+            "scope": hit.get("scope") or "global",
+        },
     )
 
 
@@ -487,7 +545,16 @@ def _try_local_rag(
         return None
     context["embedding_calls"] = int(context.get("embedding_calls") or 0) + 1
     try:
-        hit = service.try_answer(session, request.user_id, request.message)
+        try:
+            hit = service.try_answer(
+                session,
+                request.user_id,
+                request.message,
+                query_embedding=context.get("local_rag_query_embedding"),
+                query_embedding_kind=context.get("local_rag_query_embedding_kind"),
+            )
+        except TypeError:
+            hit = service.try_answer(session, request.user_id, request.message)
     except Exception:
         session.rollback()
         return None
@@ -508,7 +575,12 @@ def _try_local_rag(
         language="ta" if hit.get("tamil_text") or hit.get("theni_tamil_text") else "en",
         intent=str(hit.get("predicted_label") or "general"),
         characters=len(text),
-        raw={"source": hit.get("direct_answer_source"), "confidence": confidence, "embedding_calls": context.get("embedding_calls", 0)},
+        raw={
+            "source": hit.get("direct_answer_source"),
+            "confidence": confidence,
+            "embedding_calls": context.get("embedding_calls", 0),
+            "cache_hit_source": "L4_local_rag",
+        },
     )
 
 

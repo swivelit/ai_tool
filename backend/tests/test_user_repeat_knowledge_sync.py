@@ -9,7 +9,9 @@ from app.global_qa_cache import (
     answer_hash,
     build_global_knowledge_sync_payload,
     embed_question_for_global_cache,
+    lookup_approved_global_cache,
     normalize_question,
+    record_backend_openai_answer,
 )
 from app.models import GlobalQACache, QACache
 from app.time_utils import utc_now
@@ -148,3 +150,56 @@ def test_global_entries_still_sync_with_user_entries_shape():
     assert payload["userEntries"] == []
     assert "userEntries" in payload
     assert "revokedIds" in payload
+
+
+def test_provider_answer_creates_user_scoped_global_cache_and_second_user_hit():
+    user = create_test_user("provider-repeat", "provider-repeat@example.com")
+    with SessionLocal() as session:
+        result = record_backend_openai_answer(
+            session,
+            int(user.id),
+            "What is a trie?",
+            "A trie is a tree data structure for prefix lookup.",
+            "cheap-test-model",
+        )
+        assert result["ok"] is True
+        assert result["user_candidate_id"] is not None
+
+        same_user_hit = lookup_approved_global_cache(
+            session,
+            "Explain tries",
+            "en",
+            user_id=int(user.id),
+        )
+        other_user_hit = lookup_approved_global_cache(
+            session,
+            "Explain tries",
+            "en",
+            user_id=9999,
+        )
+
+    assert same_user_hit is not None
+    assert same_user_hit["scope"] == "user"
+    assert same_user_hit["cache_hit_source"] == "L2_user_global_qa"
+    assert other_user_hit is None
+
+
+def test_sync_includes_user_scoped_global_qa_entries():
+    user = create_test_user("provider-sync", "provider-sync@example.com")
+    with SessionLocal() as session:
+        record_backend_openai_answer(
+            session,
+            int(user.id),
+            "What is a trie?",
+            "A trie is a tree data structure for prefix lookup.",
+            "cheap-test-model",
+        )
+        payload = build_global_knowledge_sync_payload(session, user_id=int(user.id))
+
+    assert payload["entries"] == []
+    assert len(payload["userEntries"]) == 1
+    entry = payload["userEntries"][0]
+    assert entry["id"].startswith("user-global:")
+    assert entry["scope"] == "user"
+    assert entry["embeddingKind"] == "token_hash_v1"
+    assert entry["tokenHashEmbeddingKind"] == "token_hash_v1"

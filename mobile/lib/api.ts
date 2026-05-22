@@ -2148,6 +2148,7 @@ async function maybeServeSyncedGlobalKnowledgeChat(
     workflow_phase: "completed",
     cache_hit: true,
     cache_source: "global_knowledge_sync",
+    cache_hit_source: hit.entry.scope === "user" ? "L1_mobile_synced_user" : "L1_mobile_synced_global",
     duration_ms: Date.now() - startedAt,
   });
   return buildSyncedGlobalKnowledgeChatResponse({

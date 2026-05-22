@@ -38,6 +38,7 @@ export type ClientTurnLogPayload = {
   decision?: string | null;
   cache_hit?: boolean | null;
   cache_source?: string | null;
+  cache_hit_source?: string | null;
   global_sync_status?: string | null;
   http_status?: number | null;
   error_name?: string | null;

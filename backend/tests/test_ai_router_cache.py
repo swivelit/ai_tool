@@ -113,7 +113,11 @@ def test_ai_router_records_safe_provider_answer_in_global_and_user_cache(client,
         qa = session.exec(select(QACache).where(QACache.user_id == user.id)).one()
         assert qa.hits == 1
         assert "compiler translates" in qa.answer
-        global_row = session.exec(select(GlobalQACache)).one()
+        rows = list(session.exec(select(GlobalQACache)).all())
+        user_rows = [row for row in rows if row.scope == "user"]
+        assert len(user_rows) == 1
+        assert user_rows[0].status == "approved"
+        global_row = session.exec(select(GlobalQACache).where(GlobalQACache.scope == "global")).one()
         assert global_row.status == "candidate"
         assert global_row.hit_count == 1
 
@@ -138,10 +142,12 @@ def test_ai_router_repeated_same_user_increments_user_qa_cache(client, monkeypat
         )
         assert response.status_code == 200
 
-    assert calls == ["What is a compiler?", "What is a compiler?"]
+    assert calls == ["What is a compiler?"]
     with SessionLocal() as session:
         qa = session.exec(select(QACache).where(QACache.user_id == user.id)).one()
-        assert qa.hits == 2
+        assert qa.hits == 1
+        user_row = session.exec(select(GlobalQACache).where(GlobalQACache.scope == "user")).one()
+        assert user_row.status == "approved"
 
 
 def test_ai_router_does_not_record_live_or_private_queries(client, monkeypatch):

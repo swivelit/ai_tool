@@ -49,7 +49,9 @@ import {
 import {
   isLiveOrCurrentGlobalKnowledgeQuestion,
   lookupSyncedGlobalKnowledge,
+  reembedSyncedGlobalKnowledgeEntries,
   syncGlobalKnowledge,
+  GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
 } from "./globalKnowledgeSync";
 import {
   canUseNativeEmbeddingsSafely,
@@ -711,6 +713,15 @@ function maxTokensForLocalAnswer(
   return LOCAL_TASK_MAX_TOKENS.localAnswerLite;
 }
 
+function globalKnowledgeMinSimilarityForTier(
+  runtimeOptions: ModelRuntimeTierOptions = {},
+) {
+  const tier = String(runtimeOptions.selectedTier || runtimeOptions.modelTier || "lite");
+  if (tier === "pro") return 0.95;
+  if (tier === "standard") return 0.92;
+  return 0.85;
+}
+
 const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
   version: 8,
   runtime: {
@@ -1263,6 +1274,16 @@ function simpleHash(text: string) {
     h = Math.imul(h, 16777619);
   }
   return Math.abs(h >>> 0).toString(16);
+}
+
+function topicSeedsFromTextAndProfile(message: string, profile?: LocalUserProfile) {
+  return uniq(
+    [
+      ...normalizeText(message).split(/\s+/).filter((token) => token.length >= 4),
+      normalizeText(profile?.place || ""),
+      normalizeText(profile?.name || ""),
+    ].filter(Boolean),
+  ).slice(0, 8);
 }
 
 function escapeRegExp(text: string) {
@@ -6937,6 +6958,13 @@ export async function consolidateLocalMemoryOnIdle(
     mergedFacts,
     runtimeOptions,
   );
+  if (runtimeOptions.modelsReady !== false) {
+    await reembedSyncedGlobalKnowledgeEntries({
+      embedTexts: (texts) => embedTexts(texts, runtimeOptions),
+      nativeEmbeddingKind: GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
+      limit: 16,
+    }).catch(() => undefined);
+  }
   await safeRecordTrainingSample("memory", {
     input: JSON.stringify({
       recent_turns: turns,
@@ -7336,7 +7364,11 @@ async function callBackendOpenAiFallback(opts: {
       backend_fallback: durationMs,
     },
   });
-  void syncGlobalKnowledge({ lightweight: true, limit: 25 }).catch(() => undefined);
+  void syncGlobalKnowledge({
+    lightweight: true,
+    limit: 25,
+    topicSeeds: topicSeedsFromTextAndProfile(opts.message),
+  }).catch(() => undefined);
   return annotated;
 }
 
@@ -7972,6 +8004,10 @@ export async function runLocalAssistantTurn(opts: {
         stage_timings: stageTimings,
       });
       return lookupSyncedGlobalKnowledge(message, {
+        minSimilarity: globalKnowledgeMinSimilarityForTier(modelRuntimeOptions),
+        nativeEmbeddingKind: nativeEmbeddingSafety.safe
+          ? GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND
+          : undefined,
         embedTexts:
           modelRuntimeOptions.modelsReady === false ||
           isLiveOrCurrentGlobalKnowledgeQuestion(message) ||
@@ -7995,6 +8031,10 @@ export async function runLocalAssistantTurn(opts: {
       workflow_phase: "completed",
       cache_hit: true,
       cache_source: globalKnowledgeHit.source,
+      cache_hit_source:
+        globalKnowledgeHit.entry.scope === "user"
+          ? "L1_mobile_synced_user"
+          : "L1_mobile_synced_global",
       duration_ms: stageTimings.global_knowledge_cache,
       stage_timings: stageTimings,
     });
@@ -8051,6 +8091,10 @@ export async function runLocalAssistantTurn(opts: {
           confidence: globalKnowledgeHit.entry.confidence,
           topic: globalKnowledgeHit.entry.topic,
         },
+        cache_hit_source:
+          globalKnowledgeHit.entry.scope === "user"
+            ? "L1_mobile_synced_user"
+            : "L1_mobile_synced_global",
         classified: decision,
         orchestratorDecision: decision,
         stageTimings,

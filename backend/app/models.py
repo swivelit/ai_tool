@@ -111,6 +111,8 @@ class GlobalQACache(SQLModel, table=True):
     answer_language: str = Field(default="en", index=True)
     topic: Optional[str] = Field(default=None, index=True)
 
+    scope: str = Field(default="global", index=True)  # global | user
+    user_id_hash: Optional[str] = Field(default=None, index=True)
     status: str = Field(default="candidate", index=True)  # candidate | approved | rejected
     hit_count: int = Field(default=1, index=True)
     distinct_user_count: int = Field(default=1, index=True)
@@ -123,6 +125,11 @@ class GlobalQACache(SQLModel, table=True):
     embedding_json: Optional[str] = None
     embedding_kind: str = Field(default="token_hash_v1", index=True)
     embedding_norm: float = Field(default=0.0)
+    token_hash_embedding_json: Optional[str] = None
+    token_hash_embedding_norm: float = Field(default=0.0)
+    real_embedding_json: Optional[str] = None
+    real_embedding_norm: float = Field(default=0.0)
+    real_embedding_kind: Optional[str] = Field(default=None, index=True)
     confidence: float = Field(default=0.0)
     safety_label: str = Field(default="general", index=True)
     model_used: Optional[str] = Field(default=None, index=True)
@@ -200,6 +207,7 @@ class AIUsageEvent(SQLModel, table=True):
     estimated_cost_amount: float = Field(default=0.0)
     estimated_cost_currency: str = Field(default="")
     cache_hit: bool = Field(default=False, index=True)
+    cache_hit_source: Optional[str] = Field(default=None, index=True)
     latency_ms: Optional[int] = Field(default=None)
     metadata_json: str = Field(default="{}")
 

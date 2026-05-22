@@ -7,6 +7,10 @@ import math
 import os
 import re
 import threading
+import time
+import urllib.error
+import urllib.request
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
@@ -110,6 +114,9 @@ _LIVE_PHRASES = {
     "prime minister",
 }
 GLOBAL_QA_EMBEDDING_KIND = "token_hash_v1"
+GLOBAL_QA_QWEN_EMBEDDING_KIND = "qwen3_embedding_0_6b"
+_GLOBAL_SCOPE = "global"
+_USER_SCOPE = "user"
 _ALIAS_MAP = {
     "ipl": "indian premier league",
     "ai": "artificial intelligence",
@@ -184,6 +191,73 @@ _SALARY_TERMS = {"salary", "income", "ctc", "pay", "bonus", "compensation", "ear
 _ADVICE_TERMS = {"should", "can", "take", "choose", "recommend", "advice", "best", "plan", "treat", "diagnose"}
 
 
+class _InProcessHotCache:
+    def __init__(self, max_size: int = 2048) -> None:
+        self.max_size = max(32, int(max_size or 2048))
+        self._lock = threading.Lock()
+        self._rows: "OrderedDict[str, Tuple[float, Dict[str, Any]]]" = OrderedDict()
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        now = time.time()
+        with self._lock:
+            item = self._rows.get(key)
+            if item is None:
+                return None
+            expires_at, payload = item
+            if expires_at <= now:
+                self._rows.pop(key, None)
+                return None
+            self._rows.move_to_end(key)
+            return dict(payload)
+
+    def set(self, key: str, payload: Dict[str, Any], ttl_seconds: int) -> None:
+        ttl = max(1, int(ttl_seconds or 1))
+        with self._lock:
+            self._rows[key] = (time.time() + ttl, dict(payload))
+            self._rows.move_to_end(key)
+            while len(self._rows) > self.max_size:
+                self._rows.popitem(last=False)
+
+    def delete(self, key: str) -> None:
+        with self._lock:
+            self._rows.pop(key, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._rows.clear()
+
+
+class _RedisHotCache:
+    def __init__(self, url: str) -> None:
+        import redis  # type: ignore
+
+        self._client = redis.Redis.from_url(url, decode_responses=True)
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        raw = self._client.get(key)
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def set(self, key: str, payload: Dict[str, Any], ttl_seconds: int) -> None:
+        self._client.setex(key, max(1, int(ttl_seconds or 1)), json.dumps(payload, ensure_ascii=False))
+
+    def delete(self, key: str) -> None:
+        self._client.delete(key)
+
+    def clear(self) -> None:
+        # Used only by tests/debug. Avoid KEYS in production Redis.
+        return None
+
+
+_HOT_CACHE: Any = None
+_HOT_CACHE_LOCK = threading.Lock()
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -209,6 +283,140 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
 
 def _enabled() -> bool:
     return _env_bool("GLOBAL_QA_CACHE_ENABLED", False)
+
+
+def _row_scope(row: GlobalQACache) -> str:
+    scope = str(getattr(row, "scope", "") or "").strip().lower()
+    return _USER_SCOPE if scope == _USER_SCOPE else _GLOBAL_SCOPE
+
+
+def _hot_cache_ttl_seconds() -> int:
+    return _env_int("GLOBAL_QA_HOT_CACHE_TTL_SECONDS", 3600, minimum=1)
+
+
+def _hot_cache() -> Any:
+    global _HOT_CACHE
+    if _HOT_CACHE is not None:
+        return _HOT_CACHE
+    with _HOT_CACHE_LOCK:
+        if _HOT_CACHE is not None:
+            return _HOT_CACHE
+        redis_url = str(os.getenv("REDIS_URL") or "").strip()
+        if redis_url:
+            try:
+                _HOT_CACHE = _RedisHotCache(redis_url)
+                return _HOT_CACHE
+            except Exception as exc:
+                logger.warning(
+                    "global_qa_redis_hot_cache_unavailable",
+                    extra={
+                        "event": "global_qa_redis_hot_cache_unavailable",
+                        "error_type": exc.__class__.__name__,
+                    },
+                )
+        _HOT_CACHE = _InProcessHotCache(_env_int("GLOBAL_QA_HOT_CACHE_MAX_SIZE", 2048, minimum=32))
+        return _HOT_CACHE
+
+
+def reset_global_qa_hot_cache_for_tests() -> None:
+    global _HOT_CACHE
+    with _HOT_CACHE_LOCK:
+        if _HOT_CACHE is not None:
+            try:
+                _HOT_CACHE.clear()
+            except Exception:
+                pass
+        _HOT_CACHE = None
+
+
+def _hot_question_hash(normalized_question: str) -> str:
+    return hashlib.sha256(str(normalized_question or "").encode("utf-8")).hexdigest()
+
+
+def _hot_key(*, scope: str, normalized_question: str, language: str = "*", user_id_hash: Optional[str] = None) -> str:
+    scope = _USER_SCOPE if str(scope or "").lower() == _USER_SCOPE else _GLOBAL_SCOPE
+    user_part = user_id_hash or "-"
+    lang = str(language or "*").strip().lower() or "*"
+    return f"gqa:v1:{scope}:{lang}:{user_part}:{_hot_question_hash(normalized_question)}"
+
+
+def _hot_lookup_keys(question: str, language: Optional[str], user_id_hash: Optional[str]) -> List[str]:
+    normalized = normalize_question(question)
+    if not normalized:
+        return []
+    languages = []
+    if language:
+        languages.append(language)
+    languages.extend(["en", "*"])
+    deduped_languages: List[str] = []
+    seen_langs = set()
+    for lang in languages:
+        key = str(lang or "*").strip().lower() or "*"
+        if key not in seen_langs:
+            seen_langs.add(key)
+            deduped_languages.append(key)
+    keys: List[str] = []
+    if user_id_hash:
+        keys.extend(
+            _hot_key(scope=_USER_SCOPE, normalized_question=normalized, language=lang, user_id_hash=user_id_hash)
+            for lang in deduped_languages
+        )
+    keys.extend(
+        _hot_key(scope=_GLOBAL_SCOPE, normalized_question=normalized, language=lang)
+        for lang in deduped_languages
+    )
+    return keys
+
+
+def _hot_payload_for_row(row: GlobalQACache, source: str) -> Dict[str, Any]:
+    return {
+        "id": int(row.id) if row.id is not None else None,
+        "scope": _row_scope(row),
+        "user_id_hash": getattr(row, "user_id_hash", None),
+        "answer_hash": row.answer_hash,
+        "cache_hit_source": source,
+    }
+
+
+def _cache_hit_source_for_row(row: GlobalQACache) -> str:
+    return "L2_user_global_qa" if _row_scope(row) == _USER_SCOPE else "L3_global_qa"
+
+
+def _populate_hot_cache_for_row(row: GlobalQACache) -> None:
+    if row.id is None or row.status != "approved" or not _not_expired(row):
+        return
+    if row.safety_label in {"private", "personal_high_risk", "unsafe"}:
+        return
+    scope = _row_scope(row)
+    user_hash = str(getattr(row, "user_id_hash", "") or "").strip() or None
+    if scope == _USER_SCOPE and not user_hash:
+        return
+    payload = _hot_payload_for_row(row, _cache_hit_source_for_row(row))
+    languages = {str(row.answer_language or "en").strip().lower() or "en", "*"}
+    cache = _hot_cache()
+    for variant in _row_question_variants(row):
+        for language in languages:
+            try:
+                cache.set(
+                    _hot_key(scope=scope, normalized_question=variant, language=language, user_id_hash=user_hash),
+                    payload,
+                    _hot_cache_ttl_seconds(),
+                )
+            except Exception:
+                return
+
+
+def _invalidate_hot_cache_for_row(row: GlobalQACache) -> None:
+    scope = _row_scope(row)
+    user_hash = str(getattr(row, "user_id_hash", "") or "").strip() or None
+    languages = {str(row.answer_language or "en").strip().lower() or "en", "*"}
+    cache = _hot_cache()
+    for variant in _row_question_variants(row):
+        for language in languages:
+            try:
+                cache.delete(_hot_key(scope=scope, normalized_question=variant, language=language, user_id_hash=user_hash))
+            except Exception:
+                return
 
 
 def global_qa_schema_ready(session: Session) -> dict:
@@ -258,12 +466,35 @@ def _ensure_schema_compat(session: Session) -> None:
         inspector = inspect(bind)
         if inspector.has_table("global_qa_cache"):
             cache_columns = {column["name"] for column in inspector.get_columns("global_qa_cache")}
+            if "scope" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN scope VARCHAR NOT NULL DEFAULT 'global'"))
+            if "user_id_hash" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN user_id_hash VARCHAR"))
             if "embedding_kind" not in cache_columns:
                 session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN embedding_kind VARCHAR NOT NULL DEFAULT 'token_hash_v1'"))
+            if "token_hash_embedding_json" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN token_hash_embedding_json VARCHAR"))
+            if "token_hash_embedding_norm" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN token_hash_embedding_norm FLOAT NOT NULL DEFAULT 0.0"))
+            if "real_embedding_json" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN real_embedding_json VARCHAR"))
+            if "real_embedding_norm" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN real_embedding_norm FLOAT NOT NULL DEFAULT 0.0"))
+            if "real_embedding_kind" not in cache_columns:
+                session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN real_embedding_kind VARCHAR"))
             if "observed_safe_questions_json" not in cache_columns:
                 session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN observed_safe_questions_json VARCHAR NOT NULL DEFAULT '[]'"))
             if "aliases_json" not in cache_columns:
                 session.exec(text("ALTER TABLE global_qa_cache ADD COLUMN aliases_json VARCHAR NOT NULL DEFAULT '[]'"))
+            for index_name, columns in {
+                "ix_global_qa_cache_scope": "scope",
+                "ix_global_qa_cache_user_id_hash": "user_id_hash",
+                "ix_global_qa_cache_real_embedding_kind": "real_embedding_kind",
+            }.items():
+                try:
+                    session.exec(text(f"CREATE INDEX IF NOT EXISTS {index_name} ON global_qa_cache ({columns})"))
+                except Exception:
+                    pass
         if not inspector.has_table("global_qa_tombstone"):
             GlobalQATombstone.__table__.create(bind, checkfirst=True)
         if inspector.has_table("global_qa_observation"):
@@ -272,6 +503,14 @@ def _ensure_schema_compat(session: Session) -> None:
                 session.exec(text("ALTER TABLE global_qa_observation ADD COLUMN answer_similarity_score FLOAT NOT NULL DEFAULT 1.0"))
             if "conflicting_answer_hashes_json" not in observation_columns:
                 session.exec(text("ALTER TABLE global_qa_observation ADD COLUMN conflicting_answer_hashes_json VARCHAR NOT NULL DEFAULT '[]'"))
+        if inspector.has_table("ai_usage_events"):
+            usage_columns = {column["name"] for column in inspector.get_columns("ai_usage_events")}
+            if "cache_hit_source" not in usage_columns:
+                session.exec(text("ALTER TABLE ai_usage_events ADD COLUMN cache_hit_source VARCHAR"))
+            try:
+                session.exec(text("CREATE INDEX IF NOT EXISTS ix_ai_usage_events_cache_hit_source ON ai_usage_events (cache_hit_source)"))
+            except Exception:
+                pass
         session.commit()
         _SCHEMA_COMPAT_READY = True
 
@@ -516,10 +755,132 @@ def _vector_norm(vec: List[float]) -> float:
     return math.sqrt(sum(float(x) * float(x) for x in vec)) if vec else 0.0
 
 
-def embed_question_for_global_cache(text: str) -> Tuple[List[float], float]:
+def _coerce_embedding_vector(value: Any) -> List[float]:
+    if not isinstance(value, list):
+        return []
+    vec: List[float] = []
+    for item in value:
+        try:
+            number = float(item)
+        except Exception:
+            return []
+        if not math.isfinite(number):
+            return []
+        vec.append(number)
+    return vec
+
+
+def token_hash_embedding_for_global_cache(text: str) -> Tuple[List[float], float, str]:
     tokens = _semantic_tokens(text)
     vec = _hash_embedding(tokens)
-    return vec, _vector_norm(vec)
+    return vec, _vector_norm(vec), GLOBAL_QA_EMBEDDING_KIND
+
+
+def _real_embedding_kind_for_provider(provider: str, model: str) -> str:
+    provider = str(provider or "").strip().lower()
+    model = str(model or "").strip()
+    if provider == "qwen_http" or "qwen3-embedding-0.6b" in model.lower():
+        return GLOBAL_QA_QWEN_EMBEDDING_KIND
+    if provider == "openai":
+        return f"openai:{model or 'text-embedding-3-small'}"
+    return f"{provider}:{model}" if model else provider
+
+
+def _parse_embedding_response(payload: Any) -> List[float]:
+    if isinstance(payload, dict):
+        if isinstance(payload.get("embedding"), list):
+            return _coerce_embedding_vector(payload.get("embedding"))
+        data = payload.get("data")
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict):
+                return _coerce_embedding_vector(first.get("embedding"))
+            emb = getattr(first, "embedding", None)
+            return _coerce_embedding_vector(emb)
+        if isinstance(payload.get("embeddings"), list) and payload["embeddings"]:
+            first = payload["embeddings"][0]
+            return _coerce_embedding_vector(first)
+    embedding = getattr(payload, "embedding", None)
+    if embedding is not None:
+        return _coerce_embedding_vector(embedding)
+    data = getattr(payload, "data", None)
+    if data:
+        first = data[0]
+        return _coerce_embedding_vector(getattr(first, "embedding", None))
+    return []
+
+
+def _qwen_http_embedding(text: str, url: str, model: str) -> List[float]:
+    body = json.dumps({"model": model, "input": text, "texts": [text]}, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    timeout = _env_float("GLOBAL_QA_QWEN_EMBEDDING_TIMEOUT_SECONDS", 3.0, minimum=0.1)
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - configured internal URL only.
+        payload = json.loads(response.read().decode("utf-8"))
+    return _parse_embedding_response(payload)
+
+
+def _openai_embedding(text: str, model: str) -> List[float]:
+    api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return []
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception:
+        return []
+    client = OpenAI(api_key=api_key)
+    response = client.embeddings.create(model=model or "text-embedding-3-small", input=[text])
+    return _parse_embedding_response(response)
+
+
+def real_embedding_for_global_cache(text: str) -> Optional[Tuple[List[float], float, str]]:
+    if not _env_bool("GLOBAL_QA_REAL_EMBEDDINGS_ENABLED", False):
+        return None
+    provider = str(os.getenv("GLOBAL_QA_EMBEDDING_PROVIDER") or "token_hash").strip().lower()
+    model = str(os.getenv("GLOBAL_QA_EMBEDDING_MODEL") or "").strip()
+    if provider in {"", "token_hash", "token_hash_v1"}:
+        return None
+    try:
+        if provider == "qwen_http":
+            url = str(os.getenv("GLOBAL_QA_QWEN_EMBEDDING_URL") or "").strip()
+            if not url:
+                return None
+            vec = _qwen_http_embedding(text, url, model or "Qwen/Qwen3-Embedding-0.6B")
+        elif provider == "openai":
+            vec = _openai_embedding(text, model or "text-embedding-3-small")
+        else:
+            return None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, TypeError, RuntimeError):
+        return None
+    if not vec:
+        return None
+    return vec, _vector_norm(vec), _real_embedding_kind_for_provider(provider, model)
+
+
+def embedding_bundle_for_global_cache(text: str) -> Dict[str, Any]:
+    token_vec, token_norm, token_kind = token_hash_embedding_for_global_cache(text)
+    real = real_embedding_for_global_cache(text)
+    active_vec, active_norm, active_kind = real if real is not None else (token_vec, token_norm, token_kind)
+    return {
+        "embedding": active_vec,
+        "embedding_norm": active_norm,
+        "embedding_kind": active_kind,
+        "token_hash_embedding": token_vec,
+        "token_hash_embedding_norm": token_norm,
+        "token_hash_embedding_kind": token_kind,
+        "real_embedding": real[0] if real is not None else [],
+        "real_embedding_norm": real[1] if real is not None else 0.0,
+        "real_embedding_kind": real[2] if real is not None else None,
+    }
+
+
+def embed_question_for_global_cache(text: str) -> Tuple[List[float], float]:
+    bundle = embedding_bundle_for_global_cache(text)
+    return list(bundle["embedding"]), float(bundle["embedding_norm"] or 0.0)
 
 
 def _cosine(left: List[float], left_norm: float, right: List[float], right_norm: float) -> float:
@@ -575,16 +936,63 @@ def _question_similarity(
     return max(token_score, (token_score * 0.75) + (seq_score * 0.25), semantic)
 
 
-def _load_embedding(row: GlobalQACache) -> Optional[Tuple[List[float], float]]:
-    if str(getattr(row, "embedding_kind", "") or GLOBAL_QA_EMBEDDING_KIND) != GLOBAL_QA_EMBEDDING_KIND:
-        return None
+def _load_embedding_json(raw: Optional[str], norm_value: Any = 0.0) -> Optional[Tuple[List[float], float]]:
     try:
-        vec = [float(x) for x in json.loads(row.embedding_json or "[]")]
+        parsed = json.loads(raw or "[]")
     except Exception:
-        vec = []
+        return None
+    vec = _coerce_embedding_vector(parsed)
     if not vec:
         return None
-    return vec, float(row.embedding_norm or _vector_norm(vec))
+    try:
+        norm = float(norm_value or 0.0)
+    except Exception:
+        norm = 0.0
+    return vec, norm or _vector_norm(vec)
+
+
+def _embedding_json_is_corrupt(raw: Optional[str]) -> bool:
+    if not raw:
+        return False
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return True
+    return not isinstance(parsed, list)
+
+
+def _load_row_token_embedding(row: GlobalQACache) -> Optional[Tuple[List[float], float]]:
+    explicit = _load_embedding_json(
+        getattr(row, "token_hash_embedding_json", None),
+        getattr(row, "token_hash_embedding_norm", 0.0),
+    )
+    if explicit is not None:
+        return explicit
+    if str(getattr(row, "embedding_kind", "") or GLOBAL_QA_EMBEDDING_KIND) != GLOBAL_QA_EMBEDDING_KIND:
+        return None
+    return _load_embedding_json(row.embedding_json, row.embedding_norm)
+
+
+def _load_row_real_embedding(row: GlobalQACache) -> Optional[Tuple[List[float], float, str]]:
+    kind = str(getattr(row, "real_embedding_kind", "") or "").strip()
+    loaded = _load_embedding_json(getattr(row, "real_embedding_json", None), getattr(row, "real_embedding_norm", 0.0))
+    if loaded is not None and kind:
+        return loaded[0], loaded[1], kind
+    legacy_kind = str(getattr(row, "embedding_kind", "") or "").strip()
+    if legacy_kind and legacy_kind != GLOBAL_QA_EMBEDDING_KIND:
+        legacy = _load_embedding_json(row.embedding_json, row.embedding_norm)
+        if legacy is not None:
+            return legacy[0], legacy[1], legacy_kind
+    return None
+
+
+def _row_embedding_for_kind(row: GlobalQACache, kind: str) -> Optional[Tuple[List[float], float]]:
+    if kind == GLOBAL_QA_EMBEDDING_KIND:
+        return _load_row_token_embedding(row)
+    real = _load_row_real_embedding(row)
+    if real is not None and real[2] == kind:
+        return real[0], real[1]
+    return None
 
 
 def _not_expired(row: GlobalQACache, now: Optional[datetime] = None) -> bool:
@@ -605,7 +1013,144 @@ def _answer_language(reply_language: Optional[str]) -> Optional[str]:
     return None
 
 
-def lookup_approved_global_cache(session: Session, question: str, reply_language: Optional[str] = None) -> Optional[dict]:
+def _query_embedding_bundle(question: str, query_embedding: Any = None) -> Dict[str, Any]:
+    if isinstance(query_embedding, dict):
+        bundle = dict(query_embedding)
+        if "token_hash_embedding" not in bundle:
+            token_vec, token_norm, token_kind = token_hash_embedding_for_global_cache(question)
+            bundle.setdefault("token_hash_embedding", token_vec)
+            bundle.setdefault("token_hash_embedding_norm", token_norm)
+            bundle.setdefault("token_hash_embedding_kind", token_kind)
+        return bundle
+    if isinstance(query_embedding, tuple) and len(query_embedding) >= 2:
+        vec = _coerce_embedding_vector(list(query_embedding[0] or []))
+        try:
+            norm = float(query_embedding[1] or 0.0)
+        except Exception:
+            norm = 0.0
+        tuple_kind = str(query_embedding[2] if len(query_embedding) >= 3 else GLOBAL_QA_EMBEDDING_KIND).strip() or GLOBAL_QA_EMBEDDING_KIND
+        token_vec, token_norm, token_kind = token_hash_embedding_for_global_cache(question)
+        bundle = {
+            "embedding": vec,
+            "embedding_norm": norm or _vector_norm(vec),
+            "embedding_kind": tuple_kind,
+            "token_hash_embedding": token_vec,
+            "token_hash_embedding_norm": token_norm,
+            "token_hash_embedding_kind": token_kind,
+        }
+        if tuple_kind != GLOBAL_QA_EMBEDDING_KIND:
+            bundle["real_embedding"] = vec
+            bundle["real_embedding_norm"] = norm or _vector_norm(vec)
+            bundle["real_embedding_kind"] = tuple_kind
+        return bundle
+    return embedding_bundle_for_global_cache(question)
+
+
+def _score_row_against_query(row: GlobalQACache, question: str, query_bundle: Dict[str, Any]) -> float:
+    variants = _row_question_variants(row)
+    if not variants:
+        return 0.0
+    scores: List[float] = []
+    real_query = _coerce_embedding_vector(query_bundle.get("real_embedding"))
+    real_kind = str(query_bundle.get("real_embedding_kind") or "").strip()
+    real_query_norm = float(query_bundle.get("real_embedding_norm") or _vector_norm(real_query) or 0.0)
+    token_query = _coerce_embedding_vector(query_bundle.get("token_hash_embedding"))
+    token_query_norm = float(query_bundle.get("token_hash_embedding_norm") or _vector_norm(token_query) or 0.0)
+    row_real = _load_row_real_embedding(row)
+    row_token = _load_row_token_embedding(row)
+    for variant in variants:
+        lexical = _question_similarity(question, variant)
+        semantic = 0.0
+        if real_query and real_kind and row_real is not None and row_real[2] == real_kind:
+            semantic = max(semantic, _cosine(real_query, real_query_norm, row_real[0], row_real[1]))
+        if token_query and row_token is not None:
+            semantic = max(semantic, _cosine(token_query, token_query_norm, row_token[0], row_token[1]))
+        scores.append(max(lexical, semantic))
+    return max(scores, default=0.0)
+
+
+def _row_to_hit(row: GlobalQACache, score: float) -> dict:
+    source = _cache_hit_source_for_row(row)
+    return {
+        "id": row.id,
+        "answer": row.answer,
+        "answer_language": row.answer_language,
+        "canonical_question": row.canonical_question,
+        "normalized_question": row.normalized_question,
+        "similarity_score": score,
+        "confidence": row.confidence,
+        "answer_hash": row.answer_hash,
+        "topic": row.topic,
+        "scope": _row_scope(row),
+        "cache_hit_source": source,
+        "direct_answer_source": "global_qa_cache",
+    }
+
+
+def _row_lookup_safe(row: GlobalQACache, question: str, language: Optional[str], now: datetime, *, user_hash: Optional[str]) -> bool:
+    if row.status != "approved":
+        return False
+    if not _not_expired(row, now):
+        return False
+    if BAD_CACHED_ANSWER_RE.search(str(row.answer or "")):
+        return False
+    if row.safety_label in {"private", "personal_high_risk", "unsafe"}:
+        return False
+    if language and row.answer_language not in {language, "en"}:
+        return False
+    scope = _row_scope(row)
+    if scope == _USER_SCOPE:
+        return bool(user_hash and str(getattr(row, "user_id_hash", "") or "") == user_hash)
+    return scope == _GLOBAL_SCOPE
+
+
+def _lookup_hot_cache(
+    session: Session,
+    question: str,
+    language: Optional[str],
+    user_hash: Optional[str],
+    now: datetime,
+) -> Optional[dict]:
+    cache = _hot_cache()
+    for key in _hot_lookup_keys(question, language, user_hash):
+        try:
+            payload = cache.get(key)
+        except Exception:
+            return None
+        if not payload:
+            continue
+        row_id = payload.get("id")
+        if row_id is None:
+            continue
+        row = session.get(GlobalQACache, int(row_id))
+        if row is None:
+            try:
+                cache.delete(key)
+            except Exception:
+                pass
+            continue
+        if not _row_lookup_safe(row, question, language, now, user_hash=user_hash):
+            try:
+                cache.delete(key)
+            except Exception:
+                pass
+            continue
+        score = 1.0
+        row.hit_count = int(row.hit_count or 0) + 1
+        row.last_seen_at = now
+        session.add(row)
+        session.commit()
+        return _row_to_hit(row, score)
+    return None
+
+
+def lookup_approved_global_cache(
+    session: Session,
+    question: str,
+    reply_language: Optional[str] = None,
+    user_id: Any = None,
+    query_embedding: Any = None,
+) -> Optional[dict]:
     if not _enabled() or not str(question or "").strip():
         return None
     readiness = global_qa_schema_ready(session)
@@ -638,12 +1183,28 @@ def lookup_approved_global_cache(session: Session, question: str, reply_language
 
     language = _answer_language(reply_language)
     now = utc_now()
-    query_embedding = embed_question_for_global_cache(question)
+    user_hash = stable_user_hash(user_id) if user_id is not None else None
+    hot_hit = _lookup_hot_cache(session, question, language, user_hash, now)
+    if hot_hit is not None:
+        return hot_hit
+    query_bundle = _query_embedding_bundle(question, query_embedding)
     try:
-        rows = list(
+        user_rows: List[GlobalQACache] = []
+        if user_hash:
+            user_rows = list(
+                session.exec(
+                    select(GlobalQACache)
+                    .where(GlobalQACache.status == "approved")
+                    .where(GlobalQACache.scope == _USER_SCOPE)
+                    .where(GlobalQACache.user_id_hash == user_hash)
+                    .order_by(GlobalQACache.updated_at.desc())
+                ).all()
+            )
+        global_rows = list(
             session.exec(
                 select(GlobalQACache)
                 .where(GlobalQACache.status == "approved")
+                .where(or_(GlobalQACache.scope == _GLOBAL_SCOPE, GlobalQACache.scope == None))  # noqa: E711
                 .order_by(GlobalQACache.updated_at.desc())
             ).all()
         )
@@ -659,28 +1220,25 @@ def lookup_approved_global_cache(session: Session, question: str, reply_language
             },
         )
         return None
-    best: Optional[GlobalQACache] = None
-    best_score = 0.0
-    for row in rows:
-        if not _not_expired(row, now):
+    scored: List[Tuple[GlobalQACache, float]] = []
+    for row in [*user_rows, *global_rows]:
+        if not _row_lookup_safe(row, question, language, now, user_hash=user_hash):
             continue
-        if BAD_CACHED_ANSWER_RE.search(str(row.answer or "")):
-            continue
-        if row.safety_label in {"private", "personal_high_risk", "unsafe"}:
-            continue
-        if language and row.answer_language not in {language, "en"}:
-            continue
-        row_embedding = _load_embedding(row)
-        score = max(
-            (
-                _question_similarity(question, variant, query_embedding, row_embedding)
-                for variant in _row_question_variants(row)
-            ),
-            default=0.0,
-        )
-        if score > best_score:
-            best = row
-            best_score = score
+        score = _score_row_against_query(row, question, query_bundle)
+        if score > 0:
+            scored.append((row, score))
+    try:
+        from .ai.agents.reranker_agent import RerankerAgent
+
+        reranked = RerankerAgent().rerank(scored)
+        best, best_score = reranked[0] if reranked else (None, 0.0)
+    except Exception:
+        best = None
+        best_score = 0.0
+        for row, score in scored:
+            if best is None or score > best_score or (score == best_score and _row_scope(row) == _USER_SCOPE):
+                best = row
+                best_score = score
     if best is None or best_score < _min_similarity():
         return None
 
@@ -698,17 +1256,8 @@ def lookup_approved_global_cache(session: Session, question: str, reply_language
             "answer_hash": best.answer_hash,
         },
     )
-    return {
-        "id": best.id,
-        "answer": best.answer,
-        "answer_language": best.answer_language,
-        "canonical_question": best.canonical_question,
-        "normalized_question": best.normalized_question,
-        "similarity_score": best_score,
-        "confidence": best.confidence,
-        "answer_hash": best.answer_hash,
-        "topic": best.topic,
-    }
+    _populate_hot_cache_for_row(best)
+    return _row_to_hit(best, best_score)
 
 
 def _source_hashes(row: GlobalQACache) -> List[str]:
@@ -730,11 +1279,12 @@ def _topic_from_question(question: str) -> Optional[str]:
     return tokens[0] if tokens else None
 
 
-def _find_candidate(session: Session, normalized_question: str, embedding: Tuple[List[float], float]) -> Tuple[Optional[GlobalQACache], float]:
+def _find_candidate(session: Session, normalized_question: str, query_bundle: Dict[str, Any]) -> Tuple[Optional[GlobalQACache], float]:
     rows = list(
         session.exec(
             select(GlobalQACache)
             .where(GlobalQACache.status.in_(["candidate", "approved"]))
+            .where(or_(GlobalQACache.scope == _GLOBAL_SCOPE, GlobalQACache.scope == None))  # noqa: E711
             .order_by(GlobalQACache.updated_at.desc())
         ).all()
     )
@@ -743,20 +1293,145 @@ def _find_candidate(session: Session, normalized_question: str, embedding: Tuple
     for row in rows:
         if not _not_expired(row):
             continue
-        row_embedding = _load_embedding(row)
-        score = max(
-            (
-                _question_similarity(normalized_question, variant, embedding, row_embedding)
-                for variant in _row_question_variants(row)
-            ),
-            default=0.0,
-        )
+        score = _score_row_against_query(row, normalized_question, query_bundle)
         if score > best_score:
             best = row
             best_score = score
     if best is not None and best_score >= _min_similarity():
         return best, best_score
     return None, 0.0
+
+
+def _apply_embedding_bundle(row: GlobalQACache, bundle: Dict[str, Any]) -> None:
+    active = _coerce_embedding_vector(bundle.get("embedding"))
+    token = _coerce_embedding_vector(bundle.get("token_hash_embedding"))
+    real = _coerce_embedding_vector(bundle.get("real_embedding"))
+    row.embedding_json = json.dumps(active, ensure_ascii=False) if active else "[]"
+    row.embedding_kind = str(bundle.get("embedding_kind") or GLOBAL_QA_EMBEDDING_KIND)
+    row.embedding_norm = float(bundle.get("embedding_norm") or _vector_norm(active) or 0.0)
+    row.token_hash_embedding_json = json.dumps(token, ensure_ascii=False) if token else "[]"
+    row.token_hash_embedding_norm = float(bundle.get("token_hash_embedding_norm") or _vector_norm(token) or 0.0)
+    row.real_embedding_json = json.dumps(real, ensure_ascii=False) if real else None
+    row.real_embedding_norm = float(bundle.get("real_embedding_norm") or _vector_norm(real) or 0.0)
+    row.real_embedding_kind = str(bundle.get("real_embedding_kind") or "").strip() or None
+
+
+def _find_user_scoped_row(
+    session: Session,
+    *,
+    user_hash: str,
+    answer_hash_value: str,
+    normalized_question: str,
+    query_bundle: Dict[str, Any],
+) -> Optional[GlobalQACache]:
+    rows = list(
+        session.exec(
+            select(GlobalQACache)
+            .where(GlobalQACache.scope == _USER_SCOPE)
+            .where(GlobalQACache.user_id_hash == user_hash)
+            .where(GlobalQACache.status == "approved")
+            .order_by(GlobalQACache.updated_at.desc())
+        ).all()
+    )
+    best: Optional[GlobalQACache] = None
+    best_score = 0.0
+    for row in rows:
+        if str(row.answer_hash or "") and str(row.answer_hash or "") != answer_hash_value:
+            continue
+        score = _score_row_against_query(row, normalized_question, query_bundle)
+        if score > best_score:
+            best = row
+            best_score = score
+    return best if best is not None and best_score >= _min_similarity() else None
+
+
+def _upsert_user_scoped_cache_row(
+    session: Session,
+    *,
+    user_hash: str,
+    canonical_question: str,
+    normalized: str,
+    answer: str,
+    model_used: Optional[str],
+    q_hash: str,
+    a_hash: str,
+    safe_variant: Optional[str],
+    safe_aliases: List[str],
+    embedding_bundle: Dict[str, Any],
+    now: datetime,
+    expires_at: datetime,
+) -> Optional[GlobalQACache]:
+    row = _find_user_scoped_row(
+        session,
+        user_hash=user_hash,
+        answer_hash_value=a_hash,
+        normalized_question=normalized,
+        query_bundle=embedding_bundle,
+    )
+    redacted_answer = redact_sensitive_text(answer)
+    if row is None:
+        row = GlobalQACache(
+            scope=_USER_SCOPE,
+            user_id_hash=user_hash,
+            canonical_question=canonical_question,
+            normalized_question=normalized,
+            answer=redacted_answer,
+            answer_language=_infer_answer_language(answer),
+            topic=_topic_from_question(canonical_question),
+            status="approved",
+            hit_count=1,
+            distinct_user_count=1,
+            observed_question_count=1,
+            source_question_hashes_json=json.dumps([q_hash], ensure_ascii=False),
+            observed_safe_questions_json=_dump_json_list([safe_variant] if safe_variant else []),
+            aliases_json=_dump_json_list(safe_aliases),
+            answer_hash=a_hash,
+            confidence=0.90,
+            safety_label="general",
+            model_used=model_used,
+            first_seen_at=now,
+            last_seen_at=now,
+            expires_at=expires_at,
+            created_at=now,
+            updated_at=now,
+        )
+        _apply_embedding_bundle(row, embedding_bundle)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+    else:
+        hashes = _source_hashes(row)
+        if q_hash not in hashes:
+            hashes.append(q_hash)
+        observed_safe_questions = _load_json_list(getattr(row, "observed_safe_questions_json", "[]"))
+        if safe_variant:
+            observed_safe_questions.append(safe_variant)
+        aliases = _load_json_list(getattr(row, "aliases_json", "[]"))
+        aliases.extend(safe_aliases)
+        row.canonical_question = row.canonical_question or canonical_question
+        row.normalized_question = row.normalized_question or normalized
+        row.answer = redacted_answer
+        row.answer_hash = a_hash
+        row.answer_language = _infer_answer_language(answer)
+        row.status = "approved"
+        row.hit_count = int(row.hit_count or 0) + 1
+        row.distinct_user_count = 1
+        row.observed_question_count = int(row.observed_question_count or 0) + 1
+        row.source_question_hashes_json = json.dumps(hashes[-100:], ensure_ascii=False)
+        row.observed_safe_questions_json = _dump_json_list(observed_safe_questions)
+        row.aliases_json = _dump_json_list(aliases)
+        row.confidence = max(float(row.confidence or 0.0), 0.90)
+        row.safety_label = "general"
+        row.model_used = model_used or row.model_used
+        row.last_seen_at = now
+        row.updated_at = now
+        row.expires_at = expires_at
+        _apply_embedding_bundle(row, embedding_bundle)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+    _populate_hot_cache_for_row(row)
+    return row
 
 
 def record_backend_openai_answer(
@@ -829,13 +1504,32 @@ def record_backend_openai_answer(
     q_hash = question_hash(question)
     a_hash = answer_hash(answer)
     user_hash = stable_user_hash(user_id)
-    embedding = embed_question_for_global_cache(normalized)
-    embedding_json = json.dumps(embedding[0], ensure_ascii=False)
+    embedding_bundle = embedding_bundle_for_global_cache(normalized)
     expires_at = now + timedelta(days=_ttl_days())
 
-    candidate, similarity = _find_candidate(session, normalized, embedding)
+    user_row = None
+    if user_id is not None and user_hash:
+        user_row = _upsert_user_scoped_cache_row(
+            session,
+            user_hash=user_hash,
+            canonical_question=canonical_question,
+            normalized=normalized,
+            answer=answer,
+            model_used=model_used,
+            q_hash=q_hash,
+            a_hash=a_hash,
+            safe_variant=safe_variant,
+            safe_aliases=safe_aliases,
+            embedding_bundle=embedding_bundle,
+            now=now,
+            expires_at=expires_at,
+        )
+
+    candidate, similarity = _find_candidate(session, normalized, embedding_bundle)
     if candidate is None:
         candidate = GlobalQACache(
+            scope=_GLOBAL_SCOPE,
+            user_id_hash=None,
             canonical_question=canonical_question,
             normalized_question=normalized,
             answer=redact_sensitive_text(answer),
@@ -849,9 +1543,6 @@ def record_backend_openai_answer(
             observed_safe_questions_json=_dump_json_list([safe_variant] if safe_variant else []),
             aliases_json=_dump_json_list(safe_aliases),
             answer_hash=a_hash,
-            embedding_json=embedding_json,
-            embedding_kind=GLOBAL_QA_EMBEDDING_KIND,
-            embedding_norm=embedding[1],
             confidence=0.0,
             safety_label="general",
             model_used=model_used,
@@ -861,6 +1552,7 @@ def record_backend_openai_answer(
             created_at=now,
             updated_at=now,
         )
+        _apply_embedding_bundle(candidate, embedding_bundle)
         session.add(candidate)
         session.commit()
         session.refresh(candidate)
@@ -886,6 +1578,10 @@ def record_backend_openai_answer(
         candidate.expires_at = expires_at
         if not candidate.embedding_kind:
             candidate.embedding_kind = GLOBAL_QA_EMBEDDING_KIND
+        if not getattr(candidate, "token_hash_embedding_json", None) or (
+            embedding_bundle.get("real_embedding") and not getattr(candidate, "real_embedding_json", None)
+        ):
+            _apply_embedding_bundle(candidate, embedding_bundle)
         if not answer_conflict and (not candidate.answer or candidate.status == "candidate"):
             candidate.answer = redact_sensitive_text(answer)
             candidate.answer_hash = a_hash
@@ -965,6 +1661,7 @@ def record_backend_openai_answer(
     return {
         "ok": True,
         "candidate_id": candidate.id,
+        "user_candidate_id": user_row.id if user_row is not None else None,
         "observation_id": observation.id,
         "status": candidate.status,
         "promoted": promoted,
@@ -975,6 +1672,8 @@ def promote_candidate_if_threshold_met(session: Session, candidate_id: int) -> b
     _ensure_schema_compat(session)
     candidate = session.get(GlobalQACache, candidate_id)
     if not candidate or candidate.status != "candidate":
+        return False
+    if _row_scope(candidate) != _GLOBAL_SCOPE:
         return False
     if int(candidate.hit_count or 0) < _promote_hits():
         return False
@@ -1009,6 +1708,7 @@ def promote_candidate_if_threshold_met(session: Session, candidate_id: int) -> b
     candidate.updated_at = utc_now()
     session.add(candidate)
     session.commit()
+    _populate_hot_cache_for_row(candidate)
     logger.info(
         "global_cache_promoted",
         extra={
@@ -1055,6 +1755,35 @@ def _sync_safe_row(row: GlobalQACache, now: datetime) -> bool:
     if is_live_or_current_question(row.canonical_question) or is_live_or_current_question(row.normalized_question):
         return False
     return True
+
+
+def _sync_embedding_payload(row: GlobalQACache) -> Optional[Dict[str, Any]]:
+    token = _load_row_token_embedding(row)
+    real = _load_row_real_embedding(row)
+    active_vec: List[float] = []
+    active_norm = 0.0
+    active_kind = ""
+    if real is not None:
+        active_vec, active_norm, active_kind = real
+    elif token is not None:
+        active_vec, active_norm = token
+        active_kind = GLOBAL_QA_EMBEDDING_KIND
+    elif _embedding_json_is_corrupt(row.embedding_json) or _embedding_json_is_corrupt(getattr(row, "token_hash_embedding_json", None)) or _embedding_json_is_corrupt(getattr(row, "real_embedding_json", None)):
+        return None
+    payload: Dict[str, Any] = {
+        "embedding": active_vec,
+        "embeddingNorm": active_norm,
+        "embeddingKind": active_kind,
+    }
+    if token is not None:
+        payload.update(
+            {
+                "tokenHashEmbedding": token[0],
+                "tokenHashEmbeddingNorm": token[1],
+                "tokenHashEmbeddingKind": GLOBAL_QA_EMBEDDING_KIND,
+            }
+        )
+    return payload
 
 
 def _sync_safe_variants(values: List[str]) -> List[str]:
@@ -1168,7 +1897,7 @@ def _safe_user_qa_sync_entry(row: QACache, now: datetime) -> Optional[Dict[str, 
     normalized = normalize_question(canonical_question)
     if not normalized:
         return None
-    embedding, embedding_norm = embed_question_for_global_cache(normalized)
+    token_embedding, token_embedding_norm, token_embedding_kind = token_hash_embedding_for_global_cache(normalized)
     aliases = _sync_safe_variants(_alias_variants(canonical_question))
     answer_language = _infer_answer_language(answer)
     source = {
@@ -1189,9 +1918,12 @@ def _safe_user_qa_sync_entry(row: QACache, now: datetime) -> Optional[Dict[str, 
         "answerLanguage": answer_language,
         "topic": _topic_from_question(canonical_question),
         "answerHash": answer_hash(answer),
-        "embedding": embedding,
-        "embeddingNorm": embedding_norm,
-        "embeddingKind": GLOBAL_QA_EMBEDDING_KIND,
+        "embedding": token_embedding,
+        "embeddingNorm": token_embedding_norm,
+        "embeddingKind": token_embedding_kind,
+        "tokenHashEmbedding": token_embedding,
+        "tokenHashEmbeddingNorm": token_embedding_norm,
+        "tokenHashEmbeddingKind": token_embedding_kind,
         "confidence": 1.0,
         "safetyLabel": "general",
         "scopeSource": source,
@@ -1228,8 +1960,94 @@ def _user_qa_sync_entries(
     return entries
 
 
+def _global_qa_row_sync_entry(row: GlobalQACache, *, entry_id: Any, scope: str, now: datetime) -> Optional[Dict[str, Any]]:
+    if not _sync_safe_row(row, now):
+        return None
+    embedding_payload = _sync_embedding_payload(row)
+    if embedding_payload is None:
+        return None
+    aliases = _sync_safe_variants(
+        _load_json_list(getattr(row, "aliases_json", "[]")) + _alias_variants(row.canonical_question)
+    )
+    observed_safe_questions = _sync_safe_variants(
+        _load_json_list(getattr(row, "observed_safe_questions_json", "[]"))
+    )
+    return {
+        "id": entry_id,
+        "scope": scope,
+        "canonicalQuestion": row.canonical_question,
+        "normalizedQuestion": row.normalized_question,
+        "aliases": aliases,
+        "observedSafeQuestions": observed_safe_questions,
+        "answer": row.answer,
+        "answerLanguage": row.answer_language,
+        "topic": row.topic,
+        "answerHash": row.answer_hash,
+        **embedding_payload,
+        "confidence": row.confidence,
+        "safetyLabel": row.safety_label,
+        "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
+        "expiresAt": row.expires_at.isoformat() if row.expires_at else None,
+    }
+
+
+def _user_global_qa_sync_entries(
+    session: Session,
+    *,
+    user_id: Any,
+    now: datetime,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    if user_id is None:
+        return []
+    user_hash = stable_user_hash(user_id)
+    rows = list(
+        session.exec(
+            select(GlobalQACache)
+            .where(GlobalQACache.scope == _USER_SCOPE)
+            .where(GlobalQACache.user_id_hash == user_hash)
+            .where(GlobalQACache.status == "approved")
+            .order_by(GlobalQACache.updated_at.desc(), GlobalQACache.id.desc())
+            .limit(max(1, min(int(limit or 250), 500)))
+        ).all()
+    )
+    entries: List[Dict[str, Any]] = []
+    for row in rows:
+        if row.id is None:
+            continue
+        entry = _global_qa_row_sync_entry(row, entry_id=f"user-global:{int(row.id)}", scope=_USER_SCOPE, now=now)
+        if entry is not None:
+            source = {"kind": "user_global_qa_cache", "globalCacheId": int(row.id)}
+            entry["scopeSource"] = source
+            entry["source"] = source
+            entries.append(entry)
+    return entries
+
+
+def _dedupe_sync_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen_ids = set()
+    seen_hashes = set()
+    for entry in entries:
+        entry_id = str(entry.get("id") or "").strip()
+        answer_hash_value = str(entry.get("answerHash") or "").strip()
+        if entry_id and entry_id in seen_ids:
+            continue
+        if answer_hash_value and answer_hash_value in seen_hashes:
+            continue
+        if entry_id:
+            seen_ids.add(entry_id)
+        if answer_hash_value:
+            seen_hashes.add(answer_hash_value)
+        out.append(entry)
+    return out
+
+
 def record_global_qa_tombstone(session: Session, global_cache_id: int, reason: str = "deleted") -> GlobalQATombstone:
     _ensure_schema_compat(session)
+    existing = session.get(GlobalQACache, int(global_cache_id))
+    if existing is not None:
+        _invalidate_hot_cache_for_row(existing)
     row = GlobalQATombstone(
         global_cache_id=int(global_cache_id),
         deleted_at=utc_now(),
@@ -1268,6 +2086,7 @@ def build_global_knowledge_sync_payload(
         safe_limit = max(1, min(int(limit or 250), 500))
         query = (
             select(GlobalQACache)
+            .where(or_(GlobalQACache.scope == _GLOBAL_SCOPE, GlobalQACache.scope == None))  # noqa: E711
             .order_by(GlobalQACache.updated_at.asc(), GlobalQACache.id.asc())
             .limit(safe_limit + 1)
         )
@@ -1293,12 +2112,16 @@ def build_global_knowledge_sync_payload(
             for row in session.exec(tombstone_query).all()
             if int(row.global_cache_id or 0) > 0
         ]
-        user_entries = _user_qa_sync_entries(
-            session,
-            user_id=user_id,
-            now=now,
-            limit=safe_limit,
+        user_entries = _user_global_qa_sync_entries(session, user_id=user_id, now=now, limit=safe_limit)
+        user_entries.extend(
+            _user_qa_sync_entries(
+                session,
+                user_id=user_id,
+                now=now,
+                limit=safe_limit,
+            )
         )
+        user_entries = _dedupe_sync_entries(user_entries)
     except (ProgrammingError, OperationalError) as exc:
         session.rollback()
         readiness = global_qa_schema_ready(session)
@@ -1332,49 +2155,17 @@ def build_global_knowledge_sync_payload(
                     extra={"event": "global_knowledge_sync_skipped_private_entry", "global_cache_id": row.id},
                 )
             continue
-        embedding_kind = str(getattr(row, "embedding_kind", "") or GLOBAL_QA_EMBEDDING_KIND)
-        if embedding_kind != GLOBAL_QA_EMBEDDING_KIND:
-            embedding = []
-            embedding_norm = 0.0
-        else:
-            try:
-                parsed_embedding = json.loads(row.embedding_json or "[]") if row.embedding_json else []
-                embedding = [float(value) for value in parsed_embedding] if isinstance(parsed_embedding, list) else []
-                embedding_norm = float(row.embedding_norm or _vector_norm(embedding))
-            except Exception:
-                if row.id is not None:
-                    revoked_ids.append(int(row.id))
-                logger.warning(
-                    "global_knowledge_sync_skipped_corrupt_entry",
-                    extra={"event": "global_knowledge_sync_skipped_corrupt_entry", "global_cache_id": row.id},
-                )
-                continue
-        aliases = _sync_safe_variants(
-            _load_json_list(getattr(row, "aliases_json", "[]")) + _alias_variants(row.canonical_question)
-        )
-        observed_safe_questions = _sync_safe_variants(
-            _load_json_list(getattr(row, "observed_safe_questions_json", "[]"))
-        )
-        entries.append(
-            {
-                "id": row.id,
-                "canonicalQuestion": row.canonical_question,
-                "normalizedQuestion": row.normalized_question,
-                "aliases": aliases,
-                "observedSafeQuestions": observed_safe_questions,
-                "answer": row.answer,
-                "answerLanguage": row.answer_language,
-                "topic": row.topic,
-                "answerHash": row.answer_hash,
-                "embedding": embedding,
-                "embeddingNorm": embedding_norm,
-                "embeddingKind": embedding_kind,
-                "confidence": row.confidence,
-                "safetyLabel": row.safety_label,
-                "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
-                "expiresAt": row.expires_at.isoformat() if row.expires_at else None,
-            }
-        )
+        entry = _global_qa_row_sync_entry(row, entry_id=row.id, scope=_GLOBAL_SCOPE, now=now)
+        if entry is None:
+            if row.id is not None:
+                revoked_ids.append(int(row.id))
+            logger.warning(
+                "global_knowledge_sync_skipped_corrupt_entry",
+                extra={"event": "global_knowledge_sync_skipped_corrupt_entry", "global_cache_id": row.id},
+            )
+            continue
+        entry.pop("scope", None)
+        entries.append(entry)
     next_since, next_after_id = _row_cursor(last_processed) if last_processed is not None else (
         since_dt.isoformat() if since_dt else None,
         after_id_int,
