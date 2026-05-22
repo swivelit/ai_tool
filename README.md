@@ -1,268 +1,433 @@
-# AI Tool
+# J AI mobile app
 
-## Architecture
-
-The primary public runtime is now **backend-first** from the Expo app.
-
-- `mobile/lib/api.ts` sends normal chat and recorded voice through the authenticated backend by default.
-- The FastAPI backend is the AI control plane: intent routing, provider budget,
-  safety, contextual follow-ups, reminders, cache/memory/RAG, and usage logging.
-- Sarvam handles Indic/Tanglish/Tamil, STT, TTS, and translation paths.
-- OpenAI uses cheap/reasoning model ladders for English/general/coding answers,
-  with flagship models disabled for free users.
-- Phone-local agents and local model runtime remain optional fallback/development
-  paths only when explicitly enabled.
-- `mobile/data/` is the checked-in source of truth for agent configs, prompts, training seeds, and RAG seeds.
-- On first launch, the app bootstraps those checked-in seed files into `Expo FileSystem.documentDirectory/data`.
-- Live phone runtime data stays only in `documentDirectory/data` and is not stored in git.
-- Architecture/coding answers are prompted with this app context so responses are
-  implementation-focused instead of generic backend boilerplate.
-
-## Folder Map
+This Expo/React Native app is configured so normal public chat and recorded
+voice enter the authenticated backend AI router first:
 
 ```text
-ai_tool/
-├── mobile/
-│   ├── app/
-│   ├── data/
-│   │   ├── config/
-│   │   │   ├── agent_registry.json
-│   │   │   ├── alignment_rules.json
-│   │   │   ├── memory_rules.json
-│   │   │   ├── models.json
-│   │   │   ├── orchestrator_routes.json
-│   │   │   ├── profiler_slots.json
-│   │   │   ├── prompts.json
-│   │   │   └── workspace_manifest.json
-│   │   ├── rag/
-│   │   │   └── seed/
-│   │   │       ├── fast_rag_replies.csv
-│   │   │       ├── local_rag_keywords.csv
-│   │   │       └── local_rag_synonyms.csv
-│   │   └── training/
-│   │       └── seed/
-│   │           ├── alignment.jsonl
-│   │           ├── classifier_dataset.csv
-│   │           ├── memory.jsonl
-│   │           ├── orchestrator.jsonl
-│   │           ├── pipeline_questions.csv
-│   │           ├── profiler.jsonl
-│   │           └── rag.jsonl
-│   └── lib/
-│       ├── api.ts
-│       ├── localAgentBootstrap.ts
-│       ├── localAgentSeedManifest.ts
-│       └── localAgents.ts
-├── backend/
-│   ├── app/
-│   ├── config.py
-│   └── data/
-│       └── ... runtime-only backend state/db/logs ...
-└── README.md
+apiPost("/api/chat")
+  -> Firebase bearer token
+  -> backend /api/chat
+  -> backend AI router
+  -> Sarvam for Indic/Tanglish or speech-language paths
+  -> OpenAI gpt-5-nano for cheap English/general
+  -> OpenAI gpt-5-mini for controlled coding/complex reasoning
+  -> reply
 ```
 
-## Phone Bootstrap Flow
+Phone-local models are optional fallback/development only:
 
-1. The checked-in seed files live under `mobile/data/`.
-2. `mobile/lib/localAgentBootstrap.ts` copies those files into `documentDirectory/data` on first launch, or when the checked-in seed version changes.
-3. `mobile/lib/localAgents.ts` reads runtime config from `documentDirectory/data`.
-4. Runtime folders such as profiles, cache, memory, conversations, tasks, `rag/runtime`, and `training/captures` are created on-device only.
+```text
+EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=true
+  or EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=true
+  -> local setup/llama.cpp/GGUF validation
+  -> local pipeline may intercept selected turns
+  -> backend remains the public primary path
+  -> reply
+```
 
-## Backend-First Release Notes
+Default release/public builds keep `EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false`,
+`EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false`, and
+`EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false`. Missing local model files,
+llama.cpp, GGUF CDN URLs, byte sizes, or SHA hashes must not block a backend-first
+release unless local fallback is explicitly enabled.
 
-- Contextual follow-ups such as `Tamil la simple ah explain pannunga` use the
-  previous chat topic. If there is no prior topic, the backend asks a clarification.
-- Reminder clarification continues across turns: `Remind me tomorrow morning`
-  followed by `Call Amma` creates the reminder without an AI provider call.
-- Local Android debug can run with either a real `mobile/google-services.json`
-  / `GOOGLE_SERVICES_JSON_BASE64` or debug mock auth. Release/EAS builds require
-  real Firebase public env plus a real google-services config source.
+## Firebase Android config
 
-## Profiler Runtime Artifacts
+Expo Android prebuild only points to `mobile/google-services.json` when the file
+exists. The file is gitignored and must not be committed.
 
-The Profiler Agent is local-first and writes its runtime state under `documentDirectory/data` on the phone:
+Local debug options:
 
-- `profiles/{userId}/answers.json`
-  Structured slot values collected during onboarding.
-- `profiles/{userId}/summary.json`
-  Compact factual profile summary plus confidence and note metadata.
-- `profiles/{userId}/profiler_state.json`
-  Conversation state, current target slot, missing slots, confidence-by-slot, and profiler notes.
-- `conversations/{userId}.jsonl`
-  Append-only onboarding chat transcript.
-- `rag/runtime/{userId}_profile_rag.json`
-  Profile summary bundle with retrieval-ready chunks and metadata.
-- `rag/runtime/{userId}_chunks.json`
-  Flattened runtime RAG chunks, including the generated profile chunks.
-- `training/captures/profiler.jsonl`
-  Non-blocking training captures from profiler turns and completions.
+```bash
+# Real Firebase Auth in debug:
+GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json> ./launch-debug_apk.sh
+# or place mobile/google-services.json locally.
 
-Profiler completion still writes local artifacts on-device first, but the onboarding completion gate now requires the backend profile refresh to confirm `questionnaireCompleted`. The backend remains secondary for profiler runtime state, but it is the source of truth for allowing the app to continue past onboarding completion.
+# Debug-lite/mock auth without native Firebase config:
+EXPO_PUBLIC_E2E_MOCK_AUTH=1 ./launch-debug_apk.sh
+# JAI_DEBUG_LITE=1 also allows the missing file for emulator smoke work.
+```
 
-## Orchestrator And Alignment Runtime
+Release/EAS builds must use one of these real Firebase Android config paths:
 
-The chat path still enters through `/api/chat`. When `EXPO_PUBLIC_LOCAL_MODEL_BASE_URL` or `extra.LOCAL_MODEL_BASE_URL` is configured to a reachable local model server, the main decision tree runs locally inside `mobile/lib/localAgents.ts`. Without that local model URL, `/api/chat` goes to the backend.
+```bash
+# A. Keep the downloaded Firebase file locally. Do not commit it.
+mobile/google-services.json
 
-Routing order:
+# B. Provide the JSON through a secret env var.
+GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json>
+# or GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON
 
-1. Semantic cache hit, if available.
-2. Fast local rules for greeting/small-talk, reminders, schedule/tasks, weather, profile requests, and obvious ambiguity.
-3. Qwen3 local orchestrator decision with explicit typed output:
-   `route`, `reason`, `confidence`, `needsClarification`, `clarificationQuestion`, `needsLiveData`, `selectedModel`, `fallbackAllowed`.
-4. Local tool or local reasoning execution:
-   - `Qwen3 8B` by default
-   - `Qwen3 14B` for longer or more multi-step/context-heavy prompts
-5. Gemma 3 4B alignment rewrite using local profile summary, answers, preferences, and language settings.
-6. Backend/OpenAI fallback only when one of these is true:
-   - the local reasoner returns `__OPENAI_FALLBACK__`
-   - the orchestrator marks `needsLiveData = true`
-   - no safe local tool/model path can answer
+# C. Provide all six public Firebase env values below; the preflight script
+#    synthesizes mobile/google-services.json locally with package
+#    com.harishajahan.tamilai.
+EXPO_PUBLIC_FIREBASE_API_KEY=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_APP_ID=<firebase-public-value>
+```
 
-Runtime artifacts added for the new agents:
+`mobile/scripts/ensure-google-services-json.js` decodes or synthesizes the file
+before prebuild/build and never prints Firebase values or JSON content. Release
+verification also requires the backend API base and complete Firebase public
+`EXPO_PUBLIC_FIREBASE_*` values. `mobile/google-services.json` is ignored by git
+and must not be committed.
 
-- `training/captures/orchestrator.jsonl`
-  Route decisions and training captures for the local orchestrator.
-- `training/captures/alignment.jsonl`
-  Draft-to-final alignment captures.
-- `conversations/{userId}_routes.jsonl`
-  Append-only route decision log with route metadata and fallback-policy context.
+## Backend chat smoke test
 
-## Memory And Cache Runtime
-
-The semantic cache is now a single phone-local runtime path inside `mobile/lib/localAgents.ts`.
-
-- Cache lookup uses the configured embedding model, currently `Qwen/Qwen3-Embedding-0.6B`.
-- Cache hits are based on semantic similarity, not exact text match.
-- Cache reuse happens before orchestrator routing, backend calls, or OpenAI fallback.
-- Cached factual content is preserved in English form, and alignment may be reapplied only for style/language presentation.
-- Older backend semantic-cache prototypes remain deprecated and are not the primary mobile decision path.
-
-Runtime files:
-
-- `cache/semantic_cache.json`
-  Shared semantic cache store with entries plus hit metadata such as source question, matched question, similarity, timestamp, and whether alignment was reapplied.
-- `memory/daily_summaries/{userId}.jsonl`
-  Append-only consolidation summaries for recent conversation windows.
-- `memory/durable_facts/{userId}.json`
-  Conservatively filtered durable user facts.
-- `memory/profile_updates/{userId}.jsonl`
-  Applied or skipped conservative profile update decisions.
-- `rag/runtime/{userId}_memory_chunks.json`
-  Retrieval-ready memory chunks embedded with the same configured embedding model used by semantic cache and local RAG search.
-- `training/captures/memory.jsonl`
-  Non-blocking memory/cache training captures.
-
-Idle-safe consolidation is exposed from `mobile/lib/localAgents.ts` through `consolidateLocalMemoryOnIdle(...)`.
-It can be called manually or from future background scheduling hooks.
-It summarizes recent conversations, extracts durable facts, updates the profile conservatively, refreshes memory chunks, and writes training captures without making OpenAI the default path.
-
-## Backend Role
-
-The backend still supports:
-
-- existing API screens and sync behavior
-- OpenAI fallback when a phone-local agent explicitly cannot answer
-- backend RAG/training consumers that now read shared seed files from `mobile/data`
-
-Deprecated backend onboarding remains optional for legacy API compatibility only:
-
-- the backend must boot even if deprecated onboarding extras are missing
-- legacy onboarding import failures should only disable that deprecated route, not `/health` or `/api/chat`
-- after Render deploy, verify boot with the health endpoint at `/health`
-
-Backend runtime state remains under `backend/data/`:
-
-- database files
-- generated docs
-- logs
-- backend agent mirror state
-
-## Running Locally
-
-### Mobile
+`npm run smoke:chat` runs the seeded 10-question chat smoke test. With no `SMOKE_CHAT_BASE_URL`, it defaults to mock mode and does not require auth:
 
 ```bash
 cd mobile
-npm install
-npx expo start
-npm run test:local-agents
+npm run smoke:chat
 ```
 
-Local Android APKs are built from the repo root:
+Real backend mode requires Firebase bearer auth because `/api/chat` uses the same authenticated user ownership checks as the app. `SMOKE_CHAT_USER_ID` only fills the legacy request body; the backend resolves and owns the real user from the verified bearer token and ignores spoofed IDs.
+
+Using an existing Firebase ID token:
 
 ```bash
+cd mobile
+SMOKE_CHAT_BASE_URL=https://ai-tool-rrau.onrender.com \
+SMOKE_CHAT_AUTH_TOKEN="$FIREBASE_ID_TOKEN" \
+SMOKE_CHAT_USE_MOCK=false \
+npm run smoke:chat
+```
+
+Using a dedicated Firebase email/password smoke account:
+
+```bash
+cd mobile
+SMOKE_CHAT_BASE_URL=https://ai-tool-rrau.onrender.com \
+SMOKE_CHAT_FIREBASE_API_KEY="$EXPO_PUBLIC_FIREBASE_API_KEY" \
+SMOKE_CHAT_FIREBASE_EMAIL="smoke@example.com" \
+SMOKE_CHAT_FIREBASE_PASSWORD="$SMOKE_CHAT_FIREBASE_PASSWORD" \
+SMOKE_CHAT_ENSURE_USER=true \
+SMOKE_CHAT_USE_MOCK=false \
+npm run smoke:chat
+```
+
+For local development only, backend dev bearer tokens work when the backend is explicitly started with `AUTH_ALLOW_DEV_TOKENS=true`:
+
+```bash
+cd mobile
+SMOKE_CHAT_BASE_URL=http://127.0.0.1:8000 \
+SMOKE_CHAT_AUTH_TOKEN="dev:smoke-local:smoke@example.com" \
+SMOKE_CHAT_USE_MOCK=false \
+npm run smoke:chat
+```
+
+Common failures:
+
+- `401`: missing or invalid bearer token.
+- `404`: token is valid, but no backend user exists for that Firebase account. Sign up once in the app or set `SMOKE_CHAT_ENSURE_USER=true` for a dedicated smoke account.
+- `503`: Firebase Admin, OpenAI, or another backend dependency is not configured.
+
+## Runtime modes
+
+- Backend AI router is the production/public primary runtime.
+- `EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false` disables local model release requirements.
+- `runtime.mode = "native_on_device"` is available for explicit local fallback builds.
+- `runtime.mode = "local_adapter"` is development-only and keeps `/chat/completions` and `/embeddings` as local adapter contracts.
+- `modelDelivery.mode = "download_on_first_launch"` is used only when explicit native local fallback is enabled.
+- `modelDelivery.mode = "bundled_assets"` is optional developer/build-time mode only.
+
+The native Android/iOS bridge still has llama.cpp build wiring and guards for
+explicit local fallback builds. Backend-first release builds do not require
+llama.cpp. If local fallback is enabled, release machines must run
+`npm run native:sync-llama` and `npm run native:verify-llama`.
+
+## llama.cpp setup
+
+Preferred path:
+
+```text
+mobile/modules/jai-on-device-model/vendor/llama.cpp
+```
+
+Initialize it on a fresh machine:
+
+```bash
+# From repo root, when the llama.cpp submodule is committed:
+git submodule update --init --recursive
+
+# Or from mobile/, works for submodule and zip checkouts:
+npm run native:sync-llama
+```
+
+For CI/builds that use an external checkout:
+
+```bash
+JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run android:native
+JAI_LLAMA_CPP_DIR=/absolute/path/to/llama.cpp npm run ios:native
+```
+
+For reproducible production builds, commit the submodule pointer or set `JAI_LLAMA_CPP_REF=<tag-or-commit>` when using the clone fallback in `npm run native:sync-llama`.
+
+## CI/release verification order
+
+Backend-first release CI does not need llama.cpp or GGUF metadata:
+
+```bash
+cd mobile
+npm ci
+npm run typecheck
+npm test
+npm run release:verify-backend-first
+```
+
+Explicit local fallback release CI must also prove llama.cpp is present and linkable before Expo prebuild generates native projects:
+
+```bash
+cd mobile
+npm ci
+EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=true
+npm run native:sync-llama
+npm run native:verify-llama
+npx expo prebuild --platform android --clean
+# then run the platform build, for example ./gradlew assembleRelease from android/
+```
+
+`npm run native:verify-llama` checks the vendored `include/llama.h` and `CMakeLists.txt`, configures Android CMake with `JAI_REQUIRE_LLAMA_CPP=ON`, compiles and links `jai_llama_runtime` with the Android NDK, verifies Android/iOS `JAI_LLAMA_CPP_AVAILABLE=1` wiring, compiles `JaiLlamaCppBridge.mm` on macOS, verifies explicit local-fallback missing-llama guards, and updates `nativeImplementationStatus` only after those checks pass. On non-macOS hosts it clearly reports that iOS compile verification was skipped while keeping podspec structural checks; explicit local fallback macOS CI/release builds must run the same verifier on macOS.
+
+Optional GGUF smoke test:
+
+```bash
+npm run native:verify-llama -- --smoke --model /path/to/tiny.gguf
+# Or use a separate embedding GGUF:
+npm run native:verify-llama -- --smoke --model /path/to/tiny-chat.gguf --embedding-model /path/to/tiny-embed.gguf
+```
+
+The smoke mode builds a small host probe against llama.cpp, loads the supplied GGUF, and calls `completeChat` plus `embedTexts`. It still does not replace real target-device Gemma/Qwen validation in the mobile app with downloaded `file://` model paths.
+
+## Optional local model delivery
+
+Backend-first production users do **not** need GGUF files. When explicit local
+fallback is enabled, users do **not** manually place GGUF files in
+`mobile/models/`.
+
+Optional local fallback startup/setup flow:
+
+```text
+App launches
+  -> app checks required GGUF files in app-private storage
+  -> if any file is missing/invalid, /model-setup opens
+  -> /model-setup automatically starts required downloads
+  -> each file is saved under FileSystem.documentDirectory + "models/"
+  -> size and SHA-256 are verified
+  -> invalid files are deleted and retried
+  -> downloaded file:// paths are passed to NativeOnDeviceModelRuntime
+```
+
+The setup screen shows current model, per-model progress, total progress, required download size, Wi-Fi/storage warning, clear errors, and retry.
+
+Lite first-launch required files:
+
+```text
+gemma-3-4b-it-q4_k_m.gguf
+qwen3-embedding-0.6b-q8_0.gguf
+```
+
+Tiered/optional files:
+
+```text
+qwen3-8b-q4_k_m.gguf
+qwen3-14b-q4_k_m.gguf
+```
+
+`mobile/data/config/models.json` defaults `modelDelivery.defaultTier` to `lite`, so first launch/basic chat requires only Gemma 4B plus the Qwen embedding model. Qwen 8B and Qwen 14B are downloaded only when the selected tier requires them, or when a release configuration deliberately validates metadata for all production model entries.
+
+## Required EAS/mobile environment values
+
+Backend-first release:
+
+```bash
+EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false
+EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false
+EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=false
+EXPO_PUBLIC_API_BASE=https://<your-render-service>
+EXPO_PUBLIC_FIREBASE_API_KEY=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=<firebase-public-value>
+EXPO_PUBLIC_FIREBASE_APP_ID=<firebase-public-value>
+
+# Optional if you prefer JSON-secret input instead of synthesis from public env.
+GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json>
+# or GOOGLE_SERVICES_JSON / FIREBASE_GOOGLE_SERVICES_JSON
+```
+
+Explicit local fallback release additionally needs llama.cpp and GGUF delivery metadata.
+
+Use either one public CDN base URL or per-model public/signed URLs. Do not put long-lived secrets in `EXPO_PUBLIC_*` values because they are bundled into the app.
+
+```bash
+# Option A: one public CDN base used with cdn://models/<fileName>
+EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL=https://cdn.example.com/jai
+
+# Option B: per-model public or release-generated signed URLs
+EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B=https://cdn.example.com/jai/models/gemma-3-4b-it-q4_k_m.gguf
+EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B=https://cdn.example.com/jai/models/qwen3-8b-q4_k_m.gguf
+EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B=https://cdn.example.com/jai/models/qwen3-14b-q4_k_m.gguf
+EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED=https://cdn.example.com/jai/models/qwen3-embedding-0.6b-q8_0.gguf
+
+# Exact byte sizes from your release artifact pipeline
+EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B=<exact-bytes>
+EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B=<exact-bytes>
+EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B=<exact-bytes>
+EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED=<exact-bytes>
+
+# SHA-256 of the exact GGUF files users will download
+EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B=<64-hex-sha256>
+EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B=<64-hex-sha256>
+EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B=<64-hex-sha256>
+EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED=<64-hex-sha256>
+```
+
+When `EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK=true` with
+`runtime.mode=native_on_device` and `modelDelivery.mode=download_on_first_launch`,
+`mobile/app.config.ts` fails the build clearly when the CDN URL path or
+integrity metadata is missing. Explicit local fallback builds also fail clearly
+when llama.cpp is missing.
+
+## Local APK builds
+
+From the repo root, `./build-apk.sh` builds a local Android APK and automatically loads mobile environment files before release verification, native verification, Expo config, Expo prebuild, and Gradle:
+
+```bash
+./build-apk.sh
+```
+
+Local APK builds load `mobile/.env` first and `mobile/.env.local` second. Values already exported in the shell take highest priority, so command-specific overrides such as `BUILD_TYPE=debug ./build-apk.sh` are preserved. The script logs only the loaded file names and precedence, never environment values.
+
+Release APK builds default to `arm64-v8a`, which is the intended Android phone target and also the required target for explicit on-device llama.cpp fallback builds. Debug APK builds use the same `JAI_ANDROID_ABIS` source of truth across React Native, app Gradle, and the Jai native module. `./launch-debug_apk.sh` reads the connected device ABI with adb and builds a matching debug APK, including `x86_64` for supported emulators. You can override explicitly with:
+
+```bash
+JAI_ANDROID_ABIS=x86_64 BUILD_TYPE=debug ./build-apk.sh
+JAI_ANDROID_ABIS=arm64-v8a ./build-apk.sh
+```
+
+After Gradle finishes, `./build-apk.sh` validates the APK native libraries and fails before install if required React Native libraries are missing for any selected ABI, or if the APK contains native libraries for an unselected ABI. It only requires `libjai_llama_runtime.so` when explicit local model fallback is enabled.
+
+Android 15 introduced devices and emulator images with 16 KB memory pages. Apps that package native `.so` files must have uncompressed APK entries aligned for 16 KB loading and every ELF `LOAD` segment aligned to at least `0x4000`; otherwise Android 15+/Android 16-style 16 KB devices can show the Android App Compatibility warning or refuse to load the native code in future releases. [Android's guidance](https://developer.android.com/guide/practices/page-sizes) says NDK r28+ emits 16 KB-aligned shared libraries by default, while NDK r27 requires `-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON` or explicit linker flags. Expo SDK 54 / React Native 0.81.5 currently pins NDK `27.1.12297006` in `react-native/gradle/libs.versions.toml`, and the local SDK used by this repo has NDK r27 installed, so this project keeps r27 and applies the documented r27 flags instead of overriding Expo/RN to r28.
+
+The custom Jai runtime is source-built by `mobile/modules/jai-on-device-model/android/src/main/cpp/CMakeLists.txt` and links `libjai_llama_runtime.so` with:
+
+```text
+-Wl,-z,max-page-size=16384
+-Wl,-z,common-page-size=16384
+```
+
+The generated app CMake target (`libappmodules.so`) gets `-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON` from the local Expo config plugin. React Native, Hermes, Expo modules, Reanimated/Worklets, Screens, and other source-built native dependencies already receive the same r27 CMake argument from their Gradle integrations. Prebuilt AAR/Prefab libraries such as `libreactnative.so`, `libhermes.so`, `libhermestooling.so`, `libjsi.so`, `libfbjni.so`, `libc++_shared.so`, and Fresco/image pipeline libraries must come from package versions that ship 16 KB-compatible prebuilts; `./build-apk.sh` validates the final APK so incompatible dependency upgrades are caught immediately.
+
+`./build-apk.sh` now runs both checks on the final `dist/tamil-ai-<type>.apk`:
+
+```bash
+zipalign -c -P 16 -v 4 dist/tamil-ai-debug.apk
+llvm-readelf -l -W <each extracted lib/<abi>/*.so>
+```
+
+If `zipalign` or `llvm-readelf`/`readelf` is missing, the build fails with the exact Android SDK Build-Tools or NDK path to install. For quick local debug installs only, `JAI_ANDROID_ALLOW_16KB_INCOMPATIBLE_DEBUG=1 BUILD_TYPE=debug ./build-apk.sh` allows the build to continue after printing a strong warning. Release/production builds can never skip 16 KB validation.
+
+To test on a 16 KB emulator:
+
+```bash
+adb shell getconf PAGE_SIZE
 BUILD_TYPE=debug ./build-apk.sh
 ./launch-debug_apk.sh
+zipalign -c -P 16 -v 4 dist/tamil-ai-debug.apk
 ```
 
-The APK build validates native library ABI selection and Android 15+/16 KB page-size compatibility. On a 16 KB emulator, confirm `adb shell getconf PAGE_SIZE` returns `16384`; the build then checks `zipalign -c -P 16 -v 4 dist/tamil-ai-debug.apk` and every `lib/<abi>/*.so` ELF `LOAD` segment alignment before install. See [mobile/README.md](mobile/README.md) for the NDK r27/r28 decision and the debug-only escape hatch.
+`./launch-debug_apk.sh` prints `16 KB page-size emulator detected; APK must pass 16 KB native library validation.` when `adb shell getconf PAGE_SIZE` returns `16384`, and stops before install if validation fails unless the explicit debug escape hatch above is set.
 
-Profile restore/auth diagnostics for debug APK runs:
+For EAS/cloud backend-first builds, set Firebase public values, `EXPO_PUBLIC_API_BASE`, and the backend-first routing flags shown above. Set `EXPO_PUBLIC_LOCAL_MODEL_*` and llama.cpp-related values only for explicit local fallback builds. EAS/cloud builders do not receive your local `mobile/.env` or `mobile/.env.local` unless you explicitly provide those values to the build environment.
+
+## Optional developer bundled-assets mode
+
+Use `mobile/models/` only when intentionally testing a bundled-assets development build:
+
+```text
+mobile/models/gemma-3-4b-it-q4_k_m.gguf
+mobile/models/qwen3-8b-q4_k_m.gguf
+mobile/models/qwen3-14b-q4_k_m.gguf
+mobile/models/qwen3-embedding-0.6b-q8_0.gguf
+```
+
+Then set:
 
 ```bash
-adb logcat -c
-adb logcat | grep --line-buffered -E 'ReactNativeJS|\[account\]|\[auth\]|ApiError|users/resolve|Backend profile|Firebase'
-
-curl -i https://ai-tool-rrau.onrender.com/health
-curl -i https://ai-tool-rrau.onrender.com/api/health
+EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE=bundled_assets
 ```
 
-Focused regression tests for auth persistence, boot fail-open behavior, route resolution, and password visibility can also be run with:
+The Expo config plugin copies non-empty files from `mobile/models/` into native assets during prebuild. This is not the real-user production flow.
+
+## Explicit Local Native Build Path
+
+Expo Go cannot load custom native inference code. Use this path only when intentionally developing the optional local model fallback in a custom development build or prebuild/bare React Native workflow.
 
 ```bash
-cd mobile
-npx vitest run test/firebase.test.ts test/appBoot.test.ts test/authUi.test.ts
+npm install
+npm run native:sync-llama
+npx expo prebuild --clean
+npm run android:native
+# or
+npm run ios:native
 ```
 
-### Backend
+The checked-in native module scaffold is at:
+
+```text
+modules/jai-on-device-model/
+```
+
+Android validates downloaded/bundled GGUF paths and delegates to `JaiLlamaCppBinding`, which expects `libjai_llama_runtime.so` to export `nativeCompleteChat` and `nativeEmbedText`.
+
+Android CMake links the vendored llama.cpp `llama` target and sets `JAI_LLAMA_CPP_AVAILABLE=1` when the checkout exists.
+
+iOS validates downloaded/bundled GGUF paths and delegates to `JaiLlamaCppBridge.mm`. The podspec compiles the vendored llama.cpp/ggml sources or links prebuilt static libraries under `vendor/llama.cpp/build-ios/**/lib*.a`, and sets `JAI_LLAMA_CPP_AVAILABLE=1` when the checkout exists.
+
+The native module must never call backend/OpenAI.
+
+## Development local adapter
+
+For local development only, you can point the app at an OpenAI-compatible LAN adapter:
 
 ```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE=local_adapter \
+EXPO_PUBLIC_LOCAL_MODEL_BASE_URL=http://192.168.1.23:10000/v1 \
+npx expo start
 ```
 
-### Optional local Theni-Tamil API
+Do not use `local_adapter` for production builds.
+
+## Tests
 
 ```bash
-cd backend
-source .venv/bin/activate
-export THENI_MODEL_ROOT=./models/stage_tamil_thenitamil_model
-uvicorn theni_tamil_api:app --host 127.0.0.1 --port 9009
+npm test
+npm run test:local-agents
+npm run test:profiler
 ```
 
-## Legacy Paths Left In Place
+## Local AI Memory & Personalization
 
-- `backend/app/onboarding_agent.py`
-  Kept for legacy backend onboarding API compatibility. Marked deprecated.
-- `backend/app/semantic_cache.py`
-  Kept as an old backend-side prototype/reference only. Marked deprecated and no longer the primary semantic-cache path.
-- `backend/data/`
-  Still used for backend runtime state. It is no longer the checked-in source of truth for agent seeds.
+The mobile application utilizes a local memory, profile syncing, and personalization pipeline (run on-device) to store persistent facts, manage daily summaries, and optimize local RAG context retrieval.
 
-## Notes
+### Storage & File Paths
 
-- Do not add live phone data to git. The app stores that under Expo document storage, outside the repo.
-- Do not treat backend OpenAI-first paths as the main architecture anymore.
-- Keep `/api/chat` stable. Mobile uses local chat only when a reachable local model base URL is configured; otherwise it uses backend chat.
-- If memory or cache config files are missing, tiny in-code fallbacks exist only to keep the local path safe to boot.
-- Native Firebase auth now uses AsyncStorage-backed persistence so login survives app restarts on Android/iOS, while web keeps the default web auth behavior.
-- App boot uses watchdog-style fail-open handling. Optional local seed bootstrap and profile recovery now warn and continue instead of blocking the boot screen forever.
+All local user memory and synchronization logs are stored under the app-private data directory `DATA_DIR/memory/` (defined dynamically at runtime):
+- **Durable Facts**: `${MEMORY_DIR}/durable_facts/${userId}.json` (JSON list of structured user facts, categorized and stored with confidence scores)
+- **Daily Summaries**: `${MEMORY_DIR}/daily_summaries/${userId}.jsonl` (Chronological line-delimited daily summary records)
+- **Profile Updates**: `${MEMORY_DIR}/profile_updates/${userId}.jsonl` (Chronological records of user-profile updates derived from chat logs)
 
-## Manual QA Checklist
+### Privacy & Security Filters
 
-- Fresh install on Android/iOS:
-  launch the app with an empty local storage state and confirm the boot screen clears even if local seed bootstrap is slow or unavailable.
-- Login persistence on native:
-  log in with email/password, fully close the app, reopen it, and confirm the user lands back in the authenticated flow without logging in again.
-- Fresh signup flow:
-  create a new account, confirm routing goes `signup -> onboarding/profile -> onboarding/questionnaire -> tabs` without a split or half-rendered transition.
-- Existing account login flow:
-  log in with an already onboarded account and confirm routing goes directly to tabs without flashing onboarding screens.
-- Optional seed bootstrap failure:
-  simulate or force a local seed bootstrap failure and confirm the app logs a warning and still reaches the app shell.
-- Password visibility:
-  verify the login password eye toggle works, and both signup password fields independently toggle visibility with accessible labels.
-```
+To prevent accidental storage of sensitive personal data or secrets, all heuristic and LLM-extracted memory candidates are passed through an automatic sanitization filter (`isSensitiveMemoryFact`). If a memory fact matches any of the following criteria, it is silently discarded:
+1. **Email Addresses**: Any string containing a standard RFC-like email address (e.g., `user@domain.com`).
+2. **Social Security Numbers (SSN)**: Standard US Social Security numbers formatted with dashes (e.g., `XXX-XX-XXXX`).
+3. **Credit Card Numbers**: Any string containing a 13-19 digit sequence (even with space or hyphen formatting, such as standard Visa, Mastercard, Amex, or Discover numbers).
+4. **Phone Numbers**: Any sequence of 7 to 15 digits matching typical phone formats, excluding 4-digit years (e.g., 1985, 2026).
+5. **Credentials & Secrets**: Any text containing sensitive keywords like `password`, `passcode`, `api_key`, `auth_token`, `bearer`, `private_key`, `secret_key`, or `secret`.
+
