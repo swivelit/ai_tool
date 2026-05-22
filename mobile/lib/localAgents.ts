@@ -306,6 +306,8 @@ type MemoryUpdateToolData = {
   fact: string;
   category: MemoryFactCategory;
   confidence: number;
+  action?: "delete" | "mark_stale" | "upsert";
+  matchedIds?: string[];
 };
 
 type RagSearchToolData = {
@@ -2541,6 +2543,73 @@ async function embedTexts(
   }
 }
 
+function isSensitiveMemoryFact(text: string): boolean {
+  const normalized = text.toLowerCase();
+  
+  // 1. Email address
+  if (/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/.test(text)) {
+    return true;
+  }
+  
+  // 2. SSN: XXX-XX-XXXX or 9 digits
+  if (/\b\d{3}-\d{2}-\d{4}\b/.test(text)) {
+    return true;
+  }
+  
+  // 3. Credit Cards: 13-19 digits sequence
+  const ccClean = text.replace(/[-\s]/g, "");
+  if (/(?:^|[^0-9])(?:4[0-9]{12}(?:[0-9]{3})?|[52][1-5][0-9]{14}|6011[0-9]{12}|3[47][0-9]{13})(?:$|[^0-9])/.test(ccClean)) {
+    return true;
+  }
+  if (/(?:^|[^0-9])\d{13,19}(?:$|[^0-9])/.test(ccClean)) {
+    return true;
+  }
+
+  // 4. Phone numbers: at least 7-15 digits sequence, formatted or not
+  const phonePattern = /(?:\+?\d{1,4}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/;
+  const digitsOnly = text.replace(/[^\d]/g, "");
+  if (digitsOnly.length >= 7 && digitsOnly.length <= 15 && phonePattern.test(text)) {
+    if (!/^(?:19|20)\d{2}$/.test(digitsOnly)) {
+      return true;
+    }
+  }
+
+  // 5. Secrets/credentials/passwords
+  if (/\b(?:password|passcode|api[-_]?key|auth[-_]?token|bearer|private[-_]?key|secret_key|secret)\b/i.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+function matchDurableFacts(query: string, activeFacts: DurableFactRecord[]): DurableFactRecord[] {
+  const normQuery = normalizeText(query);
+  const stopWords = new Set(["my", "is", "a", "an", "the", "in", "of", "to", "for", "with", "at", "about", "memory", "that", "i", "me", "you", "your"]);
+  const queryTokens = normQuery.split(/\s+/).filter(t => t && !stopWords.has(t));
+  
+  if (queryTokens.length === 0) {
+    queryTokens.push(...normQuery.split(/\s+/).filter(Boolean));
+  }
+
+  return activeFacts.filter((factRow) => {
+    const normFact = normalizeText(factRow.fact);
+    if (normFact.includes(normQuery) || normQuery.includes(normFact)) {
+      return true;
+    }
+    const factTokens = normFact.split(/\s+/).filter(t => t && !stopWords.has(t));
+    if (factTokens.length === 0) {
+      factTokens.push(...normFact.split(/\s+/).filter(Boolean));
+    }
+    
+    const intersection = queryTokens.filter(t => factTokens.includes(t));
+    if (intersection.length > 0) {
+      const ratio = intersection.length / Math.min(queryTokens.length, factTokens.length);
+      if (ratio >= 0.5) return true;
+    }
+    return false;
+  });
+}
+
 function isTransientFact(text: string, rules: MemoryRules) {
   const normalized = normalizeText(text);
   const transientMarkers = rules.durableFacts?.transientMarkers || [];
@@ -2679,7 +2748,7 @@ function normalizeDurableFact(row: any): DurableFactRecord | null {
   };
 }
 
-function createDurableFactRecord(opts: {
+export function createDurableFactRecord(opts: {
   fact: string;
   confidence: number;
   category?: string;
@@ -2691,7 +2760,7 @@ function createDurableFactRecord(opts: {
   createdAt?: string;
 }): DurableFactRecord | null {
   const fact = String(opts.fact || "").trim();
-  if (!fact) return null;
+  if (!fact || isSensitiveMemoryFact(fact)) return null;
   const category = normalizeMemoryCategory(opts.category, fact);
   const createdAt = opts.createdAt || nowIso();
   return normalizeDurableFact({
@@ -2711,15 +2780,21 @@ function createDurableFactRecord(opts: {
   });
 }
 
-function isActiveMemoryFact(row: DurableFactRecord, at = Date.now()) {
+function isActiveMemoryFact(
+  row: DurableFactRecord,
+  at = Date.now(),
+  confidenceThreshold?: number,
+) {
+  const threshold = confidenceThreshold !== undefined ? confidenceThreshold : 0.78;
   if (!ACTIVE_MEMORY_STATUSES.includes(row.status)) return false;
+  if (row.confidence < threshold) return false;
   if (!row.expires_at) return true;
   const expiresAt = new Date(row.expires_at).getTime();
   return Number.isFinite(expiresAt) ? expiresAt > at : true;
 }
 
-function activeDurableFacts(rows: DurableFactRecord[]) {
-  return rows.filter((row) => isActiveMemoryFact(row));
+export function activeDurableFacts(rows: DurableFactRecord[], confidenceThreshold?: number) {
+  return rows.filter((row) => isActiveMemoryFact(row, Date.now(), confidenceThreshold));
 }
 
 function isHealthRelatedMemoryQuery(message: string) {
@@ -2732,9 +2807,10 @@ function isHealthRelatedMemoryQuery(message: string) {
 function relevantDurableFactsForMessage(
   facts: DurableFactRecord[],
   message: string,
+  confidenceThreshold?: number,
 ) {
   const healthRelevant = isHealthRelatedMemoryQuery(message);
-  return activeDurableFacts(facts).filter(
+  return activeDurableFacts(facts, confidenceThreshold).filter(
     (row) => row.category !== "health_context" || healthRelevant,
   );
 }
@@ -2822,8 +2898,9 @@ function mergeDurableFacts(
 function buildFallbackMemorySummary(
   facts: DurableFactRecord[],
   turns: LocalChatMessage[],
+  confidenceThreshold?: number,
 ) {
-  const activeFacts = activeDurableFacts(facts);
+  const activeFacts = activeDurableFacts(facts, confidenceThreshold);
   if (activeFacts.length) {
     return `Durable user facts: ${activeFacts.map((row) => row.fact).join("; ")}.`;
   }
@@ -2838,7 +2915,7 @@ function buildFallbackMemorySummary(
   return "No durable memory updates from this conversation window.";
 }
 
-function heuristicMemoryCandidates(
+export function heuristicMemoryCandidates(
   turns: LocalChatMessage[],
   rules: MemoryRules,
 ) {
@@ -2852,6 +2929,11 @@ function heuristicMemoryCandidates(
     sourceTurnId?: string;
   }> = [];
 
+  const transientAdjectives = new Set([
+    'hungry', 'tired', 'busy', 'sleepy', 'sick', 'bored', 'angry', 'happy', 'sad', 
+    'cold', 'hot', 'ready', 'fine', 'exhausted', 'late', 'done', 'waiting'
+  ]);
+
   const extract = (
     fact: string,
     confidence: number,
@@ -2861,7 +2943,7 @@ function heuristicMemoryCandidates(
     sourceTurnId?: string,
   ) => {
     const clean = String(fact || "").trim();
-    if (!clean || isTransientFact(clean, rules)) return;
+    if (!clean || isTransientFact(clean, rules) || isSensitiveMemoryFact(clean)) return;
     candidates.push({
       fact: clean,
       confidence,
@@ -2880,7 +2962,7 @@ function heuristicMemoryCandidates(
     );
 
     const namedPatterns: Array<
-      [RegExp, (match: RegExpExecArray) => [string, string, number]]
+      [RegExp, (match: RegExpExecArray) => [string, string, number] | null]
     > = [
       [
         /\bmy name is ([^.!,\n]+)/i,
@@ -2896,7 +2978,14 @@ function heuristicMemoryCandidates(
       ],
       [
         /\bi am(?: a| an)? ([^.!,\n]+)/i,
-        (match) => [`Identity: ${match[1].trim()}`, "identity", 0.82],
+        (match) => {
+          const val = match[1].trim();
+          const lowerVal = val.toLowerCase();
+          if (transientAdjectives.has(lowerVal) || /^[a-z]+ing$/i.test(lowerVal)) {
+            return null;
+          }
+          return [`Identity: ${val}`, "identity", 0.82];
+        },
       ],
       [
         /\bi work as(?: a| an)? ([^.!,\n]+)/i,
@@ -2907,7 +2996,7 @@ function heuristicMemoryCandidates(
         (match) => [`Education: ${match[1].trim()}`, "work_or_education", 0.88],
       ],
       [
-        /\bi (?:prefer|want) (?:you to )?(?:reply|respond|speak) (?:in )?([^.!,\n]+)/i,
+        /\bi prefer (?:you to )?(?:reply|respond|speak) (?:in )?([^.!,\n]+)/i,
         (match) => [
           `Preferred language: ${match[1].trim()}`,
           "communication_preference",
@@ -2923,7 +3012,7 @@ function heuristicMemoryCandidates(
         ],
       ],
       [
-        /\bi (?:prefer|want) ([^.!,\n]+)/i,
+        /\bi prefer ([^.!,\n]+)/i,
         (match) => [`Preference: ${match[1].trim()}`, "communication_preference", 0.85],
       ],
       [
@@ -2951,7 +3040,9 @@ function heuristicMemoryCandidates(
     for (const [regex, build] of namedPatterns) {
       const match = regex.exec(content);
       if (!match) continue;
-      const [fact, category, confidence] = build(match);
+      const res = build(match);
+      if (!res) continue;
+      const [fact, category, confidence] = res;
       const normalizedFact = normalizeText(fact);
       if (
         normalizedFact.startsWith("preference") &&
@@ -3121,6 +3212,7 @@ function profileChunkBlueprints(
   answers: Record<string, any>,
   summary: string,
   optionalProfileNotes: string[],
+  userProfile?: LocalUserProfile,
 ) {
   return [
     {
@@ -3131,6 +3223,8 @@ function profileChunkBlueprints(
     {
       id: "profile_identity",
       text: [
+        userProfile?.name ? `Name: ${userProfile.name}` : "",
+        userProfile?.place ? `Location: ${userProfile.place}` : "",
         answers.occupation
           ? `Occupation: ${displayValue(answers.occupation)}`
           : "",
@@ -3233,12 +3327,14 @@ async function persistProfileArtifacts(
   confidenceBySlot: Record<string, number>,
   optionalProfileNotes: string[],
   replyLanguageName: string,
+  userProfile?: LocalUserProfile,
 ) {
   const facts = buildSummaryFacts(slots, answers);
   const chunkBlueprints = profileChunkBlueprints(
     answers,
     summary,
     optionalProfileNotes,
+    userProfile,
   );
   const embeddings = chunkBlueprints.length
     ? await embedTexts(chunkBlueprints.map((chunk) => chunk.text))
@@ -3470,6 +3566,14 @@ export async function searchLocalRag(
     .filter(({ score }) => score >= 0.2)
     .sort((a, b) => {
       const scoreDelta = b.score - a.score;
+      if (Math.abs(scoreDelta) > 0.05) {
+        return scoreDelta;
+      }
+      const aIsMemory = a.row.sourceType === "memory";
+      const bIsMemory = b.row.sourceType === "memory";
+      if (aIsMemory && !bIsMemory) return -1;
+      if (bIsMemory && !aIsMemory) return 1;
+
       if (Math.abs(scoreDelta) > 0.03) return scoreDelta;
       return freshnessRank(b.row, nowMs) - freshnessRank(a.row, nowMs);
     })
@@ -4184,6 +4288,7 @@ async function buildProfileSummaryLocally(
         answers.preferred_language || userProfile?.replyLanguage || "english",
       ),
     ),
+    userProfile,
   );
   return summary;
 }
@@ -4685,7 +4790,16 @@ function isProfileToolIntent(normalized: string) {
 }
 
 function isMemoryUpdateToolIntent(normalized: string) {
-  return /\b(remember that|remember this|save this|note that|keep in mind)\b/.test(
+  const hasForget = /\bforget\b/.test(normalized);
+  if (hasForget) {
+    if (/\b(don\s*'?\s*t|do\s+not|never|not|won\s*'?\s*t)\s+(?:let\s+me\s+)?forget\b/.test(normalized)) {
+      if (/\b(delete|remove|forget)\s+(?:my\s+)?memory\s+of\b/.test(normalized)) {
+        return true;
+      }
+      return false;
+    }
+  }
+  return /\b(remember that|remember this|save this|note that|keep in mind|forget|delete my memory of|remove my memory of|delete memory of)\b/.test(
     normalized,
   );
 }
@@ -4718,6 +4832,12 @@ function inferProfileFields(message: string) {
 
 function extractMemoryFact(message: string) {
   const raw = String(message || "").trim();
+  const deleteMatch = raw.match(
+    /\b(?:forget|delete my memory of|remove my memory of|delete memory of|remove)\b[:,\s-]*(.+)$/i,
+  );
+  if (deleteMatch) {
+    return String(deleteMatch[1]).trim();
+  }
   const match = raw.match(
     /\b(?:remember that|remember this|save this|note that|keep in mind)\b[:,\s-]*(.+)$/i,
   );
@@ -4742,12 +4862,21 @@ function planLocalTools(opts: {
   };
 
   if (isMemoryUpdateToolIntent(normalized)) {
+    const isStale = /\b(stale|mark as stale|mark stale)\b/i.test(normalized);
+    const isDelete = /\b(forget|delete|remove)\b/i.test(normalized);
+    let action: "delete" | "mark_stale" | "upsert" = "upsert";
+    if (isStale) {
+      action = "mark_stale";
+    } else if (isDelete) {
+      action = "delete";
+    }
     addStep(
       "updateMemory",
       {
         fact: extractMemoryFact(opts.message),
         category: "user_note",
         confidence: 0.82,
+        action,
       },
       "user_asked_to_store_memory",
     );
@@ -4961,10 +5090,11 @@ async function runGetProfileTool(
   });
 }
 
-async function runUpdateMemoryTool(
+export async function runUpdateMemoryTool(
   args: Record<string, any>,
   context: ToolExecutionContext,
 ): Promise<ToolResult<MemoryUpdateToolData>> {
+  const action = args.action || "upsert";
   const fact = String(args.fact || extractMemoryFact(context.message)).trim();
   if (!fact) {
     return toolFail("updateMemory", "No memory fact was provided.", {
@@ -4972,11 +5102,80 @@ async function runUpdateMemoryTool(
       confidence: 0.2,
     });
   }
+
+  const current = await loadDurableFacts(context.userId);
+
+  if (action === "delete" || action === "mark_stale") {
+    const rules = await getMemoryRules();
+    const threshold = rules.durableFacts?.confidenceThreshold ?? 0.78;
+    const activeFacts = activeDurableFacts(current, threshold);
+    const matched = matchDurableFacts(fact, activeFacts);
+
+    if (matched.length > 0) {
+      const matchedIds = matched.map((row) => row.id);
+      const updated = current.map((row) => {
+        if (matchedIds.includes(row.id)) {
+          return {
+            ...row,
+            status: action === "delete" ? "deleted" as const : "stale" as const,
+            lastSeenAt: nowIso(),
+          };
+        }
+        return row;
+      });
+
+      await saveDurableFacts(context.userId, updated);
+
+      const runtimeOptions = await backgroundMemoryRuntimeOptions().catch(() => ({
+        modelsReady: false,
+      }));
+      await refreshMemoryRagArtifacts(
+        context.userId,
+        {
+          userId: context.userId,
+          createdAt: nowIso(),
+          summary: `Memory user-control ${action}: ${fact}`,
+          durableFacts: activeDurableFacts(updated, threshold),
+          profileUpdates: {},
+          source: "fallback",
+          conversationTurnCount: 0,
+          routeLogCount: 0,
+        },
+        updated,
+        runtimeOptions,
+      ).catch(() => []);
+
+      return toolOk(
+        "updateMemory",
+        {
+          fact,
+          category: "user_note",
+          confidence: 1.0,
+          action,
+          matchedIds,
+        },
+        { source: "local_memory", confidence: 1.0 },
+      );
+    }
+
+    return toolOk(
+      "updateMemory",
+      {
+        fact,
+        category: "user_note",
+        confidence: 0.0,
+        action,
+        matchedIds: [],
+      },
+      { source: "local_memory", confidence: 0.0 },
+    );
+  }
+
   const category = String(args.category || "user_note").trim() || "user_note";
   const confidence = Number.isFinite(Number(args.confidence))
     ? Math.max(0, Math.min(1, Number(args.confidence)))
     : 0.8;
-  const current = await loadDurableFacts(context.userId);
+
   const nextFact = createDurableFactRecord({
     fact,
     category,
@@ -4999,6 +5198,7 @@ async function runUpdateMemoryTool(
       fact: nextFact.fact,
       category: nextFact.category,
       confidence: nextFact.confidence,
+      action: "upsert",
     },
     { source: "local_memory", confidence },
   );
@@ -6472,6 +6672,28 @@ async function writeSemanticCache(
   });
 }
 
+export async function cacheSemanticTurn(
+  userId: number,
+  question: string,
+  route: string,
+  answer: string,
+  englishAnswer?: string,
+  alignmentProfile?: any,
+  opts?: { allowVectorEmbeddings?: boolean }
+) {
+  return writeSemanticCache(
+    userId,
+    question,
+    answer,
+    englishAnswer || answer,
+    route,
+    "informational",
+    alignmentProfile,
+    {},
+    opts
+  );
+}
+
 async function buildMemoryConsolidation(
   userId: number,
   turns: LocalChatMessage[],
@@ -6635,7 +6857,7 @@ async function buildMemoryConsolidation(
       source: "model" as const,
       summary:
         String(parsed.summary || "").trim() ||
-        buildFallbackMemorySummary(durableFacts, turns),
+        buildFallbackMemorySummary(durableFacts, turns, rules.durableFacts?.confidenceThreshold),
       durableFacts: durableFacts.slice(
         0,
         positiveInt(rules.durableFacts?.maxFactsPerSync, 6),
@@ -6662,7 +6884,7 @@ async function buildMemoryConsolidation(
     const factDerived = deriveUpdatesFromFacts(durableFacts);
     return {
       source: "fallback" as const,
-      summary: buildFallbackMemorySummary(durableFacts, turns),
+      summary: buildFallbackMemorySummary(durableFacts, turns, rules.durableFacts?.confidenceThreshold),
       durableFacts,
       profileUpdates: {
         ...fallbackProfileUpdates,
@@ -6737,7 +6959,9 @@ async function refreshMemoryRagArtifacts(
   durableFacts: DurableFactRecord[],
   runtimeOptions: ModelRuntimeTierOptions = {},
 ) {
-  const activeFacts = activeDurableFacts(durableFacts);
+  const rules = await getMemoryRules();
+  const threshold = rules.durableFacts?.confidenceThreshold ?? 0.78;
+  const activeFacts = activeDurableFacts(durableFacts, threshold);
   const texts = [
     summaryRow.summary ? `Summary: ${summaryRow.summary}` : "",
     ...activeFacts.map((row) => `Fact: ${row.fact}`),
@@ -6871,7 +7095,8 @@ export async function consolidateLocalMemoryOnIdle(
   );
   const existingFacts = await loadDurableFacts(userId);
   const mergedFacts = mergeDurableFacts(existingFacts, built.durableFacts);
-  const activeMergedFacts = activeDurableFacts(mergedFacts);
+  const threshold = rules.durableFacts?.confidenceThreshold ?? 0.78;
+  const activeMergedFacts = activeDurableFacts(mergedFacts, threshold);
   const summaryRow: DailySummaryRecord = {
     userId,
     createdAt: nowIso(),
@@ -6930,7 +7155,9 @@ export async function consolidateLocalMemoryOnIdle(
 
 export async function listActiveMemories(userId: number) {
   await ensureLocalAgentData();
-  return activeDurableFacts(await loadDurableFacts(userId)).map((row) => ({
+  const rules = await getMemoryRules();
+  const threshold = rules.durableFacts?.confidenceThreshold ?? 0.78;
+  return activeDurableFacts(await loadDurableFacts(userId), threshold).map((row) => ({
     id: row.id,
     fact: row.fact,
     category: row.category,
@@ -6963,13 +7190,15 @@ async function updateMemoryFactStatus(
     const runtimeOptions = await backgroundMemoryRuntimeOptions().catch(() => ({
       modelsReady: false,
     }));
+    const rules = await getMemoryRules();
+    const threshold = rules.durableFacts?.confidenceThreshold ?? 0.78;
     await refreshMemoryRagArtifacts(
       userId,
       {
         userId,
         createdAt: nowIso(),
         summary: "Memory user-control update.",
-        durableFacts: activeDurableFacts(updated),
+        durableFacts: activeDurableFacts(updated, threshold),
         profileUpdates: {},
         source: "fallback",
         conversationTurnCount: 0,
@@ -7058,9 +7287,12 @@ async function buildLocalReasoningWithContext(opts: {
 }) {
   const prompts = await getPromptCatalog();
   const memories = await loadDailySummaries(opts.userId);
+  const rules = await getMemoryRules();
+  const threshold = rules.durableFacts?.confidenceThreshold ?? 0.78;
   const durableFacts = relevantDurableFactsForMessage(
     await loadDurableFacts(opts.userId),
     opts.message,
+    threshold,
   );
   const turns = await recentConversation(opts.userId, 10);
   const rewrittenQuery = rewriteFollowUpRagQuery({
