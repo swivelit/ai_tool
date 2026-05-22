@@ -1335,4 +1335,140 @@ describe("local memory and semantic cache", () => {
     ).rejects.toThrow(/native_on_device|Qwen|hash embeddings|verified safe/i);
     expect(apiPostMock).not.toHaveBeenCalled();
   });
+
+  it("filters out transient feelings and continuous verbs, and simplifies general preferences", async () => {
+    const { heuristicMemoryCandidates } = await import("../lib/localAgents");
+    const rules = {
+      ...memoryRules,
+      durableFacts: {
+        ...memoryRules.durableFacts,
+        confidenceThreshold: 0.78,
+      }
+    };
+    
+    const turns = [
+      { role: "user", content: "I am hungry", createdAt: "2026-05-22T08:00:00Z" },
+      { role: "user", content: "I am working", createdAt: "2026-05-22T08:00:01Z" },
+      { role: "user", content: "I want a new keyboard", createdAt: "2026-05-22T08:00:02Z" },
+      { role: "user", content: "I prefer coffee", createdAt: "2026-05-22T08:00:03Z" },
+      { role: "user", content: "I work as a designer", createdAt: "2026-05-22T08:00:04Z" }
+    ];
+    
+    const candidates = heuristicMemoryCandidates(turns, rules);
+    const facts = candidates.map(c => c.fact);
+    
+    expect(facts).toContain("Preference: coffee");
+    expect(facts).toContain("Occupation: designer");
+    expect(facts).not.toContain("Identity: hungry");
+    expect(facts).not.toContain("Identity: working");
+    expect(facts.some(f => f.includes("keyboard"))).toBe(false);
+  });
+
+  it("filters sensitive data (SSN, credit card, phone, secrets) from being stored", async () => {
+    const { heuristicMemoryCandidates, createDurableFactRecord } = await import("../lib/localAgents");
+    const rules = memoryRules;
+
+    const turns = [
+      { role: "user", content: "I live in Chennai and my phone number is +91-98765-43210", createdAt: "2026-05-22T08:00:00Z" },
+      { role: "user", content: "I prefer you to email me at test@example.com", createdAt: "2026-05-22T08:00:01Z" },
+      { role: "user", content: "My SSN is 123-45-6789", createdAt: "2026-05-22T08:00:02Z" }
+    ];
+
+    const candidates = heuristicMemoryCandidates(turns, rules);
+    expect(candidates.some(c => c.fact.includes("123-45-6789") || c.fact.includes("test@example.com"))).toBe(false);
+
+    expect(createDurableFactRecord({ fact: "My password is supersecret", confidence: 0.9 })).toBeNull();
+    expect(createDurableFactRecord({ fact: "Card 4111 1111 1111 1111", confidence: 0.9 })).toBeNull();
+    expect(createDurableFactRecord({ fact: "I like ice cream", confidence: 0.9 })).not.toBeNull();
+  });
+
+  it("respects memory confidence threshold", async () => {
+    const { activeDurableFacts } = await import("../lib/localAgents");
+    const facts = [
+      { id: "1", fact: "Fact A", confidence: 0.9, status: "active", category: "other", source: "heuristic", created_at: "2026-05-22T08:00:00Z", last_confirmed_at: "2026-05-22T08:00:00Z", expires_at: null, evidence: [], important: false, profileUpdates: {} },
+      { id: "2", fact: "Fact B", confidence: 0.7, status: "active", category: "other", source: "heuristic", created_at: "2026-05-22T08:00:00Z", last_confirmed_at: "2026-05-22T08:00:00Z", expires_at: null, evidence: [], important: false, profileUpdates: {} }
+    ] as any[];
+
+    const activeAtDefault = activeDurableFacts(facts); 
+    expect(activeAtDefault.map(f => f.id)).toEqual(["1"]);
+
+    const activeAtLower = activeDurableFacts(facts, 0.6);
+    expect(activeAtLower.map(f => f.id)).toEqual(["1", "2"]);
+  });
+
+  it("handles delete and mark_stale memory updates using substring match", async () => {
+    const { runUpdateMemoryTool } = await import("../lib/localAgents");
+    
+    const initialFacts = [
+      { id: "mem_loc_chennai", fact: "Location: Chennai", confidence: 0.9, status: "active", category: "location", source: "local_tool", created_at: "2026-05-22T08:00:00Z", last_confirmed_at: "2026-05-22T08:00:00Z", expires_at: null, evidence: [], important: false, profileUpdates: {} },
+      { id: "mem_pref_coffee", fact: "Preference: coffee", confidence: 0.85, status: "active", category: "communication_preference", source: "local_tool", created_at: "2026-05-22T08:00:00Z", last_confirmed_at: "2026-05-22T08:00:00Z", expires_at: null, evidence: [], important: false, profileUpdates: {} }
+    ];
+    writeJson(`${dataRoot}/memory/durable_facts/50.json`, initialFacts);
+
+    const context = { userId: 50, message: "forget Chennai" };
+    queueEmbeddingResponse([testEmbedding({ 0: 1 })]);
+
+    const result = await runUpdateMemoryTool({
+      action: "delete",
+      fact: "Chennai"
+    }, context as any);
+
+    expect(result.ok).toBe(true);
+    expect(result.data.matchedIds).toEqual(["mem_loc_chennai"]);
+
+    const updatedFacts = readJson(`${dataRoot}/memory/durable_facts/50.json`) as any[];
+    const chennaiFact = updatedFacts.find((f: any) => f.id === "mem_loc_chennai");
+    expect(chennaiFact.status).toBe("deleted");
+  });
+
+  it("skips vector semantic cache write for configured skipRoutes", async () => {
+    const { cacheSemanticTurn } = await import("../lib/localAgents");
+    writeJson(`${dataRoot}/config/memory_rules.json`, {
+      ...memoryRules,
+      cache: {
+        ...memoryRules.cache,
+        skipRoutes: ["weather", "clarify"],
+      },
+    });
+
+    const result = await cacheSemanticTurn(
+      51,
+      "What is the weather?",
+      "weather",
+      "assistant",
+      undefined,
+      {},
+      { allowVectorEmbeddings: true }
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("prioritizes relevant memories over generic RAG chunks within 0.05 delta", async () => {
+    writeJson(`${dataRoot}/rag/runtime/52_chunks.json`, [
+      {
+        id: "doc_chunk",
+        sourceId: "policy-new",
+        sourceType: "doc",
+        text: "General RAG content",
+        embedding: testEmbedding({ 0: 1 }),
+        metadata: {},
+        updatedAt: "2026-04-28T00:00:00.000Z",
+      },
+      {
+        id: "profile_chunk",
+        sourceId: "memory-fact",
+        sourceType: "memory",
+        text: "User Memory content",
+        embedding: testEmbedding({ 0: 0.98 }), 
+        metadata: {},
+        updatedAt: "2026-04-28T00:00:00.000Z",
+      },
+    ]);
+    queueEmbeddingResponse([testEmbedding({ 0: 1 })]);
+
+    const { searchLocalRag } = await import("../lib/localAgents");
+    const hits = await searchLocalRag(52, "context query", 2);
+
+    expect(hits[0].chunk_id).toBe("profile_chunk");
+  });
 });
