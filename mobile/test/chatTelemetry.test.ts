@@ -157,11 +157,28 @@ describe("chat telemetry queue", () => {
     expect(() => getMobileBuildInfo()).toThrow(/real mobile build identifiers/i);
   });
 
-  it("enables voice-only mode for release/public runtime", async () => {
+  it("does not enable voice-only mode for release/public runtime by default", async () => {
     vi.resetModules();
     vi.stubEnv("EXPO_PUBLIC_RELEASE_BUILD", "true");
+    vi.stubEnv("EXPO_PUBLIC_PUBLIC_BUILD", "true");
     vi.stubEnv("EXPO_PUBLIC_MOBILE_BUILD_ID", "release-build");
     vi.stubEnv("EXPO_PUBLIC_GIT_SHA", "release-sha");
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {},
+        },
+      },
+    }));
+
+    const { getMobileBuildInfo } = await import("../lib/mobileBuildInfo");
+
+    expect(getMobileBuildInfo().voice_only_mode).toBe(false);
+  });
+
+  it("honors explicit voice-only mode env", async () => {
+    vi.resetModules();
+    vi.stubEnv("EXPO_PUBLIC_VOICE_ONLY_MODE", "true");
     vi.doMock("expo-constants", () => ({
       default: {
         expoConfig: {

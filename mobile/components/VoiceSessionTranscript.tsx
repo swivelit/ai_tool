@@ -35,10 +35,6 @@ export function VoiceSessionTranscript({
     return () => clearTimeout(timeout);
   }, [onScrollEnd, turns.length, status]);
 
-  if (!turns.length && !status) {
-    return null;
-  }
-
   return (
     <View
       testID="voice-session-transcript"
@@ -53,6 +49,11 @@ export function VoiceSessionTranscript({
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
+        {!turns.length && !status ? (
+          <Text style={styles.emptyHint}>
+            Hold the orb. Your speech and reply will appear here.
+          </Text>
+        ) : null}
         {turns.map((turn) => (
           <View key={turn.id} style={styles.turn}>
             {turn.userText ? (
@@ -151,6 +152,13 @@ const styles = StyleSheet.create({
     color: Brand.textMuted,
     fontSize: 11,
     lineHeight: 15,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  emptyHint: {
+    color: Brand.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
     fontWeight: "800",
     textAlign: "center",
   },

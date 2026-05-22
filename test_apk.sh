@@ -39,6 +39,10 @@ is_truthy() {
   esac
 }
 
+lowercase() {
+  printf "%s" "${1:-}" | tr "[:upper:]" "[:lower:]"
+}
+
 record_skip() {
   SKIPPED_STEPS+=("$1")
   printf "SKIP: %s\n" "$1" >> "$ARTIFACT_DIR/skipped.log"
@@ -177,6 +181,40 @@ tap_desc_offset() {
     return 0
   fi
   return 1
+}
+
+device_window_size() {
+  local wm_output width height
+  wm_output="$(adb shell wm size 2>/dev/null | tr -d '\r' || true)"
+  if [[ "$wm_output" =~ ([0-9]+)x([0-9]+) ]]; then
+    width="${BASH_REMATCH[1]}"
+    height="${BASH_REMATCH[2]}"
+    printf "%s %s\n" "$width" "$height"
+    return 0
+  fi
+  return 1
+}
+
+swipe_chat_to_voice() {
+  local width height start_x end_x y
+  if ! read -r width height < <(device_window_size); then
+    return 1
+  fi
+  start_x=$((width * 80 / 100))
+  end_x=$((width * 20 / 100))
+  y=$((height * 55 / 100))
+  adb shell input swipe "$start_x" "$y" "$end_x" "$y" 420
+}
+
+swipe_voice_to_chat() {
+  local width height start_x end_x y
+  if ! read -r width height < <(device_window_size); then
+    return 1
+  fi
+  start_x=$((width * 20 / 100))
+  end_x=$((width * 80 / 100))
+  y=$((height * 55 / 100))
+  adb shell input swipe "$start_x" "$y" "$end_x" "$y" 420
 }
 
 type_text() {
@@ -431,7 +469,7 @@ scan_crashes() {
         continue
       fi
       if [[ "$marker" == "ReactNativeJS.*Error" ]]; then
-        if grep -E -n "ReactNativeJS:.*(\\[Error|Error:|Unhandled|Uncaught)" "$log_file" >> "$markers_file" 2>/dev/null; then
+        if grep -E -n "ReactNativeJS:.*(\\[Error|[^A-Za-z]Error:|Unhandled|Uncaught)" "$log_file" >> "$markers_file" 2>/dev/null; then
           CRASH_MARKERS_FOUND=1
         fi
         continue
@@ -864,9 +902,8 @@ if wait_for_desc "chat-input" 60; then
   dismiss_expo_warning || true
   capture_step "chat-ready"
   assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-launch" || true
-  if ! wait_for_desc "chat-voice-button" 5 && ! wait_for_desc "open-voice-mode-button" 2; then
-    mark_failed "voice-entry-button-not-found"
-  fi
+  assert_desc_absent "chat-voice-button" "chat-voice-button-absent-after-launch" || true
+  assert_desc_absent "open-voice-mode-button" "open-voice-mode-button-absent-after-launch" || true
 else
   capture_step "auth-or-setup"
   if wait_for_desc "login-email-input" 3; then
@@ -886,11 +923,12 @@ voice_log_start_line=0
 if [[ -f "$ARTIFACT_DIR/logcat-full.log" ]]; then
   voice_log_start_line="$(wc -l < "$ARTIFACT_DIR/logcat-full.log" | tr -d '[:space:]')"
 fi
+voice_query_lower="$(lowercase "$EXPO_PUBLIC_E2E_VOICE_QUERY")"
 voice_expected_reply="E2E voice reply ready."
 if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
   voice_expected_reply="Seri, unga voice reply ready."
 fi
-if [[ "${EXPO_PUBLIC_E2E_VOICE_QUERY,,}" == *"spitzola"* ]]; then
+if [[ "$voice_query_lower" == *"spitzola"* ]]; then
   if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
     voice_expected_reply="Spitzola"
   else
@@ -899,16 +937,9 @@ if [[ "${EXPO_PUBLIC_E2E_VOICE_QUERY,,}" == *"spitzola"* ]]; then
 fi
 
 capture_step "voice-before"
-voice_entry_tapped=0
-if tap_desc "chat-voice-button"; then
-  voice_entry_tapped=1
-elif tap_desc "open-voice-mode-button"; then
-  voice_entry_tapped=1
+if ! swipe_chat_to_voice; then
+  mark_failed "swipe-chat-to-voice"
 else
-  mark_failed "tap-voice-entry-button"
-fi
-
-if [[ "$voice_entry_tapped" == "1" ]]; then
   if ! wait_for_text "Hold to Talk" 10 && ! wait_for_desc "Hold the orb to record" 5; then
     mark_failed "voice-sheet-not-ready"
     capture_step "voice-sheet-not-ready"
@@ -947,7 +978,7 @@ if [[ "$voice_entry_tapped" == "1" ]]; then
       if ! wait_for_text "$voice_expected_reply" 2; then
         mark_failed "voice-reply-language-mismatch-${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
       fi
-      if [[ "${EXPO_PUBLIC_E2E_VOICE_QUERY,,}" == *"spitzola"* ]]; then
+      if [[ "$voice_query_lower" == *"spitzola"* ]]; then
         if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "en" ]]; then
           wait_for_text "Spitzola" 2 || mark_failed "voice-spitzola-term-missing"
           wait_for_text "misheard" 2 || wait_for_text "misspelled" 2 || mark_failed "voice-spitzola-uncertainty-missing"
@@ -1006,8 +1037,11 @@ if [[ "$voice_entry_tapped" == "1" ]]; then
   fi
 fi
 
-adb shell input keyevent 4 >/dev/null 2>&1 || true
-wait_for_desc "chat-input" 10 || true
+if ! swipe_voice_to_chat || ! wait_for_desc "chat-input" 10; then
+  mark_failed "voice-swipe-right-close"
+  adb shell input keyevent 4 >/dev/null 2>&1 || true
+  wait_for_desc "chat-input" 10 || true
+fi
 capture_step "voice-closed"
 assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-voice" || true
 

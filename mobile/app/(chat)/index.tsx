@@ -10,6 +10,7 @@ import {
   LayoutChangeEvent,
   Linking,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -162,6 +163,9 @@ const CHAT_SESSIONS_STORAGE_PREFIX = "chat_sessions_v2";
 const HIDDEN_CHAT_SESSIONS_STORAGE_PREFIX = "hidden_chat_session_ids_v2";
 const HIDDEN_CHAT_ITEM_IDS_STORAGE_PREFIX = "hidden_chat_item_ids_v1";
 const MODEL_SETUP_ALERT_THROTTLE_MS = 5 * 60 * 1000;
+const VOICE_NAV_SWIPE_MIN_DISTANCE = 72;
+const VOICE_NAV_SWIPE_CAPTURE_DISTANCE = 18;
+const VOICE_NAV_SWIPE_HORIZONTAL_RATIO = 1.35;
 const VOICE_UNAVAILABLE_MESSAGE =
   "Voice is unavailable right now. Please try again.";
 const CHAT_LOCAL_SOFT_NOTICE_MESSAGE =
@@ -173,6 +177,15 @@ function clamp(value: number, min: number, max: number) {
 
 function wait(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function isClearHorizontalDrag(dx: number, dy: number, minDistance: number) {
+  const absDx = Math.abs(dx);
+  const absDy = Math.abs(dy);
+  return (
+    absDx >= minDistance &&
+    absDx > absDy * VOICE_NAV_SWIPE_HORIZONTAL_RATIO
+  );
 }
 
 async function getCachedDeviceCapabilitiesLazy() {
@@ -606,6 +619,77 @@ export default function Home() {
   }, [historySearch, latestHistory]);
 
   const composerPlaceholder = `Ask ${assistantLabel}`;
+  const chatSwipePanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gestureState) =>
+          gestureState.dx < 0 &&
+          isClearHorizontalDrag(
+            gestureState.dx,
+            gestureState.dy,
+            VOICE_NAV_SWIPE_CAPTURE_DISTANCE,
+          ),
+        onMoveShouldSetPanResponderCapture: (_event, gestureState) =>
+          gestureState.dx < 0 &&
+          isClearHorizontalDrag(
+            gestureState.dx,
+            gestureState.dy,
+            VOICE_NAV_SWIPE_CAPTURE_DISTANCE,
+          ),
+        onPanResponderRelease: (_event, gestureState) => {
+          if (
+            gestureState.dx <= -VOICE_NAV_SWIPE_MIN_DISTANCE &&
+            isClearHorizontalDrag(
+              gestureState.dx,
+              gestureState.dy,
+              VOICE_NAV_SWIPE_MIN_DISTANCE,
+            ) &&
+            !voiceSheetOpenRef.current &&
+            !drawerOpen &&
+            !chatActionsOpen &&
+            !confirmOpen
+          ) {
+            openVoiceSession();
+          }
+        },
+        onPanResponderTerminationRequest: () => true,
+      }),
+    [chatActionsOpen, confirmOpen, drawerOpen],
+  );
+  const voiceSwipePanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gestureState) =>
+          gestureState.dx > 0 &&
+          isClearHorizontalDrag(
+            gestureState.dx,
+            gestureState.dy,
+            VOICE_NAV_SWIPE_CAPTURE_DISTANCE,
+          ),
+        onMoveShouldSetPanResponderCapture: (_event, gestureState) =>
+          gestureState.dx > 0 &&
+          isClearHorizontalDrag(
+            gestureState.dx,
+            gestureState.dy,
+            VOICE_NAV_SWIPE_CAPTURE_DISTANCE,
+          ),
+        onPanResponderRelease: (_event, gestureState) => {
+          if (
+            gestureState.dx >= VOICE_NAV_SWIPE_MIN_DISTANCE &&
+            isClearHorizontalDrag(
+              gestureState.dx,
+              gestureState.dy,
+              VOICE_NAV_SWIPE_MIN_DISTANCE,
+            ) &&
+            voiceSheetOpenRef.current
+          ) {
+            void closeVoiceSheetSafely();
+          }
+        },
+        onPanResponderTerminationRequest: () => true,
+      }),
+    [],
+  );
 
   const handsFreeSummaryText = recordingPreparing && activeSurface === "live"
     ? "Preparing microphone..."
@@ -3138,15 +3222,7 @@ export default function Home() {
             <Text style={styles.topBarTitle}>{assistantLabel}</Text>
           </View>
 
-          <Pressable
-            onPress={openVoiceSession}
-            style={styles.iconButton}
-            testID="chat-voice-button"
-            accessibilityLabel="chat-voice-button"
-            accessibilityRole="button"
-          >
-            <Ionicons name="sparkles-outline" size={18} color={Brand.cocoa} />
-          </Pressable>
+          <View style={styles.iconButtonSpacer} />
         </View>
 
         {e2eHandsFreeEnabled ? (
@@ -3176,7 +3252,12 @@ export default function Home() {
           </View>
         ) : null}
 
-        <View style={styles.chatBody}>
+        <View
+          style={styles.chatBody}
+          testID="chat-swipe-surface"
+          accessibilityLabel="chat-swipe-surface"
+          {...chatSwipePanResponder.panHandlers}
+        >
           <ScrollView
             ref={scrollViewRef}
             style={styles.scrollArea}
@@ -3323,67 +3404,52 @@ export default function Home() {
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
               <View style={styles.composerCard} onLayout={handleComposerLayout}>
                 <View style={styles.composerMainRow}>
-                  {!voiceOnlyMode ? (
-                    <TextInput
-                      value={text}
-                      testID="chat-input"
-                      accessibilityLabel="chat-input"
-                      onChangeText={setText}
-                      placeholder={composerPlaceholder}
-                      placeholderTextColor="rgba(124, 99, 80, 0.58)"
-                      multiline
-                      scrollEnabled={composerInputHeight >= MAX_INPUT_HEIGHT}
-                      textAlignVertical="center"
-                      onContentSizeChange={(event) => {
-                        const measuredHeight = Math.ceil(
-                          event.nativeEvent.contentSize.height
-                        );
-                        const nextHeight = clamp(
-                          measuredHeight,
-                          MIN_INPUT_HEIGHT,
-                          MAX_INPUT_HEIGHT
-                        );
-                        setComposerInputHeight(nextHeight);
-                      }}
-                      style={[
-                        styles.composerInput,
-                        { minHeight: Math.max(composerInputHeight, 36), height: Math.max(composerInputHeight, 36) },
-                      ]}
-                    />
-                  ) : (
-                    <Pressable
-                      onPress={openVoiceSession}
-                      testID="open-voice-mode-button"
-                      accessibilityLabel="open-voice-mode-button"
-                      accessibilityRole="button"
-                      style={styles.openVoiceModeButton}
-                    >
-                      <Ionicons name="sparkles-outline" size={16} color={Brand.cocoa} />
-                      <Text style={styles.openVoiceModeText}>Open voice mode</Text>
-                    </Pressable>
-                  )}
+                  <TextInput
+                    value={text}
+                    testID="chat-input"
+                    accessibilityLabel="chat-input"
+                    onChangeText={setText}
+                    placeholder={composerPlaceholder}
+                    placeholderTextColor="rgba(124, 99, 80, 0.58)"
+                    multiline
+                    scrollEnabled={composerInputHeight >= MAX_INPUT_HEIGHT}
+                    textAlignVertical="center"
+                    onContentSizeChange={(event) => {
+                      const measuredHeight = Math.ceil(
+                        event.nativeEvent.contentSize.height
+                      );
+                      const nextHeight = clamp(
+                        measuredHeight,
+                        MIN_INPUT_HEIGHT,
+                        MAX_INPUT_HEIGHT
+                      );
+                      setComposerInputHeight(nextHeight);
+                    }}
+                    style={[
+                      styles.composerInput,
+                      { minHeight: Math.max(composerInputHeight, 36), height: Math.max(composerInputHeight, 36) },
+                    ]}
+                  />
 
-                  {!voiceOnlyMode ? (
-                    <View style={styles.composerInlineActions}>
-                      <Pressable
-                        onPress={handleChatSend}
-                        disabled={!text.trim() || busy || listening}
-                        testID="chat-send-button"
-                        accessibilityLabel="chat-send-button"
-                        accessibilityRole="button"
-                        style={[
-                          styles.sendButton,
-                          (!text.trim() || busy || listening) && styles.iconButtonDisabled,
-                        ]}
-                      >
-                        {busy && !listening ? (
-                          <ActivityIndicator size="small" color={Brand.cocoa} />
-                        ) : (
-                          <Ionicons name="arrow-up" size={18} color={Brand.cocoa} />
-                        )}
-                      </Pressable>
-                    </View>
-                  ) : null}
+                  <View style={styles.composerInlineActions}>
+                    <Pressable
+                      onPress={handleChatSend}
+                      disabled={!text.trim() || busy || listening}
+                      testID="chat-send-button"
+                      accessibilityLabel="chat-send-button"
+                      accessibilityRole="button"
+                      style={[
+                        styles.sendButton,
+                        (!text.trim() || busy || listening) && styles.iconButtonDisabled,
+                      ]}
+                    >
+                      {busy && !listening ? (
+                        <ActivityIndicator size="small" color={Brand.cocoa} />
+                      ) : (
+                        <Ionicons name="arrow-up" size={18} color={Brand.cocoa} />
+                      )}
+                    </Pressable>
+                  </View>
                 </View>
               </View>
             </View>
@@ -3557,6 +3623,12 @@ export default function Home() {
           <StatusBar style="dark" />
 
           <View
+            style={styles.voiceSwipeSurface}
+            testID="voice-swipe-surface"
+            accessibilityLabel="voice-swipe-surface"
+            {...voiceSwipePanResponder.panHandlers}
+          >
+          <View
             style={[
               styles.voiceTopBar,
               {
@@ -3570,14 +3642,7 @@ export default function Home() {
               <Text style={styles.voiceLiveBadgeText}>Live</Text>
             </View>
 
-            <Pressable
-              onPress={() => {
-                void closeVoiceSheetSafely();
-              }}
-              style={styles.voiceCloseButton}
-            >
-              <Ionicons name="close" size={18} color={Brand.cream} />
-            </Pressable>
+            <View style={styles.voiceTopSpacer} />
           </View>
 
           <View style={styles.voiceCenter}>
@@ -3677,45 +3742,6 @@ export default function Home() {
               </View>
             ) : null}
           </View>
-
-          <View
-            style={[
-              styles.voiceBottomDock,
-              {
-                paddingHorizontal: horizontalPadding,
-                paddingBottom: bottomPadding,
-              },
-            ]}
-          >
-            <View style={styles.voiceBottomRow}>
-              <Pressable
-                onPress={() => {
-                  void closeVoiceSheetSafely();
-                }}
-                style={styles.voiceDockButton}
-              >
-                <Ionicons name="chatbubble-ellipses-outline" size={16} color={Brand.cocoa} />
-              </Pressable>
-
-              <View style={styles.voiceDockInput}>
-                <Text numberOfLines={1} style={styles.voiceDockPlaceholder}>
-                  {`Ask ${assistantLabel}`}
-                </Text>
-              </View>
-
-              <Pressable
-                onPress={() => {
-                  void closeVoiceSheetSafely();
-                }}
-                style={styles.voiceDockButtonDanger}
-              >
-                <Ionicons
-                  name={(recordingPreparing || listening || recordingStopping) && activeSurface === "live" ? "stop" : "close"}
-                  size={16}
-                  color={Brand.cream}
-                />
-              </Pressable>
-            </View>
           </View>
         </LinearGradient>
       </Modal>
@@ -3854,6 +3880,11 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.74)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
+  },
+
+  iconButtonSpacer: {
+    width: 36,
+    height: 36,
   },
 
   iconButtonDisabled: {
@@ -4079,25 +4110,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-  },
-
-  openVoiceModeButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 8,
-    backgroundColor: Brand.soft,
-    borderWidth: 1,
-    borderColor: Brand.lineStrong,
-  },
-
-  openVoiceModeText: {
-    color: Brand.cocoa,
-    fontSize: 14,
-    fontWeight: "900",
   },
 
   drawerRoot: {
@@ -4426,6 +4438,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  voiceSwipeSurface: {
+    flex: 1,
+  },
+
   voiceTopBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -4450,13 +4466,9 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
-  voiceCloseButton: {
+  voiceTopSpacer: {
     width: 38,
     height: 38,
-    borderRadius: 19,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: Brand.danger,
   },
 
   voiceCenter: {
@@ -4551,53 +4563,6 @@ const styles = StyleSheet.create({
     marginTop: 22,
     minHeight: 42,
     justifyContent: "center",
-  },
-
-  voiceBottomDock: {
-    paddingTop: 8,
-  },
-
-  voiceBottomRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-
-  voiceDockInput: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255,255,255,0.72)",
-    justifyContent: "center",
-    paddingHorizontal: 16,
-  },
-
-  voiceDockPlaceholder: {
-    color: "rgba(124, 99, 80, 0.66)",
-    fontSize: 14,
-    fontWeight: "700",
-  },
-
-  voiceDockButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.76)",
-    borderWidth: 1,
-    borderColor: Brand.lineStrong,
-  },
-
-  voiceDockButtonDanger: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: Brand.danger,
   },
 
   modalBackdrop: {

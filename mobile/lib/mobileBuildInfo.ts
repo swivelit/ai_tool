@@ -26,10 +26,6 @@ function isReleaseRuntime() {
   return boolFlag(process.env.EXPO_PUBLIC_RELEASE_BUILD) || boolFlag(extra.RELEASE_BUILD);
 }
 
-function isPublicRuntime() {
-  return isReleaseRuntime() || boolFlag(process.env.EXPO_PUBLIC_PUBLIC_BUILD) || boolFlag(extra.PUBLIC_BUILD);
-}
-
 export function getMobileBuildInfo() {
   const info = {
     mobile_build_id: firstNonEmpty(
@@ -58,8 +54,7 @@ export function getMobileBuildInfo() {
       DEFAULT_LOCAL_TO_BACKEND_FALLBACK_MS,
     ),
     voice_only_mode:
-      boolFlag(process.env.EXPO_PUBLIC_VOICE_ONLY_MODE ?? extra.EXPO_PUBLIC_VOICE_ONLY_MODE ?? extra.VOICE_ONLY_MODE) ||
-      isPublicRuntime(),
+      boolFlag(process.env.EXPO_PUBLIC_VOICE_ONLY_MODE ?? extra.EXPO_PUBLIC_VOICE_ONLY_MODE ?? extra.VOICE_ONLY_MODE),
   };
   if (isReleaseRuntime() && (info.mobile_build_id === "unknown" || info.mobile_git_sha === "unknown")) {
     throw new Error("Release telemetry requires real mobile build identifiers.");

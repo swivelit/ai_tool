@@ -61,7 +61,6 @@ describe("chat voice press-and-hold source", () => {
   });
 
   it("keeps voice recording and reply playback on the live orb route", () => {
-    expect(source).toContain('testID="chat-voice-button"');
     expect(source).toContain("openVoiceSession");
     expect(source).toContain("<Orb");
     expect(source).toContain("handleLiveOrbPressIn");
@@ -93,6 +92,23 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("voiceLanguage.ttsLanguageCode");
   });
 
+  it("uses swipe navigation instead of chat/voice transition buttons", () => {
+    expect(source).toContain("PanResponder.create");
+    expect(source).toContain("VOICE_NAV_SWIPE_MIN_DISTANCE");
+    expect(source).toContain("VOICE_NAV_SWIPE_CAPTURE_DISTANCE");
+    expect(source).toContain("isClearHorizontalDrag");
+    expect(source).toContain("chatSwipePanResponder");
+    expect(source).toContain("voiceSwipePanResponder");
+    expect(source).toContain('testID="chat-swipe-surface"');
+    expect(source).toContain('testID="voice-swipe-surface"');
+    expect(source).toContain("gestureState.dx <= -VOICE_NAV_SWIPE_MIN_DISTANCE");
+    expect(source).toContain("gestureState.dx >= VOICE_NAV_SWIPE_MIN_DISTANCE");
+    expect(source).not.toContain('testID="chat-voice-button"');
+    expect(source).not.toContain('accessibilityLabel="chat-voice-button"');
+    expect(source).not.toContain('testID="open-voice-mode-button"');
+    expect(source).not.toContain('accessibilityLabel="open-voice-mode-button"');
+  });
+
   it("keeps live orb voice turns inside the voice-session transcript", () => {
     expect(source).toContain("activeVoiceSessionId");
     expect(source).toContain("voiceSessionTurns");
@@ -102,6 +118,7 @@ describe("chat voice press-and-hold source", () => {
     expect(transcriptSource).toContain("voice-session-user-turn");
     expect(transcriptSource).toContain("voice-session-assistant-turn");
     expect(transcriptSource).toContain("voice-session-scroll");
+    expect(transcriptSource).toContain("Hold the orb. Your speech and reply will appear here.");
     expect(source).toContain('const voiceSessionId = ensureVoiceSession("live")');
     expect(source).toContain("updateVoiceSessionTurn");
   });
@@ -122,13 +139,25 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("tts_locale_style");
   });
 
-  it("supports voice-only mode with a non-recording voice-mode CTA", () => {
+  it("keeps explicit voice-only support without hiding the chat composer", () => {
     expect(source).toContain("voiceOnlyMode");
-    expect(source).toContain('testID="open-voice-mode-button"');
-    expect(source).toContain('accessibilityLabel="open-voice-mode-button"');
-    expect(source).toContain("!voiceOnlyMode ? (");
-    expect(source).toContain("Open voice mode");
+    expect(source).toContain('testID="chat-input"');
+    expect(source).toContain('testID="chat-send-button"');
+    expect(source).not.toContain('testID="open-voice-mode-button"');
+    expect(source).not.toContain('accessibilityLabel="open-voice-mode-button"');
+    expect(source).not.toContain("!voiceOnlyMode ? (");
+    expect(source).not.toContain("Open voice mode");
     expect(source).not.toContain("Hold the mic to talk");
+  });
+
+  it("does not render a fake chat input inside voice mode", () => {
+    expect(source).not.toContain("chatbubble-ellipses-outline");
+    expect(source).not.toContain("voiceBottomDock");
+    expect(source).not.toContain("voiceBottomRow");
+    expect(source).not.toContain("voiceDockInput");
+    expect(source).not.toContain("voiceDockPlaceholder");
+    expect(source).not.toContain("voiceDockButton");
+    expect(source).not.toContain("voiceDockButtonDanger");
   });
 
   it("uses the shared hands-free wake helper and continuous conversation mode", () => {

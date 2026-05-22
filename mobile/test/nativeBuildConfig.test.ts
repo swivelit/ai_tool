@@ -43,6 +43,8 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "JAI_LLAMA_CPP_DIR",
   "EXPO_PUBLIC_ENABLE_LOCAL_MODEL_FALLBACK",
   "EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE",
+  "EXPO_PUBLIC_VOICE_ONLY_MODE",
+  "VOICE_ONLY_MODE",
   "EXPO_PUBLIC_LOCAL_MODEL_RUNTIME_MODE",
   "EXPO_PUBLIC_LOCAL_MODEL_DELIVERY_MODE",
   "EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE",
@@ -688,7 +690,17 @@ export const runtime = {
 
     expect(appConfig.expo.extra.ENABLE_LOCAL_MODEL_FALLBACK).toBe("false");
     expect(appConfig.expo.extra.LOCAL_MODEL_REQUIRE_SHA256).toBe("false");
+    expect(appConfig.expo.extra.VOICE_ONLY_MODE).toBe("false");
+  });
+
+  it("allows explicit app.config voice-only opt-in", async () => {
+    const appConfig = await importAppConfigWithEnv({
+      BUILD_TYPE: "debug",
+      EXPO_PUBLIC_VOICE_ONLY_MODE: "true",
+    });
+
     expect(appConfig.expo.extra.VOICE_ONLY_MODE).toBe("true");
+    expect(appConfig.expo.extra.EXPO_PUBLIC_VOICE_ONLY_MODE).toBe("true");
   });
 
   it("fails explicit local fallback release app.config when model CDN/integrity metadata is missing", async () => {

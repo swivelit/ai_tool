@@ -247,8 +247,16 @@ describe("APK test harness", () => {
     const source = readRepo("test_apk.sh");
 
     expect(source).toContain("android.permission.RECORD_AUDIO");
-    expect(source).toContain("chat-voice-button");
-    expect(source).toContain("open-voice-mode-button");
+    expect(source).toContain("device_window_size");
+    expect(source).toContain("swipe_chat_to_voice");
+    expect(source).toContain("swipe_voice_to_chat");
+    expect(source).toContain('start_x=$((width * 80 / 100))');
+    expect(source).toContain('end_x=$((width * 20 / 100))');
+    expect(source).toContain('start_x=$((width * 20 / 100))');
+    expect(source).toContain('end_x=$((width * 80 / 100))');
+    expect(source).toContain("swipe-chat-to-voice");
+    expect(source).toContain("voice-swipe-right-close");
+    expect(source).not.toContain("tap-voice-entry-button");
     expect(source).toContain("Hold the orb to record");
     expect(source).toContain("input swipe");
     expect(source).toContain("voice-last-reply");
@@ -265,6 +273,8 @@ describe("APK test harness", () => {
     expect(source).toContain("assert_desc_absent");
     expect(source).toContain("chat-mic-button-absent-after-launch");
     expect(source).toContain("chat-mic-button-absent-after-voice");
+    expect(source).toContain("chat-voice-button-absent-after-launch");
+    expect(source).toContain("open-voice-mode-button-absent-after-launch");
     expect(source).toContain("voice-modal-open");
     expect(source).toContain("voice-closed");
     expect(source).toContain("Speaking reply");
@@ -366,9 +376,9 @@ describe("APK test harness", () => {
     [
       "chat-input",
       "chat-send-button",
-      "open-voice-mode-button",
+      "chat-swipe-surface",
+      "voice-swipe-surface",
       "chat-drawer-button",
-      "chat-voice-button",
       "e2e-hands-free-trigger-button",
       "e2e-hands-free-stop-button",
       "chat-assistant-response",
@@ -376,6 +386,8 @@ describe("APK test harness", () => {
     ].forEach((label) => {
       expect(source).toContain(label);
     });
+    expect(source).not.toContain("open-voice-mode-button");
+    expect(source).not.toContain("chat-voice-button");
   });
 
   it("auth, model setup, and alert screens expose automation labels", () => {

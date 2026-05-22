@@ -138,14 +138,10 @@ const isProductionOrReleaseBuild =
   normalizedJaiBuildProfile === "production" ||
   normalizedJaiBuildProfile === "release" ||
   normalizedJaiBuildType === "release";
-const isPublicBuild =
-  isProductionOrReleaseBuild ||
-  isTruthyEnv(process.env.EXPO_PUBLIC_PUBLIC_BUILD) ||
-  isTruthyEnv(process.env.PUBLIC_BUILD);
 const VOICE_ONLY_MODE = firstNonEmpty(
   process.env.EXPO_PUBLIC_VOICE_ONLY_MODE,
   process.env.VOICE_ONLY_MODE,
-  isPublicBuild ? "true" : "false",
+  "false",
 );
 const isLocalModelFallbackEnabled =
   isTruthyEnv(ENABLE_LOCAL_MODEL_FALLBACK) ||

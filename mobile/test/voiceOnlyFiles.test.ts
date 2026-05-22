@@ -10,14 +10,14 @@ const chatSource = fs.readFileSync(
 );
 
 describe("voice-only file handling", () => {
-  it("hides typing controls and opens dedicated voice mode in voice-only mode", () => {
+  it("keeps typing controls available and does not expose composer voice controls", () => {
     expect(chatSource).toContain("voiceOnlyMode");
-    expect(chatSource).toContain('testID="open-voice-mode-button"');
+    expect(chatSource).not.toContain('testID="open-voice-mode-button"');
     expect(chatSource).not.toContain('testID="chat-mic-button"');
     expect(chatSource).not.toContain("Hold the mic to talk");
     expect(chatSource).toContain('testID="chat-input"');
     expect(chatSource).toContain('testID="chat-send-button"');
-    expect(chatSource).toContain("!voiceOnlyMode ? (");
+    expect(chatSource).not.toContain("!voiceOnlyMode ? (");
   });
 
   it("uses resolved voice language params instead of hard-coded Tamil defaults", () => {
