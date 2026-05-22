@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   classifyChatHistoryItemsForDeletion,
+  createChatSessionFromItem,
   filterHistoryItemsByHiddenItemIds,
   filterLocalChatHistoryItems,
+  getChatHistoryItemKind,
   markChatHistoryItemsOrigin,
   mergeChatHistoryItems,
+  reconcileChatSessions,
 } from "@/lib/chatHistory";
 import { ChatHistoryItem, normalizeChatTurnPayload } from "@/lib/chatResponse";
 
@@ -118,5 +121,58 @@ describe("chat deletion classification", () => {
     const visible = filterHistoryItemsByHiddenItemIds(merged, new Set([4001]));
 
     expect(visible.map((entry) => entry.id)).toEqual([4002]);
+  });
+});
+
+describe("chat and voice session mapping", () => {
+  it("maps text and voice history items to separate session kinds", () => {
+    const textItem = item(5001, "typed question", "backend");
+    const voiceItem = { ...item(5002, "voice transcript", "backend"), source: "voice" };
+    const handsFreeItem = { ...item(5003, "handsfree transcript", "backend"), source: "handsfree" };
+
+    expect(getChatHistoryItemKind(textItem)).toBe("chat");
+    expect(getChatHistoryItemKind(voiceItem)).toBe("voice");
+    expect(getChatHistoryItemKind(handsFreeItem)).toBe("voice");
+    expect(createChatSessionFromItem(textItem).kind).toBe("chat");
+    expect(createChatSessionFromItem(voiceItem).kind).toBe("voice");
+  });
+
+  it("does not merge mixed chat and voice item IDs into one session", () => {
+    const textItem = item(6001, "typed question", "backend");
+    const voiceItem = { ...item(6002, "voice transcript", "backend"), source: "voice" };
+
+    const sessions = reconcileChatSessions([textItem, voiceItem], [
+      {
+        id: "old_mixed_session",
+        itemIds: [textItem.id, voiceItem.id],
+        createdAt: "2026-05-12T00:00:00Z",
+        updatedAt: "2026-05-12T00:00:01Z",
+      },
+    ]);
+
+    expect(sessions).toHaveLength(2);
+    expect(sessions.map((session) => session.kind).sort()).toEqual(["chat", "voice"]);
+    expect(sessions.every((session) => session.itemIds.length === 1)).toBe(true);
+  });
+
+  it("keeps voice items out of explicit chat sessions", () => {
+    const textItem = item(7001, "typed question", "backend");
+    const voiceItem = { ...item(7002, "voice transcript", "backend"), source: "voice" };
+
+    const sessions = reconcileChatSessions([textItem, voiceItem], [
+      {
+        id: "stored_chat",
+        itemIds: [textItem.id, voiceItem.id],
+        createdAt: "2026-05-12T00:00:00Z",
+        updatedAt: "2026-05-12T00:00:01Z",
+        kind: "chat",
+      },
+    ]);
+
+    const chatSession = sessions.find((session) => session.kind === "chat");
+    const voiceSession = sessions.find((session) => session.kind === "voice");
+
+    expect(chatSession?.itemIds).toEqual([textItem.id]);
+    expect(voiceSession?.itemIds).toEqual([voiceItem.id]);
   });
 });

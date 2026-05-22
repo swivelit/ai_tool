@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 
 import { Brand } from "@/constants/theme";
 
@@ -14,15 +15,11 @@ export type VoiceSessionTurn = {
 
 type Props = {
   turns: VoiceSessionTurn[];
-  status?: string | null;
-  replyLanguage?: string | null;
   onScrollEnd?: () => void;
 };
 
 export function VoiceSessionTranscript({
   turns,
-  status,
-  replyLanguage,
   onScrollEnd,
 }: Props) {
   const scrollRef = useRef<ScrollView | null>(null);
@@ -33,7 +30,7 @@ export function VoiceSessionTranscript({
       onScrollEnd?.();
     }, 80);
     return () => clearTimeout(timeout);
-  }, [onScrollEnd, turns.length, status]);
+  }, [onScrollEnd, turns.length]);
 
   return (
     <View
@@ -49,11 +46,6 @@ export function VoiceSessionTranscript({
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {!turns.length && !status ? (
-          <Text style={styles.emptyHint}>
-            Hold the orb. Your speech and reply will appear here.
-          </Text>
-        ) : null}
         {turns.map((turn) => (
           <View key={turn.id} style={styles.turn}>
             {turn.userText ? (
@@ -82,13 +74,12 @@ export function VoiceSessionTranscript({
             ) : null}
           </View>
         ))}
-        {status ? (
-          <Text style={styles.status}>
-            {status}
-            {replyLanguage ? ` (${replyLanguage})` : ""}
-          </Text>
-        ) : null}
       </ScrollView>
+      <LinearGradient
+        pointerEvents="none"
+        colors={["rgba(255, 247, 236, 0.98)", "rgba(255, 247, 236, 0)"]}
+        style={styles.topFade}
+      />
     </View>
   );
 }
@@ -98,19 +89,26 @@ const styles = StyleSheet.create({
     marginTop: 16,
     width: "100%",
     maxWidth: 360,
-    maxHeight: 220,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Brand.line,
-    backgroundColor: "rgba(255,255,255,0.76)",
+    maxHeight: 190,
+    backgroundColor: "transparent",
+    overflow: "hidden",
   },
   scroll: {
     width: "100%",
   },
   content: {
+    minHeight: 72,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingTop: 30,
+    paddingBottom: 8,
     gap: 8,
+  },
+  topFade: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 44,
   },
   turn: {
     gap: 8,
@@ -147,19 +145,5 @@ const styles = StyleSheet.create({
   },
   errorBubble: {
     color: Brand.danger,
-  },
-  status: {
-    color: Brand.textMuted,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    textAlign: "center",
-  },
-  emptyHint: {
-    color: Brand.textMuted,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: "800",
-    textAlign: "center",
   },
 });

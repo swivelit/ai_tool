@@ -80,11 +80,18 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("client_voice_reply_tts_started");
     expect(source).toContain("client_voice_reply_tts_completed");
     expect(source).toContain("client_voice_reply_tts_failed");
+    expect(source).toContain("configureAudioForPlayback");
+    expect(source).toContain("client_voice_reply_playback_started");
+    expect(source).toContain("client_voice_reply_playback_finished");
+    expect(source).toContain("client_voice_reply_playback_failed");
+    expect(source).toContain("sound.playAsync");
     expect(source).toContain("FileSystem.writeAsStringAsync");
     expect(source).toContain("FileSystem.EncodingType.Base64");
-    expect(source).toContain("voice-last-reply");
-    expect(source).toContain("voice-reply-status");
-    expect(source).toContain("TTS speaker is misconfigured");
+    expect(source).not.toContain("voice-last-reply");
+    expect(source).not.toContain("voice-reply-status");
+    expect(source).not.toContain("voiceReplyPanel");
+    expect(source).toContain("isTtsSpeakerMisconfiguredError");
+    expect(source).toContain("speaker_misconfigured");
     expect(source).not.toContain('speaker: "shubh"');
     expect(source).not.toContain("speaker: 'shubh'");
     expect(source).toContain("recordingPhaseRef.current === \"stopping\"");
@@ -118,7 +125,9 @@ describe("chat voice press-and-hold source", () => {
     expect(transcriptSource).toContain("voice-session-user-turn");
     expect(transcriptSource).toContain("voice-session-assistant-turn");
     expect(transcriptSource).toContain("voice-session-scroll");
-    expect(transcriptSource).toContain("Hold the orb. Your speech and reply will appear here.");
+    expect(transcriptSource).toContain("LinearGradient");
+    expect(transcriptSource).toContain("topFade");
+    expect(transcriptSource).not.toContain("Hold the orb. Your speech and reply will appear here.");
     expect(source).toContain('const voiceSessionId = ensureVoiceSession("live")');
     expect(source).toContain("updateVoiceSessionTurn");
   });
@@ -130,6 +139,14 @@ describe("chat voice press-and-hold source", () => {
     expect(liveBlock).toContain("updateVoiceSessionTurn");
     expect(liveBlock).not.toContain("attachItemToCurrentChat(nextItem, mergedHistory)");
     expect(source).toContain("await refreshHistoryAndSessions(pendingItems)");
+  });
+
+  it("keeps voice history separate from active text chat sessions", () => {
+    expect(source).toContain("getChatHistoryItemKind(item) !== \"chat\"");
+    expect(source).toContain("normalizeItemForRequestSource");
+    expect(source).toContain("source === \"handsfree\" || source === \"voice\"");
+    expect(source).toContain("chatListKindBadge");
+    expect(source).toContain("getChatSessionKindLabel");
   });
 
   it("voice source logs TTS language and voice session identifiers", () => {
@@ -161,6 +178,10 @@ describe("chat voice press-and-hold source", () => {
     expect(source).not.toContain("voiceDockPlaceholder");
     expect(source).not.toContain("voiceDockButton");
     expect(source).not.toContain("voiceDockButtonDanger");
+    expect(source).not.toContain("voiceReplyPanel");
+    expect(source).not.toContain("voiceReplyStatus");
+    expect(source).not.toContain("voiceLastReply");
+    expect(source).not.toContain("Hold the orb to talk");
   });
 
   it("uses the shared hands-free wake helper and continuous conversation mode", () => {

@@ -1303,6 +1303,7 @@ class ChatAPIRequest(BaseModel):
     include_pipeline: bool = True
     reply_language: Optional[str] = None
     request_id: Optional[str] = None
+    client_source: Optional[str] = None
     client_fallback_reason: Optional[str] = None
     client_local_budget_ms: Optional[int] = None
     client_original_route: Optional[str] = None
@@ -2454,6 +2455,11 @@ def _resolve_chat_text(payload: ChatAPIRequest) -> str:
     if not text:
         raise HTTPException(400, "message or text is required")
     return text
+
+
+def _persisted_chat_source(payload: ChatAPIRequest) -> str:
+    client_source = str(payload.client_source or "").strip().lower()
+    return "voice" if client_source in {"voice", "handsfree"} else "text"
 
 
 def _boolish(value: Any) -> bool:
@@ -3636,7 +3642,7 @@ def _build_ai_router_global_cache_response(
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
-        source="text",
+        source=_persisted_chat_source(payload),
         raw_text=text,
         transcript=None,
         pipeline_result=pipeline_result,
@@ -3773,10 +3779,11 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
             user_id=payload.user_id,
             message=text,
             reply_language=payload.reply_language,
-            channel="text",
+            channel=_persisted_chat_source(payload),
             request_id=request_id,
             metadata={
                 "admin_email": getattr(payload, "admin_email", None),
+                "client_source": payload.client_source,
                 "client_fallback_reason": payload.client_fallback_reason,
                 "client_local_budget_ms": payload.client_local_budget_ms,
                 "client_original_route": payload.client_original_route,
@@ -3795,7 +3802,7 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
-        source="text",
+        source=_persisted_chat_source(payload),
         raw_text=text,
         transcript=None,
         pipeline_result=pipeline_result,
@@ -3881,7 +3888,7 @@ def _run_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, An
     item, meta, normalized_pipeline = _save_item_from_pipeline(
         session,
         user_id=payload.user_id,
-        source="text",
+        source=_persisted_chat_source(payload),
         raw_text=text,
         transcript=None,
         pipeline_result=pipeline_result,

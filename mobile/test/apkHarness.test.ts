@@ -259,7 +259,6 @@ describe("APK test harness", () => {
     expect(source).not.toContain("tap-voice-entry-button");
     expect(source).toContain("Hold the orb to record");
     expect(source).toContain("input swipe");
-    expect(source).toContain("voice-last-reply");
     expect(source).toContain("voice-session-transcript");
     expect(source).toContain("voice-session-user-turn");
     expect(source).toContain("voice-session-assistant-turn");
@@ -269,7 +268,6 @@ describe("APK test harness", () => {
     expect(source).toContain("not finding");
     expect(source).toContain("misheard");
     expect(source).toContain("agent_local_greeting");
-    expect(source).toContain("voice-reply-status");
     expect(source).toContain("assert_desc_absent");
     expect(source).toContain("chat-mic-button-absent-after-launch");
     expect(source).toContain("chat-mic-button-absent-after-voice");
@@ -277,8 +275,10 @@ describe("APK test harness", () => {
     expect(source).toContain("open-voice-mode-button-absent-after-launch");
     expect(source).toContain("voice-modal-open");
     expect(source).toContain("voice-closed");
-    expect(source).toContain("Speaking reply");
-    expect(source).toContain("Reply ready");
+    expect(source).toContain("voice-reply-status-visible");
+    expect(source).toContain("voice-last-reply-visible");
+    expect(source).not.toContain("voice-reply-status-not-ready");
+    expect(source).not.toContain("Reply ready");
     expect(source).toContain("Scenario 1: English Settings");
     expect(source).toContain("Scenario 2: Tamil Settings");
     expect(source).toContain("requested_reply_language");
@@ -287,12 +287,17 @@ describe("APK test harness", () => {
     expect(source).toContain("ta-IN");
     expect(source).toContain("client_voice_reply_tts_started");
     expect(source).toContain("client_voice_reply_tts_completed");
+    expect(source).toContain("client_voice_reply_playback_started");
+    expect(source).toContain("client_voice_reply_playback_finished");
     expect(source).toContain("client_voice_reply_tts_failed");
+    expect(source).toContain("client_voice_reply_playback_failed");
     expect(source).toContain("voice-tts-failed");
     expect(source).toContain("voice-tts-failures.log");
     expect(source).toContain("voice-greeting-misroute.log");
     expect(source).toContain("e2e_voice_mock");
     expect(source).toContain("voice-markers.log");
+    expect(source).toContain("voice-ui-clean");
+    expect(source).toContain("history-kind-labels");
   });
 
   it("test_apk.sh checks Spitzola orb transcript and both TTS languages", () => {
@@ -308,6 +313,7 @@ describe("APK test harness", () => {
     expect(source).toContain("ta-IN");
     expect(source).toContain("local_tamil");
     expect(source).toContain("client_voice_reply_tts_failed");
+    expect(source).toContain("client_voice_reply_playback_failed");
   });
 
   it("APK harness exercises hands-free wake phrase conversation without a composer mic", () => {
@@ -322,7 +328,6 @@ describe("APK test harness", () => {
     expect(source).toContain("hands-free-before");
     expect(source).toContain("hands-free-after-reply");
     expect(source).toContain("hands-free-after-stop");
-    expect(source).toContain("Hands-free conversation");
     expect(source).toContain("Listening for your next question");
     expect(source).toContain("hands-free-listening-resumed");
     expect(source).toContain("hands-free-telemetry-markers-missing");

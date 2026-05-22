@@ -8,6 +8,10 @@ const chatSource = fs.readFileSync(
   path.join(__dirname, "..", "app", "(chat)", "index.tsx"),
   "utf8",
 );
+const transcriptSource = fs.readFileSync(
+  path.join(__dirname, "..", "components", "VoiceSessionTranscript.tsx"),
+  "utf8",
+);
 
 describe("voice-only file handling", () => {
   it("keeps typing controls available and does not expose composer voice controls", () => {
@@ -21,6 +25,7 @@ describe("voice-only file handling", () => {
     expect(chatSource).not.toContain("voiceOnlyInitialOpenRef");
     expect(chatSource).not.toContain("voiceOnlyMode &&");
     expect(chatSource).not.toContain("openVoiceSession();\n    }\n  }, [voiceOnlyMode");
+    expect(transcriptSource).not.toContain("Hold the orb. Your speech and reply will appear here.");
   });
 
   it("uses resolved voice language params instead of hard-coded Tamil defaults", () => {

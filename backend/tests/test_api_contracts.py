@@ -143,6 +143,81 @@ def test_chat_contract_uses_ai_router_when_enabled(client, monkeypatch):
     assert payload["meta"]["ai_router_enabled"] is True
 
 
+def test_chat_without_client_source_saves_text_source(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        assert ai_request.channel == "text"
+        return AIProviderResponse(
+            text="Text reply",
+            provider="openai",
+            model="gpt-5-nano",
+            route="openai_general",
+            reason="unit_test",
+            language="en",
+            intent="general",
+        )
+
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        "/api/chat",
+        headers=headers,
+        json={"message": "typed message", "reply_language": "en"},
+    )
+
+    assert response.status_code == 200
+    item_id = response.json()["item"]["id"]
+    assert response.json()["item"]["source"] == "text"
+    with SessionLocal() as session:
+        stored = session.get(Item, item_id)
+    assert stored is not None
+    assert stored.user_id == user.id
+    assert stored.source == "text"
+
+
+def test_chat_handsfree_client_source_saves_voice_source(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        assert ai_request.channel == "voice"
+        assert ai_request.metadata["client_source"] == "handsfree"
+        return AIProviderResponse(
+            text="Voice reply",
+            provider="openai",
+            model="gpt-5-nano",
+            route="openai_general",
+            reason="unit_test",
+            language="en",
+            intent="general",
+        )
+
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        "/api/chat",
+        headers=headers,
+        json={
+            "message": "handsfree message",
+            "reply_language": "en",
+            "client_source": "handsfree",
+        },
+    )
+
+    assert response.status_code == 200
+    item_id = response.json()["item"]["id"]
+    assert response.json()["item"]["source"] == "voice"
+    with SessionLocal() as session:
+        stored = session.get(Item, item_id)
+    assert stored is not None
+    assert stored.user_id == user.id
+    assert stored.source == "voice"
+
+
 def test_chat_ai_request_includes_saved_profile_context(client, monkeypatch):
     user = create_test_user(name="Hari")
     headers = auth_headers("test-uid", "test@example.com")
@@ -282,9 +357,14 @@ def test_voice_contract_uses_sarvam_stt_and_ai_router(client, monkeypatch):
     payload = response.json()
     assert payload["item"]["raw_text"] == "voice hello"
     assert payload["item"]["details"] == "Voice answer"
+    assert payload["item"]["source"] == "voice"
     assert payload["assistant"]["text"] == "Voice answer"
     assert payload["meta"]["provider"] == "sarvam"
     assert stt_calls[0][0][1] is None
+    with SessionLocal() as session:
+        stored = session.get(Item, payload["item"]["id"])
+    assert stored is not None
+    assert stored.source == "voice"
 
 
 def test_voice_contract_respects_tamil_reply_query_and_autodetects_speech(client, monkeypatch):

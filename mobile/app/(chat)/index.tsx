@@ -66,11 +66,19 @@ import {
 } from "@/lib/chatResponse";
 import {
   classifyChatHistoryItemsForDeletion,
+  createChatSessionFromItem,
   filterHistoryItemsByHiddenItemIds,
   filterLocalChatHistoryItems,
+  getChatHistoryItemKind,
   localChatItemsStorageKey,
   markChatHistoryItemsOrigin,
   mergeChatHistoryItems,
+  normalizeChatSessionRecord,
+  reconcileChatSessions,
+  sessionTimeValue,
+  sortSessionsByRecent,
+  type ChatSessionKind,
+  type ChatSessionRecord,
   uniqueNumberList,
 } from "@/lib/chatHistory";
 import { parseDatetime } from "@/lib/datetime";
@@ -112,15 +120,8 @@ import {
   withRecordingStartTimeout,
 } from "@/lib/voiceRecording";
 
-type ChatSessionRecord = {
-  id: string;
-  itemIds: number[];
-  createdAt: string;
-  updatedAt: string;
-  title?: string | null;
-};
-
-type ChatSessionListItem = ChatSessionRecord & {
+type ChatSessionListItem = Omit<ChatSessionRecord, "kind"> & {
+  kind: ChatSessionKind;
   items: ChatHistoryItem[];
   title: string;
   preview: string;
@@ -242,6 +243,19 @@ function getHistoryPreview(item: ChatHistoryItem) {
   return "Assistant response";
 }
 
+function getChatSessionKindLabel(kind: ChatSessionKind) {
+  return kind === "voice" ? "Voice" : "Chat";
+}
+
+function normalizeItemForRequestSource(
+  item: ChatHistoryItem,
+  source: ChatRequestSource,
+): ChatHistoryItem {
+  return source === "handsfree" || source === "voice"
+    ? { ...item, source: "voice" }
+    : { ...item, source: item.source || "text" };
+}
+
 function absoluteDownloadUrl(url?: string | null) {
   const value = String(url || "").trim();
   if (!value) return "";
@@ -261,104 +275,6 @@ function openReturnedFile(file: ReturnType<typeof firstOpenableFile>) {
   Linking.openURL(url).catch(() => {
     Alert.alert("File", "Could not open this file link.");
   });
-}
-
-function sessionTimeValue(value?: string | null) {
-  if (!value) return 0;
-  const parsed = new Date(value).getTime();
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function sortSessionsByRecent(a: ChatSessionRecord, b: ChatSessionRecord) {
-  return (
-    sessionTimeValue(b.updatedAt || b.createdAt) - sessionTimeValue(a.updatedAt || a.createdAt)
-  );
-}
-
-function normalizeChatSessionRecord(value: unknown): ChatSessionRecord | null {
-  if (!value || typeof value !== "object") return null;
-
-  const raw = value as Partial<ChatSessionRecord>;
-  const id = String(raw.id || "").trim();
-  if (!id) return null;
-
-  const itemIds = uniqueNumberList(Array.isArray(raw.itemIds) ? raw.itemIds : []);
-  const createdAt = String(raw.createdAt || raw.updatedAt || new Date().toISOString());
-  const updatedAt = String(raw.updatedAt || raw.createdAt || createdAt);
-
-  return {
-    id,
-    itemIds,
-    createdAt,
-    updatedAt,
-    title: typeof raw.title === "string" ? raw.title : null,
-  };
-}
-
-function createChatSessionFromItem(item: ChatHistoryItem): ChatSessionRecord {
-  const timestamp = item.created_at || item.datetime || new Date().toISOString();
-  return {
-    id: `chat_${Number(item.id) || Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    itemIds: [Number(item.id)],
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    title: getHistoryTitle(item),
-  };
-}
-
-function reconcileChatSessions(
-  items: ChatHistoryItem[],
-  sessions: ChatSessionRecord[]
-): ChatSessionRecord[] {
-  const itemMap = new Map<number, ChatHistoryItem>();
-  items.forEach((item) => {
-    const itemId = Number(item.id);
-    if (Number.isFinite(itemId)) {
-      itemMap.set(itemId, item);
-    }
-  });
-
-  const claimedItemIds = new Set<number>();
-  const normalizedSessions: ChatSessionRecord[] = [];
-
-  sessions.forEach((value) => {
-    const session = normalizeChatSessionRecord(value);
-    if (!session) return;
-
-    const itemIds = session.itemIds.filter((itemId) => {
-      if (!itemMap.has(itemId) || claimedItemIds.has(itemId)) return false;
-      claimedItemIds.add(itemId);
-      return true;
-    });
-
-    if (!itemIds.length) return;
-
-    const firstItem = itemMap.get(itemIds[0]);
-    const lastItem = itemMap.get(itemIds[itemIds.length - 1]);
-    normalizedSessions.push({
-      ...session,
-      itemIds,
-      createdAt:
-        session.createdAt || firstItem?.created_at || firstItem?.datetime || new Date().toISOString(),
-      updatedAt:
-        lastItem?.created_at ||
-        lastItem?.datetime ||
-        session.updatedAt ||
-        session.createdAt ||
-        new Date().toISOString(),
-      title: session.title || (firstItem ? getHistoryTitle(firstItem) : "Chat"),
-    });
-  });
-
-  const migratedSessions = items
-    .filter((item) => {
-      const itemId = Number(item.id);
-      return Number.isFinite(itemId) && !claimedItemIds.has(itemId);
-    })
-    .sort((a, b) => Number(b.id) - Number(a.id))
-    .map((item) => createChatSessionFromItem(item));
-
-  return [...normalizedSessions, ...migratedSessions].sort(sortSessionsByRecent);
 }
 
 export default function Home() {
@@ -398,8 +314,6 @@ export default function Home() {
   const [activeVoiceSessionId, setActiveVoiceSessionId] = useState<string | null>(null);
   const [voiceSessionTurns, setVoiceSessionTurns] = useState<VoiceSessionTurn[]>([]);
   const [voiceSessionMode, setVoiceSessionMode] = useState<VoiceSessionMode>(null);
-  const [voiceLastReplyText, setVoiceLastReplyText] = useState("");
-  const [voiceReplyStatus, setVoiceReplyStatus] = useState("");
   const [historySearch, setHistorySearch] = useState("");
   const [hiddenChatSessionIds, setHiddenChatSessionIds] = useState<string[]>([]);
   const [hiddenChatItemIds, setHiddenChatItemIds] = useState<number[]>([]);
@@ -567,9 +481,11 @@ export default function Home() {
         const sortedItems = [...items].sort((a, b) => Number(a.id) - Number(b.id));
         const firstItem = sortedItems[0];
         const lastItem = sortedItems[sortedItems.length - 1];
+        const kind = session.kind || getChatHistoryItemKind(firstItem);
 
         return {
           ...session,
+          kind,
           items: sortedItems,
           title: session.title || getHistoryTitle(firstItem),
           preview: getHistoryPreview(lastItem),
@@ -689,20 +605,6 @@ export default function Home() {
       }),
     [],
   );
-
-  const handsFreeSummaryText = recordingPreparing && activeSurface === "live"
-    ? "Preparing microphone..."
-    : recordingStopping && activeSurface === "live"
-    ? "Sending..."
-    : listening && activeSurface === "live"
-      ? "Listening..."
-      : handsFreeMode === "conversation"
-      ? "Listening for your next question..."
-      : handsFreeMode === "command"
-      ? "Listening for your request…"
-      : settings.handsFreeEnabled
-        ? `Say "${handsFreeWakePhrase}" or tap the orb.`
-        : "Hold the orb to talk.";
 
   const drawerTranslateX = drawerProgress.interpolate({
     inputRange: [0, 1],
@@ -1317,6 +1219,19 @@ export default function Home() {
     }
   }
 
+  async function configureAudioForPlayback() {
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      } as any);
+    } catch {
+      // Playback mode failures should not hide the text reply.
+    }
+  }
+
   const readChatHistoryFromApi = useCallback(async (): Promise<ChatHistoryItem[]> => {
     try {
       const suffix = profile?.userId ? `?user_id=${profile.userId}` : "";
@@ -1554,6 +1469,8 @@ export default function Home() {
     item: ChatHistoryItem,
     latestItems: ChatHistoryItem[]
   ) {
+    if (getChatHistoryItemKind(item) !== "chat") return;
+
     const itemId = Number(item.id);
     if (!Number.isFinite(itemId)) return;
 
@@ -1575,12 +1492,20 @@ export default function Home() {
 
       if (targetIndex >= 0) {
         const targetSession = workingSessions[targetIndex];
-        workingSessions[targetIndex] = {
-          ...targetSession,
-          itemIds: [...targetSession.itemIds, itemId],
-          updatedAt: timestamp,
-          title: targetSession.title || getHistoryTitle(item),
-        };
+        if (targetSession.kind === "chat") {
+          workingSessions[targetIndex] = {
+            ...targetSession,
+            kind: "chat",
+            itemIds: [...targetSession.itemIds, itemId],
+            updatedAt: timestamp,
+            title: targetSession.title || getHistoryTitle(item),
+          };
+        } else {
+          const nextSession = createChatSessionFromItem(item);
+          workingSessions = [nextSession, ...workingSessions];
+          activeChatSessionIdRef.current = nextSession.id;
+          setActiveChatSessionId(nextSession.id);
+        }
       } else {
         const nextSession = createChatSessionFromItem(item);
         workingSessions = [nextSession, ...workingSessions];
@@ -1750,8 +1675,6 @@ export default function Home() {
     setActiveVoiceSessionId(sessionId);
     setVoiceSessionMode("live");
     setVoiceSessionTurns([]);
-    setVoiceLastReplyText("");
-    setVoiceReplyStatus("");
     setVoiceSheetOpen(true);
   }
 
@@ -2044,6 +1967,9 @@ export default function Home() {
     const isSpokenVoiceReply = isVoiceReply || isHandsFreeReply;
     let cachedUri: string | null = null;
     let sound: Audio.Sound | null = null;
+    let ttsLoaded = false;
+    let playbackStartedLogged = false;
+    let playbackFinishedLogged = false;
 
     await abortHandsFreeRecognizer(false);
     await releaseReplySound();
@@ -2056,7 +1982,6 @@ export default function Home() {
           profileReplyLanguage: profile?.replyLanguage || null,
         });
       if (isVoiceReply) {
-        setVoiceReplyStatus("Preparing reply...");
         if (context.voiceSessionId) {
           updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
             ttsStatus: "tts_started",
@@ -2096,8 +2021,9 @@ export default function Home() {
           : settings.languageMode === "ta" ? "ta-IN" : "en-IN",
       });
 
-      if (!data.audio_base64) {
-        throw new Error("TTS response did not include audio.");
+      const replyAudioBytes = base64DecodedByteLength(String(data.audio_base64 || ""));
+      if (!data.audio_base64 || replyAudioBytes <= 0) {
+        throw new Error("TTS response did not include playable audio.");
       }
 
       if (replyPlaybackTokenRef.current !== playbackToken) {
@@ -2120,24 +2046,90 @@ export default function Home() {
 
       sound = new Audio.Sound();
 
+      const logPlaybackStarted = () => {
+        if (playbackStartedLogged) return;
+        playbackStartedLogged = true;
+        if (isVoiceReply && context.voiceSessionId) {
+          updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
+            ttsStatus: "playback_started",
+          });
+        } else if (isHandsFreeReply) {
+          setHandsFreeStatus("Speaking reply...");
+        }
+        logVoiceTelemetry("client_voice_reply_playback_started", {
+          request_id: context.requestId,
+          route_taken: "voice_reply_tts",
+          voice_phase: "playback_started",
+          reply_playback_phase: "playback_started",
+          voice_surface: context.voiceSurface || null,
+          voice_session_id: context.voiceSessionId || undefined,
+          requested_reply_language: isSpokenVoiceReply ? voiceLanguage.replyLanguage : undefined,
+          tts_language_code: data.target_language_code || (isSpokenVoiceReply ? voiceLanguage.ttsLanguageCode : undefined),
+          reply_audio_bytes: replyAudioBytes,
+          playback_uri_scheme: uriScheme(cachedUri),
+        });
+      };
+
+      const logPlaybackFinished = () => {
+        if (playbackFinishedLogged) return;
+        playbackFinishedLogged = true;
+        if (isVoiceReply && context.voiceSessionId) {
+          updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
+            ttsStatus: "playback_finished",
+          });
+        } else if (isHandsFreeReply) {
+          setHandsFreeStatus("");
+        }
+        logVoiceTelemetry("client_voice_reply_playback_finished", {
+          request_id: context.requestId,
+          route_taken: "voice_reply_tts",
+          voice_phase: "playback_finished",
+          reply_playback_phase: "playback_finished",
+          voice_surface: context.voiceSurface || null,
+          voice_session_id: context.voiceSessionId || undefined,
+          requested_reply_language: isSpokenVoiceReply ? voiceLanguage.replyLanguage : undefined,
+          tts_language_code: data.target_language_code || (isSpokenVoiceReply ? voiceLanguage.ttsLanguageCode : undefined),
+          reply_audio_bytes: replyAudioBytes,
+          playback_uri_scheme: uriScheme(cachedUri),
+        });
+      };
+
       sound.setOnPlaybackStatusUpdate((status) => {
         if (!status.isLoaded) {
+          const statusError = String((status as any)?.error || "");
+          if (statusError && replySoundRef.current === sound) {
+            logVoiceTelemetry("client_voice_reply_playback_failed", {
+              request_id: context.requestId,
+              route_taken: "voice_reply_tts",
+              voice_phase: "playback_failed",
+              reply_playback_phase: "failed",
+              voice_surface: context.voiceSurface || null,
+              voice_session_id: context.voiceSessionId || undefined,
+              playback_uri_scheme: uriScheme(cachedUri),
+              error_type: "playback_status_error",
+              error_message: statusError,
+            });
+            if (isVoiceReply && context.voiceSessionId) {
+              updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
+                assistantText: textValue ? `${textValue}\nVoice playback failed.` : "Voice playback failed.",
+                status: textValue ? "done" : "error",
+                ttsStatus: "playback_failed",
+              });
+            }
+          }
           if (replySoundRef.current === sound) {
             replySoundRef.current = null;
           }
           return;
         }
 
+        if (status.isPlaying || status.positionMillis > 0) {
+          logPlaybackStarted();
+        }
+
         if (status.didJustFinish) {
-          if (replySoundRef.current === sound && isVoiceReply) {
-            setVoiceReplyStatus("Reply ready");
-            if (context.voiceSessionId) {
-              updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
-                ttsStatus: "reply_ready",
-              });
-            }
-          } else if (replySoundRef.current === sound && isHandsFreeReply) {
-            setHandsFreeStatus("Listening for your next question...");
+          if (replySoundRef.current === sound) {
+            logPlaybackFinished();
           }
           void releaseReplySound(sound).finally(() => {
             resumeHandsFreeAfterAssistantTurn(context.source, 320);
@@ -2145,16 +2137,18 @@ export default function Home() {
         }
       });
 
+      await configureAudioForPlayback();
       const status = await sound.loadAsync(
         { uri: cachedUri },
         {
-          shouldPlay: true,
+          shouldPlay: false,
           progressUpdateIntervalMillis: 250,
         }
       );
       if (!status.isLoaded) {
         throw new Error("TTS audio could not be loaded.");
       }
+      ttsLoaded = true;
 
       if (replyPlaybackTokenRef.current !== playbackToken) {
         await releaseReplySound(sound);
@@ -2165,14 +2159,11 @@ export default function Home() {
       replySoundRef.current = sound;
       replyAudioUriRef.current = cachedUri;
       if (isVoiceReply) {
-        setVoiceReplyStatus("Speaking reply...");
         if (context.voiceSessionId) {
           updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
-            ttsStatus: "speaking",
+            ttsStatus: "loaded",
           });
         }
-      } else if (isHandsFreeReply) {
-        setHandsFreeStatus("Speaking reply...");
       }
       logVoiceTelemetry("client_voice_reply_tts_completed", {
         request_id: context.requestId,
@@ -2185,9 +2176,14 @@ export default function Home() {
         tts_language_code: data.target_language_code || (isSpokenVoiceReply ? voiceLanguage.ttsLanguageCode : undefined),
         tts_speaker: data.speaker || undefined,
         tts_locale_style: data.locale_style || undefined,
-        reply_audio_bytes: base64DecodedByteLength(data.audio_base64),
+        reply_audio_bytes: replyAudioBytes,
         playback_uri_scheme: uriScheme(cachedUri),
       });
+      const playStatus = await sound.playAsync();
+      if (!playStatus.isLoaded) {
+        throw new Error("TTS audio playback could not start.");
+      }
+      logPlaybackStarted();
     } catch (error: unknown) {
       if (sound) {
         await releaseReplySound(sound);
@@ -2195,29 +2191,31 @@ export default function Home() {
       if (cachedUri && replyAudioUriRef.current !== cachedUri) {
         await deleteReplyAudioFile(cachedUri);
       }
+      const failureEvent = ttsLoaded
+        ? "client_voice_reply_playback_failed"
+        : "client_voice_reply_tts_failed";
+      const failurePhase = ttsLoaded ? "playback_failed" : "tts_failed";
       if (isVoiceReply) {
-        setVoiceReplyStatus(
-          isTtsSpeakerMisconfiguredError(error)
-            ? "Reply received, but voice playback failed. TTS speaker is misconfigured."
-            : "Reply received, but voice playback failed.",
-        );
         if (context.voiceSessionId) {
           updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
-            ttsStatus: "tts_failed",
+            assistantText: textValue ? `${textValue}\nVoice playback failed.` : "Voice playback failed.",
+            status: textValue ? "done" : "error",
+            ttsStatus: failurePhase,
           });
         }
       } else if (isHandsFreeReply) {
-        setHandsFreeStatus("Reply received, but voice playback failed.");
+        setHandsFreeStatus("Voice playback failed.");
       }
-      logVoiceTelemetry("client_voice_reply_tts_failed", {
+      logVoiceTelemetry(failureEvent, {
         request_id: context.requestId,
         route_taken: "voice_reply_tts",
-        voice_phase: "tts_failed",
+        voice_phase: failurePhase,
         reply_playback_phase: "failed",
         voice_surface: context.voiceSurface || null,
         voice_session_id: context.voiceSessionId || undefined,
         playback_uri_scheme: uriScheme(cachedUri),
-        error_type: safeVoiceErrorType(error, "voice_reply_tts_failed"),
+        error_type: safeVoiceErrorType(error, failurePhase),
+        ...({ speaker_misconfigured: isTtsSpeakerMisconfiguredError(error) } as any),
         error_message: error instanceof Error ? error.message : String(error || ""),
       });
       resumeHandsFreeAfterAssistantTurn(context.source, 650);
@@ -2348,7 +2346,10 @@ export default function Home() {
         return;
       }
 
-      const nextItem = normalizeChatTurnPayload(response, cleaned);
+      const nextItem = normalizeItemForRequestSource(
+        normalizeChatTurnPayload(response, cleaned),
+        source,
+      );
       clearPendingAssistant(requestId);
       if (isHandsFreeTurn) {
         updateVoiceSessionTurn(requestId, {
@@ -2462,7 +2463,10 @@ export default function Home() {
                 await clearActiveWorkflow(requestId).catch(() => undefined);
                 return;
               }
-              const nextItem = normalizeChatTurnPayload(backendResponse, cleaned);
+              const nextItem = normalizeItemForRequestSource(
+                normalizeChatTurnPayload(backendResponse, cleaned),
+                source,
+              );
               clearPendingAssistant(requestId);
               if (isHandsFreeTurn) {
                 updateVoiceSessionTurn(requestId, {
@@ -2961,12 +2965,9 @@ export default function Home() {
         return;
       }
 
-      const nextItem = normalizeChatTurnPayload(res);
+      const nextItem = normalizeItemForRequestSource(normalizeChatTurnPayload(res), "voice");
       const assistantReplyText = String(nextItem.details || "").trim();
       const userTranscript = String(nextItem.raw_text || nextItem.transcript || "Voice message").trim();
-      if (assistantReplyText) {
-        setVoiceLastReplyText(assistantReplyText);
-      }
       updateVoiceSessionTurn(requestId, {
         userText: userTranscript,
         assistantText: assistantReplyText,
@@ -2997,8 +2998,6 @@ export default function Home() {
           voiceLanguage,
           voiceSessionId,
         });
-      } else if (assistantReplyText) {
-        setVoiceReplyStatus("Reply ready");
       }
 
       if (nextItem.intent === "reminder" && nextItem.datetime) {
@@ -3044,7 +3043,6 @@ export default function Home() {
           assistantText: message,
           status: "error",
         });
-        setVoiceReplyStatus(message);
         warnChatFailure(error, requestId, "voice");
       }
     } finally {
@@ -3529,9 +3527,21 @@ export default function Home() {
                       >
                         <View style={styles.chatListRow}>
                           <View style={styles.chatListTextWrap}>
-                            <Text numberOfLines={1} style={styles.chatListTitle}>
-                              {item.title}
-                            </Text>
+                            <View style={styles.chatListHeaderRow}>
+                              <Text numberOfLines={1} style={styles.chatListTitle}>
+                                {item.title}
+                              </Text>
+                              <View
+                                style={[
+                                  styles.chatListKindBadge,
+                                  item.kind === "voice" && styles.chatListKindBadgeVoice,
+                                ]}
+                              >
+                                <Text style={styles.chatListKindBadgeText}>
+                                  {getChatSessionKindLabel(item.kind || "chat")}
+                                </Text>
+                              </View>
+                            </View>
                             <Text numberOfLines={1} style={styles.chatListPreview}>
                               {item.preview}
                             </Text>
@@ -3652,20 +3662,19 @@ export default function Home() {
 
             <Text style={styles.voiceTitle}>
               {recordingStopping && activeSurface === "live"
-                ? "Sending..."
+                ? "Sending"
                 : recordingPreparing && activeSurface === "live"
-                ? "Preparing microphone..."
+                ? "Listening"
                 : listening && activeSurface === "live"
-                  ? "Listening..."
+                  ? "Listening"
                   : handsFreeConversationActive
-                    ? "Hands-free conversation"
+                    ? "Listening"
                   : handsFreeActive
-                    ? "Hands-free ready"
+                    ? "Listening"
                     : "Hold to Talk"}
             </Text>
-            <Text style={styles.voiceSubtitle}>{handsFreeSummaryText}</Text>
 
-            {settings.handsFreeEnabled ? (
+            {settings.handsFreeEnabled && (handsFreeActive || handsFreeConversationActive) ? (
               <View style={styles.handsFreeBadge}>
                 <Ionicons
                   name={handsFreeActive ? "radio" : "radio-outline"}
@@ -3673,7 +3682,7 @@ export default function Home() {
                   color={Brand.cocoa}
                 />
                 <Text style={styles.handsFreeBadgeText}>
-                  {handsFreeStatus || `Say "${handsFreeWakePhrase}"`}
+                  {handsFreeStatus || "Listening"}
                 </Text>
               </View>
             ) : null}
@@ -3700,33 +3709,7 @@ export default function Home() {
 
             <VoiceSessionTranscript
               turns={voiceSessionMode === "live" ? voiceSessionTurns : []}
-              status={voiceReplyStatus}
-              replyLanguage={settings.languageMode}
             />
-
-            {voiceReplyStatus || (voiceLastReplyText && voiceSessionTurns.length === 0) ? (
-              <View style={styles.voiceReplyPanel}>
-                {voiceReplyStatus ? (
-                  <Text
-                    testID="voice-reply-status"
-                    accessibilityLabel="voice-reply-status"
-                    style={styles.voiceReplyStatus}
-                  >
-                    {voiceReplyStatus}
-                  </Text>
-                ) : null}
-                {voiceLastReplyText && voiceSessionTurns.length === 0 ? (
-                  <Text
-                    testID="voice-last-reply"
-                    accessibilityLabel="voice-last-reply"
-                    numberOfLines={4}
-                    style={styles.voiceLastReply}
-                  >
-                    {voiceLastReplyText}
-                  </Text>
-                ) : null}
-              </View>
-            ) : null}
 
             {(recordingPreparing || listening || recordingStopping) && activeSurface === "live" ? (
               <View style={styles.voiceWaveWrap}>
@@ -4230,15 +4213,42 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  chatListHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
   chatListItemActive: {
     backgroundColor: "rgba(124, 99, 80, 0.10)",
   },
 
   chatListTitle: {
+    flex: 1,
     color: Brand.ink,
     fontSize: 13,
     lineHeight: 18,
     fontWeight: "800",
+  },
+
+  chatListKindBadge: {
+    minWidth: 42,
+    alignItems: "center",
+    borderRadius: 999,
+    backgroundColor: "rgba(124, 99, 80, 0.10)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+
+  chatListKindBadgeVoice: {
+    backgroundColor: "rgba(168, 103, 52, 0.14)",
+  },
+
+  chatListKindBadgeText: {
+    color: Brand.cocoa,
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "900",
   },
 
   chatListPreview: {
@@ -4485,16 +4495,6 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
 
-  voiceSubtitle: {
-    marginTop: 10,
-    color: Brand.textMuted,
-    fontSize: 14,
-    lineHeight: 21,
-    fontWeight: "600",
-    textAlign: "center",
-    maxWidth: 300,
-  },
-
   handsFreeBadge: {
     marginTop: 14,
     flexDirection: "row",
@@ -4522,33 +4522,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textAlign: "center",
     maxWidth: 310,
-  },
-
-  voiceReplyPanel: {
-    marginTop: 16,
-    width: "100%",
-    maxWidth: 340,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Brand.line,
-    backgroundColor: "rgba(255,255,255,0.72)",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-
-  voiceReplyStatus: {
-    color: Brand.cocoa,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: "900",
-  },
-
-  voiceLastReply: {
-    marginTop: 6,
-    color: Brand.ink,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: "700",
   },
 
   voiceWaveWrap: {
