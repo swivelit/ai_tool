@@ -1,8 +1,6 @@
 package com.harishajahan.jai.wakeword
 
 import android.net.Uri
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
@@ -37,10 +35,8 @@ class OpenWakeWordEngine {
   private var lastScore: Double? = null
   private var lastError: String? = null
   private var audioSource: PcmAudioSource? = null
-  private var environment: OrtEnvironment? = null
-  private var wakeSession: OrtSession? = null
-  private var melSession: OrtSession? = null
-  private var embeddingSession: OrtSession? = null
+
+  fun isAvailable(): Boolean = false
 
   @Synchronized
   fun start(
@@ -57,42 +53,14 @@ class OpenWakeWordEngine {
     lastScore = null
 
     val wakeModel = resolveFilePath(parsed.wakeModelPath, "wakeModel")
-    val melModel = parsed.melspectrogramModelPath?.let { resolveFilePath(it, "melspectrogramModel") }
-    val embeddingModel = parsed.embeddingModelPath?.let { resolveFilePath(it, "embeddingModel") }
+    parsed.melspectrogramModelPath?.let { resolveFilePath(it, "melspectrogramModel") }
+    parsed.embeddingModelPath?.let { resolveFilePath(it, "embeddingModel") }
+    modelLoaded = false
 
-    if (melModel == null || embeddingModel == null) {
-      throw WakeWordException(
-        "JAI_WAKE_MODEL_UNSUPPORTED",
-        "OpenWakeWord wake detection requires melspectrogram.onnx, embedding_model.onnx, and an ONNX wake prediction model in the local bundle.",
-      )
-    }
-
-    try {
-      val env = OrtEnvironment.getEnvironment()
-      environment = env
-      val sessionOptions = OrtSession.SessionOptions()
-      melSession = env.createSession(melModel.absolutePath, sessionOptions)
-      embeddingSession = env.createSession(embeddingModel.absolutePath, sessionOptions)
-      wakeSession = env.createSession(wakeModel.absolutePath, sessionOptions)
-      modelLoaded = true
-
-      val diagnostic = buildPipelineDiagnostic()
-      throw WakeWordException(
-        "JAI_WAKE_MODEL_UNSUPPORTED",
-        "OpenWakeWord ONNX artifacts loaded, but this build does not yet enable the full mel/embedding/wake tensor pipeline. Diagnostics: $diagnostic",
-      )
-    } catch (error: WakeWordException) {
-      lastError = error.detail
-      releaseSessions()
-      modelLoaded = false
-      throw error
-    } catch (error: Throwable) {
-      val detail = "Could not initialize OpenWakeWord ONNX Runtime sessions: ${error.message ?: error.javaClass.simpleName}"
-      lastError = detail
-      releaseSessions()
-      modelLoaded = false
-      throw WakeWordException("JAI_WAKE_MODEL_LOAD_FAILED", detail, error)
-    }
+    val detail =
+      "Native OpenWakeWord inference is not enabled in this Android build. The model bundle was validated at ${wakeModel.name}, but hands-free wake detection remains disabled until a 16 KB-compatible inference runtime is linked."
+    lastError = detail
+    throw WakeWordException("JAI_WAKE_MODEL_UNSUPPORTED", detail)
   }
 
   @Synchronized
@@ -102,7 +70,6 @@ class OpenWakeWordEngine {
       audioSource?.stop()
     } finally {
       audioSource = null
-      releaseSessions()
       modelLoaded = false
     }
   }
@@ -164,35 +131,4 @@ class OpenWakeWordEngine {
     return file
   }
 
-  private fun buildPipelineDiagnostic(): String {
-    fun describe(session: OrtSession?, label: String): String {
-      if (session == null) return "$label=missing"
-      val inputs = session.inputInfo.keys.joinToString(",")
-      val outputs = session.outputInfo.keys.joinToString(",")
-      return "$label(inputs=[$inputs], outputs=[$outputs])"
-    }
-    return listOf(
-      describe(melSession, "melspectrogram"),
-      describe(embeddingSession, "embedding"),
-      describe(wakeSession, "wake"),
-    ).joinToString("; ")
-  }
-
-  private fun releaseSessions() {
-    try {
-      wakeSession?.close()
-    } catch (_: Throwable) {
-    }
-    try {
-      melSession?.close()
-    } catch (_: Throwable) {
-    }
-    try {
-      embeddingSession?.close()
-    } catch (_: Throwable) {
-    }
-    wakeSession = null
-    melSession = null
-    embeddingSession = null
-  }
 }

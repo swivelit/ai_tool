@@ -15,7 +15,7 @@ class WakeWordModule : Module() {
     Events("onWake", "onWakeScore", "onWakeError")
 
     Function("isAvailable") {
-      true
+      engine.isAvailable()
     }
 
     AsyncFunction("getStatus") {

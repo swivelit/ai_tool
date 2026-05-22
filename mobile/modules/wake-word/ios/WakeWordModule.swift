@@ -10,7 +10,7 @@ public class WakeWordModule: Module {
     Events("onWake", "onWakeScore", "onWakeError")
 
     Function("isAvailable") {
-      return true
+      return self.engine.isAvailable()
     }
 
     AsyncFunction("getStatus") { () -> [String: Any?] in

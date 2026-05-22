@@ -168,36 +168,34 @@ function describeWakeState(
   negativeCount = 0
 ) {
   if (state === "ready_now") {
-    return supportedBaseModel
-      ? `${wakePhrase} matches the built-in phrase template ${supportedBaseModel}. The app still needs the OpenWakeWord ONNX bundle before native wake detection can run.`
-      : `${wakePhrase} is accepted. Record ${MINIMUM_POSITIVE} positive and ${MINIMUM_NEGATIVE} negative clips so a custom OpenWakeWord model can be produced.`;
+    return supportedBaseModel ? "Needs model" : "Ready";
   }
   if (state === "needs_training") {
-    return `${wakePhrase} has ${positiveCount}/${MINIMUM_POSITIVE} positive and ${negativeCount}/${MINIMUM_NEGATIVE} negative enrollment clips saved.`;
+    return `${positiveCount}/${MINIMUM_POSITIVE} positive, ${negativeCount}/${MINIMUM_NEGATIVE} negative`;
   }
   if (state === "training") {
-    return `${wakePhrase} enrollment is pending a trained OpenWakeWord model bundle.`;
+    return "Needs model";
   }
-  return `${wakePhrase} has a ready OpenWakeWord model bundle on this phone.`;
+  return "Ready";
 }
 
 function actionHint(state: WakeState) {
   if (state === "ready_now") {
-    return "The phrase is accepted. Download or build its OpenWakeWord model before hands-free wake detection starts.";
+    return "Ready";
   }
   if (state === "needs_training") {
-    return "Record enough positive and negative clips for OpenWakeWord enrollment.";
+    return "Start";
   }
   if (state === "training") {
-    return "Enrollment is saved. Waiting for a trained model bundle.";
+    return "Needs model";
   }
-  return "The model bundle is ready on this phone.";
+  return "Ready";
 }
 
 function finalizeButtonLabel(state: WakeState) {
-  if (state === "active") return "Already active";
-  if (state === "training") return "Building locally";
-  return "Build local profile";
+  if (state === "active") return "Ready";
+  if (state === "training") return "Needs model";
+  return "Done";
 }
 
 function resolveWakeState(status: EnrollmentStatus | null): WakeState {
@@ -424,9 +422,7 @@ export default function Setup() {
   const [uploadingKind, setUploadingKind] = useState<SampleKind | null>(null);
   const [finalizing, setFinalizing] = useState(false);
   const [recordingKind, setRecordingKind] = useState<SampleKind | null>(null);
-  const [message, setMessage] = useState(
-    "Record wake phrase samples, then build or download a real OpenWakeWord model before enabling hands-free wake detection."
-  );
+  const [message, setMessage] = useState("Ready");
   const [error, setError] = useState("");
 
   const recordingRef = useRef<Audio.Recording | null>(null);
@@ -505,7 +501,7 @@ export default function Setup() {
       await FileSystem.deleteAsync(paths.rootDir, { idempotent: true });
       const next = await loadEnrollmentStatus(normalizedWakePhrase);
       setStatus(next);
-      setMessage("Local wake phrase samples were removed from this phone.");
+      setMessage("Ready");
     } catch (nextError: unknown) {
       const nextMessage =
         nextError instanceof Error ? nextError.message : "Could not reset wake phrase setup.";
@@ -533,11 +529,7 @@ export default function Setup() {
 
     try {
       setError("");
-      setMessage(
-        kind === "positive"
-          ? `Recording positive sample on this phone. Say “${normalizedWakePhrase}”, then tap stop.`
-          : "Recording negative sample on this phone. Read any normal sentence that does not contain the wake phrase, then tap stop."
-      );
+      setMessage("Listening");
       await ensureRecordingPermissions();
       const recording = new Audio.Recording();
       await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
@@ -639,10 +631,9 @@ export default function Setup() {
       const payload = backendStatus || manifestToStatus(nextManifest);
       setStatus(payload);
       setMessage(
-        backendStatus?.message ||
-          (currentKind === "positive"
-            ? `Saved positive sample ${progressLabel(nextManifest.positive_count, minimumPositive)}.`
-            : `Saved negative sample ${progressLabel(nextManifest.negative_count, minimumNegative)}.`)
+        currentKind === "positive"
+          ? `Saved ${progressLabel(nextManifest.positive_count, minimumPositive)}`
+          : `Saved ${progressLabel(nextManifest.negative_count, minimumNegative)}`
       );
     } catch (nextError: unknown) {
       const nextMessage =
@@ -669,7 +660,7 @@ export default function Setup() {
       });
       setStatus(manifestToStatus(trainingManifest));
       await writeManifest(trainingManifest);
-      setMessage(`Finalizing “${normalizedWakePhrase}” and checking for an OpenWakeWord model…`);
+      setMessage("Needs model");
 
       await apiPost<EnrollmentStatus>(
         `/api/openwakeword/enrollment/finalize?wake_phrase=${encodeURIComponent(normalizedWakePhrase)}`
@@ -704,7 +695,7 @@ export default function Setup() {
             modelPaths: saved.modelPaths,
           },
         });
-        setMessage(`Wake phrase model is ready for on-device OpenWakeWord detection.`);
+        setMessage("Ready");
         return;
       }
 
@@ -725,10 +716,7 @@ export default function Setup() {
         wakeTrainingSamples: uniqueStrings([normalizedWakePhrase]),
         wakeModel: modelStateFromStatus(normalizedWakePhrase, modelStatus),
       });
-      setMessage(
-        modelStatus.detail ||
-          `Wake phrase samples are saved, but “${normalizedWakePhrase}” still needs a real OpenWakeWord model bundle before it can wake the app.`
-      );
+      setMessage("Needs model");
     } catch (nextError: unknown) {
       const nextMessage =
         nextError instanceof Error ? nextError.message : "Could not finalize wake phrase setup.";
@@ -882,10 +870,6 @@ export default function Setup() {
 
           <GlassCard>
             <Text style={styles.sectionTitle}>Voice setup</Text>
-            <Text style={styles.sectionBody}>
-              Record {MINIMUM_POSITIVE} positive clips and {MINIMUM_NEGATIVE} negative clips. The
-              backend stores them for OpenWakeWord enrollment and returns a model bundle when ready.
-            </Text>
 
             <View style={styles.metricsRow}>
               <MetricCard
@@ -901,18 +885,8 @@ export default function Setup() {
             </View>
 
             <View style={styles.statusBox}>
-              <Text style={styles.statusTitle}>Current status</Text>
+              <Text style={styles.statusTitle}>{wakeStateLabel}</Text>
               <Text style={styles.statusText}>{statusMessage}</Text>
-              <Text style={styles.statusMeta}>State: {wakeStateLabel}</Text>
-              <Text style={styles.statusMeta}>Wake engine: native OpenWakeWord</Text>
-              {!!status?.manifest_path && (
-                <Text style={styles.statusMeta}>Manifest: {status.manifest_path}</Text>
-              )}
-              {!!status?.supported_base_model && (
-                <Text style={styles.statusMeta}>
-                  Base phrase match: {status.supported_base_model}
-                </Text>
-              )}
               {!!error && <Text style={styles.errorText}>{error}</Text>}
             </View>
 

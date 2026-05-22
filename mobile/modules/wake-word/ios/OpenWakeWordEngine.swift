@@ -22,6 +22,10 @@ public final class OpenWakeWordEngine {
   private var lastScore: Double?
   private var lastError: String?
 
+  public func isAvailable() -> Bool {
+    return false
+  }
+
   public func start(config: [String: Any]) throws {
     stop()
     guard let modelPaths = config["modelPaths"] as? [String: Any],

@@ -1,0 +1,46 @@
+import fs from "node:fs";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+const root = path.join(__dirname, "..");
+const customiseSource = fs.readFileSync(path.join(root, "app", "customise.tsx"), "utf8");
+const modalSource = fs.readFileSync(path.join(root, "app", "modal.tsx"), "utf8");
+
+const forbidden = [
+  "Dedicated training screen",
+  "Android speech diagnostics",
+  "Android recognizer status",
+  "Live transcript",
+  "Your captured phrase will appear here",
+  "Install on-device speech model",
+  "Download on-device speech model",
+  "Best way to record it",
+  "Last captured audio file",
+  "Microphone audio was captured",
+  "Requested language is supported",
+];
+
+describe("minimal settings wake phrase UI", () => {
+  it("keeps customise clean and routes training away from Android STT", () => {
+    expect(customiseSource).toContain("Settings");
+    expect(customiseSource).toContain("Assistant name");
+    expect(customiseSource).toContain("Professional");
+    expect(customiseSource).toContain("Friendly");
+    expect(customiseSource).toContain("Tamil");
+    expect(customiseSource).toContain("English");
+    expect(customiseSource).toContain("customise-hands-free-switch");
+    expect(customiseSource).toContain("customise-wake-phrase-input");
+    expect(customiseSource).toContain("customise-wake-trainer-button");
+    expect(customiseSource).toContain("Train wake phrase");
+    expect(customiseSource).toContain("customise-save-button");
+    expect(customiseSource).not.toContain("handsFreeRecognizer.start");
+    expect(customiseSource).not.toContain("useHandsFreeRecognitionEvent");
+    forbidden.forEach((copy) => expect(customiseSource).not.toContain(copy));
+  });
+
+  it("removes the hidden modal wake trainer Android speech path", () => {
+    expect(modalSource).not.toContain("handsFreeRecognizer.start");
+    expect(modalSource).not.toContain("useHandsFreeRecognitionEvent");
+    forbidden.forEach((copy) => expect(modalSource).not.toContain(copy));
+  });
+});

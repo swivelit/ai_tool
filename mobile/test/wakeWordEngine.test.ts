@@ -8,6 +8,16 @@ afterEach(() => {
 });
 
 describe("wakeWordEngine", () => {
+  it("does not prepare a production model when native wake detection is unavailable", async () => {
+    const settings = normalizeAssistantSettings({
+      handsFreeEnabled: true,
+      wakePhrase: "Hey Elli",
+    });
+    const model = await ensureWakeModel(settings);
+    expect(model.ready).toBe(false);
+    expect(model.status).toBe("unsupported");
+  });
+
   it("does not start production wake listening without a ready model", async () => {
     await expect(
       startWakeWordListening(

@@ -163,6 +163,15 @@ export async function ensureWakeModel(settings: AssistantSettings): Promise<Wake
     });
   }
 
+  if (!isWakeWordAvailable()) {
+    return toWakeModelState({
+      status: "unsupported",
+      wakePhrase: settings.wakePhrase,
+      detail: "Needs model",
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   if (settings.wakeModel?.status === "ready" && (await readyModelExists(settings.wakeModel))) {
     return toWakeModelState(settings.wakeModel);
   }
@@ -278,6 +287,9 @@ export async function startWakeWordListening(
 
   if (!nativeModule?.start) {
     throw new Error("JaiWakeWord native module is unavailable.");
+  }
+  if (!isWakeWordAvailable()) {
+    throw new Error("Native wake-word detection is unavailable.");
   }
   const emitter = new EventEmitter(nativeModule as any) as any;
   nativeSubscriptions = [
