@@ -64,8 +64,45 @@ describe("global knowledge sync", () => {
 
     expect(result.synced).toBe(1);
     expect(store.entries).toHaveLength(1);
+    expect(store.entries[0].scope).toBe("global");
     expect(store.entries[0].answer).toContain("compiler");
     expect(apiGetMock).toHaveBeenCalledWith("/api/global-knowledge/sync?limit=250");
+  });
+
+  it("stores same-user sync entries with user scope", async () => {
+    apiGetMock.mockResolvedValueOnce({
+      ok: true,
+      serverTime: "2026-05-14T00:00:00Z",
+      entries: [],
+      userEntries: [
+        {
+          id: "user:42",
+          scope: "user",
+          canonicalQuestion: "What is Spitzola?",
+          normalizedQuestion: "what is spitzola",
+          answer: "Spitzola is a fictional pizza-style test answer.",
+          answerLanguage: "en",
+          embedding: unitEmbedding(),
+          embeddingKind: "token_hash_v1",
+          embeddingNorm: 1,
+          confidence: 1,
+          safetyLabel: "general",
+          source: { kind: "user_qa_cache", hits: 2 },
+          updatedAt: "2026-05-14T00:00:00Z",
+          expiresAt: "2099-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const { loadGlobalKnowledgeStore, lookupSyncedGlobalKnowledge, syncGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    const result = await syncGlobalKnowledge({ force: true });
+    const store = await loadGlobalKnowledgeStore();
+
+    expect(result.synced).toBe(1);
+    expect(store.entries[0].id).toBe("user:42");
+    expect(store.entries[0].scope).toBe("user");
+    expect(store.entries[0].source).toMatchObject({ kind: "user_qa_cache" });
+    expect((await lookupSyncedGlobalKnowledge("Tell me about Spitzola"))?.entry.scope).toBe("user");
   });
 
   it("syncs multiple cursor pages without missing entries", async () => {
@@ -256,6 +293,76 @@ describe("global knowledge sync", () => {
     );
 
     expect(await lookupSyncedGlobalKnowledge("latest IPL score today")).toBeNull();
+  });
+
+  it("respects user entry expiry and safety labels", async () => {
+    const { GLOBAL_KNOWLEDGE_CACHE_KEY, lookupSyncedGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    storage.set(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "user:expired",
+            scope: "user",
+            canonicalQuestion: "What is old concept?",
+            normalizedQuestion: "what is old concept",
+            answer: "Expired answer.",
+            answerLanguage: "en",
+            embedding: [],
+            embeddingNorm: 0,
+            confidence: 1,
+            safetyLabel: "general",
+            updatedAt: "2026-05-01T00:00:00Z",
+            expiresAt: "2001-01-01T00:00:00Z",
+          },
+          {
+            id: "user:private",
+            scope: "user",
+            canonicalQuestion: "What is my secret?",
+            normalizedQuestion: "what is my secret",
+            answer: "Private answer.",
+            answerLanguage: "en",
+            embedding: [],
+            embeddingNorm: 0,
+            confidence: 1,
+            safetyLabel: "private",
+            updatedAt: "2026-05-01T00:00:00Z",
+            expiresAt: "2099-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+
+    expect(await lookupSyncedGlobalKnowledge("What is old concept?")).toBeNull();
+    expect(await lookupSyncedGlobalKnowledge("What is my secret?")).toBeNull();
+  });
+
+  it("avoids returning answers in the wrong reply language", async () => {
+    const { GLOBAL_KNOWLEDGE_CACHE_KEY, lookupSyncedGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
+    storage.set(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "compiler-en",
+            canonicalQuestion: "What is a compiler?",
+            normalizedQuestion: "what is a compiler",
+            answer: "A compiler translates source code.",
+            answerLanguage: "en",
+            embedding: [],
+            embeddingNorm: 0,
+            confidence: 1,
+            safetyLabel: "general",
+            updatedAt: "2026-05-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+
+    expect(await lookupSyncedGlobalKnowledge("Explain compiler", { replyLanguage: "ta" })).toBeNull();
+    expect((await lookupSyncedGlobalKnowledge("Explain compiler", { replyLanguage: "en" }))?.entry.answer).toContain("compiler");
   });
 
   it("bypasses expanded live, price, weather, and recommendation queries", async () => {

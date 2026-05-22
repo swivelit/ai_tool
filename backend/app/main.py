@@ -77,6 +77,7 @@ from .orchestrator_task import run_orchestrator, run_rule_orchestrator
 from .global_qa_cache import (
     build_global_knowledge_sync_payload,
     global_qa_schema_ready,
+    is_cacheable_global_question,
     lookup_approved_global_cache,
     record_backend_openai_answer,
 )
@@ -571,6 +572,21 @@ def _ai_router_enabled() -> bool:
 
 def _legacy_pipeline_enabled() -> bool:
     return os.getenv("AI_LEGACY_PIPELINE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_bool_runtime(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ai_router_global_cache_lookup_enabled() -> bool:
+    return _env_bool_runtime("AI_ROUTER_GLOBAL_CACHE_LOOKUP_ENABLED", True)
+
+
+def _ai_router_global_cache_record_enabled() -> bool:
+    return _env_bool_runtime("AI_ROUTER_GLOBAL_CACHE_RECORD_ENABLED", True)
 
 
 def _normalize_reply_language(value: Optional[str]) -> str:
@@ -3584,9 +3600,140 @@ def _metadata_for_ai_response(text: str, response: AIProviderResponse) -> Dict[s
     }
 
 
+def _run_ai_router_global_cache_lookup(session: Session, payload: ChatAPIRequest, text: str) -> Optional[Dict[str, Any]]:
+    if not _ai_router_global_cache_lookup_enabled():
+        return None
+    try:
+        return lookup_approved_global_cache(session, text, payload.reply_language)
+    except Exception as exc:
+        session.rollback()
+        logger.warning(
+            "ai_router_global_cache_lookup_failed",
+            extra=chat_log_payload(
+                event="ai_router_global_cache_lookup_failed",
+                user_id=payload.user_id,
+                request_id=payload.request_id or get_request_id(),
+                workflow_step="global_cache_lookup",
+                workflow_phase="failed",
+                error_type=exc.__class__.__name__,
+                error_message=sanitize_log_text(str(exc), 240),
+            ),
+        )
+        return None
+
+
+def _build_ai_router_global_cache_response(
+    session: Session,
+    payload: ChatAPIRequest,
+    text: str,
+    hit: Dict[str, Any],
+    request_id: Optional[str],
+) -> Dict[str, Any]:
+    pipeline_result = _build_global_cache_pipeline_result(hit)
+    answer = str(hit.get("answer") or "").strip()
+    item, meta, normalized_pipeline = _save_item_from_pipeline(
+        session,
+        user_id=payload.user_id,
+        source="text",
+        raw_text=text,
+        transcript=None,
+        pipeline_result=pipeline_result,
+        reply_language=payload.reply_language,
+        metadata_override=_fast_fallback_metadata_for_item(text, answer),
+        skip_expensive_side_effects=True,
+    )
+    response = _build_chat_response(item, meta, normalized_pipeline)
+    response_meta = response.get("meta") if isinstance(response, dict) else {}
+    if isinstance(response_meta, dict):
+        response_meta.setdefault("request_id", request_id)
+        response_meta.setdefault("route", "global_knowledge_cache")
+        response_meta.setdefault("source", "global_qa_cache")
+        response_meta.setdefault("provider", "cache")
+        response_meta.setdefault("cache_hit", True)
+        response_meta.setdefault("global_cache_id", hit.get("id"))
+        response_meta.setdefault("direct_answer_source", "global_qa_cache")
+        response_meta.setdefault("ai_router_enabled", True)
+        response_meta.setdefault("cost_estimate", 0)
+        response_meta.setdefault("cost_currency", "")
+    return response
+
+
+def _ai_router_response_is_cache_recordable(
+    response: AIProviderResponse,
+    pipeline: Dict[str, Any],
+    question: str,
+    answer: str,
+) -> bool:
+    provider = str(response.provider or "").strip().lower()
+    if provider not in {"openai", "sarvam"}:
+        return False
+    if not str(question or "").strip() or not str(answer or "").strip():
+        return False
+    route = str(pipeline.get("route_taken") or response.route or "").strip().lower()
+    source = str(pipeline.get("direct_answer_source") or response.provider or "").strip().lower()
+    intent = str(response.intent or pipeline.get("predicted_label") or "").strip().lower()
+    cache_hit = str(pipeline.get("cache_hit") or "").strip().lower() in {"1", "true", "yes"}
+    if cache_hit or route == "global_knowledge_cache" or source == "global_qa_cache":
+        return False
+    if provider == "cache" or route in {"backend_tool", "tool", "blocked"}:
+        return False
+    if intent in {"reminder", "routine", "profile", "settings", "unsafe_or_sensitive"}:
+        return False
+    blocked_terms = ("reminder", "routine", "schedule", "calendar", "tool", "mutation", "error")
+    if any(term in f"{route} {source} {intent}" for term in blocked_terms):
+        return False
+    if isinstance(response.raw, dict) and response.raw.get("provider_error_type"):
+        return False
+    return is_cacheable_global_question(question, answer)
+
+
+def _record_ai_router_cache_side_effects(
+    session: Session,
+    *,
+    user_id: Optional[int],
+    question: str,
+    answer: str,
+    ai_response: AIProviderResponse,
+    pipeline: Dict[str, Any],
+    meta: Dict[str, Any],
+    request_id: Optional[str],
+) -> None:
+    if not _ai_router_global_cache_record_enabled():
+        return
+    if not _ai_router_response_is_cache_recordable(ai_response, pipeline, question, answer):
+        return
+    payload = {"pipeline": pipeline, "meta": meta}
+    try:
+        upsert_qa_cache(session, user_id, question, payload)
+    except Exception:
+        session.rollback()
+        logger.exception(
+            "AI router QA cache side effect failed",
+            extra={"user_id": user_id, "source": "ai_router"},
+        )
+    try:
+        record_backend_openai_answer(
+            session,
+            user_id,
+            question,
+            answer,
+            ai_response.model,
+            request_id=request_id,
+        )
+    except Exception:
+        session.rollback()
+        logger.exception(
+            "AI router global QA cache side effect failed",
+            extra={"user_id": user_id, "source": "ai_router"},
+        )
+
+
 def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
     text = _resolve_chat_text(payload)
     request_id = payload.request_id or get_request_id()
+    global_hit = _run_ai_router_global_cache_lookup(session, payload, text)
+    if global_hit is not None:
+        return _build_ai_router_global_cache_response(session, payload, text, global_hit, request_id)
     context_turns = _recent_ai_context_turns(session, payload.user_id, limit=6)
     profile_context = build_profile_prompt_context(session, payload.user_id)
     profile_prompt_context = _profile_prompt_context_text(profile_context)
@@ -3661,6 +3808,24 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
         if payload.client_original_route:
             response_meta.setdefault("original_route", payload.client_original_route)
             response_meta.setdefault("client_original_route", payload.client_original_route)
+    answer_text = str(
+        normalized_pipeline.get("theni_tamil_text")
+        or normalized_pipeline.get("tamil_text")
+        or normalized_pipeline.get("remodeled_english")
+        or normalized_pipeline.get("raw_english")
+        or item.details
+        or ""
+    ).strip()
+    _record_ai_router_cache_side_effects(
+        session,
+        user_id=payload.user_id,
+        question=text,
+        answer=answer_text,
+        ai_response=ai_response,
+        pipeline=normalized_pipeline,
+        meta=meta,
+        request_id=request_id,
+    )
     return response
 
 
@@ -4176,7 +4341,13 @@ def api_global_knowledge_sync(
         ),
     )
     try:
-        payload = build_global_knowledge_sync_payload(session, since=since, limit=limit, after_id=afterId)
+        payload = build_global_knowledge_sync_payload(
+            session,
+            since=since,
+            limit=limit,
+            after_id=afterId,
+            user_id=int(user.id),
+        )
     except Exception as exc:
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         logger.exception(

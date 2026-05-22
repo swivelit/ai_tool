@@ -1,6 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { apiGet } from "./api";
 import { enqueueClientTurnLog, type ClientTurnLogPayload } from "./chatTelemetry";
 import { isUnsafeForStaticCache } from "./currentDataGuards";
 
@@ -13,6 +12,7 @@ export const GLOBAL_KNOWLEDGE_SYNC_PAGE_CAP = 10;
 
 type SyncEntryPayload = {
   id?: number | string;
+  scope?: "global" | "user" | string;
   canonicalQuestion?: string;
   normalizedQuestion?: string;
   answer?: string;
@@ -26,6 +26,8 @@ type SyncEntryPayload = {
   embeddingKind?: string;
   confidence?: number;
   safetyLabel?: string;
+  source?: Record<string, unknown> | string | null;
+  scopeSource?: Record<string, unknown> | string | null;
   updatedAt?: string | null;
   expiresAt?: string | null;
 };
@@ -34,11 +36,13 @@ type SyncPayload = {
   ok?: boolean;
   schemaReady?: boolean;
   entries?: SyncEntryPayload[];
+  userEntries?: SyncEntryPayload[];
   serverTime?: string;
   nextSince?: string | null;
   nextAfterId?: number | string | null;
   hasMore?: boolean;
   revokedIds?: Array<number | string>;
+  revocations?: Array<number | string | { id?: number | string }>;
   count?: number;
   error?: string;
   missingTables?: string[];
@@ -46,6 +50,7 @@ type SyncPayload = {
 
 export type GlobalKnowledgeEntry = {
   id: string;
+  scope: "global" | "user";
   canonicalQuestion: string;
   normalizedQuestion: string;
   answer: string;
@@ -59,6 +64,7 @@ export type GlobalKnowledgeEntry = {
   embeddingKind: string;
   confidence: number;
   safetyLabel: string;
+  source?: Record<string, unknown> | string | null;
   updatedAt: string;
   expiresAt?: string | null;
 };
@@ -424,7 +430,13 @@ function lexicalSimilarity(left: string, right: string) {
 }
 
 function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
-  const id = String(raw?.id ?? "").trim();
+  const scope = String(raw?.scope || "global").trim().toLowerCase() === "user"
+    ? "user"
+    : "global";
+  const rawId = String(raw?.id ?? "").trim();
+  const id = scope === "user" && rawId && !rawId.startsWith("user:")
+    ? `user:${rawId}`
+    : rawId;
   const normalizedQuestion = normalizeGlobalKnowledgeQuestion(
     raw?.normalizedQuestion || raw?.canonicalQuestion,
   );
@@ -458,6 +470,7 @@ function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
   );
   return {
     id,
+    scope,
     canonicalQuestion:
       String(raw.canonicalQuestion || raw.normalizedQuestion || "").trim() ||
       normalizedQuestion,
@@ -474,6 +487,7 @@ function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
     embeddingKind: effectiveEmbedding.length ? GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND : "",
     confidence: Math.max(0, Math.min(1, Number(raw.confidence || 0))),
     safetyLabel: String(raw.safetyLabel || "general"),
+    source: raw.source ?? raw.scopeSource ?? null,
     updatedAt: String(raw.updatedAt || nowIso()),
     expiresAt: raw.expiresAt || null,
   };
@@ -587,6 +601,7 @@ export async function syncGlobalKnowledge(
       if (cursorSince && cursorAfterId) params.set("afterId", cursorAfterId);
       let payload: SyncPayload;
       try {
+        const { apiGet } = await import("./api");
         payload = await apiGet<SyncPayload>(`/api/global-knowledge/sync?${params.toString()}`);
       } catch (error) {
         const durationMs = Date.now() - startedAt;
@@ -658,15 +673,24 @@ export async function syncGlobalKnowledge(
           missingTables,
         };
       }
-      const revokedIds = Array.isArray(payload.revokedIds)
-        ? payload.revokedIds.map((id) => String(id)).filter(Boolean)
-        : [];
+      const revokedIds = [
+        ...(Array.isArray(payload.revokedIds) ? payload.revokedIds : []),
+        ...(Array.isArray(payload.revocations)
+          ? payload.revocations.map((value) =>
+              typeof value === "object" && value !== null ? value.id : value,
+            )
+          : []),
+      ].map((id) => String(id ?? "").trim()).filter(Boolean);
       revokedIds.forEach((id) => {
         byId.delete(id);
       });
-      const incoming = Array.isArray(payload.entries)
-        ? payload.entries.map(normalizeEntry).filter(Boolean) as GlobalKnowledgeEntry[]
+      const globalEntries = Array.isArray(payload.entries) ? payload.entries : [];
+      const userEntries = Array.isArray(payload.userEntries)
+        ? payload.userEntries.map((entry) => ({ ...entry, scope: "user" }))
         : [];
+      const incoming = [...globalEntries, ...userEntries]
+        .map(normalizeEntry)
+        .filter(Boolean) as GlobalKnowledgeEntry[];
       incoming.forEach((entry) => {
         byId.set(entry.id, entry);
       });
@@ -762,12 +786,30 @@ function isExpired(entry: GlobalKnowledgeEntry) {
   return Number.isFinite(expires) && expires <= Date.now();
 }
 
+function normalizeAnswerLanguage(value?: string | null) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "english" || normalized.startsWith("en")) return "en";
+  if (normalized === "tamil" || normalized === "mixed" || normalized === "tanglish" || normalized.startsWith("ta")) {
+    return "ta";
+  }
+  return normalized;
+}
+
+function languageMatches(entry: GlobalKnowledgeEntry, requested?: string | null) {
+  const wanted = normalizeAnswerLanguage(requested);
+  if (!wanted) return true;
+  const actual = normalizeAnswerLanguage(entry.answerLanguage);
+  return !actual || actual === wanted;
+}
+
 export async function lookupSyncedGlobalKnowledge(
   question: string,
   options: {
     minSimilarity?: number;
     embedTexts?: (texts: string[]) => Promise<number[][]>;
     nativeEmbeddingKind?: string;
+    replyLanguage?: string | null;
   } = {},
 ): Promise<GlobalKnowledgeLookupHit | null> {
   if (!question.trim() || isLiveOrCurrentGlobalKnowledgeQuestion(question)) {
@@ -779,7 +821,8 @@ export async function lookupSyncedGlobalKnowledge(
       !isExpired(entry) &&
       entry.safetyLabel !== "private" &&
       entry.safetyLabel !== "personal_high_risk" &&
-      entry.safetyLabel !== "unsafe",
+      entry.safetyLabel !== "unsafe" &&
+      languageMatches(entry, options.replyLanguage),
   );
   if (!entries.length) return null;
 

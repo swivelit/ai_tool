@@ -6423,6 +6423,35 @@ async function recordSemanticCacheHit(
   });
 }
 
+const LOCAL_EXACT_CACHE_PRIVATE_RE = /\b(my|our)\s+(email|phone|mobile|address|password|otp|account|bank|card|upi|aadhaar|ssn|salary|income|ctc|pay|profile|memory|routine|goal)\b|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?91[\s.-]?)?[6-9]\d{4}[\s.-]?\d{5}/i;
+const LOCAL_EXACT_CACHE_HIGH_RISK_RE = /\b(emergency|suicide|self harm|kill myself|hurt myself|chest pain|cannot breathe|medical|medicine|symptom|diagnosis|treatment|prescription|dosage|legal|lawyer|lawsuit|contract|tax|financial advice|investment|loan|insurance|bank account|credit card)\b/i;
+const LOCAL_EXACT_CACHE_BAD_ANSWER_RE = /\b(couldn'?t|could not|failed|error|try again|unavailable|timeout|not configured)\b/i;
+
+function isStableSafeSemanticCacheWrite(
+  question: string,
+  answer: string,
+  route: string,
+) {
+  const normalizedRoute = normalizeText(route);
+  if (
+    normalizedRoute.includes("reminder") ||
+    normalizedRoute.includes("calendar") ||
+    normalizedRoute.includes("schedule") ||
+    normalizedRoute.includes("weather") ||
+    normalizedRoute.includes("tool") ||
+    normalizedRoute.includes("clarify") ||
+    normalizedRoute.includes("setup")
+  ) {
+    return false;
+  }
+  if (isTimeSensitiveRagQuery(question)) return false;
+  const combined = `${question}\n${answer}`;
+  if (LOCAL_EXACT_CACHE_PRIVATE_RE.test(combined)) return false;
+  if (LOCAL_EXACT_CACHE_HIGH_RISK_RE.test(combined)) return false;
+  if (LOCAL_EXACT_CACHE_BAD_ANSWER_RE.test(answer)) return false;
+  return Boolean(normalizeText(question) && String(answer || "").trim());
+}
+
 async function writeSemanticCache(
   userId: number,
   question: string,
@@ -6437,10 +6466,14 @@ async function writeSemanticCache(
   const rules = await getMemoryRules();
   const skipRoutes = rules.cache?.skipRoutes || [];
   if (skipRoutes.includes(route)) return;
-  if (opts.allowVectorEmbeddings !== true) return;
-  const vectors = await optionalEmbedTexts([question], runtimeOptions);
-  const embedding = vectors?.[0];
-  if (!embedding) return;
+  if (!isStableSafeSemanticCacheWrite(question, englishAnswer || answer, route)) return;
+  const profileRoute = normalizeText(route).includes("profile");
+  if (profileRoute && opts.allowVectorEmbeddings !== true) return;
+  let embedding: number[] = [];
+  if (opts.allowVectorEmbeddings === true) {
+    const vectors = await optionalEmbedTexts([question], runtimeOptions);
+    embedding = vectors?.[0] || [];
+  }
   const ttlHours = positiveInt(rules.cache?.ttlHours, 168);
   const createdAt = nowIso();
   const expiresAt =
@@ -6463,7 +6496,7 @@ async function writeSemanticCache(
     expiresAt,
     alignmentProfile,
     confidence: 1,
-    sourceLabels: [route],
+    sourceLabels: embedding.length ? [route] : [route, "exact_match_only"],
   };
   await updateSemanticCacheStore(userId, rules, async (store) => {
     const filtered = store.entries.filter((row) => row.id !== newEntry.id);

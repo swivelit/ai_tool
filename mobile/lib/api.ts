@@ -32,6 +32,7 @@ import {
 import { tryBuildQuickLocalReply } from "./localQuickReplies";
 import { loadCloudFallbackConsent } from "./localAssistantSettings";
 import { requiresImmediateBackendCurrentData } from "./currentDataGuards";
+import type { GlobalKnowledgeLookupHit } from "./globalKnowledgeSync";
 import {
   LocalBudgetExceededError,
   getLocalToBackendFallbackMs,
@@ -2014,6 +2015,150 @@ function isChatPath(path: string) {
   return normalized === "/api/chat" || normalized.startsWith("/api/chat?");
 }
 
+function chatMessageFromBody(body?: any) {
+  return String(body?.message ?? body?.text ?? "").trim();
+}
+
+function chatReplyLanguageFromBody(body?: any): ReplyLanguage | undefined {
+  return (
+    normalizeReplyLanguage(body?.reply_language ?? body?.replyLanguage) ||
+    undefined
+  );
+}
+
+function requestLightweightGlobalKnowledgeSync() {
+  void import("./globalKnowledgeSync")
+    .then(({ syncGlobalKnowledge }) =>
+      syncGlobalKnowledge({
+        lightweight: true,
+        limit: 25,
+        minIntervalMs: 30_000,
+      }),
+    )
+    .catch(() => undefined);
+}
+
+function buildSyncedGlobalKnowledgeChatResponse(input: {
+  body?: any;
+  message: string;
+  replyLanguage?: ReplyLanguage;
+  requestId?: string | null;
+  hit: GlobalKnowledgeLookupHit | null;
+}): LocalChatProxyResponse | null {
+  const hit = input.hit;
+  if (!hit) return null;
+  const entry = hit.entry;
+  const createdAt = new Date().toISOString();
+  const answer = entry.answer;
+  const isTamilAnswer = String(entry.answerLanguage || "").toLowerCase().startsWith("ta");
+  const source =
+    entry.scope === "user"
+      ? "synced_user_qa_cache"
+      : "synced_global_knowledge";
+  const replyLanguage = input.replyLanguage || chatReplyLanguageFromBody(input.body);
+  return {
+    ok: true,
+    item: {
+      id: Date.now(),
+      intent: "assistant",
+      category: "Other",
+      raw_text: input.message,
+      transcript: null,
+      datetime: null,
+      title: entry.canonicalQuestion || input.message,
+      details: answer,
+      created_at: createdAt,
+      source: "text",
+      __origin: "local",
+    },
+    assistant: {
+      text: answer,
+      english: isTamilAnswer ? "" : answer,
+      tamil: isTamilAnswer ? answer : undefined,
+      theni_tamil: isTamilAnswer ? answer : undefined,
+    },
+    pipeline: {
+      route_taken: "global_knowledge_cache",
+      predicted_label: "global_knowledge",
+      raw_english: isTamilAnswer ? "" : answer,
+      remodeled_english: isTamilAnswer ? "" : answer,
+      tamil_text: isTamilAnswer ? answer : "",
+      theni_tamil_text: isTamilAnswer ? answer : "",
+      direct_answer_source: source,
+      direct_answer_confidence: hit.score.toFixed(4),
+      cache_hit: "true",
+      meta: {
+        source,
+        cache_source: "global_knowledge_sync",
+        scope: entry.scope,
+        global_knowledge_entry_id: entry.id,
+        request_id: input.requestId || undefined,
+        score: hit.score,
+        match_source: hit.source,
+        reply_language: replyLanguage,
+      },
+    },
+    meta: {
+      source,
+      route: "global_knowledge_cache",
+      request_id: input.requestId || null,
+      cacheHit: true,
+      cache_source: "global_knowledge_sync",
+      scope: entry.scope,
+      globalKnowledgeEntryId: entry.id,
+      score: hit.score,
+      matchSource: hit.source,
+      responsePath: "local_synced_global_knowledge",
+      created_at: createdAt,
+    },
+  };
+}
+
+async function maybeServeSyncedGlobalKnowledgeChat(
+  path: string,
+  body?: any,
+): Promise<LocalChatProxyResponse | null> {
+  if (!isChatPath(path)) return null;
+  const message = chatMessageFromBody(body);
+  if (!message || requiresImmediateBackendCurrentData(message)) {
+    return null;
+  }
+  const requestId = String(body?.request_id ?? body?.requestId ?? "").trim() || null;
+  const replyLanguage = chatReplyLanguageFromBody(body);
+  const startedAt = Date.now();
+  const { lookupSyncedGlobalKnowledge } = await import("./globalKnowledgeSync");
+  const hit = await lookupSyncedGlobalKnowledge(message, {
+    replyLanguage,
+    minSimilarity: 0.9,
+  });
+  if (!hit) {
+    return null;
+  }
+  logClientWorkflowStep({
+    event: "client_synced_global_knowledge_cache_hit",
+    user_id: Number(body?.user_id ?? body?.userId ?? 0) || undefined,
+    request_id: requestId,
+    channel: "text",
+    question: message,
+    question_length: textLength(message),
+    answer_length: textLength(hit.entry.answer),
+    agent_source: "global_rag",
+    route_taken: "global_knowledge_cache",
+    workflow_step: "global_knowledge_lookup",
+    workflow_phase: "completed",
+    cache_hit: true,
+    cache_source: "global_knowledge_sync",
+    duration_ms: Date.now() - startedAt,
+  });
+  return buildSyncedGlobalKnowledgeChatResponse({
+    body,
+    message,
+    replyLanguage,
+    requestId,
+    hit,
+  });
+}
+
 async function shouldUseLocalChatPipeline() {
   logClientRoutingBanner();
 
@@ -2632,10 +2777,16 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
     }
   }
 
+  const chatPath = isChatPath(path);
+  const useLocalChatPipeline =
+    localChatInterceptionDepth === 0 && chatPath
+      ? await shouldUseLocalChatPipeline()
+      : false;
+
   if (
     localChatInterceptionDepth === 0 &&
-    isChatPath(path) &&
-    (await shouldUseLocalChatPipeline())
+    chatPath &&
+    useLocalChatPipeline
   ) {
     localChatInterceptionDepth += 1;
     try {
@@ -2643,6 +2794,16 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
     } finally {
       localChatInterceptionDepth = Math.max(0, localChatInterceptionDepth - 1);
     }
+  }
+
+  if (localChatInterceptionDepth === 0 && chatPath) {
+    const localHit = await maybeServeSyncedGlobalKnowledgeChat(path, body);
+    if (localHit) {
+      return localHit as T;
+    }
+    const response = await apiPostBackendOnly<T>(path, body);
+    requestLightweightGlobalKnowledgeSync();
+    return response;
   }
 
   return apiPostBackendOnly<T>(path, body);

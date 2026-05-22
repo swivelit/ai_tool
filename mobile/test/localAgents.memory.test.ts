@@ -832,6 +832,43 @@ describe("local memory and semantic cache", () => {
     ]);
   });
 
+  it("writes exact-match semantic cache entries without native embeddings", async () => {
+    writeJson(`${dataRoot}/cache/semantic_cache.json`, {
+      version: 2,
+      entries: [],
+      hits: [],
+    });
+    const { __memoryTestUtils } = await import("../lib/localAgents");
+
+    await __memoryTestUtils.writeSemanticCache(
+      349,
+      "Explain recursion",
+      "Recursion is when a function calls itself.",
+      "Recursion is when a function calls itself.",
+      "local_answer",
+      "assistant",
+      { replyLanguage: "en" },
+      { modelsReady: false },
+      { allowVectorEmbeddings: false },
+    );
+
+    const store = readJson(`${dataRoot}/cache/semantic_cache.json`);
+    expect(store.entries).toHaveLength(1);
+    expect(store.entries[0].embedding).toEqual([]);
+    expect(store.entries[0].sourceLabels).toContain("exact_match_only");
+    await expect(
+      __memoryTestUtils.lookupSemanticCache(
+        349,
+        "Explain recursion",
+        { modelsReady: false },
+        { route: "local_answer" },
+      ),
+    ).resolves.toMatchObject({
+      canonicalAnswer: "Recursion is when a function calls itself.",
+      score: 1,
+    });
+  });
+
   it("extracts durable facts from recent conversation logs", async () => {
     writeJsonl(`${dataRoot}/conversations/41.jsonl`, [
       { role: "user", content: "I work as a software engineer.", createdAt: "2026-04-09T10:00:00.000Z" },

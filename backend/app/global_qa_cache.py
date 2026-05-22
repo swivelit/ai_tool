@@ -15,7 +15,7 @@ from sqlalchemy import and_, inspect, or_, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlmodel import Session, select
 
-from .models import GlobalQACache, GlobalQAObservation, GlobalQATombstone
+from .models import GlobalQACache, GlobalQAObservation, GlobalQATombstone, QACache
 from .openai_model_router import stable_user_hash
 from .time_utils import utc_now
 
@@ -237,7 +237,9 @@ def _schema_not_ready_payload(missing_tables: Optional[List[str]] = None) -> dic
         "ok": False,
         "schemaReady": False,
         "entries": [],
+        "userEntries": [],
         "revokedIds": [],
+        "revocations": [],
         "hasMore": False,
         "count": 0,
         "error": "global_qa_schema_not_ready",
@@ -1074,6 +1076,158 @@ def _row_cursor(row: GlobalQACache) -> Tuple[Optional[str], Optional[int]]:
     )
 
 
+def _user_qa_sync_min_hits() -> int:
+    return _env_int("USER_QA_SYNC_MIN_HITS", 2, minimum=1)
+
+
+def _user_qa_sync_ttl_days() -> int:
+    return _env_int("USER_QA_SYNC_TTL_DAYS", 30, minimum=1)
+
+
+def _qa_cache_payload(row: QACache) -> Dict[str, Any]:
+    try:
+        parsed = json.loads(row.answer or "{}")
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _qa_cache_answer_text(payload: Dict[str, Any]) -> str:
+    assistant = payload.get("assistant")
+    if isinstance(assistant, dict):
+        text = str(assistant.get("text") or "").strip()
+        if text:
+            return " ".join(text.split())
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        details = str(meta.get("details") or "").strip()
+        if details:
+            return " ".join(details.split())
+    pipeline = payload.get("pipeline")
+    if isinstance(pipeline, dict):
+        for key in ("theni_tamil_text", "tamil_text", "remodeled_english", "raw_english"):
+            text = str(pipeline.get(key) or "").strip()
+            if text:
+                return " ".join(text.split())
+    return ""
+
+
+def _qa_cache_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
+    pipeline = payload.get("pipeline")
+    return pipeline if isinstance(pipeline, dict) else {}
+
+
+def _qa_cache_route_is_user_sync_safe(pipeline: Dict[str, Any]) -> bool:
+    route = str(pipeline.get("route_taken") or "").strip().lower()
+    source = str(pipeline.get("direct_answer_source") or "").strip().lower()
+    risk = str(pipeline.get("risk_level") or "").strip().lower()
+    predicted = str(pipeline.get("predicted_label") or "").strip().lower()
+    cache_hit = str(pipeline.get("cache_hit") or "").strip().lower() in {"1", "true", "yes"}
+    if cache_hit or route == "global_knowledge_cache" or source == "global_qa_cache":
+        return False
+    if risk in {"high", "unsafe", "personal_high_risk"}:
+        return False
+    blocked_terms = (
+        "reminder",
+        "routine",
+        "schedule",
+        "calendar",
+        "tool",
+        "mutation",
+        "error",
+        "fallback",
+    )
+    combined = " ".join(part for part in (route, source, predicted) if part)
+    return not any(term in combined for term in blocked_terms)
+
+
+def _safe_user_qa_sync_entry(row: QACache, now: datetime) -> Optional[Dict[str, Any]]:
+    if row.id is None or row.user_id is None:
+        return None
+    if int(row.hits or 0) < _user_qa_sync_min_hits():
+        return None
+    updated_at = row.updated_at or now
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    expires_at = updated_at + timedelta(days=_user_qa_sync_ttl_days())
+    if expires_at <= now:
+        return None
+    question = str(row.question or "").strip()
+    payload = _qa_cache_payload(row)
+    answer = _qa_cache_answer_text(payload)
+    pipeline = _qa_cache_pipeline(payload)
+    if not question or not answer:
+        return None
+    if not _qa_cache_route_is_user_sync_safe(pipeline):
+        return None
+    if not is_cacheable_global_question(question, answer):
+        return None
+    canonical_question = redact_sensitive_text(question)
+    if _redaction_changed_meaning(question, canonical_question):
+        return None
+    normalized = normalize_question(canonical_question)
+    if not normalized:
+        return None
+    embedding, embedding_norm = embed_question_for_global_cache(normalized)
+    aliases = _sync_safe_variants(_alias_variants(canonical_question))
+    answer_language = _infer_answer_language(answer)
+    source = {
+        "kind": "user_qa_cache",
+        "qaCacheId": int(row.id),
+        "hits": int(row.hits or 0),
+        "route": str(pipeline.get("route_taken") or ""),
+        "directAnswerSource": str(pipeline.get("direct_answer_source") or ""),
+    }
+    return {
+        "id": f"user:{int(row.id)}",
+        "scope": "user",
+        "canonicalQuestion": canonical_question,
+        "normalizedQuestion": normalized,
+        "aliases": aliases,
+        "observedSafeQuestions": _sync_safe_variants([canonical_question, normalized]),
+        "answer": redact_sensitive_text(answer),
+        "answerLanguage": answer_language,
+        "topic": _topic_from_question(canonical_question),
+        "answerHash": answer_hash(answer),
+        "embedding": embedding,
+        "embeddingNorm": embedding_norm,
+        "embeddingKind": GLOBAL_QA_EMBEDDING_KIND,
+        "confidence": 1.0,
+        "safetyLabel": "general",
+        "scopeSource": source,
+        "source": source,
+        "updatedAt": updated_at.isoformat(),
+        "expiresAt": expires_at.isoformat(),
+    }
+
+
+def _user_qa_sync_entries(
+    session: Session,
+    *,
+    user_id: Any,
+    now: datetime,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    try:
+        uid = int(user_id)
+    except Exception:
+        return []
+    rows = list(
+        session.exec(
+            select(QACache)
+            .where(QACache.user_id == uid)
+            .order_by(QACache.updated_at.desc(), QACache.id.desc())
+            .limit(max(1, min(int(limit or 250), 500)))
+        ).all()
+    )
+    entries: List[Dict[str, Any]] = []
+    for row in rows:
+        entry = _safe_user_qa_sync_entry(row, now)
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
 def record_global_qa_tombstone(session: Session, global_cache_id: int, reason: str = "deleted") -> GlobalQATombstone:
     _ensure_schema_compat(session)
     row = GlobalQATombstone(
@@ -1092,6 +1246,7 @@ def build_global_knowledge_sync_payload(
     since: Any = None,
     limit: int = 250,
     after_id: Any = None,
+    user_id: Any = None,
 ) -> dict:
     readiness = global_qa_schema_ready(session)
     if not readiness.get("ok"):
@@ -1138,6 +1293,12 @@ def build_global_knowledge_sync_payload(
             for row in session.exec(tombstone_query).all()
             if int(row.global_cache_id or 0) > 0
         ]
+        user_entries = _user_qa_sync_entries(
+            session,
+            user_id=user_id,
+            now=now,
+            limit=safe_limit,
+        )
     except (ProgrammingError, OperationalError) as exc:
         session.rollback()
         readiness = global_qa_schema_ready(session)
@@ -1232,11 +1393,13 @@ def build_global_knowledge_sync_payload(
         "ok": True,
         "schemaReady": True,
         "entries": entries,
+        "userEntries": user_entries,
         "count": len(entries),
         "nextSince": next_since,
         "nextAfterId": next_after_id,
         "hasMore": has_more,
         "serverTime": now.isoformat(),
         "revokedIds": sorted(set(revoked_ids)),
+        "revocations": sorted(set(revoked_ids)),
         "since": since_dt.isoformat() if since_dt else None,
     }

@@ -436,6 +436,8 @@ def _sarvam_configured(context: dict[str, Any]) -> bool:
 
 
 def _try_global_cache(session: Session, request: AIRequest, context: dict[str, Any]) -> Optional[AIProviderResponse]:
+    if not _env_bool("AI_ROUTER_GLOBAL_CACHE_LOOKUP_ENABLED", True):
+        return None
     lookup = context.get("global_cache_lookup")
     if lookup is None:
         try:
