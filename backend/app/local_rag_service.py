@@ -591,6 +591,29 @@ class LocalRAGService:
         except Exception:
             return []
 
+    def _embedding_kind(self) -> str:
+        return f"openai:{self._embedding_model}"
+
+    def _query_embedding_is_compatible(self, query_embedding_kind: Optional[str]) -> bool:
+        kind = str(query_embedding_kind or "").strip()
+        return not kind or kind == self._embedding_kind()
+
+    def _provided_query_embedding(
+        self,
+        query_embedding: Optional[Tuple[List[float], float]],
+        query_embedding_kind: Optional[str],
+    ) -> Optional[Tuple[List[float], float]]:
+        if query_embedding is None or not self._query_embedding_is_compatible(query_embedding_kind):
+            return None
+        try:
+            vec = [float(x) for x in (query_embedding[0] or [])]
+            norm = float(query_embedding[1] or 0.0)
+        except Exception:
+            return None
+        if not vec:
+            return None
+        return vec, norm or self._vector_norm(vec)
+
     def _embed_query(
         self,
         text: str,
@@ -896,13 +919,20 @@ class LocalRAGService:
         theni = self._format_template(row.theni_tamil_template or row.tamil_template or row.english_template, user_name=user_name, assistant_name=assistant_name, place=place)
         return english, tamil, theni
 
-    def _match_fast_row(self, normalized: str, user: Optional[User]) -> Optional[Tuple[FastRAGRow, float, str]]:
+    def _match_fast_row(
+        self,
+        normalized: str,
+        user: Optional[User],
+        *,
+        query_embedding: Optional[Tuple[List[float], float]] = None,
+    ) -> Optional[Tuple[FastRAGRow, float, str]]:
         if not normalized:
             return None
         self._ensure_fast_row_vectors()
         q_tokens = set(self._tokens(normalized))
         exp_q = self._expand_tokens(q_tokens)
-        query_embedding = self._embed_query(normalized) if (self._semantic_enabled and RAG_ENABLE_FAST_RAG_SEMANTIC) else None
+        if query_embedding is None and self._semantic_enabled and RAG_ENABLE_FAST_RAG_SEMANTIC:
+            query_embedding = self._embed_query(normalized)
 
         best_row: Optional[FastRAGRow] = None
         best_score = 0.0
@@ -1141,7 +1171,15 @@ class LocalRAGService:
         )
         return str(user.id or ""), text, user.created_at or _utc_now()
 
-    def build_rag_context(self, session: Session, user_id: Optional[int], message: str) -> Dict[str, Any]:
+    def build_rag_context(
+        self,
+        session: Session,
+        user_id: Optional[int],
+        message: str,
+        *,
+        query_embedding: Optional[Tuple[List[float], float]] = None,
+        query_embedding_kind: Optional[str] = None,
+    ) -> Dict[str, Any]:
         t0 = time.perf_counter()
         if not (RAG_ENABLED and user_id):
             return {"context_text": "", "snippets": [], "timings_ms": {"rag_total_ms": 0.0}}
@@ -1153,7 +1191,9 @@ class LocalRAGService:
 
         q_tokens = set(self._tokens(normalized_query))
         exp_q = self._expand_tokens(q_tokens)
-        query_embedding = self._embed_query(normalized_query, session=session, user_id=int(user_id)) if self._semantic_enabled else None
+        query_embedding = self._provided_query_embedding(query_embedding, query_embedding_kind) or (
+            self._embed_query(normalized_query, session=session, user_id=int(user_id)) if self._semantic_enabled else None
+        )
 
         t_fetch = time.perf_counter()
         candidates: List[RagSnippet] = []
@@ -1339,6 +1379,7 @@ class LocalRAGService:
         normalized = self.normalize_lookup_text(message)
         if not normalized:
             return None
+        provided_query_embedding = self._provided_query_embedding(query_embedding, query_embedding_kind)
         is_live_current_query = bool(
             LIVE_CURRENT_QUERY_RE.search(normalized) or TODAY_LIVE_QUERY_RE.search(normalized)
         )
@@ -1422,9 +1463,33 @@ class LocalRAGService:
                 if not q_norm:
                     continue
 
-                overlap = self._set_overlap(set(self._tokens(normalized)), set(self._tokens(q_norm)))
+                q_tokens = set(self._tokens(normalized))
+                exp_q = self._expand_tokens(q_tokens)
+                overlap = self._set_overlap(q_tokens, set(self._tokens(q_norm)))
                 seq = self._string_similarity(normalized, q_norm)
                 score = max(overlap, seq)
+                if provided_query_embedding is not None:
+                    source_id, content_text, updated_at = self._candidate_from_cache(row)
+                    cand_embedding = None
+                    emb = self._get_or_create_embedding(
+                        session,
+                        user_id=int(user_id),
+                        source_type="qa_cache",
+                        source_id=source_id,
+                        content_text=content_text,
+                        updated_at=updated_at,
+                    )
+                    if emb is not None:
+                        cand_embedding = (emb[0], emb[1])
+                    semantic_score, _semantic, _lexical = self._score_text_pair(
+                        normalized,
+                        content_text,
+                        q_tokens,
+                        exp_q,
+                        provided_query_embedding,
+                        cand_embedding,
+                    )
+                    score = max(score, semantic_score)
 
                 if q_norm == normalized:
                     score = 1.0
@@ -1468,7 +1533,7 @@ class LocalRAGService:
         if direct_profile is not None:
             return direct_profile
 
-        match = self._match_fast_row(normalized, user)
+        match = self._match_fast_row(normalized, user, query_embedding=provided_query_embedding)
         if match is None:
             return None
 

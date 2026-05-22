@@ -24,4 +24,8 @@ class FeedbackQualityAgent:
         row.updated_at = utc_now()
         session.add(row)
         session.commit()
+        if tombstoned and row.id is not None:
+            from ...global_qa_cache import record_global_qa_tombstone
+
+            record_global_qa_tombstone(session, int(row.id), reason="negative_feedback_threshold")
         return FeedbackQualityResult(row.confidence, tombstoned)

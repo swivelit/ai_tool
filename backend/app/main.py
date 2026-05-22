@@ -4348,9 +4348,12 @@ def api_debug_global_qa_cache(
 
 @app.get("/api/global-knowledge/sync")
 def api_global_knowledge_sync(
+    request: Request,
     since: Optional[str] = Query(default=None),
     afterId: Optional[int] = Query(default=None, ge=1),
     limit: int = Query(default=250, ge=1, le=500),
+    topicSeeds: Optional[List[str]] = Query(default=None),
+    topic_seeds: Optional[List[str]] = Query(default=None),
     session: Session = Depends(get_session),
     auth_user: AuthUser = Depends(get_current_user),
 ):
@@ -4371,12 +4374,19 @@ def api_global_knowledge_sync(
         ),
     )
     try:
+        topic_seed_values = [
+            *(topicSeeds or []),
+            *(topic_seeds or []),
+            *request.query_params.getlist("topicSeeds"),
+            *request.query_params.getlist("topic_seeds"),
+        ]
         payload = build_global_knowledge_sync_payload(
             session,
             since=since,
             limit=limit,
             after_id=afterId,
             user_id=int(user.id),
+            topic_seeds=topic_seed_values,
         )
     except Exception as exc:
         duration_ms = round((time.perf_counter() - started) * 1000, 2)

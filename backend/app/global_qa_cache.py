@@ -72,8 +72,10 @@ _LIVE_TERMS = {
     "forecast",
     "tomorrow",
     "yesterday",
+    "tonight",
     "result",
     "results",
+    "playing",
     "match",
     "fixture",
     "fixtures",
@@ -340,10 +342,7 @@ def _hot_key(*, scope: str, normalized_question: str, language: str = "*", user_
     return f"gqa:v1:{scope}:{lang}:{user_part}:{_hot_question_hash(normalized_question)}"
 
 
-def _hot_lookup_keys(question: str, language: Optional[str], user_id_hash: Optional[str]) -> List[str]:
-    normalized = normalize_question(question)
-    if not normalized:
-        return []
+def _hot_lookup_languages(language: Optional[str]) -> List[str]:
     languages = []
     if language:
         languages.append(language)
@@ -355,16 +354,38 @@ def _hot_lookup_keys(question: str, language: Optional[str], user_id_hash: Optio
         if key not in seen_langs:
             seen_langs.add(key)
             deduped_languages.append(key)
-    keys: List[str] = []
-    if user_id_hash:
-        keys.extend(
+    return deduped_languages
+
+
+def _hot_lookup_keys_for_scope(
+    question: str,
+    language: Optional[str],
+    *,
+    scope: str,
+    user_id_hash: Optional[str] = None,
+) -> List[str]:
+    normalized = normalize_question(question)
+    if not normalized:
+        return []
+    scope = _USER_SCOPE if str(scope or "").strip().lower() == _USER_SCOPE else _GLOBAL_SCOPE
+    languages = _hot_lookup_languages(language)
+    if scope == _USER_SCOPE:
+        if not user_id_hash:
+            return []
+        return [
             _hot_key(scope=_USER_SCOPE, normalized_question=normalized, language=lang, user_id_hash=user_id_hash)
-            for lang in deduped_languages
-        )
-    keys.extend(
+            for lang in languages
+        ]
+    return [
         _hot_key(scope=_GLOBAL_SCOPE, normalized_question=normalized, language=lang)
-        for lang in deduped_languages
-    )
+        for lang in languages
+    ]
+
+
+def _hot_lookup_keys(question: str, language: Optional[str], user_id_hash: Optional[str]) -> List[str]:
+    keys: List[str] = []
+    keys.extend(_hot_lookup_keys_for_scope(question, language, scope=_USER_SCOPE, user_id_hash=user_id_hash))
+    keys.extend(_hot_lookup_keys_for_scope(question, language, scope=_GLOBAL_SCOPE))
     return keys
 
 
@@ -1014,6 +1035,13 @@ def _answer_language(reply_language: Optional[str]) -> Optional[str]:
 
 
 def _query_embedding_bundle(question: str, query_embedding: Any = None) -> Dict[str, Any]:
+    if callable(query_embedding):
+        try:
+            resolved = query_embedding()
+        except Exception:
+            resolved = None
+        if resolved is not None and resolved is not query_embedding:
+            return _query_embedding_bundle(question, resolved)
     if isinstance(query_embedding, dict):
         bundle = dict(query_embedding)
         if "token_hash_embedding" not in bundle:
@@ -1110,9 +1138,11 @@ def _lookup_hot_cache(
     language: Optional[str],
     user_hash: Optional[str],
     now: datetime,
+    *,
+    scope: str,
 ) -> Optional[dict]:
     cache = _hot_cache()
-    for key in _hot_lookup_keys(question, language, user_hash):
+    for key in _hot_lookup_keys_for_scope(question, language, scope=scope, user_id_hash=user_hash):
         try:
             payload = cache.get(key)
         except Exception:
@@ -1124,6 +1154,12 @@ def _lookup_hot_cache(
             continue
         row = session.get(GlobalQACache, int(row_id))
         if row is None:
+            try:
+                cache.delete(key)
+            except Exception:
+                pass
+            continue
+        if _row_scope(row) != (_USER_SCOPE if str(scope or "").lower() == _USER_SCOPE else _GLOBAL_SCOPE):
             try:
                 cache.delete(key)
             except Exception:
@@ -1184,10 +1220,11 @@ def lookup_approved_global_cache(
     language = _answer_language(reply_language)
     now = utc_now()
     user_hash = stable_user_hash(user_id) if user_id is not None else None
-    hot_hit = _lookup_hot_cache(session, question, language, user_hash, now)
-    if hot_hit is not None:
-        return hot_hit
-    query_bundle = _query_embedding_bundle(question, query_embedding)
+    if user_hash:
+        hot_user_hit = _lookup_hot_cache(session, question, language, user_hash, now, scope=_USER_SCOPE)
+        if hot_user_hit is not None:
+            return hot_user_hit
+    query_bundle: Optional[Dict[str, Any]] = None
     try:
         user_rows: List[GlobalQACache] = []
         if user_hash:
@@ -1200,6 +1237,73 @@ def lookup_approved_global_cache(
                     .order_by(GlobalQACache.updated_at.desc())
                 ).all()
             )
+    except (ProgrammingError, OperationalError) as exc:
+        session.rollback()
+        logger.warning(
+            "global_cache_schema_not_ready",
+            extra={
+                "event": "global_cache_schema_not_ready",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc)[:240],
+                "db_schema_ready": False,
+            },
+        )
+        return None
+
+    def _best_hit_from_rows(rows: List[GlobalQACache]) -> Tuple[Optional[GlobalQACache], float]:
+        nonlocal query_bundle
+        if not rows:
+            return None, 0.0
+        if query_bundle is None:
+            query_bundle = _query_embedding_bundle(question, query_embedding)
+        scored: List[Tuple[GlobalQACache, float]] = []
+        for row in rows:
+            if not _row_lookup_safe(row, question, language, now, user_hash=user_hash):
+                continue
+            score = _score_row_against_query(row, question, query_bundle)
+            if score > 0:
+                scored.append((row, score))
+        if not scored:
+            return None, 0.0
+        try:
+            from .ai.agents.reranker_agent import RerankerAgent
+
+            reranked = RerankerAgent().rerank(scored)
+            return reranked[0] if reranked else (None, 0.0)
+        except Exception:
+            best_row: Optional[GlobalQACache] = None
+            best_score_value = 0.0
+            for row, score in scored:
+                if best_row is None or score > best_score_value:
+                    best_row = row
+                    best_score_value = score
+            return best_row, best_score_value
+
+    best, best_score = _best_hit_from_rows(user_rows)
+    if best is not None and best_score >= _min_similarity():
+        best.hit_count = int(best.hit_count or 0) + 1
+        best.last_seen_at = now
+        session.add(best)
+        session.commit()
+        logger.info(
+            "global_cache_hit",
+            extra={
+                "event": "global_cache_hit",
+                "cache_hit": True,
+                "direct_answer_source": "global_qa_cache",
+                "route_taken": "global_knowledge_cache",
+                "answer_hash": best.answer_hash,
+                "cache_hit_source": "L2_user_global_qa",
+            },
+        )
+        _populate_hot_cache_for_row(best)
+        return _row_to_hit(best, best_score)
+
+    hot_global_hit = _lookup_hot_cache(session, question, language, user_hash, now, scope=_GLOBAL_SCOPE)
+    if hot_global_hit is not None:
+        return hot_global_hit
+
+    try:
         global_rows = list(
             session.exec(
                 select(GlobalQACache)
@@ -1220,25 +1324,8 @@ def lookup_approved_global_cache(
             },
         )
         return None
-    scored: List[Tuple[GlobalQACache, float]] = []
-    for row in [*user_rows, *global_rows]:
-        if not _row_lookup_safe(row, question, language, now, user_hash=user_hash):
-            continue
-        score = _score_row_against_query(row, question, query_bundle)
-        if score > 0:
-            scored.append((row, score))
-    try:
-        from .ai.agents.reranker_agent import RerankerAgent
 
-        reranked = RerankerAgent().rerank(scored)
-        best, best_score = reranked[0] if reranked else (None, 0.0)
-    except Exception:
-        best = None
-        best_score = 0.0
-        for row, score in scored:
-            if best is None or score > best_score or (score == best_score and _row_scope(row) == _USER_SCOPE):
-                best = row
-                best_score = score
+    best, best_score = _best_hit_from_rows(global_rows)
     if best is None or best_score < _min_similarity():
         return None
 
@@ -1254,6 +1341,7 @@ def lookup_approved_global_cache(
             "direct_answer_source": "global_qa_cache",
             "route_taken": "global_knowledge_cache",
             "answer_hash": best.answer_hash,
+            "cache_hit_source": "L3_global_qa",
         },
     )
     _populate_hot_cache_for_row(best)
@@ -1434,7 +1522,7 @@ def _upsert_user_scoped_cache_row(
     return row
 
 
-def record_backend_openai_answer(
+def _record_backend_openai_answer_impl(
     session: Session,
     user_id: Any,
     question: str,
@@ -1666,6 +1754,36 @@ def record_backend_openai_answer(
         "status": candidate.status,
         "promoted": promoted,
     }
+
+
+def record_backend_openai_answer(
+    session: Session,
+    user_id: Any,
+    question: str,
+    answer: str,
+    model_used: Optional[str],
+    request_id: Optional[str] = None,
+) -> dict:
+    try:
+        from .ai.agents.cache_writer_agent import CacheWriterAgent
+
+        return CacheWriterAgent().record_provider_answer(
+            session,
+            user_id=user_id,
+            question=question,
+            answer=answer,
+            model_used=model_used,
+            request_id=request_id,
+        )
+    except ImportError:
+        return _record_backend_openai_answer_impl(
+            session,
+            user_id,
+            question,
+            answer,
+            model_used,
+            request_id=request_id,
+        )
 
 
 def promote_candidate_if_threshold_met(session: Session, candidate_id: int) -> bool:
@@ -2043,6 +2161,137 @@ def _dedupe_sync_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _normalize_topic_seed_list(values: Any) -> List[str]:
+    if values in (None, ""):
+        return []
+    raw_values = values if isinstance(values, list) else [values]
+    out: List[str] = []
+    seen = set()
+    for raw_value in raw_values:
+        for part in re.split(r",", str(raw_value or "")):
+            seed = _safe_question_variant(part)
+            if not seed or seed in seen:
+                continue
+            seen.add(seed)
+            out.append(seed)
+            if len(out) >= 24:
+                return out
+    return out
+
+
+def _topic_seed_prefetch_limit(safe_limit: int) -> int:
+    configured = _env_int("GLOBAL_QA_TOPIC_SEED_PREFETCH_LIMIT", 25, minimum=0)
+    if configured <= 0:
+        return 0
+    return min(configured, max(1, safe_limit))
+
+
+def _topic_seed_query_bundle(seed: str) -> Dict[str, Any]:
+    token_vec, token_norm, token_kind = token_hash_embedding_for_global_cache(seed)
+    bundle: Dict[str, Any] = {
+        "embedding": token_vec,
+        "embedding_norm": token_norm,
+        "embedding_kind": token_kind,
+        "token_hash_embedding": token_vec,
+        "token_hash_embedding_norm": token_norm,
+        "token_hash_embedding_kind": token_kind,
+        "real_embedding": [],
+        "real_embedding_norm": 0.0,
+        "real_embedding_kind": None,
+    }
+    provider = str(os.getenv("GLOBAL_QA_EMBEDDING_PROVIDER") or "token_hash").strip().lower()
+    if _env_bool("GLOBAL_QA_REAL_EMBEDDINGS_ENABLED", False) and provider not in {"", "token_hash", "token_hash_v1", "openai"}:
+        real = real_embedding_for_global_cache(seed)
+        if real is not None:
+            bundle.update(
+                {
+                    "embedding": real[0],
+                    "embedding_norm": real[1],
+                    "embedding_kind": real[2],
+                    "real_embedding": real[0],
+                    "real_embedding_norm": real[1],
+                    "real_embedding_kind": real[2],
+                }
+            )
+    return bundle
+
+
+def _topic_seed_lexical_score(row: GlobalQACache, seed: str) -> float:
+    values = [
+        str(row.topic or ""),
+        str(row.canonical_question or ""),
+        str(row.normalized_question or ""),
+        *_load_json_list(getattr(row, "aliases_json", "[]")),
+        *_load_json_list(getattr(row, "observed_safe_questions_json", "[]")),
+    ]
+    return max((_token_similarity(seed, value) for value in values if value), default=0.0)
+
+
+def _topic_seed_prefetch_entries(
+    session: Session,
+    *,
+    topic_seeds: List[str],
+    now: datetime,
+    excluded_ids: set[int],
+    excluded_answer_hashes: set[str],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    if not topic_seeds or limit <= 0:
+        return []
+    seed_bundles = [(seed, _topic_seed_query_bundle(seed)) for seed in topic_seeds]
+    row_limit = max(50, min(500, int(limit or 25) * 8))
+    try:
+        rows = list(
+            session.exec(
+                select(GlobalQACache)
+                .where(GlobalQACache.status == "approved")
+                .where(or_(GlobalQACache.scope == _GLOBAL_SCOPE, GlobalQACache.scope == None))  # noqa: E711
+                .order_by(GlobalQACache.updated_at.desc(), GlobalQACache.id.desc())
+                .limit(row_limit)
+            ).all()
+        )
+    except (ProgrammingError, OperationalError):
+        session.rollback()
+        return []
+
+    threshold = min(1.0, _env_float("GLOBAL_QA_TOPIC_SEED_MIN_SIMILARITY", 0.35, minimum=0.0))
+    scored: List[Tuple[GlobalQACache, float]] = []
+    for row in rows:
+        if row.id is None or int(row.id) in excluded_ids:
+            continue
+        if str(row.answer_hash or "") and str(row.answer_hash or "") in excluded_answer_hashes:
+            continue
+        if not _sync_safe_row(row, now):
+            continue
+        score = 0.0
+        for seed, bundle in seed_bundles:
+            score = max(score, _score_row_against_query(row, seed, bundle), _topic_seed_lexical_score(row, seed))
+        if score >= threshold:
+            scored.append((row, score))
+
+    try:
+        from .ai.agents.reranker_agent import RerankerAgent
+
+        ranked = RerankerAgent().rerank(scored)
+    except Exception:
+        ranked = sorted(scored, key=lambda item: item[1], reverse=True)
+
+    entries: List[Dict[str, Any]] = []
+    for row, _score in ranked:
+        if len(entries) >= limit:
+            break
+        entry = _global_qa_row_sync_entry(row, entry_id=row.id, scope=_GLOBAL_SCOPE, now=now)
+        if entry is None:
+            continue
+        entry.pop("scope", None)
+        entries.append(entry)
+        if row.id is not None:
+            excluded_ids.add(int(row.id))
+        if str(row.answer_hash or ""):
+            excluded_answer_hashes.add(str(row.answer_hash or ""))
+    return entries
+
+
 def record_global_qa_tombstone(session: Session, global_cache_id: int, reason: str = "deleted") -> GlobalQATombstone:
     _ensure_schema_compat(session)
     existing = session.get(GlobalQACache, int(global_cache_id))
@@ -2065,6 +2314,7 @@ def build_global_knowledge_sync_payload(
     limit: int = 250,
     after_id: Any = None,
     user_id: Any = None,
+    topic_seeds: Optional[List[str]] = None,
 ) -> dict:
     readiness = global_qa_schema_ready(session)
     if not readiness.get("ok"):
@@ -2084,6 +2334,7 @@ def build_global_knowledge_sync_payload(
         after_id_int = _parse_after_id(after_id)
         now = utc_now()
         safe_limit = max(1, min(int(limit or 250), 500))
+        normalized_topic_seeds = _normalize_topic_seed_list(topic_seeds)
         query = (
             select(GlobalQACache)
             .where(or_(GlobalQACache.scope == _GLOBAL_SCOPE, GlobalQACache.scope == None))  # noqa: E711
@@ -2166,6 +2417,28 @@ def build_global_knowledge_sync_payload(
             continue
         entry.pop("scope", None)
         entries.append(entry)
+    if normalized_topic_seeds:
+        existing_ids = {
+            int(entry["id"])
+            for entry in entries
+            if str(entry.get("id") or "").isdigit()
+        }
+        existing_answer_hashes = {
+            str(entry.get("answerHash") or "")
+            for entry in entries
+            if str(entry.get("answerHash") or "").strip()
+        }
+        entries.extend(
+            _topic_seed_prefetch_entries(
+                session,
+                topic_seeds=normalized_topic_seeds,
+                now=now,
+                excluded_ids=existing_ids,
+                excluded_answer_hashes=existing_answer_hashes,
+                limit=_topic_seed_prefetch_limit(safe_limit),
+            )
+        )
+        entries = _dedupe_sync_entries(entries)
     next_since, next_after_id = _row_cursor(last_processed) if last_processed is not None else (
         since_dt.isoformat() if since_dt else None,
         after_id_int,

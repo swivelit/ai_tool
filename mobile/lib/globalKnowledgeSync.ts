@@ -25,6 +25,9 @@ type SyncEntryPayload = {
   embedding?: number[];
   embeddingNorm?: number;
   embeddingKind?: string;
+  remoteEmbedding?: number[];
+  remoteEmbeddingNorm?: number;
+  remoteEmbeddingKind?: string;
   tokenHashEmbedding?: number[];
   tokenHashEmbeddingNorm?: number;
   tokenHashEmbeddingKind?: string;
@@ -66,6 +69,9 @@ export type GlobalKnowledgeEntry = {
   embedding: number[];
   embeddingNorm: number;
   embeddingKind: string;
+  remoteEmbedding?: number[];
+  remoteEmbeddingNorm?: number;
+  remoteEmbeddingKind?: string;
   confidence: number;
   safetyLabel: string;
   source?: Record<string, unknown> | string | null;
@@ -303,6 +309,22 @@ function validEmbeddingVector(value: unknown) {
   return out.length && out.every((item) => Number.isFinite(item)) ? out : [];
 }
 
+function embeddingVectorsFromResponse(value: unknown): number[][] {
+  if (Array.isArray(value)) {
+    return value.map(validEmbeddingVector);
+  }
+  const data = (value as any)?.data;
+  if (Array.isArray(data)) {
+    return data.map((item) => validEmbeddingVector(item?.embedding ?? item));
+  }
+  const embeddings = (value as any)?.embeddings;
+  if (Array.isArray(embeddings)) {
+    return embeddings.map(validEmbeddingVector);
+  }
+  const single = validEmbeddingVector((value as any)?.embedding);
+  return single.length ? [single] : [];
+}
+
 function isRealEmbeddingKind(kind: unknown) {
   const normalized = String(kind || "").trim();
   return normalized && normalized !== GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND;
@@ -462,6 +484,8 @@ function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
   if (!id || !normalizedQuestion || !answer) return null;
   const rawEmbeddingKind = String(raw.embeddingKind || "").trim();
   const suppliedEmbedding = validEmbeddingVector(raw.embedding);
+  const remoteEmbedding = validEmbeddingVector(raw.remoteEmbedding);
+  const remoteEmbeddingKind = String(raw.remoteEmbeddingKind || "").trim();
   const suppliedTokenHash = validEmbeddingVector(raw.tokenHashEmbedding);
   const fallbackTokenHash = suppliedTokenHash.length ? suppliedTokenHash : tokenHashEmbedding(normalizedQuestion);
   const fallbackTokenHashNorm =
@@ -501,6 +525,10 @@ function normalizeEntry(raw: SyncEntryPayload): GlobalKnowledgeEntry | null {
     embedding: effectiveEmbedding,
     embeddingNorm: effectiveEmbeddingNorm,
     embeddingKind: effectiveEmbedding.length ? effectiveEmbeddingKind : "",
+    remoteEmbedding: remoteEmbedding.length ? remoteEmbedding : undefined,
+    remoteEmbeddingNorm:
+      remoteEmbedding.length ? Number(raw.remoteEmbeddingNorm || 0) || vectorNorm(remoteEmbedding) : undefined,
+    remoteEmbeddingKind: remoteEmbedding.length && remoteEmbeddingKind ? remoteEmbeddingKind : undefined,
     tokenHashEmbedding: fallbackTokenHash,
     tokenHashEmbeddingNorm: fallbackTokenHashNorm,
     tokenHashEmbeddingKind: GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND,
@@ -789,6 +817,8 @@ export async function syncGlobalKnowledgeIfStale(
     staleMs?: number;
     minIntervalMs?: number;
     lightweight?: boolean;
+    topicSeeds?: string[];
+    topic_seeds?: string[];
   } = {},
 ) {
   const meta = await loadSyncMeta();
@@ -809,6 +839,8 @@ export async function syncGlobalKnowledgeIfStale(
     limit: options.limit,
     minIntervalMs: options.minIntervalMs,
     lightweight: options.lightweight,
+    topicSeeds: options.topicSeeds,
+    topic_seeds: options.topic_seeds,
   });
 }
 
@@ -945,7 +977,7 @@ export async function lookupSyncedGlobalKnowledge(
 
 export async function reembedSyncedGlobalKnowledgeEntries(
   options: {
-    embedTexts?: (texts: string[]) => Promise<number[][]>;
+    embedTexts?: (texts: string[]) => Promise<number[][] | unknown>;
     nativeEmbeddingKind?: string;
     limit?: number;
   } = {},
@@ -961,7 +993,8 @@ export async function reembedSyncedGlobalKnowledgeEntries(
       (entry) =>
         !isExpired(entry) &&
         (!entry.embedding.length ||
-          entry.embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND),
+          entry.embeddingKind === GLOBAL_KNOWLEDGE_TOKEN_HASH_EMBEDDING_KIND ||
+          (isRealEmbeddingKind(entry.embeddingKind) && entry.embeddingKind !== targetKind)),
     )
     .slice(0, limit);
   if (!candidates.length) {
@@ -969,7 +1002,7 @@ export async function reembedSyncedGlobalKnowledgeEntries(
   }
   try {
     const texts = candidates.map((entry) => entry.normalizedQuestion || entry.canonicalQuestion);
-    const vectors = await options.embedTexts(texts);
+    const vectors = embeddingVectorsFromResponse(await options.embedTexts(texts));
     let updated = 0;
     const byId = new Map(candidates.map((entry, index) => [entry.id, { entry, index }]));
     const entries = store.entries.map((entry) => {
@@ -980,9 +1013,18 @@ export async function reembedSyncedGlobalKnowledgeEntries(
       const tokenFallback = entry.tokenHashEmbedding?.length
         ? entry.tokenHashEmbedding
         : tokenHashEmbedding(entry.normalizedQuestion || entry.canonicalQuestion);
+      const preserveRemote =
+        isRealEmbeddingKind(entry.embeddingKind) && entry.embeddingKind !== targetKind && entry.embedding.length
+          ? {
+              remoteEmbedding: entry.remoteEmbedding?.length ? entry.remoteEmbedding : entry.embedding,
+              remoteEmbeddingNorm: entry.remoteEmbeddingNorm || entry.embeddingNorm || vectorNorm(entry.embedding),
+              remoteEmbeddingKind: entry.remoteEmbeddingKind || entry.embeddingKind,
+            }
+          : {};
       updated += 1;
       return {
         ...entry,
+        ...preserveRemote,
         embedding: vector,
         embeddingNorm: vectorNorm(vector),
         embeddingKind: targetKind,

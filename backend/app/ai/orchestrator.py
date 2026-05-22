@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import re
 from dataclasses import replace
@@ -110,7 +111,8 @@ def run_text_turn(
         return _record(session, response, ai_request, started)
 
     if not route.intent.startswith("contextual_"):
-        cached = _try_global_cache(session, ai_request, context)
+        _install_lazy_shared_query_embedding(session, ai_request, route, context)
+        cached = _try_global_cache(session, ai_request, route, context)
         if cached is not None:
             return _record(session, cached, ai_request, started, cache_hit=True, metadata={"embedding_calls": context.get("embedding_calls", 0)})
 
@@ -468,7 +470,140 @@ def _sarvam_configured(context: dict[str, Any]) -> bool:
     return bool(os.getenv("SARVAM_API_KEY", "").strip())
 
 
-def _try_global_cache(session: Session, request: AIRequest, context: dict[str, Any]) -> Optional[AIProviderResponse]:
+def _vector_norm(vec: list[float]) -> float:
+    return sum(float(x) * float(x) for x in vec) ** 0.5 if vec else 0.0
+
+
+def _coerce_vector(value: Any) -> list[float]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[float] = []
+    for item in value:
+        try:
+            out.append(float(item))
+        except Exception:
+            return []
+    return out
+
+
+def _local_rag_embedding_kind(context: dict[str, Any]) -> str:
+    explicit = str(context.get("local_rag_query_embedding_kind") or context.get("query_embedding_kind") or "").strip()
+    if explicit:
+        return explicit
+    import os
+
+    return f"openai:{str(os.getenv('RAG_EMBEDDING_MODEL') or 'text-embedding-3-small').strip() or 'text-embedding-3-small'}"
+
+
+def _embedding_bundle_from_shared_result(message: str, result: Any, kind: str) -> Optional[dict[str, Any]]:
+    try:
+        from ..global_qa_cache import GLOBAL_QA_EMBEDDING_KIND, token_hash_embedding_for_global_cache
+    except Exception:
+        return None
+    if isinstance(result, dict):
+        if "embedding" in result and "embedding_kind" in result:
+            return dict(result)
+        vector = _coerce_vector(result.get("embedding") or result.get("vector"))
+        kind = str(result.get("embedding_kind") or result.get("kind") or kind).strip() or kind
+    elif isinstance(result, tuple) and len(result) >= 2:
+        vector = _coerce_vector(result[0])
+        kind = str(result[2] if len(result) >= 3 else kind).strip() or kind
+    else:
+        vector = _coerce_vector(result)
+    if not vector:
+        return None
+    norm = _vector_norm(vector)
+    token_vec, token_norm, token_kind = token_hash_embedding_for_global_cache(message)
+    bundle: dict[str, Any] = {
+        "embedding": vector,
+        "embedding_norm": norm,
+        "embedding_kind": kind,
+        "token_hash_embedding": token_vec,
+        "token_hash_embedding_norm": token_norm,
+        "token_hash_embedding_kind": token_kind,
+    }
+    if kind != GLOBAL_QA_EMBEDDING_KIND:
+        bundle.update(
+            {
+                "real_embedding": vector,
+                "real_embedding_norm": norm,
+                "real_embedding_kind": kind,
+            }
+        )
+    return bundle
+
+
+def _install_lazy_shared_query_embedding(
+    session: Session,
+    request: AIRequest,
+    route: AIRoute,
+    context: dict[str, Any],
+) -> None:
+    if context.get("global_query_embedding") is not None:
+        return
+    if not _env_bool("AI_ROUTER_GLOBAL_CACHE_LOOKUP_ENABLED", True):
+        return
+    if not _should_run_local_rag(request, route, context):
+        return
+    if context.get("local_rag_service") is None:
+        return
+    embedding_fn = context.get("query_embedding_fn") or context.get("shared_query_embedding_fn")
+    if embedding_fn is None or not callable(embedding_fn):
+        return
+    kind = _local_rag_embedding_kind(context)
+
+    def _lazy_bundle() -> Optional[dict[str, Any]]:
+        if context.get("_shared_query_embedding_bundle") is not None:
+            return context.get("_shared_query_embedding_bundle")
+        result = embedding_fn(request.message)
+        bundle = _embedding_bundle_from_shared_result(request.message, result, kind)
+        if not bundle:
+            return None
+        context["_shared_query_embedding_bundle"] = bundle
+        vector = _coerce_vector(bundle.get("real_embedding") or bundle.get("embedding"))
+        if vector:
+            context["local_rag_query_embedding"] = (
+                vector,
+                float(bundle.get("real_embedding_norm") or bundle.get("embedding_norm") or _vector_norm(vector)),
+            )
+            context["local_rag_query_embedding_kind"] = str(bundle.get("real_embedding_kind") or bundle.get("embedding_kind") or kind)
+        context["embedding_calls"] = int(context.get("embedding_calls") or 0) + 1
+        return bundle
+
+    context["global_query_embedding"] = _lazy_bundle
+
+
+def _record_agent_step_if_possible(
+    session: Session,
+    request: AIRequest,
+    *,
+    name: str,
+    input_payload: dict[str, Any],
+    output_payload: dict[str, Any],
+    confidence: float = 1.0,
+) -> None:
+    run_id = request.metadata.get("agent_run_id") if isinstance(request.metadata, dict) else None
+    if not run_id:
+        return
+    try:
+        from ..models import AgentStep
+
+        session.add(
+            AgentStep(
+                run_id=int(run_id),
+                step_name=name,
+                input_json=json.dumps(input_payload, ensure_ascii=False, default=str),
+                output_json=json.dumps(output_payload, ensure_ascii=False, default=str),
+                confidence=float(confidence),
+                duration_ms=0,
+            )
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+
+def _try_global_cache(session: Session, request: AIRequest, route: AIRoute, context: dict[str, Any]) -> Optional[AIProviderResponse]:
     if not _env_bool("AI_ROUTER_GLOBAL_CACHE_LOOKUP_ENABLED", True):
         return None
     lookup = context.get("global_cache_lookup")
@@ -489,6 +624,17 @@ def _try_global_cache(session: Session, request: AIRequest, context: dict[str, A
         lookup_message = rewrite.canonical_question or request.message
         if lookup_message != request.message:
             context["global_cache_rewritten_question"] = lookup_message
+            _record_agent_step_if_possible(
+                session,
+                request,
+                name="query_rewriter_agent",
+                input_payload={"message": request.message},
+                output_payload={
+                    "canonical_question": lookup_message,
+                    "changed": rewrite.changed,
+                    "reason": rewrite.reason,
+                },
+            )
     except Exception:
         lookup_message = request.message
     try:
@@ -542,8 +688,18 @@ def _try_local_rag(
     if service is None:
         return None
     if int(context.get("embedding_calls") or 0) >= _max_embedding_calls_per_turn():
-        return None
-    context["embedding_calls"] = int(context.get("embedding_calls") or 0) + 1
+        if context.get("local_rag_query_embedding") is None:
+            return None
+    lazy_shared = context.get("global_query_embedding")
+    if context.get("local_rag_query_embedding") is None and callable(lazy_shared):
+        try:
+            lazy_shared()
+        except Exception:
+            pass
+    if context.get("local_rag_query_embedding") is None:
+        if int(context.get("embedding_calls") or 0) >= _max_embedding_calls_per_turn():
+            return None
+        context["embedding_calls"] = int(context.get("embedding_calls") or 0) + 1
     try:
         try:
             hit = service.try_answer(

@@ -519,6 +519,130 @@ describe("global knowledge sync", () => {
     expect(store.entries[0].tokenHashEmbedding).toHaveLength(96);
   });
 
+  it("re-embeds token-hash and incompatible real entries into native Qwen space", async () => {
+    const {
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
+      loadGlobalKnowledgeStore,
+      reembedSyncedGlobalKnowledgeEntries,
+      tokenHashEmbedding,
+    } = await import("../lib/globalKnowledgeSync");
+    const tokenEmbedding = tokenHashEmbedding("what is a compiler");
+    storage.set(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "token",
+            canonicalQuestion: "What is a compiler?",
+            normalizedQuestion: "what is a compiler",
+            answer: "Compiler answer.",
+            answerLanguage: "en",
+            embedding: tokenEmbedding,
+            embeddingKind: "token_hash_v1",
+            embeddingNorm: 1,
+            confidence: 0.95,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+          {
+            id: "openai",
+            canonicalQuestion: "What is photosynthesis?",
+            normalizedQuestion: "what is photosynthesis",
+            answer: "Photosynthesis answer.",
+            answerLanguage: "en",
+            embedding: [0, 1, 0],
+            embeddingKind: "openai:text-embedding-3-small",
+            embeddingNorm: 1,
+            confidence: 0.95,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const embedTexts = vi.fn(async () => [[1, 0, 0], [0, 0, 1]]);
+
+    const result = await reembedSyncedGlobalKnowledgeEntries({
+      embedTexts,
+      nativeEmbeddingKind: GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
+      limit: 8,
+    });
+    const store = await loadGlobalKnowledgeStore();
+
+    expect(result.updated).toBe(2);
+    expect(embedTexts).toHaveBeenCalledTimes(1);
+    expect(store.entries.map((entry) => entry.embeddingKind)).toEqual([
+      GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
+      GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
+    ]);
+    expect(store.entries[1].embedding).toEqual([0, 0, 1]);
+    expect(store.entries[1].remoteEmbeddingKind).toBe("openai:text-embedding-3-small");
+    expect(store.entries[1].remoteEmbedding).toEqual([0, 1, 0]);
+    expect(store.entries[0].tokenHashEmbeddingKind).toBe("token_hash_v1");
+  });
+
+  it("syncGlobalKnowledgeIfStale forwards topic seeds", async () => {
+    apiGetMock.mockResolvedValueOnce({
+      ok: true,
+      serverTime: "2026-05-14T00:00:00Z",
+      entries: [],
+      hasMore: false,
+    });
+
+    const { syncGlobalKnowledgeIfStale } = await import("../lib/globalKnowledgeSync");
+    await syncGlobalKnowledgeIfStale({
+      staleMs: 0,
+      minIntervalMs: 0,
+      lightweight: true,
+      topicSeeds: ["section 80c"],
+    });
+
+    expect(String(apiGetMock.mock.calls[0][0])).toContain("topicSeeds=section+80c");
+    expect(String(apiGetMock.mock.calls[0][0])).toContain("topic_seeds=section+80c");
+  });
+
+  it("matches synced Qwen entries semantically with embedTexts", async () => {
+    const {
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
+      lookupSyncedGlobalKnowledge,
+    } = await import("../lib/globalKnowledgeSync");
+    storage.set(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "qwen-semantic",
+            canonicalQuestion: "What is section 80c deduction?",
+            normalizedQuestion: "what is section 80c deduction",
+            answer: "Section 80C is an Indian income-tax deduction category.",
+            answerLanguage: "en",
+            embedding: [0, 1, 0],
+            embeddingKind: GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
+            embeddingNorm: 1,
+            confidence: 0.95,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const embedTexts = vi.fn(async () => [[0, 1, 0]]);
+
+    const hit = await lookupSyncedGlobalKnowledge("tax saving deduction", {
+      embedTexts,
+      nativeEmbeddingKind: GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
+      minSimilarity: 0.9,
+    });
+
+    expect(hit?.entry.id).toBe("qwen-semantic");
+    expect(hit?.source).toBe("embedding");
+    expect(embedTexts).toHaveBeenCalledTimes(1);
+  });
+
   it("throttles repeated sync calls", async () => {
     const { syncGlobalKnowledge } = await import("../lib/globalKnowledgeSync");
     apiGetMock.mockResolvedValueOnce({

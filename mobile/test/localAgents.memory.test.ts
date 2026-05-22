@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as FileSystem from "expo-file-system/legacy";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import models from "../data/config/models.json";
 
 import memoryRules from "../data/config/memory_rules.json";
@@ -29,6 +30,7 @@ function parentDirs(path: string) {
 }
 
 const apiPostMock = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+const apiGetMock = vi.hoisted(() => vi.fn(async () => ({ ok: true, entries: [], userEntries: [], hasMore: false })));
 
 vi.mock("expo-constants", () => ({
   default: {
@@ -81,6 +83,7 @@ vi.mock("../lib/api", () => ({
   CLOUD_FALLBACK_CONSENT_MESSAGE:
     "This needs backend/OpenAI help. Enable cloud fallback to answer this.",
   annotateBackendOpenAiFallbackResponse: (payload: any) => payload,
+  apiGet: apiGetMock,
   apiPost: apiPostMock,
   apiPostBackendOnly: apiPostMock,
   sendClientTurnLog: vi.fn(),
@@ -168,8 +171,9 @@ async function flushLocalLearningJobs() {
 }
 
 describe("local memory and semantic cache", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetNativeInferenceSafetyForTests();
+    await AsyncStorage.clear();
     __idleQueueTestUtils.clear();
     mockedState.files.clear();
     mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
@@ -1317,6 +1321,67 @@ describe("local memory and semantic cache", () => {
       ([path]: [string]) => path === `${dataRoot}/memory/daily_summaries/45.jsonl`
     );
     expect(dailySummaryReads).toHaveLength(0);
+  });
+
+  it("runs global knowledge maintenance and topic prewarm when memory consolidation is skipped", async () => {
+    writeJsonl(`${dataRoot}/conversations/451.jsonl`, [
+      { role: "user", content: "Tell me about section 80c deductions.", createdAt: "2026-04-09T10:00:00.000Z" },
+    ]);
+
+    const { consolidateLocalMemoryOnIdle } = await import("../lib/localAgents");
+    const result = await consolidateLocalMemoryOnIdle(451, {
+      userProfile: { replyLanguage: "en", place: "Chennai" },
+    });
+
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe("not_enough_turns");
+    expect(apiGetMock).toHaveBeenCalled();
+    const syncUrl = String((apiGetMock.mock.calls as any[])[0][0]);
+    expect(syncUrl).toContain("topicSeeds=");
+    expect(syncUrl).toContain("section");
+    expect(result.globalKnowledgeMaintenance?.topicSeeds).toEqual(
+      expect.arrayContaining(["section", "80c"]),
+    );
+  });
+
+  it("re-embeds synced global knowledge during idle maintenance even when memory is skipped", async () => {
+    const { GLOBAL_KNOWLEDGE_CACHE_KEY, GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND } = await import("../lib/globalKnowledgeSync");
+    await AsyncStorage.setItem(
+      GLOBAL_KNOWLEDGE_CACHE_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            id: "token-entry",
+            scope: "global",
+            canonicalQuestion: "What is section 80c?",
+            normalizedQuestion: "what is section 80c",
+            answer: "Section 80C answer.",
+            answerLanguage: "en",
+            embedding: [1, 0, 0],
+            embeddingKind: "token_hash_v1",
+            embeddingNorm: 1,
+            confidence: 0.95,
+            safetyLabel: "general",
+            updatedAt: "2026-05-14T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    writeJsonl(`${dataRoot}/conversations/452.jsonl`, [
+      { role: "user", content: "section 80c", createdAt: "2026-04-09T10:00:00.000Z" },
+    ]);
+    queueEmbeddingResponse([testEmbedding({ 2: 1 })]);
+
+    const { consolidateLocalMemoryOnIdle } = await import("../lib/localAgents");
+    const result = await consolidateLocalMemoryOnIdle(452, {
+      userProfile: { replyLanguage: "en" },
+    });
+    const stored = JSON.parse((await AsyncStorage.getItem(GLOBAL_KNOWLEDGE_CACHE_KEY)) || "{}");
+
+    expect(result.skipped).toBe(true);
+    expect(result.globalKnowledgeMaintenance?.reembed?.updated).toBe(1);
+    expect(stored.entries[0].embeddingKind).toBe(GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND);
   });
 
   it("does not use OpenAI when local cache or memory can answer", async () => {

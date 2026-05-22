@@ -15,6 +15,10 @@ from app.global_qa_cache import (
     record_global_qa_tombstone,
 )
 from app.models import GlobalQACache, GlobalQAObservation, GlobalQATombstone
+from app.ai.agents.aggregator_reflection_agent import AggregatorReflectionAgent
+from app.ai.agents.feedback_quality_agent import FeedbackQualityAgent
+from app.ai.agents.live_data_classifier_agent import LiveDataClassifierAgent
+from app.ai.agents.web_search_agent import WebSearchAgent
 from conftest import auth_headers, create_test_user
 from sqlalchemy import text
 from sqlmodel import SQLModel, select
@@ -835,3 +839,119 @@ def test_record_backend_openai_answer_skips_when_schema_missing(caplog):
         assert "global_cache_record_skipped_schema_not_ready" in caplog.text
     finally:
         _restore_global_qa_schema_for_test()
+
+
+def test_feedback_quality_decrements_confidence_and_tombstones_low_confidence():
+    with SessionLocal() as session:
+        row = GlobalQACache(
+            canonical_question="What is a queue?",
+            normalized_question="what is queue",
+            answer="A queue is FIFO.",
+            answer_language="en",
+            topic="queue",
+            status="approved",
+            hit_count=2,
+            distinct_user_count=2,
+            observed_question_count=2,
+            source_question_hashes_json=json.dumps([]),
+            answer_hash="queue-feedback",
+            embedding_json="[]",
+            embedding_norm=0,
+            confidence=0.40,
+            safety_label="general",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+
+        result = FeedbackQualityAgent().apply_negative_feedback(session, row, amount=0.10)
+        tombstones = list(session.exec(select(GlobalQATombstone)).all())
+        refreshed = session.get(GlobalQACache, row.id)
+
+    assert result.tombstoned is True
+    assert refreshed.status == "rejected"
+    assert tombstones
+    assert tombstones[0].global_cache_id == row.id
+
+
+def test_live_data_classifier_catches_current_queries_without_overblocking_stable_knowledge():
+    agent = LiveDataClassifierAgent()
+    live_questions = [
+        "who's playing tonight",
+        "what's the score",
+        "latest election result",
+        "who is president now",
+        "current price of bitcoin",
+    ]
+    stable_questions = [
+        "what is a compiler",
+        "explain photosynthesis",
+        "what is section 80c deduction",
+    ]
+
+    assert all(agent.classify(question).is_live for question in live_questions)
+    assert not any(agent.classify(question).is_live for question in stable_questions)
+
+
+def test_aggregator_reflection_plans_without_mutating_unless_apply_changes():
+    with SessionLocal() as session:
+        for index in range(2):
+            session.add(
+                GlobalQACache(
+                    canonical_question=f"What is duplicate {index}?",
+                    normalized_question=f"what is duplicate {index}",
+                    answer="Duplicate answer.",
+                    answer_language="en",
+                    topic="duplicate",
+                    status="approved",
+                    hit_count=2 + index,
+                    distinct_user_count=2,
+                    observed_question_count=2,
+                    source_question_hashes_json=json.dumps([]),
+                    answer_hash="duplicate-hash",
+                    embedding_json="[]",
+                    embedding_norm=0,
+                    confidence=0.95,
+                    safety_label="general",
+                    expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+                )
+            )
+        session.commit()
+        result = AggregatorReflectionAgent().run_batch(session)
+        rows = list(session.exec(select(GlobalQACache)).all())
+
+    assert result.clustered == 1
+    assert result.planned_updates
+    assert all(not row.review_notes for row in rows)
+
+
+def test_web_search_agent_disabled_by_default_and_mocked_wikipedia_enabled(monkeypatch):
+    monkeypatch.delenv("ENABLE_WEB_SEARCH_FOR_FREE", raising=False)
+    assert WebSearchAgent().search("what is python").reason == "disabled"
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "title": "Python",
+                    "extract": "Python is a programming language.",
+                    "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Python"}},
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setenv("ENABLE_WEB_SEARCH_FOR_FREE", "true")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: Response())
+
+    result = WebSearchAgent().search("what is python")
+
+    assert result.enabled is True
+    assert result.reason == "wikipedia_summary"
+    assert result.results[0]["source"] == "wikipedia"
+    assert result.results[0]["url"].startswith("https://en.wikipedia.org/")

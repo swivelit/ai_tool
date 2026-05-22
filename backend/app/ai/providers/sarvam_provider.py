@@ -180,11 +180,13 @@ class SarvamProvider(AIProvider):
         client_factory: Optional[Callable[[], Any]] = None,
         http_post: Optional[Callable[..., Any]] = None,
         api_key_getter: Optional[Callable[[], str]] = None,
+        cache_recorder: Optional[Callable[[AIRequest, AIRoute, AIProviderResponse], Any]] = None,
     ) -> None:
         self._client = client
         self._client_factory = client_factory
         self._http_post = http_post or requests.post
         self._api_key_getter = api_key_getter
+        self._cache_recorder = cache_recorder
 
     def _api_key(self) -> str:
         if self._api_key_getter is not None:
@@ -222,7 +224,7 @@ class SarvamProvider(AIProvider):
         input_tokens = OpenAIModelRouter.estimate_tokens(request.message)
         output_tokens = OpenAIModelRouter.estimate_tokens(text)
         cost = estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens)
-        return AIProviderResponse(
+        response = AIProviderResponse(
             text=text,
             provider="sarvam",
             model=route.model,
@@ -248,6 +250,9 @@ class SarvamProvider(AIProvider):
                 "intent_after_cleanup": route.metadata.get("intent_after_cleanup") or route.intent,
             },
         )
+        if self._cache_recorder is not None:
+            self._cache_recorder(request, route, response)
+        return response
 
     def _call_chat(self, client: Any, model: str, messages: list[dict[str, str]], max_tokens: int) -> Any:
         completions = getattr(getattr(client, "chat", None), "completions", None)

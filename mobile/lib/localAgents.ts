@@ -606,6 +606,7 @@ type MemoryConsolidationResult = {
   durableFacts?: DurableFactRecord[];
   profileUpdate?: ProfileUpdateRecord;
   memoryChunks?: LocalRagChunk[];
+  globalKnowledgeMaintenance?: any;
 };
 
 type MemoryConsolidationModelOutput = {
@@ -1279,11 +1280,65 @@ function simpleHash(text: string) {
 function topicSeedsFromTextAndProfile(message: string, profile?: LocalUserProfile) {
   return uniq(
     [
-      ...normalizeText(message).split(/\s+/).filter((token) => token.length >= 4),
+      ...normalizeText(message).split(/\s+/).filter((token) => token.length >= 4 || /\d/.test(token)),
       normalizeText(profile?.place || ""),
       normalizeText(profile?.name || ""),
     ].filter(Boolean),
   ).slice(0, 8);
+}
+
+async function runSyncedGlobalKnowledgeIdleMaintenance(
+  userId: number,
+  profile?: LocalUserProfile,
+) {
+  const [turns, routeLogs] = await Promise.all([
+    recentConversation(userId, 8).catch(() => [] as LocalChatMessage[]),
+    loadRouteLogs(userId, 8).catch(() => [] as any[]),
+  ]);
+  const seedText = [
+    profile?.place || "",
+    profile?.name || "",
+    ...turns.map((turn) => turn.content || ""),
+    ...routeLogs.map((row) =>
+      [
+        row?.message,
+        row?.question,
+        row?.intent,
+        row?.route,
+        row?.topic,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    ),
+  ].join(" ");
+  const topicSeeds = topicSeedsFromTextAndProfile(seedText, profile);
+  const runtimeOptions = await backgroundMemoryRuntimeOptions().catch(() => ({
+    modelsReady: false,
+  } as ModelRuntimeTierOptions));
+  const [syncResult, reembedResult] = await Promise.all([
+    syncGlobalKnowledge({
+      topicSeeds,
+      lightweight: true,
+      limit: 25,
+    }).catch((error) => ({
+      ok: false,
+      skipped: true,
+      reason: String((error as any)?.message || error || "sync_failed").slice(0, 80),
+    })),
+    runtimeOptions.modelsReady === false
+      ? Promise.resolve({ ok: true, skipped: true, reason: "models_not_ready", updated: 0 })
+      : reembedSyncedGlobalKnowledgeEntries({
+          embedTexts: (texts) => embedTexts(texts, runtimeOptions),
+          nativeEmbeddingKind: GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
+          limit: 16,
+        }).catch(() => ({ ok: true, skipped: true, reason: "embedding_unavailable", updated: 0 })),
+  ]);
+  return {
+    ok: true,
+    topicSeeds,
+    sync: syncResult,
+    reembed: reembedResult,
+  };
 }
 
 function escapeRegExp(text: string) {
@@ -6882,10 +6937,18 @@ export async function consolidateLocalMemoryOnIdle(
   userId: number,
   opts?: { force?: boolean; userProfile?: LocalUserProfile },
 ): Promise<MemoryConsolidationResult> {
+  const globalKnowledgeMaintenance = await runSyncedGlobalKnowledgeIdleMaintenance(
+    userId,
+    opts?.userProfile,
+  ).catch((error) => ({
+    ok: false,
+    skipped: true,
+    reason: String((error as any)?.message || error || "global_knowledge_maintenance_failed").slice(0, 80),
+  }));
   const rules = await getMemoryRules();
   const registry = await getAgentRegistry();
   if (!registry.agents.memory.enabled) {
-    return { ok: false, skipped: true, reason: "memory_agent_disabled" };
+    return { ok: false, skipped: true, reason: "memory_agent_disabled", globalKnowledgeMaintenance };
   }
 
   const turns = await recentConversation(
@@ -6896,7 +6959,7 @@ export async function consolidateLocalMemoryOnIdle(
     !opts?.force &&
     turns.length < positiveInt(rules.summarization?.minTurnsBeforeSync, 6)
   ) {
-    return { ok: false, skipped: true, reason: "not_enough_turns" };
+    return { ok: false, skipped: true, reason: "not_enough_turns", globalKnowledgeMaintenance };
   }
   const previous = await loadDailySummaries(userId);
   const latestSync = previous[previous.length - 1]?.createdAt;
@@ -6906,7 +6969,7 @@ export async function consolidateLocalMemoryOnIdle(
       !opts?.force &&
       minutes < positiveInt(rules.summarization?.minMinutesBetweenSync, 15)
     ) {
-      return { ok: false, skipped: true, reason: "within_cooldown_window" };
+      return { ok: false, skipped: true, reason: "within_cooldown_window", globalKnowledgeMaintenance };
     }
   }
 
@@ -6958,13 +7021,6 @@ export async function consolidateLocalMemoryOnIdle(
     mergedFacts,
     runtimeOptions,
   );
-  if (runtimeOptions.modelsReady !== false) {
-    await reembedSyncedGlobalKnowledgeEntries({
-      embedTexts: (texts) => embedTexts(texts, runtimeOptions),
-      nativeEmbeddingKind: GLOBAL_KNOWLEDGE_QWEN_EMBEDDING_KIND,
-      limit: 16,
-    }).catch(() => undefined);
-  }
   await safeRecordTrainingSample("memory", {
     input: JSON.stringify({
       recent_turns: turns,
@@ -6986,6 +7042,7 @@ export async function consolidateLocalMemoryOnIdle(
     durableFacts: mergedFacts,
     profileUpdate,
     memoryChunks,
+    globalKnowledgeMaintenance,
   };
 }
 

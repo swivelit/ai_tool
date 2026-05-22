@@ -78,3 +78,33 @@ def test_daily_usage_helpers_count_text_voice_and_spend():
         assert get_user_daily_text_count(session, 123) == 1
         assert get_user_daily_voice_seconds(session, 123) == 12.5
         assert get_provider_daily_spend(session, "sarvam", "INR") == 0.1
+
+
+def test_cache_hit_source_is_persisted_for_supported_cache_layers():
+    sources = [
+        "L0_negative_cache",
+        "L1_mobile_synced_user",
+        "L2_user_global_qa",
+        "L3_global_qa",
+        "L4_local_rag",
+    ]
+    with SessionLocal() as session:
+        for source in sources:
+            record_ai_usage_event(
+                session,
+                AIProviderResponse(
+                    text="cached",
+                    provider="cache",
+                    model=None,
+                    route="cache_route",
+                    reason="test",
+                    language="en",
+                    intent="general",
+                    raw={"cache_hit_source": source},
+                ),
+                user_id=123,
+                cache_hit=True,
+            )
+        stored = list(session.exec(select(AIUsageEvent).order_by(AIUsageEvent.id)).all())
+
+    assert [row.cache_hit_source for row in stored] == sources

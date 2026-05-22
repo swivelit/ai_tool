@@ -46,6 +46,38 @@ def test_sarvam_chat_uses_sdk_client_without_real_network(monkeypatch):
     assert completions.calls[0]["messages"][1]["content"] == "வணக்கம்"
 
 
+def test_direct_sarvam_complete_records_once_through_optional_hook(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    completions = _FakeCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    recorder_calls = []
+    provider = SarvamProvider(client=client, cache_recorder=lambda request, route, response: recorder_calls.append((request, route, response)))
+
+    response = provider.complete(
+        AIRequest(1, "What is photosynthesis?", "en", "text", "sarvam-hook-test", {}),
+        AIRoute("sarvam", "sarvam-30b", "sarvam_general", "test", "en", "general", 100),
+    )
+
+    assert response.provider == "sarvam"
+    assert len(recorder_calls) == 1
+    assert recorder_calls[0][2] is response
+
+
+def test_direct_sarvam_complete_without_hook_is_not_hidden_cache_write_path(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "test-key")
+    completions = _FakeCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    provider = SarvamProvider(client=client)
+
+    response = provider.complete(
+        AIRequest(1, "What is photosynthesis?", "en", "text", "sarvam-no-hook-test", {}),
+        AIRoute("sarvam", "sarvam-30b", "sarvam_general", "test", "en", "general", 100),
+    )
+
+    assert response.provider == "sarvam"
+    assert completions.calls
+
+
 def test_sarvam_chat_gets_english_only_instruction_for_english_reply(monkeypatch):
     monkeypatch.setenv("SARVAM_API_KEY", "test-key")
     completions = _FakeCompletions()
