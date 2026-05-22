@@ -445,7 +445,6 @@ export default function Home() {
   const e2eHandsFreeTriggeredRef = useRef(false);
   const activeChatRequestIdRef = useRef<string | null>(null);
   const modelSetupAlertLastShownAtRef = useRef(0);
-  const voiceOnlyInitialOpenRef = useRef(false);
   const historyItemsRef = useRef<ChatHistoryItem[]>([]);
   const chatSessionsRef = useRef<ChatSessionRecord[]>([]);
   const handsFreeRuntimeRef = useRef({
@@ -1112,13 +1111,6 @@ export default function Home() {
       queueHandsFreeRestart("wake", 500);
     }
   });
-
-  useEffect(() => {
-    if (voiceOnlyMode && !voiceOnlyInitialOpenRef.current && !voiceSheetOpen) {
-      voiceOnlyInitialOpenRef.current = true;
-      openVoiceSession();
-    }
-  }, [voiceOnlyMode, voiceSheetOpen]);
 
   useEffect(() => {
     if (handsFreeForegroundEnabled) {

@@ -18,6 +18,9 @@ describe("voice-only file handling", () => {
     expect(chatSource).toContain('testID="chat-input"');
     expect(chatSource).toContain('testID="chat-send-button"');
     expect(chatSource).not.toContain("!voiceOnlyMode ? (");
+    expect(chatSource).not.toContain("voiceOnlyInitialOpenRef");
+    expect(chatSource).not.toContain("voiceOnlyMode &&");
+    expect(chatSource).not.toContain("openVoiceSession();\n    }\n  }, [voiceOnlyMode");
   });
 
   it("uses resolved voice language params instead of hard-coded Tamil defaults", () => {

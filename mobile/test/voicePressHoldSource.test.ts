@@ -143,6 +143,9 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("voiceOnlyMode");
     expect(source).toContain('testID="chat-input"');
     expect(source).toContain('testID="chat-send-button"');
+    expect(source).not.toContain("voiceOnlyInitialOpenRef");
+    expect(source).not.toContain("voiceOnlyMode &&");
+    expect(source).not.toContain("}, [voiceOnlyMode");
     expect(source).not.toContain('testID="open-voice-mode-button"');
     expect(source).not.toContain('accessibilityLabel="open-voice-mode-button"');
     expect(source).not.toContain("!voiceOnlyMode ? (");
