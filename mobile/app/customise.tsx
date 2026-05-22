@@ -18,14 +18,14 @@ import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import {
-  ExpoSpeechRecognitionModule,
-  useSpeechRecognitionEvent,
-} from "expo-speech-recognition";
 
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { Brand } from "@/constants/theme";
+import {
+  handsFreeRecognizer,
+  useHandsFreeRecognitionEvent,
+} from "@/lib/handsFreeRecognizer";
 
 type Tone = "pro" | "friendly";
 type LanguageMode = "en" | "ta";
@@ -197,7 +197,7 @@ export default function CustomiseScreen() {
   useEffect(() => {
     return () => {
       try {
-        ExpoSpeechRecognitionModule.abort();
+        handsFreeRecognizer.abort("customise");
       } catch {
         // ignore cleanup errors
       }
@@ -264,14 +264,14 @@ export default function CustomiseScreen() {
 
     try {
       defaultService = String(
-        ExpoSpeechRecognitionModule.getDefaultRecognitionService?.()?.packageName || ""
+        handsFreeRecognizer.getDefaultRecognitionService?.()?.packageName || ""
       ).trim();
     } catch {
       defaultService = "";
     }
 
     try {
-      const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices?.();
+      const services = handsFreeRecognizer.getSpeechRecognitionServices?.();
       availableServices = Array.isArray(services)
         ? services.map((item) => String(item || "").trim()).filter(Boolean)
         : [];
@@ -281,7 +281,7 @@ export default function CustomiseScreen() {
 
     try {
       supportsOnDevice = Boolean(
-        ExpoSpeechRecognitionModule.supportsOnDeviceRecognition?.()
+        handsFreeRecognizer.supportsOnDeviceRecognition?.()
       );
     } catch {
       supportsOnDevice = false;
@@ -289,7 +289,7 @@ export default function CustomiseScreen() {
 
     if (supportsOnDevice) {
       try {
-        const payload: any = await ExpoSpeechRecognitionModule.getSupportedLocales?.({
+        const payload: any = await handsFreeRecognizer.getSupportedLocales?.({
           androidRecognitionServicePackage: "com.google.android.as",
         });
         installedLocales = Array.isArray(payload?.installedLocales)
@@ -324,7 +324,7 @@ export default function CustomiseScreen() {
 
     try {
       setTrainingStatus(`Opening the Android speech model download for ${speechLocale}…`);
-      const result: any = await ExpoSpeechRecognitionModule.androidTriggerOfflineModelDownload?.({
+      const result: any = await handsFreeRecognizer.androidTriggerOfflineModelDownload?.({
         locale: speechLocale,
       });
 
@@ -397,7 +397,7 @@ export default function CustomiseScreen() {
     }
   }
 
-  useSpeechRecognitionEvent("start", () => {
+  useHandsFreeRecognitionEvent("start", () => {
     if (!trainerVisibleRef.current || !trainingRef.current) return;
     setTrainingPhase("listening");
     setTrainingError("");
@@ -405,13 +405,13 @@ export default function CustomiseScreen() {
     setTrainingStatus(`Listening now. Say “${wakePrompt}”.`);
   });
 
-  useSpeechRecognitionEvent("speechstart", () => {
+  useHandsFreeRecognitionEvent("speechstart", () => {
     if (!trainerVisibleRef.current || !trainingRef.current) return;
     setTrainingPhase("hearing");
     setTrainingStatus("Sound detected. Finish saying the full wake phrase.");
   });
 
-  useSpeechRecognitionEvent("volumechange", (event: { value?: number } | undefined) => {
+  useHandsFreeRecognitionEvent("volumechange", (event: { value?: number } | undefined) => {
     if (!trainerVisibleRef.current || !trainingRef.current) return;
     const raw = Number(event?.value ?? -2);
     const normalized = Math.max(0, Math.min(1, (raw + 2) / 12));
@@ -423,7 +423,7 @@ export default function CustomiseScreen() {
     }
   });
 
-  useSpeechRecognitionEvent("audiostart", () => {
+  useHandsFreeRecognitionEvent("audiostart", () => {
     if (!trainerVisibleRef.current || !trainingRef.current) return;
 
     trainingPendingRecordedAudioFallbackRef.current = false;
@@ -435,7 +435,7 @@ export default function CustomiseScreen() {
     setTrainingStatus(`Microphone is live. Say “${wakePrompt}” now.`);
   });
 
-  useSpeechRecognitionEvent("audioend", (event: { uri: string | null }) => {
+  useHandsFreeRecognitionEvent("audioend", (event: { uri: string | null }) => {
     if (!trainerVisibleRef.current) return;
 
     const uri = String(event?.uri || "").trim();
@@ -459,7 +459,7 @@ export default function CustomiseScreen() {
     }
   });
 
-  useSpeechRecognitionEvent(
+  useHandsFreeRecognitionEvent(
     "result",
     (event: { results?: { transcript?: string }[]; isFinal?: boolean } | undefined) => {
       if (!trainerVisibleRef.current || !trainingRef.current) return;
@@ -478,7 +478,7 @@ export default function CustomiseScreen() {
     }
   );
 
-  useSpeechRecognitionEvent(
+  useHandsFreeRecognitionEvent(
     "error",
     (event: { error?: string; message?: string } | undefined) => {
       if (!trainerVisibleRef.current) return;
@@ -508,8 +508,8 @@ export default function CustomiseScreen() {
       const canAttemptRecordedAudioFallback =
         Platform.OS === "android" &&
         Number(Platform.Version) >= 33 &&
-        typeof ExpoSpeechRecognitionModule.supportsRecording === "function" &&
-        Boolean(ExpoSpeechRecognitionModule.supportsRecording());
+        typeof handsFreeRecognizer.supportsRecording === "function" &&
+        Boolean(handsFreeRecognizer.supportsRecording());
 
       if (isRecoverableTimeout && canAttemptRecordedAudioFallback) {
         setTraining(false);
@@ -552,7 +552,7 @@ export default function CustomiseScreen() {
     }
   );
 
-  useSpeechRecognitionEvent("end", () => {
+  useHandsFreeRecognitionEvent("end", () => {
     setTraining(false);
     trainingRef.current = false;
     setTrainingLevel(0);
@@ -603,7 +603,7 @@ export default function CustomiseScreen() {
     trainingAudioCapturedRef.current = false;
 
     try {
-      ExpoSpeechRecognitionModule.abort();
+      handsFreeRecognizer.abort("customise");
     } catch {
       // ignore cleanup errors
     }
@@ -634,7 +634,7 @@ export default function CustomiseScreen() {
       setTrainingPhase("preparing");
       setTrainingStatus(`Getting the microphone ready for “${wakePrompt}”…`);
   
-      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      const permission = await handsFreeRecognizer.requestPermissionsAsync();
       if (!permission.granted) {
         setTraining(false);
         trainingRef.current = false;
@@ -649,8 +649,8 @@ export default function CustomiseScreen() {
       const canPersistAudio =
         Platform.OS === "android" &&
         Number(Platform.Version) >= 33 &&
-        typeof ExpoSpeechRecognitionModule.supportsRecording === "function" &&
-        Boolean(ExpoSpeechRecognitionModule.supportsRecording());
+        typeof handsFreeRecognizer.supportsRecording === "function" &&
+        Boolean(handsFreeRecognizer.supportsRecording());
   
       const shouldUseOnDevice =
         Platform.OS === "ios" ||
@@ -659,7 +659,7 @@ export default function CustomiseScreen() {
       setTraining(true);
       trainingRef.current = true;
   
-      ExpoSpeechRecognitionModule.start({
+      handsFreeRecognizer.start("customise", {
         lang: speechLocale,
         interimResults: true,
         maxAlternatives: 1,
@@ -705,10 +705,10 @@ export default function CustomiseScreen() {
     setTrainingStatus("Finishing this listening session…");
 
     try {
-      ExpoSpeechRecognitionModule.stop();
+      handsFreeRecognizer.stop("customise");
     } catch {
       try {
-        ExpoSpeechRecognitionModule.abort();
+        handsFreeRecognizer.abort("customise");
       } catch {
         // ignore nested stop failures
       }
@@ -740,6 +740,8 @@ export default function CustomiseScreen() {
         JSON.stringify(uniqueSamples(wakeTrainingSamples)) !==
           JSON.stringify(uniqueSamples(settings.wakeTrainingSamples || []))
       ) {
+        const wakePhraseChanged =
+          wakePrompt !== (settings.wakePhrase || `Hey ${name || "Elli"}`).trim();
         await updateSettings({
           tone,
           languageMode,
@@ -749,6 +751,16 @@ export default function CustomiseScreen() {
           handsFreeEnabled,
           wakePhrase: wakePrompt,
           wakeTrainingSamples: uniqueSamples(wakeTrainingSamples),
+          ...(wakePhraseChanged
+            ? {
+                wakeModel: {
+                  status: "pending",
+                  wakePhrase: wakePrompt,
+                  updatedAt: new Date().toISOString(),
+                  detail: "Wake phrase changed. Download or build an OpenWakeWord model before enabling hands-free wake detection.",
+                },
+              }
+            : {}),
         });
       }
 

@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import uuid
 import wave
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +44,9 @@ WAKE_STATE_LABELS: Dict[str, str] = {
 MINIMUM_POSITIVE_SAMPLES = 3
 MINIMUM_NEGATIVE_SAMPLES = 2
 TARGET_SAMPLE_RATE = 16_000
+MODEL_FRAME_MS = 80
+MODEL_THRESHOLD_DEFAULT = 0.5
+MODEL_BUNDLE_VERSION = 1
 
 
 
@@ -302,6 +306,15 @@ class OpenWakeWordSupport:
         paths = self.enrollment_paths(user_id, wake_phrase)
         normalized_phrase = paths.wake_phrase
         manifest = self._load_latest_manifest(paths)
+        resolved_custom_model_path = custom_model_path or manifest.get("custom_model_path")
+        custom_model_ready = bool(
+            resolved_custom_model_path and Path(str(resolved_custom_model_path)).exists()
+        )
+
+        if custom_model_path and not custom_model_ready:
+            raise EnrollmentValidationError(
+                "Custom wake phrase activation requires an existing OpenWakeWord model file."
+            )
 
         next_manifest = {
             **manifest,
@@ -311,11 +324,18 @@ class OpenWakeWordSupport:
             "phrase_key": paths.phrase_key,
             "created_at": _utc_now(),
             "supported_base_model": SUPPORTED_BASE_MODELS.get(normalized_phrase),
-            "activation_mode": "custom_model",
-            "wake_state": "active",
-            "custom_model_path": custom_model_path,
+            "activation_mode": "custom_model" if custom_model_ready else "custom_model_pending",
+            "wake_state": "active" if custom_model_ready else "training",
+            "custom_model_path": str(resolved_custom_model_path) if resolved_custom_model_path else None,
             "notes": notes,
-            "message": f"'{normalized_phrase}' is now Active.",
+            "message": (
+                f"'{normalized_phrase}' is now Active."
+                if custom_model_ready
+                else (
+                    f"'{normalized_phrase}' samples are saved, but the custom phrase still needs "
+                    "a real OpenWakeWord model file before it can become Active."
+                )
+            ),
         }
 
         manifest_path = paths.manifests_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
@@ -326,10 +346,241 @@ class OpenWakeWordSupport:
         status["manifest_path"] = str(manifest_path)
         return status
 
+    def model_bundle_status(self, user_id: int, wake_phrase: str) -> Dict[str, Any]:
+        paths = self.enrollment_paths(user_id, wake_phrase)
+        normalized_phrase = paths.wake_phrase
+        base_model_key = SUPPORTED_BASE_MODELS.get(normalized_phrase)
+        manifest = self._load_latest_manifest(paths)
+
+        if base_model_key:
+            try:
+                located = self.locate_supported_base_model_bundle(base_model_key)
+            except OpenWakeWordNotInstalledError as exc:
+                return self._model_status_payload(
+                    user_id=user_id,
+                    paths=paths,
+                    status="missing_dependency",
+                    ready=False,
+                    model_type="supported_base",
+                    supported_base_model=base_model_key,
+                    detail=str(exc),
+                    manifest=manifest,
+                )
+            except TrainingNotSupportedError as exc:
+                return self._model_status_payload(
+                    user_id=user_id,
+                    paths=paths,
+                    status="unsupported",
+                    ready=False,
+                    model_type="supported_base",
+                    supported_base_model=base_model_key,
+                    detail=str(exc),
+                    manifest=manifest,
+                )
+
+            return self._model_status_payload(
+                user_id=user_id,
+                paths=paths,
+                status="ready",
+                ready=True,
+                model_type="supported_base",
+                supported_base_model=base_model_key,
+                detail="OpenWakeWord ONNX model bundle is ready.",
+                manifest=manifest,
+                model_files=located["model_files"],
+            )
+
+        try:
+            located = self.locate_custom_model_bundle(user_id, normalized_phrase)
+        except EnrollmentValidationError as exc:
+            return self._model_status_payload(
+                user_id=user_id,
+                paths=paths,
+                status="pending",
+                ready=False,
+                model_type="custom",
+                detail=str(exc),
+                manifest=manifest,
+            )
+        except TrainingNotSupportedError as exc:
+            return self._model_status_payload(
+                user_id=user_id,
+                paths=paths,
+                status="unsupported",
+                ready=False,
+                model_type="custom",
+                detail=str(exc),
+                manifest=manifest,
+            )
+
+        return self._model_status_payload(
+            user_id=user_id,
+            paths=paths,
+            status="ready",
+            ready=True,
+            model_type="custom",
+            detail="Custom OpenWakeWord model bundle is ready.",
+            manifest=manifest,
+            model_files=located["model_files"],
+        )
+
+    def build_model_bundle(self, user_id: int, wake_phrase: str) -> Path:
+        paths = self.enrollment_paths(user_id, wake_phrase)
+        normalized_phrase = paths.wake_phrase
+        base_model_key = SUPPORTED_BASE_MODELS.get(normalized_phrase)
+        located = (
+            self.locate_supported_base_model_bundle(base_model_key)
+            if base_model_key
+            else self.locate_custom_model_bundle(user_id, normalized_phrase)
+        )
+        bundle_dir = paths.root / "bundles"
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        bundle_path = bundle_dir / f"{paths.phrase_key}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.zip"
+        manifest = {
+            "version": MODEL_BUNDLE_VERSION,
+            "phrase_key": paths.phrase_key,
+            "wake_phrase": normalized_phrase,
+            "model_type": located["model_type"],
+            "model_files": [
+                {
+                    "role": entry["role"],
+                    "file": entry["file"],
+                    "sha256": entry["sha256"],
+                    "bytes": entry["bytes"],
+                }
+                for entry in located["model_files"]
+            ],
+            "threshold": MODEL_THRESHOLD_DEFAULT,
+            "frame_ms": MODEL_FRAME_MS,
+            "sample_rate": TARGET_SAMPLE_RATE,
+            "created_at": _utc_now(),
+        }
+
+        with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            for entry in located["model_files"]:
+                archive.write(entry["path"], entry["file"])
+
+        return bundle_path
+
+    def locate_supported_base_model_bundle(self, model_key: str) -> Dict[str, Any]:
+        try:
+            import openwakeword  # type: ignore
+            from openwakeword.utils import download_models  # type: ignore
+        except ImportError as exc:
+            raise OpenWakeWordNotInstalledError(
+                "openwakeword is not installed. Install optional wakeword dependencies before downloading wake model bundles."
+            ) from exc
+
+        try:
+            download_models([model_key])
+        except TypeError:
+            download_models()
+        except Exception as exc:
+            raise OpenWakeWordNotInstalledError(
+                f"Could not download OpenWakeWord artifacts for '{model_key}': {exc}"
+            ) from exc
+
+        package_root = Path(openwakeword.__file__).resolve().parent
+        search_roots = [
+            package_root,
+            package_root / "resources",
+            package_root / "models",
+            Path.home() / ".cache" / "openwakeword",
+            self.root_dir / "models",
+        ]
+
+        mel = self._find_model_file(search_roots, ["melspectrogram.onnx", "mel*.onnx"])
+        embedding = self._find_model_file(search_roots, ["embedding_model.onnx", "*embedding*.onnx"])
+        wake = self._find_model_file(
+            search_roots,
+            [
+                f"{model_key}.onnx",
+                f"{model_key}_*.onnx",
+                f"*{model_key}*.onnx",
+            ],
+            exclude_patterns=["*embedding*", "*melspectrogram*"],
+        )
+
+        if not wake:
+            tflite = self._find_model_file(
+                search_roots,
+                [f"{model_key}.tflite", f"{model_key}_*.tflite", f"*{model_key}*.tflite"],
+            )
+            if tflite:
+                raise TrainingNotSupportedError(
+                    f"OpenWakeWord model '{model_key}' is available only as TFLite here. "
+                    "The mobile wake engine requires ONNX artifacts."
+                )
+
+        missing = [
+            name
+            for name, value in (
+                ("melspectrogram.onnx", mel),
+                ("embedding_model.onnx", embedding),
+                (f"{model_key}.onnx", wake),
+            )
+            if not value
+        ]
+        if missing:
+            raise TrainingNotSupportedError(
+                f"OpenWakeWord ONNX bundle for '{model_key}' is incomplete. Missing: {', '.join(missing)}."
+            )
+
+        return {
+            "model_type": "supported_base",
+            "model_key": model_key,
+            "model_files": [
+                self._model_file_entry(mel, "melspectrogram"),
+                self._model_file_entry(embedding, "embedding"),
+                self._model_file_entry(wake, "wake"),
+            ],
+        }
+
+    def locate_custom_model_bundle(self, user_id: int, wake_phrase: str) -> Dict[str, Any]:
+        paths = self.enrollment_paths(user_id, wake_phrase)
+        manifest = self._load_latest_manifest(paths)
+        custom_model_path = manifest.get("custom_model_path")
+        if not custom_model_path:
+            raise EnrollmentValidationError(
+                "Custom wake phrase model is pending. Upload or attach a trained OpenWakeWord model before downloading a bundle."
+            )
+
+        model_path = Path(str(custom_model_path)).expanduser()
+        if not model_path.exists() or not model_path.is_file():
+            raise EnrollmentValidationError(
+                "Custom wake phrase model is pending because the configured model file does not exist."
+            )
+        if model_path.suffix.lower() == ".tflite":
+            raise TrainingNotSupportedError(
+                "The mobile wake engine requires an ONNX custom wake model; TFLite custom models are not supported."
+            )
+        if model_path.suffix.lower() != ".onnx":
+            raise TrainingNotSupportedError(
+                "The custom wake model must be an ONNX file for the on-device wake engine."
+            )
+
+        model_files = [self._model_file_entry(model_path, "wake")]
+        for role, filename in (
+            ("melspectrogram", "melspectrogram.onnx"),
+            ("embedding", "embedding_model.onnx"),
+        ):
+            candidate = model_path.parent / filename
+            if candidate.exists() and candidate.is_file():
+                model_files.insert(0 if role == "melspectrogram" else 1, self._model_file_entry(candidate, role))
+
+        return {
+            "model_type": "custom",
+            "model_files": model_files,
+        }
+
     def _derive_wake_state(self, supported_base_model: Optional[str], manifest: Dict[str, Any]) -> WAKE_STATE:
         manifest_state = str(manifest.get("wake_state") or "").strip().lower()
         if manifest_state == "active":
-            return "active"
+            custom_model_path = manifest.get("custom_model_path")
+            if supported_base_model or (custom_model_path and Path(str(custom_model_path)).exists()):
+                return "active"
+            return "training"
         if manifest_state == "training":
             return "training"
         if supported_base_model:
@@ -365,6 +616,74 @@ class OpenWakeWordSupport:
             return json.loads(manifests[-1].read_text(encoding="utf-8"))
         except Exception:
             return {}
+
+    def _model_status_payload(
+        self,
+        *,
+        user_id: int,
+        paths: EnrollmentPaths,
+        status: str,
+        ready: bool,
+        model_type: str,
+        detail: str,
+        manifest: Dict[str, Any],
+        supported_base_model: Optional[str] = None,
+        model_files: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "user_id": int(user_id),
+            "wake_phrase": paths.wake_phrase,
+            "phrase_key": paths.phrase_key,
+            "status": status,
+            "ready": ready,
+            "model_type": model_type,
+            "supported_base_model": supported_base_model,
+            "detail": detail,
+            "threshold": MODEL_THRESHOLD_DEFAULT,
+            "frame_ms": MODEL_FRAME_MS,
+            "sample_rate": TARGET_SAMPLE_RATE,
+            "model_files": [
+                {
+                    "role": entry["role"],
+                    "file": entry["file"],
+                    "sha256": entry["sha256"],
+                    "bytes": entry["bytes"],
+                }
+                for entry in (model_files or [])
+            ],
+            "manifest": manifest,
+        }
+
+    def _find_model_file(
+        self,
+        search_roots: List[Path],
+        patterns: List[str],
+        *,
+        exclude_patterns: Optional[List[str]] = None,
+    ) -> Optional[Path]:
+        exclude_patterns = exclude_patterns or []
+        for root in search_roots:
+            if not root.exists():
+                continue
+            for pattern in patterns:
+                for candidate in sorted(root.rglob(pattern)):
+                    if not candidate.is_file():
+                        continue
+                    if any(candidate.match(exclude) for exclude in exclude_patterns):
+                        continue
+                    return candidate
+        return None
+
+    def _model_file_entry(self, path: Path, role: str) -> Dict[str, Any]:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        return {
+            "role": role,
+            "file": path.name,
+            "path": path,
+            "sha256": digest,
+            "bytes": path.stat().st_size,
+        }
 
     def _decode_to_wav(self, source_path: Path, destination_path: Path) -> Dict[str, Any]:
         try:

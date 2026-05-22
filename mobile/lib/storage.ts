@@ -38,6 +38,23 @@ export const KEYS = {
 
 export type AssistantTone = "pro" | "friendly";
 export type LanguageMode = "en" | "ta";
+export type WakeModelStatus = "missing" | "pending" | "ready" | "unsupported" | "error" | "e2e_mock";
+export type WakeModelSettings = {
+  status: WakeModelStatus;
+  phraseKey?: string;
+  wakePhrase?: string;
+  modelType?: "supported_base" | "custom" | "e2e_mock" | string;
+  threshold?: number;
+  sampleRate?: number;
+  frameMs?: number;
+  modelPaths?: {
+    wakeModel?: string;
+    melspectrogramModel?: string;
+    embeddingModel?: string;
+  };
+  detail?: string;
+  updatedAt?: string;
+};
 
 export type AssistantSettings = {
   tone: AssistantTone;
@@ -49,6 +66,8 @@ export type AssistantSettings = {
   autoSpeakReplies: boolean;
   wakePhrase: string;
   wakeTrainingSamples: string[];
+  wakeObservedTranscriptions: string[];
+  wakeModel: WakeModelSettings;
 };
 
 export const CLOUD_FALLBACK_POLICY_VERSION = 2;
@@ -64,6 +83,10 @@ export const DEFAULTS: { name: string; settings: AssistantSettings } = {
     autoSpeakReplies: false,
     wakePhrase: "Hey Elli",
     wakeTrainingSamples: [],
+    wakeObservedTranscriptions: [],
+    wakeModel: {
+      status: "missing",
+    },
   },
 };
 
@@ -97,6 +120,63 @@ function normalizeWakeTrainingSamples(value: unknown): string[] {
   );
 }
 
+function normalizeWakeObservedTranscriptions(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(
+    new Set(
+      value
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .slice(0, 12)
+    )
+  );
+}
+
+function normalizeWakeModel(value: unknown, wakePhrase: string): WakeModelSettings {
+  const input = value && typeof value === "object" ? (value as Record<string, any>) : {};
+  const rawStatus = String(input.status || "").trim();
+  const status: WakeModelStatus =
+    rawStatus === "pending" ||
+    rawStatus === "ready" ||
+    rawStatus === "unsupported" ||
+    rawStatus === "error" ||
+    rawStatus === "e2e_mock"
+      ? rawStatus
+      : "missing";
+  const modelPaths =
+    input.modelPaths && typeof input.modelPaths === "object"
+      ? {
+          wakeModel: String(input.modelPaths.wakeModel || "").trim() || undefined,
+          melspectrogramModel:
+            String(input.modelPaths.melspectrogramModel || "").trim() || undefined,
+          embeddingModel: String(input.modelPaths.embeddingModel || "").trim() || undefined,
+        }
+      : undefined;
+
+  return {
+    status,
+    phraseKey: String(input.phraseKey || "").trim() || undefined,
+    wakePhrase: String(input.wakePhrase || "").trim() || wakePhrase,
+    modelType: String(input.modelType || "").trim() || undefined,
+    threshold:
+      Number.isFinite(Number(input.threshold)) && Number(input.threshold) > 0
+        ? Number(input.threshold)
+        : undefined,
+    sampleRate:
+      Number.isFinite(Number(input.sampleRate)) && Number(input.sampleRate) > 0
+        ? Math.floor(Number(input.sampleRate))
+        : undefined,
+    frameMs:
+      Number.isFinite(Number(input.frameMs)) && Number(input.frameMs) > 0
+        ? Math.floor(Number(input.frameMs))
+        : undefined,
+    modelPaths,
+    detail: String(input.detail || "").trim() || undefined,
+    updatedAt: String(input.updatedAt || "").trim() || undefined,
+  };
+}
+
 function normalizeCloudFallback(value: Partial<AssistantSettings> | null | undefined): boolean {
   if (value?.cloudFallbackUserChoice === true) {
     return value.allowCloudFallback === true;
@@ -120,6 +200,7 @@ export function normalizeAssistantSettings(
   value?: Partial<AssistantSettings> | null
 ): AssistantSettings {
   const cloudFallbackUserChoice = value?.cloudFallbackUserChoice === true;
+  const wakePhrase = normalizeWakePhrase(value?.wakePhrase);
 
   return {
     tone: value?.tone === "friendly" ? "friendly" : DEFAULTS.settings.tone,
@@ -131,8 +212,12 @@ export function normalizeAssistantSettings(
     ),
     handsFreeEnabled: Boolean(value?.handsFreeEnabled),
     autoSpeakReplies: value?.autoSpeakReplies === true,
-    wakePhrase: normalizeWakePhrase(value?.wakePhrase),
+    wakePhrase,
     wakeTrainingSamples: normalizeWakeTrainingSamples(value?.wakeTrainingSamples),
+    wakeObservedTranscriptions: normalizeWakeObservedTranscriptions(
+      value?.wakeObservedTranscriptions
+    ),
+    wakeModel: normalizeWakeModel(value?.wakeModel, wakePhrase),
   };
 }
 

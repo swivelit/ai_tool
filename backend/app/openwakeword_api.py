@@ -4,6 +4,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 
 from .auth import AuthUser, get_current_user, get_owned_user
 from .database import get_session
@@ -73,6 +74,41 @@ def get_openwakeword_enrollment_status(
         return service.status(user_id, wake_phrase)
     except EnrollmentValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/enrollment/model/status")
+def get_openwakeword_model_status(
+    wake_phrase: str = Query(...),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user_id = owned_user_id(session, auth_user)
+    try:
+        return service.model_bundle_status(user_id, wake_phrase)
+    except EnrollmentValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/enrollment/model/download")
+def download_openwakeword_model_bundle(
+    wake_phrase: str = Query(...),
+    session: Session = Depends(get_session),
+    auth_user: AuthUser = Depends(get_current_user),
+):
+    user_id = owned_user_id(session, auth_user)
+    try:
+        bundle_path = service.build_model_bundle(user_id, wake_phrase)
+        return FileResponse(
+            path=str(bundle_path),
+            media_type="application/zip",
+            filename=bundle_path.name,
+        )
+    except OpenWakeWordNotInstalledError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except TrainingNotSupportedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except EnrollmentValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/enrollment/sample")

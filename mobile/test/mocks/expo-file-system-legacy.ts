@@ -28,6 +28,10 @@ export async function readAsStringAsync(_uri: string) {
   return "";
 }
 
+export async function writeAsStringAsync(_uri: string, _contents: string, _options?: unknown) {
+  return undefined;
+}
+
 export function createDownloadResumable() {
   return {
     downloadAsync: async () => null,

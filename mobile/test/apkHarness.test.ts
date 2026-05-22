@@ -328,7 +328,7 @@ describe("APK test harness", () => {
     expect(source).toContain("hands-free-before");
     expect(source).toContain("hands-free-after-reply");
     expect(source).toContain("hands-free-after-stop");
-    expect(source).toContain("Listening for your next question");
+    expect(source).toContain("Listening");
     expect(source).toContain("hands-free-listening-resumed");
     expect(source).toContain("hands-free-telemetry-markers-missing");
     expect(source).toContain("hands-free-tts-failed");

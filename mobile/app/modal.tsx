@@ -18,10 +18,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import {
-  ExpoSpeechRecognitionModule,
-  useSpeechRecognitionEvent,
-} from "expo-speech-recognition";
 
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
@@ -29,6 +25,10 @@ import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
 import { apiGet, apiPostForm, apiPut } from "@/lib/api";
 import { getProfileForFirebaseUid } from "@/lib/account";
+import {
+  handsFreeRecognizer,
+  useHandsFreeRecognitionEvent,
+} from "@/lib/handsFreeRecognizer";
 
 type Routine = {
   wake_time: string;
@@ -288,7 +288,7 @@ export default function SettingsModal() {
   useEffect(() => {
     return () => {
       try {
-        ExpoSpeechRecognitionModule.abort();
+        handsFreeRecognizer.abort("modal");
       } catch {
         // Ignore cleanup errors.
       }
@@ -413,13 +413,13 @@ export default function SettingsModal() {
     try {
       try {
         defaultService =
-          String(ExpoSpeechRecognitionModule.getDefaultRecognitionService?.()?.packageName || "").trim();
+          String(handsFreeRecognizer.getDefaultRecognitionService?.()?.packageName || "").trim();
       } catch {
         defaultService = "";
       }
 
       try {
-        const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices?.();
+        const services = handsFreeRecognizer.getSpeechRecognitionServices?.();
         availableServices = Array.isArray(services)
           ? services.map((item) => String(item || "").trim()).filter(Boolean)
           : [];
@@ -428,14 +428,14 @@ export default function SettingsModal() {
       }
 
       try {
-        supportsOnDevice = Boolean(ExpoSpeechRecognitionModule.supportsOnDeviceRecognition?.());
+        supportsOnDevice = Boolean(handsFreeRecognizer.supportsOnDeviceRecognition?.());
       } catch {
         supportsOnDevice = false;
       }
 
       if (supportsOnDevice) {
         try {
-          const payload: any = await ExpoSpeechRecognitionModule.getSupportedLocales?.({
+          const payload: any = await handsFreeRecognizer.getSupportedLocales?.({
             androidRecognitionServicePackage: "com.google.android.as",
           });
           installedLocales = Array.isArray(payload?.installedLocales)
@@ -465,7 +465,7 @@ export default function SettingsModal() {
 
     try {
       setTrainingStatus(`Opening the Android speech model download for ${speechLocale}…`);
-      const result: any = await ExpoSpeechRecognitionModule.androidTriggerOfflineModelDownload?.({
+      const result: any = await handsFreeRecognizer.androidTriggerOfflineModelDownload?.({
         locale: speechLocale,
       });
 
@@ -548,7 +548,7 @@ export default function SettingsModal() {
     }
   }
 
-  useSpeechRecognitionEvent("start", () => {
+  useHandsFreeRecognitionEvent("start", () => {
     if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
 
     setTrainingPhase("listening");
@@ -557,14 +557,14 @@ export default function SettingsModal() {
     setTrainingLevel(0.08);
   });
 
-  useSpeechRecognitionEvent("speechstart", () => {
+  useHandsFreeRecognitionEvent("speechstart", () => {
     if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
 
     setTrainingPhase("heard-sound");
     setTrainingStatus("Sound detected. Keep speaking until the phrase is complete.");
   });
 
-  useSpeechRecognitionEvent("volumechange", (event: any) => {
+  useHandsFreeRecognitionEvent("volumechange", (event: any) => {
     if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
 
     const nextValue = Number(event?.value ?? -2);
@@ -577,7 +577,7 @@ export default function SettingsModal() {
     }
   });
 
-  useSpeechRecognitionEvent("audiostart", () => {
+  useHandsFreeRecognitionEvent("audiostart", () => {
     if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
 
     trainingPendingRecordedAudioFallbackRef.current = false;
@@ -589,7 +589,7 @@ export default function SettingsModal() {
     setTrainingStatus(`Microphone is live. Say “${wakePrompt}” now.`);
   });
 
-  useSpeechRecognitionEvent("audioend", (event: any) => {
+  useHandsFreeRecognitionEvent("audioend", (event: any) => {
     if (!trainingScreenVisibleRef.current) return;
 
     const uri = String(event?.uri || "").trim();
@@ -613,7 +613,7 @@ export default function SettingsModal() {
     }
   });
 
-  useSpeechRecognitionEvent("result", (event: any) => {
+  useHandsFreeRecognitionEvent("result", (event: any) => {
     if (!trainingScreenVisibleRef.current || !trainingWakePhraseRef.current) return;
 
     const transcript = normalizeRecognitionTranscript(
@@ -629,7 +629,7 @@ export default function SettingsModal() {
     }
   });
 
-  useSpeechRecognitionEvent("error", (event: any) => {
+  useHandsFreeRecognitionEvent("error", (event: any) => {
     if (!trainingScreenVisibleRef.current) return;
 
     if (event?.error === "aborted") {
@@ -657,8 +657,8 @@ export default function SettingsModal() {
     const canAttemptRecordedAudioFallback =
       Platform.OS === "android" &&
       Number(Platform.Version) >= 33 &&
-      typeof ExpoSpeechRecognitionModule.supportsRecording === "function" &&
-      Boolean(ExpoSpeechRecognitionModule.supportsRecording());
+      typeof handsFreeRecognizer.supportsRecording === "function" &&
+      Boolean(handsFreeRecognizer.supportsRecording());
 
     if (isRecoverableTimeout && canAttemptRecordedAudioFallback) {
       setTrainingWakePhrase(false);
@@ -700,7 +700,7 @@ export default function SettingsModal() {
     );
   });
 
-  useSpeechRecognitionEvent("end", () => {
+  useHandsFreeRecognitionEvent("end", () => {
     setTrainingWakePhrase(false);
     trainingWakePhraseRef.current = false;
     setTrainingLevel(0);
@@ -918,7 +918,7 @@ export default function SettingsModal() {
     trainingAudioCapturedRef.current = false;
 
     try {
-      ExpoSpeechRecognitionModule.abort();
+      handsFreeRecognizer.abort("modal");
     } catch {
       // Ignore cleanup errors.
     }
@@ -940,10 +940,10 @@ export default function SettingsModal() {
     setTrainingStatus("Finishing this listening session…");
 
     try {
-      ExpoSpeechRecognitionModule.stop();
+      handsFreeRecognizer.stop("modal");
     } catch {
       try {
-        ExpoSpeechRecognitionModule.abort();
+        handsFreeRecognizer.abort("modal");
       } catch {
         // Ignore nested stop failures.
       }
@@ -965,7 +965,7 @@ export default function SettingsModal() {
       setTrainingPhase("preparing");
       setTrainingStatus(`Getting the microphone ready for “${wakePrompt}”…`);
 
-      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      const permission = await handsFreeRecognizer.requestPermissionsAsync();
       if (!permission.granted) {
         setTrainingWakePhrase(false);
         trainingWakePhraseRef.current = false;
@@ -980,8 +980,8 @@ export default function SettingsModal() {
       const canPersistAudio =
         Platform.OS === "android" &&
         Number(Platform.Version) >= 33 &&
-        typeof ExpoSpeechRecognitionModule.supportsRecording === "function" &&
-        Boolean(ExpoSpeechRecognitionModule.supportsRecording());
+        typeof handsFreeRecognizer.supportsRecording === "function" &&
+        Boolean(handsFreeRecognizer.supportsRecording());
 
       const shouldUseOnDevice =
         Platform.OS === "ios" ||
@@ -990,7 +990,7 @@ export default function SettingsModal() {
       setTrainingWakePhrase(true);
       trainingWakePhraseRef.current = true;
 
-      ExpoSpeechRecognitionModule.start({
+      handsFreeRecognizer.start("modal", {
         lang: speechLocale,
         interimResults: true,
         maxAlternatives: 1,

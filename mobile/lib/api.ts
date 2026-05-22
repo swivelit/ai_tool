@@ -2722,6 +2722,14 @@ export async function apiGet<T>(path: string): Promise<T> {
   return normalizeBackendDates((await res.json()) as T);
 }
 
+export async function apiFetchRaw(
+  path: string,
+  options: RequestInit = {},
+  config: { timeoutMs?: number; auth?: boolean } = {},
+): Promise<Response> {
+  return fetchBackend(path, options, config);
+}
+
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
   if (
     isE2eMockHandsFreeEnabled() &&

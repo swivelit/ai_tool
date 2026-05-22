@@ -18,7 +18,9 @@ import {
 } from "@/lib/account";
 import {
   getE2eMockUserProfile,
+  getE2eHandsFreeWakePhrase,
   isE2eMockAuthEnabled,
+  isE2eMockHandsFreeEnabled,
 } from "@/lib/e2eMode";
 import { resolveSettingsLanguageAfterProfileRestore } from "@/lib/profileSync";
 import {
@@ -68,6 +70,20 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       const mockSettings: AssistantSettings = {
         ...DEFAULTS.settings,
         languageMode: mockProfile.replyLanguage || "en",
+        ...(isE2eMockHandsFreeEnabled()
+          ? {
+              handsFreeEnabled: true,
+              autoSpeakReplies: true,
+              wakePhrase: getE2eHandsFreeWakePhrase(),
+              wakeTrainingSamples: [getE2eHandsFreeWakePhrase()],
+              wakeModel: {
+                status: "e2e_mock",
+                phraseKey: "e2e-mock",
+                wakePhrase: getE2eHandsFreeWakePhrase(),
+                modelType: "e2e_mock",
+              },
+            }
+          : {}),
       };
 
       await Promise.all([
@@ -134,7 +150,11 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       resolvedSettings.autoSpeakReplies !== normalizedStoredSettings.autoSpeakReplies ||
       resolvedSettings.wakePhrase !== normalizedStoredSettings.wakePhrase ||
       JSON.stringify(resolvedSettings.wakeTrainingSamples) !==
-        JSON.stringify(normalizedStoredSettings.wakeTrainingSamples);
+        JSON.stringify(normalizedStoredSettings.wakeTrainingSamples) ||
+      JSON.stringify(resolvedSettings.wakeObservedTranscriptions) !==
+        JSON.stringify(normalizedStoredSettings.wakeObservedTranscriptions) ||
+      JSON.stringify(resolvedSettings.wakeModel) !==
+        JSON.stringify(normalizedStoredSettings.wakeModel);
 
     if (settingsChanged) {
       await setSettings(resolvedSettings);

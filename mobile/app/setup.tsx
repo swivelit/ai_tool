@@ -22,6 +22,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { Brand } from "@/constants/theme";
+import { apiGet, apiPost, apiPostForm } from "@/lib/api";
+import { downloadAndSaveWakeModelBundle } from "@/lib/wakeWordEngine";
 
 type SampleKind = "positive" | "negative";
 type WakeState = "ready_now" | "needs_training" | "training" | "active";
@@ -41,13 +43,16 @@ type EnrollmentStatus = {
   state_message?: string;
   message?: string;
   manifest_path?: string;
-  storage_mode?: "local_device_only";
+  storage_mode?: "local_device_only" | "backend_enrollment";
   sample_files?: {
     positive: string[];
     negative: string[];
   };
   trained_at?: string | null;
   active_at?: string | null;
+  ready?: boolean;
+  status?: string;
+  detail?: string;
 };
 
 type LocalEnrollmentManifest = {
@@ -164,29 +169,29 @@ function describeWakeState(
 ) {
   if (state === "ready_now") {
     return supportedBaseModel
-      ? `${wakePhrase} matches the built-in phrase template ${supportedBaseModel}. The phrase is saved for foreground speech recognition, and any extra recordings stay on this phone.`
-      : `${wakePhrase} is accepted. You can record ${MINIMUM_POSITIVE} positive and ${MINIMUM_NEGATIVE} negative clips as local phrase variants on this phone.`;
+      ? `${wakePhrase} matches the built-in phrase template ${supportedBaseModel}. The app still needs the OpenWakeWord ONNX bundle before native wake detection can run.`
+      : `${wakePhrase} is accepted. Record ${MINIMUM_POSITIVE} positive and ${MINIMUM_NEGATIVE} negative clips so a custom OpenWakeWord model can be produced.`;
   }
   if (state === "needs_training") {
-    return `${wakePhrase} has ${positiveCount}/${MINIMUM_POSITIVE} positive and ${negativeCount}/${MINIMUM_NEGATIVE} negative local clips saved as phrase samples.`;
+    return `${wakePhrase} has ${positiveCount}/${MINIMUM_POSITIVE} positive and ${negativeCount}/${MINIMUM_NEGATIVE} negative enrollment clips saved.`;
   }
   if (state === "training") {
-    return `${wakePhrase} samples are being packaged locally on this phone. No audio is sent to the backend.`;
+    return `${wakePhrase} enrollment is pending a trained OpenWakeWord model bundle.`;
   }
-  return `${wakePhrase} is saved. The phrase samples and enrollment audio stay on this device only.`;
+  return `${wakePhrase} has a ready OpenWakeWord model bundle on this phone.`;
 }
 
 function actionHint(state: WakeState) {
   if (state === "ready_now") {
-    return "The phrase is accepted. You can continue now or record local samples as recognition variants.";
+    return "The phrase is accepted. Download or build its OpenWakeWord model before hands-free wake detection starts.";
   }
   if (state === "needs_training") {
-    return "Keep recording on the phone if you want saved phrase variants. Nothing is uploaded.";
+    return "Record enough positive and negative clips for OpenWakeWord enrollment.";
   }
   if (state === "training") {
-    return "The phone is packaging the saved wake phrase samples now.";
+    return "Enrollment is saved. Waiting for a trained model bundle.";
   }
-  return "This wake phrase is saved on the phone and the samples stay local.";
+  return "The model bundle is ready on this phone.";
 }
 
 function finalizeButtonLabel(state: WakeState) {
@@ -228,7 +233,7 @@ function buildDefaultStatus(wakePhrase: string): EnrollmentStatus {
     wake_state_label: STATE_LABELS[wakeState],
     can_run_instantly: Boolean(supportedBaseModel),
     state_message: describeWakeState(wakeState, wakePhrase, supportedBaseModel, 0, 0),
-    storage_mode: "local_device_only",
+    storage_mode: "backend_enrollment",
     sample_files: {
       positive: [],
       negative: [],
@@ -337,7 +342,7 @@ function manifestToStatus(manifest: LocalEnrollmentManifest): EnrollmentStatus {
     state_message: message,
     message,
     manifest_path: buildPaths(manifest.wake_phrase).manifestPath,
-    storage_mode: "local_device_only",
+    storage_mode: "backend_enrollment",
     sample_files: manifest.sample_files,
     trained_at: manifest.trained_at || null,
     active_at: manifest.active_at || null,
@@ -378,6 +383,36 @@ async function loadEnrollmentStatus(wakePhrase: string) {
   };
 }
 
+function audioUploadPart(uri: string, sampleKind: SampleKind) {
+  const lower = uri.toLowerCase();
+  const extension = lower.endsWith(".wav") ? "wav" : lower.endsWith(".mp4") ? "mp4" : "m4a";
+  const type =
+    extension === "wav"
+      ? "audio/wav"
+      : extension === "mp4"
+        ? "audio/mp4"
+        : "audio/m4a";
+  return {
+    uri,
+    name: `${sampleKind}-wake-sample.${extension}`,
+    type,
+  } as any;
+}
+
+function modelStateFromStatus(wakePhrase: string, status: EnrollmentStatus | null) {
+  return {
+    status: (status?.status || (status?.ready ? "ready" : "pending")) as any,
+    phraseKey: status?.phrase_key || phraseKeyFor(wakePhrase),
+    wakePhrase: status?.wake_phrase || wakePhrase,
+    modelType: (status as any)?.model_type,
+    threshold: (status as any)?.threshold,
+    sampleRate: (status as any)?.sample_rate,
+    frameMs: (status as any)?.frame_ms,
+    detail: status?.detail || status?.state_message || status?.message,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export default function Setup() {
   const { updateName, updateSettings, name } = useAssistant();
   const insets = useSafeAreaInsets();
@@ -390,7 +425,7 @@ export default function Setup() {
   const [finalizing, setFinalizing] = useState(false);
   const [recordingKind, setRecordingKind] = useState<SampleKind | null>(null);
   const [message, setMessage] = useState(
-    "Custom wake phrase samples stay on-device. Record optional variants here, then save the phrase for foreground hands-free recognition."
+    "Record wake phrase samples, then build or download a real OpenWakeWord model before enabling hands-free wake detection."
   );
   const [error, setError] = useState("");
 
@@ -564,6 +599,23 @@ export default function Setup() {
       const targetUri = `${targetDir}/${currentKind}-${Date.now()}.${extension}`;
 
       await FileSystem.copyAsync({ from: uri, to: targetUri });
+      const form = new FormData();
+      form.append("file", audioUploadPart(uri, currentKind));
+
+      let backendStatus: EnrollmentStatus | null = null;
+      try {
+        backendStatus = await apiPostForm<EnrollmentStatus>(
+          `/api/openwakeword/enrollment/sample?wake_phrase=${encodeURIComponent(normalizedWakePhrase)}&sample_kind=${currentKind}`,
+          form
+        );
+      } catch (uploadError: unknown) {
+        const uploadMessage =
+          uploadError instanceof Error
+            ? uploadError.message
+            : "Backend wake sample upload failed.";
+        setError(uploadMessage);
+      }
+
       await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
 
       const nextSamples = {
@@ -584,12 +636,13 @@ export default function Setup() {
 
       await writeManifest(nextManifest);
 
-      const payload = manifestToStatus(nextManifest);
+      const payload = backendStatus || manifestToStatus(nextManifest);
       setStatus(payload);
       setMessage(
-        currentKind === "positive"
-          ? `Saved positive sample ${progressLabel(nextManifest.positive_count, minimumPositive)} on this device.`
-          : `Saved negative sample ${progressLabel(nextManifest.negative_count, minimumNegative)} on this device.`
+        backendStatus?.message ||
+          (currentKind === "positive"
+            ? `Saved positive sample ${progressLabel(nextManifest.positive_count, minimumPositive)}.`
+            : `Saved negative sample ${progressLabel(nextManifest.negative_count, minimumNegative)}.`)
       );
     } catch (nextError: unknown) {
       const nextMessage =
@@ -615,30 +668,81 @@ export default function Setup() {
         wake_state: "training",
       });
       setStatus(manifestToStatus(trainingManifest));
-      setMessage(`Packaging the wake phrase samples for “${normalizedWakePhrase}” locally on this phone…`);
+      await writeManifest(trainingManifest);
+      setMessage(`Finalizing “${normalizedWakePhrase}” and checking for an OpenWakeWord model…`);
 
-      const finishedAt = new Date().toISOString();
-      const activeManifest = normalizeManifest(normalizedWakePhrase, {
+      await apiPost<EnrollmentStatus>(
+        `/api/openwakeword/enrollment/finalize?wake_phrase=${encodeURIComponent(normalizedWakePhrase)}`
+      );
+      const modelStatus = await apiGet<EnrollmentStatus>(
+        `/api/openwakeword/enrollment/model/status?wake_phrase=${encodeURIComponent(normalizedWakePhrase)}`
+      );
+
+      if (modelStatus.ready) {
+        const saved = await downloadAndSaveWakeModelBundle(normalizedWakePhrase);
+        const finishedAt = new Date().toISOString();
+        const activeManifest = normalizeManifest(normalizedWakePhrase, {
+          ...trainingManifest,
+          wake_state: "active",
+          trained_at: finishedAt,
+          active_at: finishedAt,
+        });
+        await writeManifest(activeManifest);
+        const payload = {
+          ...manifestToStatus(activeManifest),
+          ...modelStatus,
+          wake_state: "active" as WakeState,
+          wake_state_label: STATE_LABELS.active,
+        };
+        setStatus(payload);
+        await updateSettings({
+          wakePhrase: normalizedWakePhrase,
+          wakeTrainingSamples: uniqueStrings([normalizedWakePhrase]),
+          wakeModel: {
+            ...modelStateFromStatus(normalizedWakePhrase, modelStatus),
+            status: "ready",
+            modelPaths: saved.modelPaths,
+          },
+        });
+        setMessage(`Wake phrase model is ready for on-device OpenWakeWord detection.`);
+        return;
+      }
+
+      const pendingManifest = normalizeManifest(normalizedWakePhrase, {
         ...trainingManifest,
-        wake_state: "active",
-        trained_at: finishedAt,
-        active_at: finishedAt,
+        wake_state: "training",
       });
-
-      await writeManifest(activeManifest);
-      const payload = manifestToStatus(activeManifest);
+      await writeManifest(pendingManifest);
+      const payload = {
+        ...manifestToStatus(pendingManifest),
+        ...modelStatus,
+        wake_state: "training" as WakeState,
+        wake_state_label: STATE_LABELS.training,
+      };
       setStatus(payload);
       await updateSettings({
         wakePhrase: normalizedWakePhrase,
         wakeTrainingSamples: uniqueStrings([normalizedWakePhrase]),
+        wakeModel: modelStateFromStatus(normalizedWakePhrase, modelStatus),
       });
       setMessage(
-        `Wake phrase samples saved. “${normalizedWakePhrase}” is ready for foreground hands-free recognition, and enrollment data stays on this phone.`
+        modelStatus.detail ||
+          `Wake phrase samples are saved, but “${normalizedWakePhrase}” still needs a real OpenWakeWord model bundle before it can wake the app.`
       );
     } catch (nextError: unknown) {
       const nextMessage =
         nextError instanceof Error ? nextError.message : "Could not finalize wake phrase setup.";
       setError(nextMessage);
+      await updateSettings({
+        wakePhrase: normalizedWakePhrase,
+        wakeModel: {
+          status: "error",
+          wakePhrase: normalizedWakePhrase,
+          phraseKey: phraseKeyFor(normalizedWakePhrase),
+          detail: nextMessage,
+          updatedAt: new Date().toISOString(),
+        },
+      });
       Alert.alert("Finalize failed", nextMessage);
     } finally {
       setFinalizing(false);
@@ -648,13 +752,24 @@ export default function Setup() {
   async function onContinue() {
     const trimmed = input.trim();
     await updateName(trimmed.length ? trimmed : "Elli");
-    await updateSettings({ wakePhrase: normalizedWakePhrase });
+    await updateSettings({
+      wakePhrase: normalizedWakePhrase,
+      wakeModel: status?.ready
+        ? modelStateFromStatus(normalizedWakePhrase, status)
+        : {
+            status: "pending",
+            wakePhrase: normalizedWakePhrase,
+            phraseKey: phraseKeyFor(normalizedWakePhrase),
+            detail: status?.detail || status?.state_message,
+            updatedAt: new Date().toISOString(),
+          },
+    });
     router.replace("/(chat)" as any);
   }
 
   async function onSkip() {
     await updateName("Elli");
-    await updateSettings({ wakePhrase: "Hey Elli" });
+    await updateSettings({ wakePhrase: "Hey Elli", wakeModel: { status: "missing" } });
     router.replace("/(chat)" as any);
   }
 
@@ -691,15 +806,15 @@ export default function Setup() {
 
           <GlassCard>
             <View style={styles.heroRow}>
-              <Text style={styles.title}>Wake phrase samples stay on-device.</Text>
+              <Text style={styles.title}>Wake phrase model setup</Text>
               <View style={styles.stateChip}>
                 <Ionicons name={STATE_ICONS[wakeState]} size={14} color={Brand.bronze} />
                 <Text style={styles.stateChipText}>{wakeStateLabel}</Text>
               </View>
             </View>
             <Text style={styles.subtitle}>
-              Custom phrase recordings are stored in the phone sandbox as recognition variants.
-              Runtime hands-free uses the saved phrase while the app is open.
+              Custom phrase recordings are uploaded for OpenWakeWord enrollment. Hands-free only
+              becomes active after a real model bundle is ready on this phone.
             </Text>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryTitle}>{selectedName}</Text>
@@ -769,7 +884,7 @@ export default function Setup() {
             <Text style={styles.sectionTitle}>Voice setup</Text>
             <Text style={styles.sectionBody}>
               Record {MINIMUM_POSITIVE} positive clips and {MINIMUM_NEGATIVE} negative clips. The
-              audio files are saved locally on this device as wake phrase variants.
+              backend stores them for OpenWakeWord enrollment and returns a model bundle when ready.
             </Text>
 
             <View style={styles.metricsRow}>
@@ -789,7 +904,7 @@ export default function Setup() {
               <Text style={styles.statusTitle}>Current status</Text>
               <Text style={styles.statusText}>{statusMessage}</Text>
               <Text style={styles.statusMeta}>State: {wakeStateLabel}</Text>
-              <Text style={styles.statusMeta}>Storage: on-device only</Text>
+              <Text style={styles.statusMeta}>Wake engine: native OpenWakeWord</Text>
               {!!status?.manifest_path && (
                 <Text style={styles.statusMeta}>Manifest: {status.manifest_path}</Text>
               )}
@@ -827,7 +942,7 @@ export default function Setup() {
             {!!uploadingKind && (
               <View style={styles.uploadRow}>
                 <ActivityIndicator color={Brand.cocoa} />
-                <Text style={styles.uploadText}>Saving {uploadingKind} sample to the device…</Text>
+                <Text style={styles.uploadText}>Saving {uploadingKind} sample…</Text>
               </View>
             )}
 

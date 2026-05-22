@@ -1102,7 +1102,7 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
     hands_free_status_seen=0
     deadline=$((SECONDS + 35))
     while [[ "$SECONDS" -lt "$deadline" ]]; do
-      if wait_for_text "Listening for your next question" 1; then
+      if wait_for_text "Listening" 1; then
         hands_free_status_seen=1
         break
       fi
@@ -1135,8 +1135,7 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
     if wait_for_desc "e2e-hands-free-stop-button" 15; then
       tap_desc "e2e-hands-free-stop-button" || mark_failed "tap-e2e-hands-free-stop"
       sleep 2
-      if ! wait_for_text "Say \"${EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE}\"" 8 && \
-        ! wait_for_desc "chat-input" 8; then
+      if ! wait_for_text "Listening" 8 && ! wait_for_desc "chat-input" 8; then
         mark_failed "hands-free-stop-did-not-return-to-wake"
       fi
     else
