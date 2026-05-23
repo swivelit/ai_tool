@@ -310,11 +310,17 @@ class OpenWakeWordSupport:
         custom_model_ready = bool(
             resolved_custom_model_path and Path(str(resolved_custom_model_path)).exists()
         )
+        custom_model_error: Optional[str] = None
 
         if custom_model_path and not custom_model_ready:
             raise EnrollmentValidationError(
                 "Custom wake phrase activation requires an existing OpenWakeWord model file."
             )
+        if custom_model_ready:
+            custom_model_error = self._custom_model_artifact_error(
+                Path(str(resolved_custom_model_path)).expanduser()
+            )
+        bundle_ready = custom_model_ready and not custom_model_error
 
         next_manifest = {
             **manifest,
@@ -324,13 +330,15 @@ class OpenWakeWordSupport:
             "phrase_key": paths.phrase_key,
             "created_at": _utc_now(),
             "supported_base_model": SUPPORTED_BASE_MODELS.get(normalized_phrase),
-            "activation_mode": "custom_model" if custom_model_ready else "custom_model_pending",
-            "wake_state": "active" if custom_model_ready else "training",
+            "activation_mode": "custom_model" if bundle_ready else "custom_model_pending",
+            "wake_state": "active" if bundle_ready else "training",
             "custom_model_path": str(resolved_custom_model_path) if resolved_custom_model_path else None,
             "notes": notes,
             "message": (
                 f"'{normalized_phrase}' is now Active."
-                if custom_model_ready
+                if bundle_ready
+                else custom_model_error
+                if custom_model_error
                 else (
                     f"'{normalized_phrase}' samples are saved, but the custom phrase still needs "
                     "a real OpenWakeWord model file before it can become Active."
@@ -561,6 +569,7 @@ class OpenWakeWordSupport:
             )
 
         model_files = [self._model_file_entry(model_path, "wake")]
+        missing_shared_artifacts: List[str] = []
         for role, filename in (
             ("melspectrogram", "melspectrogram.onnx"),
             ("embedding", "embedding_model.onnx"),
@@ -568,6 +577,15 @@ class OpenWakeWordSupport:
             candidate = model_path.parent / filename
             if candidate.exists() and candidate.is_file():
                 model_files.insert(0 if role == "melspectrogram" else 1, self._model_file_entry(candidate, role))
+            else:
+                missing_shared_artifacts.append(filename)
+
+        if missing_shared_artifacts:
+            raise TrainingNotSupportedError(
+                "Custom wake phrase model bundle is incomplete. Missing: "
+                + ", ".join(missing_shared_artifacts)
+                + "."
+            )
 
         return {
             "model_type": "custom",
@@ -578,14 +596,42 @@ class OpenWakeWordSupport:
         manifest_state = str(manifest.get("wake_state") or "").strip().lower()
         if manifest_state == "active":
             custom_model_path = manifest.get("custom_model_path")
-            if supported_base_model or (custom_model_path and Path(str(custom_model_path)).exists()):
+            if supported_base_model:
                 return "active"
+            if custom_model_path:
+                model_path = Path(str(custom_model_path)).expanduser()
+                if model_path.exists() and model_path.is_file() and not self._custom_model_artifact_error(model_path):
+                    return "active"
             return "training"
         if manifest_state == "training":
+            custom_model_path = manifest.get("custom_model_path")
+            if custom_model_path:
+                model_path = Path(str(custom_model_path)).expanduser()
+                if model_path.exists() and model_path.is_file() and not self._custom_model_artifact_error(model_path):
+                    return "active"
             return "training"
         if supported_base_model:
             return "ready_now"
         return "needs_training"
+
+    def _custom_model_artifact_error(self, model_path: Path) -> Optional[str]:
+        if model_path.suffix.lower() == ".tflite":
+            return "The mobile wake engine requires an ONNX custom wake model; TFLite custom models are not supported."
+        if model_path.suffix.lower() != ".onnx":
+            return "The custom wake model must be an ONNX file for the on-device wake engine."
+
+        missing_shared_artifacts = [
+            filename
+            for filename in ("melspectrogram.onnx", "embedding_model.onnx")
+            if not (model_path.parent / filename).is_file()
+        ]
+        if missing_shared_artifacts:
+            return (
+                "Custom wake phrase model bundle is incomplete. Missing: "
+                + ", ".join(missing_shared_artifacts)
+                + "."
+            )
+        return None
 
     def _state_message(
         self,

@@ -7,8 +7,8 @@ function read(relativePath: string) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
 }
 
-describe("JaiWakeWord native module scaffold", () => {
-  it("defines a local Expo module with Android audio capture and fails closed without a 16 KB-safe runtime", () => {
+describe("JaiWakeWord native module", () => {
+  it("defines a local Expo module with Android audio capture and native ONNX inference", () => {
     const config = read("modules/wake-word/expo-module.config.json");
     const gradle = read("modules/wake-word/android/build.gradle");
     const manifest = read("modules/wake-word/android/src/main/AndroidManifest.xml");
@@ -23,15 +23,23 @@ describe("JaiWakeWord native module scaffold", () => {
     );
 
     expect(config).toContain("WakeWordModule");
-    expect(gradle).not.toContain("onnxruntime-android");
+    expect(gradle).toContain("onnxruntime-android:1.25.1");
     expect(manifest).toContain("android.permission.RECORD_AUDIO");
     expect(module).toContain('Name("JaiWakeWord")');
     expect(module).toContain('Events("onWake", "onWakeScore", "onWakeError")');
     expect(module).toContain("engine.isAvailable()");
-    expect(engine).toContain("JAI_WAKE_MODEL_UNSUPPORTED");
-    expect(engine).toContain("isAvailable(): Boolean = false");
-    expect(engine).not.toContain("OrtEnvironment");
-    expect(engine).not.toContain("OrtSession");
+    expect(engine).not.toContain("fun isAvailable(): Boolean = false");
+    expect(engine).toContain("OrtEnvironment");
+    expect(engine).toContain("OrtSession");
+    expect(engine).toContain("OnnxTensor.createTensor");
+    expect(engine).toContain("OnnxWakeWordPipeline");
+    expect(engine).toContain("processFrame");
+    expect(engine).toContain("nextAudioSource.start");
+    expect(engine).toContain("nextPipeline.processFrame");
+    expect(engine).toContain("score >= parsed.threshold");
+    expect(engine).toContain("parsed.minWakeIntervalMs");
+    expect(engine).not.toContain("Native OpenWakeWord inference is not enabled");
+    expect(engine).not.toContain("return false");
     expect(audio).toContain("AudioRecord");
     expect(audio).toContain("MediaRecorder.AudioSource.VOICE_RECOGNITION");
   });

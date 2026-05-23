@@ -257,7 +257,6 @@ export default function CustomiseScreen() {
                 accessibilityRole="button"
                 style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
               >
-                <Ionicons name="radio-outline" size={16} color={Brand.ink} />
                 <Text style={styles.secondaryBtnText}>Train wake phrase</Text>
               </Pressable>
             </View>

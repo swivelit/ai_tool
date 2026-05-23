@@ -31,6 +31,23 @@ describe("wakeWordEngine", () => {
     ).rejects.toThrow(/Wake model is not ready/);
   });
 
+  it("does not start production wake listening with an incomplete OpenWakeWord bundle", async () => {
+    await expect(
+      startWakeWordListening(
+        {
+          status: "ready",
+          ready: true,
+          wakePhrase: "Hey Elli",
+          phraseKey: "hey-elli",
+          modelPaths: {
+            wakeModel: "file:///wake.onnx",
+          },
+        },
+        { onWake: () => undefined },
+      ),
+    ).rejects.toThrow(/mel or embedding/);
+  });
+
   it("supports debug E2E mock wake only when explicitly enabled", async () => {
     vi.stubEnv("NODE_ENV", "test");
     vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE", "1");

@@ -10,6 +10,7 @@ import { getCachedDeviceCapabilities } from "./deviceCapabilities";
 import {
   getE2eVoiceQuery,
   getE2eVoiceSurface,
+  isE2eMockAuthEnabled,
   isE2eMockHandsFreeEnabled,
   isE2eMockVoiceTurnEnabled,
 } from "./e2eMode";
@@ -1477,22 +1478,25 @@ function buildE2eMockHandsFreeChatResponse(input: {
   message: string;
   replyLanguage: ReplyLanguage;
   requestId?: string | null;
+  source?: "handsfree" | "text";
 }): LocalChatProxyResponse {
   const createdAt = new Date().toISOString();
   const assistantText = e2eVoiceAnswerFor(input.message, input.replyLanguage);
   const routeTaken = input.replyLanguage === "ta" ? "sarvam_general" : "openai_general";
   const ttsLanguageCode = e2eTtsLanguageCode(input.replyLanguage);
+  const source = input.source || "handsfree";
+  const isHandsFree = source === "handsfree";
   return {
     ok: true,
     kind: "assistant_turn",
     item: {
       id: Date.now(),
       intent: "assistant",
-      category: "Hands free",
+      category: isHandsFree ? "Hands free" : "Chat",
       raw_text: input.message,
       transcript: null,
       datetime: null,
-      title: "Hands-free",
+      title: isHandsFree ? "Hands-free" : "E2E chat",
       details: assistantText,
       created_at: createdAt,
       source: "text",
@@ -1513,7 +1517,7 @@ function buildE2eMockHandsFreeChatResponse(input: {
       theni_tamil_text: input.replyLanguage === "ta" ? assistantText : "",
       direct_answer_source: "e2e_hands_free_mock",
       meta: {
-        source: "e2e_hands_free_mock",
+        source: isHandsFree ? "e2e_hands_free_mock" : "e2e_chat_mock",
         request_id: input.requestId || null,
         requested_reply_language: input.replyLanguage,
         tts_language_code: ttsLanguageCode,
@@ -1522,7 +1526,7 @@ function buildE2eMockHandsFreeChatResponse(input: {
       },
     },
     meta: {
-      source: "e2e_hands_free_mock",
+      source: isHandsFree ? "e2e_hands_free_mock" : "e2e_chat_mock",
       route: routeTaken,
       request_id: input.requestId || null,
       language: input.replyLanguage,
@@ -2732,18 +2736,22 @@ export async function apiFetchRaw(
 
 export async function apiPost<T>(path: string, body?: any): Promise<T> {
   if (
-    isE2eMockHandsFreeEnabled() &&
+    (isE2eMockHandsFreeEnabled() || isE2eMockAuthEnabled()) &&
     isChatPath(path) &&
-    String(body?.client_source || "").trim().toLowerCase() === "handsfree"
+    (isE2eMockAuthEnabled() ||
+      String(body?.client_source || "").trim().toLowerCase() === "handsfree")
   ) {
+    const clientSource = String(body?.client_source || "").trim().toLowerCase();
+    const isHandsFree = clientSource === "handsfree";
     const replyLanguage =
       normalizeReplyLanguage(body?.reply_language) || PRODUCT_DEFAULT_REPLY_LANGUAGE;
     const mock = buildE2eMockHandsFreeChatResponse({
       message: String(body?.message || "tell me about Spitzola"),
       replyLanguage,
       requestId: body?.request_id || null,
+      source: isHandsFree ? "handsfree" : "text",
     }) as T;
-    console.info("[e2e_hands_free_mock] /api/chat", {
+    console.info(isHandsFree ? "[e2e_hands_free_mock] /api/chat" : "[e2e_chat_mock] /api/chat", {
       requested_reply_language: replyLanguage,
       predicted_label: "general",
       route_taken: replyLanguage === "ta" ? "sarvam_general" : "openai_general",

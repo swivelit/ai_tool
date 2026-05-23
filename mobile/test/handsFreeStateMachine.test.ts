@@ -40,6 +40,8 @@ describe("handsFreeStateMachine", () => {
     expect(state.state).toBe("wakeListening");
     state = handsFreeStateReducer(state, { type: "WAKE_DETECTED" });
     expect(state.state).toBe("wakeDetected");
+    state = handsFreeStateReducer(state, { type: "COMMAND_STARTED" });
+    expect(state.state).toBe("commandListening");
     state = handsFreeStateReducer(state, { type: "COMMAND_FINAL" });
     expect(state.state).toBe("submitting");
     state = handsFreeStateReducer(state, { type: "TTS_STARTED" });

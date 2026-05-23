@@ -332,6 +332,14 @@ PY
   return 1
 }
 
+wait_for_voice_mode_ready() {
+  wait_for_desc "voice-swipe-surface" 8 ||
+    wait_for_desc "Hold the orb to record" 4 ||
+    wait_for_text "Hold to Talk" 4 ||
+    wait_for_text "Listening" 4 ||
+    wait_for_desc "voice-session-transcript" 4
+}
+
 chat_input_text() {
   local label="${1:-chat-input-text}"
   local xml_path
@@ -950,7 +958,7 @@ capture_step "voice-before"
 if ! swipe_chat_to_voice; then
   mark_failed "swipe-chat-to-voice"
 else
-  if ! wait_for_text "Hold to Talk" 10 && ! wait_for_desc "Hold the orb to record" 5; then
+  if ! wait_for_voice_mode_ready; then
     mark_failed "voice-sheet-not-ready"
     capture_step "voice-sheet-not-ready"
   else
@@ -1091,7 +1099,7 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
       capture_step "hands-free-reply-not-visible"
     fi
 
-    wait_for_desc "voice-swipe-surface" 3 || mark_failed "hands-free-modal-not-open"
+    wait_for_voice_mode_ready || mark_failed "hands-free-modal-not-open"
     wait_for_desc "voice-session-transcript" 3 || mark_failed "hands-free-transcript-not-visible"
     wait_for_desc "voice-session-user-turn" 3 || mark_failed "hands-free-user-turn-not-visible"
     wait_for_desc "voice-session-assistant-turn" 3 || mark_failed "hands-free-assistant-turn-not-visible"

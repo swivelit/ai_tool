@@ -146,7 +146,12 @@ async function fileExists(path?: string) {
 
 async function readyModelExists(value: WakeModelSettings | null | undefined) {
   if (!value || value.status !== "ready") return false;
-  return fileExists(value.modelPaths?.wakeModel);
+  const paths = value.modelPaths || {};
+  return (
+    (await fileExists(paths.wakeModel)) &&
+    (await fileExists(paths.melspectrogramModel)) &&
+    (await fileExists(paths.embeddingModel))
+  );
 }
 
 export async function ensureWakeModel(settings: AssistantSettings): Promise<WakeModelState> {
@@ -259,6 +264,9 @@ export async function saveWakeModelBundleBytes(bytes: Uint8Array): Promise<Saved
   if (!modelPaths.wakeModel) {
     throw new Error("Wake model bundle does not include a wake prediction model.");
   }
+  if (!modelPaths.melspectrogramModel || !modelPaths.embeddingModel) {
+    throw new Error("Wake model bundle is missing OpenWakeWord mel or embedding artifacts.");
+  }
   return { manifest, modelPaths };
 }
 
@@ -330,6 +338,12 @@ function normalizeStartConfig(config: WakeWordStartConfig | WakeModelState): Wak
     const wakeModel = rawModelPaths.wakeModel || "";
     if (!wakeModel && maybeState.status !== "e2e_mock") {
       throw new Error("Wake model path is missing.");
+    }
+    if (
+      maybeState.status !== "e2e_mock" &&
+      (!rawModelPaths.melspectrogramModel || !rawModelPaths.embeddingModel)
+    ) {
+      throw new Error("Wake model bundle is missing OpenWakeWord mel or embedding artifacts.");
     }
     return {
       phraseKey: maybeState.phraseKey || normalizePhraseKey(maybeState.wakePhrase || ""),

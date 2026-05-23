@@ -16,6 +16,7 @@ export type HandsFreeEvent =
   | { type: "WAKE_MODEL_MISSING" }
   | { type: "WAKE_STARTED" }
   | { type: "WAKE_DETECTED" }
+  | { type: "COMMAND_STARTED" }
   | { type: "COMMAND_FINAL" }
   | { type: "COMMAND_EMPTY" }
   | { type: "SUBMIT_STARTED" }
@@ -68,6 +69,8 @@ export function handsFreeStateReducer(
         : snapshot;
     case "WAKE_DETECTED":
       return { ...snapshot, state: "wakeDetected" };
+    case "COMMAND_STARTED":
+      return { ...snapshot, state: "commandListening" };
     case "COMMAND_FINAL":
       return { ...snapshot, state: "submitting" };
     case "COMMAND_EMPTY":

@@ -52,6 +52,8 @@ app-example
 # generated native module outputs
 modules/jai-on-device-model/android/.cxx/
 modules/jai-on-device-model/android/build/
+modules/wake-word/android/.cxx/
+modules/wake-word/android/build/
 
 # Local model weights are intentionally not committed.
 models/*.gguf

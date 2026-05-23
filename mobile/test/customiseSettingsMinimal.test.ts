@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const root = path.join(__dirname, "..");
 const customiseSource = fs.readFileSync(path.join(root, "app", "customise.tsx"), "utf8");
 const modalSource = fs.readFileSync(path.join(root, "app", "modal.tsx"), "utf8");
+const setupSource = fs.readFileSync(path.join(root, "app", "setup.tsx"), "utf8");
 
 const forbidden = [
   "Dedicated training screen",
@@ -18,6 +19,10 @@ const forbidden = [
   "Last captured audio file",
   "Microphone audio was captured",
   "Requested language is supported",
+  "Custom phrase recordings are uploaded",
+  "Hands-free only becomes active",
+  "Suggested negative sentences",
+  "Active sign-in methods",
 ];
 
 describe("minimal settings wake phrase UI", () => {
@@ -35,6 +40,7 @@ describe("minimal settings wake phrase UI", () => {
     expect(customiseSource).toContain("customise-save-button");
     expect(customiseSource).not.toContain("handsFreeRecognizer.start");
     expect(customiseSource).not.toContain("useHandsFreeRecognitionEvent");
+    expect(customiseSource.match(/name="radio-outline"/g) || []).toHaveLength(0);
     forbidden.forEach((copy) => expect(customiseSource).not.toContain(copy));
   });
 
@@ -42,5 +48,13 @@ describe("minimal settings wake phrase UI", () => {
     expect(modalSource).not.toContain("handsFreeRecognizer.start");
     expect(modalSource).not.toContain("useHandsFreeRecognitionEvent");
     forbidden.forEach((copy) => expect(modalSource).not.toContain(copy));
+  });
+
+  it("keeps setup copy short and product-facing", () => {
+    expect(setupSource).toContain("Train wake phrase");
+    expect(setupSource).toContain("Positive sample");
+    expect(setupSource).toContain("Negative sample");
+    expect(setupSource).toContain("Needs model");
+    forbidden.forEach((copy) => expect(setupSource).not.toContain(copy));
   });
 });

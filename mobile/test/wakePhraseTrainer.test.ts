@@ -25,5 +25,9 @@ describe("wake phrase trainer source", () => {
     expect(setupSource).not.toContain("Android speech diagnostics");
     expect(setupSource).not.toContain("Live transcript");
     expect(setupSource).not.toContain("Your captured phrase will appear here");
+    expect(setupSource).not.toContain("Custom phrase recordings are uploaded");
+    expect(setupSource).not.toContain("Hands-free only becomes active");
+    expect(setupSource).not.toContain("Suggested negative sentences");
+    expect(setupSource).not.toContain("Wake phrase model setup");
   });
 });

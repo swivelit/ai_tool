@@ -205,6 +205,10 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       await saveProfile(updatedProfile);
       setProfileState(updatedProfile);
 
+      if (isE2eMockAuthEnabled()) {
+        return;
+      }
+
       try {
         const syncedProfile = await createProfileOnBackend(updatedProfile);
         setProfileState(syncedProfile);
@@ -242,6 +246,10 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
 
       await saveProfile(updatedProfile);
       setProfileState(updatedProfile);
+
+      if (isE2eMockAuthEnabled()) {
+        return;
+      }
 
       try {
         const syncedProfile = await createProfileOnBackend(updatedProfile);

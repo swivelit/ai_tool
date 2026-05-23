@@ -30,3 +30,7 @@ try {
 android {
   namespace 'com.harishajahan.jai.wakeword'
 }
+
+dependencies {
+  implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.25.1'
+}

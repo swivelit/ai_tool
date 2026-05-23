@@ -95,6 +95,8 @@ def test_custom_model_bundle_download_contains_manifest_and_model(client, monkey
     _set_service(monkeypatch, service)
     model_path = tmp_path / "custom.onnx"
     model_path.write_bytes(b"fake-onnx")
+    (tmp_path / "melspectrogram.onnx").write_bytes(b"fake-mel")
+    (tmp_path / "embedding_model.onnx").write_bytes(b"fake-embedding")
     service.activate_custom_phrase(
         user_id=user.id,
         wake_phrase="custom elli",
@@ -109,10 +111,47 @@ def test_custom_model_bundle_download_contains_manifest_and_model(client, monkey
     assert response.status_code == 200
     archive = zipfile.ZipFile(io.BytesIO(response.content))
     assert "manifest.json" in archive.namelist()
+    assert "melspectrogram.onnx" in archive.namelist()
+    assert "embedding_model.onnx" in archive.namelist()
     assert "custom.onnx" in archive.namelist()
     manifest = archive.read("manifest.json").decode("utf-8")
     assert '"model_type": "custom"' in manifest
     assert '"sample_rate": 16000' in manifest
+
+
+def test_custom_model_bundle_requires_shared_openwakeword_artifacts(client, monkeypatch, tmp_path):
+    user = create_test_user()
+    service = OpenWakeWordSupport(tmp_path)
+    _set_service(monkeypatch, service)
+    model_path = tmp_path / "custom.onnx"
+    model_path.write_bytes(b"fake-onnx")
+    activation = service.activate_custom_phrase(
+        user_id=user.id,
+        wake_phrase="custom elli",
+        custom_model_path=str(model_path),
+    )
+    assert activation["wake_state"] == "training"
+    assert activation["can_run_instantly"] is False
+    assert "melspectrogram.onnx" in activation["message"]
+    assert "embedding_model.onnx" in activation["message"]
+
+    status_response = client.get(
+        "/api/openwakeword/enrollment/model/status?wake_phrase=custom%20elli",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+    assert status_response.status_code == 200
+    status_payload = status_response.json()
+    assert status_payload["ready"] is False
+    assert status_payload["status"] == "unsupported"
+    assert "melspectrogram.onnx" in status_payload["detail"]
+    assert "embedding_model.onnx" in status_payload["detail"]
+
+    download_response = client.get(
+        "/api/openwakeword/enrollment/model/download?wake_phrase=custom%20elli",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+    assert download_response.status_code == 422
+    assert "melspectrogram.onnx" in download_response.json()["detail"]
 
 
 def test_activate_custom_phrase_does_not_mark_active_without_model(tmp_path):

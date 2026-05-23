@@ -74,18 +74,6 @@ type LocalEnrollmentManifest = {
   updated_at: string;
 };
 
-const EXAMPLES = [
-  "Hey Elli, remind me to call mom at 7.",
-  "Elli, help me plan tomorrow.",
-  "Can you schedule a meeting for Friday?",
-];
-
-const NEGATIVE_SCRIPT_LINES = [
-  "Tomorrow I need to buy groceries and pay the electricity bill.",
-  "Please remind me to call my brother after lunch tomorrow.",
-  "The weather looks hot today, so I will carry a water bottle.",
-];
-
 const MINIMUM_POSITIVE = 3;
 const MINIMUM_NEGATIVE = 2;
 const MANIFEST_VERSION = 1;
@@ -110,10 +98,10 @@ const SUPPORTED_BASE_MODELS: Record<string, string> = {
 
 const STATE_ORDER: WakeState[] = ["ready_now", "needs_training", "training", "active"];
 const STATE_LABELS: Record<WakeState, string> = {
-  ready_now: "Ready now",
-  needs_training: "Needs training",
-  training: "Training",
-  active: "Active",
+  ready_now: "Ready",
+  needs_training: "Start",
+  training: "Needs model",
+  active: "Ready",
 };
 const STATE_ICONS: Record<WakeState, keyof typeof Ionicons.glyphMap> = {
   ready_now: "flash-outline",
@@ -172,19 +160,6 @@ function describeWakeState(
   }
   if (state === "needs_training") {
     return `${positiveCount}/${MINIMUM_POSITIVE} positive, ${negativeCount}/${MINIMUM_NEGATIVE} negative`;
-  }
-  if (state === "training") {
-    return "Needs model";
-  }
-  return "Ready";
-}
-
-function actionHint(state: WakeState) {
-  if (state === "ready_now") {
-    return "Ready";
-  }
-  if (state === "needs_training") {
-    return "Start";
   }
   if (state === "training") {
     return "Needs model";
@@ -440,7 +415,6 @@ export default function Setup() {
   const minimumNegative = Number(status?.minimum_negative || MINIMUM_NEGATIVE);
   const statusMessage =
     message ||
-    status?.state_message ||
     describeWakeState(
       wakeState,
       normalizedWakePhrase,
@@ -474,14 +448,13 @@ export default function Setup() {
       const next = await loadEnrollmentStatus(normalizedWakePhrase);
       setStatus(next);
       setMessage(
-        next.state_message ||
-          describeWakeState(
-            resolveWakeState(next),
-            normalizedWakePhrase,
-            next.supported_base_model,
-            Number(next.positive_count || 0),
-            Number(next.negative_count || 0)
-          )
+        describeWakeState(
+          resolveWakeState(next),
+          normalizedWakePhrase,
+          next.supported_base_model,
+          Number(next.positive_count || 0),
+          Number(next.negative_count || 0)
+        )
       );
     } catch (nextError) {
       console.warn("[setup] Failed to refresh local wake phrase status:", nextError);
@@ -782,7 +755,7 @@ export default function Setup() {
           <View style={styles.headerRow}>
             <View style={styles.tag}>
               <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
-              <Text style={styles.tagText}>Wake phrase setup</Text>
+              <Text style={styles.tagText}>Wake phrase</Text>
             </View>
             <Pressable
               onPress={onSkip}
@@ -794,28 +767,23 @@ export default function Setup() {
 
           <GlassCard>
             <View style={styles.heroRow}>
-              <Text style={styles.title}>Wake phrase model setup</Text>
+              <Text style={styles.title}>Wake phrase</Text>
               <View style={styles.stateChip}>
                 <Ionicons name={STATE_ICONS[wakeState]} size={14} color={Brand.bronze} />
                 <Text style={styles.stateChipText}>{wakeStateLabel}</Text>
               </View>
             </View>
-            <Text style={styles.subtitle}>
-              Custom phrase recordings are uploaded for OpenWakeWord enrollment. Hands-free only
-              becomes active after a real model bundle is ready on this phone.
-            </Text>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryTitle}>{selectedName}</Text>
               <Text style={styles.summaryPhrase}>“{normalizedWakePhrase}”</Text>
               <Text style={styles.summaryBody}>
-                {status?.state_message ||
-                  describeWakeState(
-                    wakeState,
-                    normalizedWakePhrase,
-                    status?.supported_base_model,
-                    positiveCount,
-                    negativeCount
-                  )}
+                {describeWakeState(
+                  wakeState,
+                  normalizedWakePhrase,
+                  status?.supported_base_model,
+                  positiveCount,
+                  negativeCount
+                )}
               </Text>
             </View>
           </GlassCard>
@@ -861,15 +829,10 @@ export default function Setup() {
                 );
               })}
             </View>
-
-            <View style={styles.hintBox}>
-              <Ionicons name={STATE_ICONS[wakeState]} size={16} color={Brand.cocoa} />
-              <Text style={styles.hintText}>{actionHint(wakeState)}</Text>
-            </View>
           </GlassCard>
 
           <GlassCard>
-            <Text style={styles.sectionTitle}>Voice setup</Text>
+            <Text style={styles.sectionTitle}>Train wake phrase</Text>
 
             <View style={styles.metricsRow}>
               <MetricCard
@@ -893,7 +856,7 @@ export default function Setup() {
             <View style={styles.buttonRow}>
               <ActionButton
                 icon={recordingKind === "positive" ? "stop-circle-outline" : "mic-outline"}
-                label={recordingKind === "positive" ? "Stop positive" : "Positive sample"}
+                label={recordingKind === "positive" ? "Stop" : "Positive sample"}
                 onPress={
                   recordingKind === "positive"
                     ? stopAndUploadRecording
@@ -903,7 +866,7 @@ export default function Setup() {
               />
               <ActionButton
                 icon={recordingKind === "negative" ? "stop-circle-outline" : "mic-off-outline"}
-                label={recordingKind === "negative" ? "Stop negative" : "Negative sample"}
+                label={recordingKind === "negative" ? "Stop" : "Negative sample"}
                 onPress={
                   recordingKind === "negative"
                     ? stopAndUploadRecording
@@ -920,19 +883,10 @@ export default function Setup() {
               </View>
             )}
 
-            <View style={styles.scriptBox}>
-              <Text style={styles.scriptTitle}>Suggested negative sentences</Text>
-              {NEGATIVE_SCRIPT_LINES.map((line) => (
-                <Text key={line} style={styles.scriptLine}>
-                  {line}
-                </Text>
-              ))}
-            </View>
-
             <View style={styles.buttonRow}>
               <ActionButton
                 icon="refresh-outline"
-                label="Reset phrase"
+                label="Try again"
                 onPress={resetEnrollment}
                 disabled={busy || finalizing}
                 variant="secondary"
@@ -948,15 +902,6 @@ export default function Setup() {
           </GlassCard>
 
           <GlassCard>
-            <Text style={styles.sectionTitle}>Examples</Text>
-            {EXAMPLES.map((example) => (
-              <Text key={example} style={styles.exampleText}>
-                {example.replace(/Elli/g, selectedName)}
-              </Text>
-            ))}
-          </GlassCard>
-
-          <GlassCard>
             <Pressable
               onPress={onContinue}
               style={({ pressed }) => [styles.primaryButtonWrap, pressed && styles.pressed]}
@@ -967,7 +912,7 @@ export default function Setup() {
                 end={{ x: 1, y: 1 }}
                 style={styles.primaryButton}
               >
-                <Text style={styles.primaryButtonText}>Continue</Text>
+                <Text style={styles.primaryButtonText}>Done</Text>
                 <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
               </LinearGradient>
             </Pressable>

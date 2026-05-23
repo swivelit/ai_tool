@@ -171,33 +171,12 @@ export default function SettingsModal() {
     [resolvedProfile, profile?.timezone]
   );
 
-  const signInMethods = useMemo(() => {
-    const methods: string[] = [];
-    if (googleLinked) methods.push("Google");
-    if (passwordLinked) methods.push("Email/password");
-    return methods.length ? methods.join(", ") : "Not linked";
-  }, [googleLinked, passwordLinked]);
-
   const targetUserId =
     resolvedUserId || userId || profile?.userId || resolvedProfile?.userId || null;
 
   const wakePrompt = useMemo(
     () => wakePhrase.trim() || `Hey ${assistantNameInput.trim() || "Elli"}`,
     [assistantNameInput, wakePhrase]
-  );
-
-  const sleepHours = useMemo(
-    () => computeSleepHours(routine.wake_time, routine.sleep_time),
-    [routine.sleep_time, routine.wake_time]
-  );
-
-  const stats = useMemo(
-    () => ({
-      habits: countHabits(routine.daily_habits),
-      sleep: sleepHours ? `${sleepHours}h` : "--",
-      mode: getDayMode(routine.wake_time),
-    }),
-    [routine.daily_habits, routine.wake_time, sleepHours]
   );
 
   function showNotice(
@@ -475,46 +454,7 @@ export default function SettingsModal() {
             </View>
           </View>
 
-          <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
-            <View style={styles.heroHeaderRow}>
-            </View>
-
-            <View style={styles.metricRow}>
-              <OverviewMetric
-                icon="sparkles-outline"
-                label="Assistant"
-                value={name || "Elli"}
-              />
-              <OverviewMetric
-                icon="time-outline"
-                label="Sleep"
-                value={stats.sleep}
-              />
-              <OverviewMetric
-                icon="leaf-outline"
-                label="Habits"
-                value={String(stats.habits)}
-              />
-            </View>
-
-            <LinearGradient
-              colors={["rgba(255,255,255,0.84)", "rgba(255,239,210,0.66)"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.heroInsightCard}
-            >
-
-              <Text style={styles.heroInsightTitle}>{stats.mode}</Text>
-              <Text style={styles.heroInsightText}>
-                Wake at {formatClock(routine.wake_time)}, sleep at {formatClock(routine.sleep_time)}
-                {routine.work_start?.trim() && routine.work_end?.trim()
-                  ? `, with work hours from ${formatClock(routine.work_start)} to ${formatClock(routine.work_end)}.`
-                  : "."}
-              </Text>
-            </LinearGradient>
-          </GlassCard>
-
-          <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
+          <GlassCard style={{ borderRadius: 28, marginTop: 14 }}>
             <View style={styles.sectionHeaderRow}>
               <View>
                 <Text style={styles.sectionTitle}>Customise</Text>
@@ -531,9 +471,6 @@ export default function SettingsModal() {
 
               <View style={styles.accountHeroContent}>
                 <Text style={styles.accountName}>{`Customise (${name || "Elli"})`}</Text>
-                <Text style={styles.accountMeta}>
-                  Assistant name, tone, reply language, hands-free, and wake phrase
-                </Text>
               </View>
 
               <Ionicons name="chevron-forward" size={18} color={Brand.cocoa} />
@@ -566,49 +503,17 @@ export default function SettingsModal() {
               </View>
             </View>
 
-            <View style={styles.infoGrid}>
-              <InfoCard
-                label="Name"
-                value={accountName}
-                icon="person-outline"
-                fullWidth={isCompactSettingsLayout}
-              />
-              <InfoCard
-                label="Email"
-                value={user?.email || "Not set"}
-                icon="mail-outline"
-                fullWidth={isCompactSettingsLayout}
-              />
-              <InfoCard
-                label="Place"
-                value={accountPlace}
-                icon="location-outline"
-                fullWidth={isCompactSettingsLayout}
-              />
-              <InfoCard
-                label="Timezone"
-                value={accountTimezone}
-                icon="earth-outline"
-                fullWidth={isCompactSettingsLayout}
-              />
-            </View>
-
             <View style={styles.inlineStatusRow}>
               <StatusChip
                 icon="logo-google"
-                label={googleLinked ? "Google linked" : "Google not linked"}
+                label={googleLinked ? "Google" : "No Google"}
                 positive={googleLinked}
               />
               <StatusChip
                 icon="mail-outline"
-                label={passwordLinked ? "Password linked" : "Password not linked"}
+                label={passwordLinked ? "Password" : "No password"}
                 positive={passwordLinked}
               />
-            </View>
-
-            <View style={styles.helperPanel}>
-              <Text style={styles.helperPanelTitle}>Active sign-in methods</Text>
-              <Text style={styles.helperPanelText}>{signInMethods}</Text>
             </View>
 
             {!passwordLinked ? (
@@ -674,21 +579,6 @@ export default function SettingsModal() {
               <SectionPill label="Routine" />
             </View>
 
-            <LinearGradient
-              colors={["rgba(255,255,255,0.78)", "rgba(255,239,210,0.62)"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.routinePreviewCard}
-            >
-              <View style={styles.timelineRow}>
-                <TimelinePoint icon="sunny-outline" label="Wake" value={formatClock(routine.wake_time)} />
-                <View style={styles.timelineDivider} />
-                <TimelinePoint icon="briefcase-outline" label="Work" value={routine.work_start?.trim() ? formatClock(routine.work_start) : "Flexible"} />
-                <View style={styles.timelineDivider} />
-                <TimelinePoint icon="moon-outline" label="Sleep" value={formatClock(routine.sleep_time)} />
-              </View>
-            </LinearGradient>
-
             <View style={styles.twoColRow}>
               <View style={{ flex: 1 }}>
                 <Field
@@ -742,12 +632,6 @@ export default function SettingsModal() {
               height={104}
               icon="leaf-outline"
             />
-
-            <View style={styles.habitSummaryRow}>
-              <MiniStatCard label="Habits tracked" value={String(stats.habits)} icon="leaf-outline" />
-              <MiniStatCard label="Sleep target" value={stats.sleep} icon="moon-outline" />
-              <MiniStatCard label="Start style" value={stats.mode} icon="sparkles-outline" />
-            </View>
 
             <Pressable
               onPress={saveRoutine}
