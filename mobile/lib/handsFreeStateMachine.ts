@@ -15,6 +15,8 @@ export type HandsFreeEvent =
   | { type: "WAKE_READY" }
   | { type: "WAKE_MODEL_MISSING" }
   | { type: "WAKE_STARTED" }
+  | { type: "WAKE_TRANSIENT_ERROR" }
+  | { type: "WAKE_PERMANENT_ERROR" }
   | { type: "WAKE_DETECTED" }
   | { type: "COMMAND_STARTED" }
   | { type: "COMMAND_FINAL" }
@@ -40,6 +42,32 @@ export const initialHandsFreeMachineState: HandsFreeMachineSnapshot = {
   eligible: false,
   wakeReady: false,
 };
+
+export const WAKE_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000] as const;
+
+export function wakeRetryDelayMs(attempt: number) {
+  const index = Math.max(0, Math.floor(attempt));
+  return WAKE_RETRY_DELAYS_MS[Math.min(index, WAKE_RETRY_DELAYS_MS.length - 1)];
+}
+
+export function isPermanentWakeError(error: { code?: string; message?: string } | Error | unknown) {
+  const code = String((error as any)?.code || (error as any)?.name || "").toLowerCase();
+  const message = String(
+    (error as any)?.message || (error instanceof Error ? error.message : error || ""),
+  ).toLowerCase();
+  const value = `${code} ${message}`;
+  return (
+    value.includes("permission") ||
+    value.includes("denied") ||
+    value.includes("not-allowed") ||
+    value.includes("unavailable") ||
+    value.includes("unsupported") ||
+    value.includes("not found") ||
+    value.includes("missing") ||
+    value.includes("not ready") ||
+    code.includes("model")
+  );
+}
 
 export function handsFreeStateReducer(
   snapshot: HandsFreeMachineSnapshot,
@@ -73,6 +101,12 @@ export function handsFreeStateReducer(
       return snapshot.eligible && snapshot.wakeReady
         ? { ...snapshot, state: "wakeListening" }
         : snapshot;
+    case "WAKE_TRANSIENT_ERROR":
+      return snapshot.eligible && snapshot.wakeReady
+        ? { ...snapshot, state: "wakeListening" }
+        : { ...snapshot, state: "idle" };
+    case "WAKE_PERMANENT_ERROR":
+      return { ...snapshot, state: "blocked" };
     case "WAKE_DETECTED":
       return { ...snapshot, state: "wakeDetected" };
     case "COMMAND_STARTED":

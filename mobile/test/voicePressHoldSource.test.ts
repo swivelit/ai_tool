@@ -240,6 +240,27 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS");
   });
 
+  it("requests microphone permission before native wake capture and retries only transient wake errors", () => {
+    const block = sliceAround("const startNativeWakeEngine = useCallback", 2600);
+
+    expect(block.indexOf("Audio.requestPermissionsAsync")).toBeGreaterThanOrEqual(0);
+    expect(block.indexOf("Audio.requestPermissionsAsync")).toBeLessThan(
+      block.indexOf("startWakeWordListening"),
+    );
+    expect(block).toContain('setHandsFreeStatus("Try again")');
+    expect(block).toContain('dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" })');
+    expect(source).toContain("scheduleWakeRetry");
+    expect(source).toContain("WAKE_RETRY_DELAYS_MS");
+    expect(source).toContain("wakeRetryDelayMs");
+    expect(source).toContain("isPermanentWakeError");
+    expect(source).not.toContain('Alert.alert("Try again"');
+
+    const recordingBlock = sliceAround("async function startRecording", 1800);
+    expect(recordingBlock.indexOf("abortHandsFreeRecognizer(false)")).toBeLessThan(
+      recordingBlock.indexOf("Audio.requestPermissionsAsync"),
+    );
+  });
+
   it("keeps hands-free E2E hooks debug-only and separate from the composer mic", () => {
     expect(source).toContain("isE2eMockHandsFreeEnabled");
     expect(source).toContain("getE2eHandsFreeWakePhrase");

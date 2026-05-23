@@ -76,6 +76,7 @@ describe("JaiWakeWord native module", () => {
 
   it("keeps real bundle validation separate from the deterministic fixture seam", () => {
     const script = path.join(root, "scripts", "validate-wake-model-bundle.mjs");
+    const scriptSource = fs.readFileSync(script, "utf8");
     const result = spawnSync(process.execPath, [script], {
       cwd: root,
       encoding: "utf8",
@@ -90,5 +91,9 @@ describe("JaiWakeWord native module", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("SKIP wake model bundle validation");
+    expect(scriptSource).toContain("safeFlatOnnxFileName");
+    expect(scriptSource).toContain("SHA-256 mismatch");
+    expect(scriptSource).toContain("byte length mismatch");
+    expect(scriptSource).toContain("unsafe file path");
   });
 });

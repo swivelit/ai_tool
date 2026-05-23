@@ -39,32 +39,85 @@ try {
 
 const modelFiles = Array.isArray(manifest.model_files) ? manifest.model_files : [];
 const byRole = new Map();
-for (const entry of modelFiles) {
-  const role = String(entry?.role || "").trim();
-  const file = String(entry?.file || "").replace(/^\/+/, "");
-  if (role && file) byRole.set(role, file);
-}
+const requiredRoles = ["wake", "melspectrogram", "embedding"];
 
-for (const role of ["wake", "melspectrogram", "embedding"]) {
-  const file = byRole.get(role);
-  if (!file) {
-    fail("Wake model manifest must include wake, melspectrogram, and embedding roles.");
+function safeFlatOnnxFileName(value, role) {
+  const file = String(value || "").trim();
+  const unsafe =
+    !file ||
+    file.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(file) ||
+    file.includes("/") ||
+    file.includes("\\") ||
+    file === "." ||
+    file === "..";
+  if (unsafe) {
+    fail(`Wake model manifest role ${role || "model"} has an unsafe file path: ${file || "(empty)"}`);
   }
   if (!file.endsWith(".onnx")) {
     fail(`Wake model manifest role ${role} must point to an ONNX file, got: ${file}`);
   }
-  const filePath = path.join(root, file);
+  return file;
+}
+
+function normalizeSha(value, file) {
+  const sha = String(value || "").trim().toLowerCase();
+  if (!sha) return "";
+  if (!/^[a-f0-9]{64}$/.test(sha)) {
+    fail(`Wake model manifest has invalid sha256 metadata for ${file}`);
+  }
+  return sha;
+}
+
+for (const entry of modelFiles) {
+  const role = String(entry?.role || "").trim();
+  if (!requiredRoles.includes(role)) {
+    fail("Wake model manifest roles must be wake, melspectrogram, or embedding.");
+  }
+  const file = safeFlatOnnxFileName(entry?.file, role);
+  if (byRole.has(role)) {
+    fail(`Wake model manifest contains duplicate ${role} entries.`);
+  }
+  byRole.set(role, { file, expectedBytes: entry?.bytes, expectedSha: normalizeSha(entry?.sha256, file) });
+}
+
+for (const role of requiredRoles) {
+  const entry = byRole.get(role);
+  if (!entry?.file) {
+    fail("Wake model manifest must include wake, melspectrogram, and embedding roles.");
+  }
+  const filePath = path.join(root, entry.file);
+  const resolved = path.resolve(filePath);
+  if (path.dirname(resolved) !== root) {
+    fail(`Wake model manifest role ${role} escapes the bundle directory.`);
+  }
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     fail(`Wake model bundle role ${role} points to a missing file: ${filePath}`);
   }
-  if (fs.statSync(filePath).size <= 0) {
+  const stat = fs.statSync(filePath);
+  if (stat.size <= 0) {
     fail(`Wake model bundle role ${role} points to an empty file: ${filePath}`);
+  }
+  if (typeof entry.expectedBytes !== "undefined" && entry.expectedBytes !== null) {
+    const expectedBytes = Number(entry.expectedBytes);
+    if (!Number.isInteger(expectedBytes) || expectedBytes < 0) {
+      fail(`Wake model manifest has invalid byte length for ${entry.file}`);
+    }
+    if (stat.size !== expectedBytes) {
+      fail(`Wake model bundle byte length mismatch for ${entry.file}`);
+    }
+  }
+  if (entry.expectedSha) {
+    const actualSha = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+    if (actualSha !== entry.expectedSha) {
+      fail(`Wake model bundle SHA-256 mismatch for ${entry.file}`);
+    }
   }
 }
 
 const hash = crypto.createHash("sha256");
-for (const role of ["wake", "melspectrogram", "embedding"]) {
-  hash.update(fs.readFileSync(path.join(root, byRole.get(role))));
+for (const role of requiredRoles) {
+  hash.update(fs.readFileSync(path.join(root, byRole.get(role).file)));
   hash.update("\n");
 }
 const digest = hash.digest("hex").slice(0, 12);

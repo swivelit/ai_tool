@@ -55,6 +55,7 @@ TARGET_SAMPLE_RATE = 16_000
 MODEL_FRAME_MS = 80
 MODEL_THRESHOLD_DEFAULT = 0.5
 MODEL_BUNDLE_VERSION = 1
+MODEL_FILE_ROLES = {"wake", "melspectrogram", "embedding"}
 
 
 
@@ -315,19 +316,36 @@ class OpenWakeWordSupport:
         normalized_phrase = paths.wake_phrase
         manifest = self._load_latest_manifest(paths)
         resolved_custom_model_path = custom_model_path or manifest.get("custom_model_path")
-        custom_model_ready = bool(
-            resolved_custom_model_path and Path(str(resolved_custom_model_path)).exists()
-        )
+        custom_model_ready = False
         custom_model_error: Optional[str] = None
+        validated_custom_model_path: Optional[Path] = None
 
-        if custom_model_path and not custom_model_ready:
-            raise EnrollmentValidationError(
-                "Custom wake phrase activation requires an existing OpenWakeWord model file."
-            )
-        if custom_model_ready:
-            custom_model_error = self._custom_model_artifact_error(
-                Path(str(resolved_custom_model_path)).expanduser()
-            )
+        if resolved_custom_model_path:
+            try:
+                validated_custom_model_path = self._validate_custom_model_path(
+                    Path(str(resolved_custom_model_path)).expanduser()
+                )
+                custom_model_ready = True
+            except EnrollmentValidationError:
+                if custom_model_path:
+                    raise
+                custom_model_error = (
+                    "Custom wake phrase model is pending because the configured model file is not allowed or does not exist."
+                )
+            except TrainingNotSupportedError as exc:
+                if custom_model_path:
+                    candidate = Path(str(resolved_custom_model_path)).expanduser().resolve()
+                    allowed_root = self.root_dir.resolve()
+                    if (
+                        candidate.suffix.lower() == ".onnx"
+                        and candidate.exists()
+                        and candidate.is_file()
+                        and (candidate == allowed_root or allowed_root in candidate.parents)
+                    ):
+                        validated_custom_model_path = candidate
+                    custom_model_error = str(exc)
+                else:
+                    custom_model_error = str(exc)
         bundle_ready = custom_model_ready and not custom_model_error
 
         next_manifest = {
@@ -340,7 +358,7 @@ class OpenWakeWordSupport:
             "supported_base_model": SUPPORTED_BASE_MODELS.get(normalized_phrase),
             "activation_mode": "custom_model" if bundle_ready else "custom_model_pending",
             "wake_state": "active" if bundle_ready else "training",
-            "custom_model_path": str(resolved_custom_model_path) if resolved_custom_model_path else None,
+            "custom_model_path": str(validated_custom_model_path) if validated_custom_model_path else None,
             "notes": notes,
             "message": (
                 f"'{normalized_phrase}' is now Active."
@@ -644,19 +662,7 @@ class OpenWakeWordSupport:
                 "Custom wake phrase model is pending. Upload or attach a trained OpenWakeWord model before downloading a bundle."
             )
 
-        model_path = Path(str(custom_model_path)).expanduser()
-        if not model_path.exists() or not model_path.is_file():
-            raise EnrollmentValidationError(
-                "Custom wake phrase model is pending because the configured model file does not exist."
-            )
-        if model_path.suffix.lower() == ".tflite":
-            raise TrainingNotSupportedError(
-                "The mobile wake engine requires an ONNX custom wake model; TFLite custom models are not supported."
-            )
-        if model_path.suffix.lower() != ".onnx":
-            raise TrainingNotSupportedError(
-                "The custom wake model must be an ONNX file for the on-device wake engine."
-            )
+        model_path = self._validate_custom_model_path(Path(str(custom_model_path)).expanduser())
 
         model_files = [self._model_file_entry(model_path, "wake")]
         missing_shared_artifacts: List[str] = []
@@ -703,9 +709,15 @@ class OpenWakeWordSupport:
                 if not isinstance(item, dict):
                     continue
                 role = str(item.get("role") or "").strip()
-                file_name = str(item.get("file") or "").strip().lstrip("/")
-                if role and file_name:
-                    files_by_role[role] = bundle_dir / file_name
+                if role not in MODEL_FILE_ROLES:
+                    raise TrainingNotSupportedError(
+                        "Configured wake model manifest roles must be wake, melspectrogram, or embedding."
+                    )
+                files_by_role[role] = self._safe_bundle_model_file(
+                    bundle_dir,
+                    item.get("file"),
+                    role,
+                )
 
         fallback_names = {
             "melspectrogram": bundle_dir / "melspectrogram.onnx",
@@ -771,23 +783,76 @@ class OpenWakeWordSupport:
         return "needs_training"
 
     def _custom_model_artifact_error(self, model_path: Path) -> Optional[str]:
-        if model_path.suffix.lower() == ".tflite":
-            return "The mobile wake engine requires an ONNX custom wake model; TFLite custom models are not supported."
-        if model_path.suffix.lower() != ".onnx":
-            return "The custom wake model must be an ONNX file for the on-device wake engine."
+        try:
+            self._validate_custom_model_path(model_path)
+        except (EnrollmentValidationError, TrainingNotSupportedError) as exc:
+            return str(exc)
+        return None
+
+    def _safe_bundle_model_file(self, bundle_dir: Path, value: Any, role: str) -> Path:
+        file_name = str(value or "").strip()
+        if (
+            not file_name
+            or file_name.startswith("/")
+            or "\\" in file_name
+            or "/" in file_name
+            or file_name in {".", ".."}
+            or Path(file_name).is_absolute()
+            or ".." in Path(file_name).parts
+        ):
+            raise TrainingNotSupportedError(
+                f"Configured wake model manifest has an unsafe file path for {role or 'model'}."
+            )
+        if Path(file_name).suffix.lower() != ".onnx":
+            raise TrainingNotSupportedError(
+                f"Configured wake model manifest role {role or 'model'} must point to an ONNX file."
+            )
+        root = bundle_dir.resolve()
+        candidate = (bundle_dir / file_name).resolve()
+        if candidate.parent != root:
+            raise TrainingNotSupportedError(
+                f"Configured wake model manifest path for {role or 'model'} escapes the bundle directory."
+            )
+        return candidate
+
+    def _validate_custom_model_path(self, model_path: Path) -> Path:
+        try:
+            resolved = model_path.expanduser().resolve()
+        except OSError as exc:
+            raise EnrollmentValidationError(
+                "Custom wake phrase activation requires a readable backend-owned OpenWakeWord model file."
+            ) from exc
+
+        allowed_root = self.root_dir.resolve()
+        if resolved != allowed_root and allowed_root not in resolved.parents:
+            raise EnrollmentValidationError(
+                "Custom wake phrase activation requires a backend-owned OpenWakeWord model file."
+            )
+        if not resolved.exists() or not resolved.is_file():
+            raise EnrollmentValidationError(
+                "Custom wake phrase activation requires an existing OpenWakeWord model file."
+            )
+        if resolved.suffix.lower() == ".tflite":
+            raise TrainingNotSupportedError(
+                "The mobile wake engine requires an ONNX custom wake model; TFLite custom models are not supported."
+            )
+        if resolved.suffix.lower() != ".onnx":
+            raise TrainingNotSupportedError(
+                "The custom wake model must be an ONNX file for the on-device wake engine."
+            )
 
         missing_shared_artifacts = [
             filename
             for filename in ("melspectrogram.onnx", "embedding_model.onnx")
-            if not (model_path.parent / filename).is_file()
+            if not (resolved.parent / filename).is_file()
         ]
         if missing_shared_artifacts:
-            return (
+            raise TrainingNotSupportedError(
                 "Custom wake phrase model bundle is incomplete. Missing: "
                 + ", ".join(missing_shared_artifacts)
                 + "."
             )
-        return None
+        return resolved
 
     def _state_message(
         self,

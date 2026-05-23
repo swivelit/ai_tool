@@ -145,6 +145,61 @@ def test_default_hey_elli_configured_incomplete_bundle_is_not_ready(
     assert "embedding_model.onnx" in payload["detail"]
 
 
+def test_default_hey_elli_configured_bundle_rejects_unsafe_manifest_path(
+    client, monkeypatch, tmp_path
+):
+    create_test_user()
+    bundle_dir = tmp_path / "hey-elli-unsafe"
+    bundle_dir.mkdir()
+    (bundle_dir / "melspectrogram.onnx").write_bytes(b"fake-mel")
+    (bundle_dir / "embedding_model.onnx").write_bytes(b"fake-embedding")
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "phrase_key": "hey-elli",
+                "wake_phrase": "Hey Elli",
+                "model_files": [
+                    {"role": "melspectrogram", "file": "melspectrogram.onnx"},
+                    {"role": "embedding", "file": "embedding_model.onnx"},
+                    {"role": "wake", "file": "../secret.onnx"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JAI_HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR", str(bundle_dir))
+    _set_service(monkeypatch, OpenWakeWordSupport(tmp_path / "service"))
+
+    response = client.get(
+        "/api/openwakeword/enrollment/model/status?wake_phrase=Hey%20Elli",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["status"] == "unsupported"
+    assert "unsafe file path" in payload["detail"]
+
+
+def test_activate_custom_phrase_rejects_arbitrary_server_file(client, monkeypatch, tmp_path):
+    create_test_user()
+    outside = tmp_path / "outside.onnx"
+    outside.write_bytes(b"fake-onnx")
+    (tmp_path / "melspectrogram.onnx").write_bytes(b"fake-mel")
+    (tmp_path / "embedding_model.onnx").write_bytes(b"fake-embedding")
+    _set_service(monkeypatch, OpenWakeWordSupport(tmp_path / "service"))
+
+    response = client.post(
+        "/api/openwakeword/enrollment/activate",
+        params={"wake_phrase": "custom elli", "custom_model_path": str(outside)},
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 400
+    assert "backend-owned" in response.json()["detail"]
+
+
 def test_supported_base_status_handles_missing_openwakeword_dependency(client, monkeypatch, tmp_path):
     create_test_user()
     service = OpenWakeWordSupport(tmp_path)

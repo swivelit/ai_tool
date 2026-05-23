@@ -100,7 +100,10 @@ import {
 import {
   handsFreeStateReducer,
   initialHandsFreeMachineState,
+  isPermanentWakeError,
   isHandsFreeWakeEligible,
+  WAKE_RETRY_DELAYS_MS,
+  wakeRetryDelayMs,
 } from "@/lib/handsFreeStateMachine";
 import {
   ensureWakeModel,
@@ -374,6 +377,9 @@ export default function Home() {
   const historyLongPressTriggeredRef = useRef(false);
   const wakeStartInFlightRef = useRef(false);
   const wakeListeningRef = useRef(false);
+  const wakeRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wakeRetryAttemptRef = useRef(0);
+  const startNativeWakeEngineRef = useRef<() => Promise<void>>(async () => undefined);
   const commandListeningRef = useRef(false);
   const wakeModelStateRef = useRef<WakeModelState | null>(null);
   const handsFreeMachineRef = useRef(handsFreeMachine);
@@ -381,7 +387,6 @@ export default function Home() {
   const nativeWakeHandlerRef = useRef<(event: WakeWordEvent) => void>(() => undefined);
   const commandLocalePlanRef = useRef<string[]>([]);
   const commandLocaleIndexRef = useRef(0);
-  const handsFreePermissionAlertedRef = useRef(false);
   const voiceSheetOpenRef = useRef(false);
   const chatSwipeTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const voiceSwipeTouchStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -716,11 +721,64 @@ export default function Home() {
     }
   }, []);
 
+  const clearWakeRetryTimer = useCallback((resetAttempts = false) => {
+    if (wakeRetryTimerRef.current) {
+      clearTimeout(wakeRetryTimerRef.current);
+      wakeRetryTimerRef.current = null;
+    }
+    if (resetAttempts) {
+      wakeRetryAttemptRef.current = 0;
+    }
+  }, []);
+
+  const scheduleWakeRetry = useCallback(
+    (error: { code?: string; message?: string } | Error | unknown) => {
+      clearWakeRetryTimer(false);
+      wakeListeningRef.current = false;
+
+      if (isPermanentWakeError(error)) {
+        wakeRetryAttemptRef.current = 0;
+        const value = `${String((error as any)?.code || "")} ${String((error as any)?.message || "")}`.toLowerCase();
+        setHandsFreeStatus(
+          value.includes("model") ||
+            value.includes("missing") ||
+            value.includes("unsupported") ||
+            value.includes("unavailable")
+            ? "Needs model"
+            : "Try again",
+        );
+        dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" });
+        return;
+      }
+
+      const attempt = wakeRetryAttemptRef.current;
+      if (attempt >= WAKE_RETRY_DELAYS_MS.length) {
+        wakeRetryAttemptRef.current = 0;
+        setHandsFreeStatus("Try again");
+        dispatchHandsFree({ type: "ERROR" });
+        return;
+      }
+
+      const delayMs = wakeRetryDelayMs(attempt);
+      wakeRetryAttemptRef.current = attempt + 1;
+      setHandsFreeStatus("Try again");
+      dispatchHandsFree({ type: "WAKE_TRANSIENT_ERROR" });
+      wakeRetryTimerRef.current = setTimeout(() => {
+        wakeRetryTimerRef.current = null;
+        if (handsFreeEligibleRef.current && wakeModelStateRef.current?.ready) {
+          void startNativeWakeEngineRef.current();
+        }
+      }, delayMs);
+    },
+    [clearWakeRetryTimer],
+  );
+
   const abortHandsFreeRecognizer = useCallback(async (_clearDesiredMode = false) => {
+    clearWakeRetryTimer(true);
     await stopWakeWordListening().catch(() => undefined);
     wakeListeningRef.current = false;
     await stopHandsFreeCommandRecognizer();
-  }, [stopHandsFreeCommandRecognizer]);
+  }, [clearWakeRetryTimer, stopHandsFreeCommandRecognizer]);
 
   const shutdownHandsFree = useCallback(async (clearStatus = false) => {
     await abortHandsFreeRecognizer(false);
@@ -747,6 +805,7 @@ export default function Home() {
 
     const model = wakeModelStateRef.current;
     if (!model?.ready) {
+      clearWakeRetryTimer(true);
       dispatchHandsFree({ type: "WAKE_MODEL_MISSING" });
       setHandsFreeStatus("Needs model");
       return;
@@ -754,30 +813,40 @@ export default function Home() {
 
     try {
       wakeStartInFlightRef.current = true;
+      const permission = await Audio.requestPermissionsAsync();
+      if (!permission.granted) {
+        wakeListeningRef.current = false;
+        clearWakeRetryTimer(true);
+        setHandsFreeStatus("Try again");
+        dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" });
+        return;
+      }
+      if (!handsFreeRuntimeRef.current.foreground) return;
+
       setHandsFreeStatus("Listening");
       dispatchHandsFree({ type: "WAKE_STARTED" });
       await startWakeWordListening(model, {
         onWake: (event) => {
           void nativeWakeHandlerRef.current(event);
         },
-        onError: () => {
-          wakeListeningRef.current = false;
-          setHandsFreeStatus("Try again");
-          dispatchHandsFree({ type: "ERROR" });
+        onError: (error) => {
+          scheduleWakeRetry(error);
         },
       });
       wakeListeningRef.current = true;
+      clearWakeRetryTimer(true);
     } catch (error: unknown) {
       wakeListeningRef.current = false;
       const message =
         error instanceof Error ? error.message : "Could not start wake-word detection.";
       console.warn("[hands-free wake]", message);
-      setHandsFreeStatus("Try again");
-      dispatchHandsFree({ type: "ERROR" });
+      scheduleWakeRetry(error);
     } finally {
       wakeStartInFlightRef.current = false;
     }
-  }, []);
+  }, [clearWakeRetryTimer, scheduleWakeRetry]);
+
+  startNativeWakeEngineRef.current = startNativeWakeEngine;
 
   const startHandsFreeCommandRecognizer = useCallback(async () => {
     const runtime = handsFreeRuntimeRef.current;
@@ -798,10 +867,6 @@ export default function Home() {
       if (!permission.granted) {
         setHandsFreeStatus("Try again");
         dispatchHandsFree({ type: "COMMAND_EMPTY" });
-        if (!handsFreePermissionAlertedRef.current) {
-          handsFreePermissionAlertedRef.current = true;
-          Alert.alert("Try again", "Try again");
-        }
         return;
       }
 
@@ -863,6 +928,7 @@ export default function Home() {
 
   async function handleNativeWakeWordDetected(_event: WakeWordEvent) {
     if (!handsFreeEligibleRef.current) return;
+    clearWakeRetryTimer(true);
     dispatchHandsFree({ type: "WAKE_DETECTED" });
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
     await stopWakeWordListening();
@@ -1008,14 +1074,6 @@ export default function Home() {
       return;
     }
 
-    const errorCode = String(event?.error || "").toLowerCase();
-    if (
-      (errorCode === "not-allowed" || errorCode === "service-not-allowed") &&
-      !handsFreePermissionAlertedRef.current
-    ) {
-      handsFreePermissionAlertedRef.current = true;
-      Alert.alert("Try again", "Try again");
-    }
     setHandsFreeStatus("Try again");
     dispatchHandsFree({ type: "COMMAND_EMPTY" });
   });
@@ -1059,7 +1117,6 @@ export default function Home() {
 
   useEffect(() => {
     if (handsFreeForegroundEnabled) {
-      handsFreePermissionAlertedRef.current = false;
       dispatchHandsFree({ type: "ELIGIBLE" });
       setHandsFreeStatus("Listening");
       return;

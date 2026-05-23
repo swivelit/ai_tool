@@ -101,7 +101,13 @@ type SavedBundle = {
 };
 
 const MODEL_ROOT = `${FileSystem.documentDirectory || ""}wake_word_models`;
+const REQUIRED_MODEL_ROLES = ["wake", "melspectrogram", "embedding"] as const;
+const MODEL_FILE_ROLES = new Set<string>(REQUIRED_MODEL_ROLES);
 const nativeModule: NativeWakeWordModule | null = (() => {
+  if (process.env.NODE_ENV === "test") {
+    const testOverride = (globalThis as any).__JAI_WAKE_WORD_NATIVE_MODULE_FOR_TESTS__;
+    if (testOverride) return testOverride as NativeWakeWordModule;
+  }
   try {
     return require("../modules/wake-word").default as NativeWakeWordModule;
   } catch {
@@ -266,7 +272,20 @@ export async function validateNativeWakeModelBundle(
       detail: "Native wake-word detection is unavailable.",
     };
   }
-  return nativeModule.validateModelBundle(normalizeStartConfig(config));
+  try {
+    return await nativeModule.validateModelBundle(normalizeStartConfig(config));
+  } catch (error) {
+    return {
+      ...localValidation,
+      ok: false,
+      available: true,
+      status: nativeValidationFailureStatus(error),
+      detail: conciseWakeModelDetail(
+        error instanceof Error ? error.message : String(error || ""),
+        "Wake model bundle failed native validation.",
+      ),
+    };
+  }
 }
 
 async function fileExists(path?: string) {
@@ -284,6 +303,124 @@ async function readyModelExists(value: WakeModelSettings | null | undefined) {
     (await fileExists(paths.melspectrogramModel)) &&
     (await fileExists(paths.embeddingModel))
   );
+}
+
+function wakeModelStateFromNativeValidationFailure(
+  settings: AssistantSettings,
+  validation: WakeWordBundleValidation,
+): WakeModelState {
+  const status = validation.status === "error" ? "error" : "unsupported";
+  return toWakeModelState({
+    status,
+    wakePhrase: settings.wakePhrase,
+    modelType: settings.wakeModel?.modelType,
+    detail: conciseWakeModelDetail(validation.detail, "Needs model"),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function nativeValidationFailureStatus(error: unknown): WakeModelStatus {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("unsupported") ||
+    normalized.includes("unavailable") ||
+    normalized.includes("not found") ||
+    normalized.includes("missing") ||
+    normalized.includes("permission") ||
+    normalized.includes("model")
+  ) {
+    return "unsupported";
+  }
+  return "error";
+}
+
+function conciseWakeModelDetail(value: unknown, fallback: string) {
+  const raw = String(value || "").trim();
+  const cleaned = raw
+    .replace(/^JaiWakeWord error \[[^\]]+\]:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (cleaned || fallback).slice(0, 220);
+}
+
+function validateBundleManifestFiles(
+  modelFiles: Array<{ role?: unknown; file?: unknown; bytes?: unknown; sha256?: unknown }>,
+  entries: Map<string, Uint8Array>,
+) {
+  const byRole = new Map<
+    string,
+    { role: "wake" | "melspectrogram" | "embedding"; file: string; content: Uint8Array }
+  >();
+
+  for (const entry of modelFiles) {
+    const role = String(entry?.role || "").trim();
+    if (!MODEL_FILE_ROLES.has(role)) {
+      throw new Error("Wake model manifest roles must be wake, melspectrogram, or embedding.");
+    }
+    const file = validateSafeModelFileName(entry?.file, role);
+    if (byRole.has(role)) {
+      throw new Error(`Wake model manifest contains duplicate ${role} entries.`);
+    }
+    const content = entries.get(file);
+    if (!content) {
+      throw new Error(`Wake model bundle is missing ${file}.`);
+    }
+
+    const expectedBytes = entry?.bytes;
+    if (typeof expectedBytes !== "undefined" && expectedBytes !== null) {
+      const byteCount = Number(expectedBytes);
+      if (!Number.isInteger(byteCount) || byteCount < 0) {
+        throw new Error(`Wake model manifest has invalid byte length for ${file}.`);
+      }
+      if (content.length !== byteCount) {
+        throw new Error(`Wake model bundle byte length mismatch for ${file}.`);
+      }
+    }
+
+    const expectedSha = normalizeSha(entry?.sha256);
+    if (expectedSha && sha256Bytes(content) !== expectedSha) {
+      throw new Error(`Wake model bundle SHA-256 mismatch for ${file}.`);
+    }
+
+    byRole.set(role, { role: role as "wake" | "melspectrogram" | "embedding", file, content });
+  }
+
+  const missingRoles = REQUIRED_MODEL_ROLES.filter((role) => !byRole.has(role));
+  if (missingRoles.length > 0) {
+    throw new Error("Wake model manifest must include wake, melspectrogram, and embedding roles.");
+  }
+
+  return REQUIRED_MODEL_ROLES.map((role) => byRole.get(role)!);
+}
+
+function validateSafeModelFileName(value: unknown, role: string) {
+  const file = String(value || "").trim();
+  const unsafe =
+    !file ||
+    file.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(file) ||
+    file.includes("/") ||
+    file.includes("\\") ||
+    file.split(/[\\/]/).includes("..") ||
+    file === "." ||
+    file === "..";
+  if (unsafe) {
+    throw new Error(`Wake model manifest has an unsafe file path for ${role || "model"}.`);
+  }
+  if (!file.toLowerCase().endsWith(".onnx")) {
+    throw new Error(`Wake model manifest role ${role || "model"} must point to an ONNX file.`);
+  }
+  return file;
+}
+
+function normalizeSha(value: unknown) {
+  const sha = String(value || "").trim().toLowerCase();
+  if (!sha) return "";
+  if (!/^[a-f0-9]{64}$/.test(sha)) {
+    throw new Error("Wake model manifest has invalid SHA-256 metadata.");
+  }
+  return sha;
 }
 
 export async function ensureWakeModel(settings: AssistantSettings): Promise<WakeModelState> {
@@ -311,7 +448,12 @@ export async function ensureWakeModel(settings: AssistantSettings): Promise<Wake
   }
 
   if (settings.wakeModel?.status === "ready" && (await readyModelExists(settings.wakeModel))) {
-    return toWakeModelState(settings.wakeModel);
+    const cachedModel = toWakeModelState(settings.wakeModel);
+    const cachedValidation = await validateNativeWakeModelBundle(cachedModel);
+    if (cachedValidation.ok && cachedValidation.realOpenWakeWordModelCompatibility === true) {
+      return cachedModel;
+    }
+    return wakeModelStateFromNativeValidationFailure(settings, cachedValidation);
   }
 
   const wakePhrase = encodeURIComponent(settings.wakePhrase);
@@ -324,7 +466,7 @@ export async function ensureWakeModel(settings: AssistantSettings): Promise<Wake
     }
 
     const saved = await downloadAndSaveWakeModelBundle(settings.wakePhrase);
-    return wakeModelStateFromApiStatus(settings, status, {
+    const prepared = wakeModelStateFromApiStatus(settings, status, {
       status: "ready",
       phraseKey: saved.manifest.phrase_key || status.phrase_key,
       wakePhrase: saved.manifest.wake_phrase || status.wake_phrase || settings.wakePhrase,
@@ -335,6 +477,11 @@ export async function ensureWakeModel(settings: AssistantSettings): Promise<Wake
       modelPaths: saved.modelPaths,
       modelRoles: saved.modelRoles,
     });
+    const validation = await validateNativeWakeModelBundle(prepared);
+    if (!validation.ok || validation.realOpenWakeWordModelCompatibility !== true) {
+      return wakeModelStateFromNativeValidationFailure(settings, validation);
+    }
+    return prepared;
   } catch (error) {
     return toWakeModelState({
       status: "error",
@@ -373,41 +520,26 @@ export async function saveWakeModelBundleBytes(bytes: Uint8Array): Promise<Saved
   if (!FileSystem.documentDirectory) {
     throw new Error("Device storage is unavailable for wake model files.");
   }
+
+  const modelFiles: Array<{ role?: unknown; file?: unknown; bytes?: unknown; sha256?: unknown }> = Array.isArray(manifest.model_files)
+    ? manifest.model_files
+    : [];
+  const validatedFiles = validateBundleManifestFiles(modelFiles, entries);
+  const modelPaths: WakeWordStartConfig["modelPaths"] = { wakeModel: "" };
+  const modelRoles = validatedFiles.map((entry) => entry.role);
   const targetRoot = `${MODEL_ROOT}/${phraseKey}`;
   await FileSystem.makeDirectoryAsync(MODEL_ROOT, { intermediates: true }).catch(() => undefined);
   await FileSystem.deleteAsync(targetRoot, { idempotent: true }).catch(() => undefined);
   await FileSystem.makeDirectoryAsync(targetRoot, { intermediates: true });
 
-  const modelFiles: Array<{ role?: unknown; file?: unknown }> = Array.isArray(manifest.model_files)
-    ? manifest.model_files
-    : [];
-  const modelPaths: WakeWordStartConfig["modelPaths"] = { wakeModel: "" };
-  const modelRoles: string[] = Array.from(
-    new Set<string>(
-      modelFiles
-        .map((entry) => String(entry?.role || "").trim())
-        .filter(Boolean)
-    )
-  );
-  const requiredRoles = ["wake", "melspectrogram", "embedding"];
-  const missingRoles = requiredRoles.filter((role) => !modelRoles.includes(role));
-  if (missingRoles.length > 0) {
-    throw new Error("Wake model manifest must include wake, melspectrogram, and embedding roles.");
-  }
-  for (const entry of modelFiles) {
-    const fileName = String(entry.file || "").replace(/^\/+/, "");
-    const role = String(entry.role || "").trim();
-    const content = entries.get(fileName);
-    if (!fileName || !content) {
-      throw new Error(`Wake model bundle is missing ${fileName || role || "model file"}.`);
-    }
-    const uri = `${targetRoot}/${fileName}`;
-    await FileSystem.writeAsStringAsync(uri, bytesToBase64(content), {
+  for (const entry of validatedFiles) {
+    const uri = `${targetRoot}/${entry.file}`;
+    await FileSystem.writeAsStringAsync(uri, bytesToBase64(entry.content), {
       encoding: FileSystem.EncodingType.Base64,
     });
-    if (role === "wake") modelPaths.wakeModel = uri;
-    if (role === "melspectrogram") modelPaths.melspectrogramModel = uri;
-    if (role === "embedding") modelPaths.embeddingModel = uri;
+    if (entry.role === "wake") modelPaths.wakeModel = uri;
+    if (entry.role === "melspectrogram") modelPaths.melspectrogramModel = uri;
+    if (entry.role === "embedding") modelPaths.embeddingModel = uri;
   }
   if (!modelPaths.wakeModel) {
     throw new Error("Wake model bundle does not include a wake prediction model.");
@@ -564,6 +696,75 @@ function bytesToUtf8(bytes: Uint8Array) {
     output += String.fromCharCode(byte);
   });
   return decodeURIComponent(escape(output));
+}
+
+function rotr(value: number, amount: number) {
+  return (value >>> amount) | (value << (32 - amount));
+}
+
+function sha256Bytes(bytes: Uint8Array) {
+  const k = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+  const h = [
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ];
+  const bitLength = bytes.length * 8;
+  const paddedLength = (((bytes.length + 9 + 63) >> 6) << 6);
+  const padded = new Uint8Array(paddedLength);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x100000000), false);
+  view.setUint32(paddedLength - 4, bitLength >>> 0, false);
+
+  const w = new Array<number>(64);
+  for (let offset = 0; offset < paddedLength; offset += 64) {
+    for (let index = 0; index < 16; index += 1) {
+      w[index] = view.getUint32(offset + index * 4, false);
+    }
+    for (let index = 16; index < 64; index += 1) {
+      const s0 = rotr(w[index - 15], 7) ^ rotr(w[index - 15], 18) ^ (w[index - 15] >>> 3);
+      const s1 = rotr(w[index - 2], 17) ^ rotr(w[index - 2], 19) ^ (w[index - 2] >>> 10);
+      w[index] = (w[index - 16] + s0 + w[index - 7] + s1) >>> 0;
+    }
+
+    let [a, b, c, d, e, f, g, hh] = h;
+    for (let index = 0; index < 64; index += 1) {
+      const s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (hh + s1 + ch + k[index] + w[index]) >>> 0;
+      const s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (s0 + maj) >>> 0;
+      hh = g;
+      g = f;
+      f = e;
+      e = (d + temp1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) >>> 0;
+    }
+    h[0] = (h[0] + a) >>> 0;
+    h[1] = (h[1] + b) >>> 0;
+    h[2] = (h[2] + c) >>> 0;
+    h[3] = (h[3] + d) >>> 0;
+    h[4] = (h[4] + e) >>> 0;
+    h[5] = (h[5] + f) >>> 0;
+    h[6] = (h[6] + g) >>> 0;
+    h[7] = (h[7] + hh) >>> 0;
+  }
+
+  return h.map((value) => value.toString(16).padStart(8, "0")).join("");
 }
 
 function bytesToBase64(bytes: Uint8Array) {
