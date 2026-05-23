@@ -17,6 +17,7 @@ describe("wake model storage normalization", () => {
         },
         sampleRate: 16000,
         frameMs: 80,
+        modelRoles: ["wake", "", "embedding", "wake"],
       },
     } as any);
 
@@ -31,6 +32,7 @@ describe("wake model storage normalization", () => {
       modelPaths: {
         wakeModel: "file:///wake.onnx",
       },
+      modelRoles: ["wake", "embedding"],
     });
   });
 

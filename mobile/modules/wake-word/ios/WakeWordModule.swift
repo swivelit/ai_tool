@@ -31,5 +31,9 @@ public class WakeWordModule: Module {
       self.engine.stop()
       return ["ok": true]
     }
+
+    AsyncFunction("validateModelBundle") { (config: [String: Any]) -> [String: Any] in
+      return self.engine.validateModelBundle(config: config)
+    }
   }
 }

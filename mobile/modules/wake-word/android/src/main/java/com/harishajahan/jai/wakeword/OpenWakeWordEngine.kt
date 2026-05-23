@@ -220,6 +220,8 @@ class OpenWakeWordEngine {
 
     return mapOf(
       "ok" to true,
+      "deterministicTestSeam" to true,
+      "realOpenWakeWordModelCompatibility" to false,
       "modelFilesLoaded" to fixture.modelFilesLoaded,
       "shapesAccepted" to fixture.shapesAccepted,
       "processFrameRan" to processFrameRan,
@@ -227,6 +229,76 @@ class OpenWakeWordEngine {
       "score" to maxScore,
       "model" to fixture.modelName,
       "phraseKey" to fixture.phraseKey,
+    )
+  }
+
+  fun validateModelBundle(config: Map<String, Any?>): Map<String, Any?> {
+    val parsed = parseConfig(config)
+    if (parsed.sampleRate != 16000) {
+      throw WakeWordException(
+        "JAI_WAKE_SAMPLE_RATE_UNSUPPORTED",
+        "OpenWakeWord wake detection requires 16 kHz PCM audio.",
+      )
+    }
+
+    val roles = (config["manifestRoles"] as? List<*>)
+      ?.map { String.format(Locale.US, "%s", it).trim() }
+      ?.filter { it.isNotEmpty() }
+      ?.toSet()
+      ?: emptySet()
+    val requiredRoles = setOf("wake", "melspectrogram", "embedding")
+    val missingRoles = requiredRoles.filter { role -> !roles.contains(role) }
+    if (missingRoles.isNotEmpty()) {
+      throw WakeWordException(
+        "JAI_WAKE_MANIFEST_ROLES_REQUIRED",
+        "Wake model manifest must include wake, melspectrogram, and embedding roles.",
+      )
+    }
+
+    val wakeModel = resolveFilePath(parsed.wakeModelPath, "wakeModel")
+    val melModel = parsed.melspectrogramModelPath?.let {
+      resolveFilePath(it, "melspectrogramModel")
+    } ?: throw WakeWordException(
+      "JAI_WAKE_MODEL_UNSUPPORTED",
+      "Wake model bundle is missing melspectrogram.onnx.",
+    )
+    val embeddingModel = parsed.embeddingModelPath?.let {
+      resolveFilePath(it, "embeddingModel")
+    } ?: throw WakeWordException(
+      "JAI_WAKE_MODEL_UNSUPPORTED",
+      "Wake model bundle is missing embedding_model.onnx.",
+    )
+
+    try {
+      OnnxWakeWordPipeline(
+        wakeModel = wakeModel,
+        melModel = melModel,
+        embeddingModel = embeddingModel,
+        phraseKey = parsed.phraseKey.ifBlank { null },
+        sampleRate = parsed.sampleRate,
+        frameMs = parsed.frameMs,
+      ).use {
+        // Loading the sessions and deriving input shapes is the validation.
+      }
+    } catch (error: WakeWordException) {
+      lastError = error.detail
+      throw error
+    } catch (error: OrtException) {
+      val detail = "Could not validate OpenWakeWord ONNX bundle: ${error.message ?: "unknown ONNX error"}"
+      lastError = detail
+      throw WakeWordException("JAI_WAKE_MODEL_LOAD_FAILED", detail, error)
+    }
+
+    return mapOf(
+      "ok" to true,
+      "deterministicTestSeam" to false,
+      "realOpenWakeWordModelCompatibility" to true,
+      "modelFilesExist" to true,
+      "manifestRolesPresent" to true,
+      "startConfigModelPathsPresent" to true,
+      "modelShapesAccepted" to true,
+      "model" to wakeModel.name,
+      "phraseKey" to parsed.phraseKey.ifBlank { null },
     )
   }
 

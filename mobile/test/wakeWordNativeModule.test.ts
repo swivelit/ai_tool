@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const root = path.join(__dirname, "..");
@@ -31,6 +32,7 @@ describe("JaiWakeWord native module", () => {
     expect(module).toContain("Handler(Looper.getMainLooper())");
     expect(module).toContain("sendEventOnMain");
     expect(module).toContain("validateFixturePipeline");
+    expect(module).toContain("validateModelBundle");
     expect(engine).not.toContain("fun isAvailable(): Boolean = false");
     expect(engine).toContain("OrtEnvironment");
     expect(engine).toContain("OrtSession");
@@ -42,6 +44,13 @@ describe("JaiWakeWord native module", () => {
     expect(engine).toContain("score >= parsed.threshold");
     expect(engine).toContain("parsed.minWakeIntervalMs");
     expect(engine).toContain("DeterministicWakeWordPipeline");
+    expect(engine).toContain('"deterministicTestSeam" to true');
+    expect(engine).toContain('"realOpenWakeWordModelCompatibility" to false');
+    expect(engine).toContain("fun validateModelBundle");
+    expect(engine).toContain("manifestRoles");
+    expect(engine).toContain("JAI_WAKE_MANIFEST_ROLES_REQUIRED");
+    expect(engine).toContain('"realOpenWakeWordModelCompatibility" to true');
+    expect(engine).toContain('"modelShapesAccepted" to true');
     expect(engine).toContain('"modelFilesLoaded"');
     expect(engine).toContain('"shapesAccepted"');
     expect(engine).toContain('"processFrameRan"');
@@ -59,7 +68,27 @@ describe("JaiWakeWord native module", () => {
 
     expect(podspec).toContain("ExpoModulesCore");
     expect(module).toContain('Name("JaiWakeWord")');
+    expect(module).toContain("validateModelBundle");
     expect(engine).toContain("JAI_WAKE_MODEL_UNSUPPORTED");
+    expect(engine).toContain('"status": "unsupported"');
     expect(engine).toContain("ONNX Runtime wake pipeline is not linked");
+  });
+
+  it("keeps real bundle validation separate from the deterministic fixture seam", () => {
+    const script = path.join(root, "scripts", "validate-wake-model-bundle.mjs");
+    const result = spawnSync(process.execPath, [script], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        JAI_WAKE_MODEL_BUNDLE_DIR: "",
+        JAI_HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR: "",
+        HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR: "",
+        OPENWAKEWORD_HEY_ELLI_BUNDLE_DIR: "",
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("SKIP wake model bundle validation");
   });
 });

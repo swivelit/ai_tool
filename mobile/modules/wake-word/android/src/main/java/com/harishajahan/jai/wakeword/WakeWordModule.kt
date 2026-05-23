@@ -48,6 +48,15 @@ class WakeWordModule : Module() {
     AsyncFunction("validateFixturePipeline") {
       engine.validateFixturePipeline()
     }
+
+    AsyncFunction("validateModelBundle") { config: Map<String, Any?> ->
+      try {
+        engine.validateModelBundle(config)
+      } catch (error: WakeWordException) {
+        sendError(error.code, error.detail)
+        throw error
+      }
+    }
   }
 
   private fun sendError(code: String, message: String) {

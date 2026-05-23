@@ -109,6 +109,42 @@ def test_default_hey_elli_uses_configured_bundle_only_when_complete(
     }
 
 
+def test_default_hey_elli_configured_incomplete_bundle_is_not_ready(
+    client, monkeypatch, tmp_path
+):
+    create_test_user()
+    bundle_dir = tmp_path / "hey-elli-incomplete"
+    bundle_dir.mkdir()
+    (bundle_dir / "hey_elli.onnx").write_bytes(b"fake-wake")
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "phrase_key": "hey-elli",
+                "wake_phrase": "Hey Elli",
+                "model_files": [
+                    {"role": "wake", "file": "hey_elli.onnx"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JAI_HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR", str(bundle_dir))
+    _set_service(monkeypatch, OpenWakeWordSupport(tmp_path / "service"))
+
+    response = client.get(
+        "/api/openwakeword/enrollment/model/status?wake_phrase=Hey%20Elli",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["status"] == "unsupported"
+    assert payload["model_type"] == "configured"
+    assert "melspectrogram.onnx" in payload["detail"]
+    assert "embedding_model.onnx" in payload["detail"]
+
+
 def test_supported_base_status_handles_missing_openwakeword_dependency(client, monkeypatch, tmp_path):
     create_test_user()
     service = OpenWakeWordSupport(tmp_path)

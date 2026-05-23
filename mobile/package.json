@@ -21,6 +21,7 @@
     "native:verify-llama": "node ./scripts/verify-native-llama-runtime.js",
     "release": "npm run release:verify-backend-first",
     "release:verify-backend-first": "node ./scripts/verify-release-backend-first-config.js",
+    "wake:validate-bundle": "node ./scripts/validate-wake-model-bundle.mjs",
     "smoke:chat": "node ./scripts/smoke-chat-10.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

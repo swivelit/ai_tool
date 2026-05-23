@@ -366,6 +366,14 @@ function audioUploadPart(uri: string, sampleKind: SampleKind) {
 }
 
 function modelStateFromStatus(wakePhrase: string, status: EnrollmentStatus | null) {
+  const modelFiles = Array.isArray((status as any)?.model_files) ? (status as any).model_files : [];
+  const modelRoles: string[] = Array.from(
+    new Set<string>(
+      modelFiles
+        .map((entry: any) => String(entry?.role || "").trim())
+        .filter(Boolean)
+    )
+  );
   return {
     status: (status?.status || (status?.ready ? "ready" : "pending")) as any,
     phraseKey: status?.phrase_key || phraseKeyFor(wakePhrase),
@@ -374,6 +382,7 @@ function modelStateFromStatus(wakePhrase: string, status: EnrollmentStatus | nul
     threshold: (status as any)?.threshold,
     sampleRate: (status as any)?.sample_rate,
     frameMs: (status as any)?.frame_ms,
+    modelRoles,
     detail: status?.detail || status?.state_message || status?.message,
     updatedAt: new Date().toISOString(),
   };
@@ -800,13 +809,13 @@ export default function Setup() {
           <GlassCard>
             <Text style={styles.sectionTitle}>Train wake phrase</Text>
 
-            <View style={styles.metricsRow}>
-              <MetricCard
+            <View style={styles.sampleChipRow}>
+              <SampleChip
                 label="Positive"
                 value={progressLabel(positiveCount, minimumPositive)}
                 icon="checkmark-circle-outline"
               />
-              <MetricCard
+              <SampleChip
                 label="Negative"
                 value={progressLabel(negativeCount, minimumNegative)}
                 icon="remove-circle-outline"
@@ -888,7 +897,7 @@ export default function Setup() {
   );
 }
 
-function MetricCard({
+function SampleChip({
   label,
   value,
   icon,
@@ -898,10 +907,10 @@ function MetricCard({
   icon: keyof typeof Ionicons.glyphMap;
 }) {
   return (
-    <View style={styles.metricCard}>
+    <View style={styles.sampleChip}>
       <Ionicons name={icon} size={18} color={Brand.cocoa} />
-      <Text style={styles.metricValue}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.sampleChipLabel}>{label}</Text>
+      <Text style={styles.sampleChipValue}>{value}</Text>
     </View>
   );
 }
@@ -1002,12 +1011,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: Brand.ink,
   },
-  subtitle: {
-    marginTop: 12,
-    fontSize: 15,
-    lineHeight: 22,
-    color: Brand.muted,
-  },
   stateChip: {
     flexDirection: "row",
     alignItems: "center",
@@ -1022,39 +1025,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: Brand.cocoa,
   },
-  summaryCard: {
-    marginTop: 18,
-    padding: 16,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.75)",
-  },
-  summaryTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: Brand.ink,
-  },
-  summaryPhrase: {
-    marginTop: 8,
-    fontSize: 15,
-    fontWeight: "700",
-    color: Brand.cocoa,
-  },
-  summaryBody: {
-    marginTop: 10,
-    fontSize: 14,
-    lineHeight: 21,
-    color: Brand.muted,
-  },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "800",
     color: Brand.ink,
-  },
-  sectionBody: {
-    marginTop: 8,
-    fontSize: 14,
-    lineHeight: 21,
-    color: Brand.muted,
   },
   label: {
     marginTop: 16,
@@ -1072,69 +1046,32 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: Brand.ink,
   },
-  stateRail: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginTop: 16,
-  },
-  railPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.7)",
-  },
-  railPillActive: {
-    backgroundColor: "rgba(244,214,174,0.7)",
-  },
-  railPillText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: Brand.cocoa,
-  },
-  railPillTextActive: {
-    color: Brand.ink,
-  },
-  hintBox: {
-    marginTop: 14,
-    flexDirection: "row",
-    gap: 10,
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.72)",
-  },
-  hintText: {
-    flex: 1,
-    fontSize: 13,
-    lineHeight: 20,
-    color: Brand.muted,
-  },
-  metricsRow: {
+  sampleChipRow: {
     flexDirection: "row",
     gap: 12,
     marginTop: 16,
   },
-  metricCard: {
+  sampleChip: {
     flex: 1,
+    minHeight: 44,
+    flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 16,
-    paddingHorizontal: 10,
-    borderRadius: 18,
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.74)",
   },
-  metricValue: {
-    marginTop: 10,
-    fontSize: 22,
+  sampleChipLabel: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "700",
+    color: Brand.muted,
+  },
+  sampleChipValue: {
+    fontSize: 13,
     fontWeight: "800",
     color: Brand.ink,
-  },
-  metricLabel: {
-    marginTop: 6,
-    fontSize: 13,
-    color: Brand.muted,
   },
   statusBox: {
     marginTop: 16,
@@ -1146,17 +1083,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
     color: Brand.cocoa,
-  },
-  statusText: {
-    marginTop: 8,
-    fontSize: 14,
-    lineHeight: 21,
-    color: Brand.ink,
-  },
-  statusMeta: {
-    marginTop: 8,
-    fontSize: 13,
-    color: Brand.muted,
   },
   errorText: {
     marginTop: 10,
@@ -1202,29 +1128,6 @@ const styles = StyleSheet.create({
   },
   uploadText: {
     fontSize: 13,
-    color: Brand.muted,
-  },
-  scriptBox: {
-    marginTop: 14,
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.72)",
-  },
-  scriptTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: Brand.cocoa,
-  },
-  scriptLine: {
-    marginTop: 8,
-    fontSize: 13,
-    lineHeight: 20,
-    color: Brand.muted,
-  },
-  exampleText: {
-    marginTop: 10,
-    fontSize: 14,
-    lineHeight: 21,
     color: Brand.muted,
   },
   primaryButtonWrap: {

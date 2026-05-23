@@ -41,6 +41,18 @@ public final class OpenWakeWordEngine {
     throw WakeWordError("JAI_WAKE_MODEL_UNSUPPORTED", lastError!)
   }
 
+  public func validateModelBundle(config: [String: Any]) -> [String: Any] {
+    lastError = "JaiWakeWord iOS has the native Expo module scaffold, but the ONNX Runtime wake pipeline is not linked in this build."
+    return [
+      "ok": false,
+      "available": false,
+      "status": "unsupported",
+      "deterministicTestSeam": false,
+      "realOpenWakeWordModelCompatibility": false,
+      "detail": lastError!,
+    ]
+  }
+
   public func stop() {
     running = false
     modelLoaded = false

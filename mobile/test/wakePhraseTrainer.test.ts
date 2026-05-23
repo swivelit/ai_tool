@@ -30,7 +30,8 @@ describe("wake phrase trainer source", () => {
     expect(setupSource).not.toContain("Hands-free only becomes active");
     expect(setupSource).not.toContain("Suggested negative sentences");
     expect(setupSource).not.toContain("Wake phrase model setup");
-    expect(setupSource).not.toContain("styles.summaryCard");
-    expect(setupSource).not.toContain("styles.stateRail");
+    expect(setupSource).not.toContain("summaryCard");
+    expect(setupSource).not.toContain("stateRail");
+    expect(setupSource).not.toContain("MetricCard");
   });
 });

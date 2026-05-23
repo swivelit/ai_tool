@@ -11,6 +11,7 @@ type NativeWakeWordModule = {
   start?: (config: WakeWordStartConfig) => Promise<{ ok: true }>;
   stop?: () => Promise<{ ok: true }>;
   validateFixturePipeline?: () => Promise<WakeWordFixtureValidation>;
+  validateModelBundle?: (config: WakeWordStartConfig) => Promise<WakeWordBundleValidation>;
 };
 
 export type WakeWordNativeStatus = {
@@ -24,11 +25,28 @@ export type WakeWordNativeStatus = {
 
 export type WakeWordFixtureValidation = {
   ok: boolean;
+  deterministicTestSeam?: boolean;
+  realOpenWakeWordModelCompatibility?: boolean;
   modelFilesLoaded: boolean;
   shapesAccepted: boolean;
   processFrameRan: boolean;
   wakeEmitted: boolean;
   score?: number;
+  model?: string;
+  phraseKey?: string;
+};
+
+export type WakeWordBundleValidation = {
+  ok: boolean;
+  available?: boolean;
+  status?: string;
+  detail?: string;
+  deterministicTestSeam?: boolean;
+  realOpenWakeWordModelCompatibility?: boolean;
+  modelFilesExist?: boolean;
+  manifestRolesPresent?: boolean;
+  startConfigModelPathsPresent?: boolean;
+  modelShapesAccepted?: boolean;
   model?: string;
   phraseKey?: string;
 };
@@ -48,6 +66,7 @@ export type WakeWordStartConfig = {
     melspectrogramModel?: string;
     embeddingModel?: string;
   };
+  manifestRoles?: string[];
   threshold?: number;
   sampleRate?: 16000;
   frameMs?: 80;
@@ -69,11 +88,16 @@ type ModelStatusResponse = {
   sample_rate?: number;
   frame_ms?: number;
   detail?: string;
+  model_files?: Array<{
+    role?: string;
+    file?: string;
+  }>;
 };
 
 type SavedBundle = {
   manifest: any;
   modelPaths: WakeWordStartConfig["modelPaths"];
+  modelRoles: string[];
 };
 
 const MODEL_ROOT = `${FileSystem.documentDirectory || ""}wake_word_models`;
@@ -107,12 +131,21 @@ function toWakeModelState(value: WakeModelSettings | null | undefined): WakeMode
   };
 }
 
-function statusToState(
+export function wakeModelStateFromApiStatus(
   settings: AssistantSettings,
   status: ModelStatusResponse,
   overrides: Partial<WakeModelSettings> = {},
 ): WakeModelState {
   const nextStatus = (status.ready ? "ready" : status.status || "pending") as WakeModelStatus;
+  const modelRoles = Array.isArray(status.model_files)
+    ? Array.from(
+        new Set(
+          status.model_files
+            .map((entry) => String(entry?.role || "").trim())
+            .filter(Boolean)
+        )
+      )
+    : undefined;
   return toWakeModelState({
     status: nextStatus,
     phraseKey: status.phrase_key || normalizePhraseKey(status.wake_phrase || settings.wakePhrase),
@@ -122,6 +155,7 @@ function statusToState(
     sampleRate: status.sample_rate,
     frameMs: status.frame_ms,
     detail: status.detail,
+    modelRoles,
     updatedAt: new Date().toISOString(),
     ...overrides,
   });
@@ -153,6 +187,8 @@ export async function validateNativeWakeWordFixture(): Promise<WakeWordFixtureVa
   if (!nativeModule?.validateFixturePipeline) {
     return {
       ok: false,
+      deterministicTestSeam: true,
+      realOpenWakeWordModelCompatibility: false,
       modelFilesLoaded: false,
       shapesAccepted: false,
       processFrameRan: false,
@@ -160,6 +196,77 @@ export async function validateNativeWakeWordFixture(): Promise<WakeWordFixtureVa
     };
   }
   return nativeModule.validateFixturePipeline();
+}
+
+export function validateWakeModelBundleConfig(
+  config: WakeWordStartConfig | WakeModelState,
+): WakeWordBundleValidation {
+  const startConfig = normalizeStartConfig(config);
+  const requiredRoles = ["wake", "melspectrogram", "embedding"];
+  const roles = new Set((startConfig.manifestRoles || []).map((role) => String(role || "").trim()));
+  const missingRoles = requiredRoles.filter((role) => !roles.has(role));
+  const startConfigModelPathsPresent = Boolean(
+    startConfig.modelPaths.wakeModel &&
+      startConfig.modelPaths.melspectrogramModel &&
+      startConfig.modelPaths.embeddingModel,
+  );
+  if (missingRoles.length > 0) {
+    return {
+      ok: false,
+      status: "unsupported",
+      detail: "Wake model manifest must include wake, melspectrogram, and embedding roles.",
+      deterministicTestSeam: false,
+      realOpenWakeWordModelCompatibility: false,
+      manifestRolesPresent: false,
+      startConfigModelPathsPresent,
+    };
+  }
+  if (!startConfigModelPathsPresent) {
+    return {
+      ok: false,
+      status: "unsupported",
+      detail: "Wake model bundle is missing wake, melspectrogram, or embedding model paths.",
+      deterministicTestSeam: false,
+      realOpenWakeWordModelCompatibility: false,
+      manifestRolesPresent: true,
+      startConfigModelPathsPresent: false,
+    };
+  }
+  return {
+    ok: true,
+    deterministicTestSeam: false,
+    realOpenWakeWordModelCompatibility: false,
+    manifestRolesPresent: true,
+    startConfigModelPathsPresent: true,
+    model: startConfig.modelPaths.wakeModel.split("/").pop(),
+    phraseKey: startConfig.phraseKey,
+  };
+}
+
+export async function validateNativeWakeModelBundle(
+  config: WakeWordStartConfig | WakeModelState,
+): Promise<WakeWordBundleValidation> {
+  const localValidation = validateWakeModelBundleConfig(config);
+  if (!localValidation.ok) return localValidation;
+  if (!nativeModule?.validateModelBundle) {
+    return {
+      ...localValidation,
+      ok: false,
+      available: false,
+      status: "unavailable",
+      detail: "JaiWakeWord native model-bundle validation is unavailable.",
+    };
+  }
+  if (!isWakeWordAvailable()) {
+    return {
+      ...localValidation,
+      ok: false,
+      available: false,
+      status: "unsupported",
+      detail: "Native wake-word detection is unavailable.",
+    };
+  }
+  return nativeModule.validateModelBundle(normalizeStartConfig(config));
 }
 
 async function fileExists(path?: string) {
@@ -189,6 +296,7 @@ export async function ensureWakeModel(settings: AssistantSettings): Promise<Wake
       threshold: 0.5,
       sampleRate: 16000,
       frameMs: 80,
+      modelRoles: ["wake", "melspectrogram", "embedding"],
       updatedAt: new Date().toISOString(),
     });
   }
@@ -212,11 +320,11 @@ export async function ensureWakeModel(settings: AssistantSettings): Promise<Wake
       `/api/openwakeword/enrollment/model/status?wake_phrase=${wakePhrase}`,
     );
     if (!status.ready) {
-      return statusToState(settings, status);
+      return wakeModelStateFromApiStatus(settings, status);
     }
 
     const saved = await downloadAndSaveWakeModelBundle(settings.wakePhrase);
-    return statusToState(settings, status, {
+    return wakeModelStateFromApiStatus(settings, status, {
       status: "ready",
       phraseKey: saved.manifest.phrase_key || status.phrase_key,
       wakePhrase: saved.manifest.wake_phrase || status.wake_phrase || settings.wakePhrase,
@@ -225,6 +333,7 @@ export async function ensureWakeModel(settings: AssistantSettings): Promise<Wake
       sampleRate: saved.manifest.sample_rate || status.sample_rate,
       frameMs: saved.manifest.frame_ms || status.frame_ms,
       modelPaths: saved.modelPaths,
+      modelRoles: saved.modelRoles,
     });
   } catch (error) {
     return toWakeModelState({
@@ -269,8 +378,22 @@ export async function saveWakeModelBundleBytes(bytes: Uint8Array): Promise<Saved
   await FileSystem.deleteAsync(targetRoot, { idempotent: true }).catch(() => undefined);
   await FileSystem.makeDirectoryAsync(targetRoot, { intermediates: true });
 
+  const modelFiles: Array<{ role?: unknown; file?: unknown }> = Array.isArray(manifest.model_files)
+    ? manifest.model_files
+    : [];
   const modelPaths: WakeWordStartConfig["modelPaths"] = { wakeModel: "" };
-  const modelFiles = Array.isArray(manifest.model_files) ? manifest.model_files : [];
+  const modelRoles: string[] = Array.from(
+    new Set<string>(
+      modelFiles
+        .map((entry) => String(entry?.role || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const requiredRoles = ["wake", "melspectrogram", "embedding"];
+  const missingRoles = requiredRoles.filter((role) => !modelRoles.includes(role));
+  if (missingRoles.length > 0) {
+    throw new Error("Wake model manifest must include wake, melspectrogram, and embedding roles.");
+  }
   for (const entry of modelFiles) {
     const fileName = String(entry.file || "").replace(/^\/+/, "");
     const role = String(entry.role || "").trim();
@@ -292,7 +415,7 @@ export async function saveWakeModelBundleBytes(bytes: Uint8Array): Promise<Saved
   if (!modelPaths.melspectrogramModel || !modelPaths.embeddingModel) {
     throw new Error("Wake model bundle is missing OpenWakeWord mel or embedding artifacts.");
   }
-  return { manifest, modelPaths };
+  return { manifest, modelPaths, modelRoles };
 }
 
 export async function startWakeWordListening(
@@ -378,6 +501,7 @@ function normalizeStartConfig(config: WakeWordStartConfig | WakeModelState): Wak
         melspectrogramModel: rawModelPaths.melspectrogramModel,
         embeddingModel: rawModelPaths.embeddingModel,
       },
+      manifestRoles: maybeState.modelRoles,
       threshold: maybeState.threshold,
       sampleRate: 16000,
       frameMs: 80,

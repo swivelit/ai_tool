@@ -52,6 +52,7 @@ export type WakeModelSettings = {
     melspectrogramModel?: string;
     embeddingModel?: string;
   };
+  modelRoles?: string[];
   detail?: string;
   updatedAt?: string;
 };
@@ -153,6 +154,15 @@ function normalizeWakeModel(value: unknown, wakePhrase: string): WakeModelSettin
           embeddingModel: String(input.modelPaths.embeddingModel || "").trim() || undefined,
         }
       : undefined;
+  const modelRoles = Array.isArray(input.modelRoles)
+    ? Array.from(
+        new Set(
+          input.modelRoles
+            .map((role: unknown) => String(role || "").trim())
+            .filter(Boolean)
+        )
+      )
+    : undefined;
 
   return {
     status,
@@ -172,6 +182,7 @@ function normalizeWakeModel(value: unknown, wakePhrase: string): WakeModelSettin
         ? Math.floor(Number(input.frameMs))
         : undefined,
     modelPaths,
+    modelRoles,
     detail: String(input.detail || "").trim() || undefined,
     updatedAt: String(input.updatedAt || "").trim() || undefined,
   };
