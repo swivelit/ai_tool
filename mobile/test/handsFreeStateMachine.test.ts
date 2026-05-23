@@ -5,6 +5,10 @@ import {
   initialHandsFreeMachineState,
   isHandsFreeWakeEligible,
 } from "@/lib/handsFreeStateMachine";
+import {
+  buildCommandRecognitionLocalePlan,
+  isLanguageNotSupportedRecognitionError,
+} from "@/lib/handsFreeCommandLocales";
 
 describe("handsFreeStateMachine", () => {
   it("only marks hands-free eligible while app is active, voice is open, and model is ready", () => {
@@ -48,5 +52,19 @@ describe("handsFreeStateMachine", () => {
     expect(state.state).toBe("speaking");
     state = handsFreeStateReducer(state, { type: "TTS_COMPLETED" });
     expect(state.state).toBe("wakeListening");
+  });
+
+  it("does not become active when the wake model is missing", () => {
+    let state = handsFreeStateReducer(initialHandsFreeMachineState, { type: "ELIGIBLE" });
+    state = handsFreeStateReducer(state, { type: "WAKE_MODEL_MISSING" });
+
+    expect(state.wakeReady).toBe(false);
+    expect(state.state).toBe("blocked");
+  });
+
+  it("falls command recognition back from Tamil/Indian English to English once", () => {
+    expect(buildCommandRecognitionLocalePlan("ta-IN")).toEqual(["ta-IN", "en-IN", "en-US"]);
+    expect(buildCommandRecognitionLocalePlan("en-IN")).toEqual(["en-IN", "en-US"]);
+    expect(isLanguageNotSupportedRecognitionError({ error: "language-not-supported" })).toBe(true);
   });
 });

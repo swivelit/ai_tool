@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -34,6 +35,13 @@ SUPPORTED_BASE_MODELS: Dict[str, str] = {
     "set a 10 minute timer": "timer",
     "set ten minute timer": "timer",
     "timer": "timer",
+}
+CONFIGURED_MODEL_BUNDLE_ENV: Dict[str, List[str]] = {
+    "hey elli": [
+        "JAI_HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR",
+        "HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR",
+        "OPENWAKEWORD_HEY_ELLI_BUNDLE_DIR",
+    ],
 }
 WAKE_STATE_LABELS: Dict[str, str] = {
     "ready_now": "Ready now",
@@ -360,6 +368,29 @@ class OpenWakeWordSupport:
         base_model_key = SUPPORTED_BASE_MODELS.get(normalized_phrase)
         manifest = self._load_latest_manifest(paths)
 
+        configured_bundle = self.locate_configured_model_bundle(normalized_phrase)
+        if configured_bundle["configured"]:
+            if configured_bundle["error"]:
+                return self._model_status_payload(
+                    user_id=user_id,
+                    paths=paths,
+                    status="unsupported",
+                    ready=False,
+                    model_type="configured",
+                    detail=str(configured_bundle["error"]),
+                    manifest=manifest,
+                )
+            return self._model_status_payload(
+                user_id=user_id,
+                paths=paths,
+                status="ready",
+                ready=True,
+                model_type="configured",
+                detail="Wake model bundle is ready.",
+                manifest=manifest,
+                model_files=configured_bundle["model_files"],
+            )
+
         if base_model_key:
             try:
                 located = self.locate_supported_base_model_bundle(base_model_key)
@@ -436,11 +467,17 @@ class OpenWakeWordSupport:
         paths = self.enrollment_paths(user_id, wake_phrase)
         normalized_phrase = paths.wake_phrase
         base_model_key = SUPPORTED_BASE_MODELS.get(normalized_phrase)
-        located = (
-            self.locate_supported_base_model_bundle(base_model_key)
-            if base_model_key
-            else self.locate_custom_model_bundle(user_id, normalized_phrase)
-        )
+        configured_bundle = self.locate_configured_model_bundle(normalized_phrase)
+        if configured_bundle["configured"]:
+            if configured_bundle["error"]:
+                raise TrainingNotSupportedError(str(configured_bundle["error"]))
+            located = configured_bundle
+        else:
+            located = (
+                self.locate_supported_base_model_bundle(base_model_key)
+                if base_model_key
+                else self.locate_custom_model_bundle(user_id, normalized_phrase)
+            )
         bundle_dir = paths.root / "bundles"
         bundle_dir.mkdir(parents=True, exist_ok=True)
         bundle_path = bundle_dir / f"{paths.phrase_key}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.zip"
@@ -470,6 +507,59 @@ class OpenWakeWordSupport:
                 archive.write(entry["path"], entry["file"])
 
         return bundle_path
+
+    def locate_configured_model_bundle(self, wake_phrase: str) -> Dict[str, Any]:
+        normalized_phrase = normalize_phrase(wake_phrase)
+        phrase_key = phrase_key_for(normalized_phrase)
+        slug = re.sub(r"[^a-z0-9]+", "-", normalized_phrase).strip("-")
+        env_keys = CONFIGURED_MODEL_BUNDLE_ENV.get(normalized_phrase, [])
+        candidate_dirs: List[Path] = []
+
+        for env_key in env_keys:
+            configured_path = os.getenv(env_key)
+            if configured_path:
+                candidate_dirs.append(Path(configured_path).expanduser())
+
+        candidate_dirs.extend(
+            [
+                self.root_dir / "models" / phrase_key,
+                self.root_dir / "models" / slug,
+                Path(__file__).resolve().parent.parent.parent
+                / "models"
+                / "openwakeword"
+                / slug,
+            ]
+        )
+
+        existing_bundle_dirs = [
+            candidate for candidate in candidate_dirs if candidate.exists() and candidate.is_dir()
+        ]
+        if not existing_bundle_dirs:
+            return {
+                "configured": False,
+                "model_type": "configured",
+                "model_files": [],
+                "error": None,
+            }
+
+        bundle_dir = existing_bundle_dirs[0]
+        try:
+            model_files = self._model_files_from_bundle_dir(bundle_dir)
+        except TrainingNotSupportedError as exc:
+            return {
+                "configured": True,
+                "model_type": "configured",
+                "model_files": [],
+                "error": exc,
+            }
+
+        return {
+            "configured": True,
+            "model_type": "configured",
+            "model_key": slug,
+            "model_files": model_files,
+            "error": None,
+        }
 
     def locate_supported_base_model_bundle(self, model_key: str) -> Dict[str, Any]:
         try:
@@ -591,6 +681,72 @@ class OpenWakeWordSupport:
             "model_type": "custom",
             "model_files": model_files,
         }
+
+    def _model_files_from_bundle_dir(self, bundle_dir: Path) -> List[Dict[str, Any]]:
+        manifest_path = bundle_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise TrainingNotSupportedError(
+                "Configured wake model bundle is incomplete. Missing: manifest.json."
+            )
+
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise TrainingNotSupportedError(
+                f"Configured wake model manifest is invalid: {exc}"
+            ) from exc
+
+        manifest_files = manifest.get("model_files")
+        files_by_role: Dict[str, Path] = {}
+        if isinstance(manifest_files, list):
+            for item in manifest_files:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or "").strip()
+                file_name = str(item.get("file") or "").strip().lstrip("/")
+                if role and file_name:
+                    files_by_role[role] = bundle_dir / file_name
+
+        fallback_names = {
+            "melspectrogram": bundle_dir / "melspectrogram.onnx",
+            "embedding": bundle_dir / "embedding_model.onnx",
+        }
+        for role, path in fallback_names.items():
+            files_by_role.setdefault(role, path)
+
+        wake_path = files_by_role.get("wake")
+        if wake_path is None:
+            wake_candidates = sorted(
+                path
+                for path in bundle_dir.glob("*.onnx")
+                if path.name not in {"melspectrogram.onnx", "embedding_model.onnx"}
+            )
+            if wake_candidates:
+                files_by_role["wake"] = wake_candidates[0]
+
+        required_roles = ("melspectrogram", "embedding", "wake")
+        missing = [
+            role
+            for role in required_roles
+            if not files_by_role.get(role) or not files_by_role[role].is_file()
+        ]
+        if missing:
+            role_names = {
+                "melspectrogram": "melspectrogram.onnx",
+                "embedding": "embedding_model.onnx",
+                "wake": "wake model ONNX",
+            }
+            raise TrainingNotSupportedError(
+                "Configured wake model bundle is incomplete. Missing: "
+                + ", ".join(role_names[role] for role in missing)
+                + "."
+            )
+
+        return [
+            self._model_file_entry(files_by_role["melspectrogram"], "melspectrogram"),
+            self._model_file_entry(files_by_role["embedding"], "embedding"),
+            self._model_file_entry(files_by_role["wake"], "wake"),
+        ]
 
     def _derive_wake_state(self, supported_base_model: Optional[str], manifest: Dict[str, Any]) -> WAKE_STATE:
         manifest_state = str(manifest.get("wake_state") or "").strip().lower()
@@ -736,7 +892,7 @@ class OpenWakeWordSupport:
             import av  # type: ignore
             import numpy as np  # type: ignore
         except ImportError as exc:
-            raise AudioDecodeError(
+            raise OpenWakeWordNotInstalledError(
                 "PyAV and numpy are required to decode Expo audio files. Install optional wakeword dependencies before using this route."
             ) from exc
 

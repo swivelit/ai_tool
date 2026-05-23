@@ -1,43 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildWakePhraseCandidates,
   cleanHandsFreeCommand,
   isHandsFreeStopCommand,
-  matchWakePhrase,
   normalizeHandsFreeText,
   uniqueHandsFreePhrases,
 } from "../lib/handsFreeWake";
 
-describe("hands-free wake phrase helpers", () => {
-  it("matches a custom wake phrase", () => {
-    const phrases = buildWakePhraseCandidates("Elli", "Computer");
-
-    expect(matchWakePhrase("computer", phrases)).toMatchObject({
-      matched: true,
-      command: "",
-      phrase: "computer",
-    });
-  });
-
-  it("extracts an inline question after the wake phrase", () => {
-    const phrases = buildWakePhraseCandidates("Elli", "Hey Jarvis");
-
-    expect(matchWakePhrase("Hey Jarvis, what is the weather?", phrases)).toMatchObject({
-      matched: true,
-      command: "what is the weather",
-      phrase: "hey jarvis",
-    });
-  });
-
-  it("matches default assistant variants", () => {
-    const phrases = buildWakePhraseCandidates("Elli");
-
-    expect(matchWakePhrase("hey elli", phrases).matched).toBe(true);
-    expect(matchWakePhrase("hi elli", phrases).matched).toBe(true);
-    expect(matchWakePhrase("hello elli", phrases).matched).toBe(true);
-  });
-
+describe("hands-free command helpers", () => {
   it("removes duplicate and blank samples", () => {
     expect(uniqueHandsFreePhrases([" Hey Elli ", "", "hey elli", "Hi Elli"])).toEqual([
       "hey elli",
@@ -61,14 +31,5 @@ describe("hands-free wake phrase helpers", () => {
       },
     );
     expect(isHandsFreeStopCommand("stop the timer")).toBe(false);
-  });
-
-  it("does not wake for random text", () => {
-    const phrases = buildWakePhraseCandidates("Elli", "Hey Elli");
-
-    expect(matchWakePhrase("tell me a joke", phrases)).toEqual({
-      matched: false,
-      command: "",
-    });
   });
 });

@@ -43,9 +43,18 @@ class PcmAudioSource(
         "Could not initialize wake-word microphone capture.",
       )
     }
+    try {
+      nextRecorder.startRecording()
+    } catch (error: Throwable) {
+      nextRecorder.release()
+      throw WakeWordException(
+        "JAI_WAKE_AUDIO_START_FAILED",
+        "Could not start wake-word microphone capture.",
+        error,
+      )
+    }
     recorder = nextRecorder
     running.set(true)
-    nextRecorder.startRecording()
     worker = thread(name = "JaiWakeWordAudio", isDaemon = true) {
       val buffer = ShortArray(frameSamples)
       while (running.get()) {
@@ -65,8 +74,15 @@ class PcmAudioSource(
 
   fun stop() {
     running.set(false)
+    val workerThread = worker
     try {
       recorder?.stop()
+    } catch (_: Throwable) {
+    }
+    try {
+      if (workerThread != null && Thread.currentThread() != workerThread) {
+        workerThread.join(250)
+      }
     } catch (_: Throwable) {
     }
     try {
@@ -74,13 +90,6 @@ class PcmAudioSource(
     } catch (_: Throwable) {
     }
     recorder = null
-    val workerThread = worker
-    try {
-      if (workerThread != null && Thread.currentThread() != workerThread) {
-        workerThread.join(250)
-      }
-    } catch (_: Throwable) {
-    }
     worker = null
   }
 }

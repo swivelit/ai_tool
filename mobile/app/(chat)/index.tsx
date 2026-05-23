@@ -90,6 +90,10 @@ import {
   isHandsFreeStopCommand,
 } from "@/lib/handsFreeWake";
 import {
+  buildCommandRecognitionLocalePlan,
+  isLanguageNotSupportedRecognitionError,
+} from "@/lib/handsFreeCommandLocales";
+import {
   handsFreeRecognizer,
   useHandsFreeRecognitionEvent,
 } from "@/lib/handsFreeRecognizer";
@@ -146,7 +150,7 @@ type PendingReminder = {
 
 type RecorderSurface = "live";
 type VoiceSessionMode = "live" | null;
-type HandsFreeRecognizerMode = "off" | "wake" | "command" | "conversation";
+type HandsFreePlaybackMode = "off" | "conversation";
 type AgentReplyPlaybackContext = {
   requestId?: string;
   source?: ChatRequestSource;
@@ -338,9 +342,6 @@ export default function Home() {
   const [chatActionsOpen, setChatActionsOpen] = useState(false);
   const [selectedHistoryItem, setSelectedHistoryItem] =
     useState<ChatSessionListItem | null>(null);
-  const [handsFreeMode, setHandsFreeMode] = useState<HandsFreeRecognizerMode>("off");
-  const [handsFreeActive, setHandsFreeActive] = useState(false);
-  const [handsFreeConversationActive, setHandsFreeConversationActive] = useState(false);
   const [handsFreeTranscript, setHandsFreeTranscript] = useState("");
   const [handsFreeStatus, setHandsFreeStatus] = useState("");
   const [wakeModelState, setWakeModelState] = useState<WakeModelState | null>(null);
@@ -371,14 +372,16 @@ export default function Home() {
   const scrollViewRef = useRef<ScrollView | null>(null);
   const activeChatSessionIdRef = useRef<string | null>(null);
   const historyLongPressTriggeredRef = useRef(false);
-  const handsFreeModeRef = useRef<HandsFreeRecognizerMode>("off");
-  const handsFreeVoiceSessionRef = useRef(false);
   const wakeStartInFlightRef = useRef(false);
-  const wakeRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wakeListeningRef = useRef(false);
+  const commandListeningRef = useRef(false);
   const wakeModelStateRef = useRef<WakeModelState | null>(null);
+  const handsFreeMachineRef = useRef(handsFreeMachine);
+  const handsFreeEligibleRef = useRef(false);
+  const nativeWakeHandlerRef = useRef<(event: WakeWordEvent) => void>(() => undefined);
+  const commandLocalePlanRef = useRef<string[]>([]);
+  const commandLocaleIndexRef = useRef(0);
   const handsFreePermissionAlertedRef = useRef(false);
-  const wakeBlockedRef = useRef(false);
   const voiceSheetOpenRef = useRef(false);
   const chatSwipeTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const voiceSwipeTouchStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -431,6 +434,17 @@ export default function Home() {
       voiceSheetOpen,
       wakeModelReady: Boolean(wakeModelState?.ready),
     });
+  const handsFreeActive =
+    handsFreeMachine.state === "wakeListening" ||
+    handsFreeMachine.state === "commandListening";
+  const handsFreeConversationActive =
+    handsFreeMachine.state === "wakeDetected" ||
+    handsFreeMachine.state === "commandListening" ||
+    handsFreeMachine.state === "submitting" ||
+    handsFreeMachine.state === "speaking";
+  const handsFreePlaybackMode: HandsFreePlaybackMode = handsFreeConversationActive
+    ? "conversation"
+    : "off";
   handsFreeRuntimeRef.current = {
     busy,
     listening,
@@ -492,6 +506,14 @@ export default function Home() {
   useEffect(() => {
     wakeModelStateRef.current = wakeModelState;
   }, [wakeModelState]);
+
+  useEffect(() => {
+    handsFreeMachineRef.current = handsFreeMachine;
+  }, [handsFreeMachine]);
+
+  useEffect(() => {
+    handsFreeEligibleRef.current = handsFreeForegroundEnabled;
+  }, [handsFreeForegroundEnabled]);
 
   const latestHistory = useMemo(() => {
     return chatSessions
@@ -668,23 +690,9 @@ export default function Home() {
     outputRange: [0, 1],
   });
 
-  const clearHandsFreeRestartTimer = useCallback(() => {
-    if (wakeRestartTimerRef.current) {
-      clearTimeout(wakeRestartTimerRef.current);
-      wakeRestartTimerRef.current = null;
-    }
-  }, []);
-
-  const setHandsFreeRecognizerMode = useCallback((nextMode: HandsFreeRecognizerMode) => {
-    handsFreeModeRef.current = nextMode;
-    setHandsFreeMode(nextMode);
-  }, []);
-
-  const activateHandsFreeConversation = useCallback(() => {
+  const openHandsFreeVoiceSheet = useCallback(() => {
     const wasVoiceSheetOpen = voiceSheetOpenRef.current;
-    handsFreeVoiceSessionRef.current = true;
     voiceSheetOpenRef.current = true;
-    setHandsFreeConversationActive(true);
     if (!wasVoiceSheetOpen) {
       openVoiceSession();
     } else {
@@ -692,90 +700,94 @@ export default function Home() {
     }
   }, []);
 
-  const deactivateHandsFreeConversation = useCallback((options?: { closeVoiceSheet?: boolean }) => {
-    handsFreeVoiceSessionRef.current = false;
-    setHandsFreeConversationActive(false);
-    setHandsFreeTranscript("");
-    if (options?.closeVoiceSheet) {
-      voiceSheetOpenRef.current = false;
-      setVoiceSheetOpen(false);
-    }
-    if (!options?.closeVoiceSheet && handsFreeRuntimeRef.current.foreground && !wakeBlockedRef.current) {
-      setHandsFreeRecognizerMode("wake");
-      setHandsFreeStatus("Listening");
-    } else {
-      setHandsFreeRecognizerMode("off");
-      setHandsFreeStatus("");
-    }
-  }, [setHandsFreeRecognizerMode]);
+  const resetCommandLocalePlan = useCallback(() => {
+    commandLocalePlanRef.current = buildCommandRecognitionLocalePlan(
+      handsFreeRuntimeRef.current.locale,
+    );
+    commandLocaleIndexRef.current = 0;
+  }, []);
 
-  const startHandsFreeRecognizer = useCallback(async (nextMode: Exclude<HandsFreeRecognizerMode, "off">) => {
+  const stopHandsFreeCommandRecognizer = useCallback(async () => {
+    commandListeningRef.current = false;
+    try {
+      await handsFreeRecognizer.abort("handsfree-command");
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const abortHandsFreeRecognizer = useCallback(async (_clearDesiredMode = false) => {
+    await stopWakeWordListening().catch(() => undefined);
+    wakeListeningRef.current = false;
+    await stopHandsFreeCommandRecognizer();
+  }, [stopHandsFreeCommandRecognizer]);
+
+  const shutdownHandsFree = useCallback(async (clearStatus = false) => {
+    await abortHandsFreeRecognizer(false);
+    commandLocalePlanRef.current = [];
+    commandLocaleIndexRef.current = 0;
+    if (clearStatus) {
+      setHandsFreeStatus("");
+      setHandsFreeTranscript("");
+    }
+  }, [abortHandsFreeRecognizer]);
+
+  const startNativeWakeEngine = useCallback(async () => {
     const runtime = handsFreeRuntimeRef.current;
-    if (!runtime.foreground || wakeBlockedRef.current) return;
+    if (!runtime.foreground) return;
     if (
       runtime.busy ||
       runtime.listening ||
       replySoundRef.current ||
-      wakeStartInFlightRef.current
+      wakeStartInFlightRef.current ||
+      wakeListeningRef.current
     ) {
       return;
     }
 
-    clearHandsFreeRestartTimer();
+    const model = wakeModelStateRef.current;
+    if (!model?.ready) {
+      dispatchHandsFree({ type: "WAKE_MODEL_MISSING" });
+      setHandsFreeStatus("Needs model");
+      return;
+    }
 
-    if (nextMode === "wake") {
-      const model = wakeModelStateRef.current;
-      if (!model?.ready) {
-        dispatchHandsFree({ type: "WAKE_MODEL_MISSING" });
-        setHandsFreeRecognizerMode("off");
-        setHandsFreeStatus(model?.detail || "Wake model is not ready.");
-        return;
-      }
+    try {
+      wakeStartInFlightRef.current = true;
+      setHandsFreeStatus("Listening");
+      dispatchHandsFree({ type: "WAKE_STARTED" });
+      await startWakeWordListening(model, {
+        onWake: (event) => {
+          void nativeWakeHandlerRef.current(event);
+        },
+        onError: () => {
+          wakeListeningRef.current = false;
+          setHandsFreeStatus("Try again");
+          dispatchHandsFree({ type: "ERROR" });
+        },
+      });
+      wakeListeningRef.current = true;
+    } catch (error: unknown) {
+      wakeListeningRef.current = false;
+      const message =
+        error instanceof Error ? error.message : "Could not start wake-word detection.";
+      console.warn("[hands-free wake]", message);
+      setHandsFreeStatus("Try again");
+      dispatchHandsFree({ type: "ERROR" });
+    } finally {
+      wakeStartInFlightRef.current = false;
+    }
+  }, []);
 
-      try {
-        wakeStartInFlightRef.current = true;
-        setHandsFreeRecognizerMode("wake");
-        setHandsFreeStatus("Listening");
-        dispatchHandsFree({ type: "WAKE_STARTED" });
-        wakeListeningRef.current = true;
-        await startWakeWordListening(model, {
-          onWake: (event) => {
-            void handleNativeWakeWordDetected(event);
-          },
-          onError: (error) => {
-            wakeBlockedRef.current = true;
-            wakeListeningRef.current = false;
-            setHandsFreeRecognizerMode("off");
-            setHandsFreeActive(false);
-            setHandsFreeStatus(error.message);
-            dispatchHandsFree({ type: "ERROR" });
-          },
-        });
-        setHandsFreeActive(true);
-      } catch (error: unknown) {
-        wakeListeningRef.current = false;
-        const message =
-          error instanceof Error ? error.message : "Could not start wake-word detection.";
-        console.warn("[hands-free wake]", message);
-        setHandsFreeStatus(message);
-        dispatchHandsFree({ type: "ERROR" });
-      } finally {
-        wakeStartInFlightRef.current = false;
-      }
+  const startHandsFreeCommandRecognizer = useCallback(async () => {
+    const runtime = handsFreeRuntimeRef.current;
+    if (!runtime.foreground || commandListeningRef.current || runtime.busy || runtime.listening) {
       return;
     }
 
     if (!handsFreeRecognizer.isRecognitionAvailable()) {
-      wakeBlockedRef.current = true;
-      setHandsFreeRecognizerMode("off");
-      setHandsFreeStatus("Speech recognition is unavailable on this device.");
-      if (!handsFreePermissionAlertedRef.current) {
-        handsFreePermissionAlertedRef.current = true;
-        Alert.alert(
-          "Speech recognition unavailable",
-          "Speech recognition is not available on this device. Check Siri/Dictation on iPhone or the Google voice service on Android."
-        );
-      }
+      setHandsFreeStatus("Try again");
+      dispatchHandsFree({ type: "COMMAND_EMPTY" });
       return;
     }
 
@@ -784,213 +796,123 @@ export default function Home() {
 
       const permission = await handsFreeRecognizer.requestPermissionsAsync();
       if (!permission.granted) {
-        wakeBlockedRef.current = true;
-        setHandsFreeRecognizerMode("off");
-        setHandsFreeStatus("Grant microphone and speech permissions in Settings to enable wake phrase mode.");
+        setHandsFreeStatus("Try again");
+        dispatchHandsFree({ type: "COMMAND_EMPTY" });
         if (!handsFreePermissionAlertedRef.current) {
           handsFreePermissionAlertedRef.current = true;
-          Alert.alert(
-            "Hands-free permission needed",
-            "Please allow microphone and speech recognition access to use wake phrase mode."
-          );
+          Alert.alert("Try again", "Try again");
         }
         return;
       }
 
       const latestRuntime = handsFreeRuntimeRef.current;
-      setHandsFreeRecognizerMode(nextMode);
-      setHandsFreeStatus(
-        nextMode === "command" || nextMode === "conversation"
-          ? "Listening"
-          : "Listening"
-      );
+      if (!commandLocalePlanRef.current.length) {
+        resetCommandLocalePlan();
+      }
+      const locale =
+        commandLocalePlanRef.current[commandLocaleIndexRef.current] ||
+        latestRuntime.locale;
+      setHandsFreeStatus("Listening");
       setHandsFreeTranscript("");
 
-      const commandLikeMode = nextMode === "command" || nextMode === "conversation";
       const contextualStrings = [latestRuntime.wakePhrase, assistantLabel].filter(Boolean);
-
-      if (commandLikeMode) {
-        dispatchHandsFree({ type: "COMMAND_STARTED" });
-      }
+      commandListeningRef.current = true;
       await handsFreeRecognizer.start("handsfree-command", {
-        lang: latestRuntime.locale,
+        lang: locale,
         interimResults: true,
         maxAlternatives: 1,
         continuous: false,
         requiresOnDeviceRecognition: Platform.OS === "ios",
         addsPunctuation: false,
         contextualStrings,
-        iosTaskHint: commandLikeMode ? "dictation" : "confirmation",
+        iosTaskHint: "dictation",
         androidIntentOptions:
           Platform.OS === "android"
             ? {
                 EXTRA_LANGUAGE_MODEL: "free_form",
-                EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS:
-                  commandLikeMode ? 4200 : 2600,
-                EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS:
-                  commandLikeMode ? 2200 : 1400,
-                EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS:
-                  commandLikeMode ? 1000 : 600,
+                EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 4200,
+                EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 2200,
+                EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS: 1000,
               }
             : undefined,
       });
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : "Could not start hands-free listening.";
-      console.warn("[hands-free]", message);
-      setHandsFreeStatus(message);
+      commandListeningRef.current = false;
+      const eventLike = {
+        error: (error as any)?.code || (error as any)?.name,
+        message: error instanceof Error ? error.message : String(error || ""),
+      };
+      if (
+        isLanguageNotSupportedRecognitionError(eventLike) &&
+        commandLocaleIndexRef.current < commandLocalePlanRef.current.length - 1
+      ) {
+        commandLocaleIndexRef.current += 1;
+        setHandsFreeStatus("Listening");
+        void startHandsFreeCommandRecognizer();
+      } else {
+        const message =
+          error instanceof Error ? error.message : "Could not start hands-free listening.";
+        console.warn("[hands-free]", message);
+        setHandsFreeStatus("Try again");
+        dispatchHandsFree({ type: "COMMAND_EMPTY" });
+      }
     } finally {
       wakeStartInFlightRef.current = false;
     }
-  }, [
-    assistantLabel,
-    clearHandsFreeRestartTimer,
-    setHandsFreeRecognizerMode,
-  ]);
+  }, [assistantLabel, resetCommandLocalePlan]);
 
-  const scheduleWakeStart = useCallback((
-    nextMode: Exclude<HandsFreeRecognizerMode, "off"> = "wake",
-    delay = 350
-  ) => {
-    if (!handsFreeRuntimeRef.current.foreground || wakeBlockedRef.current) return;
-
-    clearHandsFreeRestartTimer();
-    setHandsFreeRecognizerMode(nextMode);
-
-    wakeRestartTimerRef.current = setTimeout(() => {
-      void startHandsFreeRecognizer(nextMode);
-    }, delay);
-  }, [clearHandsFreeRestartTimer, setHandsFreeRecognizerMode, startHandsFreeRecognizer]);
-
-  const abortHandsFreeRecognizer = useCallback(async (clearDesiredMode = false) => {
-    clearHandsFreeRestartTimer();
-
-    if (clearDesiredMode) {
-      setHandsFreeRecognizerMode("off");
-    }
-    setHandsFreeActive(false);
-
-    try {
-      await stopWakeWordListening();
-      await handsFreeRecognizer.abort("handsfree-command");
-      wakeListeningRef.current = false;
-    } catch {
-      // ignore
-    }
-  }, [clearHandsFreeRestartTimer, setHandsFreeRecognizerMode]);
-
-  const shutdownHandsFree = useCallback(async (clearStatus = false) => {
-    clearHandsFreeRestartTimer();
-    wakeBlockedRef.current = false;
-    handsFreeVoiceSessionRef.current = false;
-    setHandsFreeConversationActive(false);
-    setHandsFreeRecognizerMode("off");
-    setHandsFreeActive(false);
-
-    if (clearStatus) {
-      setHandsFreeStatus("");
-      setHandsFreeTranscript("");
-    }
-
-    try {
-      await stopWakeWordListening();
-      await handsFreeRecognizer.abort("handsfree-command");
-      wakeListeningRef.current = false;
-    } catch {
-      // ignore
-    }
-  }, [clearHandsFreeRestartTimer, setHandsFreeRecognizerMode]);
-
-  const restartWakeAfterTurn = useCallback((
-    source?: ChatRequestSource | null,
-    delay = 420,
-  ) => {
-    const runtime = handsFreeRuntimeRef.current;
-    if (!runtime.foreground || wakeBlockedRef.current) return;
-    if (runtime.busy || runtime.listening || replySoundRef.current) {
-      clearHandsFreeRestartTimer();
-      wakeRestartTimerRef.current = setTimeout(() => {
-        restartWakeAfterTurn(source, delay);
-      }, 120);
-      return;
-    }
-
-    if (
-      source === "handsfree" &&
-      handsFreeVoiceSessionRef.current &&
-      voiceSheetOpenRef.current
-    ) {
-      setHandsFreeStatus("Listening");
-      if (e2eHandsFreeEnabled && e2eHandsFreeTriggeredRef.current) {
-        setHandsFreeRecognizerMode("wake");
-        return;
-      }
-      scheduleWakeStart("wake", delay);
-      return;
-    }
-
-    if (!handsFreeVoiceSessionRef.current) {
-      setHandsFreeStatus("Listening");
-      scheduleWakeStart("wake", delay);
-    }
-  }, [
-    clearHandsFreeRestartTimer,
-    e2eHandsFreeEnabled,
-    scheduleWakeStart,
-    setHandsFreeRecognizerMode,
-  ]);
-
-  async function handleNativeWakeWordDetected(event: WakeWordEvent) {
-    if (!handsFreeRuntimeRef.current.foreground || wakeBlockedRef.current) return;
+  async function handleNativeWakeWordDetected(_event: WakeWordEvent) {
+    if (!handsFreeEligibleRef.current) return;
     dispatchHandsFree({ type: "WAKE_DETECTED" });
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
     await stopWakeWordListening();
     wakeListeningRef.current = false;
-    setHandsFreeActive(false);
-    activateHandsFreeConversation();
+    openHandsFreeVoiceSheet();
+    resetCommandLocalePlan();
+
     if (e2eHandsFreeEnabled) {
       if (!e2eHandsFreeTriggeredRef.current) {
         e2eHandsFreeTriggeredRef.current = true;
-        setHandsFreeRecognizerMode("off");
-        setHandsFreeStatus("Working on it...");
+        setHandsFreeStatus("Listening");
+        dispatchHandsFree({ type: "COMMAND_FINAL" });
         void submitChatMessage(e2eHandsFreeCommand || "tell me about Spitzola", "handsfree");
       }
       return;
     }
-    setHandsFreeRecognizerMode("command");
+
     setHandsFreeStatus("Listening");
-    scheduleWakeStart("command", 120);
+    dispatchHandsFree({ type: "COMMAND_STARTED" });
   }
 
+  nativeWakeHandlerRef.current = handleNativeWakeWordDetected;
+
   async function handleHandsFreeFinalTranscript(rawTranscript: string) {
-    const mode = handsFreeModeRef.current;
-    if (mode === "off" || mode === "wake") return;
+    if (handsFreeMachineRef.current.state !== "commandListening") return;
 
     const transcript = cleanHandsFreeCommand(rawTranscript);
     if (!transcript) {
+      await stopHandsFreeCommandRecognizer();
       dispatchHandsFree({ type: "COMMAND_EMPTY" });
-      scheduleWakeStart("wake", 180);
+      setHandsFreeStatus("Listening");
       return;
     }
 
     setHandsFreeTranscript(transcript);
 
-    if (mode === "command" || mode === "conversation") {
-      if (isHandsFreeStopCommand(transcript)) {
-        setHandsFreeStatus("Hands-free paused.");
-        await abortHandsFreeRecognizer(false);
-        deactivateHandsFreeConversation({ closeVoiceSheet: true });
-        return;
-      }
-
-      activateHandsFreeConversation();
-      setHandsFreeRecognizerMode("off");
-      setHandsFreeStatus("Working on it...");
-      await abortHandsFreeRecognizer(false);
-      dispatchHandsFree({ type: "COMMAND_FINAL" });
-      void submitChatMessage(transcript, "handsfree");
+    if (isHandsFreeStopCommand(transcript)) {
+      setHandsFreeStatus("");
+      await shutdownHandsFree(true);
+      dispatchHandsFree({ type: "VOICE_SHEET_CLOSED" });
+      voiceSheetOpenRef.current = false;
+      setVoiceSheetOpen(false);
       return;
     }
+
+    openHandsFreeVoiceSheet();
+    await stopHandsFreeCommandRecognizer();
+    setHandsFreeStatus("Listening");
+    dispatchHandsFree({ type: "COMMAND_FINAL" });
+    void submitChatMessage(transcript, "handsfree");
   }
 
   const deleteReplyAudioFile = useCallback(async (uri?: string | null) => {
@@ -1041,28 +963,21 @@ export default function Home() {
   }, [deleteReplyAudioFile]);
 
   useHandsFreeRecognitionEvent("start", () => {
-    if (handsFreeModeRef.current === "off") return;
-    setHandsFreeActive(true);
+    if (handsFreeMachineRef.current.state === "commandListening") {
+      commandListeningRef.current = true;
+    }
   });
 
   useHandsFreeRecognitionEvent("end", () => {
-    setHandsFreeActive(false);
-
-    const nextMode = handsFreeModeRef.current;
-    if (nextMode === "off") return;
-
-    if (!handsFreeForegroundEnabled || busy || listening || replySoundRef.current) {
-      return;
-    }
-
-    if (nextMode === "command" || nextMode === "conversation") {
-      setHandsFreeRecognizerMode("wake");
-      scheduleWakeStart("wake", 300);
+    commandListeningRef.current = false;
+    if (handsFreeMachineRef.current.state === "commandListening") {
+      dispatchHandsFree({ type: "COMMAND_EMPTY" });
+      setHandsFreeStatus("Listening");
     }
   });
 
   useHandsFreeRecognitionEvent("result", (event: any) => {
-    if (handsFreeModeRef.current === "off") return;
+    if (handsFreeMachineRef.current.state !== "commandListening") return;
 
     const transcript = cleanHandsFreeCommand(
       String(event?.results?.[0]?.transcript || "")
@@ -1076,53 +991,33 @@ export default function Home() {
   });
 
   useHandsFreeRecognitionEvent("error", (event: any) => {
-    if (handsFreeModeRef.current === "off") return;
-
-    setHandsFreeActive(false);
+    if (handsFreeMachineRef.current.state !== "commandListening") return;
+    commandListeningRef.current = false;
 
     if (event?.error === "aborted") {
       return;
     }
 
-    const errorCode = String(event?.error || "").toLowerCase();
-
     if (
-      errorCode === "not-allowed" ||
-      errorCode === "service-not-allowed" ||
-      errorCode === "language-not-supported"
+      isLanguageNotSupportedRecognitionError(event) &&
+      commandLocaleIndexRef.current < commandLocalePlanRef.current.length - 1
     ) {
-      wakeBlockedRef.current = true;
-      setHandsFreeRecognizerMode("off");
-
-      if (errorCode === "not-allowed" && !handsFreePermissionAlertedRef.current) {
-        handsFreePermissionAlertedRef.current = true;
-        Alert.alert(
-          "Hands-free permission needed",
-          "Please allow microphone and speech recognition access to use wake phrase mode."
-        );
-      }
-
-      setHandsFreeStatus(
-        errorCode === "language-not-supported"
-          ? `Wake phrase language ${handsFreeLocale} is not supported on this device.`
-          : "Grant microphone and speech permissions in Settings to use wake phrase mode."
-      );
-      return;
-    }
-
-    if (handsFreeVoiceSessionRef.current && voiceSheetOpenRef.current) {
-      setHandsFreeRecognizerMode("wake");
+      commandLocaleIndexRef.current += 1;
       setHandsFreeStatus("Listening");
-      scheduleWakeStart("wake", 500);
+      void startHandsFreeCommandRecognizer();
       return;
     }
 
-    setHandsFreeRecognizerMode("wake");
-    setHandsFreeStatus("Listening");
-
-    if (handsFreeForegroundEnabled && !busy && !listening && !replySoundRef.current) {
-      scheduleWakeStart("wake", 500);
+    const errorCode = String(event?.error || "").toLowerCase();
+    if (
+      (errorCode === "not-allowed" || errorCode === "service-not-allowed") &&
+      !handsFreePermissionAlertedRef.current
+    ) {
+      handsFreePermissionAlertedRef.current = true;
+      Alert.alert("Try again", "Try again");
     }
+    setHandsFreeStatus("Try again");
+    dispatchHandsFree({ type: "COMMAND_EMPTY" });
   });
 
   useEffect(() => {
@@ -1164,30 +1059,77 @@ export default function Home() {
 
   useEffect(() => {
     if (handsFreeForegroundEnabled) {
-      wakeBlockedRef.current = false;
       handsFreePermissionAlertedRef.current = false;
       dispatchHandsFree({ type: "ELIGIBLE" });
-      setHandsFreeRecognizerMode("wake");
       setHandsFreeStatus("Listening");
-      scheduleWakeStart("wake", 120);
+      return;
+    }
+
+    if (
+      settings.handsFreeEnabled &&
+      appState === "active" &&
+      voiceSheetOpen &&
+      wakeModelState &&
+      !wakeModelState.ready
+    ) {
+      dispatchHandsFree({ type: "WAKE_MODEL_MISSING" });
+      void shutdownHandsFree(false);
+      setHandsFreeStatus("Needs model");
       return;
     }
 
     dispatchHandsFree({ type: "INELIGIBLE" });
     void shutdownHandsFree(true);
   }, [
+    appState,
     handsFreeForegroundEnabled,
     handsFreeLocale,
     handsFreeWakePhrase,
     profile?.userId,
-    scheduleWakeStart,
+    settings.handsFreeEnabled,
     shutdownHandsFree,
+    voiceSheetOpen,
+    wakeModelState,
   ]);
 
   useEffect(() => {
     if (!handsFreeForegroundEnabled) return;
     setHandsFreeStatus("Listening");
   }, [handsFreeWakePhrase, handsFreeForegroundEnabled]);
+
+  useEffect(() => {
+    if (!handsFreeForegroundEnabled) return;
+
+    if (handsFreeMachine.state === "wakeListening") {
+      void startNativeWakeEngine();
+      return;
+    }
+
+    if (handsFreeMachine.state === "commandListening") {
+      void stopWakeWordListening().then(() => {
+        wakeListeningRef.current = false;
+        void startHandsFreeCommandRecognizer();
+      });
+      return;
+    }
+
+    if (
+      handsFreeMachine.state === "submitting" ||
+      handsFreeMachine.state === "speaking" ||
+      handsFreeMachine.state === "recording" ||
+      handsFreeMachine.state === "stopping"
+    ) {
+      void abortHandsFreeRecognizer(false);
+    }
+  }, [
+    abortHandsFreeRecognizer,
+    busy,
+    handsFreeForegroundEnabled,
+    handsFreeMachine.state,
+    listening,
+    startHandsFreeCommandRecognizer,
+    startNativeWakeEngine,
+  ]);
 
   useEffect(() => {
     if (!e2eHandsFreeEnabled || e2eHandsFreeConfiguredRef.current) return;
@@ -1258,15 +1200,6 @@ export default function Home() {
       hideSubscription.remove();
     };
   }, []);
-
-  useEffect(() => {
-    return () => {
-      if (wakeRestartTimerRef.current) {
-        clearTimeout(wakeRestartTimerRef.current);
-        wakeRestartTimerRef.current = null;
-      }
-    };
-  }, [releaseReplySound, shutdownHandsFree]);
 
   useEffect(() => {
     const timeout = setTimeout(() => {
@@ -2199,8 +2132,7 @@ export default function Home() {
             ttsStatus: "playback_finished",
           });
         } else if (isHandsFreeReply) {
-          setHandsFreeStatus("");
-          dispatchHandsFree({ type: "TTS_COMPLETED" });
+          setHandsFreeStatus("Listening");
         }
         logVoiceTelemetry("client_voice_reply_playback_finished", {
           request_id: context.requestId,
@@ -2254,7 +2186,9 @@ export default function Home() {
             logPlaybackFinished();
           }
           void releaseReplySound(sound).finally(() => {
-            restartWakeAfterTurn(context.source, 320);
+            if (isHandsFreeReply) {
+              dispatchHandsFree({ type: "TTS_COMPLETED" });
+            }
           });
         }
       });
@@ -2326,8 +2260,8 @@ export default function Home() {
           });
         }
       } else if (isHandsFreeReply) {
-        setHandsFreeStatus("Voice playback failed.");
-        dispatchHandsFree({ type: "ERROR" });
+        setHandsFreeStatus("Try again");
+        dispatchHandsFree({ type: "TTS_COMPLETED" });
       }
       logVoiceTelemetry(failureEvent, {
         request_id: context.requestId,
@@ -2341,7 +2275,6 @@ export default function Home() {
         ...({ speaker_misconfigured: isTtsSpeakerMisconfiguredError(error) } as any),
         error_message: error instanceof Error ? error.message : String(error || ""),
       });
-      restartWakeAfterTurn(context.source, 650);
     }
   }
 
@@ -2366,10 +2299,9 @@ export default function Home() {
     const currentSessionId = activeChatSessionIdRef.current;
     const isHandsFreeTurn =
       source === "handsfree" &&
-      handsFreeVoiceSessionRef.current &&
       voiceSheetOpenRef.current;
-    const replyPolicyHandsFreeMode: HandsFreeRecognizerMode =
-      source === "handsfree" && isHandsFreeTurn ? "conversation" : handsFreeMode;
+    const replyPolicyHandsFreeMode: HandsFreePlaybackMode =
+      source === "handsfree" && isHandsFreeTurn ? "conversation" : "off";
     activeChatRequestIdRef.current = requestId;
     const turnStartedAt = Date.now();
     let softNoticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2427,7 +2359,7 @@ export default function Home() {
         setText("");
         setComposerInputHeight(MIN_INPUT_HEIGHT);
       } else {
-        setHandsFreeStatus("Working on it…");
+        setHandsFreeStatus("Listening");
       }
 
       const [timeoutMs, softNoticeMs] = await Promise.all([
@@ -2515,21 +2447,20 @@ export default function Home() {
         app_state: AppState.currentState,
       });
       await clearActiveWorkflow(requestId).catch(() => undefined);
-      if (source === "handsfree") {
-        dispatchHandsFree({ type: "SUBMIT_FINISHED" });
-      }
-
-      if (
-        nextItem.details &&
+      const assistantDetails = String(nextItem.details || "");
+      const shouldSpeak =
+        assistantDetails &&
         shouldAutoSpeakReply({
           source,
           autoSpeakReplies: settings.autoSpeakReplies,
           handsFreeMode: replyPolicyHandsFreeMode,
-        })
-      ) {
-        void playAgentReply(nextItem.details, { requestId, source });
+        });
+
+      if (shouldSpeak) {
+        void playAgentReply(assistantDetails, { requestId, source });
       } else if (source === "handsfree") {
-        restartWakeAfterTurn(source, 420);
+        dispatchHandsFree({ type: "SUBMIT_FINISHED" });
+        setHandsFreeStatus("Listening");
       }
 
       if (nextItem.intent === "reminder" && nextItem.datetime) {
@@ -2652,20 +2583,19 @@ export default function Home() {
                 app_state: AppState.currentState,
               });
               await clearActiveWorkflow(requestId).catch(() => undefined);
-              if (source === "handsfree") {
-                dispatchHandsFree({ type: "SUBMIT_FINISHED" });
-              }
-              if (
-                nextItem.details &&
+              const assistantDetails = String(nextItem.details || "");
+              const shouldSpeak =
+                assistantDetails &&
                 shouldAutoSpeakReply({
                   source,
                   autoSpeakReplies: settings.autoSpeakReplies,
                   handsFreeMode: replyPolicyHandsFreeMode,
-                })
-              ) {
-                void playAgentReply(nextItem.details, { requestId, source });
+                });
+              if (shouldSpeak) {
+                void playAgentReply(assistantDetails, { requestId, source });
               } else if (source === "handsfree") {
-                restartWakeAfterTurn(source, 420);
+                dispatchHandsFree({ type: "SUBMIT_FINISHED" });
+                setHandsFreeStatus("Listening");
               }
               return;
             } catch (fallbackError) {
@@ -2693,7 +2623,7 @@ export default function Home() {
                 : friendlyLocalTimeoutMessage(),
               status: "error",
             });
-            setHandsFreeStatus("Something went wrong. Listening again...");
+            setHandsFreeStatus("Try again");
           }
           logClientTurn({
             event: "client_chat_turn_failed",
@@ -2714,7 +2644,7 @@ export default function Home() {
           });
           await clearActiveWorkflow(requestId).catch(() => undefined);
           if (source === "handsfree") {
-            restartWakeAfterTurn(source, 650);
+            dispatchHandsFree({ type: "SUBMIT_FINISHED" });
           }
           return;
         }
@@ -2726,7 +2656,7 @@ export default function Home() {
             assistantText: message,
             status: "error",
           });
-          setHandsFreeStatus("Something went wrong. Listening again...");
+          setHandsFreeStatus("Try again");
         }
         logClientTurn({
           event: "client_chat_turn_failed",
@@ -2749,7 +2679,7 @@ export default function Home() {
         await clearActiveWorkflow(requestId).catch(() => undefined);
         warnChatFailure(error, requestId, source);
         if (source === "handsfree") {
-          restartWakeAfterTurn(source, 650);
+          dispatchHandsFree({ type: "SUBMIT_FINISHED" });
         }
       }
     } finally {
@@ -2757,10 +2687,6 @@ export default function Home() {
       if (isActiveChatRequest(requestId)) {
         activeChatRequestIdRef.current = null;
         setBusy(false);
-      }
-
-      if (handsFreeForegroundEnabled && source !== "handsfree") {
-        restartWakeAfterTurn(null, 520);
       }
     }
   }
@@ -2775,10 +2701,10 @@ export default function Home() {
     const wakePhrase = e2eHandsFreeWakePhrase || handsFreeWakePhrase;
     const command = e2eHandsFreeCommand || "tell me about Spitzola";
     setHandsFreeTranscript(`${wakePhrase} ${command}`);
-    activateHandsFreeConversation();
-    setHandsFreeRecognizerMode("off");
-    setHandsFreeStatus("Working on it...");
+    openHandsFreeVoiceSheet();
+    setHandsFreeStatus("Listening");
     await abortHandsFreeRecognizer(false);
+    dispatchHandsFree({ type: "COMMAND_FINAL" });
     await submitChatMessage(command, "handsfree");
   }
 
@@ -2786,7 +2712,10 @@ export default function Home() {
     if (!e2eHandsFreeEnabled) return;
     e2eHandsFreeTriggeredRef.current = false;
     setHandsFreeTranscript("go to sleep");
-    await handleHandsFreeFinalTranscript("go to sleep");
+    dispatchHandsFree({ type: "VOICE_SHEET_CLOSED" });
+    await shutdownHandsFree(true);
+    voiceSheetOpenRef.current = false;
+    setVoiceSheetOpen(false);
   }
 
   async function cleanupVoiceRecordingState(options?: { cancelStartup?: boolean }) {
@@ -2804,6 +2733,7 @@ export default function Home() {
     setListening(false);
     activeSurfaceRef.current = null;
     setActiveSurface(null);
+    dispatchHandsFree({ type: "PRESS_TO_TALK_FINISHED" });
     await resetAudioMode();
   }
 
@@ -2835,6 +2765,7 @@ export default function Home() {
     }
 
     try {
+      dispatchHandsFree({ type: "PRESS_TO_TALK_STARTED" });
       await abortHandsFreeRecognizer(false);
       await releaseReplySound();
       const voiceSessionId = surface === "live" ? ensureVoiceSession("live") : null;
@@ -3124,7 +3055,7 @@ export default function Home() {
         shouldAutoSpeakReply({
           source: "voice",
           autoSpeakReplies: settings.autoSpeakReplies,
-          handsFreeMode,
+          handsFreeMode: handsFreePlaybackMode,
           voiceSurface: requestVoiceSurface,
           voiceOnlyMode,
         })
@@ -3198,12 +3129,8 @@ export default function Home() {
   }
 
   async function closeVoiceSheetSafely() {
-    if (handsFreeVoiceSessionRef.current) {
-      deactivateHandsFreeConversation({ closeVoiceSheet: true });
-      await shutdownHandsFree(true);
-    } else {
-      await shutdownHandsFree(true);
-    }
+    dispatchHandsFree({ type: "VOICE_SHEET_CLOSED" });
+    await shutdownHandsFree(true);
     const phase = recordingPhaseRef.current;
     if (phase === "starting" || phase === "recording") {
       await stopAndAnalyze();
@@ -3818,7 +3745,7 @@ export default function Home() {
                     : "Hold to Talk"}
             </Text>
 
-            {settings.handsFreeEnabled && (handsFreeActive || handsFreeConversationActive) ? (
+            {settings.handsFreeEnabled && (handsFreeActive || handsFreeConversationActive || handsFreeStatus) ? (
               <View style={styles.handsFreeBadge}>
                 <Ionicons
                   name={handsFreeActive ? "radio" : "radio-outline"}

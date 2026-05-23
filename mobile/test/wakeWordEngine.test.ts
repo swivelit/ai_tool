@@ -70,4 +70,15 @@ describe("wakeWordEngine", () => {
       }),
     );
   });
+
+  it("rejects E2E mock wake in production runtime", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE", "1");
+    const settings = normalizeAssistantSettings({
+      handsFreeEnabled: true,
+      wakePhrase: "Hey Elli",
+    });
+
+    await expect(ensureWakeModel(settings)).rejects.toThrow(/debug\/dev-only/);
+  });
 });

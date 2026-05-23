@@ -101,7 +101,6 @@ export default function SettingsModal() {
     deleteCurrentAccount,
     linkPasswordForCurrentUser,
     passwordLinked,
-    googleLinked,
   } = useAuth();
 
   const {
@@ -159,16 +158,6 @@ export default function SettingsModal() {
   const accountName = useMemo(
     () => resolvedProfile?.name || profile?.name || "Not set",
     [resolvedProfile, profile?.name]
-  );
-
-  const accountPlace = useMemo(
-    () => resolvedProfile?.place || profile?.place || "Not set",
-    [resolvedProfile, profile?.place]
-  );
-
-  const accountTimezone = useMemo(
-    () => resolvedProfile?.timezone || profile?.timezone || "Asia/Kolkata",
-    [resolvedProfile, profile?.timezone]
   );
 
   const targetUserId =
@@ -332,7 +321,7 @@ export default function SettingsModal() {
     }
 
     if (passwordLinked) {
-      showNotice("Already linked", "This account already supports email/password login.");
+      showNotice("Already linked", "Password login is already on.");
       return;
     }
 
@@ -478,12 +467,7 @@ export default function SettingsModal() {
           </GlassCard>
 
           <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
-            <View style={styles.sectionHeaderRow}>
-              <View>
-                <Text style={styles.sectionTitle}>Account & security</Text>
-              </View>
-              <SectionPill label="Secure" />
-            </View>
+            <Text style={styles.sectionTitle}>Account</Text>
 
             <View style={styles.accountHeroCard}>
               <View style={styles.accountAvatar}>
@@ -497,23 +481,7 @@ export default function SettingsModal() {
                 <Text style={styles.accountEmail} numberOfLines={isCompactSettingsLayout ? 2 : 1}>
                   {user?.email || "No email attached"}
                 </Text>
-                <Text style={styles.accountMeta} numberOfLines={isCompactSettingsLayout ? 2 : 1}>
-                  {accountPlace} · {accountTimezone}
-                </Text>
               </View>
-            </View>
-
-            <View style={styles.inlineStatusRow}>
-              <StatusChip
-                icon="logo-google"
-                label={googleLinked ? "Google" : "No Google"}
-                positive={googleLinked}
-              />
-              <StatusChip
-                icon="mail-outline"
-                label={passwordLinked ? "Password" : "No password"}
-                positive={passwordLinked}
-              />
             </View>
 
             {!passwordLinked ? (
@@ -561,23 +529,11 @@ export default function SettingsModal() {
                   )}
                 </Pressable>
               </>
-            ) : (
-              <View style={styles.successBanner}>
-                <Ionicons name="checkmark-circle" size={18} color={Brand.success} />
-                <Text style={styles.successBannerText}>
-                  This account already supports email/password login.
-                </Text>
-              </View>
-            )}
+            ) : null}
           </GlassCard>
 
           <GlassCard style={{ borderRadius: 28, marginTop: 16 }}>
-            <View style={styles.sectionHeaderRow}>
-              <View>
-                <Text style={styles.sectionTitle}>Daily routine</Text>
-              </View>
-              <SectionPill label="Routine" />
-            </View>
+            <Text style={styles.sectionTitle}>Routine</Text>
 
             <View style={styles.twoColRow}>
               <View style={{ flex: 1 }}>
@@ -661,11 +617,7 @@ export default function SettingsModal() {
           </GlassCard>
 
           <GlassCard style={{ borderRadius: 28, marginTop: 16, marginBottom: 10 }}>
-            <View style={styles.sectionHeaderRow}>
-              <View>
-                <Text style={styles.sectionTitle}> Leave us </Text>
-              </View>
-            </View>
+            <Text style={styles.sectionTitle}>Account</Text>
 
             <Pressable
               onPress={handleSignOut}

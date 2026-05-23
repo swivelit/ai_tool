@@ -10,6 +10,7 @@ type NativeWakeWordModule = {
   getStatus?: () => Promise<WakeWordNativeStatus>;
   start?: (config: WakeWordStartConfig) => Promise<{ ok: true }>;
   stop?: () => Promise<{ ok: true }>;
+  validateFixturePipeline?: () => Promise<WakeWordFixtureValidation>;
 };
 
 export type WakeWordNativeStatus = {
@@ -19,6 +20,17 @@ export type WakeWordNativeStatus = {
   frameMs: number;
   lastScore?: number;
   error?: string;
+};
+
+export type WakeWordFixtureValidation = {
+  ok: boolean;
+  modelFilesLoaded: boolean;
+  shapesAccepted: boolean;
+  processFrameRan: boolean;
+  wakeEmitted: boolean;
+  score?: number;
+  model?: string;
+  phraseKey?: string;
 };
 
 export type WakeWordEvent = {
@@ -135,6 +147,19 @@ export async function getWakeWordStatus(): Promise<WakeWordNativeStatus> {
     };
   }
   return nativeModule.getStatus();
+}
+
+export async function validateNativeWakeWordFixture(): Promise<WakeWordFixtureValidation> {
+  if (!nativeModule?.validateFixturePipeline) {
+    return {
+      ok: false,
+      modelFilesLoaded: false,
+      shapesAccepted: false,
+      processFrameRan: false,
+      wakeEmitted: false,
+    };
+  }
+  return nativeModule.validateFixturePipeline();
 }
 
 async function fileExists(path?: string) {

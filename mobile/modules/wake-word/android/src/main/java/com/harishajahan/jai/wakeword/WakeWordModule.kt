@@ -1,10 +1,13 @@
 package com.harishajahan.jai.wakeword
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
 class WakeWordModule : Module() {
+  private val mainHandler = Handler(Looper.getMainLooper())
   private val engine: OpenWakeWordEngine by lazy {
     OpenWakeWordEngine()
   }
@@ -26,8 +29,8 @@ class WakeWordModule : Module() {
       try {
         engine.start(
           config = config,
-          onWake = { event -> sendEvent("onWake", event.toBundle()) },
-          onScore = { event -> sendEvent("onWakeScore", event.toBundle()) },
+          onWake = { event -> sendEventOnMain("onWake", event.toBundle()) },
+          onScore = { event -> sendEventOnMain("onWakeScore", event.toBundle()) },
           onError = { code, message -> sendError(code, message) },
         )
         mapOf("ok" to true)
@@ -41,13 +44,27 @@ class WakeWordModule : Module() {
       engine.stop()
       mapOf("ok" to true)
     }
+
+    AsyncFunction("validateFixturePipeline") {
+      engine.validateFixturePipeline()
+    }
   }
 
   private fun sendError(code: String, message: String) {
     val bundle = Bundle()
     bundle.putString("code", code)
     bundle.putString("message", message)
-    sendEvent("onWakeError", bundle)
+    sendEventOnMain("onWakeError", bundle)
+  }
+
+  private fun sendEventOnMain(name: String, bundle: Bundle) {
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      sendEvent(name, bundle)
+      return
+    }
+    mainHandler.post {
+      sendEvent(name, bundle)
+    }
   }
 }
 

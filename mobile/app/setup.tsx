@@ -96,7 +96,6 @@ const SUPPORTED_BASE_MODELS: Record<string, string> = {
   "set ten minute timer": "timer",
 };
 
-const STATE_ORDER: WakeState[] = ["ready_now", "needs_training", "training", "active"];
 const STATE_LABELS: Record<WakeState, string> = {
   ready_now: "Ready",
   needs_training: "Start",
@@ -156,10 +155,13 @@ function describeWakeState(
   negativeCount = 0
 ) {
   if (state === "ready_now") {
-    return supportedBaseModel ? "Needs model" : "Ready";
+    return supportedBaseModel ? "Ready" : "Needs model";
   }
   if (state === "needs_training") {
-    return `${positiveCount}/${MINIMUM_POSITIVE} positive, ${negativeCount}/${MINIMUM_NEGATIVE} negative`;
+    if (positiveCount >= MINIMUM_POSITIVE && negativeCount >= MINIMUM_NEGATIVE) {
+      return "Needs model";
+    }
+    return "Start";
   }
   if (state === "training") {
     return "Needs model";
@@ -177,13 +179,6 @@ function resolveWakeState(status: EnrollmentStatus | null): WakeState {
   const state = status?.wake_state;
   if (state === "ready_now" || state === "needs_training" || state === "training" || state === "active") {
     return state;
-  }
-
-  if (
-    Number(status?.positive_count || 0) >= MINIMUM_POSITIVE &&
-    Number(status?.negative_count || 0) >= MINIMUM_NEGATIVE
-  ) {
-    return "ready_now";
   }
 
   return status?.supported_base_model ? "ready_now" : "needs_training";
@@ -264,9 +259,7 @@ function normalizeManifest(
   const wakeState: WakeState =
     explicitState === "active" || explicitState === "training"
       ? explicitState
-      : positiveFiles.length >= MINIMUM_POSITIVE && negativeFiles.length >= MINIMUM_NEGATIVE
-        ? "ready_now"
-        : supportedBaseModel
+      : supportedBaseModel
           ? "ready_now"
           : "needs_training";
 
@@ -311,7 +304,7 @@ function manifestToStatus(manifest: LocalEnrollmentManifest): EnrollmentStatus {
     supported_base_model: manifest.supported_base_model,
     wake_state: state,
     wake_state_label: STATE_LABELS[state],
-    can_run_instantly: state === "active" || Boolean(manifest.supported_base_model),
+    can_run_instantly: state === "active" || (state === "ready_now" && Boolean(manifest.supported_base_model)),
     state_message: message,
     message,
     manifest_path: buildPaths(manifest.wake_phrase).manifestPath,
@@ -397,7 +390,7 @@ export default function Setup() {
   const [uploadingKind, setUploadingKind] = useState<SampleKind | null>(null);
   const [finalizing, setFinalizing] = useState(false);
   const [recordingKind, setRecordingKind] = useState<SampleKind | null>(null);
-  const [message, setMessage] = useState("Ready");
+  const [message, setMessage] = useState("Needs model");
   const [error, setError] = useState("");
 
   const recordingRef = useRef<Audio.Recording | null>(null);
@@ -474,7 +467,15 @@ export default function Setup() {
       await FileSystem.deleteAsync(paths.rootDir, { idempotent: true });
       const next = await loadEnrollmentStatus(normalizedWakePhrase);
       setStatus(next);
-      setMessage("Ready");
+      setMessage(
+        describeWakeState(
+          resolveWakeState(next),
+          normalizedWakePhrase,
+          next.supported_base_model,
+          Number(next.positive_count || 0),
+          Number(next.negative_count || 0)
+        )
+      );
     } catch (nextError: unknown) {
       const nextMessage =
         nextError instanceof Error ? nextError.message : "Could not reset wake phrase setup.";
@@ -770,26 +771,9 @@ export default function Setup() {
               <Text style={styles.title}>Wake phrase</Text>
               <View style={styles.stateChip}>
                 <Ionicons name={STATE_ICONS[wakeState]} size={14} color={Brand.bronze} />
-                <Text style={styles.stateChipText}>{wakeStateLabel}</Text>
+                <Text style={styles.stateChipText}>{STATE_LABELS[wakeState]}</Text>
               </View>
             </View>
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryTitle}>{selectedName}</Text>
-              <Text style={styles.summaryPhrase}>“{normalizedWakePhrase}”</Text>
-              <Text style={styles.summaryBody}>
-                {describeWakeState(
-                  wakeState,
-                  normalizedWakePhrase,
-                  status?.supported_base_model,
-                  positiveCount,
-                  negativeCount
-                )}
-              </Text>
-            </View>
-          </GlassCard>
-
-          <GlassCard>
-            <Text style={styles.sectionTitle}>Assistant identity</Text>
             <Text style={styles.label}>Assistant name</Text>
             <TextInput
               value={input}
@@ -811,24 +795,6 @@ export default function Setup() {
               autoCapitalize="words"
               autoCorrect={false}
             />
-
-            <View style={styles.stateRail}>
-              {STATE_ORDER.map((item) => {
-                const active = item === wakeState;
-                return (
-                  <View key={item} style={[styles.railPill, active && styles.railPillActive]}>
-                    <Ionicons
-                      name={STATE_ICONS[item]}
-                      size={14}
-                      color={active ? Brand.ink : Brand.cocoa}
-                    />
-                    <Text style={[styles.railPillText, active && styles.railPillTextActive]}>
-                      {STATE_LABELS[item]}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
           </GlassCard>
 
           <GlassCard>
@@ -848,8 +814,7 @@ export default function Setup() {
             </View>
 
             <View style={styles.statusBox}>
-              <Text style={styles.statusTitle}>{wakeStateLabel}</Text>
-              <Text style={styles.statusText}>{statusMessage}</Text>
+              <Text style={styles.statusTitle}>{statusMessage || wakeStateLabel}</Text>
               {!!error && <Text style={styles.errorText}>{error}</Text>}
             </View>
 

@@ -23,6 +23,9 @@ const forbidden = [
   "Hands-free only becomes active",
   "Suggested negative sentences",
   "Active sign-in methods",
+  "This account already supports email/password login.",
+  "Wake engine",
+  "OpenWakeWord technical copy",
 ];
 
 describe("minimal settings wake phrase UI", () => {

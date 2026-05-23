@@ -28,6 +28,9 @@ describe("JaiWakeWord native module", () => {
     expect(module).toContain('Name("JaiWakeWord")');
     expect(module).toContain('Events("onWake", "onWakeScore", "onWakeError")');
     expect(module).toContain("engine.isAvailable()");
+    expect(module).toContain("Handler(Looper.getMainLooper())");
+    expect(module).toContain("sendEventOnMain");
+    expect(module).toContain("validateFixturePipeline");
     expect(engine).not.toContain("fun isAvailable(): Boolean = false");
     expect(engine).toContain("OrtEnvironment");
     expect(engine).toContain("OrtSession");
@@ -38,6 +41,11 @@ describe("JaiWakeWord native module", () => {
     expect(engine).toContain("nextPipeline.processFrame");
     expect(engine).toContain("score >= parsed.threshold");
     expect(engine).toContain("parsed.minWakeIntervalMs");
+    expect(engine).toContain("DeterministicWakeWordPipeline");
+    expect(engine).toContain('"modelFilesLoaded"');
+    expect(engine).toContain('"shapesAccepted"');
+    expect(engine).toContain('"processFrameRan"');
+    expect(engine).toContain('"wakeEmitted"');
     expect(engine).not.toContain("Native OpenWakeWord inference is not enabled");
     expect(engine).not.toContain("return false");
     expect(audio).toContain("AudioRecord");

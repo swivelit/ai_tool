@@ -63,7 +63,10 @@ export default function CustomiseScreen() {
     setTone(settings.tone);
     setLanguageMode(settings.languageMode);
     setAllowCloudFallback(settings.allowCloudFallback);
-    setHandsFreeEnabled(settings.handsFreeEnabled);
+    setHandsFreeEnabled(
+      settings.handsFreeEnabled &&
+        (settings.wakeModel?.status === "ready" || settings.wakeModel?.status === "e2e_mock"),
+    );
     setWakePhrase(settings.wakePhrase || `Hey ${name || "Elli"}`);
   }, [name, settings]);
 
@@ -78,6 +81,8 @@ export default function CustomiseScreen() {
   );
   const savedWakePrompt = (settings.wakePhrase || `Hey ${name || "Elli"}`).trim();
   const wakeStatusLabel = getWakeStatusLabel(settings.wakeModel?.status);
+  const wakeModelReady =
+    settings.wakeModel?.status === "ready" || settings.wakeModel?.status === "e2e_mock";
 
   const isDirty =
     assistantNameInput.trim() !== assistantLabel ||
@@ -111,7 +116,7 @@ export default function CustomiseScreen() {
           ...(cloudFallbackChanged
             ? { allowCloudFallback, cloudFallbackUserChoice: true }
             : {}),
-          handsFreeEnabled,
+          handsFreeEnabled: wakePhraseChanged ? false : handsFreeEnabled && wakeModelReady,
           wakePhrase: wakePrompt,
           wakeTrainingSamples: compactWakeSamples(settings.wakeTrainingSamples || []),
           ...(wakePhraseChanged
@@ -222,8 +227,13 @@ export default function CustomiseScreen() {
             <View style={styles.switchCard}>
               <Text style={styles.inputLabel}>Hands-free</Text>
               <Switch
-                value={handsFreeEnabled}
+                value={handsFreeEnabled && wakeModelReady}
                 onValueChange={(enabled) => {
+                  if (enabled && !wakeModelReady) {
+                    setHandsFreeEnabled(false);
+                    Alert.alert("Needs model", "Needs model");
+                    return;
+                  }
                   setHandsFreeEnabled(enabled);
                   if (enabled && !wakePhrase.trim()) {
                     setWakePhrase(`Hey ${displayName}`);

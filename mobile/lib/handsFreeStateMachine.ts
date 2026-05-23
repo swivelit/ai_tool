@@ -50,7 +50,10 @@ export function handsFreeStateReducer(
       return {
         ...snapshot,
         eligible: true,
-        state: snapshot.wakeReady && snapshot.state === "idle" ? "wakeListening" : snapshot.state,
+        state:
+          snapshot.wakeReady && (snapshot.state === "idle" || snapshot.state === "blocked")
+            ? "wakeListening"
+            : snapshot.state,
       };
     case "INELIGIBLE":
     case "VOICE_SHEET_CLOSED":
@@ -59,7 +62,10 @@ export function handsFreeStateReducer(
       return {
         ...snapshot,
         wakeReady: true,
-        state: snapshot.eligible && snapshot.state === "idle" ? "wakeListening" : snapshot.state,
+        state:
+          snapshot.eligible && (snapshot.state === "idle" || snapshot.state === "blocked")
+            ? "wakeListening"
+            : snapshot.state,
       };
     case "WAKE_MODEL_MISSING":
       return { ...snapshot, wakeReady: false, state: "blocked" };

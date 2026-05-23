@@ -54,7 +54,7 @@ class OpenWakeWordEngine {
   private var lastWakeAtMs = 0L
   private var lastScoreEventAtMs = 0L
   private var audioSource: PcmAudioSource? = null
-  private var pipeline: OnnxWakeWordPipeline? = null
+  private var pipeline: WakeWordPipeline? = null
 
   fun isAvailable(): Boolean {
     return try {
@@ -136,7 +136,7 @@ class OpenWakeWordEngine {
           val now = System.currentTimeMillis()
           val event = WakeWordEvent(
             score = score,
-            model = wakeModel.name,
+            model = nextPipeline.modelName,
             phraseKey = parsed.phraseKey.ifBlank { null },
             timestamp = now,
           )
@@ -194,6 +194,42 @@ class OpenWakeWordEngine {
     )
   }
 
+  fun validateFixturePipeline(): Map<String, Any?> {
+    val fixture = DeterministicWakeWordPipeline(
+      modelName = "fixture-wake.onnx",
+      phraseKey = "fixture-phrase",
+      acceptedFrameSamples = 1280,
+      scores = listOf(0.12, 0.93),
+    )
+    var processFrameRan = false
+    var wakeEmitted = false
+    var maxScore = 0.0
+
+    fixture.use { pipeline ->
+      repeat(2) {
+        val score = pipeline.processFrame(ShortArray(1280) { index -> (index % 127).toShort() })
+        if (score != null) {
+          processFrameRan = true
+          maxScore = max(maxScore, score)
+          if (score >= 0.5) {
+            wakeEmitted = true
+          }
+        }
+      }
+    }
+
+    return mapOf(
+      "ok" to true,
+      "modelFilesLoaded" to fixture.modelFilesLoaded,
+      "shapesAccepted" to fixture.shapesAccepted,
+      "processFrameRan" to processFrameRan,
+      "wakeEmitted" to wakeEmitted,
+      "score" to maxScore,
+      "model" to fixture.modelName,
+      "phraseKey" to fixture.phraseKey,
+    )
+  }
+
   private fun parseConfig(config: Map<String, Any?>): WakeWordConfig {
     val modelPaths = config["modelPaths"] as? Map<*, *>
       ?: throw WakeWordException("JAI_WAKE_MODEL_PATHS_REQUIRED", "start(config) requires modelPaths.")
@@ -241,14 +277,61 @@ class OpenWakeWordEngine {
   }
 }
 
+private interface WakeWordPipeline : AutoCloseable {
+  val modelName: String
+  val phraseKey: String?
+  fun processFrame(frame: ShortArray): Double?
+}
+
+private class DeterministicWakeWordPipeline(
+  override val modelName: String,
+  override val phraseKey: String?,
+  private val acceptedFrameSamples: Int,
+  private val scores: List<Double>,
+) : WakeWordPipeline {
+  var modelFilesLoaded = false
+    private set
+  var shapesAccepted = false
+    private set
+  private var frameCount = 0
+
+  init {
+    modelFilesLoaded = modelName.endsWith(".onnx")
+    shapesAccepted = acceptedFrameSamples > 0 && scores.isNotEmpty()
+  }
+
+  override fun processFrame(frame: ShortArray): Double? {
+    if (!modelFilesLoaded || !shapesAccepted) {
+      throw WakeWordException(
+        "JAI_WAKE_FIXTURE_INVALID",
+        "Deterministic wake fixture is not configured correctly.",
+      )
+    }
+    if (frame.size != acceptedFrameSamples) {
+      throw WakeWordException(
+        "JAI_WAKE_MODEL_UNSUPPORTED",
+        "Fixture expected $acceptedFrameSamples samples but received ${frame.size}.",
+      )
+    }
+    val score = scores[min(frameCount, scores.lastIndex)]
+    frameCount += 1
+    return score
+  }
+
+  override fun close() {
+    // No native resources in the deterministic validation seam.
+  }
+}
+
 private class OnnxWakeWordPipeline(
   wakeModel: File,
   melModel: File,
   embeddingModel: File,
-  private val phraseKey: String?,
+  override val phraseKey: String?,
   sampleRate: Int,
   frameMs: Int,
-) : AutoCloseable {
+) : WakeWordPipeline {
+  override val modelName = wakeModel.name
   private val env = OrtEnvironment.getEnvironment()
   private val sessionOptions = OrtSession.SessionOptions()
   private val melSession = env.createSession(melModel.absolutePath, sessionOptions)
@@ -276,7 +359,7 @@ private class OnnxWakeWordPipeline(
   private val embeddingSteps = max(1, wakeInputElements / embeddingWidth)
   private val embeddingHistory = ArrayDeque<FloatArray>()
 
-  fun processFrame(frame: ShortArray): Double? {
+  override fun processFrame(frame: ShortArray): Double? {
     rawAudio.append(frame)
     val audio = rawAudio.snapshot()
     if (audio.size < audioWindowSamples) return null

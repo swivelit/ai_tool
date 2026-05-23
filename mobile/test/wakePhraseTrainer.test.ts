@@ -14,6 +14,7 @@ describe("wake phrase trainer source", () => {
     expect(setupSource).toContain("downloadAndSaveWakeModelBundle");
     expect(setupSource).toContain("if (modelStatus.ready)");
     expect(setupSource).toContain('status: "pending"');
+    expect(setupSource).not.toContain('positiveFiles.length >= MINIMUM_POSITIVE && negativeFiles.length >= MINIMUM_NEGATIVE\n        ? "ready_now"');
     expect(setupSource).not.toContain("powers wake detection");
   });
 
@@ -29,5 +30,7 @@ describe("wake phrase trainer source", () => {
     expect(setupSource).not.toContain("Hands-free only becomes active");
     expect(setupSource).not.toContain("Suggested negative sentences");
     expect(setupSource).not.toContain("Wake phrase model setup");
+    expect(setupSource).not.toContain("styles.summaryCard");
+    expect(setupSource).not.toContain("styles.stateRail");
   });
 });

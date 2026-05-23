@@ -133,6 +133,8 @@ async def upload_openwakeword_sample(
         )
     except AudioDecodeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OpenWakeWordNotInstalledError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EnrollmentValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:

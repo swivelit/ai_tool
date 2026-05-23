@@ -331,7 +331,7 @@ export default function RoutineScreen() {
     }
 
     if (passwordLinked) {
-      showNotice("Already linked", "This account already supports email/password login.");
+      showNotice("Already linked", "Password login is already on.");
       return;
     }
 
@@ -614,7 +614,7 @@ export default function RoutineScreen() {
             </View>
 
             <View style={styles.helperPanel}>
-              <Text style={styles.helperPanelTitle}>Active sign-in methods</Text>
+              <Text style={styles.helperPanelTitle}>Sign-in</Text>
               <Text style={styles.helperPanelText}>{signInMethods}</Text>
             </View>
 
@@ -667,7 +667,7 @@ export default function RoutineScreen() {
               <View style={styles.successBanner}>
                 <Ionicons name="checkmark-circle" size={18} color={Brand.success} />
                 <Text style={styles.successBannerText}>
-                  This account already supports email/password login.
+                  Password login is already on.
                 </Text>
               </View>
             )}
