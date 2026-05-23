@@ -11,18 +11,97 @@ class WakeWordModule : Module() {
   private val engine: OpenWakeWordEngine by lazy {
     OpenWakeWordEngine()
   }
+  private val handsFreeCallbacks = object : HandsFreeControllerCallbacks {
+    override fun onState(event: HandsFreeStateEvent) {
+      sendEventOnMain("onState", event.toBundle())
+    }
+
+    override fun onWake(event: WakeWordEvent) {
+      sendEventOnMain("onWake", event.toBundle())
+    }
+
+    override fun onWakeScore(event: WakeWordEvent) {
+      sendEventOnMain("onWakeScore", event.toBundle())
+    }
+
+    override fun onCommand(event: HandsFreeCommandEvent) {
+      sendEventOnMain("onCommand", event.toBundle())
+    }
+
+    override fun onCommandAudio(event: HandsFreeCommandAudioEvent) {
+      sendEventOnMain("onCommandAudio", event.toBundle())
+    }
+
+    override fun onError(code: String, message: String) {
+      sendError(code, message)
+    }
+  }
 
   override fun definition() = ModuleDefinition {
     Name("JaiWakeWord")
 
-    Events("onWake", "onWakeScore", "onWakeError")
+    Events("onState", "onWake", "onWakeScore", "onCommand", "onCommandAudio", "onWakeError")
 
     Function("isAvailable") {
       engine.isAvailable()
     }
 
     AsyncFunction("getStatus") {
-      engine.getStatus()
+      val engineStatus = engine.getStatus().toMutableMap()
+      val sessionStatus = HandsFreeControllerRegistry.status()
+      engineStatus["handsFree"] = sessionStatus
+      engineStatus["sessionState"] = sessionStatus["state"]
+      if (sessionStatus["running"] == true) {
+        engineStatus["running"] = true
+      }
+      engineStatus
+    }
+
+    AsyncFunction("configure") { config: Map<String, Any?> ->
+      HandsFreeControllerRegistry.configure(config)
+      mapOf("ok" to true)
+    }
+
+    AsyncFunction("startSession") { config: Map<String, Any?> ->
+      try {
+        val context = appContext.reactContext
+          ?: throw WakeWordException(
+            "JAI_HANDS_FREE_CONTEXT_UNAVAILABLE",
+            "React context is unavailable for hands-free wake-word service.",
+          )
+        HandsFreeControllerRegistry.setCallbacks(handsFreeCallbacks)
+        HandsFreeForegroundService.startSession(context, config)
+        mapOf("ok" to true)
+      } catch (error: WakeWordException) {
+        sendError(error.code, error.detail)
+        throw error
+      }
+    }
+
+    AsyncFunction("stopSession") {
+      appContext.reactContext?.let { context ->
+        try {
+          HandsFreeForegroundService.stopSession(context)
+        } catch (_: Throwable) {
+          HandsFreeControllerRegistry.stopSession()
+        }
+      } ?: HandsFreeControllerRegistry.stopSession()
+      mapOf("ok" to true)
+    }
+
+    AsyncFunction("cancelCommand") {
+      HandsFreeControllerRegistry.cancelCommand()
+      mapOf("ok" to true)
+    }
+
+    AsyncFunction("notifyTtsStarted") {
+      HandsFreeControllerRegistry.notifyTtsStarted()
+      mapOf("ok" to true)
+    }
+
+    AsyncFunction("notifyTtsCompleted") {
+      HandsFreeControllerRegistry.notifyTtsCompleted()
+      mapOf("ok" to true)
     }
 
     AsyncFunction("start") { config: Map<String, Any?> ->
@@ -83,5 +162,34 @@ private fun WakeWordEvent.toBundle(): Bundle {
   bundle.putString("model", model)
   bundle.putDouble("timestamp", timestamp.toDouble())
   phraseKey?.let { bundle.putString("phraseKey", it) }
+  return bundle
+}
+
+private fun HandsFreeStateEvent.toBundle(): Bundle {
+  val bundle = Bundle()
+  bundle.putString("state", state.wireName)
+  bundle.putString("previousState", previousState.wireName)
+  bundle.putString("reason", reason)
+  bundle.putDouble("timestamp", timestamp.toDouble())
+  return bundle
+}
+
+private fun HandsFreeCommandEvent.toBundle(): Bundle {
+  val bundle = Bundle()
+  bundle.putString("text", text)
+  bundle.putBoolean("empty", empty)
+  reason?.let { bundle.putString("reason", it) }
+  bundle.putDouble("timestamp", timestamp.toDouble())
+  return bundle
+}
+
+private fun HandsFreeCommandAudioEvent.toBundle(): Bundle {
+  val bundle = Bundle()
+  bundle.putString("uri", fileUri)
+  bundle.putString("fileUri", fileUri)
+  bundle.putDouble("durationMs", durationMs.toDouble())
+  bundle.putInt("sampleRate", sampleRate)
+  bundle.putString("mimeType", mimeType)
+  bundle.putDouble("timestamp", timestamp.toDouble())
   return bundle
 }

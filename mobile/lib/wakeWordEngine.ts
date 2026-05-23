@@ -2,12 +2,18 @@ import { EventEmitter } from "expo-modules-core";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { apiFetchRaw, apiGet } from "./api";
-import { isE2eMockHandsFreeEnabled } from "./e2eMode";
+import { getE2eHandsFreeCommand, isE2eMockHandsFreeEnabled } from "./e2eMode";
 import type { AssistantSettings, WakeModelSettings, WakeModelStatus } from "./storage";
 
 type NativeWakeWordModule = {
   isAvailable?: () => boolean;
   getStatus?: () => Promise<WakeWordNativeStatus>;
+  configure?: (config: WakeWordStartConfig) => Promise<{ ok: true }>;
+  startSession?: (config: WakeWordStartConfig) => Promise<{ ok: true }>;
+  stopSession?: () => Promise<{ ok: true }>;
+  cancelCommand?: () => Promise<{ ok: true }>;
+  notifyTtsStarted?: () => Promise<{ ok: true }>;
+  notifyTtsCompleted?: () => Promise<{ ok: true }>;
   start?: (config: WakeWordStartConfig) => Promise<{ ok: true }>;
   stop?: () => Promise<{ ok: true }>;
   validateFixturePipeline?: () => Promise<WakeWordFixtureValidation>;
@@ -21,6 +27,16 @@ export type WakeWordNativeStatus = {
   frameMs: number;
   lastScore?: number;
   error?: string;
+  sessionState?: HandsFreeNativeState;
+  handsFree?: {
+    running?: boolean;
+    state?: HandsFreeNativeState;
+    sampleRate?: number;
+    frameMs?: number;
+    lastError?: string;
+    captureDroppedFrames?: number;
+    wakeDroppedFrames?: number;
+  };
 };
 
 export type WakeWordFixtureValidation = {
@@ -56,6 +72,38 @@ export type WakeWordEvent = {
   model: string;
   phraseKey?: string;
   timestamp: number;
+};
+
+export type HandsFreeNativeState =
+  | "idle"
+  | "wakeListening"
+  | "wakeDetected"
+  | "commandListening"
+  | "commandReady"
+  | "submitting"
+  | "speaking";
+
+export type HandsFreeStateEvent = {
+  state: HandsFreeNativeState;
+  previousState?: HandsFreeNativeState;
+  reason?: string;
+  timestamp?: number;
+};
+
+export type HandsFreeCommandEvent = {
+  text?: string;
+  empty?: boolean;
+  reason?: string;
+  timestamp?: number;
+};
+
+export type HandsFreeCommandAudioEvent = {
+  uri?: string;
+  fileUri?: string;
+  durationMs: number;
+  sampleRate: number;
+  mimeType: "audio/wav" | string;
+  timestamp?: number;
 };
 
 export type WakeWordStartConfig = {
@@ -115,8 +163,10 @@ const nativeModule: NativeWakeWordModule | null = (() => {
   }
 })();
 
-let nativeSubscriptions: Array<{ remove: () => void }> = [];
+let wakeSubscriptions: Array<{ remove: () => void }> = [];
+let sessionSubscriptions: Array<{ remove: () => void }> = [];
 let e2eWakeTimer: ReturnType<typeof setTimeout> | null = null;
+let e2eSessionTimers: Array<ReturnType<typeof setTimeout>> = [];
 
 function normalizePhraseKey(value: string) {
   return (
@@ -598,7 +648,7 @@ export async function startWakeWordListening(
     throw new Error("Native wake-word detection is unavailable.");
   }
   const emitter = new EventEmitter(nativeModule as any) as any;
-  nativeSubscriptions = [
+  wakeSubscriptions = [
     emitter.addListener("onWake", handlers.onWake),
     emitter.addListener("onWakeError", (payload: any) => {
       handlers.onError?.({
@@ -608,13 +658,13 @@ export async function startWakeWordListening(
     }),
   ];
   if (handlers.onScore) {
-    nativeSubscriptions.push(emitter.addListener("onWakeScore", handlers.onScore));
+    wakeSubscriptions.push(emitter.addListener("onWakeScore", handlers.onScore));
   }
   try {
     return await nativeModule.start(startConfig);
   } catch (error) {
-    nativeSubscriptions.forEach((subscription) => subscription.remove());
-    nativeSubscriptions = [];
+    wakeSubscriptions.forEach((subscription) => subscription.remove());
+    wakeSubscriptions = [];
     throw error;
   }
 }
@@ -624,13 +674,197 @@ export async function stopWakeWordListening(): Promise<{ ok: true }> {
     clearTimeout(e2eWakeTimer);
     e2eWakeTimer = null;
   }
-  nativeSubscriptions.forEach((subscription) => subscription.remove());
-  nativeSubscriptions = [];
+  wakeSubscriptions.forEach((subscription) => subscription.remove());
+  wakeSubscriptions = [];
   if (nativeModule?.stop) {
     await nativeModule.stop().catch(() => undefined);
   }
   return { ok: true };
 }
+
+export async function configureHandsFreeSession(
+  config: WakeWordStartConfig | WakeModelState,
+): Promise<{ ok: true }> {
+  const startConfig = normalizeStartConfig(config);
+  if (isE2eMockHandsFreeEnabled()) return { ok: true };
+  if (!nativeModule?.configure) {
+    throw new Error("JaiWakeWord native session API is unavailable.");
+  }
+  return nativeModule.configure(startConfig);
+}
+
+export async function startHandsFreeSession(
+  config: WakeWordStartConfig | WakeModelState,
+  handlers: {
+    onState?: (event: HandsFreeStateEvent) => void;
+    onWake?: (event: WakeWordEvent) => void;
+    onScore?: (event: WakeWordEvent) => void;
+    onCommand?: (event: HandsFreeCommandEvent) => void;
+    onCommandAudio?: (event: HandsFreeCommandAudioEvent) => void;
+    onError?: (error: { code: string; message: string }) => void;
+  },
+): Promise<{ ok: true }> {
+  await stopHandsFreeSession();
+
+  const startConfig = normalizeStartConfig(config);
+  if (isE2eMockHandsFreeEnabled()) {
+    const command = getE2eHandsFreeCommand() || "tell me about Spitzola";
+    e2eSessionTimers = [
+      setTimeout(() => {
+        handlers.onState?.({
+          state: "wakeListening",
+          previousState: "idle",
+          reason: "e2e_session_started",
+          timestamp: Date.now(),
+        });
+      }, 25),
+      setTimeout(() => {
+        handlers.onState?.({
+          state: "wakeDetected",
+          previousState: "wakeListening",
+          reason: "e2e_wake_detected",
+          timestamp: Date.now(),
+        });
+        handlers.onWake?.({
+          score: 1,
+          model: "e2e_mock",
+          phraseKey: startConfig.phraseKey,
+          timestamp: Date.now(),
+        });
+      }, 250),
+      setTimeout(() => {
+        handlers.onState?.({
+          state: "commandListening",
+          previousState: "wakeDetected",
+          reason: "e2e_command_listening",
+          timestamp: Date.now(),
+        });
+      }, 300),
+      setTimeout(() => {
+        handlers.onState?.({
+          state: "commandReady",
+          previousState: "commandListening",
+          reason: "e2e_command_ready",
+          timestamp: Date.now(),
+        });
+        handlers.onCommand?.({
+          text: command,
+          empty: false,
+          reason: "e2e_mock",
+          timestamp: Date.now(),
+        });
+      }, 450),
+    ];
+    return { ok: true };
+  }
+
+  if (!nativeModule?.startSession) {
+    throw new Error("JaiWakeWord native session API is unavailable.");
+  }
+  if (!isWakeWordAvailable()) {
+    throw new Error("Native wake-word detection is unavailable.");
+  }
+
+  const emitter = new EventEmitter(nativeModule as any) as any;
+  sessionSubscriptions = [
+    emitter.addListener("onState", (payload: any) => {
+      handlers.onState?.({
+        state: String(payload?.state || "idle") as HandsFreeNativeState,
+        previousState: payload?.previousState
+          ? (String(payload.previousState) as HandsFreeNativeState)
+          : undefined,
+        reason: payload?.reason ? String(payload.reason) : undefined,
+        timestamp: Number(payload?.timestamp || Date.now()),
+      });
+    }),
+    emitter.addListener("onWake", (payload: any) => {
+      handlers.onWake?.({
+        score: Number(payload?.score || 0),
+        model: String(payload?.model || ""),
+        phraseKey: payload?.phraseKey ? String(payload.phraseKey) : undefined,
+        timestamp: Number(payload?.timestamp || Date.now()),
+      });
+    }),
+    emitter.addListener("onWakeError", (payload: any) => {
+      handlers.onError?.({
+        code: String(payload?.code || "JAI_WAKE_ERROR"),
+        message: String(payload?.message || "Wake detection failed."),
+      });
+    }),
+    emitter.addListener("onCommand", (payload: any) => {
+      handlers.onCommand?.({
+        text: payload?.text ? String(payload.text) : "",
+        empty: Boolean(payload?.empty),
+        reason: payload?.reason ? String(payload.reason) : undefined,
+        timestamp: Number(payload?.timestamp || Date.now()),
+      });
+    }),
+    emitter.addListener("onCommandAudio", (payload: any) => {
+      const fileUri = String(payload?.fileUri || payload?.uri || "");
+      handlers.onCommandAudio?.({
+        uri: fileUri,
+        fileUri,
+        durationMs: Number(payload?.durationMs || 0),
+        sampleRate: Number(payload?.sampleRate || 16000),
+        mimeType: String(payload?.mimeType || "audio/wav"),
+        timestamp: Number(payload?.timestamp || Date.now()),
+      });
+    }),
+  ];
+  if (handlers.onScore) {
+    sessionSubscriptions.push(emitter.addListener("onWakeScore", handlers.onScore));
+  }
+
+  try {
+    return await nativeModule.startSession(startConfig);
+  } catch (error) {
+    sessionSubscriptions.forEach((subscription) => subscription.remove());
+    sessionSubscriptions = [];
+    throw error;
+  }
+}
+
+export async function stopHandsFreeSession(): Promise<{ ok: true }> {
+  e2eSessionTimers.forEach((timer) => clearTimeout(timer));
+  e2eSessionTimers = [];
+  sessionSubscriptions.forEach((subscription) => subscription.remove());
+  sessionSubscriptions = [];
+  if (nativeModule?.stopSession) {
+    await nativeModule.stopSession().catch(() => undefined);
+  }
+  return { ok: true };
+}
+
+export async function cancelHandsFreeCommand(): Promise<{ ok: true }> {
+  if (nativeModule?.cancelCommand) {
+    await nativeModule.cancelCommand().catch(() => undefined);
+  }
+  return { ok: true };
+}
+
+export async function notifyHandsFreeTtsStarted(): Promise<{ ok: true }> {
+  if (nativeModule?.notifyTtsStarted) {
+    await nativeModule.notifyTtsStarted().catch(() => undefined);
+  }
+  return { ok: true };
+}
+
+export async function notifyHandsFreeTtsCompleted(): Promise<{ ok: true }> {
+  if (nativeModule?.notifyTtsCompleted) {
+    await nativeModule.notifyTtsCompleted().catch(() => undefined);
+  }
+  return { ok: true };
+}
+
+export const configureWakeWordSession = configureHandsFreeSession;
+export const startWakeWordSession = startHandsFreeSession;
+export const stopWakeWordSession = stopHandsFreeSession;
+export const cancelWakeWordCommand = cancelHandsFreeCommand;
+export const notifyWakeWordTtsStarted = notifyHandsFreeTtsStarted;
+export const notifyWakeWordTtsCompleted = notifyHandsFreeTtsCompleted;
+export const configure = configureHandsFreeSession;
+export const startSession = startHandsFreeSession;
+export const stopSession = stopHandsFreeSession;
 
 function normalizeStartConfig(config: WakeWordStartConfig | WakeModelState): WakeWordStartConfig {
   const maybeState = config as WakeModelState;

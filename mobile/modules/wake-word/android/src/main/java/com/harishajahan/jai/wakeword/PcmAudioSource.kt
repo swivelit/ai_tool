@@ -13,9 +13,28 @@ class PcmAudioSource(
   private val running = AtomicBoolean(false)
   private var recorder: AudioRecord? = null
   private var worker: Thread? = null
+  private var legacyConsumer: Thread? = null
+  private var legacyQueue: AudioFrameQueue? = null
+
+  fun start(frameQueue: AudioFrameQueue) {
+    stop()
+    startCapture(frameQueue)
+  }
 
   fun start(onFrame: (ShortArray) -> Unit) {
     stop()
+    val frameQueue = AudioFrameQueue(capacityFrames = 16)
+    legacyQueue = frameQueue
+    legacyConsumer = thread(name = "JaiWakeWordAudioConsumer", isDaemon = true) {
+      while (running.get()) {
+        val frame = frameQueue.take(100L) ?: continue
+        onFrame(frame)
+      }
+    }
+    startCapture(frameQueue)
+  }
+
+  private fun startCapture(frameQueue: AudioFrameQueue) {
     val frameSamples = (sampleRate * frameMs / 1000).coerceAtLeast(1)
     val minBuffer = AudioRecord.getMinBufferSize(
       sampleRate,
@@ -64,7 +83,7 @@ class PcmAudioSource(
           break
         }
         if (read > 0) {
-          onFrame(buffer.copyOf(read))
+          frameQueue.offer(buffer.copyOf(read))
         } else if (read == AudioRecord.ERROR_INVALID_OPERATION || read == AudioRecord.ERROR_BAD_VALUE) {
           break
         }
@@ -75,13 +94,18 @@ class PcmAudioSource(
   fun stop() {
     running.set(false)
     val workerThread = worker
+    val consumerThread = legacyConsumer
+    legacyQueue?.close()
     try {
       recorder?.stop()
     } catch (_: Throwable) {
     }
     try {
       if (workerThread != null && Thread.currentThread() != workerThread) {
-        workerThread.join(250)
+        workerThread.join(150)
+      }
+      if (consumerThread != null && Thread.currentThread() != consumerThread) {
+        consumerThread.join(150)
       }
     } catch (_: Throwable) {
     }
@@ -91,5 +115,7 @@ class PcmAudioSource(
     }
     recorder = null
     worker = null
+    legacyConsumer = null
+    legacyQueue = null
   }
 }

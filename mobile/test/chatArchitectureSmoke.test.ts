@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 
 const QUESTION_BANK = [
   "Hi elli",
@@ -300,5 +302,16 @@ describe("chat architecture smoke", () => {
     expect(backendChatCalls(harness.fetchMock).length).toBeGreaterThan(0);
     expect(harness.logs.some((entry) => entry.event === "client_chat_turn_failed")).toBe(false);
     expect(harness.runLocalAssistantTurn.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("keeps Android hands-free command capture native-owned", () => {
+    const source = fs.readFileSync(path.join(__dirname, "..", "app", "(chat)", "index.tsx"), "utf8");
+
+    expect(source).toContain("startHandsFreeSession");
+    expect(source).toContain("handleNativeHandsFreeCommandAudio");
+    expect(source).toContain("submitHandsFreeCommandAudio");
+    expect(source).toContain("audio/wav");
+    expect(source).not.toContain("stopWakeWordListening().then");
+    expect(source).not.toContain("startWakeWordListening");
   });
 });

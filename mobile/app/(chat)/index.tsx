@@ -102,13 +102,16 @@ import {
   initialHandsFreeMachineState,
   isPermanentWakeError,
   isHandsFreeWakeEligible,
-  WAKE_RETRY_DELAYS_MS,
-  wakeRetryDelayMs,
 } from "@/lib/handsFreeStateMachine";
 import {
   ensureWakeModel,
-  startWakeWordListening,
-  stopWakeWordListening,
+  startHandsFreeSession,
+  stopHandsFreeSession,
+  notifyHandsFreeTtsStarted,
+  notifyHandsFreeTtsCompleted,
+  type HandsFreeCommandAudioEvent,
+  type HandsFreeCommandEvent,
+  type HandsFreeStateEvent,
   type WakeModelState,
   type WakeWordEvent,
 } from "@/lib/wakeWordEngine";
@@ -310,7 +313,6 @@ export default function Home() {
   const voiceOnlyMode = useMemo(() => getMobileBuildInfo().voice_only_mode, []);
   const e2eHandsFreeEnabled = useMemo(() => isE2eMockHandsFreeEnabled(), []);
   const e2eHandsFreeWakePhrase = useMemo(() => getE2eHandsFreeWakePhrase(), []);
-  const e2eHandsFreeCommand = useMemo(() => getE2eHandsFreeCommand(), []);
 
   const [text, setText] = useState("");
   const [composerInputHeight, setComposerInputHeight] =
@@ -375,11 +377,8 @@ export default function Home() {
   const scrollViewRef = useRef<ScrollView | null>(null);
   const activeChatSessionIdRef = useRef<string | null>(null);
   const historyLongPressTriggeredRef = useRef(false);
-  const wakeStartInFlightRef = useRef(false);
-  const wakeListeningRef = useRef(false);
-  const wakeRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wakeRetryAttemptRef = useRef(0);
-  const startNativeWakeEngineRef = useRef<() => Promise<void>>(async () => undefined);
+  const nativeHandsFreeSessionInFlightRef = useRef(false);
+  const nativeHandsFreeSessionActiveRef = useRef(false);
   const commandListeningRef = useRef(false);
   const wakeModelStateRef = useRef<WakeModelState | null>(null);
   const handsFreeMachineRef = useRef(handsFreeMachine);
@@ -445,6 +444,7 @@ export default function Home() {
   const handsFreeConversationActive =
     handsFreeMachine.state === "wakeDetected" ||
     handsFreeMachine.state === "commandListening" ||
+    handsFreeMachine.state === "commandReady" ||
     handsFreeMachine.state === "submitting" ||
     handsFreeMachine.state === "speaking";
   const handsFreePlaybackMode: HandsFreePlaybackMode = handsFreeConversationActive
@@ -609,7 +609,7 @@ export default function Home() {
     ) {
       void closeVoiceSheetSafely();
     }
-  }, []);
+  }, [handleNativeHandsFreeCommand, handleNativeHandsFreeCommandAudio, handleNativeHandsFreeState]);
   const handleChatSwipeTouchStart = useCallback((event: any) => {
     chatSwipeTouchStartRef.current = firstTouchPoint(event);
   }, []);
@@ -721,64 +721,11 @@ export default function Home() {
     }
   }, []);
 
-  const clearWakeRetryTimer = useCallback((resetAttempts = false) => {
-    if (wakeRetryTimerRef.current) {
-      clearTimeout(wakeRetryTimerRef.current);
-      wakeRetryTimerRef.current = null;
-    }
-    if (resetAttempts) {
-      wakeRetryAttemptRef.current = 0;
-    }
-  }, []);
-
-  const scheduleWakeRetry = useCallback(
-    (error: { code?: string; message?: string } | Error | unknown) => {
-      clearWakeRetryTimer(false);
-      wakeListeningRef.current = false;
-
-      if (isPermanentWakeError(error)) {
-        wakeRetryAttemptRef.current = 0;
-        const value = `${String((error as any)?.code || "")} ${String((error as any)?.message || "")}`.toLowerCase();
-        setHandsFreeStatus(
-          value.includes("model") ||
-            value.includes("missing") ||
-            value.includes("unsupported") ||
-            value.includes("unavailable")
-            ? "Needs model"
-            : "Try again",
-        );
-        dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" });
-        return;
-      }
-
-      const attempt = wakeRetryAttemptRef.current;
-      if (attempt >= WAKE_RETRY_DELAYS_MS.length) {
-        wakeRetryAttemptRef.current = 0;
-        setHandsFreeStatus("Try again");
-        dispatchHandsFree({ type: "ERROR" });
-        return;
-      }
-
-      const delayMs = wakeRetryDelayMs(attempt);
-      wakeRetryAttemptRef.current = attempt + 1;
-      setHandsFreeStatus("Try again");
-      dispatchHandsFree({ type: "WAKE_TRANSIENT_ERROR" });
-      wakeRetryTimerRef.current = setTimeout(() => {
-        wakeRetryTimerRef.current = null;
-        if (handsFreeEligibleRef.current && wakeModelStateRef.current?.ready) {
-          void startNativeWakeEngineRef.current();
-        }
-      }, delayMs);
-    },
-    [clearWakeRetryTimer],
-  );
-
   const abortHandsFreeRecognizer = useCallback(async (_clearDesiredMode = false) => {
-    clearWakeRetryTimer(true);
-    await stopWakeWordListening().catch(() => undefined);
-    wakeListeningRef.current = false;
+    nativeHandsFreeSessionActiveRef.current = false;
+    await stopHandsFreeSession().catch(() => undefined);
     await stopHandsFreeCommandRecognizer();
-  }, [clearWakeRetryTimer, stopHandsFreeCommandRecognizer]);
+  }, [stopHandsFreeCommandRecognizer]);
 
   const shutdownHandsFree = useCallback(async (clearStatus = false) => {
     await abortHandsFreeRecognizer(false);
@@ -790,33 +737,31 @@ export default function Home() {
     }
   }, [abortHandsFreeRecognizer]);
 
-  const startNativeWakeEngine = useCallback(async () => {
+  const startNativeHandsFreeSession = useCallback(async () => {
+    if (e2eHandsFreeEnabled) return;
+
     const runtime = handsFreeRuntimeRef.current;
     if (!runtime.foreground) return;
     if (
       runtime.busy ||
       runtime.listening ||
-      replySoundRef.current ||
-      wakeStartInFlightRef.current ||
-      wakeListeningRef.current
+      nativeHandsFreeSessionInFlightRef.current ||
+      nativeHandsFreeSessionActiveRef.current
     ) {
       return;
     }
 
     const model = wakeModelStateRef.current;
     if (!model?.ready) {
-      clearWakeRetryTimer(true);
       dispatchHandsFree({ type: "WAKE_MODEL_MISSING" });
       setHandsFreeStatus("Needs model");
       return;
     }
 
     try {
-      wakeStartInFlightRef.current = true;
+      nativeHandsFreeSessionInFlightRef.current = true;
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
-        wakeListeningRef.current = false;
-        clearWakeRetryTimer(true);
         setHandsFreeStatus("Try again");
         dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" });
         return;
@@ -825,28 +770,52 @@ export default function Home() {
 
       setHandsFreeStatus("Listening");
       dispatchHandsFree({ type: "WAKE_STARTED" });
-      await startWakeWordListening(model, {
+      await startHandsFreeSession(model, {
+        onState: (event) => handleNativeHandsFreeState(event),
         onWake: (event) => {
           void nativeWakeHandlerRef.current(event);
         },
+        onCommand: (event) => {
+          void handleNativeHandsFreeCommand(event);
+        },
+        onCommandAudio: (event) => {
+          void handleNativeHandsFreeCommandAudio(event);
+        },
         onError: (error) => {
-          scheduleWakeRetry(error);
+          nativeHandsFreeSessionActiveRef.current = false;
+          if (isPermanentWakeError(error)) {
+            const value = `${String(error.code || "")} ${String(error.message || "")}`.toLowerCase();
+            setHandsFreeStatus(
+              value.includes("model") ||
+                value.includes("missing") ||
+                value.includes("unsupported") ||
+                value.includes("unavailable")
+                ? "Needs model"
+                : "Try again",
+            );
+            dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" });
+          } else {
+            setHandsFreeStatus("Try again");
+            dispatchHandsFree({ type: "WAKE_TRANSIENT_ERROR" });
+          }
         },
       });
-      wakeListeningRef.current = true;
-      clearWakeRetryTimer(true);
+      nativeHandsFreeSessionActiveRef.current = true;
     } catch (error: unknown) {
-      wakeListeningRef.current = false;
+      nativeHandsFreeSessionActiveRef.current = false;
       const message =
-        error instanceof Error ? error.message : "Could not start wake-word detection.";
+        error instanceof Error ? error.message : "Could not start hands-free voice.";
       console.warn("[hands-free wake]", message);
-      scheduleWakeRetry(error);
+      if (isPermanentWakeError(error)) {
+        dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" });
+      } else {
+        dispatchHandsFree({ type: "WAKE_TRANSIENT_ERROR" });
+      }
+      setHandsFreeStatus(isPermanentWakeError(error) ? "Needs model" : "Try again");
     } finally {
-      wakeStartInFlightRef.current = false;
+      nativeHandsFreeSessionInFlightRef.current = false;
     }
-  }, [clearWakeRetryTimer, scheduleWakeRetry]);
-
-  startNativeWakeEngineRef.current = startNativeWakeEngine;
+  }, [e2eHandsFreeEnabled]);
 
   const startHandsFreeCommandRecognizer = useCallback(async () => {
     const runtime = handsFreeRuntimeRef.current;
@@ -861,7 +830,7 @@ export default function Home() {
     }
 
     try {
-      wakeStartInFlightRef.current = true;
+      nativeHandsFreeSessionInFlightRef.current = true;
 
       const permission = await handsFreeRecognizer.requestPermissionsAsync();
       if (!permission.granted) {
@@ -922,38 +891,88 @@ export default function Home() {
         dispatchHandsFree({ type: "COMMAND_EMPTY" });
       }
     } finally {
-      wakeStartInFlightRef.current = false;
+      nativeHandsFreeSessionInFlightRef.current = false;
     }
   }, [assistantLabel, resetCommandLocalePlan]);
 
+  function handleNativeHandsFreeState(event: HandsFreeStateEvent) {
+    switch (event.state) {
+      case "wakeListening":
+        setHandsFreeStatus("Listening");
+        dispatchHandsFree({ type: "WAKE_STARTED" });
+        break;
+      case "wakeDetected":
+        dispatchHandsFree({ type: "WAKE_DETECTED" });
+        break;
+      case "commandListening":
+        setHandsFreeStatus("Listening");
+        dispatchHandsFree({ type: "COMMAND_STARTED" });
+        break;
+      case "commandReady":
+        dispatchHandsFree({ type: "COMMAND_READY" });
+        break;
+      case "speaking":
+        dispatchHandsFree({ type: "TTS_STARTED" });
+        break;
+      case "idle":
+        nativeHandsFreeSessionActiveRef.current = false;
+        break;
+      default:
+        break;
+    }
+  }
+
   async function handleNativeWakeWordDetected(_event: WakeWordEvent) {
     if (!handsFreeEligibleRef.current) return;
-    clearWakeRetryTimer(true);
     dispatchHandsFree({ type: "WAKE_DETECTED" });
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
-    await stopWakeWordListening();
-    wakeListeningRef.current = false;
+    if (replySoundRef.current) {
+      await releaseReplySound();
+    }
     openHandsFreeVoiceSheet();
     resetCommandLocalePlan();
-
-    if (e2eHandsFreeEnabled) {
-      if (!e2eHandsFreeTriggeredRef.current) {
-        e2eHandsFreeTriggeredRef.current = true;
-        setHandsFreeStatus("Listening");
-        dispatchHandsFree({ type: "COMMAND_FINAL" });
-        void submitChatMessage(e2eHandsFreeCommand || "tell me about Spitzola", "handsfree");
-      }
-      return;
-    }
-
     setHandsFreeStatus("Listening");
     dispatchHandsFree({ type: "COMMAND_STARTED" });
   }
 
   nativeWakeHandlerRef.current = handleNativeWakeWordDetected;
 
+  async function handleNativeHandsFreeCommand(event: HandsFreeCommandEvent) {
+    if (event.empty) {
+      dispatchHandsFree({ type: "COMMAND_EMPTY" });
+      setHandsFreeStatus("Listening");
+      return;
+    }
+    const transcript = cleanHandsFreeCommand(String(event.text || ""));
+    if (!transcript) {
+      dispatchHandsFree({ type: "COMMAND_EMPTY" });
+      setHandsFreeStatus("Listening");
+      return;
+    }
+    await handleHandsFreeFinalTranscript(transcript);
+  }
+
+  async function handleNativeHandsFreeCommandAudio(event: HandsFreeCommandAudioEvent) {
+    const uri = event.fileUri || event.uri;
+    if (!uri) {
+      dispatchHandsFree({ type: "COMMAND_EMPTY" });
+      setHandsFreeStatus("Try again");
+      return;
+    }
+    openHandsFreeVoiceSheet();
+    setHandsFreeTranscript("Voice message");
+    setHandsFreeStatus("Listening");
+    dispatchHandsFree({ type: "COMMAND_FINAL" });
+    await submitHandsFreeCommandAudio(event);
+  }
+
   async function handleHandsFreeFinalTranscript(rawTranscript: string) {
-    if (handsFreeMachineRef.current.state !== "commandListening") return;
+    if (
+      handsFreeMachineRef.current.state !== "commandListening" &&
+      handsFreeMachineRef.current.state !== "commandReady"
+    ) {
+      return;
+    }
 
     const transcript = cleanHandsFreeCommand(rawTranscript);
     if (!transcript) {
@@ -1158,21 +1177,11 @@ export default function Home() {
     if (!handsFreeForegroundEnabled) return;
 
     if (handsFreeMachine.state === "wakeListening") {
-      void startNativeWakeEngine();
-      return;
-    }
-
-    if (handsFreeMachine.state === "commandListening") {
-      void stopWakeWordListening().then(() => {
-        wakeListeningRef.current = false;
-        void startHandsFreeCommandRecognizer();
-      });
+      void startNativeHandsFreeSession();
       return;
     }
 
     if (
-      handsFreeMachine.state === "submitting" ||
-      handsFreeMachine.state === "speaking" ||
       handsFreeMachine.state === "recording" ||
       handsFreeMachine.state === "stopping"
     ) {
@@ -1184,8 +1193,7 @@ export default function Home() {
     handsFreeForegroundEnabled,
     handsFreeMachine.state,
     listening,
-    startHandsFreeCommandRecognizer,
-    startNativeWakeEngine,
+    startNativeHandsFreeSession,
   ]);
 
   useEffect(() => {
@@ -1982,7 +1990,7 @@ export default function Home() {
       voice_session_id: activeVoiceSessionIdRef.current || undefined,
       ...details,
       event,
-      channel: "voice",
+      channel: (details as any).channel || "voice",
       agent_source: "mobile",
     };
     logClientTurn(payload);
@@ -2079,7 +2087,11 @@ export default function Home() {
     let playbackStartedLogged = false;
     let playbackFinishedLogged = false;
 
-    await abortHandsFreeRecognizer(false);
+    if (isHandsFreeReply) {
+      await stopHandsFreeCommandRecognizer();
+    } else {
+      await abortHandsFreeRecognizer(false);
+    }
     await releaseReplySound();
 
     try {
@@ -2100,6 +2112,7 @@ export default function Home() {
       }
       if (isHandsFreeReply) {
         dispatchHandsFree({ type: "TTS_STARTED" });
+        await notifyHandsFreeTtsStarted();
       }
       logVoiceTelemetry("client_voice_reply_tts_started", {
         request_id: context.requestId,
@@ -2245,6 +2258,7 @@ export default function Home() {
           void releaseReplySound(sound).finally(() => {
             if (isHandsFreeReply) {
               dispatchHandsFree({ type: "TTS_COMPLETED" });
+              void notifyHandsFreeTtsCompleted();
             }
           });
         }
@@ -2319,6 +2333,7 @@ export default function Home() {
       } else if (isHandsFreeReply) {
         setHandsFreeStatus("Try again");
         dispatchHandsFree({ type: "TTS_COMPLETED" });
+        await notifyHandsFreeTtsCompleted();
       }
       logVoiceTelemetry(failureEvent, {
         request_id: context.requestId,
@@ -2518,6 +2533,7 @@ export default function Home() {
       } else if (source === "handsfree") {
         dispatchHandsFree({ type: "SUBMIT_FINISHED" });
         setHandsFreeStatus("Listening");
+        void notifyHandsFreeTtsCompleted();
       }
 
       if (nextItem.intent === "reminder" && nextItem.datetime) {
@@ -2653,6 +2669,7 @@ export default function Home() {
               } else if (source === "handsfree") {
                 dispatchHandsFree({ type: "SUBMIT_FINISHED" });
                 setHandsFreeStatus("Listening");
+                void notifyHandsFreeTtsCompleted();
               }
               return;
             } catch (fallbackError) {
@@ -2702,6 +2719,7 @@ export default function Home() {
           await clearActiveWorkflow(requestId).catch(() => undefined);
           if (source === "handsfree") {
             dispatchHandsFree({ type: "SUBMIT_FINISHED" });
+            void notifyHandsFreeTtsCompleted();
           }
           return;
         }
@@ -2737,6 +2755,7 @@ export default function Home() {
         warnChatFailure(error, requestId, source);
         if (source === "handsfree") {
           dispatchHandsFree({ type: "SUBMIT_FINISHED" });
+          void notifyHandsFreeTtsCompleted();
         }
       }
     } finally {
@@ -2756,13 +2775,20 @@ export default function Home() {
     if (!e2eHandsFreeEnabled || busy) return;
     e2eHandsFreeTriggeredRef.current = true;
     const wakePhrase = e2eHandsFreeWakePhrase || handsFreeWakePhrase;
-    const command = e2eHandsFreeCommand || "tell me about Spitzola";
-    setHandsFreeTranscript(`${wakePhrase} ${command}`);
+    const command = getE2eHandsFreeCommand() || "tell me about Spitzola";
+    setHandsFreeTranscript(wakePhrase);
     openHandsFreeVoiceSheet();
     setHandsFreeStatus("Listening");
-    await abortHandsFreeRecognizer(false);
-    dispatchHandsFree({ type: "COMMAND_FINAL" });
-    await submitChatMessage(command, "handsfree");
+    dispatchHandsFree({ type: "WAKE_DETECTED" });
+    dispatchHandsFree({ type: "COMMAND_STARTED" });
+    setTimeout(() => {
+      if (!voiceSheetOpenRef.current) {
+        openHandsFreeVoiceSheet();
+      }
+      setHandsFreeTranscript(command);
+      dispatchHandsFree({ type: "COMMAND_FINAL" });
+      void submitChatMessage(command, "handsfree");
+    }, 250);
   }
 
   async function simulateE2eHandsFreeStop() {
@@ -2947,6 +2973,205 @@ export default function Home() {
     }
   }
 
+  async function uploadVoiceAudioForAnalysis(input: {
+    requestId: string;
+    uri: string;
+    fileName: string;
+    mimeType: string;
+    source: ChatRequestSource;
+    voiceSurface: RecorderSurface;
+    voiceSessionId: string | null;
+    fileSize?: number;
+  }) {
+    const form = new FormData();
+    form.append(
+      "file",
+      {
+        uri: input.uri,
+        name: input.fileName,
+        type: input.mimeType,
+      } as any
+    );
+    form.append("client_source", input.source);
+
+    const timeoutMs = await getChatTurnTimeoutMs(input.source);
+    const voiceLanguage = resolveVoiceLanguageParams({
+      settingsLanguageMode: settings.languageMode,
+      profileReplyLanguage: profile?.replyLanguage || null,
+    });
+    logVoiceTelemetry("client_voice_upload_started", {
+      request_id: input.requestId,
+      route_taken: "voice_upload",
+      voice_phase: "uploading",
+      voice_surface: input.voiceSurface,
+      voice_session_id: input.voiceSessionId || undefined,
+      channel: input.source,
+      client_source: input.source,
+      file_size: input.fileSize,
+      mime_type: input.mimeType,
+      requested_reply_language: voiceLanguage.replyLanguage,
+      requested_speech_language: voiceLanguage.speechLanguage,
+      tts_language_code: voiceLanguage.ttsLanguageCode,
+      settings_language_mode: settings.languageMode,
+    } as any);
+    const res = await withLocalTimeout(
+      apiPostForm<BackendChatResponse | ChatHistoryItem>(
+        `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${voiceLanguage.replyLanguage}&speech_language=${voiceLanguage.speechLanguage}&client_source=${input.source}`,
+        form,
+      ),
+      timeoutMs,
+      {
+        source: input.source,
+        message: friendlyLocalTimeoutMessage(),
+      },
+    );
+    return { res, voiceLanguage };
+  }
+
+  async function submitHandsFreeCommandAudio(event: HandsFreeCommandAudioEvent) {
+    const uri = event.fileUri || event.uri;
+    if (!uri || busy) return;
+    if (!profile?.userId) {
+      setHandsFreeStatus("Finish setup to use hands-free voice.");
+      await notifyHandsFreeTtsCompleted();
+      return;
+    }
+
+    const requestId = nextChatRequestId("handsfree");
+    activeChatRequestIdRef.current = requestId;
+    const requestVoiceSurface: RecorderSurface = "live";
+    const voiceSessionId = ensureVoiceSession("live");
+    let uploadStarted = false;
+    let audioFileSize: number | undefined;
+    const mimeType = event.mimeType || "audio/wav";
+
+    try {
+      setBusy(true);
+      dispatchHandsFree({ type: "SUBMIT_STARTED" });
+      updateVoiceSessionTurn(requestId, {
+        userText: "Voice message",
+        assistantText: "",
+        status: "thinking",
+        replyLanguage: settings.languageMode,
+      });
+
+      const audioInfo = await assertUsableAudioFile(uri);
+      audioFileSize = Number((audioInfo as any).size || 0) || undefined;
+      assertMinimumVoiceRecordingDuration(event.durationMs, 700);
+      uploadStarted = true;
+      const { res, voiceLanguage } = await uploadVoiceAudioForAnalysis({
+        requestId,
+        uri,
+        fileName: "handsfree-command.wav",
+        mimeType,
+        source: "handsfree",
+        voiceSurface: requestVoiceSurface,
+        voiceSessionId,
+        fileSize: audioFileSize,
+      });
+
+      if (!isActiveChatRequest(requestId)) {
+        return;
+      }
+
+      const nextItem = normalizeItemForRequestSource(normalizeChatTurnPayload(res), "handsfree");
+      const assistantReplyText = String(nextItem.details || "").trim();
+      const userTranscript = String(nextItem.raw_text || nextItem.transcript || "Voice message").trim();
+      setHandsFreeTranscript(userTranscript);
+      updateVoiceSessionTurn(requestId, {
+        userText: userTranscript,
+        assistantText: assistantReplyText,
+        status: "done",
+        replyLanguage: voiceLanguage.replyLanguage,
+      });
+      voiceSessionItemsPendingHistoryRef.current = [
+        ...voiceSessionItemsPendingHistoryRef.current,
+        nextItem,
+      ];
+      openReturnedFile(firstOpenableFile(nextItem, "files"));
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      if (
+        assistantReplyText &&
+        shouldAutoSpeakReply({
+          source: "handsfree",
+          autoSpeakReplies: settings.autoSpeakReplies,
+          handsFreeMode: "conversation",
+          voiceSurface: requestVoiceSurface,
+          voiceOnlyMode,
+        })
+      ) {
+        void playAgentReply(assistantReplyText, {
+          requestId,
+          source: "handsfree",
+          voiceSurface: requestVoiceSurface,
+          voiceLanguage,
+          voiceSessionId,
+        });
+      } else {
+        dispatchHandsFree({ type: "SUBMIT_FINISHED" });
+        setHandsFreeStatus("Listening");
+        await notifyHandsFreeTtsCompleted();
+      }
+
+      if (nextItem.intent === "reminder" && nextItem.datetime) {
+        setPendingReminder({
+          title: nextItem.title || "Reminder",
+          details: nextItem.details || nextItem.raw_text,
+          datetimeText: nextItem.datetime,
+        });
+        setConfirmOpen(true);
+      }
+    } catch (error: unknown) {
+      const tooShortAudio = isTooShortAudioError(error);
+      const emptyAudio =
+        error instanceof Error && error.message === EMPTY_AUDIO_MESSAGE;
+      logVoiceTelemetry("client_voice_upload_failed", {
+        request_id: requestId,
+        route_taken: uploadStarted ? "voice_upload" : "voice_file_validation",
+        voice_phase: uploadStarted ? "upload_failed" : "file_validation_failed",
+        voice_surface: requestVoiceSurface,
+        voice_session_id: voiceSessionId || undefined,
+        channel: "handsfree",
+        client_source: "handsfree",
+        file_size: audioFileSize,
+        mime_type: mimeType,
+        error_type: emptyAudio
+          ? "empty_audio"
+          : tooShortAudio
+            ? "too_short_audio"
+            : safeVoiceErrorType(
+                error,
+                uploadStarted
+                  ? "voice_upload_failed"
+                  : "voice_file_validation_failed",
+              ),
+      } as any);
+      if (isActiveChatRequest(requestId)) {
+        const message = emptyAudio
+          ? EMPTY_AUDIO_MESSAGE
+          : tooShortAudio
+            ? TOO_SHORT_AUDIO_MESSAGE
+            : VOICE_UNAVAILABLE_MESSAGE;
+        updateVoiceSessionTurn(requestId, {
+          userText: "Voice message",
+          assistantText: message,
+          status: "error",
+        });
+        setHandsFreeStatus("Try again");
+        dispatchHandsFree({ type: "SUBMIT_FINISHED" });
+        warnChatFailure(error, requestId, "handsfree");
+      }
+      await notifyHandsFreeTtsCompleted();
+    } finally {
+      await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
+      if (isActiveChatRequest(requestId)) {
+        activeChatRequestIdRef.current = null;
+        setBusy(false);
+      }
+    }
+  }
+
   async function stopAndAnalyze() {
     if (recordingPhaseRef.current === "starting") {
       if (!stopWhenReadyRef.current) {
@@ -3046,46 +3271,17 @@ export default function Home() {
         throw error;
       }
 
-      const form = new FormData();
-      form.append(
-        "file",
-        {
-          uri,
-          name: "audio.m4a",
-          type: "audio/m4a",
-        } as any
-      );
-
-      const timeoutMs = await getChatTurnTimeoutMs("voice");
-      const voiceLanguage = resolveVoiceLanguageParams({
-        settingsLanguageMode: settings.languageMode,
-        profileReplyLanguage: profile?.replyLanguage || null,
-      });
       uploadStarted = true;
-      logVoiceTelemetry("client_voice_upload_started", {
-        request_id: requestId,
-        route_taken: "voice_upload",
-        voice_phase: "uploading",
-        voice_surface: requestVoiceSurface,
-        voice_session_id: voiceSessionId || undefined,
-        file_size: audioFileSize,
-        mime_type: "audio/m4a",
-        requested_reply_language: voiceLanguage.replyLanguage,
-        requested_speech_language: voiceLanguage.speechLanguage,
-        tts_language_code: voiceLanguage.ttsLanguageCode,
-        settings_language_mode: settings.languageMode,
+      const { res, voiceLanguage } = await uploadVoiceAudioForAnalysis({
+        requestId,
+        uri,
+        fileName: "audio.m4a",
+        mimeType: "audio/m4a",
+        source: "voice",
+        voiceSurface: requestVoiceSurface,
+        voiceSessionId,
+        fileSize: audioFileSize,
       });
-      const res = await withLocalTimeout(
-        apiPostForm<BackendChatResponse | ChatHistoryItem>(
-          `/api/transcribe-and-analyze?user_id=${profile?.userId ?? ""}&reply_language=${voiceLanguage.replyLanguage}&speech_language=${voiceLanguage.speechLanguage}`,
-          form,
-        ),
-        timeoutMs,
-        {
-          source: "voice",
-          message: friendlyLocalTimeoutMessage(),
-        },
-      );
 
       if (!isActiveChatRequest(requestId)) {
         return;

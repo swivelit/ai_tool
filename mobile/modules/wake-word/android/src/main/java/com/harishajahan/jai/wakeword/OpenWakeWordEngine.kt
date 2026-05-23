@@ -26,7 +26,7 @@ data class WakeWordEvent(
   val timestamp: Long,
 )
 
-private data class WakeWordConfig(
+internal data class WakeWordConfig(
   val phraseKey: String,
   val wakePhrase: String,
   val wakeModelPath: String,
@@ -51,9 +51,9 @@ class OpenWakeWordEngine {
   private var frameMs = 80
   private var lastScore: Double? = null
   private var lastError: String? = null
-  private var lastWakeAtMs = 0L
-  private var lastScoreEventAtMs = 0L
   private var audioSource: PcmAudioSource? = null
+  private var frameQueue: AudioFrameQueue? = null
+  private var inferenceWorker: WakeInferenceWorker? = null
   private var pipeline: WakeWordPipeline? = null
 
   fun isAvailable(): Boolean {
@@ -79,39 +79,9 @@ class OpenWakeWordEngine {
     frameMs = parsed.frameMs
     lastError = null
     lastScore = null
-    lastWakeAtMs = 0L
-    lastScoreEventAtMs = 0L
-
-    if (parsed.sampleRate != 16000) {
-      throw WakeWordException(
-        "JAI_WAKE_SAMPLE_RATE_UNSUPPORTED",
-        "OpenWakeWord wake detection requires 16 kHz PCM audio.",
-      )
-    }
-
-    val wakeModel = resolveFilePath(parsed.wakeModelPath, "wakeModel")
-    val melModel = parsed.melspectrogramModelPath?.let {
-      resolveFilePath(it, "melspectrogramModel")
-    } ?: throw WakeWordException(
-      "JAI_WAKE_MODEL_UNSUPPORTED",
-      "Wake model bundle is missing melspectrogram.onnx.",
-    )
-    val embeddingModel = parsed.embeddingModelPath?.let {
-      resolveFilePath(it, "embeddingModel")
-    } ?: throw WakeWordException(
-      "JAI_WAKE_MODEL_UNSUPPORTED",
-      "Wake model bundle is missing embedding_model.onnx.",
-    )
 
     val nextPipeline = try {
-      OnnxWakeWordPipeline(
-        wakeModel = wakeModel,
-        melModel = melModel,
-        embeddingModel = embeddingModel,
-        phraseKey = parsed.phraseKey.ifBlank { null },
-        sampleRate = parsed.sampleRate,
-        frameMs = parsed.frameMs,
-      )
+      createPipeline(parsed)
     } catch (error: WakeWordException) {
       lastError = error.detail
       throw error
@@ -125,40 +95,30 @@ class OpenWakeWordEngine {
     modelLoaded = true
     running.set(true)
 
+    val nextFrameQueue = AudioFrameQueue(capacityFrames = 16)
     val nextAudioSource = PcmAudioSource(parsed.sampleRate, parsed.frameMs)
+    val nextInferenceWorker = WakeInferenceWorker(
+      frameQueue = nextFrameQueue,
+      pipeline = nextPipeline,
+      threshold = parsed.threshold,
+      minWakeIntervalMs = parsed.minWakeIntervalMs,
+      onWake = onWake,
+      onScore = { event ->
+        lastScore = event.score
+        onScore(event)
+      },
+      onError = { code, message ->
+        lastError = message
+        onError(code, message)
+        stop()
+      },
+    )
+    frameQueue = nextFrameQueue
     audioSource = nextAudioSource
+    inferenceWorker = nextInferenceWorker
     try {
-      nextAudioSource.start { frame ->
-        if (!running.get()) return@start
-        try {
-          val score = nextPipeline.processFrame(frame) ?: return@start
-          lastScore = score
-          val now = System.currentTimeMillis()
-          val event = WakeWordEvent(
-            score = score,
-            model = nextPipeline.modelName,
-            phraseKey = parsed.phraseKey.ifBlank { null },
-            timestamp = now,
-          )
-          if (now - lastScoreEventAtMs >= 1000L) {
-            lastScoreEventAtMs = now
-            onScore(event)
-          }
-          if (score >= parsed.threshold && now - lastWakeAtMs >= parsed.minWakeIntervalMs) {
-            lastWakeAtMs = now
-            onWake(event)
-          }
-        } catch (error: WakeWordException) {
-          lastError = error.detail
-          onError(error.code, error.detail)
-          stop()
-        } catch (error: Throwable) {
-          val detail = "Wake-word inference failed: ${error.message ?: "unknown error"}"
-          lastError = detail
-          onError("JAI_WAKE_INFERENCE_FAILED", detail)
-          stop()
-        }
-      }
+      nextInferenceWorker.start()
+      nextAudioSource.start(nextFrameQueue)
     } catch (error: Throwable) {
       stop()
       val detail = "Could not start wake-word audio capture: ${error.message ?: "unknown error"}"
@@ -176,6 +136,16 @@ class OpenWakeWordEngine {
       audioSource = null
     }
     try {
+      frameQueue?.close()
+    } finally {
+      frameQueue = null
+    }
+    try {
+      inferenceWorker?.stop()
+    } finally {
+      inferenceWorker = null
+    }
+    try {
       pipeline?.close()
     } finally {
       pipeline = null
@@ -191,6 +161,7 @@ class OpenWakeWordEngine {
       "frameMs" to frameMs,
       "lastScore" to lastScore,
       "error" to lastError,
+      "droppedFrames" to (frameQueue?.stats()?.droppedFrames ?: 0L),
     )
   }
 
@@ -302,7 +273,7 @@ class OpenWakeWordEngine {
     )
   }
 
-  private fun parseConfig(config: Map<String, Any?>): WakeWordConfig {
+  internal fun parseConfig(config: Map<String, Any?>): WakeWordConfig {
     val modelPaths = config["modelPaths"] as? Map<*, *>
       ?: throw WakeWordException("JAI_WAKE_MODEL_PATHS_REQUIRED", "start(config) requires modelPaths.")
     val wakeModelPath = (modelPaths["wakeModel"] as? String)?.trim().orEmpty()
@@ -319,6 +290,38 @@ class OpenWakeWordEngine {
       sampleRate = (config["sampleRate"] as? Number)?.toInt() ?: 16000,
       frameMs = (config["frameMs"] as? Number)?.toInt() ?: 80,
       minWakeIntervalMs = (config["minWakeIntervalMs"] as? Number)?.toLong() ?: 1800L,
+    )
+  }
+
+  internal fun createPipeline(parsed: WakeWordConfig): WakeWordPipeline {
+    if (parsed.sampleRate != 16000) {
+      throw WakeWordException(
+        "JAI_WAKE_SAMPLE_RATE_UNSUPPORTED",
+        "OpenWakeWord wake detection requires 16 kHz PCM audio.",
+      )
+    }
+
+    val wakeModel = resolveFilePath(parsed.wakeModelPath, "wakeModel")
+    val melModel = parsed.melspectrogramModelPath?.let {
+      resolveFilePath(it, "melspectrogramModel")
+    } ?: throw WakeWordException(
+      "JAI_WAKE_MODEL_UNSUPPORTED",
+      "Wake model bundle is missing melspectrogram.onnx.",
+    )
+    val embeddingModel = parsed.embeddingModelPath?.let {
+      resolveFilePath(it, "embeddingModel")
+    } ?: throw WakeWordException(
+      "JAI_WAKE_MODEL_UNSUPPORTED",
+      "Wake model bundle is missing embedding_model.onnx.",
+    )
+
+    return OnnxWakeWordPipeline(
+      wakeModel = wakeModel,
+      melModel = melModel,
+      embeddingModel = embeddingModel,
+      phraseKey = parsed.phraseKey.ifBlank { null },
+      sampleRate = parsed.sampleRate,
+      frameMs = parsed.frameMs,
     )
   }
 
@@ -349,7 +352,7 @@ class OpenWakeWordEngine {
   }
 }
 
-private interface WakeWordPipeline : AutoCloseable {
+internal interface WakeWordPipeline : AutoCloseable {
   val modelName: String
   val phraseKey: String?
   fun processFrame(frame: ShortArray): Double?
@@ -395,7 +398,7 @@ private class DeterministicWakeWordPipeline(
   }
 }
 
-private class OnnxWakeWordPipeline(
+internal class OnnxWakeWordPipeline(
   wakeModel: File,
   melModel: File,
   embeddingModel: File,

@@ -22,6 +22,10 @@ const modalSource = fs.readFileSync(
   path.join(__dirname, "..", "app", "modal.tsx"),
   "utf8",
 );
+const wakeWordSource = fs.readFileSync(
+  path.join(__dirname, "..", "lib", "wakeWordEngine.ts"),
+  "utf8",
+);
 
 function sliceAround(marker: string, radius = 900) {
   const index = source.indexOf(marker);
@@ -188,20 +192,23 @@ describe("chat voice press-and-hold source", () => {
     expect(source).not.toContain("Hold the orb to talk");
   });
 
-  it("uses native OpenWakeWord wake detection and single-owner command STT", () => {
+  it("uses native OpenWakeWord session capture and command audio without JS mic handoff", () => {
     expect(source).toContain('from "@/lib/handsFreeWake"');
     expect(source).toContain('from "@/lib/wakeWordEngine"');
     expect(source).toContain('from "@/lib/handsFreeRecognizer"');
     expect(source).toContain('from "@/lib/handsFreeStateMachine"');
-    expect(source).toContain("startWakeWordListening");
-    expect(source).toContain("stopWakeWordListening");
+    expect(source).toContain("startHandsFreeSession");
+    expect(source).toContain("stopHandsFreeSession");
+    expect(source).toContain("notifyHandsFreeTtsStarted");
+    expect(source).toContain("notifyHandsFreeTtsCompleted");
     expect(source).toContain("ensureWakeModel");
     expect(source).toContain("isHandsFreeWakeEligible");
     expect(source).toContain("handsFreeStateReducer");
     expect(source).toContain("openHandsFreeVoiceSheet");
-    expect(source).toContain("startNativeWakeEngine");
-    expect(source).toContain("startHandsFreeCommandRecognizer");
+    expect(source).toContain("startNativeHandsFreeSession");
     expect(source).toContain("handleNativeWakeWordDetected");
+    expect(source).toContain("handleNativeHandsFreeCommandAudio");
+    expect(source).toContain("submitHandsFreeCommandAudio");
     expect(source).toContain("handleHandsFreeFinalTranscript");
     expect(source).toContain("isHandsFreeStopCommand");
     expect(source).not.toContain("matchWakePhrase");
@@ -228,6 +235,7 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("replySoundRef.current");
     expect(source).toContain("abortHandsFreeRecognizer(false)");
     expect(source).toContain('handsFreeRecognizer.start("handsfree-command"');
+    expect(source).toContain("fallback");
     expect(source).toContain("buildCommandRecognitionLocalePlan");
     expect(source).toContain("isLanguageNotSupportedRecognitionError");
     expect(source).toContain("contextualStrings");
@@ -238,20 +246,20 @@ describe("chat voice press-and-hold source", () => {
     expect(source).not.toContain("continuous: true");
     expect(source).toContain("androidIntentOptions");
     expect(source).toContain("EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS");
+    expect(source).not.toContain("stopWakeWordListening().then");
   });
 
-  it("requests microphone permission before native wake capture and retries only transient wake errors", () => {
-    const block = sliceAround("const startNativeWakeEngine = useCallback", 2600);
+  it("requests microphone permission before native session capture and leaves retry policy native-owned", () => {
+    const block = sliceAround("const startNativeHandsFreeSession = useCallback", 3000);
 
     expect(block.indexOf("Audio.requestPermissionsAsync")).toBeGreaterThanOrEqual(0);
     expect(block.indexOf("Audio.requestPermissionsAsync")).toBeLessThan(
-      block.indexOf("startWakeWordListening"),
+      block.indexOf("startHandsFreeSession"),
     );
     expect(block).toContain('setHandsFreeStatus("Try again")');
     expect(block).toContain('dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" })');
-    expect(source).toContain("scheduleWakeRetry");
-    expect(source).toContain("WAKE_RETRY_DELAYS_MS");
-    expect(source).toContain("wakeRetryDelayMs");
+    expect(source).not.toContain("scheduleWakeRetry");
+    expect(source).not.toContain("wakeRetryDelayMs");
     expect(source).toContain("isPermanentWakeError");
     expect(source).not.toContain('Alert.alert("Try again"');
 
@@ -264,7 +272,7 @@ describe("chat voice press-and-hold source", () => {
   it("keeps hands-free E2E hooks debug-only and separate from the composer mic", () => {
     expect(source).toContain("isE2eMockHandsFreeEnabled");
     expect(source).toContain("getE2eHandsFreeWakePhrase");
-    expect(source).toContain("getE2eHandsFreeCommand");
+    expect(wakeWordSource).toContain("getE2eHandsFreeCommand");
     expect(source).toContain("simulateE2eHandsFreeWakeCommand");
     expect(source).toContain("simulateE2eHandsFreeStop");
     expect(source).toContain('testID="e2e-hands-free-trigger-button"');

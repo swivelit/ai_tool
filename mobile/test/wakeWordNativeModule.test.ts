@@ -26,8 +26,17 @@ describe("JaiWakeWord native module", () => {
     expect(config).toContain("WakeWordModule");
     expect(gradle).toContain("onnxruntime-android:1.25.1");
     expect(manifest).toContain("android.permission.RECORD_AUDIO");
+    expect(manifest).toContain("android.permission.FOREGROUND_SERVICE");
+    expect(manifest).toContain("android.permission.FOREGROUND_SERVICE_MICROPHONE");
+    expect(manifest).toContain("android.permission.POST_NOTIFICATIONS");
+    expect(manifest).toContain("HandsFreeForegroundService");
+    expect(manifest).toContain('android:foregroundServiceType="microphone"');
     expect(module).toContain('Name("JaiWakeWord")');
-    expect(module).toContain('Events("onWake", "onWakeScore", "onWakeError")');
+    expect(module).toContain("onCommandAudio");
+    expect(module).toContain("startSession");
+    expect(module).toContain("stopSession");
+    expect(module).toContain("notifyTtsStarted");
+    expect(module).toContain("notifyTtsCompleted");
     expect(module).toContain("engine.isAvailable()");
     expect(module).toContain("Handler(Looper.getMainLooper())");
     expect(module).toContain("sendEventOnMain");
@@ -39,9 +48,8 @@ describe("JaiWakeWord native module", () => {
     expect(engine).toContain("OnnxTensor.createTensor");
     expect(engine).toContain("OnnxWakeWordPipeline");
     expect(engine).toContain("processFrame");
-    expect(engine).toContain("nextAudioSource.start");
-    expect(engine).toContain("nextPipeline.processFrame");
-    expect(engine).toContain("score >= parsed.threshold");
+    expect(engine).toContain("WakeInferenceWorker");
+    expect(engine).toContain("AudioFrameQueue");
     expect(engine).toContain("parsed.minWakeIntervalMs");
     expect(engine).toContain("DeterministicWakeWordPipeline");
     expect(engine).toContain('"deterministicTestSeam" to true');
@@ -58,7 +66,27 @@ describe("JaiWakeWord native module", () => {
     expect(engine).not.toContain("Native OpenWakeWord inference is not enabled");
     expect(engine).not.toContain("return false");
     expect(audio).toContain("AudioRecord");
+    expect(audio).toContain("AudioFrameQueue");
+    expect(audio).toContain("frameQueue.offer");
     expect(audio).toContain("MediaRecorder.AudioSource.VOICE_RECOGNITION");
+    const controller = read(
+      "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/HandsFreeController.kt",
+    );
+    const service = read(
+      "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/HandsFreeForegroundService.kt",
+    );
+    expect(controller).toContain("PreRollBuffer");
+    expect(controller).toContain("EnergyVoiceActivityDetector");
+    expect(controller).toContain("writeCommandWav");
+    expect(controller).toContain("onCommandAudio");
+    expect(controller).toContain("COMMAND_LISTENING");
+    expect(service).toContain("FOREGROUND_SERVICE_TYPE_MICROPHONE");
+    expect(service).toContain("startForeground");
+    const inferenceWorker = read(
+      "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/WakeInferenceWorker.kt",
+    );
+    expect(inferenceWorker).toContain("pipeline.processFrame");
+    expect(inferenceWorker).toContain("score >= threshold");
   });
 
   it("keeps iOS structurally wired and clearly unsupported until ONNX Runtime is linked", () => {

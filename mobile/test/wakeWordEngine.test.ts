@@ -6,13 +6,16 @@ import { normalizeAssistantSettings } from "@/lib/storage";
 import {
   ensureWakeModel,
   saveWakeModelBundleBytes,
+  startHandsFreeSession,
   startWakeWordListening,
+  stopHandsFreeSession,
   stopWakeWordListening,
   validateWakeModelBundleConfig,
   wakeModelStateFromApiStatus,
 } from "@/lib/wakeWordEngine";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.doUnmock("../lib/api");
   vi.doUnmock("../modules/wake-word");
@@ -161,6 +164,12 @@ async function importWakeWordEngineWithMocks(options: {
   }));
   const nativeModule = {
       isAvailable: () => true,
+      configure: vi.fn(async () => ({ ok: true })),
+      startSession: vi.fn(async () => ({ ok: true })),
+      stopSession: vi.fn(async () => ({ ok: true })),
+      cancelCommand: vi.fn(async () => ({ ok: true })),
+      notifyTtsStarted: vi.fn(async () => ({ ok: true })),
+      notifyTtsCompleted: vi.fn(async () => ({ ok: true })),
       start: vi.fn(async () => {
         if (options.startError) throw options.startError;
         return { ok: true };
@@ -190,6 +199,8 @@ async function importWakeWordEngineWithMocks(options: {
     apiFetchRaw,
     validateModelBundle,
     start: nativeModule.start,
+    startSession: nativeModule.startSession,
+    stopSession: nativeModule.stopSession,
     listenerRemoves,
   };
 }
@@ -485,6 +496,42 @@ describe("wakeWordEngine", () => {
     expect(listenerRemoves.every((remove) => remove.mock.calls.length === 1)).toBe(true);
   });
 
+  it("starts and stops the native hands-free session API", async () => {
+    const { module, startSession, stopSession, listenerRemoves } =
+      await importWakeWordEngineWithMocks({});
+
+    await module.startHandsFreeSession(
+      {
+        status: "ready",
+        ready: true,
+        wakePhrase: "Hey Elli",
+        phraseKey: "hey-elli",
+        modelPaths: {
+          wakeModel: "file:///wake.onnx",
+          melspectrogramModel: "file:///melspectrogram.onnx",
+          embeddingModel: "file:///embedding_model.onnx",
+        },
+        modelRoles: ["wake", "melspectrogram", "embedding"],
+      },
+      { onCommand: () => undefined, onCommandAudio: () => undefined },
+    );
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phraseKey: "hey-elli",
+        modelPaths: expect.objectContaining({
+          wakeModel: "file:///wake.onnx",
+        }),
+      }),
+    );
+
+    stopSession.mockClear();
+    await module.stopHandsFreeSession();
+
+    expect(stopSession).toHaveBeenCalledTimes(1);
+    expect(listenerRemoves.length).toBeGreaterThanOrEqual(5);
+    expect(listenerRemoves.every((remove) => remove.mock.calls.length === 1)).toBe(true);
+  });
+
   it("supports debug E2E mock wake only when explicitly enabled", async () => {
     vi.stubEnv("NODE_ENV", "test");
     vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE", "1");
@@ -504,6 +551,37 @@ describe("wakeWordEngine", () => {
       expect.objectContaining({
         model: "e2e_mock",
         phraseKey: "e2e-mock",
+      }),
+    );
+  });
+
+  it("supports debug E2E mock hands-free command events", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE", "1");
+    vi.stubEnv("EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND", "show my reminders");
+    const settings = normalizeAssistantSettings({
+      handsFreeEnabled: true,
+      wakePhrase: "Hey Elli",
+    });
+    const model = await ensureWakeModel(settings);
+    const onCommand = vi.fn();
+    const onWake = vi.fn();
+
+    await startHandsFreeSession(model, { onWake, onCommand });
+    await vi.advanceTimersByTimeAsync(500);
+    await stopHandsFreeSession();
+
+    expect(onWake).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "e2e_mock",
+        phraseKey: "e2e-mock",
+      }),
+    );
+    expect(onCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "show my reminders",
+        empty: false,
       }),
     );
   });

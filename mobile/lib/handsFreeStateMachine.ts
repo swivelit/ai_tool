@@ -3,6 +3,7 @@ export type HandsFreeState =
   | "wakeListening"
   | "wakeDetected"
   | "commandListening"
+  | "commandReady"
   | "submitting"
   | "speaking"
   | "recording"
@@ -19,6 +20,7 @@ export type HandsFreeEvent =
   | { type: "WAKE_PERMANENT_ERROR" }
   | { type: "WAKE_DETECTED" }
   | { type: "COMMAND_STARTED" }
+  | { type: "COMMAND_READY" }
   | { type: "COMMAND_FINAL" }
   | { type: "COMMAND_EMPTY" }
   | { type: "SUBMIT_STARTED" }
@@ -111,6 +113,8 @@ export function handsFreeStateReducer(
       return { ...snapshot, state: "wakeDetected" };
     case "COMMAND_STARTED":
       return { ...snapshot, state: "commandListening" };
+    case "COMMAND_READY":
+      return { ...snapshot, state: "commandReady" };
     case "COMMAND_FINAL":
       return { ...snapshot, state: "submitting" };
     case "COMMAND_EMPTY":
