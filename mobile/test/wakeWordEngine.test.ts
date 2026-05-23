@@ -109,6 +109,7 @@ function makeWakeBundle(
 async function importWakeWordEngineWithMocks(options: {
   validateResult?: any;
   validateError?: Error;
+  startError?: Error;
 }) {
   vi.resetModules();
   const validateModelBundle = vi.fn(async (config: any) => {
@@ -160,9 +161,14 @@ async function importWakeWordEngineWithMocks(options: {
   }));
   const nativeModule = {
       isAvailable: () => true,
+      start: vi.fn(async () => {
+        if (options.startError) throw options.startError;
+        return { ok: true };
+      }),
       validateModelBundle,
       stop: vi.fn(async () => ({ ok: true })),
     };
+  const listenerRemoves: Array<ReturnType<typeof vi.fn>> = [];
   (globalThis as any).__JAI_WAKE_WORD_NATIVE_MODULE_FOR_TESTS__ = nativeModule;
   vi.doMock("../modules/wake-word", () => ({
     default: nativeModule,
@@ -171,7 +177,9 @@ async function importWakeWordEngineWithMocks(options: {
     requireNativeModule: vi.fn(() => nativeModule),
     EventEmitter: class {
       addListener() {
-        return { remove: () => undefined };
+        const remove = vi.fn();
+        listenerRemoves.push(remove);
+        return { remove };
       }
     },
   }));
@@ -181,6 +189,8 @@ async function importWakeWordEngineWithMocks(options: {
     apiGet,
     apiFetchRaw,
     validateModelBundle,
+    start: nativeModule.start,
+    listenerRemoves,
   };
 }
 
@@ -291,6 +301,27 @@ describe("wakeWordEngine", () => {
 
   it.each([
     [
+      "missing hash",
+      ({ manifest }: any) => {
+        delete manifest.model_files[0].sha256;
+      },
+      /missing SHA-256/,
+    ],
+    [
+      "missing byte length",
+      ({ manifest }: any) => {
+        delete manifest.model_files[0].bytes;
+      },
+      /missing byte length/,
+    ],
+    [
+      "invalid hash",
+      ({ manifest }: any) => {
+        manifest.model_files[0].sha256 = "not-a-sha";
+      },
+      /invalid SHA-256/,
+    ],
+    [
       "hash mismatch",
       ({ manifest }: any) => {
         manifest.model_files[0].sha256 = "0".repeat(64);
@@ -336,6 +367,34 @@ describe("wakeWordEngine", () => {
     ],
   ])("rejects wake bundle with %s", async (_name, mutate, expected) => {
     await expect(saveWakeModelBundleBytes(makeWakeBundle(mutate as any))).rejects.toThrow(expected);
+  });
+
+  it.each([
+    ["../escape"],
+    ["/tmp/escape"],
+    ["a/b"],
+    ["a\\b"],
+    ["."],
+    [""],
+    ["x".repeat(65)],
+  ])("rejects unsafe wake bundle phrase_key %j", async (phraseKey) => {
+    await expect(
+      saveWakeModelBundleBytes(
+        makeWakeBundle(({ manifest }) => {
+          manifest.phrase_key = phraseKey;
+        }),
+      ),
+    ).rejects.toThrow(/unsafe phrase_key/);
+  });
+
+  it("accepts a safe wake bundle phrase_key", async () => {
+    const saved = await saveWakeModelBundleBytes(
+      makeWakeBundle(({ manifest }) => {
+        manifest.phrase_key = "hey-elli";
+      }),
+    );
+
+    expect(saved.modelPaths.wakeModel).toContain("/wake_word_models/hey-elli/hey_elli.onnx");
   });
 
   it("does not mark a downloaded bundle ready until native validation succeeds", async () => {
@@ -396,6 +455,34 @@ describe("wakeWordEngine", () => {
 
     expect(model.ready).toBe(false);
     expect(model.status).toBe("unsupported");
+  });
+
+  it("removes native event subscriptions when native start fails", async () => {
+    const { module, start, listenerRemoves } = await importWakeWordEngineWithMocks({
+      startError: new Error("AudioRecord start failed"),
+    });
+
+    await expect(
+      module.startWakeWordListening(
+        {
+          status: "ready",
+          ready: true,
+          wakePhrase: "Hey Elli",
+          phraseKey: "hey-elli",
+          modelPaths: {
+            wakeModel: "file:///wake.onnx",
+            melspectrogramModel: "file:///melspectrogram.onnx",
+            embeddingModel: "file:///embedding_model.onnx",
+          },
+          modelRoles: ["wake", "melspectrogram", "embedding"],
+        },
+        { onWake: () => undefined },
+      ),
+    ).rejects.toThrow(/AudioRecord start failed/);
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(listenerRemoves).toHaveLength(2);
+    expect(listenerRemoves.every((remove) => remove.mock.calls.length === 1)).toBe(true);
   });
 
   it("supports debug E2E mock wake only when explicitly enabled", async () => {

@@ -12,7 +12,12 @@ describe("wake phrase trainer source", () => {
     expect(setupSource).toContain("/api/openwakeword/enrollment/finalize");
     expect(setupSource).toContain("/api/openwakeword/enrollment/model/status");
     expect(setupSource).toContain("downloadAndSaveWakeModelBundle");
+    expect(setupSource).toContain("validateNativeWakeModelBundle(candidateWakeModel)");
     expect(setupSource).toContain("if (modelStatus.ready)");
+    expect(setupSource.indexOf("validateNativeWakeModelBundle(candidateWakeModel)")).toBeLessThan(
+      setupSource.indexOf('wake_state: "active"'),
+    );
+    expect(setupSource).toContain("status: failureStatus");
     expect(setupSource).toContain('status: "pending"');
     expect(setupSource).not.toContain('positiveFiles.length >= MINIMUM_POSITIVE && negativeFiles.length >= MINIMUM_NEGATIVE\n        ? "ready_now"');
     expect(setupSource).not.toContain("powers wake detection");

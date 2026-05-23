@@ -62,7 +62,9 @@ function safeFlatOnnxFileName(value, role) {
 
 function normalizeSha(value, file) {
   const sha = String(value || "").trim().toLowerCase();
-  if (!sha) return "";
+  if (!sha) {
+    fail(`Wake model manifest is missing sha256 metadata for ${file}`);
+  }
   if (!/^[a-f0-9]{64}$/.test(sha)) {
     fail(`Wake model manifest has invalid sha256 metadata for ${file}`);
   }
@@ -78,7 +80,10 @@ for (const entry of modelFiles) {
   if (byRole.has(role)) {
     fail(`Wake model manifest contains duplicate ${role} entries.`);
   }
-  byRole.set(role, { file, expectedBytes: entry?.bytes, expectedSha: normalizeSha(entry?.sha256, file) });
+  if (typeof entry?.bytes === "undefined" || entry?.bytes === null) {
+    fail(`Wake model manifest is missing byte length for ${file}`);
+  }
+  byRole.set(role, { file, expectedBytes: entry.bytes, expectedSha: normalizeSha(entry?.sha256, file) });
 }
 
 for (const role of requiredRoles) {
@@ -98,20 +103,16 @@ for (const role of requiredRoles) {
   if (stat.size <= 0) {
     fail(`Wake model bundle role ${role} points to an empty file: ${filePath}`);
   }
-  if (typeof entry.expectedBytes !== "undefined" && entry.expectedBytes !== null) {
-    const expectedBytes = Number(entry.expectedBytes);
-    if (!Number.isInteger(expectedBytes) || expectedBytes < 0) {
-      fail(`Wake model manifest has invalid byte length for ${entry.file}`);
-    }
-    if (stat.size !== expectedBytes) {
-      fail(`Wake model bundle byte length mismatch for ${entry.file}`);
-    }
+  const expectedBytes = Number(entry.expectedBytes);
+  if (!Number.isInteger(expectedBytes) || expectedBytes < 0) {
+    fail(`Wake model manifest has invalid byte length for ${entry.file}`);
   }
-  if (entry.expectedSha) {
-    const actualSha = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-    if (actualSha !== entry.expectedSha) {
-      fail(`Wake model bundle SHA-256 mismatch for ${entry.file}`);
-    }
+  if (stat.size !== expectedBytes) {
+    fail(`Wake model bundle byte length mismatch for ${entry.file}`);
+  }
+  const actualSha = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  if (actualSha !== entry.expectedSha) {
+    fail(`Wake model bundle SHA-256 mismatch for ${entry.file}`);
   }
 }
 

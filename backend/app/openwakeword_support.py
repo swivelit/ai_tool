@@ -56,6 +56,7 @@ MODEL_FRAME_MS = 80
 MODEL_THRESHOLD_DEFAULT = 0.5
 MODEL_BUNDLE_VERSION = 1
 MODEL_FILE_ROLES = {"wake", "melspectrogram", "embedding"}
+ALLOW_CUSTOM_MODEL_PATH_ENV = "JAI_OPENWAKEWORD_ALLOW_CUSTOM_MODEL_PATH"
 
 
 
@@ -165,9 +166,16 @@ class OpenWakeWordSupport:
         negative = sorted(paths.negative_dir.glob("*.wav"))
         manifest = self._load_latest_manifest(paths)
         base_model_key = SUPPORTED_BASE_MODELS.get(normalized_phrase)
-        wake_state = self._derive_wake_state(base_model_key, manifest)
+        wake_state = self._derive_wake_state(base_model_key, manifest, paths)
         verifier_path = manifest.get("verifier_path")
         custom_model_path = manifest.get("custom_model_path")
+        custom_model_ready = False
+        if custom_model_path:
+            try:
+                self._validate_custom_model_path(Path(str(custom_model_path)).expanduser(), paths)
+                custom_model_ready = True
+            except (EnrollmentValidationError, TrainingNotSupportedError):
+                custom_model_ready = False
 
         return {
             "ok": True,
@@ -181,7 +189,7 @@ class OpenWakeWordSupport:
             "supported_base_model": base_model_key,
             "custom_phrase_requires_colab": wake_state in {"needs_training", "training"} and not bool(base_model_key),
             "verifier_ready": bool(verifier_path and Path(verifier_path).exists()),
-            "custom_model_ready": bool(custom_model_path and Path(custom_model_path).exists()) if custom_model_path else False,
+            "custom_model_ready": custom_model_ready,
             "wake_state": wake_state,
             "wake_state_label": WAKE_STATE_LABELS[wake_state],
             "can_run_instantly": wake_state in {"ready_now", "active"},
@@ -320,10 +328,16 @@ class OpenWakeWordSupport:
         custom_model_error: Optional[str] = None
         validated_custom_model_path: Optional[Path] = None
 
+        if custom_model_path and os.getenv(ALLOW_CUSTOM_MODEL_PATH_ENV) != "1":
+            raise EnrollmentValidationError(
+                "Custom model path activation is disabled."
+            )
+
         if resolved_custom_model_path:
             try:
                 validated_custom_model_path = self._validate_custom_model_path(
-                    Path(str(resolved_custom_model_path)).expanduser()
+                    Path(str(resolved_custom_model_path)).expanduser(),
+                    paths,
                 )
                 custom_model_ready = True
             except EnrollmentValidationError:
@@ -335,12 +349,12 @@ class OpenWakeWordSupport:
             except TrainingNotSupportedError as exc:
                 if custom_model_path:
                     candidate = Path(str(resolved_custom_model_path)).expanduser().resolve()
-                    allowed_root = self.root_dir.resolve()
+                    allowed_root = paths.root.resolve()
                     if (
                         candidate.suffix.lower() == ".onnx"
                         and candidate.exists()
                         and candidate.is_file()
-                        and (candidate == allowed_root or allowed_root in candidate.parents)
+                        and allowed_root in candidate.parents
                     ):
                         validated_custom_model_path = candidate
                     custom_model_error = str(exc)
@@ -662,7 +676,7 @@ class OpenWakeWordSupport:
                 "Custom wake phrase model is pending. Upload or attach a trained OpenWakeWord model before downloading a bundle."
             )
 
-        model_path = self._validate_custom_model_path(Path(str(custom_model_path)).expanduser())
+        model_path = self._validate_custom_model_path(Path(str(custom_model_path)).expanduser(), paths)
 
         model_files = [self._model_file_entry(model_path, "wake")]
         missing_shared_artifacts: List[str] = []
@@ -704,37 +718,33 @@ class OpenWakeWordSupport:
 
         manifest_files = manifest.get("model_files")
         files_by_role: Dict[str, Path] = {}
-        if isinstance(manifest_files, list):
-            for item in manifest_files:
-                if not isinstance(item, dict):
-                    continue
-                role = str(item.get("role") or "").strip()
-                if role not in MODEL_FILE_ROLES:
-                    raise TrainingNotSupportedError(
-                        "Configured wake model manifest roles must be wake, melspectrogram, or embedding."
-                    )
-                files_by_role[role] = self._safe_bundle_model_file(
-                    bundle_dir,
-                    item.get("file"),
-                    role,
-                )
-
-        fallback_names = {
-            "melspectrogram": bundle_dir / "melspectrogram.onnx",
-            "embedding": bundle_dir / "embedding_model.onnx",
-        }
-        for role, path in fallback_names.items():
-            files_by_role.setdefault(role, path)
-
-        wake_path = files_by_role.get("wake")
-        if wake_path is None:
-            wake_candidates = sorted(
-                path
-                for path in bundle_dir.glob("*.onnx")
-                if path.name not in {"melspectrogram.onnx", "embedding_model.onnx"}
+        if not isinstance(manifest_files, list) or not manifest_files:
+            raise TrainingNotSupportedError(
+                "Configured wake model manifest must include model_files."
             )
-            if wake_candidates:
-                files_by_role["wake"] = wake_candidates[0]
+
+        for item in manifest_files:
+            if not isinstance(item, dict):
+                raise TrainingNotSupportedError(
+                    "Configured wake model manifest model_files entries must be objects."
+                )
+            role = str(item.get("role") or "").strip()
+            if role not in MODEL_FILE_ROLES:
+                raise TrainingNotSupportedError(
+                    "Configured wake model manifest roles must be wake, melspectrogram, or embedding."
+                )
+            if role in files_by_role:
+                raise TrainingNotSupportedError(
+                    f"Configured wake model manifest contains duplicate {role} entries."
+                )
+            model_path = self._safe_bundle_model_file(
+                bundle_dir,
+                item.get("file"),
+                role,
+            )
+            if model_path.is_file():
+                self._validate_manifest_model_metadata(model_path, item)
+            files_by_role[role] = model_path
 
         required_roles = ("melspectrogram", "embedding", "wake")
         missing = [
@@ -760,7 +770,12 @@ class OpenWakeWordSupport:
             self._model_file_entry(files_by_role["wake"], "wake"),
         ]
 
-    def _derive_wake_state(self, supported_base_model: Optional[str], manifest: Dict[str, Any]) -> WAKE_STATE:
+    def _derive_wake_state(
+        self,
+        supported_base_model: Optional[str],
+        manifest: Dict[str, Any],
+        paths: EnrollmentPaths,
+    ) -> WAKE_STATE:
         manifest_state = str(manifest.get("wake_state") or "").strip().lower()
         if manifest_state == "active":
             custom_model_path = manifest.get("custom_model_path")
@@ -768,26 +783,59 @@ class OpenWakeWordSupport:
                 return "active"
             if custom_model_path:
                 model_path = Path(str(custom_model_path)).expanduser()
-                if model_path.exists() and model_path.is_file() and not self._custom_model_artifact_error(model_path):
+                if model_path.exists() and model_path.is_file() and not self._custom_model_artifact_error(model_path, paths):
                     return "active"
             return "training"
         if manifest_state == "training":
             custom_model_path = manifest.get("custom_model_path")
             if custom_model_path:
                 model_path = Path(str(custom_model_path)).expanduser()
-                if model_path.exists() and model_path.is_file() and not self._custom_model_artifact_error(model_path):
+                if model_path.exists() and model_path.is_file() and not self._custom_model_artifact_error(model_path, paths):
                     return "active"
             return "training"
         if supported_base_model:
             return "ready_now"
         return "needs_training"
 
-    def _custom_model_artifact_error(self, model_path: Path) -> Optional[str]:
+    def _custom_model_artifact_error(self, model_path: Path, paths: EnrollmentPaths) -> Optional[str]:
         try:
-            self._validate_custom_model_path(model_path)
+            self._validate_custom_model_path(model_path, paths)
         except (EnrollmentValidationError, TrainingNotSupportedError) as exc:
             return str(exc)
         return None
+
+    def _validate_manifest_model_metadata(self, model_path: Path, item: Dict[str, Any]) -> None:
+        file_name = model_path.name
+        if "bytes" not in item or item.get("bytes") is None:
+            raise TrainingNotSupportedError(
+                f"Configured wake model manifest is missing byte length for {file_name}."
+            )
+        try:
+            expected_bytes = int(item.get("bytes"))
+        except (TypeError, ValueError) as exc:
+            raise TrainingNotSupportedError(
+                f"Configured wake model manifest has invalid byte length for {file_name}."
+            ) from exc
+        if expected_bytes < 0:
+            raise TrainingNotSupportedError(
+                f"Configured wake model manifest has invalid byte length for {file_name}."
+            )
+        actual_bytes = model_path.stat().st_size
+        if actual_bytes != expected_bytes:
+            raise TrainingNotSupportedError(
+                f"Configured wake model bundle byte length mismatch for {file_name}."
+            )
+
+        expected_sha = str(item.get("sha256") or "").strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{64}", expected_sha):
+            raise TrainingNotSupportedError(
+                f"Configured wake model manifest has invalid SHA-256 metadata for {file_name}."
+            )
+        actual_sha = hashlib.sha256(model_path.read_bytes()).hexdigest()
+        if actual_sha != expected_sha:
+            raise TrainingNotSupportedError(
+                f"Configured wake model bundle SHA-256 mismatch for {file_name}."
+            )
 
     def _safe_bundle_model_file(self, bundle_dir: Path, value: Any, role: str) -> Path:
         file_name = str(value or "").strip()
@@ -815,7 +863,7 @@ class OpenWakeWordSupport:
             )
         return candidate
 
-    def _validate_custom_model_path(self, model_path: Path) -> Path:
+    def _validate_custom_model_path(self, model_path: Path, paths: EnrollmentPaths) -> Path:
         try:
             resolved = model_path.expanduser().resolve()
         except OSError as exc:
@@ -823,10 +871,10 @@ class OpenWakeWordSupport:
                 "Custom wake phrase activation requires a readable backend-owned OpenWakeWord model file."
             ) from exc
 
-        allowed_root = self.root_dir.resolve()
-        if resolved != allowed_root and allowed_root not in resolved.parents:
+        allowed_root = paths.root.resolve()
+        if allowed_root not in resolved.parents:
             raise EnrollmentValidationError(
-                "Custom wake phrase activation requires a backend-owned OpenWakeWord model file."
+                "Custom wake phrase activation requires a model file generated for this user and wake phrase."
             )
         if not resolved.exists() or not resolved.is_file():
             raise EnrollmentValidationError(

@@ -23,7 +23,11 @@ import { GlassCard } from "@/components/Glass";
 import { useAssistant } from "@/components/AssistantProvider";
 import { Brand } from "@/constants/theme";
 import { apiGet, apiPost, apiPostForm } from "@/lib/api";
-import { downloadAndSaveWakeModelBundle } from "@/lib/wakeWordEngine";
+import {
+  downloadAndSaveWakeModelBundle,
+  validateNativeWakeModelBundle,
+  type WakeModelState,
+} from "@/lib/wakeWordEngine";
 
 type SampleKind = "positive" | "negative";
 type WakeState = "ready_now" | "needs_training" | "training" | "active";
@@ -654,6 +658,48 @@ export default function Setup() {
 
       if (modelStatus.ready) {
         const saved = await downloadAndSaveWakeModelBundle(normalizedWakePhrase);
+        const candidateWakeModel: WakeModelState = {
+          ...modelStateFromStatus(normalizedWakePhrase, modelStatus),
+          status: "ready",
+          ready: true,
+          modelPaths: saved.modelPaths,
+          modelRoles: saved.modelRoles,
+        };
+        const nativeValidation = await validateNativeWakeModelBundle(candidateWakeModel);
+        if (!nativeValidation.ok || nativeValidation.realOpenWakeWordModelCompatibility !== true) {
+          const failureStatus = nativeValidation.status === "error" ? "error" : "unsupported";
+          const detail = nativeValidation.detail || "Needs model";
+          const pendingManifest = normalizeManifest(normalizedWakePhrase, {
+            ...trainingManifest,
+            wake_state: "training",
+          });
+          await writeManifest(pendingManifest);
+          const failedWakeModel: WakeModelState = {
+            ...candidateWakeModel,
+            status: failureStatus,
+            ready: false,
+            detail,
+            updatedAt: new Date().toISOString(),
+          };
+          const { ready: _ready, ...persistedWakeModel } = failedWakeModel;
+          const payload = {
+            ...manifestToStatus(pendingManifest),
+            ...modelStatus,
+            ready: false,
+            status: failureStatus,
+            detail,
+            wake_state: "training" as WakeState,
+            wake_state_label: STATE_LABELS.training,
+          };
+          setStatus(payload);
+          await updateSettings({
+            wakePhrase: normalizedWakePhrase,
+            wakeTrainingSamples: uniqueStrings([normalizedWakePhrase]),
+            wakeModel: persistedWakeModel,
+          });
+          setMessage(failureStatus === "error" ? "Try again" : "Needs model");
+          return;
+        }
         const finishedAt = new Date().toISOString();
         const activeManifest = normalizeManifest(normalizedWakePhrase, {
           ...trainingManifest,
@@ -676,6 +722,7 @@ export default function Setup() {
             ...modelStateFromStatus(normalizedWakePhrase, modelStatus),
             status: "ready",
             modelPaths: saved.modelPaths,
+            modelRoles: saved.modelRoles,
           },
         });
         setMessage("Ready");

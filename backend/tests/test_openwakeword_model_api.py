@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import wave
@@ -19,6 +20,16 @@ from conftest import auth_headers, create_test_user
 
 def _set_service(monkeypatch, service: OpenWakeWordSupport):
     monkeypatch.setattr(openwakeword_api, "service", service)
+
+
+def _manifest_model_file(path, role: str):
+    content = path.read_bytes()
+    return {
+        "role": role,
+        "file": path.name,
+        "bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
 
 
 def test_model_status_pending_for_custom_phrase(client, monkeypatch, tmp_path):
@@ -81,9 +92,9 @@ def test_default_hey_elli_uses_configured_bundle_only_when_complete(
                 "phrase_key": "hey-elli",
                 "wake_phrase": "Hey Elli",
                 "model_files": [
-                    {"role": "melspectrogram", "file": "melspectrogram.onnx"},
-                    {"role": "embedding", "file": "embedding_model.onnx"},
-                    {"role": "wake", "file": "hey_elli.onnx"},
+                    _manifest_model_file(bundle_dir / "melspectrogram.onnx", "melspectrogram"),
+                    _manifest_model_file(bundle_dir / "embedding_model.onnx", "embedding"),
+                    _manifest_model_file(bundle_dir / "hey_elli.onnx", "wake"),
                 ],
             }
         ),
@@ -122,7 +133,7 @@ def test_default_hey_elli_configured_incomplete_bundle_is_not_ready(
                 "phrase_key": "hey-elli",
                 "wake_phrase": "Hey Elli",
                 "model_files": [
-                    {"role": "wake", "file": "hey_elli.onnx"},
+                    _manifest_model_file(bundle_dir / "hey_elli.onnx", "wake"),
                 ],
             }
         ),
@@ -159,9 +170,14 @@ def test_default_hey_elli_configured_bundle_rejects_unsafe_manifest_path(
                 "phrase_key": "hey-elli",
                 "wake_phrase": "Hey Elli",
                 "model_files": [
-                    {"role": "melspectrogram", "file": "melspectrogram.onnx"},
-                    {"role": "embedding", "file": "embedding_model.onnx"},
-                    {"role": "wake", "file": "../secret.onnx"},
+                    _manifest_model_file(bundle_dir / "melspectrogram.onnx", "melspectrogram"),
+                    _manifest_model_file(bundle_dir / "embedding_model.onnx", "embedding"),
+                    {
+                        "role": "wake",
+                        "file": "../secret.onnx",
+                        "bytes": 1,
+                        "sha256": hashlib.sha256(b"x").hexdigest(),
+                    },
                 ],
             }
         ),
@@ -182,6 +198,155 @@ def test_default_hey_elli_configured_bundle_rejects_unsafe_manifest_path(
     assert "unsafe file path" in payload["detail"]
 
 
+def test_configured_bundle_manifest_missing_model_files_is_not_ready(
+    client, monkeypatch, tmp_path
+):
+    create_test_user()
+    bundle_dir = tmp_path / "hey-elli-no-model-files"
+    bundle_dir.mkdir()
+    for filename in ("hey_elli.onnx", "melspectrogram.onnx", "embedding_model.onnx"):
+        (bundle_dir / filename).write_bytes(f"fake-{filename}".encode("utf-8"))
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps({"phrase_key": "hey-elli", "wake_phrase": "Hey Elli"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JAI_HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR", str(bundle_dir))
+    _set_service(monkeypatch, OpenWakeWordSupport(tmp_path / "service"))
+
+    response = client.get(
+        "/api/openwakeword/enrollment/model/status?wake_phrase=Hey%20Elli",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["status"] == "unsupported"
+    assert "must include model_files" in payload["detail"]
+
+
+@pytest.mark.parametrize(
+    ("missing_role", "expected_detail"),
+    [
+        ("wake", "wake model ONNX"),
+        ("melspectrogram", "melspectrogram.onnx"),
+        ("embedding", "embedding_model.onnx"),
+    ],
+)
+def test_configured_bundle_manifest_missing_required_role_is_not_ready(
+    client, monkeypatch, tmp_path, missing_role, expected_detail
+):
+    create_test_user()
+    bundle_dir = tmp_path / f"hey-elli-missing-{missing_role}"
+    bundle_dir.mkdir()
+    files_by_role = {
+        "wake": bundle_dir / "hey_elli.onnx",
+        "melspectrogram": bundle_dir / "melspectrogram.onnx",
+        "embedding": bundle_dir / "embedding_model.onnx",
+    }
+    for role, file_path in files_by_role.items():
+        file_path.write_bytes(f"fake-{role}".encode("utf-8"))
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "phrase_key": "hey-elli",
+                "wake_phrase": "Hey Elli",
+                "model_files": [
+                    _manifest_model_file(path, role)
+                    for role, path in files_by_role.items()
+                    if role != missing_role
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JAI_HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR", str(bundle_dir))
+    _set_service(monkeypatch, OpenWakeWordSupport(tmp_path / "service"))
+
+    response = client.get(
+        "/api/openwakeword/enrollment/model/status?wake_phrase=Hey%20Elli",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["status"] == "unsupported"
+    assert expected_detail in payload["detail"]
+
+
+def test_configured_bundle_rejects_random_fallback_files_without_roles(
+    client, monkeypatch, tmp_path
+):
+    create_test_user()
+    bundle_dir = tmp_path / "hey-elli-random-fallback"
+    bundle_dir.mkdir()
+    for filename in ("random.onnx", "melspectrogram.onnx", "embedding_model.onnx"):
+        (bundle_dir / filename).write_bytes(f"fake-{filename}".encode("utf-8"))
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "phrase_key": "hey-elli",
+                "wake_phrase": "Hey Elli",
+                "model_files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JAI_HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR", str(bundle_dir))
+    _set_service(monkeypatch, OpenWakeWordSupport(tmp_path / "service"))
+
+    response = client.get(
+        "/api/openwakeword/enrollment/model/status?wake_phrase=Hey%20Elli",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["status"] == "unsupported"
+    assert "must include model_files" in payload["detail"]
+
+
+def test_configured_bundle_manifest_requires_integrity_metadata(
+    client, monkeypatch, tmp_path
+):
+    create_test_user()
+    bundle_dir = tmp_path / "hey-elli-missing-integrity"
+    bundle_dir.mkdir()
+    for filename in ("hey_elli.onnx", "melspectrogram.onnx", "embedding_model.onnx"):
+        (bundle_dir / filename).write_bytes(f"fake-{filename}".encode("utf-8"))
+    wake_entry = _manifest_model_file(bundle_dir / "hey_elli.onnx", "wake")
+    wake_entry.pop("sha256")
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "phrase_key": "hey-elli",
+                "wake_phrase": "Hey Elli",
+                "model_files": [
+                    _manifest_model_file(bundle_dir / "melspectrogram.onnx", "melspectrogram"),
+                    _manifest_model_file(bundle_dir / "embedding_model.onnx", "embedding"),
+                    wake_entry,
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JAI_HEY_ELLI_OPENWAKEWORD_BUNDLE_DIR", str(bundle_dir))
+    _set_service(monkeypatch, OpenWakeWordSupport(tmp_path / "service"))
+
+    response = client.get(
+        "/api/openwakeword/enrollment/model/status?wake_phrase=Hey%20Elli",
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["status"] == "unsupported"
+    assert "SHA-256" in payload["detail"]
+
+
 def test_activate_custom_phrase_rejects_arbitrary_server_file(client, monkeypatch, tmp_path):
     create_test_user()
     outside = tmp_path / "outside.onnx"
@@ -197,7 +362,105 @@ def test_activate_custom_phrase_rejects_arbitrary_server_file(client, monkeypatc
     )
 
     assert response.status_code == 400
-    assert "backend-owned" in response.json()["detail"]
+    assert "disabled" in response.json()["detail"]
+
+
+def test_activate_custom_phrase_accepts_current_phrase_model_when_env_enabled(
+    client, monkeypatch, tmp_path
+):
+    user = create_test_user()
+    service = OpenWakeWordSupport(tmp_path / "service")
+    _set_service(monkeypatch, service)
+    paths = service.enrollment_paths(user.id, "custom elli")
+    model_dir = paths.root / "models"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "custom.onnx"
+    model_path.write_bytes(b"fake-onnx")
+    (model_dir / "melspectrogram.onnx").write_bytes(b"fake-mel")
+    (model_dir / "embedding_model.onnx").write_bytes(b"fake-embedding")
+    monkeypatch.setenv("JAI_OPENWAKEWORD_ALLOW_CUSTOM_MODEL_PATH", "1")
+
+    response = client.post(
+        "/api/openwakeword/enrollment/activate",
+        params={"wake_phrase": "custom elli", "custom_model_path": str(model_path)},
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["wake_state"] == "active"
+    assert payload["can_run_instantly"] is True
+
+
+def test_activate_custom_phrase_rejects_another_user_model_when_env_enabled(
+    client, monkeypatch, tmp_path
+):
+    user = create_test_user()
+    service = OpenWakeWordSupport(tmp_path / "service")
+    _set_service(monkeypatch, service)
+    other_paths = service.enrollment_paths(user.id + 99, "custom elli")
+    model_dir = other_paths.root / "models"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "custom.onnx"
+    model_path.write_bytes(b"fake-onnx")
+    (model_dir / "melspectrogram.onnx").write_bytes(b"fake-mel")
+    (model_dir / "embedding_model.onnx").write_bytes(b"fake-embedding")
+    monkeypatch.setenv("JAI_OPENWAKEWORD_ALLOW_CUSTOM_MODEL_PATH", "1")
+
+    response = client.post(
+        "/api/openwakeword/enrollment/activate",
+        params={"wake_phrase": "custom elli", "custom_model_path": str(model_path)},
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 400
+    assert "this user and wake phrase" in response.json()["detail"]
+
+
+def test_activate_custom_phrase_rejects_another_phrase_model_when_env_enabled(
+    client, monkeypatch, tmp_path
+):
+    user = create_test_user()
+    service = OpenWakeWordSupport(tmp_path / "service")
+    _set_service(monkeypatch, service)
+    other_paths = service.enrollment_paths(user.id, "other phrase")
+    model_dir = other_paths.root / "models"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "custom.onnx"
+    model_path.write_bytes(b"fake-onnx")
+    (model_dir / "melspectrogram.onnx").write_bytes(b"fake-mel")
+    (model_dir / "embedding_model.onnx").write_bytes(b"fake-embedding")
+    monkeypatch.setenv("JAI_OPENWAKEWORD_ALLOW_CUSTOM_MODEL_PATH", "1")
+
+    response = client.post(
+        "/api/openwakeword/enrollment/activate",
+        params={"wake_phrase": "custom elli", "custom_model_path": str(model_path)},
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 400
+    assert "this user and wake phrase" in response.json()["detail"]
+
+
+def test_activate_custom_phrase_rejects_outside_root_when_env_enabled(
+    client, monkeypatch, tmp_path
+):
+    create_test_user()
+    outside = tmp_path / "outside.onnx"
+    outside.write_bytes(b"fake-onnx")
+    (tmp_path / "melspectrogram.onnx").write_bytes(b"fake-mel")
+    (tmp_path / "embedding_model.onnx").write_bytes(b"fake-embedding")
+    _set_service(monkeypatch, OpenWakeWordSupport(tmp_path / "service"))
+    monkeypatch.setenv("JAI_OPENWAKEWORD_ALLOW_CUSTOM_MODEL_PATH", "1")
+
+    response = client.post(
+        "/api/openwakeword/enrollment/activate",
+        params={"wake_phrase": "custom elli", "custom_model_path": str(outside)},
+        headers=auth_headers("test-uid", "test@example.com"),
+    )
+
+    assert response.status_code == 400
+    assert "this user and wake phrase" in response.json()["detail"]
 
 
 def test_supported_base_status_handles_missing_openwakeword_dependency(client, monkeypatch, tmp_path):
@@ -245,10 +508,14 @@ def test_custom_model_bundle_download_contains_manifest_and_model(client, monkey
     user = create_test_user()
     service = OpenWakeWordSupport(tmp_path)
     _set_service(monkeypatch, service)
-    model_path = tmp_path / "custom.onnx"
+    paths = service.enrollment_paths(user.id, "custom elli")
+    model_dir = paths.root / "models"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "custom.onnx"
     model_path.write_bytes(b"fake-onnx")
-    (tmp_path / "melspectrogram.onnx").write_bytes(b"fake-mel")
-    (tmp_path / "embedding_model.onnx").write_bytes(b"fake-embedding")
+    (model_dir / "melspectrogram.onnx").write_bytes(b"fake-mel")
+    (model_dir / "embedding_model.onnx").write_bytes(b"fake-embedding")
+    monkeypatch.setenv("JAI_OPENWAKEWORD_ALLOW_CUSTOM_MODEL_PATH", "1")
     service.activate_custom_phrase(
         user_id=user.id,
         wake_phrase="custom elli",
@@ -275,8 +542,12 @@ def test_custom_model_bundle_requires_shared_openwakeword_artifacts(client, monk
     user = create_test_user()
     service = OpenWakeWordSupport(tmp_path)
     _set_service(monkeypatch, service)
-    model_path = tmp_path / "custom.onnx"
+    paths = service.enrollment_paths(user.id, "custom elli")
+    model_dir = paths.root / "models"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "custom.onnx"
     model_path.write_bytes(b"fake-onnx")
+    monkeypatch.setenv("JAI_OPENWAKEWORD_ALLOW_CUSTOM_MODEL_PATH", "1")
     activation = service.activate_custom_phrase(
         user_id=user.id,
         wake_phrase="custom elli",

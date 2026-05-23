@@ -128,6 +128,20 @@ function normalizePhraseKey(value: string) {
   );
 }
 
+function validateSafePhraseKey(value: unknown) {
+  const phraseKey = String(value || "").trim();
+  if (
+    !phraseKey ||
+    phraseKey === "." ||
+    phraseKey === ".." ||
+    phraseKey.length > 64 ||
+    !/^[A-Za-z0-9_-]+$/.test(phraseKey)
+  ) {
+    throw new Error("Wake model manifest has an unsafe phrase_key.");
+  }
+  return phraseKey;
+}
+
 function toWakeModelState(value: WakeModelSettings | null | undefined): WakeModelState {
   const status = value?.status || "missing";
   return {
@@ -368,18 +382,22 @@ function validateBundleManifestFiles(
     }
 
     const expectedBytes = entry?.bytes;
-    if (typeof expectedBytes !== "undefined" && expectedBytes !== null) {
-      const byteCount = Number(expectedBytes);
-      if (!Number.isInteger(byteCount) || byteCount < 0) {
-        throw new Error(`Wake model manifest has invalid byte length for ${file}.`);
-      }
-      if (content.length !== byteCount) {
-        throw new Error(`Wake model bundle byte length mismatch for ${file}.`);
-      }
+    if (typeof expectedBytes === "undefined" || expectedBytes === null) {
+      throw new Error(`Wake model manifest is missing byte length for ${file}.`);
+    }
+    const byteCount = Number(expectedBytes);
+    if (!Number.isInteger(byteCount) || byteCount < 0) {
+      throw new Error(`Wake model manifest has invalid byte length for ${file}.`);
+    }
+    if (content.length !== byteCount) {
+      throw new Error(`Wake model bundle byte length mismatch for ${file}.`);
     }
 
-    const expectedSha = normalizeSha(entry?.sha256);
-    if (expectedSha && sha256Bytes(content) !== expectedSha) {
+    if (typeof entry?.sha256 === "undefined" || entry?.sha256 === null || String(entry.sha256).trim() === "") {
+      throw new Error(`Wake model manifest is missing SHA-256 for ${file}.`);
+    }
+    const expectedSha = normalizeSha(entry.sha256);
+    if (sha256Bytes(content) !== expectedSha) {
       throw new Error(`Wake model bundle SHA-256 mismatch for ${file}.`);
     }
 
@@ -513,10 +531,10 @@ export async function saveWakeModelBundleBytes(bytes: Uint8Array): Promise<Saved
     throw new Error("Wake model bundle is missing manifest.json.");
   }
   const manifest = JSON.parse(bytesToUtf8(manifestBytes));
-  const phraseKey = String(manifest.phrase_key || "").trim() || normalizePhraseKey(manifest.wake_phrase || "");
-  if (!phraseKey) {
-    throw new Error("Wake model manifest is missing phrase_key.");
-  }
+  const hasManifestPhraseKey = Object.prototype.hasOwnProperty.call(manifest, "phrase_key");
+  const phraseKey = validateSafePhraseKey(
+    hasManifestPhraseKey ? manifest.phrase_key : normalizePhraseKey(manifest.wake_phrase || ""),
+  );
   if (!FileSystem.documentDirectory) {
     throw new Error("Device storage is unavailable for wake model files.");
   }
@@ -592,7 +610,13 @@ export async function startWakeWordListening(
   if (handlers.onScore) {
     nativeSubscriptions.push(emitter.addListener("onWakeScore", handlers.onScore));
   }
-  return nativeModule.start(startConfig);
+  try {
+    return await nativeModule.start(startConfig);
+  } catch (error) {
+    nativeSubscriptions.forEach((subscription) => subscription.remove());
+    nativeSubscriptions = [];
+    throw error;
+  }
 }
 
 export async function stopWakeWordListening(): Promise<{ ok: true }> {
