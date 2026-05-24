@@ -1,6 +1,7 @@
 package com.harishajahan.jai.wakeword
 
 import android.content.Context
+import android.net.Uri
 import java.io.BufferedOutputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -42,6 +43,7 @@ class HandsFreeController(
   private val stateMachine = HandsFreeStateMachine()
   private val engine = OpenWakeWordEngine()
   private val routing = AtomicBoolean(false)
+  private val captureRestartScheduled = AtomicBoolean(false)
   private val vad = EnergyVoiceActivityDetector()
 
   private var config: WakeWordConfig? = null
@@ -57,6 +59,13 @@ class HandsFreeController(
   private var commandSilenceMs = 0L
   private var commandSpeechDetected = false
   private var lastError: String? = null
+  private var lastCaptureError: String? = null
+  private var lastInferenceError: String? = null
+  private var captureRestartCount = 0L
+  private var vadSpeechFrames = 0L
+  private var vadSkippedWakeFrames = 0L
+  private var vadHangoverFrames = 0L
+  private var wakeVadHangoverRemainingMs = 0L
 
   fun startSession(rawConfig: Map<String, Any?>) {
     stopSession(emitIdle = false)
@@ -77,7 +86,7 @@ class HandsFreeController(
     val nextCaptureQueue = AudioFrameQueue(capacityFrames = 32)
     val nextWakeQueue = AudioFrameQueue(capacityFrames = 16)
     val nextPreRoll = PreRollBuffer(parsed.sampleRate, durationMs = 1500)
-    val nextAudioSource = PcmAudioSource(parsed.sampleRate, parsed.frameMs)
+    val nextAudioSource = createAudioSource(parsed, nextCaptureQueue)
     val nextInferenceWorker = WakeInferenceWorker(
       frameQueue = nextWakeQueue,
       pipeline = nextPipeline,
@@ -86,9 +95,19 @@ class HandsFreeController(
       onWake = { event -> handleWakeDetected(event) },
       onScore = { event -> callbacks()?.onWakeScore(event) },
       onError = { code, message ->
-        lastError = message
+        synchronized(lock) {
+          lastError = message
+          lastInferenceError = message
+        }
         emitError(code, message)
-        transition(HandsFreeNativeState.WAKE_LISTENING, "wake_inference_error")
+        transition(HandsFreeNativeState.IDLE, "wake_inference_error")
+      },
+      onStopped = { reason ->
+        if (reason != null) {
+          synchronized(lock) {
+            lastInferenceError = reason
+          }
+        }
       },
     )
 
@@ -105,6 +124,12 @@ class HandsFreeController(
       commandSilenceMs = 0L
       commandSpeechDetected = false
       lastError = null
+      lastCaptureError = null
+      lastInferenceError = null
+      vadSpeechFrames = 0L
+      vadSkippedWakeFrames = 0L
+      vadHangoverFrames = 0L
+      wakeVadHangoverRemainingMs = 0L
     }
 
     try {
@@ -165,6 +190,7 @@ class HandsFreeController(
       commandSilenceMs = 0L
       commandSpeechDetected = false
       config = null
+      wakeVadHangoverRemainingMs = 0L
     }
     if (emitIdle) {
       transition(HandsFreeNativeState.IDLE, "session_stopped")
@@ -195,6 +221,8 @@ class HandsFreeController(
     val captureStats = captureQueue?.stats()
     val wakeStats = wakeQueue?.stats()
     val currentConfig = config
+    val captureStatus = audioSource?.status()
+    val inferenceStatus = inferenceWorker?.status()
     return mapOf(
       "running" to (stateMachine.currentState() != HandsFreeNativeState.IDLE),
       "state" to stateMachine.currentState().wireName,
@@ -205,6 +233,21 @@ class HandsFreeController(
       "wakeDroppedFrames" to (wakeStats?.droppedFrames ?: 0L),
       "captureQueuedFrames" to (captureStats?.queuedFrames ?: 0),
       "wakeQueuedFrames" to (wakeStats?.queuedFrames ?: 0),
+      "vadSpeechFrames" to vadSpeechFrames,
+      "vadSkippedWakeFrames" to vadSkippedWakeFrames,
+      "vadHangoverFrames" to vadHangoverFrames,
+      "captureThreadAlive" to (captureStatus?.captureThreadAlive ?: false),
+      "lastCaptureError" to (lastCaptureError ?: captureStatus?.lastCaptureError),
+      "lastCaptureErrorCode" to captureStatus?.lastCaptureErrorCode,
+      "captureRestartCount" to captureRestartCount,
+      "audioSessionId" to captureStatus?.audioSessionId,
+      "acousticEchoCancelerEnabled" to (captureStatus?.acousticEchoCancelerEnabled ?: false),
+      "noiseSuppressorEnabled" to (captureStatus?.noiseSuppressorEnabled ?: false),
+      "automaticGainControlEnabled" to (captureStatus?.automaticGainControlEnabled ?: false),
+      "inferenceThreadAlive" to (inferenceStatus?.inferenceThreadAlive ?: false),
+      "lastInferenceError" to (lastInferenceError ?: inferenceStatus?.lastInferenceError),
+      "inferenceDroppedFrames" to (inferenceStatus?.inferenceDroppedFrames ?: 0L),
+      "inferenceErrorCount" to (inferenceStatus?.inferenceErrorCount ?: 0L),
     )
   }
 
@@ -220,11 +263,38 @@ class HandsFreeController(
         nextPreRoll.append(frame)
         when (stateMachine.currentState()) {
           HandsFreeNativeState.WAKE_LISTENING,
-          HandsFreeNativeState.SPEAKING -> nextWakeQueue.offer(frame)
+          HandsFreeNativeState.SPEAKING -> routeWakeFrame(frame, nextWakeQueue, parsed)
           HandsFreeNativeState.COMMAND_LISTENING -> handleCommandFrame(frame, parsed)
           else -> Unit
         }
       }
+    }
+  }
+
+  private fun routeWakeFrame(
+    frame: ShortArray,
+    nextWakeQueue: AudioFrameQueue,
+    parsed: WakeWordConfig,
+  ) {
+    val frameMs = samplesToMs(frame.size, parsed.sampleRate).coerceAtLeast(parsed.frameMs.toLong())
+    val isSpeech = vad.isSpeech(frame)
+    var shouldInfer = false
+    synchronized(lock) {
+      if (isSpeech) {
+        vadSpeechFrames += 1
+        wakeVadHangoverRemainingMs = WAKE_VAD_HANGOVER_MS
+        shouldInfer = true
+      } else if (wakeVadHangoverRemainingMs > 0L) {
+        vadHangoverFrames += 1
+        wakeVadHangoverRemainingMs = (wakeVadHangoverRemainingMs - frameMs).coerceAtLeast(0L)
+        shouldInfer = true
+      } else {
+        vadSkippedWakeFrames += 1
+        shouldInfer = false
+      }
+    }
+    if (shouldInfer) {
+      nextWakeQueue.offer(frame)
     }
   }
 
@@ -316,6 +386,88 @@ class HandsFreeController(
 
   private fun emitError(code: String, message: String) {
     callbacks()?.onError(code, message)
+  }
+
+  private fun createAudioSource(parsed: WakeWordConfig, queue: AudioFrameQueue): PcmAudioSource {
+    return PcmAudioSource(
+      sampleRate = parsed.sampleRate,
+      frameMs = parsed.frameMs,
+      listener = object : PcmAudioSourceListener {
+        override fun onCaptureError(error: PcmCaptureError) {
+          handleCaptureError(error, parsed, queue)
+        }
+
+        override fun onCaptureStopped() {
+          if (captureRestartScheduled.get()) return
+          if (routing.get() && stateMachine.currentState() != HandsFreeNativeState.IDLE) {
+            val message = "Microphone capture stopped unexpectedly."
+            synchronized(lock) {
+              lastCaptureError = message
+              lastError = message
+            }
+            emitError("JAI_WAKE_AUDIO_STOPPED", message)
+            scheduleCaptureRestart(parsed, queue)
+          }
+        }
+      },
+    )
+  }
+
+  private fun handleCaptureError(
+    error: PcmCaptureError,
+    parsed: WakeWordConfig,
+    queue: AudioFrameQueue,
+  ) {
+    synchronized(lock) {
+      lastCaptureError = error.message
+      lastError = error.message
+    }
+    emitError(error.code, error.message)
+    if (error.restartable && !error.permanent) {
+      scheduleCaptureRestart(parsed, queue)
+      return
+    }
+    routing.set(false)
+    transition(HandsFreeNativeState.IDLE, "capture_error")
+  }
+
+  private fun scheduleCaptureRestart(parsed: WakeWordConfig, queue: AudioFrameQueue) {
+    if (!routing.get()) return
+    if (!captureRestartScheduled.compareAndSet(false, true)) return
+    thread(name = "JaiHandsFreeCaptureRestart", isDaemon = true) {
+      try {
+        Thread.sleep(CAPTURE_RESTART_COOLDOWN_MS)
+        if (!routing.get()) return@thread
+        val nextAudioSource = createAudioSource(parsed, queue)
+        try {
+          audioSource?.stop()
+        } catch (_: Throwable) {
+        }
+        nextAudioSource.start(queue)
+        synchronized(lock) {
+          audioSource = nextAudioSource
+          captureRestartCount += 1
+          lastCaptureError = null
+        }
+        transition(HandsFreeNativeState.WAKE_LISTENING, "capture_restarted")
+      } catch (error: Throwable) {
+        val detail = "Could not restart hands-free microphone capture: ${error.message ?: "unknown error"}"
+        synchronized(lock) {
+          lastCaptureError = detail
+          lastError = detail
+        }
+        emitError("JAI_WAKE_AUDIO_RESTART_FAILED", detail)
+        routing.set(false)
+        transition(HandsFreeNativeState.IDLE, "capture_restart_failed")
+      } finally {
+        captureRestartScheduled.set(false)
+      }
+    }
+  }
+
+  companion object {
+    private const val CAPTURE_RESTART_COOLDOWN_MS = 250L
+    private const val WAKE_VAD_HANGOVER_MS = 400L
   }
 }
 
@@ -457,7 +609,7 @@ private fun writeCommandWav(
     }
   }
   return HandsFreeCommandAudioEvent(
-    fileUri = file.toURI().toString(),
+    fileUri = Uri.fromFile(file).toString(),
     durationMs = samplesToMs(totalSamples, sampleRate),
     sampleRate = sampleRate,
   )

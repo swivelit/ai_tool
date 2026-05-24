@@ -2,7 +2,11 @@ import { EventEmitter } from "expo-modules-core";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { apiFetchRaw, apiGet } from "./api";
-import { getE2eHandsFreeCommand, isE2eMockHandsFreeEnabled } from "./e2eMode";
+import {
+  getE2eHandsFreeCommand,
+  isE2eMockHandsFreeAudioEnabled,
+  isE2eMockHandsFreeEnabled,
+} from "./e2eMode";
 import type { AssistantSettings, WakeModelSettings, WakeModelStatus } from "./storage";
 
 type NativeWakeWordModule = {
@@ -36,6 +40,21 @@ export type WakeWordNativeStatus = {
     lastError?: string;
     captureDroppedFrames?: number;
     wakeDroppedFrames?: number;
+    vadSpeechFrames?: number;
+    vadSkippedWakeFrames?: number;
+    vadHangoverFrames?: number;
+    captureThreadAlive?: boolean;
+    lastCaptureError?: string;
+    lastCaptureErrorCode?: string;
+    captureRestartCount?: number;
+    audioSessionId?: number;
+    acousticEchoCancelerEnabled?: boolean;
+    noiseSuppressorEnabled?: boolean;
+    automaticGainControlEnabled?: boolean;
+    inferenceThreadAlive?: boolean;
+    lastInferenceError?: string;
+    inferenceDroppedFrames?: number;
+    inferenceErrorCount?: number;
   };
 };
 
@@ -120,6 +139,9 @@ export type WakeWordStartConfig = {
   frameMs?: 80;
   minWakeIntervalMs?: number;
 };
+
+const E2E_HANDS_FREE_WAV_BASE64 =
+  "UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
 
 export type WakeModelState = WakeModelSettings & {
   ready: boolean;
@@ -693,6 +715,25 @@ export async function configureHandsFreeSession(
   return nativeModule.configure(startConfig);
 }
 
+export async function createE2eHandsFreeCommandAudioEvent(): Promise<HandsFreeCommandAudioEvent> {
+  const root = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+  if (!root) {
+    throw new Error("Expo file system cache is unavailable for E2E hands-free audio.");
+  }
+  const fileUri = `${root.replace(/\/?$/, "/")}e2e-handsfree-command-${Date.now()}.wav`;
+  await FileSystem.writeAsStringAsync(fileUri, E2E_HANDS_FREE_WAV_BASE64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  return {
+    uri: fileUri,
+    fileUri,
+    durationMs: 1000,
+    sampleRate: 16000,
+    mimeType: "audio/wav",
+    timestamp: Date.now(),
+  };
+}
+
 export async function startHandsFreeSession(
   config: WakeWordStartConfig | WakeModelState,
   handlers: {
@@ -709,6 +750,7 @@ export async function startHandsFreeSession(
   const startConfig = normalizeStartConfig(config);
   if (isE2eMockHandsFreeEnabled()) {
     const command = getE2eHandsFreeCommand() || "tell me about Spitzola";
+    const emitCommandAudio = isE2eMockHandsFreeAudioEnabled();
     e2eSessionTimers = [
       setTimeout(() => {
         handlers.onState?.({
@@ -747,12 +789,25 @@ export async function startHandsFreeSession(
           reason: "e2e_command_ready",
           timestamp: Date.now(),
         });
-        handlers.onCommand?.({
-          text: command,
-          empty: false,
-          reason: "e2e_mock",
-          timestamp: Date.now(),
-        });
+        if (emitCommandAudio) {
+          void createE2eHandsFreeCommandAudioEvent().then((event) => {
+            console.info("[e2e_hands_free_audio_mock] onCommandAudio", {
+              fileUri: event.fileUri,
+              mimeType: event.mimeType,
+              durationMs: event.durationMs,
+              sampleRate: event.sampleRate,
+              client_source: "handsfree",
+            });
+            handlers.onCommandAudio?.(event);
+          });
+        } else {
+          handlers.onCommand?.({
+            text: command,
+            empty: false,
+            reason: "e2e_mock",
+            timestamp: Date.now(),
+          });
+        }
       }, 450),
     ];
     return { ok: true };

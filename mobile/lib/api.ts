@@ -8,6 +8,7 @@ import {
 } from "./chatTelemetry";
 import { getCachedDeviceCapabilities } from "./deviceCapabilities";
 import {
+  getE2eHandsFreeCommand,
   getE2eVoiceQuery,
   getE2eVoiceSurface,
   isE2eMockAuthEnabled,
@@ -559,6 +560,8 @@ const USE_LOCAL_CHAT_PIPELINE_DEFAULT: boolean = false;
 const CANONICAL_VOICE_ANALYZE_PATH = "/api/transcribe-and-analyze";
 const E2E_TINY_WAV_BASE64 =
   "UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
+
+type VoiceClientSource = "voice" | "handsfree";
 
 let localChatInterceptionDepth = 0;
 let routingBannerLogged = false;
@@ -1414,26 +1417,31 @@ function e2eTtsLocaleStyle(replyLanguage: ReplyLanguage) {
   return replyLanguage === "ta" ? "local_tamil" : "indian_english";
 }
 
-function buildE2eMockVoiceTurnResponse(replyLanguage: ReplyLanguage = PRODUCT_DEFAULT_REPLY_LANGUAGE): LocalChatProxyResponse {
+function buildE2eMockVoiceTurnResponse(
+  replyLanguage: ReplyLanguage = PRODUCT_DEFAULT_REPLY_LANGUAGE,
+  clientSource: VoiceClientSource = "voice",
+): LocalChatProxyResponse {
   const createdAt = new Date().toISOString();
-  const voiceQuery = getE2eVoiceQuery();
+  const voiceQuery =
+    clientSource === "handsfree" ? getE2eHandsFreeCommand() : getE2eVoiceQuery();
   const assistantText = e2eVoiceAnswerFor(voiceQuery, replyLanguage);
   const routeTaken = replyLanguage === "ta" ? "sarvam_general" : "openai_general";
   const ttsLanguageCode = e2eTtsLanguageCode(replyLanguage);
+  const mockSource = clientSource === "handsfree" ? "e2e_hands_free_audio_mock" : "e2e_voice_mock";
   return {
     ok: true,
     kind: "assistant_turn",
     item: {
       id: Date.now(),
       intent: "assistant",
-      category: "Voice",
+      category: clientSource === "handsfree" ? "Hands free" : "Voice",
       raw_text: voiceQuery,
       transcript: voiceQuery,
       datetime: null,
-      title: "E2E voice",
+      title: clientSource === "handsfree" ? "E2E hands-free voice" : "E2E voice",
       details: assistantText,
       created_at: createdAt,
-      source: "voice",
+      source: clientSource,
       __origin: "local",
     },
     assistant: {
@@ -1449,9 +1457,10 @@ function buildE2eMockVoiceTurnResponse(replyLanguage: ReplyLanguage = PRODUCT_DE
       remodeled_english: replyLanguage === "en" ? assistantText : "",
       tamil_text: replyLanguage === "ta" ? assistantText : "",
       theni_tamil_text: replyLanguage === "ta" ? assistantText : "",
-      direct_answer_source: "e2e_voice_mock",
+      direct_answer_source: mockSource,
       meta: {
-        source: "e2e_voice_mock",
+        source: mockSource,
+        client_source: clientSource,
         requested_reply_language: replyLanguage,
         tts_language_code: ttsLanguageCode,
         target_language_code: ttsLanguageCode,
@@ -1460,7 +1469,8 @@ function buildE2eMockVoiceTurnResponse(replyLanguage: ReplyLanguage = PRODUCT_DE
       },
     },
     meta: {
-      source: "e2e_voice_mock",
+      source: mockSource,
+      client_source: clientSource,
       route: routeTaken,
       language: replyLanguage,
       requested_reply_language: replyLanguage,
@@ -1551,6 +1561,25 @@ function getFormFilePart(form: FormData) {
   }
 
   return null;
+}
+
+function getFormStringPart(form: FormData, key: string) {
+  const internal = (form as any)?._parts;
+  if (!Array.isArray(internal)) return null;
+
+  for (const part of internal) {
+    if (!Array.isArray(part) || part.length < 2) continue;
+    if (part[0] !== key) continue;
+    const value = part[1];
+    return typeof value === "string" ? value : value == null ? null : String(value);
+  }
+
+  return null;
+}
+
+function normalizeVoiceClientSource(value: unknown): VoiceClientSource {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "handsfree" ? "handsfree" : "voice";
 }
 
 function isFormDataPayload(value: unknown): value is FormData {
@@ -2857,17 +2886,27 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
   const resolvedPath = isVoiceAnalyze ? await withVoiceLanguageDefaults(normalizeVoiceAnalyzePath(path)) : path;
   if (isVoiceAnalyze && isE2eMockVoiceTurnEnabled()) {
     const replyLanguage = normalizeReplyLanguage(parseQueryParam(resolvedPath, "reply_language")) || PRODUCT_DEFAULT_REPLY_LANGUAGE;
+    const clientSource = normalizeVoiceClientSource(
+      parseQueryParam(resolvedPath, "client_source") || getFormStringPart(form, "client_source"),
+    );
     const mock = buildE2eMockVoiceTurnResponse(
       replyLanguage,
+      clientSource,
     ) as T;
-    console.info("[e2e_voice_mock] /api/transcribe-and-analyze", {
+    console.info(
+      clientSource === "handsfree"
+        ? "[e2e_hands_free_audio_mock] /api/transcribe-and-analyze"
+        : "[e2e_voice_mock] /api/transcribe-and-analyze",
+      {
       requested_reply_language: replyLanguage,
       predicted_label: "general",
       route_taken: replyLanguage === "ta" ? "sarvam_general" : "openai_general",
+      client_source: clientSource,
       tts_language_code: e2eTtsLanguageCode(replyLanguage),
       tts_locale_style: e2eTtsLocaleStyle(replyLanguage),
       voice_surface: getE2eVoiceSurface(),
-    });
+      },
+    );
     return mock;
   }
 

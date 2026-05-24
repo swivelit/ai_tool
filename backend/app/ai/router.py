@@ -92,7 +92,7 @@ class AIProviderRouter:
                 language=language.language,
                 intent=intent.intent,
                 max_output_tokens=max_output_tokens,
-                needs_voice_output=request.channel == "voice",
+                needs_voice_output=request.channel in {"voice", "handsfree"},
                 metadata=intent_metadata,
             )
 
@@ -115,7 +115,7 @@ class AIProviderRouter:
             language=language.language,
             intent=intent.intent,
             max_output_tokens=max_output_tokens,
-            needs_voice_output=request.channel == "voice",
+            needs_voice_output=request.channel in {"voice", "handsfree"},
             model_candidates=[candidate.model for candidate in selections] or [selection.model],
             provider_endpoint_candidates=[candidate.endpoint for candidate in selections] or [selection.endpoint],
             metadata={

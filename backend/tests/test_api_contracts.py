@@ -1135,6 +1135,55 @@ def test_voice_route_preserves_mobile_mime_uses_profile_language_and_autodetects
     assert metadata["filename"] == "audio.m4a"
 
 
+def test_transcribe_and_analyze_preserves_handsfree_client_source(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    captured_requests = []
+
+    class FakeSarvamProvider:
+        def stt_file(self, file_path, language=None, *, content_type=None, filename=None):
+            return "handsfree hello"
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        captured_requests.append(ai_request)
+        return AIProviderResponse(
+            text="Handsfree answer",
+            provider="backend_tool",
+            model=None,
+            route="agent_local_handsfree_test",
+            reason="unit_test",
+            language="en",
+            intent="general",
+        )
+
+    monkeypatch.setattr(main_module, "_get_sarvam_provider", lambda: FakeSarvamProvider())
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        f"/api/transcribe-and-analyze?user_id={user.id}&client_source=handsfree",
+        headers=headers,
+        files={"file": ("handsfree-command.wav", b"audio", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert captured_requests
+    assert captured_requests[0].channel == "handsfree"
+    assert captured_requests[0].metadata["client_source"] == "handsfree"
+    assert payload["item"]["source"] == "handsfree"
+    assert payload["meta"]["client_source"] == "handsfree"
+    with SessionLocal() as session:
+        item = session.exec(select(Item).where(Item.raw_text == "handsfree hello")).one()
+        conversation = session.exec(
+            select(Conversation).where(Conversation.user_input == "handsfree hello")
+        ).one()
+        stt_usage = session.exec(select(AIUsageEvent).where(AIUsageEvent.route == "sarvam_stt")).one()
+    assert item.source == "handsfree"
+    assert conversation.channel == "handsfree"
+    assert json.loads(stt_usage.metadata_json)["client_source"] == "handsfree"
+
+
 def test_voice_quota_blocks_before_stt_provider_call(client, monkeypatch):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")

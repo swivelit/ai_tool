@@ -9,7 +9,7 @@ class AIRequest:
     user_id: Optional[int]
     message: str
     reply_language: Optional[str]
-    channel: Literal["text", "voice", "tool", "background"]
+    channel: Literal["text", "voice", "handsfree", "tool", "background"]
     request_id: Optional[str]
     metadata: dict
     context_turns: list[dict[str, str]] = field(default_factory=list)

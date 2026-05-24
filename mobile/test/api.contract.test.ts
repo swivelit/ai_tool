@@ -316,6 +316,63 @@ describe("API client contracts", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("uses handsfree source in the debug E2E voice upload mock", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            EXPO_PUBLIC_E2E_MOCK_VOICE_TURN: "1",
+            EXPO_PUBLIC_E2E_MOCK_HANDS_FREE: "1",
+            EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO: "1",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: null,
+      },
+    }));
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(async () => {
+      throw new Error("backend should not be called for E2E hands-free audio mock");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPostForm } = await import("../lib/api");
+    const form = {
+      _parts: [
+        [
+          "file",
+          {
+            uri: "file:///tmp/handsfree-command.wav",
+            name: "handsfree-command.wav",
+            type: "audio/wav",
+          },
+        ],
+        ["client_source", "handsfree"],
+      ],
+    } as unknown as FormData;
+
+    const payload = await apiPostForm<any>(
+      "/api/transcribe-and-analyze?user_id=7&reply_language=en&client_source=handsfree",
+      form,
+    );
+
+    expect(payload.item.source).toBe("handsfree");
+    expect(payload.meta.source).toBe("e2e_hands_free_audio_mock");
+    expect(payload.meta.client_source).toBe("handsfree");
+    expect(payload.pipeline.meta.client_source).toBe("handsfree");
+    expect(infoSpy).toHaveBeenCalledWith(
+      "[e2e_hands_free_audio_mock] /api/transcribe-and-analyze",
+      expect.objectContaining({
+        client_source: "handsfree",
+      }),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("returns a Chennai Tamil debug E2E voice mock when Tamil is requested", async () => {
     vi.doMock("expo-constants", () => ({
       default: {

@@ -170,6 +170,9 @@ describe("APK test harness", () => {
       'export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-1}"',
     );
     expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO:-1}"',
+    );
+    expect(source).toContain(
       'export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"',
     );
     expect(source).toContain(
@@ -204,6 +207,7 @@ describe("APK test harness", () => {
       expect(source).toContain("EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=");
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=");
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO=");
       expect(source).toContain("EXPO_PUBLIC_E2E_REPLY_LANGUAGE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_TAMIL_STYLE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_QUERY=");
@@ -225,6 +229,7 @@ describe("APK test harness", () => {
     expect(source).toContain('run_step "mobile-tests" env');
     expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_VOICE_TURN");
     expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE");
+    expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO");
     expect(source).toContain("-u EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE");
     expect(source).toContain("-u EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND");
   });
@@ -255,6 +260,9 @@ describe("APK test harness", () => {
     expect(source).toContain('start_x=$((width * 20 / 100))');
     expect(source).toContain('end_x=$((width * 80 / 100))');
     expect(source).toContain("swipe-chat-to-voice");
+    expect(source).toContain("e2e-open-voice-button");
+    expect(source).toContain("voice_orb_center_from_window");
+    expect(source).toContain("strict voice telemetry markers were used");
     expect(source).toContain("voice-swipe-right-close");
     expect(source).not.toContain("tap-voice-entry-button");
     expect(source).toContain("Hold the orb to record");
@@ -262,6 +270,7 @@ describe("APK test harness", () => {
     expect(source).toContain("voice-session-transcript");
     expect(source).toContain("voice-session-user-turn");
     expect(source).toContain("voice-session-assistant-turn");
+    expect(source).toContain("strict command-audio telemetry markers were used");
     expect(source).toContain("E2E voice reply ready.");
     expect(source).toContain("Seri, unga voice reply ready.");
     expect(source).toContain("Spitzola");
@@ -320,11 +329,17 @@ describe("APK test harness", () => {
     const source = readRepo("test_apk.sh");
 
     expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE");
+    expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO");
     expect(source).toContain("EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE");
     expect(source).toContain("EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND");
     expect(source).toContain("e2e-hands-free-trigger-button");
     expect(source).toContain("e2e-hands-free-stop-button");
     expect(source).toContain("scan_hands_free_reply_markers");
+    expect(source).toContain("onCommandAudio");
+    expect(source).toContain("/api/transcribe-and-analyze");
+    expect(source).toContain("client_source");
+    expect(source).toContain("client_voice_upload_started");
+    expect(source).toContain("client_voice_upload_completed");
     expect(source).toContain("hands-free-before");
     expect(source).toContain("hands-free-after-reply");
     expect(source).toContain("hands-free-after-stop");
@@ -334,6 +349,20 @@ describe("APK test harness", () => {
     expect(source).toContain("hands-free-tts-failed");
     expect(source).toContain("chat-mic-button-absent-before-hands-free");
     expect(source).toContain("chat-mic-button-absent-after-hands-free");
+  });
+
+  it("APK harness captures memory and only retries external pre-test low-memory kills", () => {
+    const launchDebug = readRepo("launch-debug_apk.sh");
+    const testApk = readRepo("test_apk.sh");
+
+    expect(launchDebug).toContain("pre-test low-memory kill");
+    expect(launchDebug).toContain("lowmemorykiller");
+    expect(launchDebug).toContain("FATAL EXCEPTION");
+    expect(testApk).toContain("dumpsys-meminfo-before-launch");
+    expect(testApk).toContain("dumpsys-meminfo-package-before-launch");
+    expect(testApk).toContain("dumpsys-meminfo-package-after-launch");
+    expect(testApk).toContain("adb-reverse-list");
+    expect(testApk).toContain("metro-status-before-launch");
   });
 
   it("APK automation rejects the removed quick composer mic", () => {

@@ -586,6 +586,36 @@ describe("wakeWordEngine", () => {
     );
   });
 
+  it("supports debug E2E mock hands-free command audio events", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE", "1");
+    vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO", "1");
+    const settings = normalizeAssistantSettings({
+      handsFreeEnabled: true,
+      wakePhrase: "Hey Elli",
+    });
+    const model = await ensureWakeModel(settings);
+    const onCommand = vi.fn();
+    const onCommandAudio = vi.fn();
+
+    await startHandsFreeSession(model, { onCommand, onCommandAudio });
+    await vi.advanceTimersByTimeAsync(500);
+    await Promise.resolve();
+    await stopHandsFreeSession();
+
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(onCommandAudio).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileUri: expect.stringMatching(/^file:\/\/.*\.wav$/),
+        uri: expect.stringMatching(/^file:\/\/.*\.wav$/),
+        durationMs: 1000,
+        sampleRate: 16000,
+        mimeType: "audio/wav",
+      }),
+    );
+  });
+
   it("rejects E2E mock wake in production runtime", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE", "1");

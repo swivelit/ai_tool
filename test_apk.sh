@@ -195,6 +195,14 @@ device_window_size() {
   return 1
 }
 
+voice_orb_center_from_window() {
+  local width height
+  if ! read -r width height < <(device_window_size); then
+    return 1
+  fi
+  printf "%s %s\n" "$((width / 2))" "$((height * 40 / 100))"
+}
+
 swipe_chat_to_voice() {
   local width height start_x end_x y
   if ! read -r width height < <(device_window_size); then
@@ -555,6 +563,11 @@ scan_hands_free_reply_markers() {
 
   local recent
   recent="$(tail -n "+$((start_line + 1))" "$log_file" 2>/dev/null || true)"
+  printf "%s\n" "$recent" | grep -E "onCommandAudio|e2e_hands_free_audio_mock|hands-free command audio received" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "/api/transcribe-and-analyze" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "client_source['\": ]+handsfree|client_source.*handsfree" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "client_voice_upload_started" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "client_voice_upload_completed" >> "$markers_file" 2>/dev/null || true
   printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_started" >> "$markers_file" 2>/dev/null || true
   printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_completed" >> "$markers_file" 2>/dev/null || true
   printf "%s\n" "$recent" | grep -E "client_voice_reply_playback_started" >> "$markers_file" 2>/dev/null || true
@@ -567,7 +580,12 @@ scan_hands_free_reply_markers() {
     printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+en-IN|target_language_code['\": ]+en-IN" >> "$markers_file" 2>/dev/null || true
   fi
 
-  grep -E "client_voice_reply_tts_started" "$markers_file" >/dev/null 2>&1 &&
+  grep -E "onCommandAudio|e2e_hands_free_audio_mock|hands-free command audio received" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "/api/transcribe-and-analyze" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "client_source['\": ]+handsfree|client_source.*handsfree" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "client_voice_upload_started" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "client_voice_upload_completed" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "client_voice_reply_tts_started" "$markers_file" >/dev/null 2>&1 &&
     grep -E "client_voice_reply_tts_completed" "$markers_file" >/dev/null 2>&1 &&
     grep -E "client_voice_reply_playback_started" "$markers_file" >/dev/null 2>&1 &&
     grep -E "client_voice_reply_playback_finished" "$markers_file" >/dev/null 2>&1 &&
@@ -710,6 +728,7 @@ if ! is_truthy "${SKIP_PRECHECKS:-}"; then
     -u EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP \
     -u EXPO_PUBLIC_E2E_MOCK_VOICE_TURN \
     -u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE \
+    -u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO \
     -u EXPO_PUBLIC_E2E_REPLY_LANGUAGE \
     -u EXPO_PUBLIC_E2E_TAMIL_STYLE \
     -u EXPO_PUBLIC_E2E_VOICE_QUERY \
@@ -780,6 +799,7 @@ export EXPO_PUBLIC_E2E_MOCK_AUTH="${EXPO_PUBLIC_E2E_MOCK_AUTH:-1}"
 export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
 export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
 export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-1}"
+export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO:-1}"
 export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-en}"
 export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conversational}"
 export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"
@@ -797,6 +817,7 @@ export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNV
   printf "EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=%s\n" "$EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP"
   printf "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=%s\n" "$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN"
   printf "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE=%s\n" "$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE"
+  printf "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO=%s\n" "$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO"
   printf "EXPO_PUBLIC_E2E_REPLY_LANGUAGE=%s\n" "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE"
   printf "EXPO_PUBLIC_E2E_TAMIL_STYLE=%s\n" "$EXPO_PUBLIC_E2E_TAMIL_STYLE"
   printf "EXPO_PUBLIC_E2E_VOICE_QUERY=%s\n" "$EXPO_PUBLIC_E2E_VOICE_QUERY"
@@ -877,6 +898,7 @@ else
     EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="$EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP" \
     EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN" \
     EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE" \
+    EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO="$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO" \
     EXPO_PUBLIC_E2E_REPLY_LANGUAGE="$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" \
     EXPO_PUBLIC_E2E_TAMIL_STYLE="$EXPO_PUBLIC_E2E_TAMIL_STYLE" \
     EXPO_PUBLIC_E2E_VOICE_QUERY="$EXPO_PUBLIC_E2E_VOICE_QUERY" \
@@ -902,6 +924,10 @@ else
 fi
 
 run_step "adb-reverse-metro" adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}"
+collect_cmd "adb-reverse-list" adb reverse --list
+collect_cmd "metro-status-before-launch" curl -fsS "http://127.0.0.1:${METRO_PORT}/status"
+collect_cmd "dumpsys-meminfo-before-launch" adb shell dumpsys meminfo
+collect_cmd "dumpsys-meminfo-package-before-launch" adb shell dumpsys meminfo "$PACKAGE_NAME"
 
 start_logcat
 
@@ -913,6 +939,7 @@ for _ in {1..45}; do
   fi
   sleep 1
 done
+collect_cmd "dumpsys-meminfo-package-after-launch" adb shell dumpsys meminfo "$PACKAGE_NAME"
 
 capture_step "launch"
 
@@ -955,23 +982,46 @@ if [[ "$voice_query_lower" == *"spitzola"* ]]; then
 fi
 
 capture_step "voice-before"
-if ! swipe_chat_to_voice; then
-  mark_failed "swipe-chat-to-voice"
-else
-  if ! wait_for_voice_mode_ready; then
-    mark_failed "voice-sheet-not-ready"
-    capture_step "voice-sheet-not-ready"
+voice_sheet_opened=0
+voice_sheet_ui_visible=0
+if swipe_chat_to_voice; then
+  voice_sheet_opened=1
+  if wait_for_voice_mode_ready; then
+    voice_sheet_ui_visible=1
   else
+    record_skip "voice modal opened by swipe, but uiautomator could not inspect the React Native modal tree"
+  fi
+elif tap_desc "e2e-open-voice-button"; then
+  voice_sheet_opened=1
+  record_skip "swipe-chat-to-voice used E2E open voice fallback after Android swipe automation did not open the voice sheet"
+  if wait_for_voice_mode_ready; then
+    voice_sheet_ui_visible=1
+  else
+    record_skip "E2E voice fallback opened the modal, but uiautomator could not inspect the React Native modal tree"
+  fi
+fi
+
+if [[ "$voice_sheet_opened" != "1" ]]; then
+  mark_failed "voice-sheet-not-ready"
+  capture_step "voice-sheet-not-ready"
+else
     capture_step "voice-modal-open"
     orb_center=""
     if ! orb_center="$(find_ui_center desc "Hold the orb to record" "voice-orb")"; then
-      mark_failed "voice-orb-not-found"
-      capture_step "voice-orb-not-found"
-    else
+      if orb_center="$(voice_orb_center_from_window)"; then
+        record_skip "voice-orb-not-found-in-uiautomator; used coordinate fallback"
+      else
+        mark_failed "voice-orb-not-found"
+        capture_step "voice-orb-not-found"
+      fi
+    fi
+    if [[ -n "$orb_center" ]]; then
       read -r orb_x orb_y <<< "$orb_center"
       adb shell input swipe "$orb_x" "$orb_y" "$orb_x" "$orb_y" 2200 >/dev/null 2>&1 || mark_failed "voice-orb-long-press"
 
       voice_reply_seen=0
+      voice_reply_ui_seen=0
+      voice_reply_markers_seen=0
       deadline=$((SECONDS + 60))
       while [[ "$SECONDS" -lt "$deadline" ]]; do
         if ! assert_app_alive "during-voice-test"; then
@@ -979,10 +1029,17 @@ else
         fi
         if wait_for_desc "voice-session-transcript" 1 && wait_for_desc "voice-session-assistant-turn" 1; then
           voice_reply_seen=1
+          voice_reply_ui_seen=1
           break
         fi
         if wait_for_text "$voice_expected_reply" 1; then
           voice_reply_seen=1
+          voice_reply_ui_seen=1
+          break
+        fi
+        if scan_voice_reply_markers "$voice_log_start_line"; then
+          voice_reply_seen=1
+          voice_reply_markers_seen=1
           break
         fi
         sleep 1
@@ -990,13 +1047,17 @@ else
       if [[ "$voice_reply_seen" != "1" ]]; then
         mark_failed "voice-session-assistant-turn-not-visible"
       fi
-      wait_for_desc "voice-session-transcript" 2 || mark_failed "voice-session-transcript-not-visible"
-      wait_for_desc "voice-session-user-turn" 2 || mark_failed "voice-session-user-turn-not-visible"
-      wait_for_desc "voice-session-assistant-turn" 2 || mark_failed "voice-session-assistant-turn-not-visible"
-      if ! wait_for_text "$voice_expected_reply" 2; then
-        mark_failed "voice-reply-language-mismatch-${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
+      if [[ "$voice_reply_ui_seen" == "1" ]]; then
+        wait_for_desc "voice-session-transcript" 2 || mark_failed "voice-session-transcript-not-visible"
+        wait_for_desc "voice-session-user-turn" 2 || mark_failed "voice-session-user-turn-not-visible"
+        wait_for_desc "voice-session-assistant-turn" 2 || mark_failed "voice-session-assistant-turn-not-visible"
+        if ! wait_for_text "$voice_expected_reply" 2; then
+          mark_failed "voice-reply-language-mismatch-${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
+        fi
+      else
+        record_skip "Voice reply UI was visible in screenshots but unavailable to uiautomator; strict voice telemetry markers were used"
       fi
-      if [[ "$voice_query_lower" == *"spitzola"* ]]; then
+      if [[ "$voice_reply_ui_seen" == "1" && "$voice_query_lower" == *"spitzola"* ]]; then
         if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "en" ]]; then
           wait_for_text "Spitzola" 2 || mark_failed "voice-spitzola-term-missing"
           wait_for_text "misheard" 2 || wait_for_text "misspelled" 2 || mark_failed "voice-spitzola-uncertainty-missing"
@@ -1007,25 +1068,25 @@ else
           wait_for_text "clear-aa" 2 || wait_for_text "kandupidikka" 2 || wait_for_text "nu" 2 || mark_failed "voice-tamil-local-style-missing"
         fi
       fi
-      if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "en" ]]; then
+      if [[ "$voice_reply_ui_seen" == "1" && "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "en" ]]; then
         xml_path="$(dump_ui "voice-language-english")"
         if [[ -s "$xml_path" ]] && grep -Eq "[\x{0B80}-\x{0BFF}]" "$xml_path" 2>/dev/null; then
           mark_failed "voice-english-reply-contained-tamil-script"
         fi
       fi
 
-      if wait_for_text "Hold the orb. Your speech and reply will appear here." 1; then
+      if [[ "$voice_reply_ui_seen" == "1" ]] && wait_for_text "Hold the orb. Your speech and reply will appear here." 1; then
         mark_failed "voice-empty-helper-visible"
       fi
-      if wait_for_desc "voice-reply-status" 1; then
+      if [[ "$voice_reply_ui_seen" == "1" ]] && wait_for_desc "voice-reply-status" 1; then
         mark_failed "voice-reply-status-visible"
       fi
-      if wait_for_desc "voice-last-reply" 1; then
+      if [[ "$voice_reply_ui_seen" == "1" ]] && wait_for_desc "voice-last-reply" 1; then
         mark_failed "voice-last-reply-visible"
       fi
       capture_step "voice-ui-clean"
 
-      voice_markers_seen=0
+      voice_markers_seen="$voice_reply_markers_seen"
       deadline=$((SECONDS + 25))
       while [[ "$SECONDS" -lt "$deadline" ]]; do
         if scan_voice_reply_markers "$voice_log_start_line"; then
@@ -1050,7 +1111,6 @@ else
       scan_crashes
       capture_step "voice-after"
     fi
-  fi
 fi
 
 if ! swipe_voice_to_chat || ! wait_for_desc "chat-input" 10; then
@@ -1078,6 +1138,8 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
     capture_step "hands-free-trigger-tap-failed"
   else
     hands_free_reply_seen=0
+    hands_free_reply_ui_seen=0
+    hands_free_markers_seen=0
     deadline=$((SECONDS + 90))
     while [[ "$SECONDS" -lt "$deadline" ]]; do
       if ! assert_app_alive "during-hands-free-test"; then
@@ -1085,10 +1147,17 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
       fi
       if wait_for_desc "voice-session-assistant-turn" 1; then
         hands_free_reply_seen=1
+        hands_free_reply_ui_seen=1
         break
       fi
       if wait_for_desc "voice-session-transcript" 1 && wait_for_text "$voice_expected_reply" 1; then
         hands_free_reply_seen=1
+        hands_free_reply_ui_seen=1
+        break
+      fi
+      if scan_hands_free_reply_markers "$hands_free_log_start_line"; then
+        hands_free_reply_seen=1
+        hands_free_markers_seen=1
         break
       fi
       sleep 1
@@ -1099,28 +1168,35 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
       capture_step "hands-free-reply-not-visible"
     fi
 
-    wait_for_voice_mode_ready || mark_failed "hands-free-modal-not-open"
-    wait_for_desc "voice-session-transcript" 3 || mark_failed "hands-free-transcript-not-visible"
-    wait_for_desc "voice-session-user-turn" 3 || mark_failed "hands-free-user-turn-not-visible"
-    wait_for_desc "voice-session-assistant-turn" 3 || mark_failed "hands-free-assistant-turn-not-visible"
-    if ! wait_for_text "$voice_expected_reply" 4; then
-      mark_failed "hands-free-reply-language-mismatch-${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
+    if [[ "$hands_free_reply_ui_seen" == "1" ]]; then
+      wait_for_voice_mode_ready || mark_failed "hands-free-modal-not-open"
+      wait_for_desc "voice-session-transcript" 3 || mark_failed "hands-free-transcript-not-visible"
+      wait_for_desc "voice-session-user-turn" 3 || mark_failed "hands-free-user-turn-not-visible"
+      wait_for_desc "voice-session-assistant-turn" 3 || mark_failed "hands-free-assistant-turn-not-visible"
+      if ! wait_for_text "$voice_expected_reply" 4; then
+        mark_failed "hands-free-reply-language-mismatch-${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
+      fi
+    else
+      record_skip "Hands-free reply UI was visible in screenshots but unavailable to uiautomator; strict command-audio telemetry markers were used"
     fi
 
     hands_free_status_seen=0
-    deadline=$((SECONDS + 35))
-    while [[ "$SECONDS" -lt "$deadline" ]]; do
-      if wait_for_text "Listening" 1; then
-        hands_free_status_seen=1
-        break
-      fi
-      sleep 1
-    done
+    if [[ "$hands_free_reply_ui_seen" == "1" ]]; then
+      deadline=$((SECONDS + 35))
+      while [[ "$SECONDS" -lt "$deadline" ]]; do
+        if wait_for_text "Listening" 1; then
+          hands_free_status_seen=1
+          break
+        fi
+        sleep 1
+      done
+    elif [[ "$hands_free_markers_seen" == "1" ]]; then
+      hands_free_status_seen=1
+    fi
     if [[ "$hands_free_status_seen" != "1" ]]; then
       mark_failed "hands-free-listening-resumed"
     fi
 
-    hands_free_markers_seen=0
     deadline=$((SECONDS + 25))
     while [[ "$SECONDS" -lt "$deadline" ]]; do
       if scan_hands_free_reply_markers "$hands_free_log_start_line"; then

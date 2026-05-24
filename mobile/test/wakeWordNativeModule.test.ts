@@ -79,7 +79,25 @@ describe("JaiWakeWord native module", () => {
     expect(controller).toContain("EnergyVoiceActivityDetector");
     expect(controller).toContain("writeCommandWav");
     expect(controller).toContain("onCommandAudio");
+    expect(controller).toContain("Uri.fromFile(file).toString()");
     expect(controller).toContain("COMMAND_LISTENING");
+    expect(controller).toContain("captureRestartCount");
+    expect(controller).toContain("lastCaptureError");
+    expect(controller).toContain("inferenceThreadAlive");
+    expect(controller).toContain("lastInferenceError");
+    expect(controller).toContain("vadSpeechFrames");
+    expect(controller).toContain("vadSkippedWakeFrames");
+    expect(controller).toContain("vadHangoverFrames");
+    const routeWakeFrame = controller.slice(
+      controller.indexOf("private fun routeWakeFrame"),
+      controller.indexOf("private fun createAudioSource"),
+    );
+    expect(routeWakeFrame).toContain("vad.isSpeech(frame)");
+    expect(routeWakeFrame).toContain("wakeVadHangoverRemainingMs");
+    expect(routeWakeFrame).toContain("vadSkippedWakeFrames");
+    expect(routeWakeFrame.indexOf("vad.isSpeech(frame)")).toBeLessThan(
+      routeWakeFrame.indexOf("nextWakeQueue.offer(frame)"),
+    );
     expect(service).toContain("FOREGROUND_SERVICE_TYPE_MICROPHONE");
     expect(service).toContain("startForeground");
     const inferenceWorker = read(
@@ -87,6 +105,15 @@ describe("JaiWakeWord native module", () => {
     );
     expect(inferenceWorker).toContain("pipeline.processFrame");
     expect(inferenceWorker).toContain("score >= threshold");
+    expect(inferenceWorker).toContain("WakeInferenceWorkerStatus");
+    expect(inferenceWorker).toContain("consecutiveErrors");
+    expect(inferenceWorker).toContain("isFatalInferenceError");
+    expect(audio).toContain("PcmAudioSourceListener");
+    expect(audio).toContain("AcousticEchoCanceler.create");
+    expect(audio).toContain("NoiseSuppressor.create");
+    expect(audio).toContain("AutomaticGainControl.create");
+    expect(audio).toContain("ERROR_INVALID_OPERATION");
+    expect(audio).toContain("ERROR_BAD_VALUE");
   });
 
   it("keeps iOS structurally wired and clearly unsupported until ONNX Runtime is linked", () => {

@@ -2462,6 +2462,13 @@ def _persisted_chat_source(payload: ChatAPIRequest) -> str:
     return "voice" if client_source in {"voice", "handsfree"} else "text"
 
 
+def _normalize_voice_client_source(client_source: Optional[str]) -> str:
+    normalized = str(client_source or "").strip().lower()
+    if normalized == "handsfree":
+        return "handsfree"
+    return "voice"
+
+
 def _boolish(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -4995,6 +5002,7 @@ async def _transcribe_and_analyze_upload(
     user_id: Optional[int],
     reply_language: Optional[str],
     speech_language: Optional[str],
+    client_source: Optional[str],
     file: UploadFile,
     session: Session,
     auth_user: AuthUser,
@@ -5008,6 +5016,7 @@ async def _transcribe_and_analyze_upload(
         reply_language if reply_language else (getattr(user, "reply_language", None) or DEFAULT_REPLY_LANGUAGE)
     )
     speech_language = _normalize_speech_language_query(speech_language)
+    normalized_client_source = _normalize_voice_client_source(client_source)
 
     content_type = str(file.content_type or "").split(";")[0].strip().lower()
     filename = file.filename or "audio.m4a"
@@ -5023,6 +5032,7 @@ async def _transcribe_and_analyze_upload(
             size_bytes=len(upload_bytes),
             reply_language=reply_language,
             speech_language=speech_language,
+            client_source=normalized_client_source,
         ),
     )
     if len(upload_bytes) <= 0:
@@ -5076,6 +5086,7 @@ async def _transcribe_and_analyze_upload(
                 "provider_content_type": provider_content_type,
                 "filename": filename,
                 "duration_estimation_method": duration_estimation_method,
+                "client_source": normalized_client_source,
             },
         )
 
@@ -5090,7 +5101,7 @@ async def _transcribe_and_analyze_upload(
                     user_id=int(user.id),
                     message=transcript_text,
                     reply_language=reply_language,
-                    channel="voice",
+                    channel=normalized_client_source,
                     request_id=get_request_id(),
                     metadata={
                         "admin_email": auth_user.email,
@@ -5099,6 +5110,7 @@ async def _transcribe_and_analyze_upload(
                         "provider_content_type": provider_content_type,
                         "audio_seconds": estimated_audio_seconds,
                         "duration_estimation_method": duration_estimation_method,
+                        "client_source": normalized_client_source,
                         "context_turn_count": len(context_turns),
                         "profile_context": profile_context,
                         "profile_prompt_context": profile_prompt_context,
@@ -5128,7 +5140,7 @@ async def _transcribe_and_analyze_upload(
         item, meta, normalized_pipeline = _save_item_from_pipeline(
             session,
             user_id=int(user.id),
-            source="voice",
+            source=normalized_client_source,
             raw_text=transcript_text,
             transcript=transcript_text,
             pipeline_result=pipeline_result,
@@ -5144,6 +5156,8 @@ async def _transcribe_and_analyze_upload(
             response_meta.setdefault("model_tier", normalized_pipeline.get("model_tier"))
             response_meta.setdefault("route", normalized_pipeline.get("route_taken"))
             response_meta.setdefault("ai_router_enabled", True)
+        if isinstance(response_meta, dict):
+            response_meta.setdefault("client_source", normalized_client_source)
         if CHAT_TURN_SUMMARY_LOGS_ENABLED:
             assistant = response.get("assistant") if isinstance(response, dict) else {}
             answer = ""
@@ -5157,7 +5171,7 @@ async def _transcribe_and_analyze_upload(
                     event="voice_turn_summary",
                     user_id=int(user.id),
                     request_id=get_request_id(),
-                    channel="voice",
+                    channel=normalized_client_source,
                     question=transcript_text,
                     answer=answer,
                     route_taken=pipeline.get("route_taken"),
@@ -5169,6 +5183,7 @@ async def _transcribe_and_analyze_upload(
                     agent_source=_backend_agent_source(pipeline),
                     duration_ms=round((time.perf_counter() - started) * 1000, 2),
                     voice_phase="completed",
+                    client_source=normalized_client_source,
                 ),
             )
         return response
@@ -5184,6 +5199,7 @@ async def transcribe_and_analyze(
     user_id: Optional[int] = None,
     reply_language: Optional[str] = None,
     speech_language: Optional[str] = None,
+    client_source: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
     auth_user: AuthUser = Depends(get_current_user),
@@ -5192,6 +5208,7 @@ async def transcribe_and_analyze(
         user_id=user_id,
         reply_language=reply_language,
         speech_language=speech_language,
+        client_source=client_source,
         file=file,
         session=session,
         auth_user=auth_user,
@@ -5203,6 +5220,7 @@ async def api_transcribe_and_analyze(
     user_id: Optional[int] = None,
     reply_language: Optional[str] = None,
     speech_language: Optional[str] = None,
+    client_source: Optional[str] = None,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
     auth_user: AuthUser = Depends(get_current_user),
@@ -5211,6 +5229,7 @@ async def api_transcribe_and_analyze(
         user_id=user_id,
         reply_language=reply_language,
         speech_language=speech_language,
+        client_source=client_source,
         file=file,
         session=session,
         auth_user=auth_user,

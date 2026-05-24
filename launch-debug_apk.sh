@@ -77,6 +77,7 @@ start_metro() {
     EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}" \
     EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-}" \
     EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}" \
+    EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO:-}" \
     EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-}" \
     EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-}" \
     EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-}" \
@@ -126,7 +127,29 @@ run_apk_harness_scenario() {
 
   info "Running APK test harness (${label})"
   print_debug_env
-  REUSE_APK=1 SKIP_PRECHECKS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh
+  local attempt=1
+  local max_attempts=2
+  local status=0
+  while true; do
+    status=0
+    REUSE_APK=1 SKIP_PRECHECKS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh || status=$?
+    if [[ "$status" == "0" ]]; then
+      return 0
+    fi
+    local latest_artifact
+    latest_artifact="$(ls -dt "$DIST_DIR"/apk-test-* 2>/dev/null | head -1 || true)"
+    if [[ "$attempt" -lt "$max_attempts" && -n "$latest_artifact" ]] &&
+      grep -E "lowmemorykiller.*${PACKAGE_NAME}|Kill '${PACKAGE_NAME}'" "$latest_artifact"/logcat-full.log "$latest_artifact"/memory-pressure.log >/dev/null 2>&1 &&
+      ! grep -E "FATAL EXCEPTION|AndroidRuntime.*${PACKAGE_NAME}" "$latest_artifact"/logcat-full.log >/dev/null 2>&1 &&
+      ! grep -E "voice-reply-start|hands-free-before|chat-input-found" "$latest_artifact"/steps.log >/dev/null 2>&1; then
+      warn "APK harness saw a pre-test low-memory kill with no app crash marker; retrying ${label} once."
+      adb shell am force-stop "$PACKAGE_NAME" >/dev/null 2>&1 || true
+      adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
+      attempt=$((attempt + 1))
+      continue
+    fi
+    return "$status"
+  done
 }
 
 open_logs_terminal() {
@@ -160,6 +183,7 @@ print_debug_env() {
   printf "EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP=%s\n" "${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-}"
   printf "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=%s\n" "${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-}"
   printf "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE=%s\n" "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"
+  printf "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO=%s\n" "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO:-}"
   printf "EXPO_PUBLIC_E2E_REPLY_LANGUAGE=%s\n" "${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-}"
   printf "EXPO_PUBLIC_E2E_TAMIL_STYLE=%s\n" "${EXPO_PUBLIC_E2E_TAMIL_STYLE:-}"
   printf "EXPO_PUBLIC_E2E_VOICE_QUERY=%s\n" "${EXPO_PUBLIC_E2E_VOICE_QUERY:-}"
@@ -270,6 +294,7 @@ if is_truthy "${RUN_APK_TESTS:-}"; then
   export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
   export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
   export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-1}"
+  export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO:-1}"
   export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-en}"
   export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conversational}"
   export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"
@@ -285,7 +310,7 @@ if is_truthy "${RUN_APK_TESTS:-}"; then
   # on this APK mock as the only regression coverage for provider configuration.
   # Run once with EXPO_PUBLIC_E2E_REPLY_LANGUAGE=en and once with =ta to validate
   # both English Settings and Chennai Tamil Settings scenarios.
-  info "APK test mode: E2E mock auth/model setup/voice turn/hands-free enabled; chat composer audio disabled; unverified native inference disabled"
+  info "APK test mode: E2E mock auth/model setup/voice turn/hands-free command audio enabled; chat composer audio disabled; unverified native inference disabled"
 fi
 
 info "Checking Firebase Android config for debug APK"

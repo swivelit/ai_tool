@@ -310,6 +310,12 @@ describe("chat architecture smoke", () => {
     expect(source).toContain("startHandsFreeSession");
     expect(source).toContain("handleNativeHandsFreeCommandAudio");
     expect(source).toContain("submitHandsFreeCommandAudio");
+    expect(source).toContain("nativeStateHandlerRef.current(event)");
+    expect(source).toContain("nativeCommandHandlerRef.current(event)");
+    expect(source).toContain("nativeCommandAudioHandlerRef.current(event)");
+    expect(source).toContain("voiceSheetGenerationRef");
+    expect(source).toContain("closeGeneration !== voiceSheetGenerationRef.current");
+    expect(source).toContain('handsFreeRecognizer.getOwner() !== "handsfree-command"');
     expect(source).toContain("audio/wav");
     expect(source).not.toContain("stopWakeWordListening().then");
     expect(source).not.toContain("startWakeWordListening");
