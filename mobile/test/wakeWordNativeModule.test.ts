@@ -22,6 +22,9 @@ describe("JaiWakeWord native module", () => {
     const audio = read(
       "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/PcmAudioSource.kt",
     );
+    const vad = read(
+      "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/EnergyVoiceActivityDetector.kt",
+    );
 
     expect(config).toContain("WakeWordModule");
     expect(gradle).toContain("onnxruntime-android:1.25.1");
@@ -33,6 +36,11 @@ describe("JaiWakeWord native module", () => {
     expect(manifest).toContain('android:foregroundServiceType="microphone"');
     expect(module).toContain('Name("JaiWakeWord")');
     expect(module).toContain("onCommandAudio");
+    expect(module).toContain("onWakeError");
+    expect(module).toContain('bundle.putBoolean("permanent"');
+    expect(module).toContain('bundle.putBoolean("restartable"');
+    expect(module).toContain('bundle.putBoolean("sessionActive"');
+    expect(module).toContain('bundle.putString("source"');
     expect(module).toContain("startSession");
     expect(module).toContain("stopSession");
     expect(module).toContain("notifyTtsStarted");
@@ -51,6 +59,9 @@ describe("JaiWakeWord native module", () => {
     expect(engine).toContain("WakeInferenceWorker");
     expect(engine).toContain("AudioFrameQueue");
     expect(engine).toContain("parsed.minWakeIntervalMs");
+    expect(engine).toContain("vadRmsThreshold");
+    expect(engine).toContain('config["vadRmsThreshold"]');
+    expect(engine).toContain('config["vadThreshold"]');
     expect(engine).toContain("DeterministicWakeWordPipeline");
     expect(engine).toContain('"deterministicTestSeam" to true');
     expect(engine).toContain('"realOpenWakeWordModelCompatibility" to false');
@@ -69,6 +80,7 @@ describe("JaiWakeWord native module", () => {
     expect(audio).toContain("AudioFrameQueue");
     expect(audio).toContain("frameQueue.offer");
     expect(audio).toContain("MediaRecorder.AudioSource.VOICE_RECOGNITION");
+    expect(vad).toContain("DEFAULT_SPEECH_RMS_THRESHOLD = 0.011");
     const controller = read(
       "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/HandsFreeController.kt",
     );
@@ -82,12 +94,23 @@ describe("JaiWakeWord native module", () => {
     expect(controller).toContain("Uri.fromFile(file).toString()");
     expect(controller).toContain("COMMAND_LISTENING");
     expect(controller).toContain("captureRestartCount");
+    expect(controller).toContain("HandsFreeWakeErrorEvent");
+    expect(controller).toContain("fun stopAfterFatalError");
+    expect(controller).toContain("releaseSessionResources");
+    expect(controller).toContain("stopServiceAfterFatalError");
     expect(controller).toContain("lastCaptureError");
     expect(controller).toContain("inferenceThreadAlive");
     expect(controller).toContain("lastInferenceError");
+    expect(controller).toContain("fatalErrorCode");
+    expect(controller).toContain("fatalErrorMessage");
     expect(controller).toContain("vadSpeechFrames");
     expect(controller).toContain("vadSkippedWakeFrames");
     expect(controller).toContain("vadHangoverFrames");
+    expect(controller).toContain("vadFailOpenFrames");
+    expect(controller).toContain("vadRmsThreshold");
+    expect(controller).toContain("commandPreRollSpeechFrames");
+    expect(controller).toContain("preRollFrames.count { vad.isSpeech(it) }");
+    expect(controller).toContain("commandSpeechDetected = preRollSpeechFrames > 0");
     const routeWakeFrame = controller.slice(
       controller.indexOf("private fun routeWakeFrame"),
       controller.indexOf("private fun createAudioSource"),
@@ -95,19 +118,48 @@ describe("JaiWakeWord native module", () => {
     expect(routeWakeFrame).toContain("vad.isSpeech(frame)");
     expect(routeWakeFrame).toContain("wakeVadHangoverRemainingMs");
     expect(routeWakeFrame).toContain("vadSkippedWakeFrames");
+    expect(routeWakeFrame).toContain("WAKE_VAD_FAIL_OPEN_INTERVAL_MS");
+    expect(routeWakeFrame).toContain("vadFailOpenFrames");
     expect(routeWakeFrame.indexOf("vad.isSpeech(frame)")).toBeLessThan(
       routeWakeFrame.indexOf("nextWakeQueue.offer(frame)"),
     );
+    const fatalCleanup = controller.slice(
+      controller.indexOf("private fun stopAfterFatalError"),
+      controller.indexOf("private fun createAudioSource"),
+    );
+    expect(fatalCleanup.indexOf("releaseSessionResources(clearFatal = false)")).toBeLessThan(
+      fatalCleanup.indexOf("transition(HandsFreeNativeState.IDLE"),
+    );
+    expect(fatalCleanup).toContain("sessionActive = false");
+    expect(fatalCleanup).toContain("HandsFreeControllerRegistry.stopServiceAfterFatalError(event)");
+    const inferenceErrorPath = controller.slice(
+      controller.indexOf("onError = { error ->"),
+      controller.indexOf("onStopped = { reason ->"),
+    );
+    expect(inferenceErrorPath).toContain("stopAfterFatalError");
+    expect(inferenceErrorPath).not.toContain("transition(HandsFreeNativeState.IDLE");
+    const captureErrorPath = controller.slice(
+      controller.indexOf("private fun handleCaptureError"),
+      controller.indexOf("private fun scheduleCaptureRestart"),
+    );
+    expect(captureErrorPath).toContain("scheduleCaptureRestart(parsed, queue)");
+    expect(captureErrorPath).toContain("stopAfterFatalError");
+    expect(captureErrorPath).not.toContain("transition(HandsFreeNativeState.IDLE");
     expect(service).toContain("FOREGROUND_SERVICE_TYPE_MICROPHONE");
     expect(service).toContain("startForeground");
+    expect(service).toContain("setServiceStopper");
+    expect(service).toContain("stopForegroundCompat()");
+    expect(service).toContain("stopSelf()");
     const inferenceWorker = read(
       "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/WakeInferenceWorker.kt",
     );
     expect(inferenceWorker).toContain("pipeline.processFrame");
     expect(inferenceWorker).toContain("score >= threshold");
     expect(inferenceWorker).toContain("WakeInferenceWorkerStatus");
+    expect(inferenceWorker).toContain("WakeInferenceError");
     expect(inferenceWorker).toContain("consecutiveErrors");
     expect(inferenceWorker).toContain("isFatalInferenceError");
+    expect(inferenceWorker).toContain("permanent = true");
     expect(audio).toContain("PcmAudioSourceListener");
     expect(audio).toContain("AcousticEchoCanceler.create");
     expect(audio).toContain("NoiseSuppressor.create");

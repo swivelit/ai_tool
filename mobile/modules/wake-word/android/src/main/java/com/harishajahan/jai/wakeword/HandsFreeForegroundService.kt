@@ -8,9 +8,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 
 class HandsFreeForegroundService : Service() {
+  private val mainHandler = Handler(Looper.getMainLooper())
+
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -21,6 +25,12 @@ class HandsFreeForegroundService : Service() {
       }
       ACTION_START -> {
         startForegroundForMicrophone()
+        HandsFreeControllerRegistry.setServiceStopper {
+          mainHandler.post {
+            stopForegroundCompat()
+            stopSelf()
+          }
+        }
         try {
           HandsFreeControllerRegistry.startPendingSession(this)
         } catch (error: WakeWordException) {
@@ -38,6 +48,7 @@ class HandsFreeForegroundService : Service() {
   }
 
   override fun onDestroy() {
+    HandsFreeControllerRegistry.setServiceStopper(null)
     HandsFreeControllerRegistry.stopSession()
     super.onDestroy()
   }

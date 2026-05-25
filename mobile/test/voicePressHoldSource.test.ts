@@ -103,6 +103,23 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain("voiceLanguage.ttsLanguageCode");
   });
 
+  it("uses WAV upload for debug E2E live voice instead of emulator microphone startup", () => {
+    const startRecordingBlock = sliceAround("async function startRecording", 2200);
+    const e2eUploadBlock = sliceAround("async function submitE2eVoiceAudio", 4200);
+
+    expect(source).toContain("isE2eMockVoiceTurnEnabled");
+    expect(startRecordingBlock).toContain("e2eVoiceTurnEnabled");
+    expect(startRecordingBlock).toContain("submitE2eVoiceAudio(surface)");
+    expect(startRecordingBlock.indexOf("submitE2eVoiceAudio(surface)")).toBeLessThan(
+      startRecordingBlock.indexOf("Audio.requestPermissionsAsync"),
+    );
+    expect(e2eUploadBlock).toContain('const uri = "file:///e2e-voice.wav"');
+    expect(e2eUploadBlock).not.toContain("assertUsableAudioFile(uri)");
+    expect(e2eUploadBlock).toContain('source: "voice"');
+    expect(e2eUploadBlock).toContain('fileName: "e2e-voice.wav"');
+    expect(e2eUploadBlock).toContain("uploadVoiceAudioForAnalysis");
+  });
+
   it("uses swipe navigation instead of chat/voice transition buttons", () => {
     expect(source).toContain("PanResponder.create");
     expect(source).toContain("VOICE_NAV_SWIPE_MIN_DISTANCE");
@@ -288,9 +305,60 @@ describe("chat voice press-and-hold source", () => {
     expect(wakeWordSource).toContain("onCommandAudio");
     expect(source).toContain("simulateE2eHandsFreeWakeCommand");
     expect(source).toContain("simulateE2eHandsFreeStop");
+    expect(source).toContain("e2eHandsFreePendingRef");
+    expect(source).toContain("waiting_for_busy_to_clear");
+    expect(source).toContain("continuing_with_mock_audio_while_busy");
+    expect(source).toContain("e2eHandsFreeBusyRetryCountRef.current < 30");
+    expect(source).toContain("end.x >= width - 190");
+    expect(source).toContain("end.y <= topPadding + 72");
     expect(source).toContain('testID="e2e-hands-free-trigger-button"');
     expect(source).toContain('testID="e2e-hands-free-stop-button"');
+    expect(source).toContain("styles.e2eHandsFreeVoiceButton");
     expect(source).not.toContain('testID="chat-mic-button"');
+  });
+
+  it("keeps real hands-free audio guarded by busy while allowing the E2E mock route", () => {
+    const block = sliceAround("async function submitHandsFreeCommandAudio", 2800);
+
+    expect(block).toContain("if (!uri)");
+    expect(block).toContain("await cancelHandsFreeCommand()");
+    expect(block).toContain("await notifyHandsFreeTtsCompleted()");
+    expect(block).toContain("if (busy && !e2eHandsFreeAudioEnabled)");
+    expect(block).toContain("hands-free command audio ignored while busy");
+    expect(block).toContain("busy_e2e_override");
+    expect(block).not.toContain("if (!uri || busy) return");
+    const nativeAudioHandler = sliceAround("async function handleNativeHandsFreeCommandAudio", 1200);
+    expect(nativeAudioHandler).toContain("await submitHandsFreeCommandAudio(event)");
+  });
+
+  it("clears voice busy ownership even when the active request was already cleared", () => {
+    const e2eCleanupBlock = sliceAround("async function submitE2eVoiceAudio", 6200);
+    const liveCleanupBlock = sliceAround("async function stopAndAnalyze", 9800);
+
+    expect(e2eCleanupBlock).toContain(
+      "const ownsVoiceBusyState = voiceBusyRequestIdRef.current === requestId",
+    );
+    expect(e2eCleanupBlock).toContain("if (ownsVoiceBusyState)");
+    expect(e2eCleanupBlock).toContain("setBusy(false)");
+    expect(liveCleanupBlock).toContain(
+      "const ownsVoiceBusyState = voiceBusyRequestIdRef.current === requestId",
+    );
+    expect(liveCleanupBlock).toContain("if (ownsVoiceBusyState)");
+    expect(liveCleanupBlock).toContain("setBusy(false)");
+  });
+
+  it("keeps E2E voice playback deterministic without touching the real playback path", () => {
+    const block = sliceAround("if (isE2eMockVoiceTurnEnabled())", 4200);
+
+    expect(block).toContain("client_voice_reply_tts_completed");
+    expect(block).toContain("client_voice_reply_playback_started");
+    expect(block).toContain("client_voice_reply_playback_finished");
+    expect(block).toContain("e2e://voice-reply.wav");
+    expect(block).toContain("notifyHandsFreeTtsCompleted");
+
+    const realPlaybackBlock = sliceAround("await sound.loadAsync", 1600);
+    expect(realPlaybackBlock).toContain("await sound.playAsync");
+    expect(realPlaybackBlock).toContain("client_voice_reply_tts_completed");
   });
 
   it("exposes configurable hands-free settings without overclaiming wake-word enrollment", () => {

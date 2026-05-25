@@ -33,6 +33,7 @@ internal data class WakeWordConfig(
   val melspectrogramModelPath: String?,
   val embeddingModelPath: String?,
   val threshold: Double,
+  val vadRmsThreshold: Double,
   val sampleRate: Int,
   val frameMs: Int,
   val minWakeIntervalMs: Long,
@@ -107,9 +108,9 @@ class OpenWakeWordEngine {
         lastScore = event.score
         onScore(event)
       },
-      onError = { code, message ->
-        lastError = message
-        onError(code, message)
+      onError = { error ->
+        lastError = error.message
+        onError(error.code, error.message)
         stop()
       },
     )
@@ -287,6 +288,12 @@ class OpenWakeWordEngine {
       melspectrogramModelPath = (modelPaths["melspectrogramModel"] as? String)?.trim()?.ifEmpty { null },
       embeddingModelPath = (modelPaths["embeddingModel"] as? String)?.trim()?.ifEmpty { null },
       threshold = (config["threshold"] as? Number)?.toDouble() ?: 0.5,
+      vadRmsThreshold = (
+        (config["vadRmsThreshold"] as? Number)
+          ?: (config["vadThreshold"] as? Number)
+        )?.toDouble()
+        ?.coerceIn(0.002, 0.08)
+        ?: EnergyVoiceActivityDetector.DEFAULT_SPEECH_RMS_THRESHOLD,
       sampleRate = (config["sampleRate"] as? Number)?.toInt() ?: 16000,
       frameMs = (config["frameMs"] as? Number)?.toInt() ?: 80,
       minWakeIntervalMs = (config["minWakeIntervalMs"] as? Number)?.toLong() ?: 1800L,

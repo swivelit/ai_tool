@@ -3,7 +3,7 @@ package com.harishajahan.jai.wakeword
 import kotlin.math.sqrt
 
 class EnergyVoiceActivityDetector(
-  private val speechRmsThreshold: Double = 0.018,
+  var speechRmsThreshold: Double = DEFAULT_SPEECH_RMS_THRESHOLD,
 ) {
   fun isSpeech(frame: ShortArray): Boolean {
     if (frame.isEmpty()) return false
@@ -14,5 +14,9 @@ class EnergyVoiceActivityDetector(
     }
     val rms = sqrt(sumSquares / frame.size.toDouble())
     return rms >= speechRmsThreshold
+  }
+
+  companion object {
+    const val DEFAULT_SPEECH_RMS_THRESHOLD = 0.011
   }
 }

@@ -178,6 +178,7 @@ async function importWakeWordEngineWithMocks(options: {
       stop: vi.fn(async () => ({ ok: true })),
     };
   const listenerRemoves: Array<ReturnType<typeof vi.fn>> = [];
+  const listeners: Record<string, Array<(payload: any) => void>> = {};
   (globalThis as any).__JAI_WAKE_WORD_NATIVE_MODULE_FOR_TESTS__ = nativeModule;
   vi.doMock("../modules/wake-word", () => ({
     default: nativeModule,
@@ -185,8 +186,9 @@ async function importWakeWordEngineWithMocks(options: {
   vi.doMock("expo-modules-core", () => ({
     requireNativeModule: vi.fn(() => nativeModule),
     EventEmitter: class {
-      addListener() {
+      addListener(name: string, callback: (payload: any) => void) {
         const remove = vi.fn();
+        listeners[name] = [...(listeners[name] || []), callback];
         listenerRemoves.push(remove);
         return { remove };
       }
@@ -202,6 +204,7 @@ async function importWakeWordEngineWithMocks(options: {
     startSession: nativeModule.startSession,
     stopSession: nativeModule.stopSession,
     listenerRemoves,
+    listeners,
   };
 }
 
@@ -530,6 +533,59 @@ describe("wakeWordEngine", () => {
     expect(stopSession).toHaveBeenCalledTimes(1);
     expect(listenerRemoves.length).toBeGreaterThanOrEqual(5);
     expect(listenerRemoves.every((remove) => remove.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("normalizes typed and legacy native hands-free error payloads", async () => {
+    const { module, listeners } = await importWakeWordEngineWithMocks({});
+    const onError = vi.fn();
+
+    await module.startHandsFreeSession(
+      {
+        status: "ready",
+        ready: true,
+        wakePhrase: "Hey Elli",
+        phraseKey: "hey-elli",
+        modelPaths: {
+          wakeModel: "file:///wake.onnx",
+          melspectrogramModel: "file:///melspectrogram.onnx",
+          embeddingModel: "file:///embedding_model.onnx",
+        },
+        modelRoles: ["wake", "melspectrogram", "embedding"],
+      },
+      { onError },
+    );
+
+    listeners.onWakeError?.[0]?.({
+      code: "JAI_WAKE_AUDIO_READ_STALLED",
+      message: "AudioRecord stalled",
+      permanent: false,
+      restartable: true,
+      sessionActive: true,
+      source: "capture",
+      timestamp: 1234,
+    });
+    listeners.onWakeError?.[0]?.({
+      message: "legacy wake error",
+    });
+
+    expect(onError).toHaveBeenNthCalledWith(1, {
+      code: "JAI_WAKE_AUDIO_READ_STALLED",
+      message: "AudioRecord stalled",
+      permanent: false,
+      restartable: true,
+      sessionActive: true,
+      source: "capture",
+      timestamp: 1234,
+    });
+    expect(onError).toHaveBeenNthCalledWith(2, {
+      code: "JAI_WAKE_ERROR",
+      message: "legacy wake error",
+      permanent: undefined,
+      restartable: undefined,
+      sessionActive: undefined,
+      source: undefined,
+      timestamp: undefined,
+    });
   });
 
   it("supports debug E2E mock wake only when explicitly enabled", async () => {

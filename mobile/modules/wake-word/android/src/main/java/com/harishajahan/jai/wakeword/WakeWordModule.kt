@@ -32,8 +32,8 @@ class WakeWordModule : Module() {
       sendEventOnMain("onCommandAudio", event.toBundle())
     }
 
-    override fun onError(code: String, message: String) {
-      sendError(code, message)
+    override fun onError(event: HandsFreeWakeErrorEvent) {
+      sendError(event)
     }
   }
 
@@ -73,7 +73,7 @@ class WakeWordModule : Module() {
         HandsFreeForegroundService.startSession(context, config)
         mapOf("ok" to true)
       } catch (error: WakeWordException) {
-        sendError(error.code, error.detail)
+        sendError(error.code, error.detail, permanent = true, restartable = false, source = "session")
         throw error
       }
     }
@@ -110,11 +110,13 @@ class WakeWordModule : Module() {
           config = config,
           onWake = { event -> sendEventOnMain("onWake", event.toBundle()) },
           onScore = { event -> sendEventOnMain("onWakeScore", event.toBundle()) },
-          onError = { code, message -> sendError(code, message) },
+          onError = { code, message ->
+            sendError(code, message, permanent = false, restartable = false, source = "capture")
+          },
         )
         mapOf("ok" to true)
       } catch (error: WakeWordException) {
-        sendError(error.code, error.detail)
+        sendError(error.code, error.detail, permanent = true, restartable = false, source = "model")
         throw error
       }
     }
@@ -132,16 +134,41 @@ class WakeWordModule : Module() {
       try {
         engine.validateModelBundle(config)
       } catch (error: WakeWordException) {
-        sendError(error.code, error.detail)
+        sendError(error.code, error.detail, permanent = true, restartable = false, source = "model")
         throw error
       }
     }
   }
 
-  private fun sendError(code: String, message: String) {
+  private fun sendError(
+    code: String,
+    message: String,
+    permanent: Boolean,
+    restartable: Boolean,
+    source: String,
+    sessionActive: Boolean = false,
+  ) {
+    sendError(
+      HandsFreeWakeErrorEvent(
+        code = code,
+        message = message,
+        permanent = permanent,
+        restartable = restartable,
+        source = source,
+        sessionActive = sessionActive,
+      ),
+    )
+  }
+
+  private fun sendError(event: HandsFreeWakeErrorEvent) {
     val bundle = Bundle()
-    bundle.putString("code", code)
-    bundle.putString("message", message)
+    bundle.putString("code", event.code)
+    bundle.putString("message", event.message)
+    bundle.putBoolean("permanent", event.permanent)
+    bundle.putBoolean("restartable", event.restartable)
+    bundle.putBoolean("sessionActive", event.sessionActive)
+    bundle.putString("source", event.source)
+    bundle.putDouble("timestamp", event.timestamp.toDouble())
     sendEventOnMain("onWakeError", bundle)
   }
 

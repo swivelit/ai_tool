@@ -5,8 +5,6 @@ import {
   initialHandsFreeMachineState,
   isPermanentWakeError,
   isHandsFreeWakeEligible,
-  WAKE_RETRY_DELAYS_MS,
-  wakeRetryDelayMs,
 } from "@/lib/handsFreeStateMachine";
 import {
   buildCommandRecognitionLocalePlan,
@@ -76,10 +74,6 @@ describe("handsFreeStateMachine", () => {
     state = handsFreeStateReducer(state, { type: "WAKE_PERMANENT_ERROR" });
     expect(state.state).toBe("blocked");
 
-    expect(WAKE_RETRY_DELAYS_MS).toEqual([1000, 2000, 4000, 8000]);
-    expect(wakeRetryDelayMs(0)).toBe(1000);
-    expect(wakeRetryDelayMs(2)).toBe(4000);
-    expect(wakeRetryDelayMs(99)).toBe(8000);
     expect(isPermanentWakeError({ code: "JAI_WAKE_AUDIO_START_FAILED", message: "AudioRecord busy" })).toBe(false);
     expect(isPermanentWakeError({ code: "JAI_WAKE_MODEL_UNSUPPORTED", message: "bad shape" })).toBe(true);
     expect(isPermanentWakeError({ message: "microphone permission denied" })).toBe(true);

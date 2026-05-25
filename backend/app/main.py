@@ -2459,7 +2459,11 @@ def _resolve_chat_text(payload: ChatAPIRequest) -> str:
 
 def _persisted_chat_source(payload: ChatAPIRequest) -> str:
     client_source = str(payload.client_source or "").strip().lower()
-    return "voice" if client_source in {"voice", "handsfree"} else "text"
+    if client_source == "handsfree":
+        return "handsfree"
+    if client_source == "voice":
+        return "voice"
+    return "text"
 
 
 def _normalize_voice_client_source(client_source: Optional[str]) -> str:
@@ -3841,6 +3845,7 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
                 response_meta.setdefault("provider_error_type", ai_response.raw.get("provider_error_type"))
             response_meta.setdefault("embedding_calls", int(ai_response.raw.get("embedding_calls") or 0))
         response_meta.setdefault("ai_router_enabled", True)
+        response_meta.setdefault("client_source", payload.client_source)
         response_meta.setdefault("context_turn_count", len(context_turns))
         response_meta.setdefault("cost_estimate", ai_response.estimated_cost_amount)
         response_meta.setdefault("cost_currency", ai_response.estimated_cost_currency)

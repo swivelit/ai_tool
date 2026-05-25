@@ -11,6 +11,13 @@ data class WakeInferenceWorkerStatus(
   val inferenceErrorCount: Long,
 )
 
+data class WakeInferenceError(
+  val code: String,
+  val message: String,
+  val permanent: Boolean,
+  val restartable: Boolean,
+)
+
 internal class WakeInferenceWorker(
   private val frameQueue: AudioFrameQueue,
   private val pipeline: WakeWordPipeline,
@@ -18,7 +25,7 @@ internal class WakeInferenceWorker(
   private val minWakeIntervalMs: Long,
   private val onWake: (WakeWordEvent) -> Unit,
   private val onScore: (WakeWordEvent) -> Unit,
-  private val onError: (String, String) -> Unit,
+  private val onError: (WakeInferenceError) -> Unit,
   private val onStopped: (String?) -> Unit = {},
 ) {
   private val running = AtomicBoolean(false)
@@ -60,7 +67,14 @@ internal class WakeInferenceWorker(
           if (isFatalInferenceError(error.code)) {
             stopReason = error.code
             running.set(false)
-            onError(error.code, error.detail)
+            onError(
+              WakeInferenceError(
+                code = error.code,
+                message = error.detail,
+                permanent = true,
+                restartable = false,
+              ),
+            )
             break
           }
           inferenceDroppedFrames += 1
@@ -71,7 +85,14 @@ internal class WakeInferenceWorker(
             lastInferenceError = detail
             stopReason = "JAI_WAKE_INFERENCE_REPEATED_ERRORS"
             running.set(false)
-            onError("JAI_WAKE_INFERENCE_REPEATED_ERRORS", detail)
+            onError(
+              WakeInferenceError(
+                code = "JAI_WAKE_INFERENCE_REPEATED_ERRORS",
+                message = detail,
+                permanent = false,
+                restartable = false,
+              ),
+            )
             break
           }
         } catch (error: Throwable) {
@@ -86,7 +107,14 @@ internal class WakeInferenceWorker(
             lastInferenceError = fatalDetail
             stopReason = "JAI_WAKE_INFERENCE_FAILED"
             running.set(false)
-            onError("JAI_WAKE_INFERENCE_FAILED", fatalDetail)
+            onError(
+              WakeInferenceError(
+                code = "JAI_WAKE_INFERENCE_FAILED",
+                message = fatalDetail,
+                permanent = false,
+                restartable = false,
+              ),
+            )
             break
           }
         }

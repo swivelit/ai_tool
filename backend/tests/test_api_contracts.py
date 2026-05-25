@@ -178,12 +178,12 @@ def test_chat_without_client_source_saves_text_source(client, monkeypatch):
     assert stored.source == "text"
 
 
-def test_chat_handsfree_client_source_saves_voice_source(client, monkeypatch):
+def test_chat_handsfree_client_source_saves_handsfree_source(client, monkeypatch):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")
 
     def fake_run_text_turn(session, ai_request, *, existing_context=None):
-        assert ai_request.channel == "voice"
+        assert ai_request.channel == "handsfree"
         assert ai_request.metadata["client_source"] == "handsfree"
         return AIProviderResponse(
             text="Voice reply",
@@ -210,12 +210,13 @@ def test_chat_handsfree_client_source_saves_voice_source(client, monkeypatch):
 
     assert response.status_code == 200
     item_id = response.json()["item"]["id"]
-    assert response.json()["item"]["source"] == "voice"
+    assert response.json()["item"]["source"] == "handsfree"
+    assert response.json()["meta"]["client_source"] == "handsfree"
     with SessionLocal() as session:
         stored = session.get(Item, item_id)
     assert stored is not None
     assert stored.user_id == user.id
-    assert stored.source == "voice"
+    assert stored.source == "handsfree"
 
 
 def test_chat_ai_request_includes_saved_profile_context(client, monkeypatch):

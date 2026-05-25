@@ -43,10 +43,15 @@ export type WakeWordNativeStatus = {
     vadSpeechFrames?: number;
     vadSkippedWakeFrames?: number;
     vadHangoverFrames?: number;
+    vadFailOpenFrames?: number;
+    vadRmsThreshold?: number;
+    commandPreRollSpeechFrames?: number;
+    lastCommandPreRollMs?: number;
     captureThreadAlive?: boolean;
     lastCaptureError?: string;
     lastCaptureErrorCode?: string;
     captureRestartCount?: number;
+    captureRestartScheduled?: boolean;
     audioSessionId?: number;
     acousticEchoCancelerEnabled?: boolean;
     noiseSuppressorEnabled?: boolean;
@@ -55,6 +60,8 @@ export type WakeWordNativeStatus = {
     lastInferenceError?: string;
     inferenceDroppedFrames?: number;
     inferenceErrorCount?: number;
+    fatalErrorCode?: string;
+    fatalErrorMessage?: string;
   };
 };
 
@@ -125,6 +132,16 @@ export type HandsFreeCommandAudioEvent = {
   timestamp?: number;
 };
 
+export type WakeWordNativeError = {
+  code: string;
+  message: string;
+  permanent?: boolean;
+  restartable?: boolean;
+  sessionActive?: boolean;
+  source?: "capture" | "inference" | "session" | "model" | string;
+  timestamp?: number;
+};
+
 export type WakeWordStartConfig = {
   phraseKey: string;
   wakePhrase: string;
@@ -135,6 +152,8 @@ export type WakeWordStartConfig = {
   };
   manifestRoles?: string[];
   threshold?: number;
+  vadRmsThreshold?: number;
+  vadThreshold?: number;
   sampleRate?: 16000;
   frameMs?: 80;
   minWakeIntervalMs?: number;
@@ -645,7 +664,7 @@ export async function startWakeWordListening(
   handlers: {
     onWake: (event: WakeWordEvent) => void;
     onScore?: (event: WakeWordEvent) => void;
-    onError?: (error: { code: string; message: string }) => void;
+    onError?: (error: WakeWordNativeError) => void;
   },
 ): Promise<{ ok: true }> {
   await stopWakeWordListening();
@@ -673,10 +692,7 @@ export async function startWakeWordListening(
   wakeSubscriptions = [
     emitter.addListener("onWake", handlers.onWake),
     emitter.addListener("onWakeError", (payload: any) => {
-      handlers.onError?.({
-        code: String((payload as any)?.code || "JAI_WAKE_ERROR"),
-        message: String((payload as any)?.message || "Wake detection failed."),
-      });
+      handlers.onError?.(normalizeWakeWordNativeError(payload));
     }),
   ];
   if (handlers.onScore) {
@@ -734,6 +750,22 @@ export async function createE2eHandsFreeCommandAudioEvent(): Promise<HandsFreeCo
   };
 }
 
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function normalizeWakeWordNativeError(payload: any): WakeWordNativeError {
+  return {
+    code: String(payload?.code || "JAI_WAKE_ERROR"),
+    message: String(payload?.message || "Wake detection failed."),
+    permanent: optionalBoolean(payload?.permanent),
+    restartable: optionalBoolean(payload?.restartable),
+    sessionActive: optionalBoolean(payload?.sessionActive),
+    source: payload?.source ? String(payload.source) : undefined,
+    timestamp: payload?.timestamp ? Number(payload.timestamp) : undefined,
+  };
+}
+
 export async function startHandsFreeSession(
   config: WakeWordStartConfig | WakeModelState,
   handlers: {
@@ -742,7 +774,7 @@ export async function startHandsFreeSession(
     onScore?: (event: WakeWordEvent) => void;
     onCommand?: (event: HandsFreeCommandEvent) => void;
     onCommandAudio?: (event: HandsFreeCommandAudioEvent) => void;
-    onError?: (error: { code: string; message: string }) => void;
+    onError?: (error: WakeWordNativeError) => void;
   },
 ): Promise<{ ok: true }> {
   await stopHandsFreeSession();
@@ -841,10 +873,7 @@ export async function startHandsFreeSession(
       });
     }),
     emitter.addListener("onWakeError", (payload: any) => {
-      handlers.onError?.({
-        code: String(payload?.code || "JAI_WAKE_ERROR"),
-        message: String(payload?.message || "Wake detection failed."),
-      });
+      handlers.onError?.(normalizeWakeWordNativeError(payload));
     }),
     emitter.addListener("onCommand", (payload: any) => {
       handlers.onCommand?.({

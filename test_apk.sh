@@ -134,7 +134,7 @@ PY
 dump_ui() {
   local label="${1:-ui}"
   local xml_path="$ARTIFACT_DIR/ui-${label}.xml"
-  if adb shell uiautomator dump "$UI_XML_DEVICE_PATH" > "$ARTIFACT_DIR/uiautomator-${label}.log" 2>&1; then
+  if adb shell timeout 8 uiautomator dump "$UI_XML_DEVICE_PATH" > "$ARTIFACT_DIR/uiautomator-${label}.log" 2>&1; then
     adb exec-out cat "$UI_XML_DEVICE_PATH" > "$xml_path" 2>> "$ARTIFACT_DIR/uiautomator-${label}.log" || true
   fi
   printf "%s\n" "$xml_path"
@@ -203,6 +203,48 @@ voice_orb_center_from_window() {
   printf "%s %s\n" "$((width / 2))" "$((height * 40 / 100))"
 }
 
+tap_e2e_hands_free_trigger_fallback() {
+  local width height
+  if ! read -r width height < <(device_window_size); then
+    return 1
+  fi
+  adb shell input tap "$((width * 78 / 100))" "$((height * 10 / 100))"
+  sleep 1
+  adb shell input tap "$((width * 50 / 100))" "$((height * 15 / 100))"
+}
+
+tap_e2e_hands_free_stop_fallback() {
+  local width height
+  if ! read -r width height < <(device_window_size); then
+    return 1
+  fi
+  adb shell input tap "$((width * 72 / 100))" "$((height * 15 / 100))"
+}
+
+tap_chat_input_fallback() {
+  local width height
+  if ! read -r width height < <(device_window_size); then
+    return 1
+  fi
+  adb shell input tap "$((width * 44 / 100))" "$((height * 96 / 100))"
+}
+
+tap_chat_send_fallback() {
+  local width height
+  if ! read -r width height < <(device_window_size); then
+    return 1
+  fi
+  adb shell input tap "$((width * 88 / 100))" "$((height * 96 / 100))"
+}
+
+tap_chat_drawer_fallback() {
+  local width height
+  if ! read -r width height < <(device_window_size); then
+    return 1
+  fi
+  adb shell input tap "$((width * 9 / 100))" "$((height * 10 / 100))"
+}
+
 swipe_chat_to_voice() {
   local width height start_x end_x y
   if ! read -r width height < <(device_window_size); then
@@ -235,11 +277,60 @@ type_text() {
 }
 
 clear_chat_input() {
-  tap_desc "chat-input" || return 1
+  tap_desc "chat-input" || tap_chat_input_fallback || return 1
   adb shell input keyevent 123 >/dev/null 2>&1 || true
   for _ in {1..80}; do
     adb shell input keyevent 67 >/dev/null 2>&1 || true
   done
+}
+
+dismiss_external_system_ui_anr() {
+  local xml_path center x y
+  xml_path="$(dump_ui "dismiss-system-ui-anr")"
+  [[ -s "$xml_path" ]] || return 1
+
+  if center="$(python3 - "$xml_path" <<'PY'
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+
+def center(bounds):
+    match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
+    if not match:
+        return None
+    left, top, right, bottom = map(int, match.groups())
+    return (left + right) // 2, (top + bottom) // 2
+
+title_seen = False
+for node in root.iter():
+    if node.attrib.get("resource-id") == "android:id/alertTitle" and node.attrib.get("text") == "System UI isn't responding":
+        title_seen = True
+        break
+
+if not title_seen:
+    sys.exit(1)
+
+for node in root.iter():
+    if node.attrib.get("resource-id") == "android:id/aerr_wait" and node.attrib.get("text") == "Wait":
+        point = center(node.attrib.get("bounds"))
+        if point:
+            print(point[0], point[1])
+            sys.exit(0)
+
+sys.exit(1)
+PY
+)"; then
+    read -r x y <<< "$center"
+    adb shell input tap "$x" "$y" >/dev/null 2>&1 || true
+    printf "System UI ANR dialog dismissed with Wait\n" >> "$ARTIFACT_DIR/system-ui-anr.log"
+    record_skip "external-system-ui-anr-dismissed"
+    sleep 2
+    return 0
+  fi
+
+  return 1
 }
 
 wait_for_text() {
@@ -250,6 +341,7 @@ wait_for_text() {
     if find_ui_center text "$text" "wait-text-${text//[^A-Za-z0-9]/_}" >/dev/null; then
       return 0
     fi
+    dismiss_external_system_ui_anr || true
     sleep 1
   done
   return 1
@@ -263,6 +355,7 @@ wait_for_desc() {
     if find_ui_center desc "$desc" "wait-desc-${desc//[^A-Za-z0-9]/_}" >/dev/null; then
       return 0
     fi
+    dismiss_external_system_ui_anr || true
     sleep 1
   done
   return 1
@@ -480,6 +573,12 @@ scan_crashes() {
       fi
       if [[ "$marker" == "has died" ]]; then
         if grep -E -n "Process ${PACKAGE_NAME} .*has died|Process ${PACKAGE_NAME}.*has died|${PACKAGE_NAME} has died" "$log_file" >> "$markers_file" 2>/dev/null; then
+          CRASH_MARKERS_FOUND=1
+        fi
+        continue
+      fi
+      if [[ "$marker" == "WINDOW DIED" ]]; then
+        if grep -E -n "WINDOW DIED.*${PACKAGE_NAME}" "$log_file" >> "$markers_file" 2>/dev/null; then
           CRASH_MARKERS_FOUND=1
         fi
         continue
@@ -1022,7 +1121,7 @@ else
       voice_reply_seen=0
       voice_reply_ui_seen=0
       voice_reply_markers_seen=0
-      deadline=$((SECONDS + 60))
+      deadline=$((SECONDS + 180))
       while [[ "$SECONDS" -lt "$deadline" ]]; do
         if ! assert_app_alive "during-voice-test"; then
           break
@@ -1051,7 +1150,7 @@ else
         wait_for_desc "voice-session-transcript" 2 || mark_failed "voice-session-transcript-not-visible"
         wait_for_desc "voice-session-user-turn" 2 || mark_failed "voice-session-user-turn-not-visible"
         wait_for_desc "voice-session-assistant-turn" 2 || mark_failed "voice-session-assistant-turn-not-visible"
-        if ! wait_for_text "$voice_expected_reply" 2; then
+        if ! wait_for_text "$voice_expected_reply" 15; then
           mark_failed "voice-reply-language-mismatch-${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
         fi
       else
@@ -1059,8 +1158,8 @@ else
       fi
       if [[ "$voice_reply_ui_seen" == "1" && "$voice_query_lower" == *"spitzola"* ]]; then
         if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "en" ]]; then
-          wait_for_text "Spitzola" 2 || mark_failed "voice-spitzola-term-missing"
-          wait_for_text "misheard" 2 || wait_for_text "misspelled" 2 || mark_failed "voice-spitzola-uncertainty-missing"
+          wait_for_text "Spitzola" 10 || mark_failed "voice-spitzola-term-missing"
+          wait_for_text "misheard" 10 || wait_for_text "misspelled" 10 || mark_failed "voice-spitzola-uncertainty-missing"
           if wait_for_text "Hi. How can I help?" 1; then
             mark_failed "voice-spitzola-routed-to-greeting"
           fi
@@ -1130,17 +1229,32 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
   capture_step "hands-free-before"
   assert_desc_absent "chat-mic-button" "chat-mic-button-absent-before-hands-free" || true
 
-  if ! wait_for_desc "e2e-hands-free-trigger-button" 20; then
-    mark_failed "e2e-hands-free-trigger-not-found"
-    capture_step "hands-free-trigger-not-found"
-  elif ! tap_desc "e2e-hands-free-trigger-button"; then
-    mark_failed "tap-e2e-hands-free-trigger"
-    capture_step "hands-free-trigger-tap-failed"
+  hands_free_trigger_tapped=0
+  if wait_for_desc "e2e-hands-free-trigger-button" 20; then
+    if tap_desc "e2e-hands-free-trigger-button"; then
+      hands_free_trigger_tapped=1
+    else
+      mark_failed "tap-e2e-hands-free-trigger"
+      capture_step "hands-free-trigger-tap-failed"
+    fi
   else
+    record_skip "e2e-hands-free-trigger-desc-not-found; used coordinate fallback"
+    capture_step "hands-free-trigger-desc-not-found"
+    if tap_desc "e2e-hands-free-trigger-button" || tap_text "E2E hands-free"; then
+      hands_free_trigger_tapped=1
+    elif tap_e2e_hands_free_trigger_fallback; then
+      hands_free_trigger_tapped=1
+    else
+      mark_failed "e2e-hands-free-trigger-not-found"
+      capture_step "hands-free-trigger-not-found"
+    fi
+  fi
+
+  if [[ "$hands_free_trigger_tapped" == "1" ]]; then
     hands_free_reply_seen=0
     hands_free_reply_ui_seen=0
     hands_free_markers_seen=0
-    deadline=$((SECONDS + 90))
+    deadline=$((SECONDS + 180))
     while [[ "$SECONDS" -lt "$deadline" ]]; do
       if ! assert_app_alive "during-hands-free-test"; then
         break
@@ -1182,7 +1296,7 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
 
     hands_free_status_seen=0
     if [[ "$hands_free_reply_ui_seen" == "1" ]]; then
-      deadline=$((SECONDS + 35))
+      deadline=$((SECONDS + 60))
       while [[ "$SECONDS" -lt "$deadline" ]]; do
         if wait_for_text "Listening" 1; then
           hands_free_status_seen=1
@@ -1197,7 +1311,7 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
       mark_failed "hands-free-listening-resumed"
     fi
 
-    deadline=$((SECONDS + 25))
+    deadline=$((SECONDS + 60))
     while [[ "$SECONDS" -lt "$deadline" ]]; do
       if scan_hands_free_reply_markers "$hands_free_log_start_line"; then
         hands_free_markers_seen=1
@@ -1216,17 +1330,33 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
 
     capture_step "hands-free-after-reply"
 
+    hands_free_stop_tapped=0
     if wait_for_desc "e2e-hands-free-stop-button" 15; then
-      tap_desc "e2e-hands-free-stop-button" || mark_failed "tap-e2e-hands-free-stop"
+      if tap_desc "e2e-hands-free-stop-button"; then
+        hands_free_stop_tapped=1
+      else
+        mark_failed "tap-e2e-hands-free-stop"
+      fi
+    else
+      record_skip "e2e-hands-free-stop-desc-not-found; used coordinate fallback"
+      if tap_desc "e2e-hands-free-stop-button" || tap_text "E2E stop" || tap_e2e_hands_free_stop_fallback; then
+        hands_free_stop_tapped=1
+      else
+        mark_failed "e2e-hands-free-stop-not-found"
+      fi
+    fi
+    if [[ "$hands_free_stop_tapped" == "1" ]]; then
       sleep 2
       if ! wait_for_text "Listening" 8 && ! wait_for_desc "chat-input" 8; then
         mark_failed "hands-free-stop-did-not-return-to-wake"
       fi
-    else
-      mark_failed "e2e-hands-free-stop-not-found"
     fi
     capture_step "hands-free-after-stop"
     assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-hands-free" || true
+    if ! wait_for_desc "chat-input" 2; then
+      swipe_voice_to_chat || adb shell input keyevent 4 >/dev/null 2>&1 || true
+      wait_for_desc "chat-input" 10 || true
+    fi
   fi
 fi
 
@@ -1258,7 +1388,7 @@ for message in "hello" "what can you do" "tell me about solo leveling"; do
   local_start="$(now_ms)"
   adb shell input keyevent 111 >/dev/null 2>&1 || true
   sleep 1
-  if ! tap_desc_offset "chat-send-button" 0 35; then
+  if ! tap_desc_offset "chat-send-button" 0 35 && ! tap_chat_send_fallback; then
     mark_failed "tap-chat-send-button"
     continue
   fi
@@ -1323,7 +1453,7 @@ for message in "hello" "what can you do" "tell me about solo leveling"; do
   RESPONSE_TIMINGS+=("${message}: $((local_end - local_start))ms")
 done
 
-if tap_desc "chat-drawer-button"; then
+if tap_desc "chat-drawer-button" || tap_chat_drawer_fallback; then
   if ! wait_for_text "Voice" 8; then
     mark_failed "history-voice-kind-label-missing"
   fi

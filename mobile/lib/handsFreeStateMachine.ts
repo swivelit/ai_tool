@@ -45,13 +45,6 @@ export const initialHandsFreeMachineState: HandsFreeMachineSnapshot = {
   wakeReady: false,
 };
 
-export const WAKE_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000] as const;
-
-export function wakeRetryDelayMs(attempt: number) {
-  const index = Math.max(0, Math.floor(attempt));
-  return WAKE_RETRY_DELAYS_MS[Math.min(index, WAKE_RETRY_DELAYS_MS.length - 1)];
-}
-
 export function isPermanentWakeError(error: { code?: string; message?: string } | Error | unknown) {
   const code = String((error as any)?.code || (error as any)?.name || "").toLowerCase();
   const message = String(

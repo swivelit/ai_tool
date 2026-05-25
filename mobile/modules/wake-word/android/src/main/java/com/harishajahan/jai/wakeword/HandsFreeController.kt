@@ -25,13 +25,23 @@ data class HandsFreeCommandAudioEvent(
   val timestamp: Long = System.currentTimeMillis(),
 )
 
+data class HandsFreeWakeErrorEvent(
+  val code: String,
+  val message: String,
+  val permanent: Boolean,
+  val restartable: Boolean,
+  val sessionActive: Boolean,
+  val source: String,
+  val timestamp: Long = System.currentTimeMillis(),
+)
+
 interface HandsFreeControllerCallbacks {
   fun onState(event: HandsFreeStateEvent)
   fun onWake(event: WakeWordEvent)
   fun onWakeScore(event: WakeWordEvent)
   fun onCommand(event: HandsFreeCommandEvent)
   fun onCommandAudio(event: HandsFreeCommandAudioEvent)
-  fun onError(code: String, message: String)
+  fun onError(event: HandsFreeWakeErrorEvent)
 }
 
 class HandsFreeController(
@@ -44,6 +54,7 @@ class HandsFreeController(
   private val engine = OpenWakeWordEngine()
   private val routing = AtomicBoolean(false)
   private val captureRestartScheduled = AtomicBoolean(false)
+  private val fatalCleanupInFlight = AtomicBoolean(false)
   private val vad = EnergyVoiceActivityDetector()
 
   private var config: WakeWordConfig? = null
@@ -61,25 +72,47 @@ class HandsFreeController(
   private var lastError: String? = null
   private var lastCaptureError: String? = null
   private var lastInferenceError: String? = null
+  private var fatalErrorCode: String? = null
+  private var fatalErrorMessage: String? = null
   private var captureRestartCount = 0L
   private var vadSpeechFrames = 0L
   private var vadSkippedWakeFrames = 0L
   private var vadHangoverFrames = 0L
+  private var vadFailOpenFrames = 0L
   private var wakeVadHangoverRemainingMs = 0L
+  private var wakeVadSkippedSinceFailOpenMs = 0L
+  private var commandPreRollSpeechFrames = 0L
+  private var lastCommandPreRollMs = 0L
 
   fun startSession(rawConfig: Map<String, Any?>) {
     stopSession(emitIdle = false)
+    fatalCleanupInFlight.set(false)
     val parsed = engine.parseConfig(rawConfig)
+    vad.speechRmsThreshold = parsed.vadRmsThreshold
     val nextPipeline = try {
       engine.createPipeline(parsed)
     } catch (error: WakeWordException) {
       lastError = error.detail
-      emitError(error.code, error.detail)
+      emitError(
+        code = error.code,
+        message = error.detail,
+        permanent = true,
+        restartable = false,
+        source = "model",
+        sessionActive = false,
+      )
       throw error
     } catch (error: Throwable) {
       val detail = "Could not load OpenWakeWord ONNX models: ${error.message ?: "unknown ONNX error"}"
       lastError = detail
-      emitError("JAI_WAKE_MODEL_LOAD_FAILED", detail)
+      emitError(
+        code = "JAI_WAKE_MODEL_LOAD_FAILED",
+        message = detail,
+        permanent = true,
+        restartable = false,
+        source = "model",
+        sessionActive = false,
+      )
       throw WakeWordException("JAI_WAKE_MODEL_LOAD_FAILED", detail, error)
     }
 
@@ -94,13 +127,19 @@ class HandsFreeController(
       minWakeIntervalMs = parsed.minWakeIntervalMs,
       onWake = { event -> handleWakeDetected(event) },
       onScore = { event -> callbacks()?.onWakeScore(event) },
-      onError = { code, message ->
+      onError = { error ->
         synchronized(lock) {
-          lastError = message
-          lastInferenceError = message
+          lastError = error.message
+          lastInferenceError = error.message
         }
-        emitError(code, message)
-        transition(HandsFreeNativeState.IDLE, "wake_inference_error")
+        stopAfterFatalError(
+          code = error.code,
+          message = error.message,
+          source = "inference",
+          permanent = error.permanent,
+          restartable = error.restartable,
+          reason = "wake_inference_error",
+        )
       },
       onStopped = { reason ->
         if (reason != null) {
@@ -126,10 +165,16 @@ class HandsFreeController(
       lastError = null
       lastCaptureError = null
       lastInferenceError = null
+      fatalErrorCode = null
+      fatalErrorMessage = null
       vadSpeechFrames = 0L
       vadSkippedWakeFrames = 0L
       vadHangoverFrames = 0L
+      vadFailOpenFrames = 0L
       wakeVadHangoverRemainingMs = 0L
+      wakeVadSkippedSinceFailOpenMs = 0L
+      commandPreRollSpeechFrames = 0L
+      lastCommandPreRollMs = 0L
     }
 
     try {
@@ -142,13 +187,28 @@ class HandsFreeController(
       stopSession(emitIdle = true)
       val detail = "Could not start hands-free microphone session: ${error.message ?: "unknown error"}"
       lastError = detail
-      emitError("JAI_HANDS_FREE_SESSION_START_FAILED", detail)
+      emitError(
+        code = "JAI_HANDS_FREE_SESSION_START_FAILED",
+        message = detail,
+        permanent = isPermanentSessionStartError(error),
+        restartable = !isPermanentSessionStartError(error),
+        source = "session",
+        sessionActive = false,
+      )
       throw WakeWordException("JAI_HANDS_FREE_SESSION_START_FAILED", detail, error)
     }
   }
 
   fun stopSession(emitIdle: Boolean = true) {
+    releaseSessionResources(clearFatal = false)
+    if (emitIdle && stateMachine.currentState() != HandsFreeNativeState.IDLE) {
+      transition(HandsFreeNativeState.IDLE, "session_stopped")
+    }
+  }
+
+  private fun releaseSessionResources(clearFatal: Boolean) {
     routing.set(false)
+    captureRestartScheduled.set(false)
     val router = routerThread
     try {
       audioSource?.stop()
@@ -191,9 +251,11 @@ class HandsFreeController(
       commandSpeechDetected = false
       config = null
       wakeVadHangoverRemainingMs = 0L
-    }
-    if (emitIdle) {
-      transition(HandsFreeNativeState.IDLE, "session_stopped")
+      wakeVadSkippedSinceFailOpenMs = 0L
+      if (clearFatal) {
+        fatalErrorCode = null
+        fatalErrorMessage = null
+      }
     }
   }
 
@@ -203,6 +265,8 @@ class HandsFreeController(
       commandLiveDurationMs = 0L
       commandSilenceMs = 0L
       commandSpeechDetected = false
+      commandPreRollSpeechFrames = 0L
+      lastCommandPreRollMs = 0L
     }
     transition(HandsFreeNativeState.WAKE_LISTENING, "command_cancelled")
   }
@@ -229,6 +293,8 @@ class HandsFreeController(
       "sampleRate" to (currentConfig?.sampleRate ?: 16000),
       "frameMs" to (currentConfig?.frameMs ?: 80),
       "lastError" to lastError,
+      "fatalErrorCode" to fatalErrorCode,
+      "fatalErrorMessage" to fatalErrorMessage,
       "captureDroppedFrames" to (captureStats?.droppedFrames ?: 0L),
       "wakeDroppedFrames" to (wakeStats?.droppedFrames ?: 0L),
       "captureQueuedFrames" to (captureStats?.queuedFrames ?: 0),
@@ -236,10 +302,15 @@ class HandsFreeController(
       "vadSpeechFrames" to vadSpeechFrames,
       "vadSkippedWakeFrames" to vadSkippedWakeFrames,
       "vadHangoverFrames" to vadHangoverFrames,
+      "vadFailOpenFrames" to vadFailOpenFrames,
+      "vadRmsThreshold" to (currentConfig?.vadRmsThreshold ?: vad.speechRmsThreshold),
+      "commandPreRollSpeechFrames" to commandPreRollSpeechFrames,
+      "lastCommandPreRollMs" to lastCommandPreRollMs,
       "captureThreadAlive" to (captureStatus?.captureThreadAlive ?: false),
       "lastCaptureError" to (lastCaptureError ?: captureStatus?.lastCaptureError),
       "lastCaptureErrorCode" to captureStatus?.lastCaptureErrorCode,
       "captureRestartCount" to captureRestartCount,
+      "captureRestartScheduled" to captureRestartScheduled.get(),
       "audioSessionId" to captureStatus?.audioSessionId,
       "acousticEchoCancelerEnabled" to (captureStatus?.acousticEchoCancelerEnabled ?: false),
       "noiseSuppressorEnabled" to (captureStatus?.noiseSuppressorEnabled ?: false),
@@ -283,14 +354,23 @@ class HandsFreeController(
       if (isSpeech) {
         vadSpeechFrames += 1
         wakeVadHangoverRemainingMs = WAKE_VAD_HANGOVER_MS
+        wakeVadSkippedSinceFailOpenMs = 0L
         shouldInfer = true
       } else if (wakeVadHangoverRemainingMs > 0L) {
         vadHangoverFrames += 1
         wakeVadHangoverRemainingMs = (wakeVadHangoverRemainingMs - frameMs).coerceAtLeast(0L)
+        wakeVadSkippedSinceFailOpenMs = 0L
         shouldInfer = true
       } else {
         vadSkippedWakeFrames += 1
-        shouldInfer = false
+        wakeVadSkippedSinceFailOpenMs += frameMs
+        if (wakeVadSkippedSinceFailOpenMs >= WAKE_VAD_FAIL_OPEN_INTERVAL_MS) {
+          vadFailOpenFrames += 1
+          wakeVadSkippedSinceFailOpenMs = 0L
+          shouldInfer = true
+        } else {
+          shouldInfer = false
+        }
       }
     }
     if (shouldInfer) {
@@ -305,10 +385,16 @@ class HandsFreeController(
         false
       } else {
         val preRollFrames = preRollBuffer?.snapshotFrames() ?: emptyList()
+        val parsed = config
+        val preRollSpeechFrames = preRollFrames.count { vad.isSpeech(it) }
         commandFrames = preRollFrames.map { it.copyOf() }.toMutableList()
         commandLiveDurationMs = 0L
         commandSilenceMs = 0L
-        commandSpeechDetected = false
+        commandSpeechDetected = preRollSpeechFrames > 0
+        commandPreRollSpeechFrames = preRollSpeechFrames.toLong()
+        lastCommandPreRollMs = preRollFrames.sumOf { frame ->
+          samplesToMs(frame.size, parsed?.sampleRate ?: 16000)
+        }
         wakeQueue?.clear()
         true
       }
@@ -375,7 +461,13 @@ class HandsFreeController(
     } catch (error: Throwable) {
       val detail = "Could not write hands-free command audio: ${error.message ?: "unknown error"}"
       lastError = detail
-      emitError("JAI_HANDS_FREE_COMMAND_AUDIO_FAILED", detail)
+      emitError(
+        code = "JAI_HANDS_FREE_COMMAND_AUDIO_FAILED",
+        message = detail,
+        permanent = false,
+        restartable = true,
+        source = "session",
+      )
       transition(HandsFreeNativeState.WAKE_LISTENING, "command_audio_failed")
     }
   }
@@ -384,8 +476,57 @@ class HandsFreeController(
     callbacks()?.onState(stateMachine.transition(nextState, reason))
   }
 
-  private fun emitError(code: String, message: String) {
-    callbacks()?.onError(code, message)
+  private fun emitError(
+    code: String,
+    message: String,
+    permanent: Boolean,
+    restartable: Boolean,
+    source: String,
+    sessionActive: Boolean = stateMachine.currentState() != HandsFreeNativeState.IDLE && routing.get(),
+  ): HandsFreeWakeErrorEvent {
+    val event = HandsFreeWakeErrorEvent(
+      code = code,
+      message = message,
+      permanent = permanent,
+      restartable = restartable,
+      sessionActive = sessionActive,
+      source = source,
+    )
+    callbacks()?.onError(event)
+    return event
+  }
+
+  private fun stopAfterFatalError(
+    code: String,
+    message: String,
+    source: String,
+    permanent: Boolean,
+    restartable: Boolean,
+    reason: String,
+  ) {
+    if (!fatalCleanupInFlight.compareAndSet(false, true)) return
+    synchronized(lock) {
+      lastError = message
+      fatalErrorCode = code
+      fatalErrorMessage = message
+      when (source) {
+        "capture" -> lastCaptureError = message
+        "inference", "model" -> lastInferenceError = message
+      }
+    }
+    releaseSessionResources(clearFatal = false)
+    val event = emitError(
+      code = code,
+      message = message,
+      permanent = permanent,
+      restartable = restartable,
+      source = source,
+      sessionActive = false,
+    )
+    if (stateMachine.currentState() != HandsFreeNativeState.IDLE) {
+      transition(HandsFreeNativeState.IDLE, reason)
+    }
+    HandsFreeControllerRegistry.stopServiceAfterFatalError(event)
   }
 
   private fun createAudioSource(parsed: WakeWordConfig, queue: AudioFrameQueue): PcmAudioSource {
@@ -405,7 +546,14 @@ class HandsFreeController(
               lastCaptureError = message
               lastError = message
             }
-            emitError("JAI_WAKE_AUDIO_STOPPED", message)
+            emitError(
+              code = "JAI_WAKE_AUDIO_STOPPED",
+              message = message,
+              permanent = false,
+              restartable = true,
+              source = "capture",
+              sessionActive = true,
+            )
             scheduleCaptureRestart(parsed, queue)
           }
         }
@@ -422,13 +570,26 @@ class HandsFreeController(
       lastCaptureError = error.message
       lastError = error.message
     }
-    emitError(error.code, error.message)
     if (error.restartable && !error.permanent) {
+      emitError(
+        code = error.code,
+        message = error.message,
+        permanent = false,
+        restartable = true,
+        source = "capture",
+        sessionActive = true,
+      )
       scheduleCaptureRestart(parsed, queue)
       return
     }
-    routing.set(false)
-    transition(HandsFreeNativeState.IDLE, "capture_error")
+    stopAfterFatalError(
+      code = error.code,
+      message = error.message,
+      source = "capture",
+      permanent = error.permanent,
+      restartable = false,
+      reason = "capture_error",
+    )
   }
 
   private fun scheduleCaptureRestart(parsed: WakeWordConfig, queue: AudioFrameQueue) {
@@ -456,18 +617,33 @@ class HandsFreeController(
           lastCaptureError = detail
           lastError = detail
         }
-        emitError("JAI_WAKE_AUDIO_RESTART_FAILED", detail)
-        routing.set(false)
-        transition(HandsFreeNativeState.IDLE, "capture_restart_failed")
+        stopAfterFatalError(
+          code = "JAI_WAKE_AUDIO_RESTART_FAILED",
+          message = detail,
+          source = "capture",
+          permanent = false,
+          restartable = false,
+          reason = "capture_restart_failed",
+        )
       } finally {
         captureRestartScheduled.set(false)
       }
     }
   }
 
+  private fun isPermanentSessionStartError(error: Throwable): Boolean {
+    val value = "${error.message ?: ""} ${(error as? WakeWordException)?.code ?: ""}".lowercase()
+    return value.contains("permission") ||
+      value.contains("denied") ||
+      value.contains("unsupported") ||
+      value.contains("model") ||
+      value.contains("init")
+  }
+
   companion object {
     private const val CAPTURE_RESTART_COOLDOWN_MS = 250L
     private const val WAKE_VAD_HANGOVER_MS = 400L
+    private const val WAKE_VAD_FAIL_OPEN_INTERVAL_MS = 2400L
   }
 }
 
@@ -477,11 +653,24 @@ object HandsFreeControllerRegistry {
   private var callbacks: HandsFreeControllerCallbacks? = null
   private var configuredConfig: Map<String, Any?>? = null
   private var pendingStartConfig: Map<String, Any?>? = null
+  private var serviceStopper: ((HandsFreeWakeErrorEvent) -> Unit)? = null
 
   fun setCallbacks(nextCallbacks: HandsFreeControllerCallbacks?) {
     synchronized(lock) {
       callbacks = nextCallbacks
     }
+  }
+
+  fun setServiceStopper(nextStopper: ((HandsFreeWakeErrorEvent) -> Unit)?) {
+    synchronized(lock) {
+      serviceStopper = nextStopper
+    }
+  }
+
+  fun stopServiceAfterFatalError(event: HandsFreeWakeErrorEvent) {
+    synchronized(lock) {
+      serviceStopper
+    }?.invoke(event)
   }
 
   fun configure(config: Map<String, Any?>) {

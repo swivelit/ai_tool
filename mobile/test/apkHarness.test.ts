@@ -53,6 +53,7 @@ describe("APK test harness", () => {
     expect(source).toContain("memory-pressure.log");
     expect(source).toContain('lowmemorykiller:.*(Kill \'${PACKAGE_NAME}\'|${PACKAGE_NAME})');
     expect(source).toContain("Process ${PACKAGE_NAME} .*has died");
+    expect(source).toContain("WINDOW DIED.*${PACKAGE_NAME}");
   });
 
   it("does not treat normal adb helper AndroidRuntime startup as a crash", () => {
@@ -74,6 +75,9 @@ describe("APK test harness", () => {
     expect(source).toContain("general-message-not-visible");
     expect(source).toContain("input keyevent 111");
     expect(source).toContain('tap_desc_offset "chat-send-button" 0 35');
+    expect(source).toContain("tap_chat_input_fallback");
+    expect(source).toContain("tap_chat_send_fallback");
+    expect(source).toContain("tap_chat_drawer_fallback");
     expect(source).toContain("dismiss_expo_warning");
     expect(source).toContain("Open debugger to view warnings");
     expect(chatSource).toContain("activeChatSessionIdRef");
@@ -334,6 +338,16 @@ describe("APK test harness", () => {
     expect(source).toContain("EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND");
     expect(source).toContain("e2e-hands-free-trigger-button");
     expect(source).toContain("e2e-hands-free-stop-button");
+    expect(source).toContain("tap_e2e_hands_free_trigger_fallback");
+    expect(source).toContain("tap_e2e_hands_free_stop_fallback");
+    expect(source).toContain("tap_chat_input_fallback");
+    expect(source).toContain("e2e-hands-free-trigger-desc-not-found; used coordinate fallback");
+    expect(source).toContain("e2e-hands-free-stop-desc-not-found; used coordinate fallback");
+    expect(source).toContain('tap_text "E2E hands-free"');
+    expect(source).toContain('tap_text "E2E stop"');
+    expect(source).toContain("width * 78 / 100");
+    expect(source).toContain("width * 72 / 100");
+    expect(source).toContain("width * 50 / 100");
     expect(source).toContain("scan_hands_free_reply_markers");
     expect(source).toContain("onCommandAudio");
     expect(source).toContain("/api/transcribe-and-analyze");
@@ -363,6 +377,20 @@ describe("APK test harness", () => {
     expect(testApk).toContain("dumpsys-meminfo-package-after-launch");
     expect(testApk).toContain("adb-reverse-list");
     expect(testApk).toContain("metro-status-before-launch");
+  });
+
+  it("dismisses only external System UI ANR overlays without hiding app crashes", () => {
+    const source = readRepo("test_apk.sh");
+
+    expect(source).toContain("dismiss_external_system_ui_anr");
+    expect(source).toContain("System UI isn't responding");
+    expect(source).toContain("android:id/aerr_wait");
+    expect(source).toContain("external-system-ui-anr-dismissed");
+    expect(source).toContain("system-ui-anr.log");
+    expect(source).toContain('"ANR in"');
+    expect(source).toContain("WINDOW DIED.*${PACKAGE_NAME}");
+    expect(source).toContain("scan_crashes");
+    expect(source).not.toContain("aerr_close");
   });
 
   it("APK automation rejects the removed quick composer mic", () => {
