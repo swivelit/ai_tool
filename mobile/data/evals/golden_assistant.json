@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Deterministic golden prompts for assistant intelligence, routing, safety, local-first, RAG, cache, and voice regressions.",
+  "description": "Deterministic golden prompts for assistant intelligence, routing, safety, local-first, RAG, cache, voice, and product-level regression testing.",
   "cases": [
 
     {
@@ -64,7 +64,6 @@
       "surface": "mobile_local_agent",
       "prompt": "Remind me to call Sam tomorrow at 9 AM",
       "userId": 9011,
-      "replyLanguage": "en",
       "mocks": {
         "reminder": {
           "title": "Call Sam",
@@ -223,16 +222,17 @@
       }
     },
 
+    // =========================
+    // TASK 3 - NEGATIVE CLARIFY EVALS
+    // =========================
+
     {
       "id": "clarify_reminder_missing_task_083",
       "surface": "mobile_local_agent",
       "prompt": "Remind me",
       "userId": 9083,
       "mocks": {
-        "routeDecision": {
-          "route": "clarify",
-          "reason": "missing_task"
-        }
+        "routeDecision": { "route": "clarify", "reason": "missing_task" }
       },
       "expected": {
         "route": "clarify",
@@ -248,10 +248,7 @@
       "prompt": "What's the weather like?",
       "userId": 9084,
       "mocks": {
-        "routeDecision": {
-          "route": "clarify",
-          "reason": "missing_location"
-        }
+        "routeDecision": { "route": "clarify", "reason": "missing_location" }
       },
       "expected": {
         "route": "clarify",
@@ -267,10 +264,7 @@
       "prompt": "Do it",
       "userId": 9085,
       "mocks": {
-        "routeDecision": {
-          "route": "clarify",
-          "reason": "missing_action"
-        }
+        "routeDecision": { "route": "clarify", "reason": "missing_action" }
       },
       "expected": {
         "route": "clarify",
@@ -286,10 +280,7 @@
       "prompt": "What about me?",
       "userId": 9086,
       "mocks": {
-        "routeDecision": {
-          "route": "clarify",
-          "reason": "ambiguous_profile_request"
-        }
+        "routeDecision": { "route": "clarify", "reason": "ambiguous_profile_request" }
       },
       "expected": {
         "route": "clarify",
@@ -305,10 +296,7 @@
       "prompt": "atha pannunga",
       "userId": 9087,
       "mocks": {
-        "routeDecision": {
-          "route": "clarify",
-          "reason": "ambiguous_reference"
-        }
+        "routeDecision": { "route": "clarify", "reason": "ambiguous_reference" }
       },
       "expected": {
         "route": "clarify",
@@ -316,6 +304,124 @@
         "answerIncludes": ["எதை"],
         "noBackendCall": true
       }
+    },
+
+    // =========================
+    // TASK 4 - VOICE STT CASES
+    // =========================
+
+    {
+      "id": "voice_stt_empty_090",
+      "surface": "mobile_voice_agent",
+      "voiceInput": true,
+      "stt": {
+        "provider": "sarvam",
+        "result": ""
+      },
+      "expected": {
+        "route": "voice_error",
+        "errorType": "empty_transcript",
+        "askRetry": true,
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "voice_stt_unavailable_091",
+      "surface": "mobile_voice_agent",
+      "voiceInput": true,
+      "stt": {
+        "provider": "sarvam",
+        "error": "service_unavailable"
+      },
+      "expected": {
+        "route": "voice_error",
+        "errorType": "stt_provider_down",
+        "askRetry": true,
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "voice_stt_success_092",
+      "surface": "mobile_voice_agent",
+      "voiceInput": true,
+      "stt": {
+        "provider": "sarvam",
+        "result": "Play music"
+      },
+      "expected": {
+        "route": "voice_command",
+        "transcript": "Play music",
+        "intent": "media_play",
+        "answerIncludes": ["music"],
+        "noBackendCall": true
+      }
+    },
+
+    // =========================
+    // TASK 6 - PRODUCT LEVEL TEST CONVERSATIONS
+    // =========================
+
+    {
+      "id": "product_onboarding_first_launch_100",
+      "surface": "mobile_local_agent",
+      "prompt": "Hi, I just installed the app",
+      "userId": 9100,
+      "expected": {
+        "route": "onboarding",
+        "answerIncludes": ["welcome"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "product_daily_routine_101",
+      "surface": "mobile_local_agent",
+      "prompt": "Help me plan my day",
+      "userId": 9101,
+      "fixtures": {
+        "reminders": [
+          { "title": "Gym", "datetimeText": "7 AM" }
+        ]
+      },
+      "expected": {
+        "route": "daily_planner",
+        "answerIncludes": ["Gym"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "product_reminder_flow_102",
+      "surface": "mobile_local_agent",
+      "prompt": "Remind me to drink water every 2 hours",
+      "userId": 9102,
+      "expected": {
+        "route": "reminder_create",
+        "tools": ["createReminder"],
+        "answerIncludes": ["water"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "product_memory_second_turn_103",
+      "surface": "mobile_local_agent",
+      "prompt": "What did you remember about me?",
+      "userId": 9103,
+      "fixtures": {
+        "memory": {
+          "fact": "User likes morning workouts"
+        }
+      },
+      "expected": {
+        "route": "profile",
+        "tools": ["getMemory"],
+        "answerIncludes": ["morning workouts"],
+        "noBackendCall": true
+      }
     }
+
   ]
 }
