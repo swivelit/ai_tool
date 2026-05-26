@@ -83,8 +83,12 @@ run_chat_persistence_test() {
 
   # Verify both messages are visible
   if [[ -f "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml" ]]; then
-    grep -q 'text="hello"' "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml" || mark_failed "persistence-hello-missing"
-    grep -q 'text="what can you do"' "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml" || mark_failed "persistence-what-missing"
+    local persistence_ok=1
+    grep -q 'text="hello"' "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml" || { mark_failed "persistence-hello-missing"; persistence_ok=0; }
+    grep -q 'text="what can you do"' "$ARTIFACT_DIR/ui-after-message-what_can_you_do.xml" || { mark_failed "persistence-what-missing"; persistence_ok=0; }
+    if [[ "$persistence_ok" == "1" ]]; then
+      printf "PASS after-message-hello\n" >> "$ARTIFACT_DIR/steps.log"
+    fi
   fi
 }
 
@@ -124,6 +128,12 @@ run_chat_delete_test() {
   sleep 3
   success "Chat deletion flow completed"
   printf "PASS delete-complete\n" >> "$ARTIFACT_DIR/steps.log"
+
+  # Dismiss action sheet and drawer so the next test can see the main chat screen
+  adb shell input keyevent 4 >/dev/null 2>&1 || true
+  sleep 1
+  adb shell input keyevent 4 >/dev/null 2>&1 || true
+  sleep 1
 }
 
 # Task 3: Voice Failure Assertions
