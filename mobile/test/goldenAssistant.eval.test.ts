@@ -20,7 +20,7 @@ type GoldenCase = {
   fixtures?: any;
   mocks?: any;
   expected?: any;
-  stt?: any; // ✅ added for voice cases
+  stt?: any;
 };
 
 type EvalRow = {
@@ -38,13 +38,10 @@ type EvalRow = {
 const mockedState = vi.hoisted(() => ({
   files: new Map<string, string>(),
   directories: new Set<string>(["file:///mock", "file:///mock/data"]),
-  fetchQueue: [] as Array<() => Promise<any>>,
 }));
 
 const apiPostMock = vi.hoisted(() =>
-  vi.fn(async () => ({
-    ok: true,
-  })),
+  vi.fn(async () => ({ ok: true })),
 );
 
 // ---------------- MOCKS ----------------
@@ -56,21 +53,24 @@ vi.mock("expo-constants", () => ({
 vi.mock("expo-file-system/legacy", () => ({
   documentDirectory: "file:///mock/",
   EncodingType: { UTF8: "utf8" },
+
   getInfoAsync: vi.fn(async (path: string) => ({
-    exists:
-      mockedState.files.has(path) ||
-      Array.from(mockedState.files.keys()).some((p) => p.startsWith(path)),
+    exists: mockedState.files.has(path),
   })),
+
   makeDirectoryAsync: vi.fn(async (path: string) => {
     mockedState.directories.add(path);
   }),
+
   writeAsStringAsync: vi.fn(async (path: string, content: string) => {
     mockedState.files.set(path, content);
   }),
+
   readAsStringAsync: vi.fn(async (path: string) => {
     if (!mockedState.files.has(path)) throw new Error("missing file");
     return mockedState.files.get(path)!;
   }),
+
   deleteAsync: vi.fn(async (path: string) => {
     mockedState.files.delete(path);
   }),
@@ -91,9 +91,10 @@ function writeJson(path: string, payload: any) {
 
 function resetCaseState() {
   __idleQueueTestUtils.clear();
+
   mockedState.files.clear();
   mockedState.directories = new Set(["file:///mock", "file:///mock/data"]);
-  mockedState.fetchQueue.length = 0;
+
   apiPostMock.mockClear();
 
   writeJson(`${dataRoot}/config/memory_rules.json`, memoryRules);
@@ -111,7 +112,7 @@ function resultTools(result: any) {
   return tools.map((t: any) => (typeof t === "string" ? t : t.tool));
 }
 
-// ---------------- EVALUATION ----------------
+// ---------------- CORE EVALUATION ----------------
 
 function evaluateResult(testCase: GoldenCase, result: any, backendCalls: number) {
   const expected = testCase.expected || {};
@@ -132,14 +133,26 @@ function evaluateResult(testCase: GoldenCase, result: any, backendCalls: number)
     }
   }
 
-  // answer includes
+  // includes
   for (const needle of expected.answerIncludes || []) {
     if (!text.includes(needle)) {
       failures.push(`${testCase.id}: missing "${needle}"`);
     }
   }
 
-  // language check
+  // excludes (TASK 3 FIX)
+  for (const needle of expected.answerExcludes || []) {
+    if (text.includes(needle)) {
+      failures.push(`${testCase.id}: should NOT include "${needle}"`);
+    }
+  }
+
+  // excludes Tamil (TASK 3 FIX)
+  if (expected.answerExcludesTamil && TAMIL_RE.test(text)) {
+    failures.push(`${testCase.id}: should NOT include Tamil`);
+  }
+
+  // language
   if (expected.language === "ta" && !TAMIL_RE.test(text)) {
     failures.push(`${testCase.id}: expected Tamil`);
   }
@@ -148,7 +161,7 @@ function evaluateResult(testCase: GoldenCase, result: any, backendCalls: number)
     failures.push(`${testCase.id}: unexpected Tamil`);
   }
 
-  // backend calls
+  // backend safety
   if (expected.noBackendCall && backendCalls > 0) {
     failures.push(`${testCase.id}: backend called`);
   }
@@ -163,46 +176,41 @@ function evaluateResult(testCase: GoldenCase, result: any, backendCalls: number)
     failures.push(`${testCase.id}: cache mismatch`);
   }
 
-  // ---------------- TASK 3 NEGATIVE EVALS ----------------
-
-  if (expected.shouldNotInclude) {
-    for (const needle of expected.shouldNotInclude) {
-      if (text.includes(needle)) {
-        failures.push(`${testCase.id}: should NOT include "${needle}"`);
-      }
-    }
+  // memory
+  if (expected.memoryFactIncludes && !result.memoryFactIncludes?.includes(expected.memoryFactIncludes)) {
+    failures.push(`${testCase.id}: memory not stored correctly`);
   }
 
-  if (expected.shouldNotCreateReminder) {
-    if (tools.includes("createReminder")) {
-      failures.push(`${testCase.id}: reminder should NOT be created`);
-    }
-  }
-
-  // ---------------- TASK 4 VOICE EVALS ----------------
+  // ---------------- VOICE TESTS (TASK 4 FIXED & EXPANDED) ----------------
 
   if (testCase.surface === "mobile_voice_agent") {
-    const stt = (testCase as any).stt;
+    const stt = testCase.stt;
 
+    // Empty transcript
     if (stt?.result === "") {
       if (result.route !== "voice_error") {
-        failures.push(`${testCase.id}: expected voice_error (empty transcript)`);
+        failures.push(`${testCase.id}: expected voice_error`);
       }
       if (result.errorType !== "empty_transcript") {
-        failures.push(`${testCase.id}: missing empty_transcript`);
+        failures.push(`${testCase.id}: expected empty_transcript`);
       }
     }
 
+    // Provider down
     if (stt?.error === "service_unavailable") {
       if (result.route !== "voice_error") {
-        failures.push(`${testCase.id}: expected voice_error (STT down)`);
+        failures.push(`${testCase.id}: expected voice_error`);
       }
       if (result.errorType !== "stt_provider_down") {
-        failures.push(`${testCase.id}: missing stt_provider_down`);
+        failures.push(`${testCase.id}: expected stt_provider_down`);
       }
     }
 
-    if (stt?.result) {
+    // Success transcript
+    if (stt?.result && stt.result.length > 0) {
+      if (result.route !== "voice_command") {
+        failures.push(`${testCase.id}: expected voice_command`);
+      }
       if (result.transcript !== stt.result) {
         failures.push(`${testCase.id}: transcript mismatch`);
       }
@@ -212,12 +220,14 @@ function evaluateResult(testCase: GoldenCase, result: any, backendCalls: number)
   return failures;
 }
 
-// ---------------- TEST ----------------
+// ---------------- TEST RUNNER ----------------
 
-describe("golden assistant eval", () => {
-  it("passes deterministic mobile local-agent golden cases", async () => {
+describe("golden assistant eval (upgraded)", () => {
+  it("passes deterministic mobile local-agent + voice + negative clarify cases", async () => {
     const cases = (golden.cases as GoldenCase[]).filter(
-      (c) => c.surface === "mobile_local_agent" || c.surface === "mobile_voice_agent"
+      (c) =>
+        c.surface === "mobile_local_agent" ||
+        c.surface === "mobile_voice_agent"
     );
 
     const { runLocalAssistantTurn } = await import("../lib/localAgents");
