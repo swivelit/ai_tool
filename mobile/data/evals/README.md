@@ -53,3 +53,80 @@ Add a case to `golden_assistant.json`, then choose the right `surface`.
 - Use `backend_agentic` for backend agentic orchestration regressions.
 
 Prefer small deterministic fixtures. If a model response is needed, put it in `mocks` so the eval never calls real cloud, native model, or live services.
+
+## Success Metrics
+
+The Golden Assistant evaluation system measures assistant intelligence, reliability, performance, and user experience using the following success metrics.
+
+### Answer Quality
+Measures correctness, relevance, and helpfulness of assistant responses.
+
+Targets:
+- >= 90% golden eval accuracy
+- >= 4/5 average user satisfaction
+
+Evaluation signals:
+- Expected route/tool matches
+- Correct safety behavior
+- Correct language handling
+- Deterministic output validation
+
+### Latency
+Measures assistant response speed from request start to final response.
+
+Targets:
+- First token latency < 1.5s
+- Full response latency < 4s
+
+Evaluation signals:
+- Local routing speed
+- Tool execution duration
+- Backend response completion time
+
+### Local-First Rate
+Measures how often requests are successfully handled using local models, local memory, local RAG, or local cache before cloud fallback.
+
+Targets:
+- >= 70% local-first handling
+
+Evaluation signals:
+- Local routing success
+- Semantic cache hits
+- Offline-capable execution
+
+### Clarification Rate
+Measures how often the assistant asks follow-up clarification questions because the user intent is ambiguous.
+
+Targets:
+- 10%–20%
+
+Evaluation signals:
+- Ambiguous prompt detection
+- Clarification necessity validation
+- Reduced unnecessary clarification prompts
+
+### Fallback Rate
+Measures how often the assistant fails and falls back to generic or safe responses.
+
+Targets:
+- < 5%
+
+Evaluation signals:
+- Unknown intent handling
+- Failed routing cases
+- Tool/model fallback frequency
+
+### Crash-Free Sessions
+Measures application stability during assistant interactions.
+
+Targets:
+- >= 99.5% crash-free sessions
+
+Evaluation signals:
+- Successful eval execution
+- No runtime crashes
+- Stable routing and tool execution
+
+## Goal
+
+The primary goal of the golden evaluation system is to define what “smarter assistant behavior” means and continuously verify improvements without introducing regressions in routing, safety, latency, reliability, or user experience.
