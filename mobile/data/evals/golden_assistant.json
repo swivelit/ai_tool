@@ -112,12 +112,10 @@
       "surface": "mobile_local_agent",
       "prompt": "Remember that project code name is JAI",
       "userId": 9022,
-      "replyLanguage": "en",
       "mocks": {
         "routeDecision": {
           "route": "profile",
-          "reason": "memory_update_request",
-          "needsLiveData": false
+          "reason": "memory_update_request"
         }
       },
       "expected": {
@@ -135,7 +133,6 @@
       "surface": "mobile_local_agent",
       "prompt": "What is my name?",
       "userId": 9024,
-      "replyLanguage": "en",
       "userProfile": { "name": "Hari" },
       "expected": {
         "route": "profile",
@@ -225,10 +222,6 @@
         "matchedKeyword": "urgent tamil safety"
       }
     },
-
-    // =========================
-    // WORK 3: NEGATIVE CLARIFY EVALS
-    // =========================
 
     {
       "id": "clarify_reminder_missing_task_083",
@@ -324,6 +317,5 @@
         "noBackendCall": true
       }
     }
-
   ]
 }
