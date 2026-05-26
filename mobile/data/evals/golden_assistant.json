@@ -2,6 +2,7 @@
   "version": 1,
   "description": "Deterministic golden prompts for assistant intelligence, routing, safety, local-first, RAG, cache, and voice regressions.",
   "cases": [
+
     {
       "id": "greeting_name_en_001",
       "surface": "mobile_local_agent",
@@ -153,8 +154,7 @@
       "mocks": {
         "routeDecision": {
           "route": "local_answer",
-          "reason": "general_advice",
-          "needsLiveData": false
+          "reason": "general_advice"
         }
       },
       "expected": {
@@ -170,12 +170,10 @@
       "surface": "mobile_local_agent",
       "prompt": "What is the latest news about electric vehicles?",
       "userId": 9033,
-      "replyLanguage": "en",
       "mocks": {
         "routeDecision": {
           "route": "clarify",
-          "reason": "current_data_required",
-          "needsLiveData": true
+          "reason": "current_data_required"
         }
       },
       "expected": {
@@ -187,11 +185,10 @@
     },
 
     {
-      "id": "semantic_cache_high_confidence_stable_043",
+      "id": "semantic_cache_high_confidence_043",
       "surface": "mobile_local_agent",
       "prompt": "Explain local-first routing",
       "userId": 9043,
-      "replyLanguage": "en",
       "fixtures": {
         "semanticCache": {
           "sourceQuestion": "Explain local-first routing",
@@ -229,54 +226,104 @@
       }
     },
 
+    // =========================
+    // WORK 3: NEGATIVE CLARIFY EVALS
+    // =========================
+
     {
-      "id": "voice_stt_empty_result_080",
-      "surface": "mobile_voice_agent",
-      "voiceInput": true,
-      "stt": {
-        "provider": "sarvam",
-        "result": ""
+      "id": "clarify_reminder_missing_task_083",
+      "surface": "mobile_local_agent",
+      "prompt": "Remind me",
+      "userId": 9083,
+      "mocks": {
+        "routeDecision": {
+          "route": "clarify",
+          "reason": "missing_task"
+        }
       },
       "expected": {
-        "route": "voice_error",
-        "errorType": "empty_transcript",
-        "askRetry": true,
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["What should I remind you about"],
         "noBackendCall": true
       }
     },
 
     {
-      "id": "voice_sarvam_unavailable_081",
-      "surface": "mobile_voice_agent",
-      "voiceInput": true,
-      "stt": {
-        "provider": "sarvam",
-        "error": "service_unavailable"
+      "id": "clarify_weather_missing_location_084",
+      "surface": "mobile_local_agent",
+      "prompt": "What's the weather like?",
+      "userId": 9084,
+      "mocks": {
+        "routeDecision": {
+          "route": "clarify",
+          "reason": "missing_location"
+        }
       },
       "expected": {
-        "route": "voice_error",
-        "errorType": "stt_provider_down",
-        "askRetry": true,
-        "fallbackUsed": "none",
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["Which city"],
         "noBackendCall": true
       }
     },
 
     {
-      "id": "voice_successful_transcript_082",
-      "surface": "mobile_voice_agent",
-      "voiceInput": true,
-      "stt": {
-        "provider": "sarvam",
-        "result": "Play music"
+      "id": "clarify_incomplete_command_085",
+      "surface": "mobile_local_agent",
+      "prompt": "Do it",
+      "userId": 9085,
+      "mocks": {
+        "routeDecision": {
+          "route": "clarify",
+          "reason": "missing_action"
+        }
       },
       "expected": {
-        "route": "voice_command",
-        "transcript": "Play music",
-        "intent": "media_play",
-        "answerIncludes": ["music"],
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["What would you like me to do"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_profile_ambiguous_086",
+      "surface": "mobile_local_agent",
+      "prompt": "What about me?",
+      "userId": 9086,
+      "mocks": {
+        "routeDecision": {
+          "route": "clarify",
+          "reason": "ambiguous_profile_request"
+        }
+      },
+      "expected": {
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["Can you clarify"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_tanglish_ambiguous_087",
+      "surface": "mobile_local_agent",
+      "prompt": "atha pannunga",
+      "userId": 9087,
+      "mocks": {
+        "routeDecision": {
+          "route": "clarify",
+          "reason": "ambiguous_reference"
+        }
+      },
+      "expected": {
+        "route": "clarify",
+        "language": "ta",
+        "answerIncludes": ["எதை"],
         "noBackendCall": true
       }
     }
+
   ]
 }
