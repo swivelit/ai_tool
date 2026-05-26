@@ -228,6 +228,153 @@
         "emergency": true,
         "matchedKeyword": "urgent tamil safety"
       }
+    },
+
+    {
+      "id": "clarify_weather_missing_location_070",
+      "surface": "mobile_local_agent",
+      "prompt": "Will it rain tomorrow?",
+      "userId": 9070,
+      "replyLanguage": "en",
+      "expected": {
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["location"],
+        "shouldNotInclude": ["Chennai", "Mumbai", "Delhi"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_reminder_missing_time_071",
+      "surface": "mobile_local_agent",
+      "prompt": "Remind me to call John",
+      "userId": 9071,
+      "replyLanguage": "en",
+      "expected": {
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["when"],
+        "shouldNotCreateReminder": true,
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_navigation_missing_destination_072",
+      "surface": "mobile_local_agent",
+      "prompt": "Navigate me there",
+      "userId": 9072,
+      "replyLanguage": "en",
+      "expected": {
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["destination"],
+        "shouldNotInclude": ["Starting navigation"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_call_missing_contact_073",
+      "surface": "mobile_local_agent",
+      "prompt": "Call him",
+      "userId": 9073,
+      "replyLanguage": "en",
+      "expected": {
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["who"],
+        "shouldNotInclude": ["Calling"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_booking_missing_destination_074",
+      "surface": "mobile_local_agent",
+      "prompt": "Book a ticket for tomorrow",
+      "userId": 9074,
+      "replyLanguage": "en",
+      "expected": {
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["where"],
+        "shouldNotInclude": ["ticket booked"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_send_message_missing_person_075",
+      "surface": "mobile_local_agent",
+      "prompt": "Send a message saying I will be late",
+      "userId": 9075,
+      "replyLanguage": "en",
+      "expected": {
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["who"],
+        "shouldNotInclude": ["message sent"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_alarm_missing_time_076",
+      "surface": "mobile_local_agent",
+      "prompt": "Set an alarm",
+      "userId": 9076,
+      "replyLanguage": "en",
+      "expected": {
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["time"],
+        "shouldNotInclude": ["alarm set"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_music_missing_song_077",
+      "surface": "mobile_local_agent",
+      "prompt": "Play the song",
+      "userId": 9077,
+      "replyLanguage": "en",
+      "expected": {
+        "route": "clarify",
+        "language": "en",
+        "answerIncludes": ["which song"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_tamil_contact_missing_078",
+      "surface": "mobile_local_agent",
+      "prompt": "அவருக்கு message அனுப்பு",
+      "userId": 9078,
+      "replyLanguage": "ta",
+      "expected": {
+        "route": "clarify",
+        "language": "ta",
+        "answerIncludes": ["யாருக்கு"],
+        "noBackendCall": true
+      }
+    },
+
+    {
+      "id": "clarify_tamil_reminder_missing_time_079",
+      "surface": "mobile_local_agent",
+      "prompt": "என்னை நினைவூட்டு",
+      "userId": 9079,
+      "replyLanguage": "ta",
+      "expected": {
+        "route": "clarify",
+        "language": "ta",
+        "answerIncludes": ["எப்போது"],
+        "noBackendCall": true
+      }
     }
   ]
 }
