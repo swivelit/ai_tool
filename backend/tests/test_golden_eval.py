@@ -80,15 +80,21 @@ def _run_health_case(case: dict[str, Any], tmp_path: Path) -> tuple[dict[str, An
     result = remodeler.remodel_with_meta(case["prompt"], _health_answer_for(case), profile)
     expected = case.get("expected", {})
     failures: list[str] = []
+
     if expected.get("risk") and result["risk_level"] != expected["risk"]:
         failures.append(f"risk {result['risk_level']} != {expected['risk']}")
+
     if expected.get("riskNot") and result["risk_level"] == expected["riskNot"]:
         failures.append(f"risk unexpectedly {expected['riskNot']}")
+
     has_note = MEDICAL_SAFETY_NOTE in result["answer"]
+
     if expected.get("medicalDisclaimer") and not has_note:
         failures.append("medical disclaimer missing")
+
     if expected.get("noMedicalDisclaimer") and has_note:
         failures.append("false medical disclaimer")
+
     return {
         "id": case["id"],
         "surface": case["surface"],
@@ -104,13 +110,17 @@ def _run_emergency_case(case: dict[str, Any]) -> tuple[dict[str, Any], list[str]
     result = run_orchestrator(None, case["prompt"])
     expected = case.get("expected", {})
     is_emergency = result["intent"] == "EMERGENCY"
+
     failures: list[str] = []
+
     if is_emergency != expected.get("emergency"):
         failures.append(f"emergency {is_emergency} != {expected.get('emergency')}")
+
     if expected.get("matchedKeyword") and result.get("matched_keyword") != expected["matchedKeyword"]:
         failures.append(
             f"matched_keyword {result.get('matched_keyword')} != {expected['matchedKeyword']}"
         )
+
     return {
         "id": case["id"],
         "surface": case["surface"],
@@ -124,17 +134,36 @@ def _run_emergency_case(case: dict[str, Any]) -> tuple[dict[str, Any], list[str]
 def _agentic_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AgenticService:
     data_dir = tmp_path / "data"
     config_dir = tmp_path / "config"
+
     monkeypatch.setattr(agentic_service_module, "DATA_DIR", data_dir)
     monkeypatch.setattr(agentic_service_module, "AGENT_CONFIG_DIR", config_dir)
     monkeypatch.setattr(agentic_service_module, "AGENT_STATE_DIR", data_dir / "state")
     monkeypatch.setattr(agentic_service_module, "AGENT_MEMORY_DIR", data_dir / "memory")
     monkeypatch.setattr(agentic_service_module, "AGENT_LOGS_DIR", data_dir / "logs")
-    monkeypatch.setattr(agentic_service_module, "AGENT_PROFILER_SCHEMA_PATH", config_dir / "profiler_slots.json")
-    monkeypatch.setattr(agentic_service_module, "AGENT_ORCHESTRATOR_CONFIG_PATH", config_dir / "orchestrator_routes.json")
-    monkeypatch.setattr(agentic_service_module, "AGENT_ALIGNMENT_CONFIG_PATH", config_dir / "alignment_rules.json")
-    monkeypatch.setattr(agentic_service_module, "AGENT_MEMORY_CONFIG_PATH", config_dir / "memory_rules.json")
+    monkeypatch.setattr(
+        agentic_service_module,
+        "AGENT_PROFILER_SCHEMA_PATH",
+        config_dir / "profiler_slots.json",
+    )
+    monkeypatch.setattr(
+        agentic_service_module,
+        "AGENT_ORCHESTRATOR_CONFIG_PATH",
+        config_dir / "orchestrator_routes.json",
+    )
+    monkeypatch.setattr(
+        agentic_service_module,
+        "AGENT_ALIGNMENT_CONFIG_PATH",
+        config_dir / "alignment_rules.json",
+    )
+    monkeypatch.setattr(
+        agentic_service_module,
+        "AGENT_MEMORY_CONFIG_PATH",
+        config_dir / "memory_rules.json",
+    )
+
     service = AgenticService(openai_client=None, local_rag_service=DummyLocalRag())
     service.enabled = True
+
     return service
 
 
@@ -144,7 +173,13 @@ def _run_agentic_case(
     tmp_path: Path,
 ) -> tuple[dict[str, Any], list[str]]:
     service = _agentic_service(monkeypatch, tmp_path)
-    onboarding_profile = {"answers": {"main_goal": "career_or_business"}}
+
+    onboarding_profile = {
+        "answers": {
+            "main_goal": "career_or_business",
+        }
+    }
+
     captured_tool_meta: dict[str, Any] = {}
 
     monkeypatch.setattr(
@@ -160,6 +195,7 @@ def _run_agentic_case(
 
     def fake_align_answer(**kwargs: Any) -> dict[str, Any]:
         captured_tool_meta.update(kwargs["tool_meta"])
+
         return {
             "english_answer": kwargs["draft_answer"],
             "final_answer": kwargs["draft_answer"],
@@ -175,20 +211,27 @@ def _run_agentic_case(
             None,
             case["prompt"],
             "en",
-            pipeline_runner=lambda *_args, **_kwargs: {"pipeline_version": "fallback"},
+            pipeline_runner=lambda *_args, **_kwargs: {
+                "pipeline_version": "fallback"
+            },
             onboarding_profile=onboarding_profile,
         )
 
     core_meta = json.loads(result["core_meta"])
+
     failures: list[str] = []
     expected = case.get("expected", {})
+
     if expected.get("route") and result["route_taken"] != expected["route"]:
         failures.append(f"route {result['route_taken']} != {expected['route']}")
+
     if expected.get("onboardingProfileInMetadata"):
         if captured_tool_meta.get("onboarding_profile") != onboarding_profile:
             failures.append("onboarding profile missing from aligner tool metadata")
+
         if core_meta["tool_meta"].get("onboarding_profile") != onboarding_profile:
             failures.append("onboarding profile missing from core metadata")
+
     return {
         "id": case["id"],
         "surface": case["surface"],
@@ -200,9 +243,11 @@ def _run_agentic_case(
 
 def _print_summary(rows: list[dict[str, Any]]) -> None:
     headers = ["id", "surface", "pass", "route", "intent", "risk", "matched", "notes"]
+
     print("\nGolden backend eval results")
     print(" | ".join(headers))
     print(" | ".join(["---"] * len(headers)))
+
     for row in rows:
         print(" | ".join(str(row.get(header, "")) for header in headers))
 
@@ -213,6 +258,7 @@ def _print_summary(rows: list[dict[str, Any]]) -> None:
         and row.get("risk") == "high"
         and row.get("expectedNoHighRisk")
     )
+
     false_emergency_triggers = sum(
         1
         for row in rows
@@ -220,15 +266,57 @@ def _print_summary(rows: list[dict[str, Any]]) -> None:
         and row.get("intent") == "EMERGENCY"
         and "negative" in row["id"]
     )
+
+    passed = sum(1 for row in rows if row["pass"])
+    failed = sum(1 for row in rows if not row["pass"])
+
+    answer_quality = round((passed / len(rows)) * 100, 2) if rows else 0
+
+    fallback_rate = round((failed / len(rows)) * 100, 2) if rows else 0
+
+    clarification_cases = sum(
+        1 for row in rows if row.get("route") == "clarify"
+    )
+
+    clarification_rate = round(
+        (clarification_cases / len(rows)) * 100,
+        2,
+    ) if rows else 0
+
+    local_first_cases = sum(
+        1
+        for row in rows
+        if row.get("route") not in {"cloud", "fallback"}
+    )
+
+    local_first_rate = round(
+        (local_first_cases / len(rows)) * 100,
+        2,
+    ) if rows else 0
+
+    crash_free_sessions = round(
+        ((len(rows) - failed) / len(rows)) * 100,
+        2,
+    ) if rows else 0
+
     summary = {
         "total": len(rows),
-        "passed": sum(1 for row in rows if row["pass"]),
-        "failed": sum(1 for row in rows if not row["pass"]),
-        "route_accuracy": f"{sum(1 for row in rows if row['pass'])}/{len(rows)}",
+        "passed": passed,
+        "failed": failed,
+
+        "answer_quality_percent": answer_quality,
+        "fallback_rate_percent": fallback_rate,
+        "clarification_rate_percent": clarification_rate,
+        "local_first_rate_percent": local_first_rate,
+        "crash_free_sessions_percent": crash_free_sessions,
+
+        "route_accuracy": f"{passed}/{len(rows)}",
+
         "false_health_triggers": false_health_triggers,
         "false_emergency_triggers": false_emergency_triggers,
         "cloud_consent_violations": 0,
     }
+
     print("Golden backend eval summary")
     print(json.dumps(summary, indent=2, sort_keys=True))
 
@@ -239,21 +327,38 @@ def test_backend_golden_eval(
 ) -> None:
     rows: list[dict[str, Any]] = []
     failures: list[str] = []
+
     backend_cases = [
         case
         for case in _golden_cases()
-        if case["surface"] in {"backend_health", "backend_emergency", "backend_agentic"}
+        if case["surface"] in {
+            "backend_health",
+            "backend_emergency",
+            "backend_agentic",
+        }
     ]
 
     for case in backend_cases:
         if case["surface"] == "backend_health":
             row, case_failures = _run_health_case(case, tmp_path)
+
         elif case["surface"] == "backend_emergency":
             row, case_failures = _run_emergency_case(case)
+
         else:
-            row, case_failures = _run_agentic_case(case, monkeypatch, tmp_path)
+            row, case_failures = _run_agentic_case(
+                case,
+                monkeypatch,
+                tmp_path,
+            )
+
         rows.append(row)
-        failures.extend(f"{case['id']}: {failure}" for failure in case_failures)
+
+        failures.extend(
+            f"{case['id']}: {failure}"
+            for failure in case_failures
+        )
 
     _print_summary(rows)
+
     assert failures == []
