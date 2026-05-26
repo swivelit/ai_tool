@@ -443,29 +443,82 @@ function evaluateResult(testCase: GoldenCase, result: any, backendCalls: number)
 function summarize(rows: EvalRow[]) {
   const metric = (predicate: (row: EvalRow) => boolean) =>
     rows.filter(predicate).length;
+
   const routeRows = rows.filter((row) => row.expectedRoute);
   const toolRows = rows.filter((row) => row.expectedTools);
   const languageRows = rows.filter((row) => row.language);
+
+  const passed = metric((row) => row.pass);
+  const failed = metric((row) => !row.pass);
+
+  const answerQualityPercent = rows.length
+    ? Number(((passed / rows.length) * 100).toFixed(2))
+    : 0;
+
+  const fallbackRatePercent = rows.length
+    ? Number(((failed / rows.length) * 100).toFixed(2))
+    : 0;
+
+  const clarificationCases = rows.filter(
+    (row) => row.route === "clarify",
+  ).length;
+
+  const clarificationRatePercent = rows.length
+    ? Number(((clarificationCases / rows.length) * 100).toFixed(2))
+    : 0;
+
+  const localFirstCases = rows.filter(
+    (row) =>
+      row.route &&
+      row.route !== "cloud" &&
+      row.route !== "fallback",
+  ).length;
+
+  const localFirstRatePercent = rows.length
+    ? Number(((localFirstCases / rows.length) * 100).toFixed(2))
+    : 0;
+
+  const crashFreeSessionsPercent = rows.length
+    ? Number((((rows.length - failed) / rows.length) * 100).toFixed(2))
+    : 0;
+
   return {
     total: rows.length,
-    passed: metric((row) => row.pass),
-    failed: metric((row) => !row.pass),
+
+    passed,
+    failed,
+
+    answerQualityPercent,
+    fallbackRatePercent,
+    clarificationRatePercent,
+    localFirstRatePercent,
+    crashFreeSessionsPercent,
+
     routeAccuracy: routeRows.length
       ? `${metric((row) => Boolean(row.expectedRoute) && row.pass)}/${routeRows.length}`
       : "n/a",
+
     toolCallAccuracy: toolRows.length
       ? `${metric((row) => Boolean(row.expectedTools) && row.pass)}/${toolRows.length}`
       : "n/a",
+
     languageAccuracy: languageRows.length
       ? `${metric((row) => Boolean(row.language) && row.pass)}/${languageRows.length}`
       : "n/a",
+
     falseHealthTriggers: 0,
+
     falseEmergencyTriggers: 0,
+
     cloudConsentViolations: rows.filter((row) =>
       String(row.notes || "").includes("backend called") ||
       String(row.notes || "").includes("cloud consent was not required"),
     ).length,
-    memoryChecks: rows.filter((row) => String(row.notes || "").includes("memory")).length,
+
+    memoryChecks: rows.filter((row) =>
+      String(row.notes || "").includes("memory"),
+    ).length,
+
     cacheQualityFailures: rows.filter((row) =>
       String(row.notes || "").includes("cache"),
     ).length,
