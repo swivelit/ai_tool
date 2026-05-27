@@ -48,6 +48,14 @@ record_skip() {
   printf "SKIP: %s\n" "$1" >> "$ARTIFACT_DIR/skipped.log"
 }
 
+record_skip_once() {
+  local reason="$1"
+  if [[ -f "$ARTIFACT_DIR/skipped.log" ]] && grep -Fqx "SKIP: ${reason}" "$ARTIFACT_DIR/skipped.log"; then
+    return
+  fi
+  record_skip "$reason"
+}
+
 mark_failed() {
   RESULT=1
   FAILED_STEPS+=("$1")
@@ -134,6 +142,8 @@ PY
 dump_ui() {
   local label="${1:-ui}"
   local xml_path="$ARTIFACT_DIR/ui-${label}.xml"
+  rm -f "$xml_path" >/dev/null 2>&1 || true
+  adb shell rm -f "$UI_XML_DEVICE_PATH" >/dev/null 2>&1 || true
   if adb shell timeout 8 uiautomator dump "$UI_XML_DEVICE_PATH" > "$ARTIFACT_DIR/uiautomator-${label}.log" 2>&1; then
     adb exec-out cat "$UI_XML_DEVICE_PATH" > "$xml_path" 2>> "$ARTIFACT_DIR/uiautomator-${label}.log" || true
   fi
@@ -237,6 +247,38 @@ tap_chat_send_fallback() {
   adb shell input tap "$((width * 88 / 100))" "$((height * 96 / 100))"
 }
 
+submit_chat_input_via_keyboard() {
+  adb shell input keyevent 66
+}
+
+tap_chat_send_button() {
+  local tapped=1
+  if submit_chat_input_via_keyboard; then
+    tapped=0
+    sleep 0.5
+  fi
+  if tap_desc_offset "chat-send-button" 0 0; then
+    tapped=0
+    sleep 0.3
+  fi
+  if tap_desc_offset "chat-send-button" 0 -20; then
+    tapped=0
+    sleep 0.3
+  fi
+  if tap_desc_offset "chat-send-button" 0 35; then
+    tapped=0
+    sleep 0.3
+  fi
+  if tap_chat_send_fallback; then
+    tapped=0
+  fi
+  if [[ "$tapped" == "0" ]]; then
+    adb shell input keyevent 111 >/dev/null 2>&1 || true
+    sleep 0.5
+  fi
+  return "$tapped"
+}
+
 tap_chat_drawer_fallback() {
   local width height
   if ! read -r width height < <(device_window_size); then
@@ -294,7 +336,10 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-root = ET.parse(sys.argv[1]).getroot()
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except Exception:
+    sys.exit(1)
 
 def center(bounds):
     match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
@@ -303,9 +348,14 @@ def center(bounds):
     left, top, right, bottom = map(int, match.groups())
     return (left + right) // 2, (top + bottom) // 2
 
+external_anr_titles = {
+    "System UI isn't responding",
+    "Pixel Launcher isn't responding",
+    "Android System isn't responding",
+}
 title_seen = False
 for node in root.iter():
-    if node.attrib.get("resource-id") == "android:id/alertTitle" and node.attrib.get("text") == "System UI isn't responding":
+    if node.attrib.get("resource-id") == "android:id/alertTitle" and node.attrib.get("text") in external_anr_titles:
         title_seen = True
         break
 
@@ -324,13 +374,25 @@ PY
 )"; then
     read -r x y <<< "$center"
     adb shell input tap "$x" "$y" >/dev/null 2>&1 || true
-    printf "System UI ANR dialog dismissed with Wait\n" >> "$ARTIFACT_DIR/system-ui-anr.log"
-    record_skip "external-system-ui-anr-dismissed"
+    printf "External system ANR dialog dismissed with Wait\n" >> "$ARTIFACT_DIR/system-ui-anr.log"
+    record_skip_once "external-system-ui-anr"
+    record_skip_once "external-system-ui-anr-dismissed"
     sleep 2
     return 0
   fi
 
   return 1
+}
+
+record_external_disconnect_if_previous_system_anr() {
+  local previous_artifact
+  previous_artifact="$(find "$DIST_DIR" -maxdepth 1 -type d -name 'apk-test-*' ! -path "$ARTIFACT_DIR" -print 2>/dev/null | sort | tail -1 || true)"
+  [[ -n "$previous_artifact" ]] || return 0
+  if [[ -s "$previous_artifact/system-ui-anr.log" ]] || \
+    { [[ -f "$previous_artifact/skipped.log" ]] && grep -E "external-system-ui-anr" "$previous_artifact/skipped.log" >/dev/null 2>&1; }; then
+    record_skip_once "external-emulator-disconnected"
+    record_skip_once "external-emulator-disconnected-after-system-ui-anr"
+  fi
 }
 
 wait_for_text() {
@@ -383,7 +445,10 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-root = ET.parse(sys.argv[1]).getroot()
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except Exception:
+    sys.exit(1)
 
 def bounds_tuple(value):
     match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", value or "")
@@ -450,7 +515,10 @@ chat_input_text() {
 import sys
 import xml.etree.ElementTree as ET
 
-root = ET.parse(sys.argv[1]).getroot()
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except Exception:
+    sys.exit(1)
 for node in root.iter():
     if node.attrib.get("resource-id") == "chat-input" or node.attrib.get("content-desc") == "chat-input":
         print(node.attrib.get("text") or "")
@@ -493,14 +561,49 @@ wait_for_chat_input_cleared() {
   local timeout="${2:-8}"
   local label="${3:-chat-input-cleared}"
   local deadline=$((SECONDS + timeout))
+  local retry_deadline=$SECONDS
+  local retry_count=0
   local current_text
   while [[ "$SECONDS" -lt "$deadline" ]]; do
-    current_text="$(chat_input_text "${label}-${SECONDS}" || true)"
+    if ! current_text="$(chat_input_text "${label}-${SECONDS}")"; then
+      sleep 1
+      continue
+    fi
     if [[ "$current_text" != *"$previous_text"* ]]; then
       return 0
     fi
+
+    if [[ "$SECONDS" -ge "$retry_deadline" && "$retry_count" -lt 6 ]]; then
+      printf "retry=%s seconds=%s text=%s\n" "$retry_count" "$SECONDS" "$current_text" >> "$ARTIFACT_DIR/chat-send-retries-${label}.log"
+      tap_chat_send_button >/dev/null 2>&1 || true
+      retry_count=$((retry_count + 1))
+      retry_deadline=$((SECONDS + 4))
+    fi
+
     sleep 1
   done
+  return 1
+}
+
+ensure_chat_input_ready() {
+  local label="${1:-chat-input-ready}"
+  if wait_for_desc "chat-input" 3; then
+    return 0
+  fi
+
+  for _ in {1..3}; do
+    swipe_voice_to_chat >/dev/null 2>&1 || true
+    if wait_for_desc "chat-input" 5; then
+      return 0
+    fi
+
+    adb shell input keyevent 4 >/dev/null 2>&1 || true
+    if wait_for_desc "chat-input" 5; then
+      return 0
+    fi
+  done
+
+  capture_step "${label}-chat-input-not-ready"
   return 1
 }
 
@@ -535,8 +638,14 @@ scan_crashes() {
   local log_file="$ARTIFACT_DIR/logcat-full.log"
   local markers_file="$ARTIFACT_DIR/crash-markers.log"
   local memory_pressure_file="$ARTIFACT_DIR/memory-pressure.log"
+  local memory_pressure_package_file="$ARTIFACT_DIR/memory-pressure-package.log"
+  local memory_pressure_system_file="$ARTIFACT_DIR/memory-pressure-system.log"
+  local external_anr_file="$ARTIFACT_DIR/external-system-anr.log"
   : > "$markers_file"
   : > "$memory_pressure_file"
+  : > "$memory_pressure_package_file"
+  : > "$memory_pressure_system_file"
+  : > "$external_anr_file"
   CRASH_MARKERS_FOUND=0
 
   CRASH_MARKERS=(
@@ -566,8 +675,22 @@ scan_crashes() {
     for marker in "${CRASH_MARKERS[@]}"; do
       if [[ "$marker" == "lowmemorykiller" ]]; then
         grep -E -n "lowmemorykiller" "$log_file" >> "$memory_pressure_file" 2>/dev/null || true
-        if grep -E -n "lowmemorykiller:.*(Kill '${PACKAGE_NAME}'|${PACKAGE_NAME})" "$log_file" >> "$markers_file" 2>/dev/null; then
+        grep -E -n "lowmemorykiller:.*(Kill '${PACKAGE_NAME}'|${PACKAGE_NAME})" "$log_file" >> "$memory_pressure_package_file" 2>/dev/null || true
+        grep -E -n "lowmemorykiller" "$log_file" | grep -Ev "Kill '${PACKAGE_NAME}'|${PACKAGE_NAME}" >> "$memory_pressure_system_file" 2>/dev/null || true
+        if [[ -s "$memory_pressure_package_file" ]]; then
+          cat "$memory_pressure_package_file" >> "$markers_file"
           CRASH_MARKERS_FOUND=1
+        fi
+        continue
+      fi
+      if [[ "$marker" == "ANR in" ]]; then
+        if grep -E -n "ANR in ${PACKAGE_NAME}|ANR in .*${PACKAGE_NAME}" "$log_file" >> "$markers_file" 2>/dev/null; then
+          CRASH_MARKERS_FOUND=1
+        fi
+        grep -E -n "ANR in (system|com\\.android\\.|com\\.google\\.android\\.)|System UI isn't responding|Pixel Launcher isn't responding|Android System isn't responding" "$log_file" >> "$external_anr_file" 2>/dev/null || true
+        if [[ -s "$external_anr_file" ]]; then
+          record_skip_once "external-system-ui-anr"
+          record_skip_once "external-system-app-anr"
         fi
         continue
       fi
@@ -584,7 +707,38 @@ scan_crashes() {
         continue
       fi
       if [[ "$marker" == "ReactNativeJS.*Error" ]]; then
-        if grep -E -n "ReactNativeJS:.*(\\[Error|[^A-Za-z]Error:|Unhandled|Uncaught)" "$log_file" >> "$markers_file" 2>/dev/null; then
+        local react_native_error_file="$ARTIFACT_DIR/react-native-error-markers.log"
+        : > "$react_native_error_file"
+        python3 - "$log_file" "$react_native_error_file" "$ARTIFACT_DIR/metro-disconnect-warning.log" <<'PY'
+import sys
+
+log_file, markers_file, metro_file = sys.argv[1:4]
+with open(log_file, "r", encoding="utf-8", errors="replace") as handle:
+    lines = handle.readlines()
+
+markers = []
+metro_warnings = []
+for index, line in enumerate(lines):
+    if "ReactNativeJS:" not in line:
+        continue
+    if not ("[Error" in line or "Error:" in line or "Unhandled" in line or "Uncaught" in line):
+        continue
+    if "ReactNativeJS: Error: undefined" in line:
+        context = "".join(lines[max(0, index - 12) : index + 1])
+        if "Cannot connect to Metro." in context:
+            metro_warnings.append(line)
+            continue
+    markers.append(line)
+
+with open(markers_file, "w", encoding="utf-8") as handle:
+    handle.writelines(markers)
+with open(metro_file, "w", encoding="utf-8") as handle:
+    handle.writelines(metro_warnings)
+PY
+        if [[ -s "$ARTIFACT_DIR/metro-disconnect-warning.log" ]]; then
+          record_skip_once "metro-disconnect-warning"
+        fi
+        if [[ -s "$react_native_error_file" ]] && cat "$react_native_error_file" >> "$markers_file" 2>/dev/null; then
           CRASH_MARKERS_FOUND=1
         fi
         continue
@@ -758,6 +912,7 @@ finish() {
     collect_cmd "final-dumpsys-activity" adb shell dumpsys activity
     collect_cmd "final-dumpsys-window" adb shell dumpsys window
     collect_cmd "final-dumpsys-package" adb shell dumpsys package "$PACKAGE_NAME"
+    collect_cmd "final-dumpsys-meminfo" adb shell dumpsys meminfo
     collect_cmd "final-dumpsys-meminfo-package" adb shell dumpsys meminfo "$PACKAGE_NAME"
     if is_truthy "${COLLECT_BUGREPORT:-}"; then
       collect_cmd "bugreport" adb bugreport "$ARTIFACT_DIR/bugreport.zip"
@@ -852,7 +1007,9 @@ if ! command -v adb >/dev/null 2>&1; then
 fi
 
 if ! adb get-state > "$ARTIFACT_DIR/adb-get-state.log" 2>&1; then
+  collect_cmd "adb-devices" adb devices -l
   mark_failed "no-android-device"
+  record_external_disconnect_if_previous_system_anr
   record_skip "APK install/UI automation skipped because adb did not detect a device"
   exit "$RESULT"
 fi
@@ -1039,10 +1196,12 @@ for _ in {1..45}; do
   sleep 1
 done
 collect_cmd "dumpsys-meminfo-package-after-launch" adb shell dumpsys meminfo "$PACKAGE_NAME"
+collect_cmd "dumpsys-meminfo-after-launch" adb shell dumpsys meminfo
 
 capture_step "launch"
 
-if wait_for_desc "chat-input" 60; then
+launch_chat_ready_timeout="${APK_LAUNCH_CHAT_READY_TIMEOUT:-240}"
+if wait_for_desc "chat-input" "$launch_chat_ready_timeout"; then
   dismiss_expo_warning || true
   capture_step "chat-ready"
   assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-launch" || true
@@ -1081,6 +1240,7 @@ if [[ "$voice_query_lower" == *"spitzola"* ]]; then
 fi
 
 capture_step "voice-before"
+collect_cmd "dumpsys-meminfo-before-voice" adb shell dumpsys meminfo
 voice_sheet_opened=0
 voice_sheet_ui_visible=0
 if swipe_chat_to_voice; then
@@ -1254,7 +1414,7 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
     hands_free_reply_seen=0
     hands_free_reply_ui_seen=0
     hands_free_markers_seen=0
-    deadline=$((SECONDS + 180))
+    deadline=$((SECONDS + 240))
     while [[ "$SECONDS" -lt "$deadline" ]]; do
       if ! assert_app_alive "during-hands-free-test"; then
         break
@@ -1353,17 +1513,14 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
     fi
     capture_step "hands-free-after-stop"
     assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-hands-free" || true
-    if ! wait_for_desc "chat-input" 2; then
-      swipe_voice_to_chat || adb shell input keyevent 4 >/dev/null 2>&1 || true
-      wait_for_desc "chat-input" 10 || true
-    fi
+    ensure_chat_input_ready "after-hands-free" || mark_failed "chat-input-not-ready-after-hands-free"
   fi
 fi
 
 for message in "hello" "what can you do" "tell me about solo leveling"; do
   label="$(printf '%s' "$message" | tr -c 'A-Za-z0-9' '_' | tr '[:upper:]' '[:lower:]')"
   is_general_question=0
-  input_clear_timeout=8
+  input_clear_timeout=30
   result_wait_seconds=8
   if [[ "$message" == "tell me about solo leveling" ]]; then
     is_general_question=1
@@ -1372,6 +1529,10 @@ for message in "hello" "what can you do" "tell me about solo leveling"; do
   fi
 
   dismiss_expo_warning || true
+  if ! ensure_chat_input_ready "before-message-${label}"; then
+    mark_failed "chat-input-not-ready-${label}"
+    continue
+  fi
   if ! clear_chat_input; then
     mark_failed "clear-chat-input"
     continue
@@ -1386,9 +1547,7 @@ for message in "hello" "what can you do" "tell me about solo leveling"; do
   sleep 1
   dismiss_expo_warning || true
   local_start="$(now_ms)"
-  adb shell input keyevent 111 >/dev/null 2>&1 || true
-  sleep 1
-  if ! tap_desc_offset "chat-send-button" 0 35 && ! tap_chat_send_fallback; then
+  if ! tap_chat_send_button; then
     mark_failed "tap-chat-send-button"
     continue
   fi

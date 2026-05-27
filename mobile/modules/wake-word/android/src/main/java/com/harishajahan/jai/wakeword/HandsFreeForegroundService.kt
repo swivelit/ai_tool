@@ -129,7 +129,20 @@ class HandsFreeForegroundService : Service() {
 
     fun stopSession(context: Context) {
       val intent = Intent(context, HandsFreeForegroundService::class.java).setAction(ACTION_STOP)
-      context.startService(intent)
+      try {
+        context.startService(intent)
+      } catch (_: Throwable) {
+        HandsFreeControllerRegistry.stopSession()
+      }
+      HandsFreeControllerRegistry.stopSession()
+      stopServiceIfRunning(context)
+    }
+
+    fun stopServiceIfRunning(context: Context) {
+      try {
+        context.stopService(Intent(context, HandsFreeForegroundService::class.java))
+      } catch (_: Throwable) {
+      }
     }
   }
 }

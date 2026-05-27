@@ -109,7 +109,9 @@ import {
   ensureWakeModel,
   createE2eHandsFreeCommandAudioEvent,
   getWakeWordStatus,
+  hasHandsFreeSessionListeners,
   startHandsFreeSession,
+  subscribeHandsFreeSessionEvents,
   stopHandsFreeSession,
   cancelHandsFreeCommand,
   notifyHandsFreeTtsStarted,
@@ -823,6 +825,9 @@ export default function Home() {
         nativeHandsFreeStatus?.captureRestartScheduled === true ||
         (nativeSessionState && nativeSessionState !== "idle")
       ) {
+        if (!hasHandsFreeSessionListeners()) {
+          subscribeHandsFreeSessionEvents(createNativeHandsFreeEventHandlers());
+        }
         nativeHandsFreeSessionActiveRef.current = true;
         setHandsFreeStatus(
           nativeHandsFreeStatus?.captureRestartScheduled ? "Recovering mic..." : "Listening",
@@ -847,41 +852,7 @@ export default function Home() {
 
       setHandsFreeStatus("Listening");
       dispatchHandsFree({ type: "WAKE_STARTED" });
-      await startHandsFreeSession(model, {
-        onState: (event) => nativeStateHandlerRef.current(event),
-        onWake: (event) => {
-          void nativeWakeHandlerRef.current(event);
-        },
-        onCommand: (event) => {
-          void nativeCommandHandlerRef.current(event);
-        },
-        onCommandAudio: (event) => {
-          void nativeCommandAudioHandlerRef.current(event);
-        },
-        onError: (error: WakeWordNativeError) => {
-          if ((error.restartable === true || error.sessionActive === true) && error.permanent !== true) {
-            nativeHandsFreeSessionActiveRef.current = true;
-            setHandsFreeStatus(error.restartable === true ? "Recovering mic..." : "Listening");
-            return;
-          }
-          nativeHandsFreeSessionActiveRef.current = false;
-          if (error.permanent === true || isPermanentWakeError(error)) {
-            const value = `${String(error.code || "")} ${String(error.message || "")}`.toLowerCase();
-            setHandsFreeStatus(
-              value.includes("model") ||
-                value.includes("missing") ||
-                value.includes("unsupported") ||
-                value.includes("unavailable")
-                ? "Needs model"
-                : "Try again",
-            );
-            dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" });
-          } else {
-            setHandsFreeStatus("Try again");
-            dispatchHandsFree({ type: "WAKE_TRANSIENT_ERROR" });
-          }
-        },
-      });
+      await startHandsFreeSession(model, createNativeHandsFreeEventHandlers());
       if (
         startToken !== nativeHandsFreeSessionStartTokenRef.current ||
         handsFreeMachineRef.current.state !== "wakeListening" ||
@@ -1012,9 +983,48 @@ export default function Home() {
     }
   }
 
+  function handleNativeHandsFreeError(error: WakeWordNativeError) {
+    if ((error.restartable === true || error.sessionActive === true) && error.permanent !== true) {
+      nativeHandsFreeSessionActiveRef.current = true;
+      setHandsFreeStatus(error.restartable === true ? "Recovering mic..." : "Listening");
+      return;
+    }
+    nativeHandsFreeSessionActiveRef.current = false;
+    if (error.permanent === true || isPermanentWakeError(error)) {
+      const value = `${String(error.code || "")} ${String(error.message || "")}`.toLowerCase();
+      setHandsFreeStatus(
+        value.includes("model") ||
+          value.includes("missing") ||
+          value.includes("unsupported") ||
+          value.includes("unavailable")
+          ? "Needs model"
+          : "Try again",
+      );
+      dispatchHandsFree({ type: "WAKE_PERMANENT_ERROR" });
+    } else {
+      setHandsFreeStatus("Try again");
+      dispatchHandsFree({ type: "WAKE_TRANSIENT_ERROR" });
+    }
+  }
+
+  function createNativeHandsFreeEventHandlers() {
+    return {
+      onState: (event: HandsFreeStateEvent) => nativeStateHandlerRef.current(event),
+      onWake: (event: WakeWordEvent) => {
+        void nativeWakeHandlerRef.current(event);
+      },
+      onCommand: (event: HandsFreeCommandEvent) => {
+        void nativeCommandHandlerRef.current(event);
+      },
+      onCommandAudio: (event: HandsFreeCommandAudioEvent) => {
+        void nativeCommandAudioHandlerRef.current(event);
+      },
+      onError: handleNativeHandsFreeError,
+    };
+  }
+
   async function handleNativeWakeWordDetected(_event: WakeWordEvent) {
     if (!handsFreeEligibleRef.current) return;
-    dispatchHandsFree({ type: "WAKE_DETECTED" });
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
     if (replySoundRef.current) {
       await releaseReplySound();
@@ -1022,7 +1032,6 @@ export default function Home() {
     openHandsFreeVoiceSheet();
     resetCommandLocalePlan();
     setHandsFreeStatus("Listening");
-    dispatchHandsFree({ type: "COMMAND_STARTED" });
   }
 
   nativeWakeHandlerRef.current = handleNativeWakeWordDetected;
@@ -4191,6 +4200,13 @@ export default function Home() {
                     placeholder={composerPlaceholder}
                     placeholderTextColor="rgba(124, 99, 80, 0.58)"
                     multiline
+                    returnKeyType="send"
+                    submitBehavior="submit"
+                    onSubmitEditing={() => {
+                      if (text.trim() && !busy && !listening) {
+                        void handleChatSend();
+                      }
+                    }}
                     scrollEnabled={composerInputHeight >= MAX_INPUT_HEIGHT}
                     textAlignVertical="center"
                     onContentSizeChange={(event) => {

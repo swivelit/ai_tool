@@ -132,17 +132,40 @@ run_apk_harness_scenario() {
   local status=0
   while true; do
     status=0
+    adb shell am force-stop "$PACKAGE_NAME" >/dev/null 2>&1 || true
+    adb shell pm clear "$PACKAGE_NAME" >/dev/null 2>&1 || true
+    adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
     REUSE_APK=1 SKIP_PRECHECKS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh || status=$?
     if [[ "$status" == "0" ]]; then
       return 0
     fi
     local latest_artifact
     latest_artifact="$(ls -dt "$DIST_DIR"/apk-test-* 2>/dev/null | head -1 || true)"
-    if [[ "$attempt" -lt "$max_attempts" && -n "$latest_artifact" ]] &&
-      grep -E "lowmemorykiller.*${PACKAGE_NAME}|Kill '${PACKAGE_NAME}'" "$latest_artifact"/logcat-full.log "$latest_artifact"/memory-pressure.log >/dev/null 2>&1 &&
-      ! grep -E "FATAL EXCEPTION|AndroidRuntime.*${PACKAGE_NAME}" "$latest_artifact"/logcat-full.log >/dev/null 2>&1 &&
-      ! grep -E "voice-reply-start|hands-free-before|chat-input-found" "$latest_artifact"/steps.log >/dev/null 2>&1; then
-      warn "APK harness saw a pre-test low-memory kill with no app crash marker; retrying ${label} once."
+    local app_crash=0
+    local app_lowmemory=0
+    local external_instability=0
+    local actual_voice_or_handsfree_started=0
+    if [[ -n "$latest_artifact" ]]; then
+      if grep -E "FATAL EXCEPTION|AndroidRuntime.*${PACKAGE_NAME}|ANR in .*${PACKAGE_NAME}" "$latest_artifact"/logcat-full.log "$latest_artifact"/crash-markers.log >/dev/null 2>&1; then
+        app_crash=1
+      fi
+      if grep -E "lowmemorykiller:.*(Kill '${PACKAGE_NAME}'|${PACKAGE_NAME})" "$latest_artifact"/logcat-full.log "$latest_artifact"/memory-pressure-package.log >/dev/null 2>&1; then
+        app_lowmemory=1
+      fi
+      if grep -E "external-system-ui-anr|external-system-app-anr|external-emulator-disconnected|no-android-device" "$latest_artifact"/skipped.log "$latest_artifact"/summary.txt >/dev/null 2>&1 ||
+        [[ -s "$latest_artifact/memory-pressure-system.log" ]]; then
+        external_instability=1
+      fi
+      if [[ -f "$latest_artifact/ui-chat-ready.xml" ||
+        -f "$latest_artifact/app-pid-during-voice-test.log" ||
+        -f "$latest_artifact/voice-markers.log" ||
+        -f "$latest_artifact/hands-free-markers.log" ||
+        -f "$latest_artifact/screen-hands-free-before.png" ]]; then
+        actual_voice_or_handsfree_started=1
+      fi
+    fi
+    if [[ "$attempt" -lt "$max_attempts" && -n "$latest_artifact" && "$external_instability" == "1" && "$app_crash" == "0" && "$app_lowmemory" == "0" && "$actual_voice_or_handsfree_started" == "0" ]]; then
+      warn "APK harness saw external emulator/System UI instability before the app E2E path, with no app crash marker; retrying ${label} once."
       adb shell am force-stop "$PACKAGE_NAME" >/dev/null 2>&1 || true
       adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
       attempt=$((attempt + 1))
@@ -353,9 +376,11 @@ if is_truthy "${RUN_APK_TESTS:-}"; then
     run_apk_harness_scenario "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" "requested ${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}"
   else
     scenario_status=0
+    export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="en"
     if ! run_apk_harness_scenario "en" "English Settings"; then
       scenario_status=1
     fi
+    export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="ta"
     stop_old_metro
     start_metro
     wait_for_metro

@@ -51,6 +51,8 @@ describe("APK test harness", () => {
       expect(source).toContain(marker);
     });
     expect(source).toContain("memory-pressure.log");
+    expect(source).toContain("memory-pressure-package.log");
+    expect(source).toContain("memory-pressure-system.log");
     expect(source).toContain('lowmemorykiller:.*(Kill \'${PACKAGE_NAME}\'|${PACKAGE_NAME})');
     expect(source).toContain("Process ${PACKAGE_NAME} .*has died");
     expect(source).toContain("WINDOW DIED.*${PACKAGE_NAME}");
@@ -73,14 +75,28 @@ describe("APK test harness", () => {
     expect(source).toContain("first-message-not-visible-after-second");
     expect(source).toContain("second-message-not-visible");
     expect(source).toContain("general-message-not-visible");
+    expect(source).toContain("submit_chat_input_via_keyboard");
+    expect(source).toContain("input keyevent 66");
     expect(source).toContain("input keyevent 111");
+    expect(source).not.toContain('local_start="$(now_ms)"\n  adb shell input keyevent 111');
     expect(source).toContain('tap_desc_offset "chat-send-button" 0 35');
+    expect(source).toContain("tap_chat_send_button");
+    expect(source).toContain("chat-send-retries");
+    expect(source).toContain("ensure_chat_input_ready");
+    expect(source).toContain('rm -f "$xml_path"');
+    expect(source).toContain('adb shell rm -f "$UI_XML_DEVICE_PATH"');
+    expect(source).toContain("chat-input-not-ready-after-hands-free");
+    expect(source).toContain("chat-input-not-ready-${label}");
+    expect(source).toContain('if ! current_text="$(chat_input_text');
     expect(source).toContain("tap_chat_input_fallback");
     expect(source).toContain("tap_chat_send_fallback");
     expect(source).toContain("tap_chat_drawer_fallback");
     expect(source).toContain("dismiss_expo_warning");
     expect(source).toContain("Open debugger to view warnings");
     expect(chatSource).toContain("activeChatSessionIdRef");
+    expect(chatSource).toContain('returnKeyType="send"');
+    expect(chatSource).toContain('submitBehavior="submit"');
+    expect(chatSource).toContain("onSubmitEditing");
     expect(chatSource).toContain("!activeChatSessionIdRef.current && !activeChatRequestIdRef.current");
     expect(chatSource).not.toContain('from "@/lib/localAgents"');
     expect(chatSource).toContain('from "@/lib/localTaskStore"');
@@ -116,8 +132,12 @@ describe("APK test harness", () => {
 
     expect(source).toContain("assert_app_alive");
     expect(source).toContain('adb shell pidof "$PACKAGE_NAME"');
+    expect(source).toContain("input_clear_timeout=30");
     expect(source).toContain("input_clear_timeout=90");
     expect(source).toContain("result_wait_seconds=90");
+    expect(source).toContain("deadline=$((SECONDS + 240))");
+    expect(source).toContain("APK_LAUNCH_CHAT_READY_TIMEOUT");
+    expect(source).toContain("launch_chat_ready_timeout");
     expect(source).toContain("scan_general_question_route_markers");
     expect(source).toContain("client_local_path_skipped_for_safety");
     expect(source).toContain("client_backend_fallback_started");
@@ -149,6 +169,9 @@ describe("APK test harness", () => {
     expect(source).toContain("stop_old_metro");
     expect(source).toContain('adb shell am force-stop "$PACKAGE_NAME"');
     expect(source).toContain('adb shell pm clear "$PACKAGE_NAME"');
+    expect(source).toContain('app-pid-during-voice-test.log');
+    expect(source).toContain('hands-free-markers.log');
+    expect(source).toContain('ui-chat-ready.xml');
     expect(source).toContain("print_debug_env");
   });
 
@@ -225,6 +248,21 @@ describe("APK test harness", () => {
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=");
       expect(source).toContain("npx expo start --dev-client");
     }
+  });
+
+  it("sets each APK language before starting Metro for that scenario", () => {
+    const source = readRepo("launch-debug_apk.sh");
+    const englishExportIndex = source.indexOf('export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="en"');
+    const englishRunIndex = source.indexOf('run_apk_harness_scenario "en" "English Settings"');
+    const tamilExportIndex = source.indexOf('export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="ta"');
+    const metroRestartAfterTamilExportIndex = source.indexOf("start_metro", tamilExportIndex);
+    const tamilRunIndex = source.indexOf('run_apk_harness_scenario "ta" "Tamil Settings"');
+
+    expect(englishExportIndex).toBeGreaterThanOrEqual(0);
+    expect(englishExportIndex).toBeLessThan(englishRunIndex);
+    expect(tamilExportIndex).toBeGreaterThan(englishRunIndex);
+    expect(metroRestartAfterTamilExportIndex).toBeGreaterThan(tamilExportIndex);
+    expect(metroRestartAfterTamilExportIndex).toBeLessThan(tamilRunIndex);
   });
 
   it("keeps APK precheck Vitest runs isolated from APK E2E env flags", () => {
@@ -369,12 +407,20 @@ describe("APK test harness", () => {
     const launchDebug = readRepo("launch-debug_apk.sh");
     const testApk = readRepo("test_apk.sh");
 
-    expect(launchDebug).toContain("pre-test low-memory kill");
+    expect(launchDebug).toContain("external emulator/System UI instability before the app E2E path");
+    expect(launchDebug).toContain('adb shell am force-stop "$PACKAGE_NAME"');
+    expect(launchDebug).toContain('adb shell pm clear "$PACKAGE_NAME"');
     expect(launchDebug).toContain("lowmemorykiller");
     expect(launchDebug).toContain("FATAL EXCEPTION");
+    expect(launchDebug).toContain("external-system-ui-anr|external-system-app-anr|external-emulator-disconnected|no-android-device");
+    expect(launchDebug).toContain("memory-pressure-system.log");
+    expect(launchDebug).toContain("memory-pressure-package.log");
     expect(testApk).toContain("dumpsys-meminfo-before-launch");
     expect(testApk).toContain("dumpsys-meminfo-package-before-launch");
     expect(testApk).toContain("dumpsys-meminfo-package-after-launch");
+    expect(testApk).toContain("dumpsys-meminfo-after-launch");
+    expect(testApk).toContain("dumpsys-meminfo-before-voice");
+    expect(testApk).toContain("final-dumpsys-meminfo");
     expect(testApk).toContain("adb-reverse-list");
     expect(testApk).toContain("metro-status-before-launch");
   });
@@ -384,9 +430,20 @@ describe("APK test harness", () => {
 
     expect(source).toContain("dismiss_external_system_ui_anr");
     expect(source).toContain("System UI isn't responding");
+    expect(source).toContain("Pixel Launcher isn't responding");
+    expect(source).toContain("Android System isn't responding");
     expect(source).toContain("android:id/aerr_wait");
+    expect(source).toContain("external-system-ui-anr");
+    expect(source).toContain("external-system-app-anr");
     expect(source).toContain("external-system-ui-anr-dismissed");
+    expect(source).toContain("com\\\\.google\\\\.android\\\\.");
+    expect(source).toContain("external-emulator-disconnected");
+    expect(source).toContain("record_external_disconnect_if_previous_system_anr");
+    expect(source).toContain("external-system-anr.log");
     expect(source).toContain("system-ui-anr.log");
+    expect(source).toContain("metro-disconnect-warning");
+    expect(source).toContain("react-native-error-markers.log");
+    expect(source).toContain("Cannot connect to Metro.");
     expect(source).toContain('"ANR in"');
     expect(source).toContain("WINDOW DIED.*${PACKAGE_NAME}");
     expect(source).toContain("scan_crashes");

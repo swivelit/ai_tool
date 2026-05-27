@@ -142,6 +142,15 @@ export type WakeWordNativeError = {
   timestamp?: number;
 };
 
+export type HandsFreeSessionHandlers = {
+  onState?: (event: HandsFreeStateEvent) => void;
+  onWake?: (event: WakeWordEvent) => void;
+  onScore?: (event: WakeWordEvent) => void;
+  onCommand?: (event: HandsFreeCommandEvent) => void;
+  onCommandAudio?: (event: HandsFreeCommandAudioEvent) => void;
+  onError?: (error: WakeWordNativeError) => void;
+};
+
 export type WakeWordStartConfig = {
   phraseKey: string;
   wakePhrase: string;
@@ -766,16 +775,92 @@ function normalizeWakeWordNativeError(payload: any): WakeWordNativeError {
   };
 }
 
+function attachHandsFreeNativeListeners(handlers: HandsFreeSessionHandlers) {
+  if (!nativeModule) {
+    throw new Error("JaiWakeWord native session API is unavailable.");
+  }
+  const emitter = new EventEmitter(nativeModule as any) as any;
+  const subscriptions = [
+    emitter.addListener("onState", (payload: any) => {
+      handlers.onState?.({
+        state: String(payload?.state || "idle") as HandsFreeNativeState,
+        previousState: payload?.previousState
+          ? (String(payload.previousState) as HandsFreeNativeState)
+          : undefined,
+        reason: payload?.reason ? String(payload.reason) : undefined,
+        timestamp: Number(payload?.timestamp || Date.now()),
+      });
+    }),
+    emitter.addListener("onWake", (payload: any) => {
+      handlers.onWake?.({
+        score: Number(payload?.score || 0),
+        model: String(payload?.model || ""),
+        phraseKey: payload?.phraseKey ? String(payload.phraseKey) : undefined,
+        timestamp: Number(payload?.timestamp || Date.now()),
+      });
+    }),
+    emitter.addListener("onWakeError", (payload: any) => {
+      handlers.onError?.(normalizeWakeWordNativeError(payload));
+    }),
+    emitter.addListener("onCommand", (payload: any) => {
+      handlers.onCommand?.({
+        text: payload?.text ? String(payload.text) : "",
+        empty: Boolean(payload?.empty),
+        reason: payload?.reason ? String(payload.reason) : undefined,
+        timestamp: Number(payload?.timestamp || Date.now()),
+      });
+    }),
+    emitter.addListener("onCommandAudio", (payload: any) => {
+      const fileUri = String(payload?.fileUri || payload?.uri || "");
+      handlers.onCommandAudio?.({
+        uri: fileUri,
+        fileUri,
+        durationMs: Number(payload?.durationMs || 0),
+        sampleRate: Number(payload?.sampleRate || 16000),
+        mimeType: String(payload?.mimeType || "audio/wav"),
+        timestamp: Number(payload?.timestamp || Date.now()),
+      });
+    }),
+  ];
+  if (handlers.onScore) {
+    subscriptions.push(emitter.addListener("onWakeScore", handlers.onScore));
+  }
+  return subscriptions;
+}
+
+export function hasHandsFreeSessionListeners(): boolean {
+  return sessionSubscriptions.length > 0 || e2eSessionTimers.length > 0;
+}
+
+export function subscribeHandsFreeSessionEvents(handlers: HandsFreeSessionHandlers): {
+  remove: () => void;
+} {
+  sessionSubscriptions.forEach((subscription) => subscription.remove());
+  sessionSubscriptions = [];
+  if (isE2eMockHandsFreeEnabled()) {
+    return { remove: () => undefined };
+  }
+  if (!nativeModule?.startSession) {
+    throw new Error("JaiWakeWord native session API is unavailable.");
+  }
+  if (!isWakeWordAvailable()) {
+    throw new Error("Native wake-word detection is unavailable.");
+  }
+  const subscriptions = attachHandsFreeNativeListeners(handlers);
+  sessionSubscriptions = subscriptions;
+  return {
+    remove: () => {
+      subscriptions.forEach((subscription) => subscription.remove());
+      if (sessionSubscriptions === subscriptions) {
+        sessionSubscriptions = [];
+      }
+    },
+  };
+}
+
 export async function startHandsFreeSession(
   config: WakeWordStartConfig | WakeModelState,
-  handlers: {
-    onState?: (event: HandsFreeStateEvent) => void;
-    onWake?: (event: WakeWordEvent) => void;
-    onScore?: (event: WakeWordEvent) => void;
-    onCommand?: (event: HandsFreeCommandEvent) => void;
-    onCommandAudio?: (event: HandsFreeCommandAudioEvent) => void;
-    onError?: (error: WakeWordNativeError) => void;
-  },
+  handlers: HandsFreeSessionHandlers,
 ): Promise<{ ok: true }> {
   await stopHandsFreeSession();
 
@@ -852,52 +937,7 @@ export async function startHandsFreeSession(
     throw new Error("Native wake-word detection is unavailable.");
   }
 
-  const emitter = new EventEmitter(nativeModule as any) as any;
-  sessionSubscriptions = [
-    emitter.addListener("onState", (payload: any) => {
-      handlers.onState?.({
-        state: String(payload?.state || "idle") as HandsFreeNativeState,
-        previousState: payload?.previousState
-          ? (String(payload.previousState) as HandsFreeNativeState)
-          : undefined,
-        reason: payload?.reason ? String(payload.reason) : undefined,
-        timestamp: Number(payload?.timestamp || Date.now()),
-      });
-    }),
-    emitter.addListener("onWake", (payload: any) => {
-      handlers.onWake?.({
-        score: Number(payload?.score || 0),
-        model: String(payload?.model || ""),
-        phraseKey: payload?.phraseKey ? String(payload.phraseKey) : undefined,
-        timestamp: Number(payload?.timestamp || Date.now()),
-      });
-    }),
-    emitter.addListener("onWakeError", (payload: any) => {
-      handlers.onError?.(normalizeWakeWordNativeError(payload));
-    }),
-    emitter.addListener("onCommand", (payload: any) => {
-      handlers.onCommand?.({
-        text: payload?.text ? String(payload.text) : "",
-        empty: Boolean(payload?.empty),
-        reason: payload?.reason ? String(payload.reason) : undefined,
-        timestamp: Number(payload?.timestamp || Date.now()),
-      });
-    }),
-    emitter.addListener("onCommandAudio", (payload: any) => {
-      const fileUri = String(payload?.fileUri || payload?.uri || "");
-      handlers.onCommandAudio?.({
-        uri: fileUri,
-        fileUri,
-        durationMs: Number(payload?.durationMs || 0),
-        sampleRate: Number(payload?.sampleRate || 16000),
-        mimeType: String(payload?.mimeType || "audio/wav"),
-        timestamp: Number(payload?.timestamp || Date.now()),
-      });
-    }),
-  ];
-  if (handlers.onScore) {
-    sessionSubscriptions.push(emitter.addListener("onWakeScore", handlers.onScore));
-  }
+  sessionSubscriptions = attachHandsFreeNativeListeners(handlers);
 
   try {
     return await nativeModule.startSession(startConfig);

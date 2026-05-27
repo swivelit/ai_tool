@@ -85,6 +85,8 @@ class WakeWordModule : Module() {
         } catch (_: Throwable) {
           HandsFreeControllerRegistry.stopSession()
         }
+        HandsFreeControllerRegistry.stopSession()
+        HandsFreeForegroundService.stopServiceIfRunning(context)
       } ?: HandsFreeControllerRegistry.stopSession()
       mapOf("ok" to true)
     }

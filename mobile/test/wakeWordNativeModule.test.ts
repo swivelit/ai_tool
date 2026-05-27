@@ -109,8 +109,59 @@ describe("JaiWakeWord native module", () => {
     expect(controller).toContain("vadFailOpenFrames");
     expect(controller).toContain("vadRmsThreshold");
     expect(controller).toContain("commandPreRollSpeechFrames");
+    expect(controller).toContain("staleNotificationCount");
+    expect(controller).toContain("commandReadyTimeoutCount");
+    expect(controller).toContain("COMMAND_READY_TIMEOUT_MS");
+    expect(controller).toContain("startCommandReadyWatchdog");
+    expect(controller).toContain("cancelCommandReadyWatchdog");
     expect(controller).toContain("preRollFrames.count { vad.isSpeech(it) }");
     expect(controller).toContain("commandSpeechDetected = preRollSpeechFrames > 0");
+    const cancelCommand = controller.slice(
+      controller.indexOf("fun cancelCommand()"),
+      controller.indexOf("fun notifyTtsStarted()"),
+    );
+    expect(cancelCommand).toContain("!isSessionActiveLocked()");
+    expect(cancelCommand).toContain("staleNotificationCount += 1");
+    expect(cancelCommand.indexOf("!isSessionActiveLocked()")).toBeLessThan(
+      cancelCommand.indexOf('transition(HandsFreeNativeState.WAKE_LISTENING, "command_cancelled")'),
+    );
+    const notifyTtsStarted = controller.slice(
+      controller.indexOf("fun notifyTtsStarted()"),
+      controller.indexOf("fun notifyTtsCompleted()"),
+    );
+    expect(notifyTtsStarted).toContain("stateMachine.currentState() != HandsFreeNativeState.COMMAND_READY");
+    expect(notifyTtsStarted).toContain("staleNotificationCount += 1");
+    const notifyTtsCompleted = controller.slice(
+      controller.indexOf("fun notifyTtsCompleted()"),
+      controller.indexOf("fun status()"),
+    );
+    expect(notifyTtsCompleted).toContain("!isSessionActiveLocked()");
+    expect(notifyTtsCompleted).toContain("state == HandsFreeNativeState.IDLE");
+    expect(notifyTtsCompleted).toContain("state == HandsFreeNativeState.WAKE_LISTENING");
+    expect(notifyTtsCompleted).toContain("staleNotificationCount += 1");
+    expect(controller).toContain('"running" to (routing.get() && stateMachine.currentState() != HandsFreeNativeState.IDLE)');
+    const startSessionModelFailure = controller.slice(
+      controller.indexOf("fun startSession"),
+      controller.indexOf("val nextCaptureQueue"),
+    );
+    expect(startSessionModelFailure).toContain("handleStartModelFailure");
+    const modelFailureCleanup = controller.slice(
+      controller.indexOf("private fun handleStartModelFailure"),
+      controller.indexOf("private fun clearCommandBuffersLocked"),
+    );
+    expect(modelFailureCleanup).toContain("releaseSessionResources(clearFatal = false)");
+    expect(modelFailureCleanup).toContain('source = "model"');
+    expect(modelFailureCleanup).toContain("sessionActive = false");
+    expect(modelFailureCleanup).toContain('transitionIdleIfNeeded("model_load_failed")');
+    const commandReadyWatchdog = controller.slice(
+      controller.indexOf("private fun startCommandReadyWatchdog"),
+      controller.indexOf("private fun cancelCommandReadyWatchdog"),
+    );
+    expect(commandReadyWatchdog).toContain("Thread.sleep(COMMAND_READY_TIMEOUT_MS)");
+    expect(commandReadyWatchdog).toContain("stateMachine.currentState() == HandsFreeNativeState.COMMAND_READY");
+    expect(commandReadyWatchdog).toContain("commandReadyTimeoutCount += 1");
+    expect(commandReadyWatchdog).toContain('source = "session"');
+    expect(commandReadyWatchdog).toContain('transition(HandsFreeNativeState.WAKE_LISTENING, "command_ready_timeout")');
     const routeWakeFrame = controller.slice(
       controller.indexOf("private fun routeWakeFrame"),
       controller.indexOf("private fun createAudioSource"),
@@ -128,7 +179,7 @@ describe("JaiWakeWord native module", () => {
       controller.indexOf("private fun createAudioSource"),
     );
     expect(fatalCleanup.indexOf("releaseSessionResources(clearFatal = false)")).toBeLessThan(
-      fatalCleanup.indexOf("transition(HandsFreeNativeState.IDLE"),
+      fatalCleanup.indexOf("transitionIdleIfNeeded(reason)"),
     );
     expect(fatalCleanup).toContain("sessionActive = false");
     expect(fatalCleanup).toContain("HandsFreeControllerRegistry.stopServiceAfterFatalError(event)");
@@ -150,6 +201,15 @@ describe("JaiWakeWord native module", () => {
     expect(service).toContain("setServiceStopper");
     expect(service).toContain("stopForegroundCompat()");
     expect(service).toContain("stopSelf()");
+    expect(service).toContain("stopServiceIfRunning");
+    expect(service).toContain("context.stopService");
+    const stopSessionModule = module.slice(
+      module.indexOf('AsyncFunction("stopSession")'),
+      module.indexOf('AsyncFunction("cancelCommand")'),
+    );
+    expect(stopSessionModule).toContain("HandsFreeForegroundService.stopSession(context)");
+    expect(stopSessionModule).toContain("HandsFreeControllerRegistry.stopSession()");
+    expect(stopSessionModule).toContain("HandsFreeForegroundService.stopServiceIfRunning(context)");
     const inferenceWorker = read(
       "modules/wake-word/android/src/main/java/com/harishajahan/jai/wakeword/WakeInferenceWorker.kt",
     );

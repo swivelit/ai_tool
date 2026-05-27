@@ -535,6 +535,52 @@ describe("wakeWordEngine", () => {
     expect(listenerRemoves.every((remove) => remove.mock.calls.length === 1)).toBe(true);
   });
 
+  it("can reattach hands-free session listeners without restarting native", async () => {
+    const { module, startSession, stopSession, listeners } =
+      await importWakeWordEngineWithMocks({});
+    const onState = vi.fn();
+    const onCommandAudio = vi.fn();
+
+    expect(module.hasHandsFreeSessionListeners()).toBe(false);
+    const subscription = module.subscribeHandsFreeSessionEvents({ onState, onCommandAudio });
+
+    expect(module.hasHandsFreeSessionListeners()).toBe(true);
+    expect(startSession).not.toHaveBeenCalled();
+    expect(stopSession).not.toHaveBeenCalled();
+
+    listeners.onState?.[0]?.({
+      state: "commandReady",
+      previousState: "commandListening",
+      reason: "reattached",
+      timestamp: 123,
+    });
+    listeners.onCommandAudio?.[0]?.({
+      fileUri: "file:///command.wav",
+      durationMs: 1000,
+      sampleRate: 16000,
+      mimeType: "audio/wav",
+      timestamp: 456,
+    });
+
+    expect(onState).toHaveBeenCalledWith({
+      state: "commandReady",
+      previousState: "commandListening",
+      reason: "reattached",
+      timestamp: 123,
+    });
+    expect(onCommandAudio).toHaveBeenCalledWith({
+      uri: "file:///command.wav",
+      fileUri: "file:///command.wav",
+      durationMs: 1000,
+      sampleRate: 16000,
+      mimeType: "audio/wav",
+      timestamp: 456,
+    });
+
+    subscription.remove();
+    expect(module.hasHandsFreeSessionListeners()).toBe(false);
+  });
+
   it("normalizes typed and legacy native hands-free error payloads", async () => {
     const { module, listeners } = await importWakeWordEngineWithMocks({});
     const onError = vi.fn();

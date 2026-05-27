@@ -83,35 +83,32 @@ class HandsFreeController(
   private var wakeVadSkippedSinceFailOpenMs = 0L
   private var commandPreRollSpeechFrames = 0L
   private var lastCommandPreRollMs = 0L
+  private var staleNotificationCount = 0L
+  private var commandReadyTimeoutCount = 0L
+  private var commandReadyWatchdogToken = 0L
+  private var commandReadyWatchdogThread: Thread? = null
 
   fun startSession(rawConfig: Map<String, Any?>) {
     stopSession(emitIdle = false)
     fatalCleanupInFlight.set(false)
-    val parsed = engine.parseConfig(rawConfig)
-    vad.speechRmsThreshold = parsed.vadRmsThreshold
-    val nextPipeline = try {
-      engine.createPipeline(parsed)
+
+    val parsed: WakeWordConfig
+    val nextPipeline: WakeWordPipeline
+    try {
+      parsed = engine.parseConfig(rawConfig)
+      vad.speechRmsThreshold = parsed.vadRmsThreshold
+      nextPipeline = engine.createPipeline(parsed)
     } catch (error: WakeWordException) {
-      lastError = error.detail
-      emitError(
+      handleStartModelFailure(
         code = error.code,
         message = error.detail,
-        permanent = true,
-        restartable = false,
-        source = "model",
-        sessionActive = false,
       )
       throw error
     } catch (error: Throwable) {
       val detail = "Could not load OpenWakeWord ONNX models: ${error.message ?: "unknown ONNX error"}"
-      lastError = detail
-      emitError(
+      handleStartModelFailure(
         code = "JAI_WAKE_MODEL_LOAD_FAILED",
         message = detail,
-        permanent = true,
-        restartable = false,
-        source = "model",
-        sessionActive = false,
       )
       throw WakeWordException("JAI_WAKE_MODEL_LOAD_FAILED", detail, error)
     }
@@ -201,12 +198,13 @@ class HandsFreeController(
 
   fun stopSession(emitIdle: Boolean = true) {
     releaseSessionResources(clearFatal = false)
-    if (emitIdle && stateMachine.currentState() != HandsFreeNativeState.IDLE) {
-      transition(HandsFreeNativeState.IDLE, "session_stopped")
+    if (emitIdle) {
+      transitionIdleIfNeeded("session_stopped")
     }
   }
 
   private fun releaseSessionResources(clearFatal: Boolean) {
+    cancelCommandReadyWatchdog()
     routing.set(false)
     captureRestartScheduled.set(false)
     val router = routerThread
@@ -261,6 +259,10 @@ class HandsFreeController(
 
   fun cancelCommand() {
     synchronized(lock) {
+      if (!isSessionActiveLocked()) {
+        staleNotificationCount += 1
+        return
+      }
       commandFrames = mutableListOf()
       commandLiveDurationMs = 0L
       commandSilenceMs = 0L
@@ -272,13 +274,24 @@ class HandsFreeController(
   }
 
   fun notifyTtsStarted() {
+    synchronized(lock) {
+      if (!isSessionActiveLocked() || stateMachine.currentState() != HandsFreeNativeState.COMMAND_READY) {
+        staleNotificationCount += 1
+        return
+      }
+    }
     transition(HandsFreeNativeState.SPEAKING, "tts_started")
   }
 
   fun notifyTtsCompleted() {
-    if (stateMachine.currentState() != HandsFreeNativeState.IDLE) {
-      transition(HandsFreeNativeState.WAKE_LISTENING, "tts_completed")
+    synchronized(lock) {
+      val state = stateMachine.currentState()
+      if (!isSessionActiveLocked() || state == HandsFreeNativeState.IDLE || state == HandsFreeNativeState.WAKE_LISTENING) {
+        staleNotificationCount += 1
+        return
+      }
     }
+    transition(HandsFreeNativeState.WAKE_LISTENING, "tts_completed")
   }
 
   fun status(): Map<String, Any?> {
@@ -288,7 +301,7 @@ class HandsFreeController(
     val captureStatus = audioSource?.status()
     val inferenceStatus = inferenceWorker?.status()
     return mapOf(
-      "running" to (stateMachine.currentState() != HandsFreeNativeState.IDLE),
+      "running" to (routing.get() && stateMachine.currentState() != HandsFreeNativeState.IDLE),
       "state" to stateMachine.currentState().wireName,
       "sampleRate" to (currentConfig?.sampleRate ?: 16000),
       "frameMs" to (currentConfig?.frameMs ?: 80),
@@ -306,6 +319,8 @@ class HandsFreeController(
       "vadRmsThreshold" to (currentConfig?.vadRmsThreshold ?: vad.speechRmsThreshold),
       "commandPreRollSpeechFrames" to commandPreRollSpeechFrames,
       "lastCommandPreRollMs" to lastCommandPreRollMs,
+      "staleNotificationCount" to staleNotificationCount,
+      "commandReadyTimeoutCount" to commandReadyTimeoutCount,
       "captureThreadAlive" to (captureStatus?.captureThreadAlive ?: false),
       "lastCaptureError" to (lastCaptureError ?: captureStatus?.lastCaptureError),
       "lastCaptureErrorCode" to captureStatus?.lastCaptureErrorCode,
@@ -473,7 +488,108 @@ class HandsFreeController(
   }
 
   private fun transition(nextState: HandsFreeNativeState, reason: String) {
-    callbacks()?.onState(stateMachine.transition(nextState, reason))
+    val event = stateMachine.transition(nextState, reason)
+    if (event.state == HandsFreeNativeState.COMMAND_READY) {
+      startCommandReadyWatchdog()
+    } else if (event.previousState == HandsFreeNativeState.COMMAND_READY) {
+      cancelCommandReadyWatchdog()
+    }
+    callbacks()?.onState(event)
+  }
+
+  private fun transitionIdleIfNeeded(reason: String) {
+    if (stateMachine.currentState() != HandsFreeNativeState.IDLE) {
+      transition(HandsFreeNativeState.IDLE, reason)
+    }
+  }
+
+  private fun handleStartModelFailure(code: String, message: String) {
+    releaseSessionResources(clearFatal = false)
+    synchronized(lock) {
+      lastError = message
+      fatalErrorCode = code
+      fatalErrorMessage = message
+      lastInferenceError = message
+    }
+    emitError(
+      code = code,
+      message = message,
+      permanent = true,
+      restartable = false,
+      source = "model",
+      sessionActive = false,
+    )
+    transitionIdleIfNeeded("model_load_failed")
+  }
+
+  private fun clearCommandBuffersLocked() {
+    commandFrames = mutableListOf()
+    commandLiveDurationMs = 0L
+    commandSilenceMs = 0L
+    commandSpeechDetected = false
+    commandPreRollSpeechFrames = 0L
+    lastCommandPreRollMs = 0L
+  }
+
+  private fun hasSessionResourcesLocked(): Boolean {
+    return captureQueue != null &&
+      wakeQueue != null &&
+      inferenceWorker != null &&
+      pipeline != null &&
+      (audioSource != null || captureRestartScheduled.get())
+  }
+
+  private fun isSessionActiveLocked(): Boolean {
+    return routing.get() &&
+      stateMachine.currentState() != HandsFreeNativeState.IDLE &&
+      hasSessionResourcesLocked()
+  }
+
+  private fun startCommandReadyWatchdog() {
+    val token: Long
+    synchronized(lock) {
+      commandReadyWatchdogToken += 1
+      token = commandReadyWatchdogToken
+      commandReadyWatchdogThread?.interrupt()
+      commandReadyWatchdogThread = thread(name = "JaiHandsFreeCommandReadyWatchdog", isDaemon = true) {
+        try {
+          Thread.sleep(COMMAND_READY_TIMEOUT_MS)
+        } catch (_: InterruptedException) {
+          return@thread
+        }
+        var shouldTimeout = false
+        synchronized(lock) {
+          if (
+            token == commandReadyWatchdogToken &&
+            isSessionActiveLocked() &&
+            stateMachine.currentState() == HandsFreeNativeState.COMMAND_READY
+          ) {
+            commandReadyTimeoutCount += 1
+            clearCommandBuffersLocked()
+            commandReadyWatchdogThread = null
+            shouldTimeout = true
+          }
+        }
+        if (!shouldTimeout) return@thread
+        emitError(
+          code = "JAI_HANDS_FREE_COMMAND_READY_TIMEOUT",
+          message = "Hands-free command audio was not handled before the timeout.",
+          permanent = false,
+          restartable = true,
+          source = "session",
+          sessionActive = true,
+        )
+        transition(HandsFreeNativeState.WAKE_LISTENING, "command_ready_timeout")
+      }
+    }
+  }
+
+  private fun cancelCommandReadyWatchdog() {
+    synchronized(lock) {
+      commandReadyWatchdogToken += 1
+      commandReadyWatchdogThread?.interrupt()
+      commandReadyWatchdogThread = null
+    }
   }
 
   private fun emitError(
@@ -523,9 +639,7 @@ class HandsFreeController(
       source = source,
       sessionActive = false,
     )
-    if (stateMachine.currentState() != HandsFreeNativeState.IDLE) {
-      transition(HandsFreeNativeState.IDLE, reason)
-    }
+    transitionIdleIfNeeded(reason)
     HandsFreeControllerRegistry.stopServiceAfterFatalError(event)
   }
 
@@ -644,6 +758,7 @@ class HandsFreeController(
     private const val CAPTURE_RESTART_COOLDOWN_MS = 250L
     private const val WAKE_VAD_HANGOVER_MS = 400L
     private const val WAKE_VAD_FAIL_OPEN_INTERVAL_MS = 2400L
+    private const val COMMAND_READY_TIMEOUT_MS = 18_000L
   }
 }
 
