@@ -93,9 +93,14 @@ describe("life context service", () => {
     expect(summary.raw?.movement.estimatedDistanceMeters).toBe(5650);
     expect(summary.raw?.screen.screenTimeMs).toBe(12600000);
     expect(summary.movementSummary).toContain("7,420 steps");
+    expect(summary.movementSummary).toContain("% of daily goal");
     expect(summary.movementSummary).toContain("5.7 km");
     expect(summary.screenSummary).toContain("3.5 hours");
+    expect(summary.screenSummary).toContain("healthy");
     expect(summary.topAppsSummary).toContain("ChatGPT");
+    expect(summary.topAppsSummary).toContain("mostly productivity");
+    expect(summary.lifeInsightSummary).toContain("7,420 steps");
+    expect(summary.lifeInsightSummary).toContain("Top apps:");
   });
 
   it("hides app and package names when app-name sharing is disabled", async () => {

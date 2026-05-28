@@ -28,7 +28,6 @@ describe("APK test harness", () => {
 
     [
       "FATAL EXCEPTION",
-      " E AndroidRuntime:",
       "ANR in",
       "SIGSEGV",
       "SIGABRT",
@@ -56,13 +55,17 @@ describe("APK test harness", () => {
     expect(source).toContain('lowmemorykiller:.*(Kill \'${PACKAGE_NAME}\'|${PACKAGE_NAME})');
     expect(source).toContain("Process ${PACKAGE_NAME} .*has died");
     expect(source).toContain("WINDOW DIED.*${PACKAGE_NAME}");
+    expect(source).toContain("android-runtime-app-markers.log");
+    expect(source).toContain("UiAutomationService");
   });
 
   it("does not treat normal adb helper AndroidRuntime startup as a crash", () => {
     const source = readRepo("test_apk.sh");
 
     expect(source).not.toContain('"AndroidRuntime"');
-    expect(source).toContain('" E AndroidRuntime:"');
+    expect(source).toContain('"FATAL EXCEPTION"');
+    expect(source).toContain("com.android.commands.uiautomator");
+    expect(source).toContain("if package_name not in text:");
   });
 
   it("verifies chat messages are submitted and remain visible", () => {

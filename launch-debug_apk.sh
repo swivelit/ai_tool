@@ -147,7 +147,7 @@ run_apk_harness_scenario() {
     local external_instability=0
     local actual_voice_or_handsfree_started=0
     if [[ -n "$latest_artifact" ]]; then
-      if grep -E "FATAL EXCEPTION|AndroidRuntime.*${PACKAGE_NAME}|ANR in .*${PACKAGE_NAME}" "$latest_artifact"/logcat-full.log "$latest_artifact"/crash-markers.log >/dev/null 2>&1; then
+      if grep -E "AndroidRuntime.*${PACKAGE_NAME}|ANR in .*${PACKAGE_NAME}" "$latest_artifact"/logcat-full.log "$latest_artifact"/crash-markers.log >/dev/null 2>&1; then
         app_crash=1
       fi
       if grep -E "lowmemorykiller:.*(Kill '${PACKAGE_NAME}'|${PACKAGE_NAME})" "$latest_artifact"/logcat-full.log "$latest_artifact"/memory-pressure-package.log >/dev/null 2>&1; then

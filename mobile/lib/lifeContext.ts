@@ -25,6 +25,7 @@ export type LifeContextAiSummary = {
   movementSummary?: string;
   screenSummary?: string;
   topAppsSummary?: string;
+  lifeInsightSummary?: string;
   raw?: DailyLifeContext;
 };
 
@@ -191,39 +192,114 @@ function formatHours(ms: number) {
   return `${minutes} minutes`;
 }
 
-function movementSummary(context: DailyLifeContext) {
+function movementSummary(context: DailyLifeContext, ageGroup?: string): string | undefined {
   const steps = Number(context.movement.steps);
-  if (!Number.isFinite(steps) || steps < 0) {
-    return undefined;
-  }
+  if (!Number.isFinite(steps) || steps < 0) return undefined;
+
   const distanceMeters =
     Number(context.movement.estimatedDistanceMeters) ||
     Math.round(steps * DISTANCE_PER_STEP_METERS);
   const km = distanceMeters / 1000;
-  return `${formatNumber(Math.round(steps))} steps, about ${km.toFixed(1)} km walked (${context.movement.confidence} confidence)`;
+
+  const stepGoals: Record<string, number> = {
+    under_13: 12000,
+    "13_17": 12000,
+    "18_25": 10000,
+    "26_35": 10000,
+    "36_45": 9000,
+    "46_60": 8000,
+    "60_plus": 7000,
+  };
+  const goal = ageGroup && stepGoals[ageGroup] ? stepGoals[ageGroup] : 10000;
+  const pct = Math.round((steps / goal) * 100);
+  const goalNote =
+    pct >= 100
+      ? `goal achieved (${pct}%!)`
+      : pct >= 70
+        ? `${pct}% of daily goal`
+        : `${pct}% of daily goal - keep it up`;
+
+  return (
+    `${formatNumber(Math.round(steps))} steps (${goalNote}), ` +
+    `~${km.toFixed(1)} km walked (${context.movement.confidence} confidence)`
+  );
 }
 
-function screenSummary(context: DailyLifeContext) {
+function screenSummary(context: DailyLifeContext, ageGroup?: string): string | undefined {
   const screenTimeMs = Number(context.screen.screenTimeMs);
-  if (!Number.isFinite(screenTimeMs) || screenTimeMs < 0) {
-    return undefined;
+  if (!Number.isFinite(screenTimeMs) || screenTimeMs < 0) return undefined;
+
+  const hours = screenTimeMs / 3_600_000;
+
+  const warnThresholds: Record<string, number> = {
+    under_13: 1,
+    "13_17": 2,
+    "18_25": 6,
+    "26_35": 7,
+    "36_45": 6,
+    "46_60": 5,
+    "60_plus": 4,
+  };
+  const warnHours = ageGroup && warnThresholds[ageGroup] ? warnThresholds[ageGroup] : 6;
+
+  let rating: string;
+  if (hours <= warnHours * 0.5) {
+    rating = "healthy";
+  } else if (hours <= warnHours) {
+    rating = "moderate";
+  } else if (hours <= warnHours * 1.5) {
+    rating = "high";
+  } else {
+    rating = "very high";
   }
-  return `${formatHours(screenTimeMs)} phone screen/app time today (${context.screen.confidence} confidence)`;
+
+  const unlockNote =
+    Number.isFinite(Number(context.screen.unlocks)) && Number(context.screen.unlocks) > 0
+      ? `, ${context.screen.unlocks} phone unlocks`
+      : "";
+
+  return (
+    `${formatHours(screenTimeMs)} screen time today (${rating}${unlockNote}, ` +
+    `${context.screen.confidence} confidence)`
+  );
 }
 
-function topAppsSummary(context: DailyLifeContext, shareAppNamesWithAi: boolean) {
+function topAppsSummary(
+  context: DailyLifeContext,
+  shareAppNamesWithAi: boolean,
+  ageGroup?: string,
+): string | undefined {
+  void ageGroup;
   const apps = (context.apps || [])
     .filter((app) => Number(app.foregroundTimeMs) > 0)
     .slice(0, 3);
   if (!apps.length) return undefined;
-  if (shareAppNamesWithAi) {
-    return apps
-      .map((app) => `${app.appName || app.category || "app"} ${formatHours(app.foregroundTimeMs)}`)
-      .join(", ");
+
+  const categoryTotals: Record<string, number> = {};
+  for (const app of context.apps || []) {
+    const category = app.category || "other";
+    categoryTotals[category] = (categoryTotals[category] || 0) + Number(app.foregroundTimeMs || 0);
   }
-  return apps
-    .map((app) => `${app.category || "app category"} ${formatHours(app.foregroundTimeMs)}`)
-    .join(", ");
+  const dominantCategory = Object.entries(categoryTotals).sort(([, a], [, b]) => b - a)[0]?.[0];
+  const dominantNote = dominantCategory ? ` (mostly ${dominantCategory})` : "";
+
+  const appLines = shareAppNamesWithAi
+    ? apps.map((app) => `${app.appName || app.category || "app"} ${formatHours(app.foregroundTimeMs)}`)
+    : apps.map((app) => `${app.category || "app"} ${formatHours(app.foregroundTimeMs)}`);
+
+  return `Top apps: ${appLines.join(", ")}${dominantNote}`;
+}
+
+function lifeInsightSummary(
+  context: DailyLifeContext,
+  ageGroup?: string,
+  shareAppNamesWithAi = false,
+): string | undefined {
+  const movement = movementSummary(context, ageGroup);
+  const screen = screenSummary(context, ageGroup);
+  const apps = topAppsSummary(context, shareAppNamesWithAi, ageGroup);
+  const parts = [movement, screen, apps].filter(Boolean);
+  return parts.length > 0 ? parts.join(" | ") : undefined;
 }
 
 export function sanitizeDailyLifeContextForAi(
@@ -382,9 +458,10 @@ export async function getTodayLifeContextForAi(
     date: sanitized.date || date,
     ...(ageGroup ? { ageGroup } : {}),
     shareAppNamesWithAi,
-    movementSummary: movementSummary(sanitized),
-    screenSummary: screenSummary(sanitized),
-    topAppsSummary: topAppsSummary(sanitized, shareAppNamesWithAi),
+    movementSummary: movementSummary(sanitized, ageGroup),
+    screenSummary: screenSummary(sanitized, ageGroup),
+    topAppsSummary: topAppsSummary(sanitized, shareAppNamesWithAi, ageGroup),
+    lifeInsightSummary: lifeInsightSummary(sanitized, ageGroup, shareAppNamesWithAi),
     raw: sanitized,
   };
 }

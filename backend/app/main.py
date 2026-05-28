@@ -3974,6 +3974,7 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
                 "context_turn_count": len(context_turns),
                 "profile_context": profile_context,
                 "profile_prompt_context": profile_prompt_context,
+                "age_group": profile_context.get("age_group") or "",
             },
             context_turns=context_turns,
         ),

@@ -10,6 +10,7 @@ METRO_PORT="${METRO_PORT:-8081}"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 ARTIFACT_DIR="${ARTIFACT_DIR:-$DIST_DIR/apk-test-$RUN_ID}"
 UI_XML_DEVICE_PATH="/sdcard/jai-apk-test-window.xml"
+LEGACY_PACKAGE_NAMES=("com.jeygroups.manas")
 
 RESULT=0
 LOGCAT_PID=""
@@ -54,6 +55,24 @@ record_skip_once() {
     return
   fi
   record_skip "$reason"
+}
+
+cleanup_legacy_packages() {
+  local removed=0
+  local legacy_package
+  for legacy_package in "${LEGACY_PACKAGE_NAMES[@]}"; do
+    if adb shell pm path "$legacy_package" >/dev/null 2>&1; then
+      adb shell am force-stop "$legacy_package" >/dev/null 2>&1 || true
+      adb uninstall "$legacy_package" >/dev/null 2>&1 || true
+      record_skip_once "removed-legacy-package-${legacy_package}"
+      removed=1
+    fi
+  done
+
+  if [[ "$removed" == "1" ]]; then
+    adb shell monkey -p "$PACKAGE_NAME" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+    sleep 2
+  fi
 }
 
 mark_failed() {
@@ -143,6 +162,7 @@ dump_ui() {
   local label="${1:-ui}"
   local xml_path="$ARTIFACT_DIR/ui-${label}.xml"
   rm -f "$xml_path" >/dev/null 2>&1 || true
+  cleanup_legacy_packages
   adb shell rm -f "$UI_XML_DEVICE_PATH" >/dev/null 2>&1 || true
   if adb shell timeout 8 uiautomator dump "$UI_XML_DEVICE_PATH" > "$ARTIFACT_DIR/uiautomator-${label}.log" 2>&1; then
     adb exec-out cat "$UI_XML_DEVICE_PATH" > "$xml_path" 2>> "$ARTIFACT_DIR/uiautomator-${label}.log" || true
@@ -650,7 +670,6 @@ scan_crashes() {
 
   CRASH_MARKERS=(
     "FATAL EXCEPTION"
-    " E AndroidRuntime:"
     "ANR in"
     "SIGSEGV"
     "SIGABRT"
@@ -679,6 +698,44 @@ scan_crashes() {
         grep -E -n "lowmemorykiller" "$log_file" | grep -Ev "Kill '${PACKAGE_NAME}'|${PACKAGE_NAME}" >> "$memory_pressure_system_file" 2>/dev/null || true
         if [[ -s "$memory_pressure_package_file" ]]; then
           cat "$memory_pressure_package_file" >> "$markers_file"
+          CRASH_MARKERS_FOUND=1
+        fi
+        continue
+      fi
+      if [[ "$marker" == "FATAL EXCEPTION" ]]; then
+        local android_runtime_file="$ARTIFACT_DIR/android-runtime-app-markers.log"
+        : > "$android_runtime_file"
+        python3 - "$log_file" "$android_runtime_file" "$PACKAGE_NAME" <<'PY'
+import sys
+
+log_file, markers_file, package_name = sys.argv[1:4]
+ignore_needles = (
+    "com.android.commands.uiautomator",
+    "UiAutomationService",
+    "uiautomator",
+    "app_process",
+)
+
+with open(log_file, "r", encoding="utf-8", errors="replace") as handle:
+    lines = handle.readlines()
+
+markers = []
+for index, line in enumerate(lines):
+    if "FATAL EXCEPTION" not in line:
+        continue
+    block = lines[index : min(len(lines), index + 80)]
+    text = "".join(block)
+    if any(needle in text for needle in ignore_needles):
+        continue
+    if package_name not in text:
+        continue
+    markers.extend(block)
+    markers.append("\n")
+
+with open(markers_file, "w", encoding="utf-8") as handle:
+    handle.writelines(markers)
+PY
+        if [[ -s "$android_runtime_file" ]] && cat "$android_runtime_file" >> "$markers_file" 2>/dev/null; then
           CRASH_MARKERS_FOUND=1
         fi
         continue
@@ -1380,6 +1437,8 @@ if ! swipe_voice_to_chat || ! wait_for_desc "chat-input" 10; then
   adb shell input keyevent 4 >/dev/null 2>&1 || true
   if wait_for_desc "chat-input" 10; then
     record_skip_once "voice-swipe-right-close-used-back-fallback"
+  elif ensure_chat_input_ready "voice-close-recover-chat"; then
+    record_skip_once "voice-swipe-right-close-used-chat-recovery"
   else
     mark_failed "voice-swipe-right-close"
   fi

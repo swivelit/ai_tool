@@ -61,6 +61,11 @@ def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str
 
 
 def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: str) -> str:
+    """Build provider system instructions.
+
+    Uses request.metadata keys including age_group and client_context.life_context
+    when present.
+    """
     language = request.reply_language or route.language or "en"
     parts = [
         "You are a backend-controlled assistant for a mobile app. Answer directly.",
@@ -93,7 +98,140 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
         )
         if _requests_tamil(request.message, language):
             parts.append("Answer in simple Tamil or natural Tanglish as requested; preserve the prior topic.")
+
+    age_style = _age_adaptive_style(request.metadata)
+    if age_style:
+        parts.append(age_style)
+
+    life_insight = _life_context_insight_prompt(request.metadata)
+    if life_insight:
+        parts.append(life_insight)
     return "\n".join(part for part in parts if part)
+
+
+def _age_adaptive_style(metadata: dict | None) -> str:
+    """
+    Returns an age-group-aware communication style directive.
+    Called from build_system_instructions() when age_group is in metadata.
+    """
+    age_group = str((metadata or {}).get("age_group") or "").strip()
+    if not age_group or age_group == "prefer_not_to_say":
+        return ""
+
+    directives = {
+        "under_13": (
+            "Age adaptation (child, under 13): Use very simple words a child understands. "
+            "Short sentences, maximum 1-2 sentences per idea. No jargon, no statistics. "
+            "Use friendly encouraging language. When discussing screen time or steps, "
+            "compare to fun things (e.g. 'that's like walking to school and back twice!'). "
+            "Safe limits for this age: screen time max 1 hour/day for recreational use (WHO). "
+            "Never use adult health framing. Always be warm, patient, and encouraging. "
+            "If screen time is high, gently suggest an outdoor activity, not a lecture."
+        ),
+        "13_17": (
+            "Age adaptation (teenager, 13-17): Use relatable casual language without being "
+            "condescending. Short paragraphs. Avoid lecturing. Frame health data as "
+            "'your stats' not medical advice. Screen limit context: 2 hours recreational "
+            "screen time is the recommended max (many experts suggest this). Steps goal: "
+            "11,000-13,500/day for teens. If they've hit goals, celebrate it genuinely. "
+            "If screen time is high, frame it as 'here's what the numbers say, up to you'. "
+            "Emoji are fine (1-2 max), avoid corporate/clinical tone."
+        ),
+        "18_25": (
+            "Age adaptation (young adult, 18-25): Peer-level tone, direct and honest. "
+            "Can use mild casual language. Steps goal: 8,000-10,000/day (WHO). "
+            "Screen time: 3-4 hours is moderate, >6 hours is worth noting. "
+            "Frame insights as useful signals, not warnings. "
+            "Can reference productivity and focus angle for screen time. "
+            "Keep it concise and actionable."
+        ),
+        "26_35": (
+            "Age adaptation (adult, 26-35): Professional but conversational. "
+            "Steps goal: 8,000-10,000/day. Screen time: 4 hours is moderate, >7 is high. "
+            "Can mention work-life balance angle. Frame movement as energy, not just health. "
+            "Be direct with insights. No need for heavy encouragement, just facts + one tip."
+        ),
+        "36_45": (
+            "Age adaptation (adult, 36-45): Calm, practical, no-nonsense tone. "
+            "Steps goal: 8,000-10,000/day, mention that consistency matters more than peak days. "
+            "Screen time: >6 hours/day is worth flagging for eye strain and posture. "
+            "Can mention family/work balance context if relevant. "
+            "Frame health data in terms of long-term wellbeing, not acute risk."
+        ),
+        "46_60": (
+            "Age adaptation (adult, 46-60): Respectful, warm, clear language. "
+            "Avoid overly technical terms; explain any stat briefly. "
+            "Steps goal: 7,000-8,000/day is excellent for this group. "
+            "Screen time: mention eye health if high (>5 hours). "
+            "Frame movement positively - any walking is good. "
+            "Slightly longer sentences are fine. No emoji unless asked."
+        ),
+        "60_plus": (
+            "Age adaptation (senior, 60+): Speak clearly, warmly, and respectfully. "
+            "Avoid all jargon. Use full sentences, not bullet points unless asked. "
+            "Steps goal: 6,000-7,000/day is excellent for this age group. "
+            "Walking even 20 minutes is worth celebrating. "
+            "Screen time: flag if >4 hours (eye strain, circulation). "
+            "Never use clinical cold language. If data shows low movement, "
+            "suggest gentle options. Always be encouraging and patient."
+        ),
+    }
+    directive = directives.get(age_group)
+    return directive or ""
+
+
+def _life_context_insight_prompt(metadata: dict | None) -> str:
+    """
+    When life context data is present in the request metadata (client_context.life_context),
+    return a richer directive that tells the AI HOW to interpret and present it intelligently -
+    not just repeat raw numbers.
+    """
+    client_context = (metadata or {}).get("client_context") or {}
+    life_ctx = client_context.get("life_context") or {}
+    if not life_ctx:
+        return ""
+
+    age_group = str((metadata or {}).get("age_group") or "").strip()
+
+    step_goals = {
+        "under_13": 12000,
+        "13_17": 12000,
+        "18_25": 10000,
+        "26_35": 10000,
+        "36_45": 9000,
+        "46_60": 8000,
+        "60_plus": 7000,
+    }
+    step_goal = step_goals.get(age_group, 10000)
+
+    screen_warn_hours = {
+        "under_13": 1.0,
+        "13_17": 2.0,
+        "18_25": 6.0,
+        "26_35": 7.0,
+        "36_45": 6.0,
+        "46_60": 5.0,
+        "60_plus": 4.0,
+    }
+    warn_hours = screen_warn_hours.get(age_group, 6.0)
+
+    parts = [
+        "Life context interpretation rules:",
+        f"- Step goal for this user's age group: {step_goal:,}/day (WHO/age-adjusted). "
+        "Calculate % of goal achieved and mention it naturally (e.g. '72% of your daily goal'). "
+        "If over 100%, celebrate it. If under 50%, be encouraging not critical.",
+        f"- Screen time health threshold for this age group: {warn_hours:.0f} hours/day. "
+        "If screen time exceeds this, mention it once with a brief constructive note. "
+        "Do not lecture. Do not repeat the warning.",
+        "- App usage: identify the dominant category (e.g. 'mostly social apps' or "
+        "'mainly productivity tools'). Mention it as an insight, not a judgment.",
+        "- Always translate raw milliseconds to hours/minutes when presenting to user. "
+        "Never show raw ms values.",
+        "- Combine movement + screen data into a brief 1-sentence holistic insight "
+        "when both are available (e.g. 'Great movement day, though screen time was on the higher side').",
+        "- If data confidence is 'low' or 'unavailable', say so briefly and do not guess.",
+    ]
+    return "\n".join(parts)
 
 
 def format_recent_context(context_turns: list[dict[str, str]], *, max_turns: int = 6, max_chars: int = 1200) -> str:
