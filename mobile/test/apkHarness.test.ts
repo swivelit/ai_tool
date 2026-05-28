@@ -86,8 +86,11 @@ describe("APK test harness", () => {
     expect(source).toContain("tap_chat_send_button");
     expect(source).toContain("chat-send-retries");
     expect(source).toContain("ensure_chat_input_ready");
+    expect(source).toContain("relaunch_app_for_recovery");
+    expect(source).toContain('monkey -p "$PACKAGE_NAME"');
+    expect(source).toContain('record_skip_once "${label}-used-app-relaunch"');
     expect(source).toContain('rm -f "$xml_path"');
-    expect(source).toContain('adb shell rm -f "$UI_XML_DEVICE_PATH"');
+    expect(source).not.toContain('adb shell rm -f "$UI_XML_DEVICE_PATH"');
     expect(source).toContain("chat-input-not-ready-after-hands-free");
     expect(source).toContain("chat-input-not-ready-${label}");
     expect(source).toContain('if ! current_text="$(chat_input_text');

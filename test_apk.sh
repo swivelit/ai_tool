@@ -163,7 +163,6 @@ dump_ui() {
   local xml_path="$ARTIFACT_DIR/ui-${label}.xml"
   rm -f "$xml_path" >/dev/null 2>&1 || true
   cleanup_legacy_packages
-  adb shell rm -f "$UI_XML_DEVICE_PATH" >/dev/null 2>&1 || true
   if adb shell timeout 8 uiautomator dump "$UI_XML_DEVICE_PATH" > "$ARTIFACT_DIR/uiautomator-${label}.log" 2>&1; then
     adb exec-out cat "$UI_XML_DEVICE_PATH" > "$xml_path" 2>> "$ARTIFACT_DIR/uiautomator-${label}.log" || true
   fi
@@ -605,6 +604,11 @@ wait_for_chat_input_cleared() {
   return 1
 }
 
+relaunch_app_for_recovery() {
+  adb shell monkey -p "$PACKAGE_NAME" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+  sleep 2
+}
+
 ensure_chat_input_ready() {
   local label="${1:-chat-input-ready}"
   if wait_for_desc "chat-input" 3; then
@@ -612,6 +616,12 @@ ensure_chat_input_ready() {
   fi
 
   for _ in {1..3}; do
+    relaunch_app_for_recovery
+    if wait_for_desc "chat-input" 5; then
+      record_skip_once "${label}-used-app-relaunch"
+      return 0
+    fi
+
     swipe_voice_to_chat >/dev/null 2>&1 || true
     if wait_for_desc "chat-input" 5; then
       return 0
