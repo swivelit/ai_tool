@@ -139,6 +139,7 @@ logger = logging.getLogger(__name__)
 REQUIRED_PROFILE_SLOTS = {
     "preferred_language",
     "secondary_language",
+    "age_group",
     "occupation",
     "industry_or_field",
     "hobbies",
@@ -1307,6 +1308,7 @@ class ChatAPIRequest(BaseModel):
     client_fallback_reason: Optional[str] = None
     client_local_budget_ms: Optional[int] = None
     client_original_route: Optional[str] = None
+    client_context: Optional[Dict[str, Any]] = None
     admin_email: Optional[str] = None
 
 
@@ -1679,6 +1681,159 @@ def _compact_profile_value(value: Any, limit: int = 800) -> Any:
     return value
 
 
+SENSITIVE_CLIENT_CONTEXT_KEY_RE = re.compile(
+    r"(email|token|auth|firebase|uid|api[_-]?key|secret|password)",
+    re.I,
+)
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+TOKENISH_RE = re.compile(
+    r"\b(?:bearer\s+)?(?:sk-[A-Za-z0-9_-]{8,}|ya29\.[A-Za-z0-9_-]+|[A-Za-z0-9_-]{32,})\b",
+    re.I,
+)
+PACKAGE_NAME_RE = re.compile(r"\b(?:[a-z][a-z0-9_]*\.)+[a-z][a-z0-9_]*\b")
+
+
+def _life_text(value: Any, limit: int = 240, *, allow_package_like: bool = False) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    text = EMAIL_RE.sub("[redacted]", text)
+    text = TOKENISH_RE.sub("[redacted]", text)
+    if not allow_package_like:
+        text = PACKAGE_NAME_RE.sub("[app]", text)
+    return text[:limit]
+
+
+def _life_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _life_int_or_none(value: Any, *, minimum: int = 0, maximum: int = 86_400_000) -> Optional[int]:
+    try:
+        numeric = int(float(value))
+    except Exception:
+        return None
+    if numeric < minimum:
+        return None
+    return min(numeric, maximum)
+
+
+def _sanitize_life_permissions(value: Any) -> Dict[str, str]:
+    raw = value if isinstance(value, dict) else {}
+    return {
+        "activityRecognition": _life_text(raw.get("activityRecognition") or "unavailable", 32),
+        "usageAccess": _life_text(raw.get("usageAccess") or "unavailable", 32),
+    }
+
+
+def _sanitize_life_movement(value: Any) -> Dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    return {
+        "steps": _life_int_or_none(raw.get("steps"), maximum=250_000),
+        "estimatedDistanceMeters": _life_int_or_none(
+            raw.get("estimatedDistanceMeters"),
+            maximum=250_000,
+        ),
+        "confidence": _life_text(raw.get("confidence") or "unavailable", 32),
+        "source": _life_text(raw.get("source") or "unknown", 80),
+    }
+
+
+def _sanitize_life_screen(value: Any) -> Dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    return {
+        "screenTimeMs": _life_int_or_none(raw.get("screenTimeMs")),
+        "unlocks": _life_int_or_none(raw.get("unlocks"), maximum=10_000),
+        "confidence": _life_text(raw.get("confidence") or "unavailable", 32),
+        "source": _life_text(raw.get("source") or "unknown", 80),
+    }
+
+
+def _sanitize_life_apps(value: Any, *, allow_app_names: bool) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    apps: List[Dict[str, Any]] = []
+    for item in value[:8]:
+        if not isinstance(item, dict):
+            continue
+        foreground_time_ms = _life_int_or_none(item.get("foregroundTimeMs"))
+        if not foreground_time_ms:
+            continue
+        app: Dict[str, Any] = {
+            "category": _life_text(item.get("category") or "other", 80),
+            "foregroundTimeMs": foreground_time_ms,
+        }
+        launch_count = _life_int_or_none(item.get("launchCount"), maximum=10_000)
+        if launch_count is not None:
+            app["launchCount"] = launch_count
+        if allow_app_names:
+            app_name = _life_text(item.get("appName"), 120, allow_package_like=True)
+            package_name = _life_text(item.get("packageName"), 160, allow_package_like=True)
+            if app_name:
+                app["appName"] = app_name
+            if package_name:
+                app["packageName"] = package_name
+        apps.append(app)
+    return apps
+
+
+def sanitize_client_life_context(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allow_app_names = _life_bool(value.get("shareAppNamesWithAi"))
+    sanitized: Dict[str, Any] = {
+        "enabled": _life_bool(value.get("enabled")),
+        "date": _life_text(value.get("date"), 32),
+        "shareAppNamesWithAi": allow_app_names,
+    }
+    age_group = _life_text(value.get("ageGroup"), 40)
+    if age_group and age_group != "prefer_not_to_say":
+        sanitized["ageGroup"] = age_group
+    for key in ("movementSummary", "screenSummary", "topAppsSummary"):
+        if SENSITIVE_CLIENT_CONTEXT_KEY_RE.search(key):
+            continue
+        if key == "topAppsSummary" and not allow_app_names:
+            continue
+        text = _life_text(
+            value.get(key),
+            360,
+            allow_package_like=allow_app_names,
+        )
+        if text:
+            sanitized[key] = text
+    raw = value.get("raw")
+    if isinstance(raw, dict):
+        sanitized["raw"] = {
+            "date": _life_text(raw.get("date"), 32),
+            "timezone": _life_text(raw.get("timezone"), 80),
+            "permissions": _sanitize_life_permissions(raw.get("permissions")),
+            "movement": _sanitize_life_movement(raw.get("movement")),
+            "screen": _sanitize_life_screen(raw.get("screen")),
+            "apps": _sanitize_life_apps(raw.get("apps"), allow_app_names=allow_app_names),
+            "generatedAt": _life_text(raw.get("generatedAt"), 40),
+        }
+    return {key: value for key, value in sanitized.items() if value not in ("", None, [])}
+
+
+def sanitize_client_context(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    life_context = sanitize_client_life_context(value.get("life_context"))
+    return {"life_context": life_context} if life_context else {}
+
+
+def _is_life_context_question(text: Any) -> bool:
+    return bool(
+        re.search(
+            r"\b(walk|walked|walking|steps?|distance|screen time|phone time|used my phone|use my phone|app time|apps? used|top apps?)\b",
+            str(text or ""),
+            re.I,
+        )
+    )
+
+
 def build_profile_prompt_context(session: Session, user_id: Optional[int]) -> Dict[str, Any]:
     if not user_id:
         return {}
@@ -1695,7 +1850,7 @@ def build_profile_prompt_context(session: Session, user_id: Optional[int]) -> Di
     elif isinstance(onboarding, dict):
         profile_summary = str(onboarding.get("profile_summary") or "").strip()
 
-    return {
+    context = {
         "user": {
             "name": user.name if user else "",
             "place": user.place if user else "",
@@ -1710,6 +1865,14 @@ def build_profile_prompt_context(session: Session, user_id: Optional[int]) -> Di
         "tamil_style": _compact_profile_value(answers.get("tamil_style") or "chennai_conversational", 120),
         "onboarding_answers": _compact_profile_value(answers, 240),
     }
+    age_group = str(answers.get("age_group") or "").strip()
+    if age_group and age_group != "prefer_not_to_say":
+        context["age_group"] = _compact_profile_value(age_group, 40)
+        if age_group in {"under_13", "13_17"}:
+            context["age_safety_note"] = (
+                "User is a minor age group. Keep explanations age-appropriate and avoid adult-style advice."
+            )
+    return context
 
 
 def _profile_prompt_context_text(profile_context: Dict[str, Any]) -> str:
@@ -1804,13 +1967,11 @@ def _default_stage_answers(
     habits_text = routine.daily_habits if routine else ""
     summary = db_profile.profile_summary if db_profile and db_profile.profile_summary else ""
     return {
-        "age_group": "26-35",
         "gender_context": "prefer_not_to_say",
         "life_stage": "none_of_these",
         "food_preference": "mixed_flexible",
         "health_conditions": ["none"],
         "food_caution": "no_special_caution",
-        "daily_activity": "moderate_walks",
         "sleep_pattern": "average",
         "personality_style": _infer_personality_style(summary),
         "stress_support": "step_by_step_plan",
@@ -3622,6 +3783,8 @@ def _metadata_for_ai_response(text: str, response: AIProviderResponse) -> Dict[s
 def _run_ai_router_global_cache_lookup(session: Session, payload: ChatAPIRequest, text: str) -> Optional[Dict[str, Any]]:
     if not _ai_router_global_cache_lookup_enabled():
         return None
+    if sanitize_client_context(payload.client_context).get("life_context") and _is_life_context_question(text):
+        return None
     try:
         return lookup_approved_global_cache(session, text, payload.reply_language, user_id=payload.user_id)
     except Exception as exc:
@@ -3716,6 +3879,8 @@ def _ai_router_response_is_cache_recordable(
         return False
     if not str(question or "").strip() or not str(answer or "").strip():
         return False
+    if _is_life_context_question(question):
+        return False
     route = str(pipeline.get("route_taken") or response.route or "").strip().lower()
     source = str(pipeline.get("direct_answer_source") or response.provider or "").strip().lower()
     intent = str(response.intent or pipeline.get("predicted_label") or "").strip().lower()
@@ -3783,6 +3948,13 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
         return _build_ai_router_global_cache_response(session, payload, text, global_hit, request_id)
     context_turns = _recent_ai_context_turns(session, payload.user_id, limit=6)
     profile_context = build_profile_prompt_context(session, payload.user_id)
+    sanitized_client_context = sanitize_client_context(payload.client_context)
+    life_context = sanitized_client_context.get("life_context")
+    if life_context:
+        profile_context = {
+            **profile_context,
+            "life_context": life_context,
+        }
     profile_prompt_context = _profile_prompt_context_text(profile_context)
     ai_response = run_text_turn(
         session,
@@ -3798,6 +3970,7 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
                 "client_fallback_reason": payload.client_fallback_reason,
                 "client_local_budget_ms": payload.client_local_budget_ms,
                 "client_original_route": payload.client_original_route,
+                "client_context": sanitized_client_context,
                 "context_turn_count": len(context_turns),
                 "profile_context": profile_context,
                 "profile_prompt_context": profile_prompt_context,

@@ -12,6 +12,12 @@
     "options": ["none", "english", "tamil", "hindi", "telugu", "malayalam", "other"]
   },
   {
+    "id": "age_group",
+    "prompt": "Which age group should I use to adjust how I explain things?",
+    "type": "single",
+    "options": ["under_13", "13_17", "18_25", "26_35", "36_45", "46_60", "60_plus", "prefer_not_to_say"]
+  },
+  {
     "id": "occupation",
     "prompt": "What do you do most days-work, study, business, home, or something else?",
     "type": "single",

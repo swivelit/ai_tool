@@ -47,6 +47,7 @@ import {
   apiPost,
   apiPostBackendOnly,
   apiPostForm,
+  buildChatRequestWithLifeContext,
   sendClientTurnLog,
 } from "@/lib/api";
 import {
@@ -2662,14 +2663,15 @@ export default function Home() {
           }
         }
       }, Math.min(Math.max(softNoticeMs, 5_000), 8_000));
+      const chatRequestBody = await buildChatRequestWithLifeContext({
+        user_id: profile.userId,
+        message: cleaned,
+        reply_language: settings.languageMode,
+        request_id: requestId,
+        client_source: source,
+      });
       const response = await withLocalTimeout(
-        apiPost<BackendChatResponse>("/api/chat", {
-          user_id: profile.userId,
-          message: cleaned,
-          reply_language: settings.languageMode,
-          request_id: requestId,
-          client_source: source,
-        }),
+        apiPost<BackendChatResponse>("/api/chat", chatRequestBody),
         chatTurnTimeoutMs,
         {
           source,
@@ -2785,18 +2787,19 @@ export default function Home() {
                 screen: "chat",
                 app_state: AppState.currentState,
               });
+              const backendFallbackBody = await buildChatRequestWithLifeContext({
+                user_id: profile.userId,
+                message: cleaned,
+                reply_language: settings.languageMode,
+                request_id: requestId,
+                client_source: source,
+                client_fallback_reason: "local_timeout",
+                client_local_budget_ms: getLocalToBackendFallbackMs(),
+                client_original_route: "local_answer",
+              });
               const backendResponse = await apiPostBackendOnly<BackendChatResponse>(
                 "/api/chat",
-                {
-                  user_id: profile.userId,
-                  message: cleaned,
-                  reply_language: settings.languageMode,
-                  request_id: requestId,
-                  client_source: source,
-                  client_fallback_reason: "local_timeout",
-                  client_local_budget_ms: getLocalToBackendFallbackMs(),
-                  client_original_route: "local_answer",
-                },
+                backendFallbackBody,
                 { timeoutMs: BACKEND_CHAT_FALLBACK_TIMEOUT_MS },
               );
               if (!isActiveChatRequest(requestId)) {

@@ -41,6 +41,15 @@ describe("minimal settings wake phrase UI", () => {
     expect(customiseSource).toContain("customise-wake-trainer-button");
     expect(customiseSource).toContain("Train wake phrase");
     expect(customiseSource).toContain("customise-save-button");
+    expect(customiseSource).toContain("life-context-card");
+    expect(customiseSource).toContain("life-context-enable-toggle");
+    expect(customiseSource).toContain("life-context-activity-permission-button");
+    expect(customiseSource).toContain("life-context-usage-settings-button");
+    expect(customiseSource).toContain("life-context-share-backend-toggle");
+    expect(customiseSource).toContain("life-context-share-app-names-toggle");
+    expect(customiseSource).toContain("life-context-daily-summary");
+    expect(customiseSource).toContain("gaze tracking");
+    expect(customiseSource).toContain("hidden monitoring");
     expect(customiseSource).not.toContain("handsFreeRecognizer.start");
     expect(customiseSource).not.toContain("useHandsFreeRecognitionEvent");
     expect(customiseSource.match(/name="radio-outline"/g) || []).toHaveLength(0);

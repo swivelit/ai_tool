@@ -50,6 +50,9 @@ describe("cloud fallback settings", () => {
 
     expect(settings.allowCloudFallback).toBe(true);
     expect(settings.cloudFallbackPolicyVersion).toBe(CLOUD_FALLBACK_POLICY_VERSION);
+    expect(settings.lifeContextEnabled).toBe(false);
+    expect(settings.shareLifeContextWithBackend).toBe(false);
+    expect(settings.shareAppNamesWithAi).toBe(false);
     await expect(loadCloudFallbackConsent()).resolves.toBe(true);
   });
 

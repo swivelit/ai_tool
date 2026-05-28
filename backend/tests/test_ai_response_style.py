@@ -120,6 +120,16 @@ def test_provider_messages_include_hidden_profile_context():
     assert "Chennai-based founder" in messages[1]["content"]
 
 
+def test_system_prompt_constrains_life_context_usage():
+    request = AIRequest(1, "How long did I use my phone today?", "en", "text", "style-test", {})
+
+    instructions = build_system_instructions(request, _route("en"), provider="openai")
+
+    assert "Use life context only when provided" in instructions
+    assert "Do not claim exact gaze" in instructions
+    assert "Never invent missing life data" in instructions
+
+
 def test_response_adapter_keeps_requested_english_reply_as_english_for_sarvam():
     pipeline = ai_response_to_pipeline(
         AIProviderResponse(

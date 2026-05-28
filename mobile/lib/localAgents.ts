@@ -70,6 +70,7 @@ import {
   scheduledTasksPath,
   type LocalTaskRecord,
 } from "./localTaskStore";
+import type { LifeContextAiSummary } from "./lifeContext";
 
 export { saveScheduledTask } from "./localTaskStore";
 
@@ -99,6 +100,7 @@ type LocalUserProfile = {
   place?: string;
   assistantName?: string;
   replyLanguage?: ReplyLanguage;
+  onboardingAnswers?: Record<string, unknown>;
 };
 
 export type LocalChatMessage = {
@@ -955,6 +957,21 @@ const DEFAULT_PROFILER_SLOTS: ProfilerSlot[] = [
     prompt: "How should I talk to you most of the time?",
     type: "single",
     options: ["warm", "short_direct", "friendly_casual"],
+  },
+  {
+    id: "age_group",
+    prompt: "Which age group should I use to adjust how I explain things?",
+    type: "single",
+    options: [
+      "under_13",
+      "13_17",
+      "18_25",
+      "26_35",
+      "36_45",
+      "46_60",
+      "60_plus",
+      "prefer_not_to_say",
+    ],
   },
   {
     id: "main_goal",
@@ -3174,6 +3191,9 @@ function buildFallbackProfileSummary(
     answers.communication_tone
       ? `Preferred tone: ${displayValue(answers.communication_tone)}.`
       : "",
+    answers.age_group && answers.age_group !== "prefer_not_to_say"
+      ? `Age group: ${displayValue(answers.age_group)}.`
+      : "",
     answers.answer_length
       ? `Typical answer length: ${displayValue(answers.answer_length)}.`
       : "",
@@ -3216,6 +3236,9 @@ function profileChunkBlueprints(
         answers.personality_style
           ? `Style: ${displayValue(answers.personality_style)}`
           : "",
+        answers.age_group && answers.age_group !== "prefer_not_to_say"
+          ? `Age group: ${displayValue(answers.age_group)}`
+          : "",
         answers.work_rhythm
           ? `Work rhythm: ${displayValue(answers.work_rhythm)}`
           : "",
@@ -3228,6 +3251,7 @@ function profileChunkBlueprints(
           "occupation",
           "industry_or_field",
           "personality_style",
+          "age_group",
           "work_rhythm",
         ],
       },
@@ -3656,6 +3680,16 @@ const SLOT_KEYWORD_MAP: Record<string, Record<string, string[]>> = {
     telugu: ["telugu"],
     malayalam: ["malayalam"],
   },
+  age_group: {
+    under_13: ["under 13", "under_13", "below 13", "younger than 13"],
+    "13_17": ["13 17", "13_17", "teen", "teenager", "minor", "school age"],
+    "18_25": ["18 25", "18_25", "young adult"],
+    "26_35": ["26 35", "26_35"],
+    "36_45": ["36 45", "36_45"],
+    "46_60": ["46 60", "46_60"],
+    "60_plus": ["60 plus", "60+", "60_plus", "senior"],
+    prefer_not_to_say: ["prefer not", "rather not say", "don't want to say"],
+  },
   occupation: {
     student: ["student", "studying", "college", "school"],
     working_professional: [
@@ -3851,6 +3885,20 @@ function deterministicProfilerExtraction(
   ) {
     updates.secondary_language = "none";
     confidenceBySlot.secondary_language = 0.72;
+  }
+  if (!nonEmptyAnswer(answers.age_group)) {
+    const ageMatch = normalizedMessage.match(/\b(?:i am|i'm|age is|aged?)\s+(\d{1,3})\b/);
+    const age = ageMatch ? Number(ageMatch[1]) : NaN;
+    if (Number.isFinite(age) && age > 0) {
+      if (age < 13) updates.age_group = "under_13";
+      else if (age <= 17) updates.age_group = "13_17";
+      else if (age <= 25) updates.age_group = "18_25";
+      else if (age <= 35) updates.age_group = "26_35";
+      else if (age <= 45) updates.age_group = "36_45";
+      else if (age <= 60) updates.age_group = "46_60";
+      else updates.age_group = "60_plus";
+      confidenceBySlot.age_group = 0.9;
+    }
   }
 
   for (const slot of slots) {
@@ -7696,11 +7744,98 @@ async function runProfilerExtractionInsideNormalChat(opts: {
   };
 }
 
+function isLifeContextQuestion(message: string) {
+  return /\b(walk|walked|walking|steps?|distance|screen time|phone time|use my phone|used my phone|app time|apps? did i use|used most|top apps?|app usage)\b/i.test(
+    message,
+  );
+}
+
+function lifePermissionGap(lifeContext?: LifeContextAiSummary) {
+  const raw = lifeContext?.raw;
+  const gaps: string[] = [];
+  if (!raw) return gaps;
+  if (raw.permissions?.activityRecognition !== "granted") {
+    gaps.push("activity permission is not granted");
+  }
+  if (raw.permissions?.usageAccess !== "granted") {
+    gaps.push("Usage Access is not granted");
+  }
+  return gaps;
+}
+
+function buildLifeContextAnswer(
+  message: string,
+  lifeContext: LifeContextAiSummary | undefined,
+  replyLanguage: ReplyLanguage,
+) {
+  const wantsMovement = /\b(walk|walked|walking|steps?|distance)\b/i.test(message);
+  const wantsScreen = /\b(screen time|phone time|use my phone|used my phone|app time)\b/i.test(message);
+  const wantsApps = /\b(apps? did i use|used most|top apps?|app usage)\b/i.test(message);
+  const english = replyLanguage !== "ta";
+
+  if (!lifeContext?.enabled) {
+    return english
+      ? "Life Intelligence is off or not available yet. Enable it in Settings > Life Intelligence, then grant Activity Recognition for steps and Usage Access for phone/app-time estimates."
+      : "Life Intelligence off-aa irukku or innum available illa. Settings > Life Intelligence-la enable pannitu, steps-ku Activity Recognition and phone/app-time-ku Usage Access grant pannunga.";
+  }
+
+  const parts: string[] = [];
+  if (wantsMovement || (!wantsScreen && !wantsApps)) {
+    parts.push(
+      lifeContext.movementSummary
+        ? `Walking: ${lifeContext.movementSummary}.`
+        : english
+          ? "Walking data is not available yet."
+          : "Walking data innum available illa.",
+    );
+  }
+  if (wantsScreen || (!wantsMovement && !wantsApps)) {
+    parts.push(
+      lifeContext.screenSummary
+        ? english
+          ? `Phone use: ${lifeContext.screenSummary}. This is estimated from foreground screen/app usage, not exact gaze or eye tracking.`
+          : `Phone use: ${lifeContext.screenSummary}. Idhu foreground screen/app usage estimate, exact gaze tracking illa.`
+        : english
+          ? "Phone screen/app time is not available yet."
+          : "Phone screen/app time innum available illa.",
+    );
+  }
+  if (wantsApps) {
+    const appNamesHidden =
+      lifeContext.shareAppNamesWithAi !== true ||
+      !(lifeContext.raw?.apps || []).some((app) => app.appName);
+    parts.push(
+      lifeContext.topAppsSummary
+        ? english
+          ? `Top apps: ${lifeContext.topAppsSummary}${appNamesHidden ? ". App names are hidden by your privacy settings." : "."}`
+          : `Top apps: ${lifeContext.topAppsSummary}${appNamesHidden ? ". App names unga privacy settings nala hidden." : "."}`
+        : english
+          ? appNamesHidden
+            ? "App names are hidden by your privacy settings, and no category usage is available yet."
+            : "Top app usage is not available yet."
+          : appNamesHidden
+            ? "App names privacy settings nala hidden; category usage-um innum available illa."
+            : "Top app usage innum available illa.",
+    );
+  }
+
+  const gaps = lifePermissionGap(lifeContext);
+  if (gaps.length) {
+    parts.push(`Permission gap: ${gaps.join(", ")}.`);
+  }
+  if (lifeContext.ageGroup) {
+    parts.push(`Age group personalization: ${lifeContext.ageGroup}.`);
+  }
+
+  return parts.join(" ").trim();
+}
+
 export async function runLocalAssistantTurn(opts: {
   userId: number;
   message: string;
   replyLanguage?: ReplyLanguage;
   userProfile?: LocalUserProfile;
+  lifeContext?: LifeContextAiSummary;
   userAllowedCloudFallback?: boolean;
   modelTier?: ModelTierName;
   deviceInfo?: DeviceCapabilitySnapshot;
@@ -7797,6 +7932,29 @@ export async function runLocalAssistantTurn(opts: {
         confidence: quick.confidence,
         classified: decision,
         orchestratorDecision: decision,
+        stageTimings,
+      },
+    } satisfies LocalAssistantTurnResult;
+  }
+
+  if (isLifeContextQuestion(message)) {
+    const assistantText = buildLifeContextAnswer(message, opts.lifeContext, replyLanguage);
+    return {
+      route: "local_answer",
+      source: "local_rules",
+      cacheHit: false,
+      assistantText,
+      englishText: assistantText,
+      intent: "assistant",
+      title: "Life context",
+      details: assistantText,
+      profileSummary: "",
+      meta: {
+        source: "local_rules",
+        route: "local_answer",
+        fastPath: true,
+        responsePath: "life_context",
+        lifeContextAvailable: opts.lifeContext?.enabled === true,
         stageTimings,
       },
     } satisfies LocalAssistantTurnResult;

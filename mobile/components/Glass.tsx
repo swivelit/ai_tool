@@ -8,11 +8,17 @@ export function GlassCard({
   style,
   contentStyle,
   radius,
+  testID,
+  accessibilityLabel,
+  accessible,
 }: {
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
   contentStyle?: StyleProp<ViewStyle>;
   radius?: number;
+  testID?: string;
+  accessibilityLabel?: string;
+  accessible?: boolean;
 }) {
   const radiusStyle = radius == null ? null : { borderRadius: radius };
   const topRadiusStyle =
@@ -20,7 +26,12 @@ export function GlassCard({
       ? null
       : { borderTopLeftRadius: radius, borderTopRightRadius: radius };
   return (
-    <View style={[styles.shell, radiusStyle, style]}>
+    <View
+      testID={testID}
+      accessible={accessible}
+      accessibilityLabel={accessibilityLabel}
+      style={[styles.shell, radiusStyle, style]}
+    >
       <BlurView
         intensity={24}
         tint="light"

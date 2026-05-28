@@ -69,6 +69,7 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN",
   "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE",
   "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO",
+  "EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT",
   "EXPO_PUBLIC_E2E_REPLY_LANGUAGE",
   "EXPO_PUBLIC_E2E_TAMIL_STYLE",
   "EXPO_PUBLIC_E2E_VOICE_QUERY",
@@ -527,6 +528,19 @@ export const runtime = {
     } finally {
       if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
     }
+  });
+
+  it("declares Android permissions for opt-in life context collection", async () => {
+    const appConfig = await importAppConfigWithEnv({
+      BUILD_TYPE: "debug",
+    });
+
+    expect(appConfig.expo.android.permissions).toEqual(
+      expect.arrayContaining([
+        "android.permission.ACTIVITY_RECOGNITION",
+        "android.permission.PACKAGE_USAGE_STATS",
+      ]),
+    );
   });
 
   it("ensure-google-services-json decodes base64 without printing JSON content", () => {

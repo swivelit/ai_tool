@@ -48,6 +48,8 @@ const E2E_MOCK_HANDS_FREE =
   process.env.EXPO_PUBLIC_E2E_MOCK_HANDS_FREE || "";
 const E2E_MOCK_HANDS_FREE_AUDIO =
   process.env.EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO || "";
+const E2E_MOCK_LIFE_CONTEXT =
+  process.env.EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT || "";
 const E2E_REPLY_LANGUAGE =
   process.env.EXPO_PUBLIC_E2E_REPLY_LANGUAGE || "";
 const E2E_TAMIL_STYLE =
@@ -184,6 +186,7 @@ const enabledE2eEnvNames = [
   ["EXPO_PUBLIC_E2E_MOCK_VOICE_TURN", E2E_MOCK_VOICE_TURN],
   ["EXPO_PUBLIC_E2E_MOCK_HANDS_FREE", E2E_MOCK_HANDS_FREE],
   ["EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO", E2E_MOCK_HANDS_FREE_AUDIO],
+  ["EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT", E2E_MOCK_LIFE_CONTEXT],
   ["EXPO_PUBLIC_E2E_REPLY_LANGUAGE", E2E_REPLY_LANGUAGE],
   ["EXPO_PUBLIC_E2E_TAMIL_STYLE", E2E_TAMIL_STYLE],
   ["EXPO_PUBLIC_E2E_VOICE_QUERY", E2E_VOICE_QUERY],
@@ -478,6 +481,7 @@ export default {
       E2E_MOCK_VOICE_TURN,
       E2E_MOCK_HANDS_FREE,
       E2E_MOCK_HANDS_FREE_AUDIO,
+      E2E_MOCK_LIFE_CONTEXT,
       E2E_REPLY_LANGUAGE,
       E2E_TAMIL_STYLE,
       E2E_VOICE_QUERY,
@@ -490,6 +494,7 @@ export default {
       EXPO_PUBLIC_E2E_MOCK_VOICE_TURN: E2E_MOCK_VOICE_TURN,
       EXPO_PUBLIC_E2E_MOCK_HANDS_FREE: E2E_MOCK_HANDS_FREE,
       EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO: E2E_MOCK_HANDS_FREE_AUDIO,
+      EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT: E2E_MOCK_LIFE_CONTEXT,
       EXPO_PUBLIC_E2E_REPLY_LANGUAGE: E2E_REPLY_LANGUAGE,
       EXPO_PUBLIC_E2E_TAMIL_STYLE: E2E_TAMIL_STYLE,
       EXPO_PUBLIC_E2E_VOICE_QUERY: E2E_VOICE_QUERY,
@@ -547,6 +552,10 @@ export default {
     android: {
       package: "com.harishajahan.tamilai",
       ...(hasGoogleServicesJson ? { googleServicesFile: "./google-services.json" } : {}),
+      permissions: [
+        "android.permission.ACTIVITY_RECOGNITION",
+        "android.permission.PACKAGE_USAGE_STATS",
+      ],
       edgeToEdgeEnabled: true,
       softwareKeyboardLayoutMode: "resize",
       predictiveBackGestureEnabled: false,

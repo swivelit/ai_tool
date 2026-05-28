@@ -271,6 +271,88 @@ def test_chat_ai_request_includes_saved_profile_context(client, monkeypatch):
     assert response.json()["assistant"]["text"] == "Focus on the next implementation step."
 
 
+def test_chat_ai_request_includes_sanitized_life_context(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        profile_context = ai_request.metadata["profile_context"]
+        life_context = profile_context["life_context"]
+        dumped = json.dumps(life_context)
+        assert life_context["movementSummary"] == "7,420 steps, about 5.7 km"
+        assert life_context["screenSummary"] == "3.5 hours screen time"
+        assert life_context["raw"]["movement"]["steps"] == 7420
+        assert "ChatGPT" not in dumped
+        assert "com.openai.chatgpt" not in dumped
+        assert "private@example.com" not in dumped
+        assert "sk-secret" not in dumped
+        assert "life_context" in ai_request.metadata["profile_prompt_context"]
+        return AIProviderResponse(
+            text="You walked 7,420 steps and used your phone about 3.5 hours.",
+            provider="openai",
+            model="gpt-5-nano",
+            route="openai_general",
+            reason="unit_test",
+            language="en",
+            intent="general",
+        )
+
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        "/api/chat",
+        headers=headers,
+        json={
+            "message": "How much did I walk today?",
+            "reply_language": "en",
+            "client_context": {
+                "life_context": {
+                    "enabled": True,
+                    "date": "2026-05-28",
+                    "shareAppNamesWithAi": False,
+                    "movementSummary": "7,420 steps, about 5.7 km",
+                    "screenSummary": "3.5 hours screen time",
+                    "topAppsSummary": "ChatGPT 1 hour",
+                    "raw": {
+                        "date": "2026-05-28",
+                        "timezone": "Asia/Kolkata",
+                        "permissions": {
+                            "activityRecognition": "granted",
+                            "usageAccess": "granted",
+                        },
+                        "movement": {
+                            "steps": 7420,
+                            "estimatedDistanceMeters": 5650,
+                            "confidence": "high",
+                            "source": "e2e_mock",
+                        },
+                        "screen": {
+                            "screenTimeMs": 12600000,
+                            "confidence": "high",
+                            "source": "e2e_mock",
+                        },
+                        "apps": [
+                            {
+                                "packageName": "com.openai.chatgpt",
+                                "appName": "ChatGPT",
+                                "category": "productivity",
+                                "foregroundTimeMs": 4200000,
+                            }
+                        ],
+                        "generatedAt": "2026-05-28T00:00:00Z",
+                    },
+                    "email": "private@example.com",
+                    "api_key": "sk-secret",
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assistant"]["text"].startswith("You walked")
+
+
 def test_chat_contract_passes_recent_context_to_ai_router(client, monkeypatch):
     create_test_user()
     headers = auth_headers("test-uid", "test@example.com")

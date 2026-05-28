@@ -1,0 +1,24 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml:1:1-4:12
+INJECTED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml:1:1-4:12
+	package
+		INJECTED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml:1:11-69
+uses-permission#android.permission.ACTIVITY_RECOGNITION
+ADDED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml:2:3-77
+	android:name
+		ADDED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml:2:20-74
+uses-permission#android.permission.PACKAGE_USAGE_STATS
+ADDED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml:3:3-76
+	android:name
+		ADDED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml:3:20-73
+uses-sdk
+INJECTED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml
+INJECTED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/hari/Documents/my_git/ai_tool/mobile/modules/life-context/android/src/main/AndroidManifest.xml

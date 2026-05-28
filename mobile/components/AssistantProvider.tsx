@@ -21,6 +21,7 @@ import {
   getE2eHandsFreeWakePhrase,
   isE2eMockAuthEnabled,
   isE2eMockHandsFreeEnabled,
+  isE2eMockLifeContextEnabled,
 } from "@/lib/e2eMode";
 import { resolveSettingsLanguageAfterProfileRestore } from "@/lib/profileSync";
 import {
@@ -82,6 +83,13 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
                 wakePhrase: getE2eHandsFreeWakePhrase(),
                 modelType: "e2e_mock",
               },
+            }
+          : {}),
+        ...(isE2eMockLifeContextEnabled()
+          ? {
+              lifeContextEnabled: true,
+              shareLifeContextWithBackend: true,
+              shareAppNamesWithAi: true,
             }
           : {}),
       };
@@ -146,6 +154,10 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
         normalizedStoredSettings.cloudFallbackUserChoice ||
       resolvedSettings.cloudFallbackPolicyVersion !==
         normalizedStoredSettings.cloudFallbackPolicyVersion ||
+      resolvedSettings.lifeContextEnabled !== normalizedStoredSettings.lifeContextEnabled ||
+      resolvedSettings.shareLifeContextWithBackend !==
+        normalizedStoredSettings.shareLifeContextWithBackend ||
+      resolvedSettings.shareAppNamesWithAi !== normalizedStoredSettings.shareAppNamesWithAi ||
       resolvedSettings.handsFreeEnabled !== normalizedStoredSettings.handsFreeEnabled ||
       resolvedSettings.autoSpeakReplies !== normalizedStoredSettings.autoSpeakReplies ||
       resolvedSettings.wakePhrase !== normalizedStoredSettings.wakePhrase ||

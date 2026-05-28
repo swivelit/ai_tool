@@ -139,7 +139,7 @@ describe("local profiler", () => {
     });
 
     expect(result.history[0]?.content).toContain("Hari");
-    expect(result.totalSlots).toBe(15);
+    expect(result.totalSlots).toBe(16);
     expect(readJson(`${dataRoot}/profiles/7/profiler_state.json`).status).toBe("active");
     expect(mockedState.files.get(`${dataRoot}/conversations/7.jsonl`)).toContain("assistant");
   });
@@ -187,14 +187,15 @@ describe("local profiler", () => {
     expect(readJson(`${dataRoot}/profiles/9/profiler_state.json`).lastRunSource).toBe("fallback");
   });
 
-  it("completes after all 15 slots are filled and writes summary plus rag artifacts", async () => {
+  it("completes after all 16 slots are filled and writes summary plus rag artifacts", async () => {
     const { getLocalAgentWorkspaceInfo, sendProfilerMessageOnPhone } = await import("../lib/localAgents");
     const workspace = await getLocalAgentWorkspaceInfo();
-    expect(workspace.slots).toHaveLength(15);
+    expect(workspace.slots).toHaveLength(16);
 
     const prefilledAnswers = {
       preferred_language: "english",
       secondary_language: "tamil",
+      age_group: "26_35",
       occupation: "working_professional",
       industry_or_field: "technology",
       hobbies: ["music", "reading"],
@@ -240,7 +241,54 @@ describe("local profiler", () => {
     expect(result.done).toBe(true);
     expect(result.answers.work_rhythm).toBe("evening");
     expect(readJson(`${dataRoot}/profiles/10/summary.json`).summary).toContain("career_growth");
+    expect(readJson(`${dataRoot}/profiles/10/summary.json`).summary).toContain("Age group: 26_35");
     expect(readJson(`${dataRoot}/rag/runtime/10_profile_rag.json`).chunks.length).toBeGreaterThan(0);
     expect(readJson(`${dataRoot}/rag/runtime/10_chunks.json`).some((row: any) => row.sourceType === "profile")).toBe(true);
+  });
+
+  it("answers local life-context questions from provided context", async () => {
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+
+    const result = await runLocalAssistantTurn({
+      userId: 11,
+      message: "How much did I walk today and how long did I use my phone?",
+      replyLanguage: "en",
+      lifeContext: {
+        enabled: true,
+        date: "2026-05-28",
+        movementSummary: "7,420 steps, about 5.7 km walked (high confidence)",
+        screenSummary: "3.5 hours phone screen/app time today (high confidence)",
+        shareAppNamesWithAi: false,
+        raw: {
+          date: "2026-05-28",
+          timezone: "Asia/Kolkata",
+          permissions: {
+            activityRecognition: "granted",
+            usageAccess: "granted",
+          },
+          movement: {
+            steps: 7420,
+            estimatedDistanceMeters: 5650,
+            confidence: "high",
+            source: "e2e_mock",
+          },
+          screen: {
+            screenTimeMs: 12600000,
+            unlocks: null,
+            confidence: "high",
+            source: "e2e_mock",
+          },
+          apps: [],
+          generatedAt: "2026-05-28T00:00:00.000Z",
+        },
+      },
+    });
+
+    expect(result.route).toBe("local_answer");
+    expect(result.meta?.responsePath).toBe("life_context");
+    expect(result.assistantText).toContain("7,420 steps");
+    expect(result.assistantText).toContain("5.7 km");
+    expect(result.assistantText).toContain("3.5 hours");
+    expect(result.assistantText).toContain("foreground screen/app usage");
   });
 });

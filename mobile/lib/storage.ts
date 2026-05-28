@@ -63,6 +63,9 @@ export type AssistantSettings = {
   allowCloudFallback: boolean;
   cloudFallbackUserChoice?: boolean;
   cloudFallbackPolicyVersion?: number;
+  lifeContextEnabled: boolean;
+  shareLifeContextWithBackend: boolean;
+  shareAppNamesWithAi: boolean;
   handsFreeEnabled: boolean;
   autoSpeakReplies: boolean;
   wakePhrase: string;
@@ -80,6 +83,9 @@ export const DEFAULTS: { name: string; settings: AssistantSettings } = {
     languageMode: "ta",
     allowCloudFallback: true,
     cloudFallbackPolicyVersion: CLOUD_FALLBACK_POLICY_VERSION,
+    lifeContextEnabled: false,
+    shareLifeContextWithBackend: false,
+    shareAppNamesWithAi: false,
     handsFreeEnabled: false,
     autoSpeakReplies: false,
     wakePhrase: "Hey Elli",
@@ -221,6 +227,9 @@ export function normalizeAssistantSettings(
     cloudFallbackPolicyVersion: normalizeCloudFallbackPolicyVersion(
       value?.cloudFallbackPolicyVersion
     ),
+    lifeContextEnabled: value?.lifeContextEnabled === true,
+    shareLifeContextWithBackend: value?.shareLifeContextWithBackend === true,
+    shareAppNamesWithAi: value?.shareAppNamesWithAi === true,
     handsFreeEnabled: Boolean(value?.handsFreeEnabled),
     autoSpeakReplies: value?.autoSpeakReplies === true,
     wakePhrase,

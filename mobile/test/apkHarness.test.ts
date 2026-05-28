@@ -200,6 +200,9 @@ describe("APK test harness", () => {
       'export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO:-1}"',
     );
     expect(source).toContain(
+      'export EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT="${EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT:-}"',
+    );
+    expect(source).toContain(
       'export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"',
     );
     expect(source).toContain(
@@ -235,6 +238,7 @@ describe("APK test harness", () => {
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=");
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO=");
+      expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT=");
       expect(source).toContain("EXPO_PUBLIC_E2E_REPLY_LANGUAGE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_TAMIL_STYLE=");
       expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_QUERY=");
@@ -272,6 +276,7 @@ describe("APK test harness", () => {
     expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_VOICE_TURN");
     expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE");
     expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO");
+    expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT");
     expect(source).toContain("-u EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE");
     expect(source).toContain("-u EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND");
   });
@@ -349,6 +354,19 @@ describe("APK test harness", () => {
     expect(source).toContain("voice-markers.log");
     expect(source).toContain("voice-ui-clean");
     expect(source).toContain("history-kind-labels");
+  });
+
+  it("APK harness exercises mocked life context chat when enabled", () => {
+    const source = readRepo("test_apk.sh");
+
+    expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT");
+    expect(source).toContain("How much did I walk today and how long did I use my phone?");
+    expect(source).toContain("life-context-steps-missing");
+    expect(source).toContain("life-context-distance-missing");
+    expect(source).toContain("life-context-screen-time-missing");
+    expect(source).toContain("7,420");
+    expect(source).toContain("5.7");
+    expect(source).toContain("3.5 hours");
   });
 
   it("test_apk.sh checks Spitzola orb transcript and both TTS languages", () => {
@@ -486,6 +504,15 @@ describe("APK test harness", () => {
 
     await expect(import("../app.config")).rejects.toThrow(
       /EXPO_PUBLIC_E2E_MOCK_HANDS_FREE/,
+    );
+  });
+
+  it("release app config rejects E2E mock life context", async () => {
+    vi.stubEnv("JAI_BUILD_TYPE", "release");
+    vi.stubEnv("EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT", "1");
+
+    await expect(import("../app.config")).rejects.toThrow(
+      /EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT/,
     );
   });
 

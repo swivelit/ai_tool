@@ -13,6 +13,7 @@ import {
   getE2eVoiceSurface,
   isE2eMockAuthEnabled,
   isE2eMockHandsFreeEnabled,
+  isE2eMockLifeContextEnabled,
   isE2eMockVoiceTurnEnabled,
 } from "./e2eMode";
 import { auth } from "./firebase";
@@ -33,6 +34,8 @@ import {
 } from "./localAssistantProfile";
 import { tryBuildQuickLocalReply } from "./localQuickReplies";
 import { loadCloudFallbackConsent } from "./localAssistantSettings";
+import { getTodayLifeContextForAi } from "./lifeContext";
+import { getSettings } from "./storage";
 import { requiresImmediateBackendCurrentData } from "./currentDataGuards";
 import type { GlobalKnowledgeLookupHit } from "./globalKnowledgeSync";
 import {
@@ -1399,6 +1402,14 @@ function buildVoiceUnavailableResponse(
 }
 
 function e2eVoiceAnswerFor(query: string, replyLanguage: ReplyLanguage) {
+  if (
+    isE2eMockLifeContextEnabled() &&
+    /\b(walk|walked|steps?|distance|phone|screen|app time|apps?|used most)\b/i.test(query)
+  ) {
+    return replyLanguage === "en"
+      ? "Today you walked 7,420 steps, about 5.7 km. Your estimated phone screen/app time is 3.5 hours. This is from the E2E mock life context, not exact gaze tracking."
+      : "Innaiku 7,420 steps nadandhirukkinga, about 5.7 km. Phone screen/app time estimate 3.5 hours. Idhu mock life context-la irundhu, exact gaze tracking illa.";
+  }
   if (/spitzola/i.test(query)) {
     return replyLanguage === "en"
       ? "I’m not finding a common disease called ‘Spitzola’. It may be a misheard or misspelled term. Did you mean Spitz nevus, spirochete infection, or leptospirosis?"
@@ -2052,11 +2063,50 @@ function chatMessageFromBody(body?: any) {
   return String(body?.message ?? body?.text ?? "").trim();
 }
 
+function isLifeContextChatQuestion(message: string) {
+  return /\b(walk|walked|walking|steps?|distance|screen time|phone time|use my phone|used my phone|app time|apps? did i use|used most|top apps?|app usage)\b/i.test(
+    message,
+  );
+}
+
 function chatReplyLanguageFromBody(body?: any): ReplyLanguage | undefined {
   return (
     normalizeReplyLanguage(body?.reply_language ?? body?.replyLanguage) ||
     undefined
   );
+}
+
+export async function buildChatRequestWithLifeContext(body?: any) {
+  if (!body || typeof body !== "object") return body;
+  if (body.client_context?.life_context) return body;
+
+  try {
+    const settings = await getSettings();
+    if (!settings.lifeContextEnabled || !settings.shareLifeContextWithBackend) {
+      return body;
+    }
+    const userId = Number(body.user_id ?? body.userId ?? 0);
+    const profile = userId > 0 ? await loadCachedLocalAssistantProfile(userId) : undefined;
+    const lifeContext = await getTodayLifeContextForAi({
+      settings,
+      profile,
+      forBackend: true,
+    });
+    if (!lifeContext.enabled) {
+      return body;
+    }
+    return {
+      ...body,
+      client_context: {
+        ...(body.client_context && typeof body.client_context === "object"
+          ? body.client_context
+          : {}),
+        life_context: lifeContext,
+      },
+    };
+  } catch {
+    return body;
+  }
 }
 
 function requestLightweightGlobalKnowledgeSync() {
@@ -2154,6 +2204,9 @@ async function maybeServeSyncedGlobalKnowledgeChat(
   if (!isChatPath(path)) return null;
   const message = chatMessageFromBody(body);
   if (!message || requiresImmediateBackendCurrentData(message)) {
+    return null;
+  }
+  if (isLifeContextChatQuestion(message)) {
     return null;
   }
   const requestId = String(body?.request_id ?? body?.requestId ?? "").trim() || null;
@@ -2390,6 +2443,17 @@ async function handleLocalChat(
     message,
   });
   const userProfile = withResolvedReplyLanguage(cachedProfile, replyLanguage);
+  const shouldLoadLifeContext = isLifeContextChatQuestion(message);
+  const settings = shouldLoadLifeContext ? await timeStage("settings", () => getSettings()) : null;
+  const lifeContext =
+    settings?.lifeContextEnabled
+      ? await timeStage("life_context", () =>
+          getTodayLifeContextForAi({
+            settings,
+            profile: userProfile,
+          }),
+        )
+      : undefined;
   const deviceInfo = await timeStage("device_capabilities", () =>
     getCachedDeviceCapabilities(),
   );
@@ -2462,6 +2526,7 @@ async function handleLocalChat(
       requestId,
       abortSignal: localAbortController.signal,
       localDeadlineMs: Date.now() + localBudgetMs,
+      ...(lifeContext ? { lifeContext } : {}),
       ...(userProfile ? { userProfile } : {}),
     }),
   );
@@ -2843,11 +2908,12 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
   }
 
   if (localChatInterceptionDepth === 0 && chatPath) {
-    const localHit = await maybeServeSyncedGlobalKnowledgeChat(path, body);
+    const requestBody = await buildChatRequestWithLifeContext(body);
+    const localHit = await maybeServeSyncedGlobalKnowledgeChat(path, requestBody);
     if (localHit) {
       return localHit as T;
     }
-    const response = await apiPostBackendOnly<T>(path, body);
+    const response = await apiPostBackendOnly<T>(path, requestBody);
     requestLightweightGlobalKnowledgeSync();
     return response;
   }

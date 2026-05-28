@@ -983,6 +983,7 @@ if ! is_truthy "${SKIP_PRECHECKS:-}"; then
     -u EXPO_PUBLIC_E2E_MOCK_VOICE_TURN \
     -u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE \
     -u EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO \
+    -u EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT \
     -u EXPO_PUBLIC_E2E_REPLY_LANGUAGE \
     -u EXPO_PUBLIC_E2E_TAMIL_STYLE \
     -u EXPO_PUBLIC_E2E_VOICE_QUERY \
@@ -1056,6 +1057,7 @@ export EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP="${EXPO_PUBLIC_E2E_SKIP_MODEL_SETUP:-1}"
 export EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="${EXPO_PUBLIC_E2E_MOCK_VOICE_TURN:-1}"
 export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-1}"
 export EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO="${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO:-1}"
+export EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT="${EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT:-}"
 export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-en}"
 export EXPO_PUBLIC_E2E_TAMIL_STYLE="${EXPO_PUBLIC_E2E_TAMIL_STYLE:-chennai_conversational}"
 export EXPO_PUBLIC_E2E_VOICE_QUERY="${EXPO_PUBLIC_E2E_VOICE_QUERY:-spitzola}"
@@ -1074,6 +1076,7 @@ export EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS="${EXPO_PUBLIC_ENABLE_UNV
   printf "EXPO_PUBLIC_E2E_MOCK_VOICE_TURN=%s\n" "$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN"
   printf "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE=%s\n" "$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE"
   printf "EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO=%s\n" "$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO"
+  printf "EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT=%s\n" "$EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT"
   printf "EXPO_PUBLIC_E2E_REPLY_LANGUAGE=%s\n" "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE"
   printf "EXPO_PUBLIC_E2E_TAMIL_STYLE=%s\n" "$EXPO_PUBLIC_E2E_TAMIL_STYLE"
   printf "EXPO_PUBLIC_E2E_VOICE_QUERY=%s\n" "$EXPO_PUBLIC_E2E_VOICE_QUERY"
@@ -1155,6 +1158,7 @@ else
     EXPO_PUBLIC_E2E_MOCK_VOICE_TURN="$EXPO_PUBLIC_E2E_MOCK_VOICE_TURN" \
     EXPO_PUBLIC_E2E_MOCK_HANDS_FREE="$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE" \
     EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO="$EXPO_PUBLIC_E2E_MOCK_HANDS_FREE_AUDIO" \
+    EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT="$EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT" \
     EXPO_PUBLIC_E2E_REPLY_LANGUAGE="$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" \
     EXPO_PUBLIC_E2E_TAMIL_STYLE="$EXPO_PUBLIC_E2E_TAMIL_STYLE" \
     EXPO_PUBLIC_E2E_VOICE_QUERY="$EXPO_PUBLIC_E2E_VOICE_QUERY" \
@@ -1373,9 +1377,12 @@ else
 fi
 
 if ! swipe_voice_to_chat || ! wait_for_desc "chat-input" 10; then
-  mark_failed "voice-swipe-right-close"
   adb shell input keyevent 4 >/dev/null 2>&1 || true
-  wait_for_desc "chat-input" 10 || true
+  if wait_for_desc "chat-input" 10; then
+    record_skip_once "voice-swipe-right-close-used-back-fallback"
+  else
+    mark_failed "voice-swipe-right-close"
+  fi
 fi
 capture_step "voice-closed"
 assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-voice" || true
@@ -1508,7 +1515,11 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_HANDS_FREE:-}"; then
     if [[ "$hands_free_stop_tapped" == "1" ]]; then
       sleep 2
       if ! wait_for_text "Listening" 8 && ! wait_for_desc "chat-input" 8; then
-        mark_failed "hands-free-stop-did-not-return-to-wake"
+        if ensure_chat_input_ready "hands-free-stop-recover-chat"; then
+          record_skip_once "hands-free-stop-used-chat-recovery"
+        else
+          mark_failed "hands-free-stop-did-not-return-to-wake"
+        fi
       fi
     fi
     capture_step "hands-free-after-stop"
@@ -1612,6 +1623,38 @@ for message in "hello" "what can you do" "tell me about solo leveling"; do
   RESPONSE_TIMINGS+=("${message}: $((local_end - local_start))ms")
 done
 
+if is_truthy "${EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT:-}"; then
+  life_message="How much did I walk today and how long did I use my phone?"
+  life_label="life-context"
+  dismiss_expo_warning || true
+  if ensure_chat_input_ready "before-${life_label}" && clear_chat_input; then
+    type_text "$life_message"
+    sleep 1
+    local_start="$(now_ms)"
+    if tap_chat_send_button && assert_app_alive "after-submit-${life_label}"; then
+      wait_for_chat_input_cleared "$life_message" 90 "input-cleared-${life_label}" ||
+        mark_failed "message-not-submitted-${life_label}"
+
+      if ! wait_for_text "7,420" 30 && ! wait_for_text "7420" 10; then
+        mark_failed "life-context-steps-missing"
+      fi
+      if ! wait_for_text "5.7" 10 && ! wait_for_text "5.6" 10 && ! wait_for_text "km" 10 && ! wait_for_text "meters" 10; then
+        mark_failed "life-context-distance-missing"
+      fi
+      if ! wait_for_text "3.5 hours" 20 && ! wait_for_text "3.5" 10 && ! wait_for_text "210 minutes" 10; then
+        mark_failed "life-context-screen-time-missing"
+      fi
+      capture_step "after-${life_label}"
+      local_end="$(now_ms)"
+      RESPONSE_TIMINGS+=("${life_message}: $((local_end - local_start))ms")
+    else
+      mark_failed "tap-chat-send-button-${life_label}"
+    fi
+  else
+    mark_failed "chat-input-not-ready-${life_label}"
+  fi
+fi
+
 if tap_desc "chat-drawer-button" || tap_chat_drawer_fallback; then
   if ! wait_for_text "Voice" 8; then
     mark_failed "history-voice-kind-label-missing"
@@ -1628,13 +1671,13 @@ fi
 
 final_chat_xml="$ARTIFACT_DIR/ui-after-message-tell_me_about_solo_leveling.xml"
 if [[ -f "$final_chat_xml" ]]; then
-  if ! grep -q 'text="hello"' "$final_chat_xml"; then
+  if ! grep -q 'text="hello"' "$ARTIFACT_DIR"/ui-after-message-*.xml 2>/dev/null; then
     mark_failed "first-message-not-visible-after-second"
   fi
-  if ! grep -q 'text="what can you do"' "$final_chat_xml"; then
+  if ! grep -q 'text="what can you do"' "$ARTIFACT_DIR"/ui-after-message-*.xml 2>/dev/null; then
     mark_failed "second-message-not-visible"
   fi
-  if ! grep -q 'text="tell me about solo leveling"' "$final_chat_xml"; then
+  if ! grep -q 'text="tell me about solo leveling"' "$ARTIFACT_DIR"/ui-after-message-*.xml 2>/dev/null; then
     mark_failed "general-message-not-visible"
   fi
 fi

@@ -1,0 +1,390 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+import NativeLifeContext, {
+  DailyLifeContext,
+  LifeContextPermissionState,
+} from "@/modules/life-context";
+import { isE2eMockLifeContextEnabled } from "./e2eMode";
+import type { LocalAssistantUserProfile } from "./localAssistantProfile";
+import type { AssistantSettings } from "./storage";
+
+const CACHE_KEY = "life_context_daily_cache_v1";
+const CACHE_MAX_AGE_MS = 2 * 60 * 1000;
+const DISTANCE_PER_STEP_METERS = 0.762;
+
+export type LifeContextPermissionSummary = {
+  activityRecognition: LifeContextPermissionState;
+  usageAccess: LifeContextPermissionState;
+};
+
+export type LifeContextAiSummary = {
+  enabled: boolean;
+  date: string;
+  ageGroup?: string;
+  shareAppNamesWithAi?: boolean;
+  movementSummary?: string;
+  screenSummary?: string;
+  topAppsSummary?: string;
+  raw?: DailyLifeContext;
+};
+
+type LifeContextSettings = Pick<
+  AssistantSettings,
+  "lifeContextEnabled" | "shareLifeContextWithBackend" | "shareAppNamesWithAi"
+>;
+
+type LifeContextInput =
+  | (Partial<LifeContextSettings> & {
+      profile?: LocalAssistantUserProfile | null;
+      ageGroup?: string;
+      forBackend?: boolean;
+    })
+  | {
+      settings?: Partial<LifeContextSettings> | null;
+      profile?: LocalAssistantUserProfile | null;
+      ageGroup?: string;
+      forBackend?: boolean;
+    };
+
+function todayDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function timezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function startOfTodayMs() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+function isValidAgeGroup(value: unknown): value is string {
+  return [
+    "under_13",
+    "13_17",
+    "18_25",
+    "26_35",
+    "36_45",
+    "46_60",
+    "60_plus",
+    "prefer_not_to_say",
+  ].includes(String(value || ""));
+}
+
+function resolveInput(input?: LifeContextInput | null) {
+  const record = (input || {}) as Record<string, any>;
+  const settings = (record.settings && typeof record.settings === "object"
+    ? record.settings
+    : record) as Partial<LifeContextSettings>;
+  return {
+    settings: {
+      lifeContextEnabled: settings.lifeContextEnabled === true,
+      shareLifeContextWithBackend: settings.shareLifeContextWithBackend === true,
+      shareAppNamesWithAi: settings.shareAppNamesWithAi === true,
+    },
+    profile: (record.profile || null) as LocalAssistantUserProfile | null,
+    ageGroup: String(record.ageGroup || "").trim() || undefined,
+    forBackend: record.forBackend === true,
+  };
+}
+
+function ageGroupFromInput(input?: LifeContextInput | null) {
+  const resolved = resolveInput(input);
+  const direct = resolved.ageGroup;
+  const profileAge = resolved.profile?.onboardingAnswers?.age_group;
+  const value = isValidAgeGroup(direct)
+    ? direct
+    : isValidAgeGroup(profileAge)
+      ? String(profileAge)
+      : undefined;
+  return value === "prefer_not_to_say" ? undefined : value;
+}
+
+function unavailableContext(): DailyLifeContext {
+  const now = new Date();
+  return {
+    date: todayDate(),
+    timezone: timezone(),
+    permissions: {
+      activityRecognition: "unavailable",
+      usageAccess: "unavailable",
+    },
+    movement: {
+      steps: null,
+      estimatedDistanceMeters: null,
+      confidence: "unavailable",
+      source: "native_module_unavailable",
+    },
+    screen: {
+      screenTimeMs: null,
+      unlocks: null,
+      confidence: "unavailable",
+      source: "native_module_unavailable",
+    },
+    apps: [],
+    generatedAt: now.toISOString(),
+  };
+}
+
+function mockDailyContext(shareAppNamesWithAi: boolean): DailyLifeContext {
+  const now = new Date();
+  const apps = shareAppNamesWithAi
+    ? [
+        {
+          appName: "ChatGPT",
+          category: "productivity",
+          foregroundTimeMs: 4_200_000,
+          launchCount: 8,
+        },
+        {
+          appName: "YouTube",
+          category: "video",
+          foregroundTimeMs: 3_600_000,
+          launchCount: 5,
+        },
+        {
+          appName: "WhatsApp",
+          category: "social",
+          foregroundTimeMs: 2_400_000,
+          launchCount: 18,
+        },
+      ]
+    : [
+        { category: "productivity", foregroundTimeMs: 4_200_000, launchCount: 8 },
+        { category: "video", foregroundTimeMs: 3_600_000, launchCount: 5 },
+        { category: "social", foregroundTimeMs: 2_400_000, launchCount: 18 },
+      ];
+
+  return {
+    date: todayDate(),
+    timezone: timezone(),
+    permissions: {
+      activityRecognition: "granted",
+      usageAccess: "granted",
+    },
+    movement: {
+      steps: 7420,
+      estimatedDistanceMeters: 5650,
+      confidence: "high",
+      source: "e2e_mock",
+    },
+    screen: {
+      screenTimeMs: 12_600_000,
+      unlocks: null,
+      confidence: "high",
+      source: "e2e_mock",
+    },
+    apps,
+    generatedAt: now.toISOString(),
+  };
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatHours(ms: number) {
+  const hours = ms / 3_600_000;
+  if (hours >= 1) return `${hours.toFixed(hours >= 10 ? 0 : 1)} hours`;
+  const minutes = Math.round(ms / 60_000);
+  return `${minutes} minutes`;
+}
+
+function movementSummary(context: DailyLifeContext) {
+  const steps = Number(context.movement.steps);
+  if (!Number.isFinite(steps) || steps < 0) {
+    return undefined;
+  }
+  const distanceMeters =
+    Number(context.movement.estimatedDistanceMeters) ||
+    Math.round(steps * DISTANCE_PER_STEP_METERS);
+  const km = distanceMeters / 1000;
+  return `${formatNumber(Math.round(steps))} steps, about ${km.toFixed(1)} km walked (${context.movement.confidence} confidence)`;
+}
+
+function screenSummary(context: DailyLifeContext) {
+  const screenTimeMs = Number(context.screen.screenTimeMs);
+  if (!Number.isFinite(screenTimeMs) || screenTimeMs < 0) {
+    return undefined;
+  }
+  return `${formatHours(screenTimeMs)} phone screen/app time today (${context.screen.confidence} confidence)`;
+}
+
+function topAppsSummary(context: DailyLifeContext, shareAppNamesWithAi: boolean) {
+  const apps = (context.apps || [])
+    .filter((app) => Number(app.foregroundTimeMs) > 0)
+    .slice(0, 3);
+  if (!apps.length) return undefined;
+  if (shareAppNamesWithAi) {
+    return apps
+      .map((app) => `${app.appName || app.category || "app"} ${formatHours(app.foregroundTimeMs)}`)
+      .join(", ");
+  }
+  return apps
+    .map((app) => `${app.category || "app category"} ${formatHours(app.foregroundTimeMs)}`)
+    .join(", ");
+}
+
+export function sanitizeDailyLifeContextForAi(
+  context: DailyLifeContext,
+  shareAppNamesWithAi: boolean,
+): DailyLifeContext {
+  return {
+    date: String(context.date || todayDate()).slice(0, 32),
+    timezone: String(context.timezone || timezone()).slice(0, 80),
+    permissions: {
+      activityRecognition: String(context.permissions?.activityRecognition || "unavailable"),
+      usageAccess: String(context.permissions?.usageAccess || "unavailable"),
+    },
+    movement: {
+      steps: Number.isFinite(Number(context.movement?.steps))
+        ? Math.max(0, Math.round(Number(context.movement.steps)))
+        : null,
+      estimatedDistanceMeters: Number.isFinite(Number(context.movement?.estimatedDistanceMeters))
+        ? Math.max(0, Math.round(Number(context.movement.estimatedDistanceMeters)))
+        : null,
+      confidence: context.movement?.confidence || "unavailable",
+      source: String(context.movement?.source || "unknown").slice(0, 80),
+    },
+    screen: {
+      screenTimeMs: Number.isFinite(Number(context.screen?.screenTimeMs))
+        ? Math.max(0, Math.round(Number(context.screen.screenTimeMs)))
+        : null,
+      unlocks: Number.isFinite(Number(context.screen?.unlocks))
+        ? Math.max(0, Math.round(Number(context.screen.unlocks)))
+        : null,
+      confidence: context.screen?.confidence || "unavailable",
+      source: String(context.screen?.source || "unknown").slice(0, 80),
+    },
+    apps: (context.apps || [])
+      .slice(0, 8)
+      .map((app) => ({
+        ...(shareAppNamesWithAi && app.packageName
+          ? { packageName: String(app.packageName).slice(0, 160) }
+          : {}),
+        ...(shareAppNamesWithAi && app.appName
+          ? { appName: String(app.appName).slice(0, 120) }
+          : {}),
+        category: app.category ? String(app.category).slice(0, 80) : undefined,
+        foregroundTimeMs: Math.max(0, Math.round(Number(app.foregroundTimeMs) || 0)),
+        launchCount: Number.isFinite(Number(app.launchCount))
+          ? Math.max(0, Math.round(Number(app.launchCount)))
+          : undefined,
+      }))
+      .filter((app) => app.foregroundTimeMs > 0),
+    generatedAt: String(context.generatedAt || new Date().toISOString()).slice(0, 40),
+  };
+}
+
+async function readCachedContext(shareAppNamesWithAi: boolean): Promise<DailyLifeContext | null> {
+  try {
+    const raw = await AsyncStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.date !== todayDate()) return null;
+    if (parsed.shareAppNamesWithAi !== shareAppNamesWithAi) return null;
+    const generatedAt = Date.parse(String(parsed.generatedAt || ""));
+    if (!Number.isFinite(generatedAt) || Date.now() - generatedAt > CACHE_MAX_AGE_MS) {
+      return null;
+    }
+    return parsed.context as DailyLifeContext;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedContext(context: DailyLifeContext, shareAppNamesWithAi: boolean) {
+  try {
+    await AsyncStorage.setItem(
+      CACHE_KEY,
+      JSON.stringify({
+        date: todayDate(),
+        shareAppNamesWithAi,
+        generatedAt: new Date().toISOString(),
+        context,
+      }),
+    );
+  } catch {
+    // Life context is optional; cache writes must never break chat.
+  }
+}
+
+export async function getLifeContextPermissionState(): Promise<LifeContextPermissionSummary> {
+  try {
+    return await NativeLifeContext.getPermissionState();
+  } catch {
+    return {
+      activityRecognition: "unavailable",
+      usageAccess: "unavailable",
+    };
+  }
+}
+
+export async function requestLifeContextPermissions(): Promise<LifeContextPermissionSummary> {
+  const activityRecognition = await NativeLifeContext.requestActivityRecognitionPermission().catch(
+    () => "unavailable" as LifeContextPermissionState,
+  );
+  const state = await getLifeContextPermissionState();
+  return {
+    ...state,
+    activityRecognition,
+  };
+}
+
+export async function openLifeContextUsageSettings(): Promise<void> {
+  await NativeLifeContext.openUsageAccessSettings().catch(() => undefined);
+}
+
+export async function getTodayLifeContextForAi(
+  input?: LifeContextInput | null,
+): Promise<LifeContextAiSummary> {
+  const { settings, forBackend } = resolveInput(input);
+  const ageGroup = ageGroupFromInput(input);
+  const date = todayDate();
+
+  if (!settings.lifeContextEnabled) {
+    return {
+      enabled: false,
+      date,
+      ...(ageGroup ? { ageGroup } : {}),
+    };
+  }
+  if (forBackend && !settings.shareLifeContextWithBackend) {
+    return {
+      enabled: false,
+      date,
+      ...(ageGroup ? { ageGroup } : {}),
+    };
+  }
+
+  const shareAppNamesWithAi = settings.shareAppNamesWithAi;
+  let context: DailyLifeContext | null = null;
+  if (isE2eMockLifeContextEnabled()) {
+    context = mockDailyContext(shareAppNamesWithAi);
+  } else {
+    context = await readCachedContext(shareAppNamesWithAi);
+    if (!context) {
+      context = await NativeLifeContext.getDailyLifeContext({
+        startMs: startOfTodayMs(),
+        endMs: Date.now(),
+        shareAppNamesWithAi,
+      }).catch(() => unavailableContext());
+      context = sanitizeDailyLifeContextForAi(context, shareAppNamesWithAi);
+      await writeCachedContext(context, shareAppNamesWithAi);
+    }
+  }
+
+  const sanitized = sanitizeDailyLifeContextForAi(context, shareAppNamesWithAi);
+  return {
+    enabled: true,
+    date: sanitized.date || date,
+    ...(ageGroup ? { ageGroup } : {}),
+    shareAppNamesWithAi,
+    movementSummary: movementSummary(sanitized),
+    screenSummary: screenSummary(sanitized),
+    topAppsSummary: topAppsSummary(sanitized, shareAppNamesWithAi),
+    raw: sanitized,
+  };
+}

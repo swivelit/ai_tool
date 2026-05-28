@@ -68,6 +68,7 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
         f"Requested reply language: {language}. The final answer must obey this requested reply_language.",
         _language_contract(language),
         "Apply saved profile preferences and onboarding answers when available. Do not invent profile facts.",
+        "Use life context only when provided. If the user asks about walking, movement, screen time, or app usage, answer from the provided context and mention confidence or permission gaps. Do not claim exact gaze or screen-looking time. Never invent missing life data.",
         _style_policy(request.message),
     ]
     if _looks_unclear_medical_like(request.message):

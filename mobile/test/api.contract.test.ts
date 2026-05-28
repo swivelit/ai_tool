@@ -203,6 +203,131 @@ describe("API client contracts", () => {
     );
   });
 
+  it("does not attach life context when Life Intelligence is disabled", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    mockCachedProfile({ userId: 7 }, { lifeContextEnabled: false });
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "ok" }, item: { id: 1 } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "hello",
+      reply_language: "en",
+    });
+
+    const body = JSON.parse(String(backendChatCalls(fetchMock)[0][1].body));
+    expect(body.client_context).toBeUndefined();
+  });
+
+  it("does not attach life context when backend sharing is disabled", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT: "1",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    mockCachedProfile(
+      { userId: 7 },
+      {
+        lifeContextEnabled: true,
+        shareLifeContextWithBackend: false,
+        shareAppNamesWithAi: true,
+      },
+    );
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "ok" }, item: { id: 1 } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "How much did I walk today?",
+      reply_language: "en",
+    });
+
+    const body = JSON.parse(String(backendChatCalls(fetchMock)[0][1].body));
+    expect(body.client_context).toBeUndefined();
+  });
+
+  it("attaches compact sanitized mock life context when sharing is enabled", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT: "1",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    mockCachedProfile(
+      { userId: 7, onboardingAnswers: { age_group: "26_35" } },
+      {
+        lifeContextEnabled: true,
+        shareLifeContextWithBackend: true,
+        shareAppNamesWithAi: false,
+      },
+    );
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "ok" }, item: { id: 1 } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "How much did I walk today?",
+      reply_language: "en",
+    });
+
+    const body = JSON.parse(String(backendChatCalls(fetchMock)[0][1].body));
+    const lifeContext = body.client_context.life_context;
+    const dumped = JSON.stringify(lifeContext);
+    expect(lifeContext.raw.movement.steps).toBe(7420);
+    expect(lifeContext.movementSummary).toContain("5.7 km");
+    expect(lifeContext.screenSummary).toContain("3.5 hours");
+    expect(lifeContext.ageGroup).toBe("26_35");
+    expect(dumped).not.toContain("ChatGPT");
+    expect(dumped).not.toContain("packageName");
+  });
+
   it("preserves explicit voice reply and speech language query params", async () => {
     vi.doMock("expo-constants", () => ({
       default: {
