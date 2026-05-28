@@ -3683,10 +3683,10 @@ const SLOT_KEYWORD_MAP: Record<string, Record<string, string[]>> = {
   age_group: {
     under_13: ["under 13", "under_13", "below 13", "younger than 13"],
     "13_17": ["13 17", "13_17", "teen", "teenager", "minor", "school age"],
-    "18_25": ["18 25", "18_25", "young adult"],
-    "26_35": ["26 35", "26_35"],
-    "36_45": ["36 45", "36_45"],
-    "46_60": ["46 60", "46_60"],
+    "18_25": ["18 25", "18_25", "18-25", "young adult"],
+    "26_35": ["26 35", "26_35", "26-35"],
+    "36_45": ["36 45", "36_45", "36-45"],
+    "46_60": ["46 60", "46_60", "46-60"],
     "60_plus": ["60 plus", "60+", "60_plus", "senior"],
     prefer_not_to_say: ["prefer not", "rather not say", "don't want to say"],
   },
@@ -7744,10 +7744,11 @@ async function runProfilerExtractionInsideNormalChat(opts: {
   };
 }
 
+const LIFE_CONTEXT_QUESTION_RE =
+  /\b(walk|walked|walking|steps?|distance|screen\s*time|phone\s*time|use\s+my\s+phone|used\s+my\s+phone|app\s*time|apps?\s+did\s+i\s+use|used\s+most|top\s+apps?|app\s+usage)\b|(?:இன்று|இன்னைக்கு|எவ்வளவு|எத்தனை).*(?:நட|steps?|phone|போன்|screen|apps?|செயலி|நேரம்)|(?:phone|screen|apps?|enna|naan|n[ae]an|innaiku|indru|evlo|evalavu).*(?:evlo|neram|use\s*pann|panninen|nadanthen|nadandhen|adhigama|steps?)/i;
+
 function isLifeContextQuestion(message: string) {
-  return /\b(walk|walked|walking|steps?|distance|screen time|phone time|use my phone|used my phone|app time|apps? did i use|used most|top apps?|app usage)\b/i.test(
-    message,
-  );
+  return LIFE_CONTEXT_QUESTION_RE.test(String(message || ""));
 }
 
 function lifePermissionGap(lifeContext?: LifeContextAiSummary) {
@@ -7768,9 +7769,12 @@ function buildLifeContextAnswer(
   lifeContext: LifeContextAiSummary | undefined,
   replyLanguage: ReplyLanguage,
 ) {
-  const wantsMovement = /\b(walk|walked|walking|steps?|distance)\b/i.test(message);
-  const wantsScreen = /\b(screen time|phone time|use my phone|used my phone|app time)\b/i.test(message);
-  const wantsApps = /\b(apps? did i use|used most|top apps?|app usage)\b/i.test(message);
+  const wantsMovement =
+    /\b(walk|walked|walking|steps?|distance)\b|(?:நட|steps?)|(?:nadanthen|nadandhen)/i.test(message);
+  const wantsScreen =
+    /\b(screen\s*time|phone\s*time|use\s+my\s+phone|used\s+my\s+phone|app\s*time)\b|(?:போன்|phone|screen).*(?:நேரம்|neram|evlo|use\s*pann|panninen)/i.test(message);
+  const wantsApps =
+    /\b(apps?\s+did\s+i\s+use|used\s+most|top\s+apps?|app\s+usage)\b|(?:apps?|செயலி|enna).*(?:adhigama|used?\s*most|use\s*pann|panninen)/i.test(message);
   const english = replyLanguage !== "ta";
 
   if (!lifeContext?.enabled) {

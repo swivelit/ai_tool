@@ -109,6 +109,13 @@ export type BackendFallbackReason =
   | "no_safe_local_answer"
   | "live_data_needed";
 
+const LIFE_CONTEXT_QUESTION_RE =
+  /\b(walk|walked|walking|steps?|distance|screen\s*time|phone\s*time|use\s+my\s+phone|used\s+my\s+phone|app\s*time|apps?\s+did\s+i\s+use|used\s+most|top\s+apps?|app\s+usage)\b|(?:இன்று|இன்னைக்கு|எவ்வளவு|எத்தனை).*(?:நட|steps?|phone|போன்|screen|apps?|செயலி|நேரம்)|(?:phone|screen|apps?|enna|naan|n[ae]an|innaiku|indru|evlo|evalavu).*(?:evlo|neram|use\s*pann|panninen|nadanthen|nadandhen|adhigama|steps?)/i;
+
+function isLifeContextText(message: string) {
+  return LIFE_CONTEXT_QUESTION_RE.test(String(message || ""));
+}
+
 function isAbortError(error: unknown) {
   return (
     (typeof DOMException !== "undefined" &&
@@ -1402,10 +1409,7 @@ function buildVoiceUnavailableResponse(
 }
 
 function e2eVoiceAnswerFor(query: string, replyLanguage: ReplyLanguage) {
-  if (
-    isE2eMockLifeContextEnabled() &&
-    /\b(walk|walked|steps?|distance|phone|screen|app time|apps?|used most)\b/i.test(query)
-  ) {
+  if (isE2eMockLifeContextEnabled() && isLifeContextText(query)) {
     return replyLanguage === "en"
       ? "Today you walked 7,420 steps, about 5.7 km. Your estimated phone screen/app time is 3.5 hours. This is from the E2E mock life context, not exact gaze tracking."
       : "Innaiku 7,420 steps nadandhirukkinga, about 5.7 km. Phone screen/app time estimate 3.5 hours. Idhu mock life context-la irundhu, exact gaze tracking illa.";
@@ -2064,9 +2068,7 @@ function chatMessageFromBody(body?: any) {
 }
 
 function isLifeContextChatQuestion(message: string) {
-  return /\b(walk|walked|walking|steps?|distance|screen time|phone time|use my phone|used my phone|app time|apps? did i use|used most|top apps?|app usage)\b/i.test(
-    message,
-  );
+  return isLifeContextText(message);
 }
 
 function chatReplyLanguageFromBody(body?: any): ReplyLanguage | undefined {

@@ -291,4 +291,50 @@ describe("local profiler", () => {
     expect(result.assistantText).toContain("3.5 hours");
     expect(result.assistantText).toContain("foreground screen/app usage");
   });
+
+  it("answers Tamil/Tanglish local life-context questions", async () => {
+    const { runLocalAssistantTurn } = await import("../lib/localAgents");
+
+    const result = await runLocalAssistantTurn({
+      userId: 12,
+      message: "இன்று நான் எவ்வளவு நடந்தேன்? phone evlo neram use panninen?",
+      replyLanguage: "ta",
+      lifeContext: {
+        enabled: true,
+        date: "2026-05-28",
+        movementSummary: "7,420 steps today (74% of daily goal), ~5.7 km walked (high confidence)",
+        screenSummary: "3.5 hours screen time today (healthy, high confidence)",
+        topAppsSummary: "Top apps: productivity 1.2 hours (mostly productivity)",
+        shareAppNamesWithAi: false,
+        raw: {
+          date: "2026-05-28",
+          timezone: "Asia/Kolkata",
+          permissions: {
+            activityRecognition: "granted",
+            usageAccess: "granted",
+          },
+          movement: {
+            steps: 7420,
+            estimatedDistanceMeters: 5650,
+            confidence: "high",
+            source: "e2e_mock",
+          },
+          screen: {
+            screenTimeMs: 12600000,
+            unlocks: null,
+            confidence: "high",
+            source: "e2e_mock",
+          },
+          apps: [{ category: "productivity", foregroundTimeMs: 4200000 }],
+          generatedAt: "2026-05-28T00:00:00.000Z",
+        },
+      },
+    });
+
+    expect(result.route).toBe("local_answer");
+    expect(result.meta?.responsePath).toBe("life_context");
+    expect(result.assistantText).toContain("7,420 steps");
+    expect(result.assistantText).toContain("3.5 hours");
+    expect(result.assistantText).toContain("exact gaze tracking illa");
+  });
 });

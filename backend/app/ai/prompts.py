@@ -4,6 +4,8 @@ import os
 import re
 from typing import Any
 
+from app.age_utils import normalize_age_group
+
 from .types import AIRequest, AIRoute
 
 
@@ -114,7 +116,7 @@ def _age_adaptive_style(metadata: dict | None) -> str:
     Returns an age-group-aware communication style directive.
     Called from build_system_instructions() when age_group is in metadata.
     """
-    age_group = str((metadata or {}).get("age_group") or "").strip()
+    age_group = normalize_age_group((metadata or {}).get("age_group"))
     if not age_group or age_group == "prefer_not_to_say":
         return ""
 
@@ -124,36 +126,37 @@ def _age_adaptive_style(metadata: dict | None) -> str:
             "Short sentences, maximum 1-2 sentences per idea. No jargon, no statistics. "
             "Use friendly encouraging language. When discussing screen time or steps, "
             "compare to fun things (e.g. 'that's like walking to school and back twice!'). "
-            "Safe limits for this age: screen time max 1 hour/day for recreational use (WHO). "
+            "App wellness heuristic for this age: about 1 hour/day recreational screen time "
+            "as a soft signal, not medical advice. "
             "Never use adult health framing. Always be warm, patient, and encouraging. "
             "If screen time is high, gently suggest an outdoor activity, not a lecture."
         ),
         "13_17": (
             "Age adaptation (teenager, 13-17): Use relatable casual language without being "
             "condescending. Short paragraphs. Avoid lecturing. Frame health data as "
-            "'your stats' not medical advice. Screen limit context: 2 hours recreational "
-            "screen time is the recommended max (many experts suggest this). Steps goal: "
+            "'your stats' not medical advice. Screen-time context: about 2 hours recreational "
+            "screen time is a soft app wellness heuristic. Steps goal estimate: "
             "11,000-13,500/day for teens. If they've hit goals, celebrate it genuinely. "
             "If screen time is high, frame it as 'here's what the numbers say, up to you'. "
             "Emoji are fine (1-2 max), avoid corporate/clinical tone."
         ),
         "18_25": (
             "Age adaptation (young adult, 18-25): Peer-level tone, direct and honest. "
-            "Can use mild casual language. Steps goal: 8,000-10,000/day (WHO). "
+            "Can use mild casual language. Steps goal estimate: 8,000-10,000/day. "
             "Screen time: 3-4 hours is moderate, >6 hours is worth noting. "
-            "Frame insights as useful signals, not warnings. "
+            "Frame insights as useful general wellness estimates, not warnings. "
             "Can reference productivity and focus angle for screen time. "
             "Keep it concise and actionable."
         ),
         "26_35": (
             "Age adaptation (adult, 26-35): Professional but conversational. "
-            "Steps goal: 8,000-10,000/day. Screen time: 4 hours is moderate, >7 is high. "
+            "Steps goal estimate: 8,000-10,000/day. Screen time: 4 hours is moderate, >7 is high. "
             "Can mention work-life balance angle. Frame movement as energy, not just health. "
             "Be direct with insights. No need for heavy encouragement, just facts + one tip."
         ),
         "36_45": (
             "Age adaptation (adult, 36-45): Calm, practical, no-nonsense tone. "
-            "Steps goal: 8,000-10,000/day, mention that consistency matters more than peak days. "
+            "Steps goal estimate: 8,000-10,000/day, mention that consistency matters more than peak days. "
             "Screen time: >6 hours/day is worth flagging for eye strain and posture. "
             "Can mention family/work balance context if relevant. "
             "Frame health data in terms of long-term wellbeing, not acute risk."
@@ -161,7 +164,7 @@ def _age_adaptive_style(metadata: dict | None) -> str:
         "46_60": (
             "Age adaptation (adult, 46-60): Respectful, warm, clear language. "
             "Avoid overly technical terms; explain any stat briefly. "
-            "Steps goal: 7,000-8,000/day is excellent for this group. "
+            "Steps goal estimate: 7,000-8,000/day is excellent for this group. "
             "Screen time: mention eye health if high (>5 hours). "
             "Frame movement positively - any walking is good. "
             "Slightly longer sentences are fine. No emoji unless asked."
@@ -169,7 +172,7 @@ def _age_adaptive_style(metadata: dict | None) -> str:
         "60_plus": (
             "Age adaptation (senior, 60+): Speak clearly, warmly, and respectfully. "
             "Avoid all jargon. Use full sentences, not bullet points unless asked. "
-            "Steps goal: 6,000-7,000/day is excellent for this age group. "
+            "Steps goal estimate: 6,000-7,000/day is excellent for this age group. "
             "Walking even 20 minutes is worth celebrating. "
             "Screen time: flag if >4 hours (eye strain, circulation). "
             "Never use clinical cold language. If data shows low movement, "
@@ -191,7 +194,7 @@ def _life_context_insight_prompt(metadata: dict | None) -> str:
     if not life_ctx:
         return ""
 
-    age_group = str((metadata or {}).get("age_group") or "").strip()
+    age_group = normalize_age_group((metadata or {}).get("age_group"))
 
     step_goals = {
         "under_13": 12000,
@@ -217,10 +220,12 @@ def _life_context_insight_prompt(metadata: dict | None) -> str:
 
     parts = [
         "Life context interpretation rules:",
-        f"- Step goal for this user's age group: {step_goal:,}/day (WHO/age-adjusted). "
+        f"- Step goal for this user's age group: {step_goal:,}/day as an app wellness heuristic, "
+        "a general wellness estimate, and not medical advice. "
         "Calculate % of goal achieved and mention it naturally (e.g. '72% of your daily goal'). "
-        "If over 100%, celebrate it. If under 50%, be encouraging not critical.",
-        f"- Screen time health threshold for this age group: {warn_hours:.0f} hours/day. "
+        "Use it as a soft signal. If over 100%, celebrate it. If under 50%, be encouraging not critical.",
+        f"- Screen time threshold for this age group: {warn_hours:.0f} hours/day as a soft app "
+        "wellness heuristic, not a medical limit. "
         "If screen time exceeds this, mention it once with a brief constructive note. "
         "Do not lecture. Do not repeat the warning.",
         "- App usage: identify the dominant category (e.g. 'mostly social apps' or "

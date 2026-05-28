@@ -367,6 +367,7 @@ describe("APK test harness", () => {
 
     expect(source).toContain("EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT");
     expect(source).toContain("How much did I walk today and how long did I use my phone?");
+    expect(source).toContain("இன்று நான் எவ்வளவு நடந்தேன்?");
     expect(source).toContain("life-context-steps-missing");
     expect(source).toContain("life-context-distance-missing");
     expect(source).toContain("life-context-screen-time-missing");

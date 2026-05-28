@@ -14,7 +14,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
@@ -212,6 +212,8 @@ class LifeContextModule : Module() {
       "estimatedDistanceMeters" to null,
       "confidence" to "unavailable",
       "source" to source,
+      "partialDay" to false,
+      "trackingStartedAtMs" to null,
     )
   }
 
@@ -235,25 +237,37 @@ class LifeContextModule : Module() {
     val bootKey = System.currentTimeMillis() - SystemClock.elapsedRealtime()
     val storedDate = prefs.getString("step_baseline_date", "")
     val storedBootKey = prefs.getLong("step_baseline_boot_key", -1L)
+    var trackingStartedAtMs = prefs.getLong("step_tracking_started_at_ms", startOfLocalDayMs())
     var baseline = prefs.getFloat("step_baseline_value", currentCounter)
     var baselineJustCreated = false
     if (storedDate != date || storedBootKey != bootKey) {
       baseline = currentCounter
       baselineJustCreated = true
+      trackingStartedAtMs = System.currentTimeMillis()
       prefs.edit()
         .putString("step_baseline_date", date)
         .putLong("step_baseline_boot_key", bootKey)
         .putFloat("step_baseline_value", baseline)
+        .putLong("step_tracking_started_at_ms", trackingStartedAtMs)
         .apply()
     }
 
     val steps = max(0, (currentCounter - baseline).toInt())
     val distanceMeters = (steps * 0.762).toInt()
+    val startOfDay = startOfLocalDayMs()
+    val partialDay = baselineJustCreated || trackingStartedAtMs > startOfDay + TimeUnit.MINUTES.toMillis(5)
     return mapOf(
       "steps" to steps,
       "estimatedDistanceMeters" to distanceMeters,
       "confidence" to if (baselineJustCreated) "medium" else "high",
       "source" to "android_step_counter_daily_baseline",
+      "partialDay" to partialDay,
+      "trackingStartedAtMs" to trackingStartedAtMs,
+      "note" to if (partialDay) {
+        "Steps are counted since Life Intelligence tracking started today, not a full-day total."
+      } else {
+        null
+      },
     )
   }
 
@@ -274,20 +288,32 @@ class LifeContextModule : Module() {
 
       override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     }
-    val handler = Handler(Looper.getMainLooper())
-    val registered = sensorManager.registerListener(
-      listener,
-      sensor,
-      SensorManager.SENSOR_DELAY_NORMAL,
-      handler,
-    )
-    if (!registered) return null
+    // Use a dedicated sensor thread so waiting for the one-shot step reading never blocks
+    // the React Native/UI main thread on real devices.
+    val sensorThread = HandlerThread("JaiLifeStepRead")
+    sensorThread.start()
+    val handler = Handler(sensorThread.looper)
+    val registered = try {
+      sensorManager.registerListener(
+        listener,
+        sensor,
+        SensorManager.SENSOR_DELAY_NORMAL,
+        handler,
+      )
+    } catch (_: Throwable) {
+      false
+    }
+    if (!registered) {
+      sensorThread.quitSafely()
+      return null
+    }
     try {
       latch.await(1200, TimeUnit.MILLISECONDS)
     } catch (_: InterruptedException) {
       Thread.currentThread().interrupt()
     } finally {
       sensorManager.unregisterListener(listener)
+      sensorThread.quitSafely()
     }
     return value
   }

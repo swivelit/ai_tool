@@ -281,6 +281,8 @@ def test_chat_ai_request_includes_sanitized_life_context(client, monkeypatch):
         dumped = json.dumps(life_context)
         assert life_context["movementSummary"] == "7,420 steps, about 5.7 km"
         assert life_context["screenSummary"] == "3.5 hours screen time"
+        assert "productivity" in life_context["topAppsSummary"]
+        assert "lifeInsightSummary" in life_context
         assert life_context["raw"]["movement"]["steps"] == 7420
         assert "ChatGPT" not in dumped
         assert "com.openai.chatgpt" not in dumped
@@ -351,6 +353,95 @@ def test_chat_ai_request_includes_sanitized_life_context(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["assistant"]["text"].startswith("You walked")
+
+
+def test_chat_ai_request_uses_client_life_context_age_when_profile_missing(client, monkeypatch):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        assert ai_request.metadata["age_group"] == "under_13"
+        profile_context = ai_request.metadata["profile_context"]
+        assert profile_context["age_group"] == "under_13"
+        assert "minor" in profile_context["age_safety_note"]
+        return AIProviderResponse(
+            text="You walked 7,420 steps.",
+            provider="openai",
+            model="gpt-5-nano",
+            route="openai_general",
+            reason="unit_test",
+            language="en",
+            intent="general",
+        )
+
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+
+    response = client.post(
+        "/api/chat",
+        headers=headers,
+        json={
+            "message": "How much did I walk today?",
+            "reply_language": "en",
+            "client_context": {
+                "life_context": {
+                    "enabled": True,
+                    "ageGroup": "under_13",
+                    "shareAppNamesWithAi": False,
+                    "raw": {"apps": []},
+                }
+            },
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_chat_ai_request_respects_prefer_not_to_say_over_client_age(client, monkeypatch):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    with SessionLocal() as session:
+        session.add(
+            UserProfile(
+                user_id=int(user.id),
+                answers_json=json.dumps({"age_group": "prefer_not_to_say"}),
+                profile_summary="Private age profile.",
+                questions_version=1,
+            )
+        )
+        session.commit()
+
+    def fake_run_text_turn(session, ai_request, *, existing_context=None):
+        assert ai_request.metadata["age_group"] == ""
+        assert "age_group" not in ai_request.metadata["profile_context"]
+        assert "age_safety_note" not in ai_request.metadata["profile_context"]
+        return AIProviderResponse(
+            text="Life context is available.",
+            provider="openai",
+            model="gpt-5-nano",
+            route="openai_general",
+            reason="unit_test",
+            language="en",
+            intent="general",
+        )
+
+    monkeypatch.setenv("AI_ROUTER_ENABLED", "true")
+    monkeypatch.setattr(main_module, "run_text_turn", fake_run_text_turn)
+    response = client.post(
+        "/api/chat",
+        headers=headers,
+        json={
+            "message": "How much did I walk today?",
+            "reply_language": "en",
+            "client_context": {"life_context": {"enabled": True, "ageGroup": "under_13"}},
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_backend_life_context_question_matches_tamil_and_tanglish():
+    assert main_module._is_life_context_question("இன்று நான் எவ்வளவு நடந்தேன்?")
+    assert main_module._is_life_context_question("phone evlo neram use panninen?")
+    assert main_module._is_life_context_question("enna apps adhigama use panninen?")
 
 
 def test_chat_contract_passes_recent_context_to_ai_router(client, monkeypatch):

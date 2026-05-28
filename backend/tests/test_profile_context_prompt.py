@@ -104,6 +104,36 @@ def test_profile_prompt_context_includes_age_group_only_when_answered():
     assert "minor" in context["age_safety_note"]
 
 
+def test_profile_prompt_context_normalizes_legacy_age_group_values():
+    user = create_test_user(uid="legacy-age-uid", email="legacy-age@example.com", name="Legacy")
+    with SessionLocal() as session:
+        session.add(
+            UserProfile(
+                user_id=int(user.id),
+                answers_json=json.dumps({"age_group": "26-35"}),
+                profile_summary="Adult profile.",
+                questions_version=1,
+            )
+        )
+        session.commit()
+        context = build_profile_prompt_context(session, int(user.id))
+    assert context["age_group"] == "26_35"
+
+    senior = create_test_user(uid="senior-age-uid", email="senior-age@example.com", name="Senior")
+    with SessionLocal() as session:
+        session.add(
+            UserProfile(
+                user_id=int(senior.id),
+                answers_json=json.dumps({"age_group": "60+"}),
+                profile_summary="Senior profile.",
+                questions_version=1,
+            )
+        )
+        session.commit()
+        context = build_profile_prompt_context(session, int(senior.id))
+    assert context["age_group"] == "60_plus"
+
+
 def test_client_life_context_sanitizer_redacts_sensitive_fields_and_hidden_app_names():
     sanitized = sanitize_client_context(
         {
@@ -148,7 +178,88 @@ def test_client_life_context_sanitizer_redacts_sensitive_fields_and_hidden_app_n
     )
     dumped = json.dumps(sanitized)
     assert sanitized["life_context"]["raw"]["movement"]["steps"] == 7420
+    assert "topAppsSummary" in sanitized["life_context"]
+    assert "lifeInsightSummary" in sanitized["life_context"]
+    assert "productivity" in sanitized["life_context"]["topAppsSummary"]
     assert "ChatGPT" not in dumped
     assert "com.openai.chatgpt" not in dumped
     assert "sk-secret" not in dumped
     assert "uid-secret" not in dumped
+
+
+def test_client_life_context_disabled_is_dropped():
+    assert sanitize_client_context({"life_context": {"enabled": False, "date": "2026-05-28"}}) == {}
+
+
+def test_client_life_context_hidden_app_names_reconstructs_category_summaries():
+    sanitized = sanitize_client_context(
+        {
+            "life_context": {
+                "enabled": True,
+                "date": "2026-05-28",
+                "shareAppNamesWithAi": False,
+                "topAppsSummary": "Top apps: ChatGPT 1 hour, YouTube 40 minutes",
+                "lifeInsightSummary": "ChatGPT and WhatsApp were used most. token=sk-secret",
+                "raw": {
+                    "apps": [
+                        {
+                            "packageName": "com.openai.chatgpt",
+                            "appName": "ChatGPT",
+                            "category": "productivity",
+                            "foregroundTimeMs": 4200000,
+                        },
+                        {
+                            "packageName": "com.google.android.youtube",
+                            "appName": "YouTube",
+                            "category": "video",
+                            "foregroundTimeMs": 2400000,
+                        },
+                    ],
+                    "authId": "auth-secret",
+                    "firebaseUid": "uid-secret",
+                },
+            }
+        }
+    )
+    life_context = sanitized["life_context"]
+    dumped = json.dumps(life_context)
+    assert life_context["topAppsSummary"] == "Top apps: productivity 1.2 hours, video 40 minutes (mostly productivity)"
+    assert life_context["lifeInsightSummary"] == life_context["topAppsSummary"]
+    assert "ChatGPT" not in dumped
+    assert "YouTube" not in dumped
+    assert "WhatsApp" not in dumped
+    assert "com.openai.chatgpt" not in dumped
+    assert "sk-secret" not in dumped
+    assert "auth-secret" not in dumped
+    assert "uid-secret" not in dumped
+
+
+def test_client_life_context_preserves_app_names_only_when_enabled_but_redacts_secrets():
+    sanitized = sanitize_client_context(
+        {
+            "life_context": {
+                "enabled": True,
+                "date": "2026-05-28",
+                "shareAppNamesWithAi": True,
+                "topAppsSummary": "Top apps: ChatGPT 1 hour. Email private@example.com token sk-secret",
+                "lifeInsightSummary": "ChatGPT helped. firebase uid abcdef1234567890abcdef1234567890",
+                "raw": {
+                    "apps": [
+                        {
+                            "packageName": "com.openai.chatgpt",
+                            "appName": "ChatGPT",
+                            "category": "productivity",
+                            "foregroundTimeMs": 3600000,
+                        }
+                    ],
+                    "api_key": "sk-secret",
+                },
+            }
+        }
+    )
+    dumped = json.dumps(sanitized)
+    assert "ChatGPT" in dumped
+    assert "com.openai.chatgpt" in dumped
+    assert "private@example.com" not in dumped
+    assert "sk-secret" not in dumped
+    assert "abcdef1234567890abcdef1234567890" not in dumped

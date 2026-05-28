@@ -11,6 +11,7 @@ RUN_ID="$(date +%Y%m%d-%H%M%S)"
 ARTIFACT_DIR="${ARTIFACT_DIR:-$DIST_DIR/apk-test-$RUN_ID}"
 UI_XML_DEVICE_PATH="/sdcard/jai-apk-test-window.xml"
 LEGACY_PACKAGE_NAMES=("com.jeygroups.manas")
+LEGACY_CLEANUP_DONE=0
 
 RESULT=0
 LOGCAT_PID=""
@@ -58,10 +59,15 @@ record_skip_once() {
 }
 
 cleanup_legacy_packages() {
+  if [[ "$LEGACY_CLEANUP_DONE" == "1" ]]; then
+    return 0
+  fi
+  LEGACY_CLEANUP_DONE=1
+
   local removed=0
   local legacy_package
   for legacy_package in "${LEGACY_PACKAGE_NAMES[@]}"; do
-    if adb shell pm path "$legacy_package" >/dev/null 2>&1; then
+    if adb shell timeout 3 pm path "$legacy_package" >/dev/null 2>&1; then
       adb shell am force-stop "$legacy_package" >/dev/null 2>&1 || true
       adb uninstall "$legacy_package" >/dev/null 2>&1 || true
       record_skip_once "removed-legacy-package-${legacy_package}"
@@ -1693,7 +1699,11 @@ for message in "hello" "what can you do" "tell me about solo leveling"; do
 done
 
 if is_truthy "${EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT:-}"; then
-  life_message="How much did I walk today and how long did I use my phone?"
+  if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
+    life_message="இன்று நான் எவ்வளவு நடந்தேன்? Phone எவ்வளவு நேரம் use பண்ணினேன்?"
+  else
+    life_message="How much did I walk today and how long did I use my phone?"
+  fi
   life_label="life-context"
   dismiss_expo_warning || true
   if ensure_chat_input_ready "before-${life_label}" && clear_chat_input; then
@@ -1710,7 +1720,7 @@ if is_truthy "${EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT:-}"; then
       if ! wait_for_text "5.7" 10 && ! wait_for_text "5.6" 10 && ! wait_for_text "km" 10 && ! wait_for_text "meters" 10; then
         mark_failed "life-context-distance-missing"
       fi
-      if ! wait_for_text "3.5 hours" 20 && ! wait_for_text "3.5" 10 && ! wait_for_text "210 minutes" 10; then
+      if ! wait_for_text "3.5 hours" 20 && ! wait_for_text "3.5" 10 && ! wait_for_text "210 minutes" 10 && ! wait_for_text "3.5 மணி" 10 && ! wait_for_text "3.5 hours" 10; then
         mark_failed "life-context-screen-time-missing"
       fi
       capture_step "after-${life_label}"

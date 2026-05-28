@@ -9,6 +9,7 @@ from app.ai.prompts import (
     build_system_instructions,
 )
 from app.ai.types import AIRequest, AIRoute
+from app.age_utils import normalize_age_group
 
 
 def make_request(message="how many steps did I walk?", age_group="26_35", life_ctx=None):
@@ -90,6 +91,21 @@ def test_life_context_insight_includes_step_goal():
     assert "10,000" in prompt
 
 
+def test_life_context_prompt_uses_soft_wellness_language_not_who_claims():
+    prompt = _life_context_insight_prompt(
+        {
+            "age_group": "26-35",
+            "client_context": {"life_context": SAMPLE_LIFE_CTX},
+        }
+    )
+    assert "WHO/age-adjusted" not in prompt
+    assert "WHO" not in prompt
+    assert "recommended max" not in prompt
+    assert "heuristic" in prompt or "general wellness estimate" in prompt
+    assert "10,000" in prompt
+    assert "7 hours" in prompt
+
+
 def test_life_context_insight_includes_screen_threshold():
     prompt = _life_context_insight_prompt(
         {
@@ -120,6 +136,12 @@ def test_build_instructions_includes_age_style():
     route = make_route()
     instructions = build_system_instructions(req, route, provider="openai")
     assert "child" in instructions.lower() or "under 13" in instructions.lower()
+
+
+def test_age_group_normalization_supports_legacy_values():
+    assert normalize_age_group("26-35") == "26_35"
+    assert normalize_age_group("60+") == "60_plus"
+    assert _age_adaptive_style({"age_group": "60+"})
 
 
 def test_build_instructions_includes_life_insight_when_context_present():

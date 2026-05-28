@@ -48,6 +48,8 @@ describe("minimal settings wake phrase UI", () => {
     expect(customiseSource).toContain("life-context-share-backend-toggle");
     expect(customiseSource).toContain("life-context-share-app-names-toggle");
     expect(customiseSource).toContain("life-context-daily-summary");
+    expect(customiseSource).toContain("AppState.addEventListener");
+    expect(customiseSource).toContain("forceRefresh: true");
     expect(customiseSource).toContain("gaze tracking");
     expect(customiseSource).toContain("hidden monitoring");
     expect(customiseSource).not.toContain("handsFreeRecognizer.start");

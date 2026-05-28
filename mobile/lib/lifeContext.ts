@@ -10,6 +10,7 @@ import type { AssistantSettings } from "./storage";
 
 const CACHE_KEY = "life_context_daily_cache_v1";
 const CACHE_MAX_AGE_MS = 2 * 60 * 1000;
+const CACHE_UNAVAILABLE_MAX_AGE_MS = 10 * 1000;
 const DISTANCE_PER_STEP_METERS = 0.762;
 
 export type LifeContextPermissionSummary = {
@@ -39,12 +40,14 @@ type LifeContextInput =
       profile?: LocalAssistantUserProfile | null;
       ageGroup?: string;
       forBackend?: boolean;
+      forceRefresh?: boolean;
     })
   | {
       settings?: Partial<LifeContextSettings> | null;
       profile?: LocalAssistantUserProfile | null;
       ageGroup?: string;
       forBackend?: boolean;
+      forceRefresh?: boolean;
     };
 
 function todayDate() {
@@ -73,6 +76,32 @@ function isValidAgeGroup(value: unknown): value is string {
   ].includes(String(value || ""));
 }
 
+function normalizeAgeGroup(value: unknown): string | undefined {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return undefined;
+  const normalized = raw.replace(/[–—]/g, "-").replace(/\s+/g, "_");
+  const aliases: Record<string, string> = {
+    under_13: "under_13",
+    "under-13": "under_13",
+    "13_17": "13_17",
+    "13-17": "13_17",
+    "18_25": "18_25",
+    "18-25": "18_25",
+    "26_35": "26_35",
+    "26-35": "26_35",
+    "36_45": "36_45",
+    "36-45": "36_45",
+    "46_60": "46_60",
+    "46-60": "46_60",
+    "60_plus": "60_plus",
+    "60+": "60_plus",
+    "60-plus": "60_plus",
+    prefer_not_to_say: "prefer_not_to_say",
+    "prefer-not-to-say": "prefer_not_to_say",
+  };
+  return aliases[normalized];
+}
+
 function resolveInput(input?: LifeContextInput | null) {
   const record = (input || {}) as Record<string, any>;
   const settings = (record.settings && typeof record.settings === "object"
@@ -87,13 +116,14 @@ function resolveInput(input?: LifeContextInput | null) {
     profile: (record.profile || null) as LocalAssistantUserProfile | null,
     ageGroup: String(record.ageGroup || "").trim() || undefined,
     forBackend: record.forBackend === true,
+    forceRefresh: record.forceRefresh === true,
   };
 }
 
 function ageGroupFromInput(input?: LifeContextInput | null) {
   const resolved = resolveInput(input);
-  const direct = resolved.ageGroup;
-  const profileAge = resolved.profile?.onboardingAnswers?.age_group;
+  const direct = normalizeAgeGroup(resolved.ageGroup);
+  const profileAge = normalizeAgeGroup(resolved.profile?.onboardingAnswers?.age_group);
   const value = isValidAgeGroup(direct)
     ? direct
     : isValidAgeGroup(profileAge)
@@ -116,6 +146,8 @@ function unavailableContext(): DailyLifeContext {
       estimatedDistanceMeters: null,
       confidence: "unavailable",
       source: "native_module_unavailable",
+      partialDay: false,
+      trackingStartedAtMs: null,
     },
     screen: {
       screenTimeMs: null,
@@ -169,6 +201,8 @@ function mockDailyContext(shareAppNamesWithAi: boolean): DailyLifeContext {
       estimatedDistanceMeters: 5650,
       confidence: "high",
       source: "e2e_mock",
+      partialDay: false,
+      trackingStartedAtMs: null,
     },
     screen: {
       screenTimeMs: 12_600_000,
@@ -212,15 +246,20 @@ function movementSummary(context: DailyLifeContext, ageGroup?: string): string |
   };
   const goal = ageGroup && stepGoals[ageGroup] ? stepGoals[ageGroup] : 10000;
   const pct = Math.round((steps / goal) * 100);
+  const partialDay = context.movement.partialDay === true;
   const goalNote =
     pct >= 100
       ? `goal achieved (${pct}%!)`
       : pct >= 70
         ? `${pct}% of daily goal`
         : `${pct}% of daily goal - keep it up`;
+  const scopedSteps = partialDay
+    ? `${formatNumber(Math.round(steps))} steps since tracking started today`
+    : `${formatNumber(Math.round(steps))} steps today`;
+  const partialNote = partialDay ? ", partial-day estimate" : "";
 
   return (
-    `${formatNumber(Math.round(steps))} steps (${goalNote}), ` +
+    `${scopedSteps} (${goalNote}${partialNote}), ` +
     `~${km.toFixed(1)} km walked (${context.movement.confidence} confidence)`
   );
 }
@@ -322,6 +361,11 @@ export function sanitizeDailyLifeContextForAi(
         : null,
       confidence: context.movement?.confidence || "unavailable",
       source: String(context.movement?.source || "unknown").slice(0, 80),
+      partialDay: context.movement?.partialDay === true,
+      trackingStartedAtMs: Number.isFinite(Number(context.movement?.trackingStartedAtMs))
+        ? Math.max(0, Math.round(Number(context.movement.trackingStartedAtMs)))
+        : null,
+      note: context.movement?.note ? String(context.movement.note).slice(0, 180) : undefined,
     },
     screen: {
       screenTimeMs: Number.isFinite(Number(context.screen?.screenTimeMs))
@@ -353,6 +397,19 @@ export function sanitizeDailyLifeContextForAi(
   };
 }
 
+function hasUnavailableOrDeniedSignals(context: DailyLifeContext) {
+  return (
+    context.permissions?.activityRecognition !== "granted" ||
+    context.permissions?.usageAccess !== "granted" ||
+    context.movement?.confidence === "unavailable" ||
+    context.screen?.confidence === "unavailable"
+  );
+}
+
+export async function clearLifeContextCache() {
+  await AsyncStorage.removeItem(CACHE_KEY).catch(() => undefined);
+}
+
 async function readCachedContext(shareAppNamesWithAi: boolean): Promise<DailyLifeContext | null> {
   try {
     const raw = await AsyncStorage.getItem(CACHE_KEY);
@@ -362,10 +419,14 @@ async function readCachedContext(shareAppNamesWithAi: boolean): Promise<DailyLif
     if (parsed.date !== todayDate()) return null;
     if (parsed.shareAppNamesWithAi !== shareAppNamesWithAi) return null;
     const generatedAt = Date.parse(String(parsed.generatedAt || ""));
-    if (!Number.isFinite(generatedAt) || Date.now() - generatedAt > CACHE_MAX_AGE_MS) {
+    const context = parsed.context as DailyLifeContext;
+    const maxAge = hasUnavailableOrDeniedSignals(context)
+      ? CACHE_UNAVAILABLE_MAX_AGE_MS
+      : CACHE_MAX_AGE_MS;
+    if (!Number.isFinite(generatedAt) || Date.now() - generatedAt > maxAge) {
       return null;
     }
-    return parsed.context as DailyLifeContext;
+    return context;
   } catch {
     return null;
   }
@@ -403,6 +464,7 @@ export async function requestLifeContextPermissions(): Promise<LifeContextPermis
     () => "unavailable" as LifeContextPermissionState,
   );
   const state = await getLifeContextPermissionState();
+  await clearLifeContextCache();
   return {
     ...state,
     activityRecognition,
@@ -411,12 +473,13 @@ export async function requestLifeContextPermissions(): Promise<LifeContextPermis
 
 export async function openLifeContextUsageSettings(): Promise<void> {
   await NativeLifeContext.openUsageAccessSettings().catch(() => undefined);
+  await clearLifeContextCache();
 }
 
 export async function getTodayLifeContextForAi(
   input?: LifeContextInput | null,
 ): Promise<LifeContextAiSummary> {
-  const { settings, forBackend } = resolveInput(input);
+  const { settings, forBackend, forceRefresh } = resolveInput(input);
   const ageGroup = ageGroupFromInput(input);
   const date = todayDate();
 
@@ -440,7 +503,7 @@ export async function getTodayLifeContextForAi(
   if (isE2eMockLifeContextEnabled()) {
     context = mockDailyContext(shareAppNamesWithAi);
   } else {
-    context = await readCachedContext(shareAppNamesWithAi);
+    context = forceRefresh ? null : await readCachedContext(shareAppNamesWithAi);
     if (!context) {
       context = await NativeLifeContext.getDailyLifeContext({
         startMs: startOfTodayMs(),

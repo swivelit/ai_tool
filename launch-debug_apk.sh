@@ -120,6 +120,32 @@ wait_for_metro() {
   fail "Metro did not start on port ${METRO_PORT}"
 }
 
+prewarm_metro_android_bundle() {
+  info "Prewarming Metro Android bundle"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl is unavailable; skipping Metro bundle prewarm"
+    sleep 12
+    return 0
+  fi
+
+  local bundle_url
+  bundle_url="http://localhost:${METRO_PORT}/node_modules/expo-router/entry.bundle?platform=android&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.bytecode=1&unstable_transformProfile=hermes-stable"
+
+  for _ in {1..3}; do
+    if curl -fsS --max-time 180 "$bundle_url" >/dev/null 2>>"$METRO_LOG"; then
+      info "Metro Android bundle is ready"
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo ""
+  echo "Metro log:"
+  tail -120 "$METRO_LOG" || true
+  fail "Metro Android bundle did not prewarm"
+}
+
 run_apk_harness_scenario() {
   local reply_language="$1"
   local label="$2"
@@ -370,6 +396,7 @@ adb shell pm clear "$PACKAGE_NAME" >/dev/null 2>&1 || true
 
 start_metro
 wait_for_metro
+prewarm_metro_android_bundle
 
 info "Forwarding device port ${METRO_PORT} to Metro"
 adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
@@ -387,6 +414,7 @@ if is_truthy "${RUN_APK_TESTS:-}"; then
     stop_old_metro
     start_metro
     wait_for_metro
+    prewarm_metro_android_bundle
     adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
     if ! run_apk_harness_scenario "ta" "Tamil Settings"; then
       scenario_status=1

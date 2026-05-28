@@ -73,6 +73,7 @@ from .observability import (
 from .vector_store import VectorStore
 from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
+from .age_utils import normalize_age_group
 from .orchestrator_task import run_orchestrator, run_rule_orchestrator
 from .global_qa_cache import (
     build_global_knowledge_sync_payload,
@@ -1691,16 +1692,23 @@ TOKENISH_RE = re.compile(
     re.I,
 )
 PACKAGE_NAME_RE = re.compile(r"\b(?:[a-z][a-z0-9_]*\.)+[a-z][a-z0-9_]*\b")
+KNOWN_APP_NAME_RE = re.compile(r"\b(?:ChatGPT|YouTube|WhatsApp)\b", re.I)
+SECRET_PHRASE_RE = re.compile(
+    r"\b(?:api[_ -]?key|firebase[_ -]?(?:uid|id)|auth[_ -]?id|token|secret|password)\s*(?:[:=]|\s)\s*\S+",
+    re.I,
+)
 
 
 def _life_text(value: Any, limit: int = 240, *, allow_package_like: bool = False) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     if not text:
         return ""
+    text = SECRET_PHRASE_RE.sub("[redacted]", text)
     text = EMAIL_RE.sub("[redacted]", text)
     text = TOKENISH_RE.sub("[redacted]", text)
     if not allow_package_like:
         text = PACKAGE_NAME_RE.sub("[app]", text)
+        text = KNOWN_APP_NAME_RE.sub("[app]", text)
     return text[:limit]
 
 
@@ -1730,7 +1738,7 @@ def _sanitize_life_permissions(value: Any) -> Dict[str, str]:
 
 def _sanitize_life_movement(value: Any) -> Dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
-    return {
+    movement: Dict[str, Any] = {
         "steps": _life_int_or_none(raw.get("steps"), maximum=250_000),
         "estimatedDistanceMeters": _life_int_or_none(
             raw.get("estimatedDistanceMeters"),
@@ -1739,6 +1747,18 @@ def _sanitize_life_movement(value: Any) -> Dict[str, Any]:
         "confidence": _life_text(raw.get("confidence") or "unavailable", 32),
         "source": _life_text(raw.get("source") or "unknown", 80),
     }
+    if "partialDay" in raw:
+        movement["partialDay"] = _life_bool(raw.get("partialDay"))
+    tracking_started = _life_int_or_none(
+        raw.get("trackingStartedAtMs"),
+        maximum=4_102_444_800_000,
+    )
+    if tracking_started is not None:
+        movement["trackingStartedAtMs"] = tracking_started
+    note = _life_text(raw.get("note"), 180)
+    if note:
+        movement["note"] = note
+    return movement
 
 
 def _sanitize_life_screen(value: Any) -> Dict[str, Any]:
@@ -1779,30 +1799,58 @@ def _sanitize_life_apps(value: Any, *, allow_app_names: bool) -> List[Dict[str, 
     return apps
 
 
+def _life_format_duration(ms: Any) -> str:
+    numeric = _life_int_or_none(ms)
+    if numeric is None:
+        return ""
+    if numeric >= 3_600_000:
+        hours = numeric / 3_600_000
+        return f"{hours:.0f} hours" if hours >= 10 else f"{hours:.1f} hours"
+    return f"{round(numeric / 60_000)} minutes"
+
+
+def _life_category_top_apps_summary(apps: List[Dict[str, Any]], *, allow_app_names: bool) -> str:
+    usable = [app for app in apps if _life_int_or_none(app.get("foregroundTimeMs"))]
+    if not usable:
+        return ""
+    category_totals: Dict[str, int] = {}
+    for app in usable:
+        category = _life_text(app.get("category") or "other", 80)
+        category_totals[category] = category_totals.get(category, 0) + int(app.get("foregroundTimeMs") or 0)
+    dominant = sorted(category_totals.items(), key=lambda item: item[1], reverse=True)[0][0]
+    rows: List[str] = []
+    for app in usable[:3]:
+        label = (
+            _life_text(app.get("appName"), 120, allow_package_like=True)
+            if allow_app_names
+            else ""
+        )
+        if not label:
+            label = _life_text(app.get("category") or "app", 80)
+        duration = _life_format_duration(app.get("foregroundTimeMs"))
+        rows.append(f"{label} {duration}".strip())
+    return f"Top apps: {', '.join(rows)} (mostly {dominant})"
+
+
+def _safe_life_summary(value: Any, *, allow_app_names: bool, limit: int = 420) -> str:
+    return _life_text(value, limit, allow_package_like=allow_app_names)
+
+
 def sanitize_client_life_context(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     allow_app_names = _life_bool(value.get("shareAppNamesWithAi"))
+    if not _life_bool(value.get("enabled")):
+        return {}
     sanitized: Dict[str, Any] = {
-        "enabled": _life_bool(value.get("enabled")),
+        "enabled": True,
         "date": _life_text(value.get("date"), 32),
         "shareAppNamesWithAi": allow_app_names,
     }
-    age_group = _life_text(value.get("ageGroup"), 40)
+    age_group = normalize_age_group(value.get("ageGroup"))
     if age_group and age_group != "prefer_not_to_say":
         sanitized["ageGroup"] = age_group
-    for key in ("movementSummary", "screenSummary", "topAppsSummary"):
-        if SENSITIVE_CLIENT_CONTEXT_KEY_RE.search(key):
-            continue
-        if key == "topAppsSummary" and not allow_app_names:
-            continue
-        text = _life_text(
-            value.get(key),
-            360,
-            allow_package_like=allow_app_names,
-        )
-        if text:
-            sanitized[key] = text
+
     raw = value.get("raw")
     if isinstance(raw, dict):
         sanitized["raw"] = {
@@ -1814,6 +1862,33 @@ def sanitize_client_life_context(value: Any) -> Dict[str, Any]:
             "apps": _sanitize_life_apps(raw.get("apps"), allow_app_names=allow_app_names),
             "generatedAt": _life_text(raw.get("generatedAt"), 40),
         }
+    raw_apps = sanitized.get("raw", {}).get("apps", []) if isinstance(sanitized.get("raw"), dict) else []
+    safe_top_apps = _life_category_top_apps_summary(raw_apps, allow_app_names=allow_app_names)
+    for key in ("movementSummary", "screenSummary"):
+        text = _safe_life_summary(value.get(key), allow_app_names=False)
+        if text:
+            sanitized[key] = text
+    if allow_app_names:
+        top_text = _safe_life_summary(value.get("topAppsSummary"), allow_app_names=True)
+        if top_text:
+            sanitized["topAppsSummary"] = top_text
+    if safe_top_apps:
+        sanitized["topAppsSummary"] = safe_top_apps
+    if allow_app_names:
+        insight_text = _safe_life_summary(value.get("lifeInsightSummary"), allow_app_names=True, limit=640)
+        if insight_text:
+            sanitized["lifeInsightSummary"] = insight_text
+    rebuilt_insight = " | ".join(
+        part
+        for part in (
+            sanitized.get("movementSummary"),
+            sanitized.get("screenSummary"),
+            sanitized.get("topAppsSummary"),
+        )
+        if isinstance(part, str) and part.strip()
+    )
+    if rebuilt_insight:
+        sanitized["lifeInsightSummary"] = rebuilt_insight[:640]
     return {key: value for key, value in sanitized.items() if value not in ("", None, [])}
 
 
@@ -1825,10 +1900,13 @@ def sanitize_client_context(value: Any) -> Dict[str, Any]:
 
 
 def _is_life_context_question(text: Any) -> bool:
+    value = str(text or "")
     return bool(
         re.search(
-            r"\b(walk|walked|walking|steps?|distance|screen time|phone time|used my phone|use my phone|app time|apps? used|top apps?)\b",
-            str(text or ""),
+            r"\b(walk|walked|walking|steps?|distance|screen\s*time|phone\s*time|used\s+my\s+phone|use\s+my\s+phone|app\s*time|apps?\s+used|top\s+apps?|app\s+usage|used\s+most)\b"
+            r"|(?:இன்று|இன்னைக்கு|எவ்வளவு|எத்தனை).*(?:நட|steps?|phone|போன்|screen|apps?|செயலி|நேரம்)"
+            r"|(?:phone|screen|apps?|enna|naan|n[ae]an|innaiku|indru|evlo|evalavu).*(?:evlo|neram|use\s*pann|panninen|nadanthen|nadandhen|adhigama|steps?)",
+            value,
             re.I,
         )
     )
@@ -1865,7 +1943,7 @@ def build_profile_prompt_context(session: Session, user_id: Optional[int]) -> Di
         "tamil_style": _compact_profile_value(answers.get("tamil_style") or "chennai_conversational", 120),
         "onboarding_answers": _compact_profile_value(answers, 240),
     }
-    age_group = str(answers.get("age_group") or "").strip()
+    age_group = normalize_age_group(answers.get("age_group"))
     if age_group and age_group != "prefer_not_to_say":
         context["age_group"] = _compact_profile_value(age_group, 40)
         if age_group in {"under_13", "13_17"}:
@@ -1879,6 +1957,37 @@ def _profile_prompt_context_text(profile_context: Dict[str, Any]) -> str:
     if not profile_context:
         return ""
     return json.dumps(profile_context, ensure_ascii=False, sort_keys=True)
+
+
+def _profile_answer_age_group(profile_context: Dict[str, Any]) -> str:
+    answers = profile_context.get("onboarding_answers")
+    if isinstance(answers, dict):
+        return normalize_age_group(answers.get("age_group"))
+    return ""
+
+
+def _add_effective_age_to_profile_context(
+    profile_context: Dict[str, Any],
+    life_context: Optional[Dict[str, Any]],
+) -> str:
+    profile_answer_age = _profile_answer_age_group(profile_context)
+    if profile_answer_age == "prefer_not_to_say":
+        profile_context.pop("age_group", None)
+        profile_context.pop("age_safety_note", None)
+        return ""
+    profile_age = normalize_age_group(profile_context.get("age_group"))
+    life_age = normalize_age_group(life_context.get("ageGroup")) if isinstance(life_context, dict) else ""
+    effective_age_group = profile_age or life_age
+    if not effective_age_group or effective_age_group == "prefer_not_to_say":
+        profile_context.pop("age_group", None)
+        profile_context.pop("age_safety_note", None)
+        return ""
+    profile_context["age_group"] = effective_age_group
+    if effective_age_group in {"under_13", "13_17"}:
+        profile_context["age_safety_note"] = (
+            "User is a minor age group. Keep explanations age-appropriate and avoid adult-style advice."
+        )
+    return effective_age_group
 
 
 def build_user_context(session: Session, user_id: int) -> dict:
@@ -3943,13 +4052,14 @@ def _record_ai_router_cache_side_effects(
 def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Dict[str, Any]:
     text = _resolve_chat_text(payload)
     request_id = payload.request_id or get_request_id()
+    sanitized_client_context = sanitize_client_context(payload.client_context)
     global_hit = _run_ai_router_global_cache_lookup(session, payload, text)
     if global_hit is not None:
         return _build_ai_router_global_cache_response(session, payload, text, global_hit, request_id)
     context_turns = _recent_ai_context_turns(session, payload.user_id, limit=6)
     profile_context = build_profile_prompt_context(session, payload.user_id)
-    sanitized_client_context = sanitize_client_context(payload.client_context)
     life_context = sanitized_client_context.get("life_context")
+    effective_age_group = _add_effective_age_to_profile_context(profile_context, life_context)
     if life_context:
         profile_context = {
             **profile_context,
@@ -3974,7 +4084,7 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
                 "context_turn_count": len(context_turns),
                 "profile_context": profile_context,
                 "profile_prompt_context": profile_prompt_context,
-                "age_group": profile_context.get("age_group") or "",
+                "age_group": effective_age_group,
             },
             context_turns=context_turns,
         ),

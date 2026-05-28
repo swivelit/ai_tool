@@ -328,6 +328,49 @@ describe("API client contracts", () => {
     expect(dumped).not.toContain("packageName");
   });
 
+  it("detects Tamil/Tanglish life context chat questions for backend sharing", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+            EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT: "1",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    mockCachedProfile(
+      { userId: 7, onboardingAnswers: { age_group: "26-35" } },
+      {
+        lifeContextEnabled: true,
+        shareLifeContextWithBackend: true,
+        shareAppNamesWithAi: false,
+      },
+    );
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "ok" }, item: { id: 1 } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "இன்று நான் எவ்வளவு நடந்தேன்? Phone எவ்வளவு நேரம் use பண்ணினேன்?",
+      reply_language: "ta",
+    });
+
+    const body = JSON.parse(String(backendChatCalls(fetchMock)[0][1].body));
+    expect(body.client_context.life_context.raw.movement.steps).toBe(7420);
+    expect(body.client_context.life_context.ageGroup).toBe("26_35");
+  });
+
   it("preserves explicit voice reply and speech language query params", async () => {
     vi.doMock("expo-constants", () => ({
       default: {

@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -82,6 +83,7 @@ export default function CustomiseScreen() {
   const [handsFreeEnabled, setHandsFreeEnabled] = useState(settings.handsFreeEnabled);
   const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase || `Hey ${name || "Elli"}`);
   const [saving, setSaving] = useState(false);
+  const refreshLifeContextOnActiveRef = useRef(false);
 
   useEffect(() => {
     setAssistantNameInput(name || "Elli");
@@ -164,7 +166,7 @@ export default function CustomiseScreen() {
     handsFreeEnabled !== settings.handsFreeEnabled ||
     wakePrompt !== savedWakePrompt;
 
-  async function refreshLifeContextPreview() {
+  const refreshLifeContextPreview = useCallback(async (forceRefresh = false) => {
     try {
       setLifeLoading(true);
       const [permissions, summary] = await Promise.all([
@@ -172,6 +174,7 @@ export default function CustomiseScreen() {
         getTodayLifeContextForAi({
           settings: previewLifeSettings,
           profile,
+          forceRefresh,
         }),
       ]);
       setLifePermissionState(permissions);
@@ -179,7 +182,7 @@ export default function CustomiseScreen() {
     } finally {
       setLifeLoading(false);
     }
-  }
+  }, [previewLifeSettings, profile]);
 
   async function handleRequestActivityPermission() {
     try {
@@ -189,6 +192,7 @@ export default function CustomiseScreen() {
       const summary = await getTodayLifeContextForAi({
         settings: previewLifeSettings,
         profile,
+        forceRefresh: true,
       });
       setLifeSummary(summary);
     } finally {
@@ -197,9 +201,21 @@ export default function CustomiseScreen() {
   }
 
   async function handleOpenUsageAccessSettings() {
+    refreshLifeContextOnActiveRef.current = true;
     await openLifeContextUsageSettings();
-    void refreshLifeContextPreview();
   }
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active" && refreshLifeContextOnActiveRef.current) {
+        refreshLifeContextOnActiveRef.current = false;
+        void refreshLifeContextPreview(true);
+      }
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [refreshLifeContextPreview]);
 
   async function handleSave() {
     const trimmedName = assistantNameInput.trim();

@@ -14,6 +14,9 @@ export type DailyLifeContext = {
     estimatedDistanceMeters: number | null;
     confidence: "high" | "medium" | "low" | "unavailable";
     source: string;
+    partialDay?: boolean;
+    trackingStartedAtMs?: number | null;
+    note?: string;
   };
   screen: {
     screenTimeMs: number | null;
@@ -60,6 +63,8 @@ function unavailableContext(): DailyLifeContext {
       estimatedDistanceMeters: null,
       confidence: "unavailable",
       source: "native_module_unavailable",
+      partialDay: false,
+      trackingStartedAtMs: null,
     },
     screen: {
       screenTimeMs: null,

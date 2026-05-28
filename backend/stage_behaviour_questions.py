@@ -34,7 +34,7 @@ DEFAULT_QUESTIONS: List[Dict[str, Any]] = [
         "id": "age_group",
         "prompt": "What is your age group?",
         "type": "single",
-        "options": ["18-25", "26-35", "36-45", "46-60", "60+"],
+        "options": ["under_13", "13_17", "18_25", "26_35", "36_45", "46_60", "60_plus", "prefer_not_to_say"],
     },
     {
         "id": "gender_context",
