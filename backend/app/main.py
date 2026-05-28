@@ -137,24 +137,29 @@ else:
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_PROFILE_SLOTS = {
+STARTER_PROFILE_REQUIRED_SLOTS = {
     "preferred_language",
-    "secondary_language",
     "age_group",
     "occupation",
+    "communication_tone",
+    "answer_length",
+    "assistant_persona",
+    "main_goal",
+    "dislikes",
+}
+
+OPTIONAL_PROFILE_SLOTS = {
+    "secondary_language",
     "industry_or_field",
     "hobbies",
     "interests",
-    "communication_tone",
-    "answer_length",
     "personality_style",
-    "assistant_persona",
     "planning_style",
     "learning_style",
-    "main_goal",
-    "dislikes",
     "work_rhythm",
 }
+
+REQUIRED_PROFILE_SLOTS = STARTER_PROFILE_REQUIRED_SLOTS
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 ALLOWED_AUDIO_CONTENT_TYPES = {

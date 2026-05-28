@@ -610,6 +610,59 @@ wait_for_chat_input_cleared() {
   return 1
 }
 
+complete_onboarding_smoke_if_present() {
+  if ! find_ui_center desc "onboarding-option-english" "onboarding-detect-english" >/dev/null 2>&1 && \
+    ! find_ui_center desc "onboarding-option-tamil" "onboarding-detect-tamil" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  info "Completing onboarding starter-profile smoke path"
+  capture_step "onboarding-detected"
+
+  if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
+    tap_desc "onboarding-option-tamil" || tap_text "Tamil" || true
+  else
+    tap_desc "onboarding-option-english" || tap_text "English" || true
+  fi
+  sleep 1
+  tap_desc "onboarding-option-26_35" || tap_text "26 35" || true
+  sleep 1
+  tap_desc "onboarding-option-working_professional" || tap_text "Working Professional" || true
+  sleep 1
+  tap_desc "onboarding-option-short_direct" || tap_text "Short Direct" || true
+  sleep 1
+  tap_desc "onboarding-option-short" || tap_text "Short" || true
+  sleep 1
+  tap_desc "onboarding-option-coach" || tap_text "Coach" || true
+  sleep 1
+  tap_desc "onboarding-option-career_growth" || tap_text "Career Growth" || true
+  sleep 1
+  tap_desc "onboarding-option-too_many_questions" || tap_text "Too Many Questions" || true
+  sleep 1
+  tap_desc "onboarding-multi-submit" || tap_text "Continue with" || true
+
+  if ! wait_for_text "Starter profile ready" 35 && ! wait_for_text "starter profile is ready" 10; then
+    mark_failed "onboarding-starter-profile-ready-missing"
+  fi
+
+  if wait_for_text "active or available" 3 || find_ui_center desc "onboarding-option-afternoon" "onboarding-stale-afternoon" >/dev/null 2>&1; then
+    mark_failed "onboarding-optional-work-rhythm-asked-after-too-many-questions"
+  fi
+
+  if tap_desc "onboarding-option-afternoon"; then
+    sleep 2
+    local xml_path ready_count
+    xml_path="$(dump_ui "onboarding-after-stale-afternoon-tap")"
+    ready_count="$(grep -o "starter profile is ready\\|Starter profile ready" "$xml_path" 2>/dev/null | wc -l | tr -d '[:space:]')"
+    if [[ "${ready_count:-0}" -gt 1 ]]; then
+      mark_failed "onboarding-duplicate-ready-after-stale-chip"
+    fi
+  fi
+
+  tap_desc "onboarding-continue-button" || tap_text "Continue to app" || true
+  wait_for_desc "chat-input" 60
+}
+
 relaunch_app_for_recovery() {
   adb shell monkey -p "$PACKAGE_NAME" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
   sleep 2
@@ -1276,6 +1329,10 @@ collect_cmd "dumpsys-meminfo-package-after-launch" adb shell dumpsys meminfo "$P
 collect_cmd "dumpsys-meminfo-after-launch" adb shell dumpsys meminfo
 
 capture_step "launch"
+
+if complete_onboarding_smoke_if_present; then
+  capture_step "onboarding-complete"
+fi
 
 launch_chat_ready_timeout="${APK_LAUNCH_CHAT_READY_TIMEOUT:-240}"
 if wait_for_desc "chat-input" "$launch_chat_ready_timeout"; then

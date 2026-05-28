@@ -139,7 +139,7 @@ describe("local profiler", () => {
     });
 
     expect(result.history[0]?.content).toContain("Hari");
-    expect(result.totalSlots).toBe(16);
+    expect(result.totalSlots).toBe(8);
     expect(readJson(`${dataRoot}/profiles/7/profiler_state.json`).status).toBe("active");
     expect(mockedState.files.get(`${dataRoot}/conversations/7.jsonl`)).toContain("assistant");
   });
@@ -187,27 +187,19 @@ describe("local profiler", () => {
     expect(readJson(`${dataRoot}/profiles/9/profiler_state.json`).lastRunSource).toBe("fallback");
   });
 
-  it("completes after all 16 slots are filled and writes summary plus rag artifacts", async () => {
+  it("completes after starter profile slots and writes summary plus rag artifacts", async () => {
     const { getLocalAgentWorkspaceInfo, sendProfilerMessageOnPhone } = await import("../lib/localAgents");
     const workspace = await getLocalAgentWorkspaceInfo();
     expect(workspace.slots).toHaveLength(16);
 
     const prefilledAnswers = {
       preferred_language: "english",
-      secondary_language: "tamil",
       age_group: "26_35",
       occupation: "working_professional",
-      industry_or_field: "technology",
-      hobbies: ["music", "reading"],
-      interests: ["ai_technology", "productivity"],
       communication_tone: "short_direct",
       answer_length: "short",
-      personality_style: "practical",
       assistant_persona: "coach",
-      planning_style: "light_structure",
-      learning_style: "step_by_step",
       main_goal: "career_growth",
-      dislikes: ["too_generic"],
     };
 
     mockedState.files.set(`${dataRoot}/profiles/10/answers.json`, JSON.stringify(prefilledAnswers, null, 2));
@@ -216,7 +208,7 @@ describe("local profiler", () => {
       JSON.stringify(
         {
           status: "active",
-          currentTargetSlot: "work_rhythm",
+          currentTargetSlot: "dislikes",
           confidenceBySlot: Object.fromEntries(Object.keys(prefilledAnswers).map((key) => [key, 0.9])),
           history: [],
         },
@@ -233,17 +225,102 @@ describe("local profiler", () => {
     });
     queueEmbeddingFailure();
 
-    const result = await sendProfilerMessageOnPhone(10, "I am usually most active in the evening.", {
+    const result = await sendProfilerMessageOnPhone(10, "Too many questions and too generic.", {
       replyLanguage: "en",
       userProfile: { name: "Hari" },
     });
 
     expect(result.done).toBe(true);
-    expect(result.answers.work_rhythm).toBe("evening");
+    expect(result.totalSlots).toBe(8);
+    expect(result.answers.dislikes).toEqual(expect.arrayContaining(["too_many_questions", "too_generic"]));
+    expect(result.answers.work_rhythm).toBeUndefined();
+    expect(result.assistantReply).toContain("starter profile is ready");
     expect(readJson(`${dataRoot}/profiles/10/summary.json`).summary).toContain("career_growth");
     expect(readJson(`${dataRoot}/profiles/10/summary.json`).summary).toContain("Age group: 26_35");
+    expect(readJson(`${dataRoot}/profiles/10/profiler_state.json`).currentTargetSlot).toBeUndefined();
     expect(readJson(`${dataRoot}/rag/runtime/10_profile_rag.json`).chunks.length).toBeGreaterThan(0);
     expect(readJson(`${dataRoot}/rag/runtime/10_chunks.json`).some((row: any) => row.sourceType === "profile")).toBe(true);
+  });
+
+  it("does not append late answers or duplicate ready messages after completion", async () => {
+    const { sendProfilerMessageOnPhone } = await import("../lib/localAgents");
+    const completedAnswers = {
+      preferred_language: "english",
+      age_group: "26_35",
+      occupation: "working_professional",
+      communication_tone: "short_direct",
+      answer_length: "short",
+      assistant_persona: "coach",
+      main_goal: "career_growth",
+      dislikes: ["too_many_questions"],
+    };
+    mockedState.files.set(`${dataRoot}/profiles/20/answers.json`, JSON.stringify(completedAnswers, null, 2));
+    mockedState.files.set(
+      `${dataRoot}/profiles/20/profiler_state.json`,
+      JSON.stringify(
+        {
+          status: "complete",
+          currentTargetSlot: "work_rhythm",
+          missingSlots: [],
+          confidenceBySlot: {},
+          history: [
+            { role: "assistant", content: "Perfect. Your starter profile is ready. I’ll keep learning naturally as we chat.", createdAt: "1" },
+          ],
+        },
+        null,
+        2
+      )
+    );
+
+    const result = await sendProfilerMessageOnPhone(20, "Afternoon", {
+      replyLanguage: "en",
+    });
+
+    expect(result.done).toBe(true);
+    expect(result.history.some((message) => message.role === "user" && message.content === "Afternoon")).toBe(false);
+    expect(result.history.filter((message) => message.content.includes("starter profile is ready"))).toHaveLength(1);
+    expect(mockedState.files.get(`${dataRoot}/conversations/20.jsonl`) || "").not.toContain("Afternoon");
+  });
+
+  it("keeps setup short after too_many_questions and does not ask optional work rhythm", async () => {
+    const { sendProfilerMessageOnPhone } = await import("../lib/localAgents");
+    const prefilledAnswers = {
+      preferred_language: "english",
+      age_group: "26_35",
+      occupation: "working_professional",
+      communication_tone: "short_direct",
+      answer_length: "short",
+      assistant_persona: "coach",
+    };
+    mockedState.files.set(`${dataRoot}/profiles/21/answers.json`, JSON.stringify(prefilledAnswers, null, 2));
+    mockedState.files.set(
+      `${dataRoot}/profiles/21/profiler_state.json`,
+      JSON.stringify(
+        {
+          status: "active",
+          currentTargetSlot: "dislikes",
+          missingSlots: ["main_goal", "dislikes"],
+          confidenceBySlot: {},
+          history: [],
+        },
+        null,
+        2
+      )
+    );
+    mockedState.fetchQueue.push(async () => {
+      throw new Error("model unavailable");
+    });
+
+    const result = await sendProfilerMessageOnPhone(21, "Too many questions.", {
+      replyLanguage: "en",
+    });
+
+    expect(result.done).toBe(false);
+    expect(result.assistantReply).toContain("I’ll keep setup short");
+    expect(result.assistantReply).toContain("Last quick setup question");
+    expect(result.assistantReply).toContain("What matters most");
+    expect(result.assistantReply).not.toContain("active or available");
+    expect(result.missingSlots).toEqual(["main_goal"]);
   });
 
   it("answers local life-context questions from provided context", async () => {

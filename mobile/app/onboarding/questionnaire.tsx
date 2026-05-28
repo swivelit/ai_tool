@@ -35,10 +35,16 @@ import {
   sendProfilerMessageOnPhone,
   startProfilerOnPhone,
 } from "@/lib/localAgents";
+import { enqueueClientTurnLog } from "@/lib/chatTelemetry";
+import {
+  OnboardingCompletionState,
+  sanitizeOnboardingHistory,
+  shouldIgnoreOnboardingOptionPress,
+  shouldIgnoreOnboardingSend,
+  shouldShowOnboardingOptions,
+} from "@/lib/onboardingWorkflow";
 
 const PROFILER_SLOTS = profilerSlotsSeed as ProfilerSlot[];
-
-type OnboardingCompletionState = "incomplete" | "complete_local_pending_sync" | "complete_synced" | "sync_failed";
 
 function humanizeOption(option: string) {
   const clean = String(option || "").trim();
@@ -73,7 +79,7 @@ export default function QuestionnaireScreen() {
   const sessionReplyLanguageRef = useRef(sessionReplyLanguage);
   const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const [, setCompletedSlots] = useState(0);
-  const [, setTotalSlots] = useState(15);
+  const [, setTotalSlots] = useState(8);
 
   const activeSlot = useMemo(
     () => PROFILER_SLOTS.find((slot) => slot.id === activeSlotId) ?? null,
@@ -117,6 +123,16 @@ export default function QuestionnaireScreen() {
     }).catch((error) => {
       console.warn("[questionnaire] Failed to sync reply language:", error);
     });
+  }
+
+  function trackOnboarding(event: string, extra: Record<string, any> = {}) {
+    void enqueueClientTurnLog({
+      event,
+      user_id: resolvedUserId,
+      channel: "app",
+      screen: "onboarding_questionnaire",
+      ...extra,
+    }).catch(() => undefined);
   }
 
   function syncCurrentStep(nextSlotId?: string | null) {
@@ -178,6 +194,12 @@ export default function QuestionnaireScreen() {
         }
 
         setResolvedUserId(nextUserId);
+        void enqueueClientTurnLog({
+          event: "onboarding_started",
+          user_id: nextUserId,
+          channel: "app",
+          screen: "onboarding_questionnaire",
+        }).catch(() => undefined);
 
         const current = await getProfilerStateOnPhone(nextUserId);
 
@@ -185,7 +207,8 @@ export default function QuestionnaireScreen() {
 
         setCompletedSlots(current.completedSlots);
         setTotalSlots(current.totalSlots);
-        const currentDone = current.missingSlots.length === 0;
+        const currentDone =
+          current.state.status === "complete" || current.missingSlots.length === 0;
         setDone(currentDone);
         setCompletionState(
           currentDone
@@ -196,10 +219,18 @@ export default function QuestionnaireScreen() {
                 : "complete_local_pending_sync"
             : "incomplete"
         );
-        syncCurrentStep(current.state.currentTargetSlot || current.missingSlots[0] || null);
+        syncCurrentStep(
+          currentDone
+            ? null
+            : current.state.currentTargetSlot || current.missingSlots[0] || null
+        );
 
         if (current.state.history?.length) {
-          setMessages(current.state.history);
+          setMessages(
+            currentDone
+              ? sanitizeOnboardingHistory(current.state.history)
+              : current.state.history
+          );
         } else {
           const started = await startProfilerOnPhone(nextUserId, {
             replyLanguage: sessionReplyLanguageRef.current,
@@ -215,7 +246,7 @@ export default function QuestionnaireScreen() {
           setTotalSlots(started.totalSlots);
           setDone(started.done);
           setCompletionState(started.done ? "complete_local_pending_sync" : "incomplete");
-          syncCurrentStep(started.missingSlots[0] || null);
+          syncCurrentStep(started.done ? null : started.missingSlots[0] || null);
         }
       } catch (error: any) {
         if (!alive) return;
@@ -241,10 +272,26 @@ export default function QuestionnaireScreen() {
   }, [messages, activeSlotId, selectedOptions]);
 
   async function handleSend(overrideMessage?: string) {
-    if (!resolvedUserId || sending) return;
+    if (
+      shouldIgnoreOnboardingSend({
+        resolvedUserId,
+        sending,
+        done,
+        completionState,
+        activeSlotId,
+      })
+    ) {
+      trackOnboarding("onboarding_late_input_ignored", {
+        workflow_step: activeSlotId,
+        decision: "send_ignored_after_completion",
+      });
+      return;
+    }
 
     const userMessage = String(overrideMessage ?? input).trim();
     if (!userMessage) return;
+    const userIdForTurn = resolvedUserId;
+    if (!userIdForTurn) return;
 
     const nextReplyLanguage = inferReplyLanguageFromAnswer(userMessage);
 
@@ -253,11 +300,16 @@ export default function QuestionnaireScreen() {
       persistReplyLanguage(nextReplyLanguage);
     }
 
+    trackOnboarding("onboarding_slot_answered", {
+      workflow_step: activeSlotId,
+      question_length: userMessage.length,
+    });
     setInput("");
     setSending(true);
+    let completedThisTurn = false;
 
     try {
-      const next = await sendProfilerMessageOnPhone(resolvedUserId, userMessage, {
+      const next = await sendProfilerMessageOnPhone(userIdForTurn, userMessage, {
         replyLanguage: nextReplyLanguage,
         userProfile: {
           name: profile?.name || user?.displayName || "User",
@@ -270,27 +322,39 @@ export default function QuestionnaireScreen() {
       setCompletedSlots(next.completedSlots);
       setTotalSlots(next.totalSlots);
       setDone(next.done);
-      syncCurrentStep(next.missingSlots[0] || null);
 
       if (next.done) {
+        completedThisTurn = true;
+        setActiveSlotId(null);
+        setSelectedOptions([]);
         setCompletionState("complete_local_pending_sync");
+        trackOnboarding("onboarding_completed_local");
         const refreshedProfile = await refresh();
 
         if (!refreshedProfile?.questionnaireCompleted) {
           setCompletionState("sync_failed");
+          trackOnboarding("onboarding_sync_failed", {
+            error_message: "backend_not_confirmed",
+          });
           throw new Error(
             "The backend did not confirm questionnaire completion from saved profiler answers. Please try again."
           );
         }
 
         setCompletionState("complete_synced");
+        trackOnboarding("onboarding_completed_synced");
       } else {
+        syncCurrentStep(next.missingSlots[0] || null);
         setCompletionState("incomplete");
       }
     } catch (error: any) {
-      if (done) {
+      if (done || completedThisTurn) {
         setCompletionState("sync_failed");
       }
+      trackOnboarding("onboarding_sync_failed", {
+        workflow_step: activeSlotId,
+        error_message: error?.message || "unknown_error",
+      });
       Alert.alert("Couldn’t continue", error?.message || "Please try again.");
       if (!overrideMessage) {
         setInput(userMessage);
@@ -314,9 +378,13 @@ export default function QuestionnaireScreen() {
       }
 
       setCompletionState("complete_synced");
+      trackOnboarding("onboarding_completed_synced");
       Alert.alert("Synced", "Your onboarding profile is now synced.");
     } catch (error: any) {
       setCompletionState("sync_failed");
+      trackOnboarding("onboarding_sync_failed", {
+        error_message: error?.message || "retry_failed",
+      });
       Alert.alert("Sync failed", error?.message || "Please check your connection and try again.");
     } finally {
       setSending(false);
@@ -332,6 +400,19 @@ export default function QuestionnaireScreen() {
   }
 
   function toggleMultiOption(option: string) {
+    if (
+      shouldIgnoreOnboardingOptionPress({
+        sending,
+        done,
+        completionState,
+      })
+    ) {
+      trackOnboarding("onboarding_late_input_ignored", {
+        workflow_step: activeSlotId,
+        decision: "multi_toggle_ignored_after_completion",
+      });
+      return;
+    }
     if (!activeSlot || activeSlot.type !== "multi") return;
     const maxChoices = activeSlot.max_choices || 4;
     setSelectedOptions((current) => {
@@ -346,14 +427,48 @@ export default function QuestionnaireScreen() {
   }
 
   async function handleSingleOptionPress(option: string) {
-    if (sending) return;
+    if (
+      shouldIgnoreOnboardingOptionPress({
+        sending,
+        done,
+        completionState,
+      })
+    ) {
+      trackOnboarding("onboarding_late_input_ignored", {
+        workflow_step: activeSlotId,
+        decision: "single_option_ignored_after_completion",
+      });
+      return;
+    }
     await handleSend(humanizeOption(option));
   }
 
   async function handleMultiOptionSubmit() {
-    if (!activeSlot || activeSlot.type !== "multi" || selectedOptions.length === 0 || sending) return;
+    if (
+      shouldIgnoreOnboardingOptionPress({
+        sending,
+        done,
+        completionState,
+      })
+    ) {
+      trackOnboarding("onboarding_late_input_ignored", {
+        workflow_step: activeSlotId,
+        decision: "multi_submit_ignored_after_completion",
+      });
+      return;
+    }
+    if (!activeSlot || activeSlot.type !== "multi" || selectedOptions.length === 0) return;
     await handleSend(formatSelectedOptions(selectedOptions));
   }
+
+  const showOptions = shouldShowOnboardingOptions({
+    done,
+    completionState,
+    activeSlotId,
+  });
+  const profileReadyVisible = done || completionState !== "incomplete";
+  const interactionsDisabled =
+    sending || done || completionState !== "incomplete";
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.screen}>
@@ -413,7 +528,7 @@ export default function QuestionnaireScreen() {
                   );
                 })}
 
-                {!done && activeSlot ? (
+                {showOptions && activeSlot ? (
                   <GlassCard style={styles.optionsCard}>
                     <Text style={styles.optionsTitle}>{activeSlot.prompt}</Text>
                     <Text style={styles.optionsSubtitle}>
@@ -428,11 +543,12 @@ export default function QuestionnaireScreen() {
                         return (
                           <Pressable
                             key={`${activeSlot.id}_${option}`}
+                            accessibilityLabel={`onboarding-option-${option}`}
                             style={[
                               styles.optionChip,
                               activeSlot.type === "multi" && selected && styles.optionChipSelected,
                             ]}
-                            disabled={sending}
+                            disabled={interactionsDisabled}
                             onPress={() => {
                               if (activeSlot.type === "multi") {
                                 toggleMultiOption(option);
@@ -456,11 +572,12 @@ export default function QuestionnaireScreen() {
 
                     {activeSlot.type === "multi" ? (
                       <Pressable
+                        accessibilityLabel="onboarding-multi-submit"
                         style={[
                           styles.multiSubmitButton,
-                          (selectedOptions.length === 0 || sending) && styles.multiSubmitButtonDisabled,
+                          (selectedOptions.length === 0 || interactionsDisabled) && styles.multiSubmitButtonDisabled,
                         ]}
-                        disabled={selectedOptions.length === 0 || sending}
+                        disabled={selectedOptions.length === 0 || interactionsDisabled}
                         onPress={() => void handleMultiOptionSubmit()}
                       >
                         <Text style={styles.multiSubmitButtonText}>
@@ -471,29 +588,34 @@ export default function QuestionnaireScreen() {
                   </GlassCard>
                 ) : null}
 
-                {done ? (
+                {profileReadyVisible ? (
                   <GlassCard style={styles.doneCard}>
                     <Text style={styles.doneTitle}>
                       {completionState === "complete_synced"
-                        ? "Profile ready"
+                        ? "Starter profile ready"
                         : completionState === "sync_failed"
                           ? "Sync needed"
                           : "Syncing profile"}
                     </Text>
                     <Text style={styles.doneText}>
                       {completionState === "complete_synced"
-                        ? "We have enough context to personalize responses."
+                        ? "You can improve this later in chat."
                         : completionState === "sync_failed"
                           ? "Your answers are saved locally, but backend sync failed. Retry sync before continuing."
                           : "Your answers are saved locally. Waiting for backend confirmation…"}
                     </Text>
 
                     {completionState === "sync_failed" ? (
-                      <Pressable style={styles.doneButton} onPress={() => void retrySync()}>
+                      <Pressable
+                        accessibilityLabel="onboarding-retry-sync-button"
+                        style={styles.doneButton}
+                        onPress={() => void retrySync()}
+                      >
                         <Text style={styles.doneButtonText}>{sending ? "Retrying…" : "Retry sync"}</Text>
                       </Pressable>
                     ) : (
                       <Pressable
+                        accessibilityLabel="onboarding-continue-button"
                         style={[
                           styles.doneButton,
                           completionState !== "complete_synced" && styles.doneButtonDisabled,
@@ -512,7 +634,7 @@ export default function QuestionnaireScreen() {
             )}
           </View>
 
-          {!done ? (
+          {!profileReadyVisible ? (
             <GlassCard style={styles.composerCard}>
               <Text style={styles.composerHint}>
                 {sessionReplyLanguage === "ta"

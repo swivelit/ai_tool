@@ -2,6 +2,8 @@ import json
 
 from app.database import SessionLocal
 from app.main import (
+    STARTER_PROFILE_REQUIRED_SLOTS,
+    _questionnaire_completed,
     _profile_prompt_context_text,
     build_profile_prompt_context,
     sanitize_client_context,
@@ -263,3 +265,71 @@ def test_client_life_context_preserves_app_names_only_when_enabled_but_redacts_s
     assert "private@example.com" not in dumped
     assert "sk-secret" not in dumped
     assert "abcdef1234567890abcdef1234567890" not in dumped
+
+
+def test_questionnaire_completed_uses_starter_required_slots_only():
+    answers = {
+        "preferred_language": "english",
+        "age_group": "26_35",
+        "occupation": "working_professional",
+        "communication_tone": "short_direct",
+        "answer_length": "short",
+        "assistant_persona": "coach",
+        "main_goal": "career_growth",
+        "dislikes": ["too_many_questions"],
+    }
+    profile = UserProfile(
+        user_id=9901,
+        answers_json=json.dumps(answers),
+        questions_version=1,
+    )
+
+    assert STARTER_PROFILE_REQUIRED_SLOTS == set(answers.keys())
+    assert _questionnaire_completed(profile) is True
+
+
+def test_questionnaire_completed_rejects_missing_starter_slot():
+    answers = {
+        "preferred_language": "english",
+        "age_group": "26_35",
+        "occupation": "working_professional",
+        "communication_tone": "short_direct",
+        "answer_length": "short",
+        "assistant_persona": "coach",
+        "main_goal": "career_growth",
+    }
+    profile = UserProfile(
+        user_id=9902,
+        answers_json=json.dumps(answers),
+        questions_version=1,
+    )
+
+    assert _questionnaire_completed(profile) is False
+
+
+def test_questionnaire_completed_accepts_existing_full_profiles():
+    answers = {
+        "preferred_language": "english",
+        "secondary_language": "tamil",
+        "age_group": "26_35",
+        "occupation": "working_professional",
+        "industry_or_field": "technology",
+        "hobbies": ["music"],
+        "interests": ["ai_technology"],
+        "communication_tone": "short_direct",
+        "answer_length": "short",
+        "personality_style": "practical",
+        "assistant_persona": "coach",
+        "planning_style": "light_structure",
+        "learning_style": "step_by_step",
+        "main_goal": "career_growth",
+        "dislikes": ["too_generic"],
+        "work_rhythm": "evening",
+    }
+    profile = UserProfile(
+        user_id=9903,
+        answers_json=json.dumps(answers),
+        questions_version=1,
+    )
+
+    assert _questionnaire_completed(profile) is True

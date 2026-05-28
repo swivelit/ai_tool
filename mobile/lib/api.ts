@@ -700,6 +700,10 @@ type LocalChatProxyResponse = {
   meta?: Record<string, any>;
 };
 
+const API_GET_DEDUPE_TTL_MS = 3_000;
+const apiGetInFlight = new Map<string, Promise<any>>();
+const apiGetCache = new Map<string, { expiresAt: number; value: any }>();
+
 type VoiceUnavailableAction =
   | "ask_user_consent"
   | "install_local_stt"
@@ -733,6 +737,15 @@ class LocalVoiceUnavailableError extends Error {
 function buildUrl(path: string) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${API_BASE}${normalizedPath}`;
+}
+
+function apiGetDedupeKey(path: string) {
+  const currentUser = auth?.currentUser ?? null;
+  return `${currentUser?.uid || "anonymous"}:${path}`;
+}
+
+function shouldDedupeApiGet(path: string) {
+  return path === "/items" || path.startsWith("/items?");
 }
 
 function localApiCandidates(baseUrl: string) {
@@ -2805,21 +2818,63 @@ async function handleLocalChat(
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetchBackend(path);
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new ApiError(
-      `GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
-      res.status,
-      {
-        method: "GET",
-        path,
-        endpoint: buildUrl(path),
-        apiBase: API_BASE,
-      },
-    );
+  if (!shouldDedupeApiGet(path)) {
+    const res = await fetchBackend(path);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ApiError(
+        `GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
+        res.status,
+        {
+          method: "GET",
+          path,
+          endpoint: buildUrl(path),
+          apiBase: API_BASE,
+        },
+      );
+    }
+    return normalizeBackendDates((await res.json()) as T);
   }
-  return normalizeBackendDates((await res.json()) as T);
+
+  const key = apiGetDedupeKey(path);
+  const now = Date.now();
+  const cached = apiGetCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached.value as T;
+  }
+
+  const existing = apiGetInFlight.get(key);
+  if (existing) {
+    return existing as Promise<T>;
+  }
+
+  const request = (async () => {
+    const res = await fetchBackend(path);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ApiError(
+        `GET ${path} failed: ${res.status}${text ? ` - ${text}` : ""}`,
+        res.status,
+        {
+          method: "GET",
+          path,
+          endpoint: buildUrl(path),
+          apiBase: API_BASE,
+        },
+      );
+    }
+    const value = normalizeBackendDates((await res.json()) as T);
+    apiGetCache.set(key, {
+      expiresAt: Date.now() + API_GET_DEDUPE_TTL_MS,
+      value,
+    });
+    return value;
+  })().finally(() => {
+    apiGetInFlight.delete(key);
+  });
+
+  apiGetInFlight.set(key, request);
+  return request;
 }
 
 export async function apiFetchRaw(

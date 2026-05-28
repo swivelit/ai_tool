@@ -132,6 +132,75 @@ describe("API client contracts", () => {
     );
   });
 
+  it("dedupes simultaneous GET requests for the same path", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          uid: "user-dedupe",
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, items: [{ id: 1, details: "Hello" }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiGet } = await import("../lib/api");
+    const [first, second] = await Promise.all([
+      apiGet<any>("/items?user_id=7"),
+      apiGet<any>("/items?user_id=7"),
+    ]);
+
+    expect(first.items).toHaveLength(1);
+    expect(second.items).toHaveLength(1);
+    expect(fetchCallsEndingWith(fetchMock, "/items?user_id=7")).toHaveLength(1);
+  });
+
+  it("does not dedupe different GET paths", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          uid: "user-dedupe-different",
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+
+    const fetchMock = vi.fn(async (_url: string) =>
+      jsonResponse({ ok: true, items: [] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiGet } = await import("../lib/api");
+    await Promise.all([
+      apiGet<any>("/items?user_id=7"),
+      apiGet<any>("/items?user_id=8"),
+    ]);
+
+    expect(fetchCallsEndingWith(fetchMock, "/items?user_id=7")).toHaveLength(1);
+    expect(fetchCallsEndingWith(fetchMock, "/items?user_id=8")).toHaveLength(1);
+  });
+
   it("routes recorded voice to authenticated backend by default", async () => {
     vi.doMock("expo-constants", () => ({
       default: {

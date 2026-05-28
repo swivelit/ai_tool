@@ -113,9 +113,25 @@ export type ProfilerSlot = {
   id: string;
   prompt: string;
   type: "single" | "multi";
+  required?: boolean;
   max_choices?: number;
   options: string[];
 };
+
+export const STARTER_PROFILE_REQUIRED_SLOTS = [
+  "preferred_language",
+  "age_group",
+  "occupation",
+  "communication_tone",
+  "answer_length",
+  "assistant_persona",
+  "main_goal",
+  "dislikes",
+] as const;
+
+const STARTER_PROFILE_REQUIRED_SLOT_SET = new Set<string>(
+  STARTER_PROFILE_REQUIRED_SLOTS,
+);
 
 export type LocalProfilerState = {
   status: "idle" | "active" | "complete";
@@ -1118,9 +1134,9 @@ const DEFAULT_MEMORY_RULES: MemoryRules = {
 
 const DEFAULT_PROMPTS: PromptCatalog = {
   profilerOpeningSystem:
-    "You are the Profiler Agent using Gemma 3 4B. Start onboarding as a natural chat in {{reply_language_name}}. Do not mention forms or questionnaires. Ask only one thing in the opening turn. Collect these slots over time: {{slot_ids}}.",
+    "You are the Profiler Agent using Gemma 3 4B. Start onboarding as a natural chat in {{reply_language_name}}. Do not mention forms or questionnaires. Ask only one thing in the opening turn. Collect only these starter profile slots during onboarding: {{slot_ids}}. Optional details can be learned later in normal chat.",
   profilerTurnSystem:
-    "You are the Profiler Agent using Gemma 3 4B. Continue onboarding as a natural chat in {{reply_language_name}}. Extract structured updates from the latest free-form user reply, avoid re-asking high-confidence known facts, and choose the next best question from the remaining slots. If all slots are collected, stop asking questions. Return JSON only with: assistant_reply, updates, missing_slots, completed, confidence_by_slot, optional_profile_notes.",
+    "You are the Profiler Agent using Gemma 3 4B. Continue onboarding as a natural chat in {{reply_language_name}}. Extract structured updates from the latest free-form user reply, avoid re-asking high-confidence known facts, and choose the next best question from remaining starter slots only. Do not ask optional follow-up questions during onboarding. If the user dislikes too_many_questions, acknowledge briefly and ask only the minimum remaining starter question. If all starter slots are collected, stop asking questions and say the starter profile is ready. Return JSON only with: assistant_reply, updates, missing_slots, completed, confidence_by_slot, optional_profile_notes.",
   profileSummarySystem:
     "Write a compact factual English profile summary from the provided onboarding facts. Mention only grounded user facts and stable preferences. Do not invent anything.",
   orchestratorSystem:
@@ -1575,12 +1591,7 @@ function slotPriorityAfterUpdate(lastUpdatedSlotIds: string[]) {
     if (!priorities.includes(slotId)) priorities.push(slotId);
   };
   for (const slotId of lastUpdatedSlotIds) {
-    if (slotId === "preferred_language") add("secondary_language");
-    if (slotId === "occupation") add("industry_or_field");
-    if (slotId === "hobbies") add("interests");
     if (slotId === "communication_tone") add("answer_length");
-    if (slotId === "personality_style") add("assistant_persona");
-    if (slotId === "planning_style") add("work_rhythm");
   }
   return priorities;
 }
@@ -1590,8 +1601,9 @@ function chooseNextProfilerSlot(
   answers: Record<string, any>,
   confidenceBySlot: Record<string, number>,
   lastUpdatedSlotIds: string[],
+  eligibleSlotIds?: string[],
 ) {
-  const remaining = missingSlots(slots, answers);
+  const remaining = eligibleSlotIds || missingSlots(slots, answers);
   if (!remaining.length) return null;
   const prioritized = slotPriorityAfterUpdate(lastUpdatedSlotIds);
   for (const slotId of prioritized) {
@@ -1896,6 +1908,16 @@ function answerValueCount(answers: Record<string, any>) {
   ).length;
 }
 
+function starterProfileSlots(slots: ProfilerSlot[]) {
+  return slots.filter((slot) =>
+    STARTER_PROFILE_REQUIRED_SLOT_SET.has(slot.id),
+  );
+}
+
+function starterProfileSlotCount(slots: ProfilerSlot[]) {
+  return starterProfileSlots(slots).length || STARTER_PROFILE_REQUIRED_SLOTS.length;
+}
+
 function missingSlots(slots: ProfilerSlot[], answers: Record<string, any>) {
   return slots
     .filter((slot) => {
@@ -1905,6 +1927,61 @@ function missingSlots(slots: ProfilerSlot[], answers: Record<string, any>) {
         : !String(value || "").trim();
     })
     .map((slot) => slot.id);
+}
+
+function missingStarterProfileSlots(
+  slots: ProfilerSlot[],
+  answers: Record<string, any>,
+) {
+  return missingSlots(starterProfileSlots(slots), answers);
+}
+
+function starterAnswerValueCount(
+  slots: ProfilerSlot[],
+  answers: Record<string, any>,
+) {
+  return starterProfileSlots(slots).filter((slot) => {
+    const value = answers[slot.id];
+    return Array.isArray(value)
+      ? value.length > 0
+      : String(value || "").trim().length > 0;
+  }).length;
+}
+
+function answerHasTooManyQuestions(answers: Record<string, any>) {
+  return trimList(answers.dislikes)
+    .map((value) => normalizeText(value).replace(/\s+/g, "_"))
+    .includes("too_many_questions");
+}
+
+function isProfileReadyMessage(content: unknown) {
+  const text = String(content || "").toLowerCase();
+  return (
+    text.includes("starter profile is ready") ||
+    text.includes("profile is already ready") ||
+    /ஆரம்ப.*ப்ரொஃபைல்.*தயார்/.test(String(content || ""))
+  );
+}
+
+function sanitizeProfilerHistory(history: LocalChatMessage[] = []) {
+  const readyIndexes = history
+    .map((message, index) =>
+      message.role === "assistant" && isProfileReadyMessage(message.content)
+        ? index
+        : -1,
+    )
+    .filter((index) => index >= 0);
+  if (!readyIndexes.length) return history.slice(-40);
+
+  const firstReadyIndex = readyIndexes[0];
+  const keepReadyIndex = readyIndexes[readyIndexes.length - 1];
+  const finalReady = history[keepReadyIndex];
+  return [
+    ...history
+      .slice(0, firstReadyIndex)
+      .filter((message) => !isProfileReadyMessage(message.content)),
+    finalReady,
+  ].slice(-40);
 }
 
 function nextSlot(slots: ProfilerSlot[], answers: Record<string, any>) {
@@ -3652,16 +3729,42 @@ function buildProfilerAssistantReply(
   replyLanguageName: string,
   nextSlotPrompt: string | undefined,
   done: boolean,
+  opts: { tooManyQuestions?: boolean; remainingCount?: number } = {},
 ) {
   const fallbackCode = fallbackReplyLanguageCode(replyLanguageName);
   if (done) {
     return fallbackCode === "ta"
-      ? "சூப்பர். உங்கள் ஆரம்ப ப்ரொஃபைல் தயார். இதை அடுத்த உரையாடல்களில் பயன்படுத்துவேன்."
-      : "Perfect. Your starter profile is ready, and I’ll use it in future chats.";
+      ? "சூப்பர். உங்கள் ஆரம்ப ப்ரொஃபைல் தயார். பேசிக்கொண்டே இதை இயல்பாக மேம்படுத்திக்கொள்கிறேன்."
+      : "Perfect. Your starter profile is ready. I’ll keep learning naturally as we chat.";
   }
+
+  const prompt =
+    nextSlotPrompt ||
+    (fallbackCode === "ta"
+      ? "உங்களைப் பற்றி இன்னும் கொஞ்சம் சொல்லுங்கள்."
+      : "Tell me a bit more about yourself.");
+  const lastQuestion = (opts.remainingCount || 0) <= 1;
+
+  if (opts.tooManyQuestions) {
+    if (fallbackCode === "ta") {
+      return lastQuestion
+        ? `சரி — setup-ஐ சுருக்கமாக வைப்பேன். கடைசி quick setup கேள்வி — ${prompt}`
+        : `சரி — setup-ஐ சுருக்கமாக வைப்பேன். ${prompt}`;
+    }
+    return lastQuestion
+      ? `Got it — I’ll keep setup short. Last quick setup question — ${prompt}`
+      : `Got it — I’ll keep setup short. ${prompt}`;
+  }
+
+  if (lastQuestion) {
+    return fallbackCode === "ta"
+      ? `கடைசி quick setup கேள்வி — ${prompt}`
+      : `Last quick setup question — ${prompt}`;
+  }
+
   return fallbackCode === "ta"
-    ? `சரி. இன்னொரு விஷயம் மட்டும் — ${nextSlotPrompt || "உங்களைப் பற்றி இன்னும் கொஞ்சம் சொல்லுங்கள்."}`
-    : `Got it. One more thing — ${nextSlotPrompt || "Tell me a bit more about yourself."}`;
+    ? `சரி. ${prompt}`
+    : `Got it. ${prompt}`;
 }
 
 const SLOT_KEYWORD_MAP: Record<string, Record<string, string[]>> = {
@@ -3935,9 +4038,20 @@ function deterministicProfilerExtraction(
   }
 
   if (!Object.keys(updates).length && state.status === "active") {
+    const starterMissing = missingStarterProfileSlots(slots, answers);
     const fallbackSlot =
-      slots.find((slot) => slot.id === state.currentTargetSlot) ||
-      chooseNextProfilerSlot(slots, answers, state.confidenceBySlot || {}, []);
+      slots.find(
+        (slot) =>
+          slot.id === state.currentTargetSlot &&
+          starterMissing.includes(slot.id),
+      ) ||
+      chooseNextProfilerSlot(
+        slots,
+        answers,
+        state.confidenceBySlot || {},
+        [],
+        starterMissing,
+      );
     if (fallbackSlot) {
       const normalizedValue = normalizeSlotValue(
         fallbackSlot,
@@ -3952,13 +4066,15 @@ function deterministicProfilerExtraction(
   }
 
   const merged = mergeProfilerUpdates(slots, answers, updates);
-  const remaining = missingSlots(slots, merged);
+  const remaining = missingStarterProfileSlots(slots, merged);
   const nextSlotCandidate = chooseNextProfilerSlot(
     slots,
     merged,
     { ...(state.confidenceBySlot || {}), ...confidenceBySlot },
     Object.keys(updates),
+    remaining,
   );
+  const tooManyQuestions = answerHasTooManyQuestions(merged);
 
   if (
     /i\b.*\b(work|study|prefer|like|dislike|usually)\b/.test(normalizedMessage)
@@ -3971,6 +4087,10 @@ function deterministicProfilerExtraction(
       replyLanguageName,
       nextSlotCandidate?.prompt,
       remaining.length === 0,
+      {
+        tooManyQuestions,
+        remainingCount: remaining.length,
+      },
     ),
     updates,
     missing_slots: remaining,
@@ -4124,6 +4244,8 @@ async function runProfilerTurnModel(
 ) {
   const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
+  const starterSlots = starterProfileSlots(slots);
+  const starterMissing = missingStarterProfileSlots(slots, currentAnswers);
   try {
     const raw = await localChatRaw(
       template(prompts.profilerTurnSystem, {
@@ -4134,10 +4256,10 @@ async function runProfilerTurnModel(
         current_answers: currentAnswers,
         current_confidence_by_slot: currentState.confidenceBySlot || {},
         current_target_slot: currentState.currentTargetSlot || null,
-        missing_slots: missingSlots(slots, currentAnswers),
-        known_slots: formatSlotFacts(slots, currentAnswers),
+        missing_slots: starterMissing,
+        known_slots: formatSlotFacts(starterSlots, currentAnswers),
         history: currentState.history.slice(-10),
-        slots,
+        slots: starterSlots,
         user_profile: userProfile || {},
       }),
       cfg.models.profiler,
@@ -4257,7 +4379,7 @@ async function buildProfileSummaryLocally(
   const answers = await loadAnswers(userId);
   const slots = await getProfilerSlots();
   const state = await loadProfilerState(userId);
-  if (missingSlots(slots, answers).length > 0) return "";
+  if (missingStarterProfileSlots(slots, answers).length > 0) return "";
   const facts = buildSummaryFacts(slots, answers);
   const optionalProfileNotes = Array.isArray(state.optionalProfileNotes)
     ? state.optionalProfileNotes
@@ -4319,11 +4441,12 @@ async function buildProfilerOpening(
   const cfg = await getModelConfig();
   const prompts = await getPromptCatalog();
   const slots = await getProfilerSlots();
+  const starterSlots = starterProfileSlots(slots);
   try {
     const out = await localChatText(
       template(prompts.profilerOpeningSystem, {
         reply_language_name: replyLanguageName,
-        slot_ids: slots.map((slot) => slot.id).join(", "),
+        slot_ids: starterSlots.map((slot) => slot.id).join(", "),
       }),
       JSON.stringify({
         user: userProfile || {},
@@ -4343,6 +4466,47 @@ async function buildProfilerOpening(
     : `Hey${userProfile?.name ? ` ${userProfile.name}` : ""}, let’s start casually. Tell me a little about yourself.`;
 }
 
+async function buildCompletedProfilerResult(
+  userId: number,
+  slots: ProfilerSlot[],
+  answers: Record<string, string | string[]>,
+  currentState: LocalProfilerState,
+  replyLanguageName: string,
+): Promise<LocalProfilerTurnResult> {
+  const history = sanitizeProfilerHistory(currentState.history || []);
+  const readyMessage =
+    [...history]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === "assistant" &&
+          isProfileReadyMessage(message.content),
+      )?.content ||
+    buildProfilerAssistantReply(replyLanguageName, undefined, true);
+  const nextState: LocalProfilerState = {
+    ...currentState,
+    status: "complete",
+    lastUpdatedAt: currentState.lastUpdatedAt || nowIso(),
+    currentTargetSlot: undefined,
+    missingSlots: [],
+    history,
+    completionSyncState:
+      currentState.completionSyncState || "complete_local_pending_sync",
+  };
+  await saveProfilerState(userId, nextState);
+  return {
+    ok: true,
+    assistantReply: readyMessage,
+    answers,
+    completedSlots: starterAnswerValueCount(slots, answers),
+    totalSlots: starterProfileSlotCount(slots),
+    missingSlots: [],
+    done: true,
+    history,
+    summary: await loadSummary(userId),
+  };
+}
+
 export async function startProfilerOnPhone(
   userId: number,
   opts?: { replyLanguage?: ReplyLanguage; userProfile?: LocalUserProfile },
@@ -4350,7 +4514,7 @@ export async function startProfilerOnPhone(
   await ensureLocalAgentData();
   const slots = await getProfilerSlots();
   const answers = await loadAnswers(userId);
-  const missing = missingSlots(slots, answers);
+  const missing = missingStarterProfileSlots(slots, answers);
   const summary =
     missing.length === 0
       ? await buildProfileSummaryLocally(userId, {
@@ -4369,9 +4533,7 @@ export async function startProfilerOnPhone(
   );
   const assistantReply = missing.length
     ? await buildProfilerOpening(replyLanguageName, opts?.userProfile)
-    : fallbackReplyLanguageCode(replyLanguageName) === "ta"
-      ? "உங்கள் ப்ரொஃபைல் ஏற்கனவே தயார். பேசிக்கொண்டே அதை இன்னும் மேம்படுத்தலாம்."
-      : "Your profile is already ready. We can still improve it as we chat.";
+    : buildProfilerAssistantReply(replyLanguageName, undefined, true);
   const state: LocalProfilerState = {
     status: missing.length ? "active" : "complete",
     startedAt: nowIso(),
@@ -4410,8 +4572,8 @@ export async function startProfilerOnPhone(
     ok: true,
     assistantReply,
     answers,
-    completedSlots: answerValueCount(answers),
-    totalSlots: slots.length,
+    completedSlots: starterAnswerValueCount(slots, answers),
+    totalSlots: starterProfileSlotCount(slots),
     missingSlots: missing,
     done: missing.length === 0,
     history: state.history,
@@ -4425,13 +4587,36 @@ export async function getProfilerStateOnPhone(userId: number) {
   const answers = await loadAnswers(userId);
   const state = await loadProfilerState(userId);
   const summary = await loadSummary(userId);
+  const missing = missingStarterProfileSlots(slots, answers);
+  const done = state.status === "complete" || missing.length === 0;
+  const normalizedState: LocalProfilerState = done
+    ? {
+        ...state,
+        status: "complete",
+        currentTargetSlot: undefined,
+        missingSlots: [],
+        history: sanitizeProfilerHistory(state.history || []),
+      }
+    : {
+        ...state,
+        missingSlots: missing,
+        history: sanitizeProfilerHistory(state.history || []),
+      };
+  if (
+    normalizedState.status !== state.status ||
+    normalizedState.currentTargetSlot !== state.currentTargetSlot ||
+    JSON.stringify(normalizedState.history || []) !==
+      JSON.stringify(state.history || [])
+  ) {
+    await saveProfilerState(userId, normalizedState);
+  }
   return {
-    state,
+    state: normalizedState,
     answers,
     summary,
-    completedSlots: answerValueCount(answers),
-    totalSlots: slots.length,
-    missingSlots: missingSlots(slots, answers),
+    completedSlots: starterAnswerValueCount(slots, answers),
+    totalSlots: starterProfileSlotCount(slots),
+    missingSlots: done ? [] : missing,
   };
 }
 
@@ -4451,6 +4636,16 @@ export async function sendProfilerMessageOnPhone(
       currentAnswers.preferred_language || opts?.replyLanguage || "english",
     ),
   );
+  const remainingBefore = missingStarterProfileSlots(slots, currentAnswers);
+  if (currentState.status === "complete" || remainingBefore.length === 0) {
+    return buildCompletedProfilerResult(
+      userId,
+      slots,
+      currentAnswers,
+      currentState,
+      replyLanguageName,
+    );
+  }
   await appendConversation(userId, "user", trimmed);
   const processed = await runProfilerTurnModel(
     trimmed,
@@ -4477,27 +4672,34 @@ export async function sendProfilerMessageOnPhone(
     llmOut.confidence_by_slot || {},
     merged,
   );
-  const remaining = missingSlots(slots, merged);
+  const remaining = missingStarterProfileSlots(slots, merged);
   const done = remaining.length === 0;
   const chosenNextSlot =
     slots.find(
       (slot) =>
         Array.isArray(llmOut.missing_slots) &&
-        llmOut.missing_slots.includes(slot.id),
+        llmOut.missing_slots.includes(slot.id) &&
+        remaining.includes(slot.id),
     ) ||
     chooseNextProfilerSlot(
       slots,
       merged,
       mergedConfidenceBySlot,
       Object.keys(llmOut.updates || {}),
+      remaining,
     );
-  const assistantReply =
-    String(llmOut.assistant_reply || "").trim() ||
-    buildProfilerAssistantReply(
-      replyLanguageName,
-      chosenNextSlot?.prompt,
-      done,
-    );
+  const fallbackAssistantReply = buildProfilerAssistantReply(
+    replyLanguageName,
+    chosenNextSlot?.prompt,
+    done,
+    {
+      tooManyQuestions: answerHasTooManyQuestions(merged),
+      remainingCount: remaining.length,
+    },
+  );
+  const assistantReply = done
+    ? fallbackAssistantReply
+    : String(llmOut.assistant_reply || "").trim() || fallbackAssistantReply;
   const optionalProfileNotes = uniq(
     [
       ...(currentState.optionalProfileNotes || []),
@@ -4507,7 +4709,7 @@ export async function sendProfilerMessageOnPhone(
       .filter(Boolean),
   ).slice(-20);
 
-  const history: LocalChatMessage[] = [
+  const history: LocalChatMessage[] = sanitizeProfilerHistory([
     ...currentState.history,
     { role: "user" as const, content: trimmed, createdAt: nowIso() },
     {
@@ -4515,7 +4717,7 @@ export async function sendProfilerMessageOnPhone(
       content: assistantReply,
       createdAt: nowIso(),
     },
-  ].slice(-40);
+  ]);
 
   const nextState: LocalProfilerState = {
     status: done ? "complete" : "active",
@@ -4604,8 +4806,8 @@ export async function sendProfilerMessageOnPhone(
     ok: true,
     assistantReply,
     answers: merged,
-    completedSlots: answerValueCount(merged),
-    totalSlots: slots.length,
+    completedSlots: starterAnswerValueCount(slots, merged),
+    totalSlots: starterProfileSlotCount(slots),
     missingSlots: remaining,
     done,
     history,

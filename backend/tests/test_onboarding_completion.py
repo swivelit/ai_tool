@@ -27,7 +27,19 @@ def test_full_required_answers_json_is_questionnaire_complete() -> None:
     assert main_module._questionnaire_completed(profile) is True
 
 
-def test_empty_list_answer_is_not_questionnaire_complete() -> None:
+def test_empty_starter_list_answer_is_not_questionnaire_complete() -> None:
+    answers = {slot: "filled" for slot in main_module.REQUIRED_PROFILE_SLOTS}
+    answers["dislikes"] = []
+    profile = UserProfile(
+        user_id=1,
+        answers_json=json.dumps(answers),
+        questions_version=2,
+    )
+
+    assert main_module._questionnaire_completed(profile) is False
+
+
+def test_empty_optional_list_answer_does_not_block_starter_completion() -> None:
     answers = {slot: "filled" for slot in main_module.REQUIRED_PROFILE_SLOTS}
     answers["interests"] = []
     profile = UserProfile(
@@ -36,4 +48,4 @@ def test_empty_list_answer_is_not_questionnaire_complete() -> None:
         questions_version=2,
     )
 
-    assert main_module._questionnaire_completed(profile) is False
+    assert main_module._questionnaire_completed(profile) is True
