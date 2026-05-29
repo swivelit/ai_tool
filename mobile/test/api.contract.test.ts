@@ -76,6 +76,7 @@ describe("API client contracts", () => {
     delete (globalThis as any).__JAI_NATIVE_ON_DEVICE_MODEL_RUNTIME__;
     vi.restoreAllMocks();
     vi.resetModules();
+    vi.doUnmock("../lib/lifeContext");
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
@@ -199,6 +200,55 @@ describe("API client contracts", () => {
 
     expect(fetchCallsEndingWith(fetchMock, "/items?user_id=7")).toHaveLength(1);
     expect(fetchCallsEndingWith(fetchMock, "/items?user_id=8")).toHaveLength(1);
+  });
+
+  it("invalidates the /items cache after a successful chat POST", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          uid: "user-items-invalidated",
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    mockCachedProfile({ userId: 7 }, { lifeContextEnabled: false });
+
+    let itemFetchCount = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/items?user_id=7")) {
+        itemFetchCount += 1;
+        return jsonResponse({ ok: true, items: [{ id: itemFetchCount }] });
+      }
+      if (String(url).endsWith("/api/chat")) {
+        return jsonResponse({ ok: true, assistant: { text: "ok" }, item: { id: 99 } });
+      }
+      return jsonResponse({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiGet, apiPost } = await import("../lib/api");
+    const first = await apiGet<any>("/items?user_id=7");
+    const cached = await apiGet<any>("/items?user_id=7");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "hello",
+      reply_language: "en",
+    });
+    const afterPost = await apiGet<any>("/items?user_id=7");
+
+    expect(first.items[0].id).toBe(1);
+    expect(cached.items[0].id).toBe(1);
+    expect(afterPost.items[0].id).toBe(2);
+    expect(fetchCallsEndingWith(fetchMock, "/items?user_id=7")).toHaveLength(2);
   });
 
   it("routes recorded voice to authenticated backend by default", async () => {
@@ -397,6 +447,112 @@ describe("API client contracts", () => {
     expect(dumped).not.toContain("packageName");
   });
 
+  it("force-refreshes life context for direct backend life-context questions", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          uid: "life-direct",
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    const getTodayLifeContextForAi = vi.fn(async () => ({
+      enabled: true,
+      date: "2026-05-28",
+      movementSummary: "fresh steps",
+      raw: { movement: { steps: 7420 }, apps: [] },
+    }));
+    vi.doMock("../lib/lifeContext", () => ({
+      getTodayLifeContextForAi,
+    }));
+    mockCachedProfile(
+      { userId: 7 },
+      {
+        lifeContextEnabled: true,
+        shareLifeContextWithBackend: true,
+        shareAppNamesWithAi: false,
+      },
+    );
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "ok" }, item: { id: 1 } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "How much did I walk today?",
+      reply_language: "en",
+    });
+
+    expect(getTodayLifeContextForAi).toHaveBeenCalledWith(
+      expect.objectContaining({ forBackend: true, forceRefresh: true }),
+    );
+    const body = JSON.parse(String(backendChatCalls(fetchMock)[0][1].body));
+    expect(body.client_context.life_context.movementSummary).toBe("fresh steps");
+  });
+
+  it("uses cached life context path for normal backend personalization", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          uid: "life-normal",
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    const getTodayLifeContextForAi = vi.fn(async () => ({
+      enabled: true,
+      date: "2026-05-28",
+      movementSummary: "cached ok",
+      raw: { movement: { steps: 7420 }, apps: [] },
+    }));
+    vi.doMock("../lib/lifeContext", () => ({
+      getTodayLifeContextForAi,
+    }));
+    mockCachedProfile(
+      { userId: 7 },
+      {
+        lifeContextEnabled: true,
+        shareLifeContextWithBackend: true,
+        shareAppNamesWithAi: false,
+      },
+    );
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "ok" }, item: { id: 1 } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "hello",
+      reply_language: "en",
+    });
+
+    expect(getTodayLifeContextForAi).toHaveBeenCalledWith(
+      expect.objectContaining({ forBackend: true, forceRefresh: false }),
+    );
+  });
+
   it("detects Tamil/Tanglish life context chat questions for backend sharing", async () => {
     vi.doMock("expo-constants", () => ({
       default: {
@@ -438,6 +594,58 @@ describe("API client contracts", () => {
     const body = JSON.parse(String(backendChatCalls(fetchMock)[0][1].body));
     expect(body.client_context.life_context.raw.movement.steps).toBe(7420);
     expect(body.client_context.life_context.ageGroup).toBe("26_35");
+  });
+
+  it("force-refreshes life context for Tamil/Tanglish backend questions", async () => {
+    vi.doMock("expo-constants", () => ({
+      default: {
+        expoConfig: {
+          extra: {
+            API_BASE: "https://api.example.test",
+          },
+        },
+      },
+    }));
+    vi.doMock("../lib/firebase", () => ({
+      auth: {
+        currentUser: {
+          uid: "life-tamil",
+          getIdToken: vi.fn(async () => "test-token"),
+        },
+      },
+    }));
+    const getTodayLifeContextForAi = vi.fn(async () => ({
+      enabled: true,
+      date: "2026-05-28",
+      screenSummary: "fresh screen",
+      raw: { movement: { steps: 7420 }, apps: [] },
+    }));
+    vi.doMock("../lib/lifeContext", () => ({
+      getTodayLifeContextForAi,
+    }));
+    mockCachedProfile(
+      { userId: 7 },
+      {
+        lifeContextEnabled: true,
+        shareLifeContextWithBackend: true,
+        shareAppNamesWithAi: false,
+      },
+    );
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ok: true, assistant: { text: "ok" }, item: { id: 1 } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { apiPost } = await import("../lib/api");
+    await apiPost<any>("/api/chat", {
+      user_id: 7,
+      message: "phone evlo neram use panninen?",
+      reply_language: "ta",
+    });
+
+    expect(getTodayLifeContextForAi).toHaveBeenCalledWith(
+      expect.objectContaining({ forBackend: true, forceRefresh: true }),
+    );
   });
 
   it("preserves explicit voice reply and speech language query params", async () => {

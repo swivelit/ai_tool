@@ -282,6 +282,44 @@ describe("local profiler", () => {
     expect(mockedState.files.get(`${dataRoot}/conversations/20.jsonl`) || "").not.toContain("Afternoon");
   });
 
+  it("materializes one ready message for completed starter answers with empty history", async () => {
+    const { getProfilerStateOnPhone } = await import("../lib/localAgents");
+    const completedAnswers = {
+      preferred_language: "english",
+      age_group: "26_35",
+      occupation: "working_professional",
+      communication_tone: "short_direct",
+      answer_length: "short",
+      assistant_persona: "coach",
+      main_goal: "career_growth",
+      dislikes: ["too_many_questions"],
+    };
+    mockedState.files.set(`${dataRoot}/profiles/22/answers.json`, JSON.stringify(completedAnswers, null, 2));
+    mockedState.files.set(
+      `${dataRoot}/profiles/22/profiler_state.json`,
+      JSON.stringify(
+        {
+          status: "active",
+          currentTargetSlot: "work_rhythm",
+          confidenceBySlot: {},
+          history: [],
+        },
+        null,
+        2
+      )
+    );
+
+    const result = await getProfilerStateOnPhone(22);
+
+    expect(result.missingSlots).toEqual([]);
+    expect(result.state.status).toBe("complete");
+    expect(result.state.currentTargetSlot).toBeUndefined();
+    expect(result.state.history).toHaveLength(1);
+    expect(result.state.history[0].content).toBe(
+      "Perfect. Your starter profile is ready. I’ll keep learning naturally as we chat.",
+    );
+  });
+
   it("keeps setup short after too_many_questions and does not ask optional work rhythm", async () => {
     const { sendProfilerMessageOnPhone } = await import("../lib/localAgents");
     const prefilledAnswers = {

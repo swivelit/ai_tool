@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ensureOnboardingReadyHistory,
+  resolveCompletedOnboardingState,
   sanitizeOnboardingHistory,
   shouldIgnoreOnboardingOptionPress,
   shouldIgnoreOnboardingSend,
@@ -54,5 +56,47 @@ describe("onboarding workflow guards", () => {
     ).toHaveLength(1);
     expect(history.some((message) => message.content === "Afternoon")).toBe(false);
     expect(history.at(-1)?.content).toContain("starter profile is ready");
+  });
+
+  it("treats completed backend/local profile as synced even when local sync state is missing", () => {
+    expect(
+      resolveCompletedOnboardingState({
+        localSyncState: undefined,
+        profileQuestionnaireCompleted: true,
+      }),
+    ).toBe("complete_synced");
+  });
+
+  it("keeps completed unknown sync state pending for one automatic sync attempt", () => {
+    expect(
+      resolveCompletedOnboardingState({
+        localSyncState: undefined,
+        profileQuestionnaireCompleted: false,
+      }),
+    ).toBe("complete_local_pending_sync");
+  });
+
+  it("surfaces failed completed-profile sync as retryable", () => {
+    expect(
+      resolveCompletedOnboardingState({
+        localSyncState: "sync_failed",
+        profileQuestionnaireCompleted: false,
+      }),
+    ).toBe("sync_failed");
+  });
+
+  it("creates one ready message when completed history is empty", () => {
+    const history = ensureOnboardingReadyHistory([]);
+
+    expect(history).toHaveLength(1);
+    expect(history[0].role).toBe("assistant");
+    expect(history[0].content).toContain("starter profile is ready");
+    expect(
+      shouldShowOnboardingOptions({
+        done: true,
+        completionState: "complete_synced",
+        activeSlotId: null,
+      }),
+    ).toBe(false);
   });
 });

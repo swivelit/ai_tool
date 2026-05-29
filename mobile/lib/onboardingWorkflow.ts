@@ -6,6 +6,22 @@ export type OnboardingCompletionState =
   | "complete_synced"
   | "sync_failed";
 
+export const STARTER_PROFILE_READY_MESSAGE =
+  "Perfect. Your starter profile is ready. I’ll keep learning naturally as we chat.";
+
+export function resolveCompletedOnboardingState(input: {
+  localSyncState?: OnboardingCompletionState | null;
+  profileQuestionnaireCompleted?: boolean | null;
+}): OnboardingCompletionState {
+  if (input.profileQuestionnaireCompleted || input.localSyncState === "complete_synced") {
+    return "complete_synced";
+  }
+  if (input.localSyncState === "sync_failed") {
+    return "sync_failed";
+  }
+  return "complete_local_pending_sync";
+}
+
 export function isOnboardingProfileComplete(input: {
   done: boolean;
   completionState: OnboardingCompletionState;
@@ -86,5 +102,27 @@ export function sanitizeOnboardingHistory(history: LocalChatMessage[] = []) {
       .slice(0, firstReadyIndex)
       .filter((message) => !isProfileReadyMessage(message.content)),
     finalReady,
+  ];
+}
+
+export function ensureOnboardingReadyHistory(
+  history: LocalChatMessage[] = [],
+): LocalChatMessage[] {
+  const sanitized = sanitizeOnboardingHistory(history);
+  if (
+    sanitized.some(
+      (message) =>
+        message.role === "assistant" && isProfileReadyMessage(message.content),
+    )
+  ) {
+    return sanitized;
+  }
+  return [
+    ...sanitized,
+    {
+      role: "assistant",
+      content: STARTER_PROFILE_READY_MESSAGE,
+      createdAt: new Date().toISOString(),
+    },
   ];
 }

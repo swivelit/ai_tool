@@ -70,6 +70,7 @@ import {
   scheduledTasksPath,
   type LocalTaskRecord,
 } from "./localTaskStore";
+import { STARTER_PROFILE_READY_MESSAGE } from "./onboardingWorkflow";
 import type { LifeContextAiSummary } from "./lifeContext";
 
 export { saveScheduledTask } from "./localTaskStore";
@@ -1984,6 +1985,26 @@ function sanitizeProfilerHistory(history: LocalChatMessage[] = []) {
   ].slice(-40);
 }
 
+function ensureProfilerReadyHistory(history: LocalChatMessage[] = []) {
+  const sanitized = sanitizeProfilerHistory(history);
+  if (
+    sanitized.some(
+      (message) =>
+        message.role === "assistant" && isProfileReadyMessage(message.content),
+    )
+  ) {
+    return sanitized;
+  }
+  return [
+    ...sanitized,
+    {
+      role: "assistant" as const,
+      content: STARTER_PROFILE_READY_MESSAGE,
+      createdAt: nowIso(),
+    },
+  ].slice(-40);
+}
+
 function nextSlot(slots: ProfilerSlot[], answers: Record<string, any>) {
   const remaining = missingSlots(slots, answers);
   return slots.find((slot) => remaining.includes(slot.id)) || null;
@@ -3735,7 +3756,7 @@ function buildProfilerAssistantReply(
   if (done) {
     return fallbackCode === "ta"
       ? "சூப்பர். உங்கள் ஆரம்ப ப்ரொஃபைல் தயார். பேசிக்கொண்டே இதை இயல்பாக மேம்படுத்திக்கொள்கிறேன்."
-      : "Perfect. Your starter profile is ready. I’ll keep learning naturally as we chat.";
+      : STARTER_PROFILE_READY_MESSAGE;
   }
 
   const prompt =
@@ -4370,6 +4391,28 @@ export async function retryPendingOnboardingSync(userId: number) {
   return { ok: true };
 }
 
+export async function markProfilerOnboardingSyncedOnPhone(userId: number) {
+  await ensureLocalAgentData();
+  const state = await loadProfilerState(userId);
+  const completedAt = state.completedLocallyAt || nowIso();
+  await saveLocalOnboardingCompletion(userId, {
+    completedLocally: true,
+    completedAt,
+    pendingBackendSync: false,
+  });
+  await saveProfilerState(userId, {
+    ...state,
+    status: "complete",
+    currentTargetSlot: undefined,
+    missingSlots: [],
+    completionSyncState: "complete_synced",
+    pendingBackendSync: false,
+    completedLocallyAt: completedAt,
+    history: ensureProfilerReadyHistory(state.history || []),
+  });
+  return { ok: true };
+}
+
 async function buildProfileSummaryLocally(
   userId: number,
   userProfile?: LocalUserProfile,
@@ -4473,7 +4516,7 @@ async function buildCompletedProfilerResult(
   currentState: LocalProfilerState,
   replyLanguageName: string,
 ): Promise<LocalProfilerTurnResult> {
-  const history = sanitizeProfilerHistory(currentState.history || []);
+  const history = ensureProfilerReadyHistory(currentState.history || []);
   const readyMessage =
     [...history]
       .reverse()
@@ -4595,7 +4638,7 @@ export async function getProfilerStateOnPhone(userId: number) {
         status: "complete",
         currentTargetSlot: undefined,
         missingSlots: [],
-        history: sanitizeProfilerHistory(state.history || []),
+        history: ensureProfilerReadyHistory(state.history || []),
       }
     : {
         ...state,

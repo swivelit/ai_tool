@@ -703,6 +703,7 @@ type LocalChatProxyResponse = {
 const API_GET_DEDUPE_TTL_MS = 3_000;
 const apiGetInFlight = new Map<string, Promise<any>>();
 const apiGetCache = new Map<string, { expiresAt: number; value: any }>();
+let apiGetCacheGeneration = 0;
 
 type VoiceUnavailableAction =
   | "ask_user_consent"
@@ -746,6 +747,47 @@ function apiGetDedupeKey(path: string) {
 
 function shouldDedupeApiGet(path: string) {
   return path === "/items" || path.startsWith("/items?");
+}
+
+function apiGetPathFromDedupeKey(key: string) {
+  const separator = key.indexOf(":");
+  return separator >= 0 ? key.slice(separator + 1) : key;
+}
+
+export function invalidateApiGetCache(pattern?: string) {
+  apiGetCacheGeneration += 1;
+  if (!pattern) {
+    apiGetCache.clear();
+    apiGetInFlight.clear();
+    return;
+  }
+
+  for (const key of Array.from(apiGetCache.keys())) {
+    if (apiGetPathFromDedupeKey(key).includes(pattern)) {
+      apiGetCache.delete(key);
+    }
+  }
+  for (const key of Array.from(apiGetInFlight.keys())) {
+    if (apiGetPathFromDedupeKey(key).includes(pattern)) {
+      apiGetInFlight.delete(key);
+    }
+  }
+}
+
+export function invalidateItemsCache() {
+  invalidateApiGetCache("/items");
+}
+
+function shouldInvalidateItemsCacheAfterMutation(path: string) {
+  const normalized = String(path || "").split("?")[0];
+  return (
+    isChatPath(path) ||
+    isTranscribeAndAnalyzePath(path) ||
+    normalized === "/items" ||
+    normalized.startsWith("/items/") ||
+    normalized === "/api/items" ||
+    normalized.startsWith("/api/items/")
+  );
 }
 
 function localApiCandidates(baseUrl: string) {
@@ -2102,10 +2144,14 @@ export async function buildChatRequestWithLifeContext(body?: any) {
     }
     const userId = Number(body.user_id ?? body.userId ?? 0);
     const profile = userId > 0 ? await loadCachedLocalAssistantProfile(userId) : undefined;
+    const directLifeContextQuestion = isLifeContextChatQuestion(
+      chatMessageFromBody(body),
+    );
     const lifeContext = await getTodayLifeContextForAi({
       settings,
       profile,
       forBackend: true,
+      forceRefresh: directLifeContextQuestion,
     });
     if (!lifeContext.enabled) {
       return body;
@@ -2466,6 +2512,7 @@ async function handleLocalChat(
           getTodayLifeContextForAi({
             settings,
             profile: userProfile,
+            forceRefresh: shouldLoadLifeContext,
           }),
         )
       : undefined;
@@ -2848,6 +2895,7 @@ export async function apiGet<T>(path: string): Promise<T> {
     return existing as Promise<T>;
   }
 
+  const requestGeneration = apiGetCacheGeneration;
   const request = (async () => {
     const res = await fetchBackend(path);
     if (!res.ok) {
@@ -2864,13 +2912,17 @@ export async function apiGet<T>(path: string): Promise<T> {
       );
     }
     const value = normalizeBackendDates((await res.json()) as T);
-    apiGetCache.set(key, {
-      expiresAt: Date.now() + API_GET_DEDUPE_TTL_MS,
-      value,
-    });
+    if (requestGeneration === apiGetCacheGeneration) {
+      apiGetCache.set(key, {
+        expiresAt: Date.now() + API_GET_DEDUPE_TTL_MS,
+        value,
+      });
+    }
     return value;
   })().finally(() => {
-    apiGetInFlight.delete(key);
+    if (apiGetInFlight.get(key) === request) {
+      apiGetInFlight.delete(key);
+    }
   });
 
   apiGetInFlight.set(key, request);
@@ -2909,6 +2961,9 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
       tts_language_code: e2eTtsLanguageCode(replyLanguage),
       tts_locale_style: e2eTtsLocaleStyle(replyLanguage),
     });
+    if (shouldInvalidateItemsCacheAfterMutation(path)) {
+      invalidateItemsCache();
+    }
     return mock;
   }
 
@@ -2958,7 +3013,11 @@ export async function apiPost<T>(path: string, body?: any): Promise<T> {
   ) {
     localChatInterceptionDepth += 1;
     try {
-      return (await handleLocalChat(path, body)) as T;
+      const response = (await handleLocalChat(path, body)) as T;
+      if (shouldInvalidateItemsCacheAfterMutation(path)) {
+        invalidateItemsCache();
+      }
+      return response;
     } finally {
       localChatInterceptionDepth = Math.max(0, localChatInterceptionDepth - 1);
     }
@@ -3001,7 +3060,11 @@ export async function apiPostBackendOnly<T>(
       },
     );
   }
-  return normalizeBackendDates((await res.json()) as T);
+  const value = normalizeBackendDates((await res.json()) as T);
+  if (shouldInvalidateItemsCacheAfterMutation(path)) {
+    invalidateItemsCache();
+  }
+  return value;
 }
 
 export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
@@ -3030,13 +3093,20 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
       voice_surface: getE2eVoiceSurface(),
       },
     );
+    if (shouldInvalidateItemsCacheAfterMutation(resolvedPath)) {
+      invalidateItemsCache();
+    }
     return mock;
   }
 
   const useLocalVoicePipeline = isVoiceAnalyze && (await shouldUseLocalVoicePipeline());
 
   if (useLocalVoicePipeline) {
-    return (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;
+    const result = (await handleLocalTranscribeAndAnalyze(resolvedPath, form)) as T;
+    if (shouldInvalidateItemsCacheAfterMutation(resolvedPath)) {
+      invalidateItemsCache();
+    }
+    return result;
   }
 
   const res = await fetchBackend(resolvedPath, {
@@ -3058,7 +3128,11 @@ export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
     );
   }
 
-  return normalizeBackendDates((await res.json()) as T);
+  const value = normalizeBackendDates((await res.json()) as T);
+  if (shouldInvalidateItemsCacheAfterMutation(resolvedPath)) {
+    invalidateItemsCache();
+  }
+  return value;
 }
 
 export async function apiPut<T>(path: string, body?: any): Promise<T> {
@@ -3080,7 +3154,11 @@ export async function apiPut<T>(path: string, body?: any): Promise<T> {
       },
     );
   }
-  return normalizeBackendDates((await res.json()) as T);
+  const value = normalizeBackendDates((await res.json()) as T);
+  if (shouldInvalidateItemsCacheAfterMutation(path)) {
+    invalidateItemsCache();
+  }
+  return value;
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
@@ -3100,7 +3178,11 @@ export async function apiDelete<T>(path: string): Promise<T> {
       },
     );
   }
-  return normalizeBackendDates((await res.json()) as T);
+  const value = normalizeBackendDates((await res.json()) as T);
+  if (shouldInvalidateItemsCacheAfterMutation(path)) {
+    invalidateItemsCache();
+  }
+  return value;
 }
 
 export { getFeatureFlags };

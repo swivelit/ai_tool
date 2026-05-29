@@ -78,6 +78,19 @@ ai_tool/
   / `GOOGLE_SERVICES_JSON_BASE64` or debug mock auth. Release/EAS builds require
   real Firebase public env plus a real google-services config source.
 
+## Life Intelligence Real-Device Release Checklist
+
+- Confirm Life Intelligence is disabled by default after a fresh install.
+- Enable Life Intelligence from the settings/customization screen.
+- Grant Activity Recognition when prompted.
+- Open Android Usage Access Settings from the app, grant access, and return to the app.
+- Confirm the permission state refreshes after returning from Android settings.
+- Ask: `How much did I walk today?`
+- Ask: `How long did I use my phone?`
+- If tracking started after the day began or after reboot, confirm the assistant says the step count is a partial-day estimate.
+- Confirm app names are hidden unless `Share app names with AI` is explicitly enabled.
+- Confirm Google Play Data Safety and the privacy policy mention activity recognition, usage access, and app usage summaries.
+
 ## Profiler Runtime Artifacts
 
 The Profiler Agent is local-first and writes its runtime state under `documentDirectory/data` on the phone:

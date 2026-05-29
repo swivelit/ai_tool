@@ -30,6 +30,7 @@ import {
 import {
   getProfilerStateOnPhone,
   LocalChatMessage,
+  markProfilerOnboardingSyncedOnPhone,
   ProfilerSlot,
   retryPendingOnboardingSync,
   sendProfilerMessageOnPhone,
@@ -38,6 +39,8 @@ import {
 import { enqueueClientTurnLog } from "@/lib/chatTelemetry";
 import {
   OnboardingCompletionState,
+  ensureOnboardingReadyHistory,
+  resolveCompletedOnboardingState,
   sanitizeOnboardingHistory,
   shouldIgnoreOnboardingOptionPress,
   shouldIgnoreOnboardingSend,
@@ -148,9 +151,12 @@ export default function QuestionnaireScreen() {
         setLoading(true);
 
         let nextUserId = userId || profile?.userId || null;
+        let knownQuestionnaireCompleted = Boolean(profile?.questionnaireCompleted);
+        const localProfile = await getProfile();
+        knownQuestionnaireCompleted =
+          knownQuestionnaireCompleted || Boolean(localProfile?.questionnaireCompleted);
 
         if (!nextUserId) {
-          const localProfile = await getProfile();
           if (localProfile?.userId) {
             nextUserId = localProfile.userId;
           }
@@ -158,6 +164,8 @@ export default function QuestionnaireScreen() {
 
         if (!nextUserId && user) {
           const existing = await getProfileForFirebaseUid(user.uid, user.email);
+          knownQuestionnaireCompleted =
+            knownQuestionnaireCompleted || Boolean(existing?.questionnaireCompleted);
           if (existing?.userId) {
             nextUserId = existing.userId;
           } else {
@@ -182,6 +190,8 @@ export default function QuestionnaireScreen() {
             });
 
             nextUserId = rebuilt?.userId ?? null;
+            knownQuestionnaireCompleted =
+              knownQuestionnaireCompleted || Boolean(rebuilt?.questionnaireCompleted);
           }
         }
 
@@ -210,26 +220,56 @@ export default function QuestionnaireScreen() {
         const currentDone =
           current.state.status === "complete" || current.missingSlots.length === 0;
         setDone(currentDone);
-        setCompletionState(
-          currentDone
-            ? current.state.completionSyncState === "complete_synced"
-              ? "complete_synced"
-              : current.state.completionSyncState === "sync_failed"
-                ? "sync_failed"
-                : "complete_local_pending_sync"
-            : "incomplete"
-        );
         syncCurrentStep(
           currentDone
             ? null
             : current.state.currentTargetSlot || current.missingSlots[0] || null
         );
 
+        if (currentDone) {
+          setMessages(ensureOnboardingReadyHistory(current.state.history || []));
+          const resolvedCompletionState = resolveCompletedOnboardingState({
+            localSyncState: current.state.completionSyncState,
+            profileQuestionnaireCompleted: knownQuestionnaireCompleted,
+          });
+          setCompletionState(resolvedCompletionState);
+
+          if (resolvedCompletionState === "complete_synced") {
+            if (current.state.completionSyncState !== "complete_synced") {
+              void markProfilerOnboardingSyncedOnPhone(nextUserId).catch(() => undefined);
+            }
+            return;
+          }
+
+          if (resolvedCompletionState === "sync_failed") {
+            return;
+          }
+
+          try {
+            setCompletionState("complete_local_pending_sync");
+            await retryPendingOnboardingSync(nextUserId);
+            const refreshedProfile = await refresh();
+            if (!alive) return;
+            if (!refreshedProfile?.questionnaireCompleted) {
+              throw new Error("Backend did not confirm questionnaire completion.");
+            }
+            setCompletionState("complete_synced");
+            trackOnboarding("onboarding_completed_synced");
+          } catch (error: any) {
+            if (!alive) return;
+            setCompletionState("sync_failed");
+            trackOnboarding("onboarding_sync_failed", {
+              error_message: error?.message || "boot_sync_failed",
+            });
+          }
+          return;
+        }
+
+        setCompletionState("incomplete");
+
         if (current.state.history?.length) {
           setMessages(
-            currentDone
-              ? sanitizeOnboardingHistory(current.state.history)
-              : current.state.history
+            sanitizeOnboardingHistory(current.state.history)
           );
         } else {
           const started = await startProfilerOnPhone(nextUserId, {
