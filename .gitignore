@@ -46,6 +46,16 @@ backend/data/agents/rag_exports/
 mobile/google-services.json
 mobile/GoogleService-Info.plist
 
+# Android release signing secrets
+release-signing.properties
+*.jks
+*.keystore
+private/
+keystores/
+mobile/android/key.properties
+mobile/android/app/*.jks
+mobile/android/app/*.keystore
+
 # Build outputs
 dist/
 dist/*.apk

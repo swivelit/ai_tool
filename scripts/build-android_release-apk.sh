@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 AAB_PATH="$DIST_DIR/tamil-ai-release.aab"
 APK_PATH="$DIST_DIR/tamil-ai-release.apk"
+ANDROID_RELEASE_SIGNING_UTILS="$ROOT_DIR/scripts/android-release-signing.sh"
 
 info() {
   printf "\n> %s\n" "$1"
@@ -67,18 +68,29 @@ fi
 
 [[ -d "$ROOT_DIR/mobile" ]] || fail "Mobile app folder not found at: $ROOT_DIR/mobile"
 [[ -x "$ROOT_DIR/build-apk.sh" ]] || fail "Root build script is not executable: $ROOT_DIR/build-apk.sh"
+[[ -f "$ANDROID_RELEASE_SIGNING_UTILS" ]] || fail "Android release signing helper not found at: $ANDROID_RELEASE_SIGNING_UTILS"
+
+# shellcheck disable=SC1090
+source "$ANDROID_RELEASE_SIGNING_UTILS"
 
 cd "$ROOT_DIR"
+
+swico_android_require_release_signing "$ROOT_DIR"
 
 export BUILD_TYPE=release
 export JAI_BUILD_TYPE=release
 export NODE_ENV="${NODE_ENV:-production}"
 
 info "Building release Android AAB and APK for com.swico.tamilai"
+rm -f "$AAB_PATH" "$APK_PATH"
 BUILD_AAB=1 RUN_MOBILE_RELEASE_PREFLIGHT=1 "$ROOT_DIR/build-apk.sh"
 
 [[ -s "$AAB_PATH" ]] || fail "Expected release AAB was not created or is empty: $AAB_PATH"
 [[ -s "$APK_PATH" ]] || fail "Expected release APK was not created or is empty: $APK_PATH"
+
+info "Validating release signing certificates"
+swico_android_validate_release_artifacts "$ROOT_DIR" "$AAB_PATH" "$APK_PATH"
+printf "\nRelease signing validation passed. This AAB is not debug-signed.\n"
 
 info "Release Android artifacts ready"
 printf "AAB: %s\n" "$AAB_PATH"

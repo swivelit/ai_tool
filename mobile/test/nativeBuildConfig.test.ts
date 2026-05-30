@@ -32,8 +32,22 @@ const ensureGoogleServicesPath = path.join(
   "scripts",
   "ensure-google-services-json.js",
 );
+const repoRoot = path.join(mobileRoot, "..");
+const releaseAndroidScriptPath = path.join(
+  repoRoot,
+  "scripts",
+  "build-android_release-apk.sh",
+);
 const androidPackageName = "com.swico.tamilai";
 const oldAndroidPackageName = ["com", "harishajahan", "tamilai"].join(".");
+const oldMarketplacePackageName = ["com", "goodone", "marketplace"].join(".");
+const swicoSigningEnvNames = [
+  "SWICO_UPLOAD_STORE_FILE",
+  "SWICO_UPLOAD_KEY_ALIAS",
+  "SWICO_UPLOAD_STORE_PASSWORD",
+  "SWICO_UPLOAD_KEY_PASSWORD",
+  "SWICO_UPLOAD_SIGNING_PROPERTIES_FILE",
+];
 const ENV_KEYS_USED_BY_APP_CONFIG = [
   "BUILD_TYPE",
   "EAS_BUILD_PROFILE",
@@ -235,6 +249,23 @@ function runEnsureGoogleServicesJson(env: Record<string, string | undefined>) {
   }
   return spawnSync(process.execPath, [ensureGoogleServicesPath, "--mode", "release"], {
     cwd: mobileRoot,
+    env: mergedEnv,
+    encoding: "utf8",
+  });
+}
+
+function runReleaseAndroidScriptWithoutSigning() {
+  const mergedEnv = { ...process.env };
+  for (const key of swicoSigningEnvNames) {
+    delete mergedEnv[key];
+  }
+  mergedEnv.SWICO_UPLOAD_SIGNING_PROPERTIES_FILE = path.join(
+    os.tmpdir(),
+    `missing-swico-release-signing-${process.pid}.properties`,
+  );
+
+  return spawnSync("bash", [releaseAndroidScriptPath], {
+    cwd: repoRoot,
     env: mergedEnv,
     encoding: "utf8",
   });
@@ -585,9 +616,69 @@ export const runtime = {
 
     expect(scripts).toContain(androidPackageName);
     expect(scripts).not.toContain(oldAndroidPackageName);
+    expect(scripts).not.toContain(oldMarketplacePackageName);
     expect(scripts).toContain("tamil-ai-debug.apk");
     expect(scripts).toContain("tamil-ai-release.aab");
     expect(scripts).toContain("tamil-ai-release.apk");
+  });
+
+  it("fails the release build script early when upload-key signing is missing", () => {
+    const result = runReleaseAndroidScriptWithoutSigning();
+    const output = result.stdout + result.stderr;
+
+    expect(result.status).not.toBe(0);
+    expect(output).toContain("Release signing is required for Google Play uploads");
+    expect(output).toContain("SWICO_UPLOAD_STORE_FILE");
+    expect(output).toContain("keytool -genkeypair");
+    expect(output).toContain("dist/tamil-ai-release.aab");
+    expect(output).not.toContain("Building release Android AAB and APK");
+  });
+
+  it("configures generated Gradle release signing after clean Expo prebuild", () => {
+    const buildApk = readRepo("build-apk.sh");
+    const prebuildIndex = buildApk.indexOf("npx expo prebuild --platform android --clean");
+    const signingIndex = buildApk.indexOf("swico_android_configure_generated_gradle_release_signing");
+    const gradleIndex = buildApk.indexOf('info "Building Android artifact(s) with Gradle');
+
+    expect(buildApk).toContain("swico_android_require_release_signing");
+    expect(prebuildIndex).toBeGreaterThanOrEqual(0);
+    expect(signingIndex).toBeGreaterThan(prebuildIndex);
+    expect(gradleIndex).toBeGreaterThan(signingIndex);
+  });
+
+  it("patches release Gradle signing to use the Swico upload key instead of debug signing", () => {
+    const patcher = readRepo("scripts/patch-android-release-signing.mjs");
+
+    expect(patcher).toContain('rootProject.file("key.properties")');
+    expect(patcher).toContain("storeFile swicoUploadStoreFile");
+    expect(patcher).toContain("signingConfig signingConfigs.release");
+    expect(patcher).toContain("Release buildType still points at signingConfigs.debug");
+    expect(patcher).not.toContain("debug.keystore");
+  });
+
+  it("validates release artifacts and rejects Android Debug certificates", () => {
+    const releaseScript = readRepo("scripts/build-android_release-apk.sh");
+    const signingUtils = readRepo("scripts/android-release-signing.sh");
+
+    expect(releaseScript).toContain("swico_android_validate_release_artifacts");
+    expect(releaseScript).toContain("Release signing validation passed. This AAB is not debug-signed.");
+    expect(signingUtils).toContain("jarsigner -verify -verbose -certs");
+    expect(signingUtils).toContain("keytool -printcert -jarfile");
+    expect(signingUtils).toContain("apksigner");
+    expect(signingUtils).toContain("Android[[:space:]]+Debug");
+    expect(signingUtils).toContain("CN=Android[[:space:]]+Debug");
+    expect(signingUtils).toContain("debug.keystore");
+  });
+
+  it("keeps release scripts from using mock E2E flags", () => {
+    const releaseScript = readRepo("scripts/build-android_release-apk.sh");
+
+    expect(releaseScript).toContain("blocked_release_env_names");
+    expect(releaseScript).toContain("EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT");
+    expect(releaseScript).toContain("EXPO_PUBLIC_E2E_REPLY_LANGUAGE");
+    expect(releaseScript).toContain("JAI_DEBUG_LITE");
+    expect(releaseScript).toContain("Release builds must not enable");
+    expect(releaseScript).toContain("Release builds must not set");
   });
 
   it("keeps user-facing Swico branding out of the old public app name", () => {
@@ -784,10 +875,18 @@ export const runtime = {
     }
   });
 
-  it("keeps mobile/google-services.json gitignored", () => {
+  it("keeps local mobile and Android signing secrets gitignored", () => {
     const gitignore = readRepo(".gitignore");
 
     expect(gitignore).toMatch(/^mobile\/google-services\.json$/m);
+    expect(gitignore).toMatch(/^release-signing\.properties$/m);
+    expect(gitignore).toMatch(/^\*\.jks$/m);
+    expect(gitignore).toMatch(/^\*\.keystore$/m);
+    expect(gitignore).toMatch(/^private\/$/m);
+    expect(gitignore).toMatch(/^keystores\/$/m);
+    expect(gitignore).toMatch(/^mobile\/android\/key\.properties$/m);
+    expect(gitignore).toMatch(/^mobile\/android\/app\/\*\.jks$/m);
+    expect(gitignore).toMatch(/^mobile\/android\/app\/\*\.keystore$/m);
   });
 
   it("keys model delivery validation to production/release native_on_device download_on_first_launch builds", () => {

@@ -275,6 +275,57 @@ slug and artifact filenames remain `tamil-ai`.
 
 Release builds must not use E2E/mock/debug flags such as `EXPO_PUBLIC_E2E_*` or `JAI_DEBUG_LITE`. Release chat and voice default to backend routing; `JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE=1` is the explicit release override for experimental local voice builds. Do not commit signing secrets, keystores, provisioning profiles, `key.properties`, or passwords. Upload the AAB to Google Play; the APK is for local QA.
 
+### Google Play Release Signing
+
+Google Play rejects bundles signed with the Android debug key. The error
+`signed in debug mode` means the wrong signing key was used. Remove the failed
+AAB from Play Console, configure the Swico upload key, rebuild, and upload the
+new release-signed AAB.
+
+Create the upload key once and keep it safe:
+
+```bash
+mkdir -p private/keystores
+keytool -genkeypair \
+  -v \
+  -keystore private/keystores/swico-upload-key.jks \
+  -alias swico-upload \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 10000
+```
+
+Export signing values before building:
+
+```bash
+export SWICO_UPLOAD_STORE_FILE="$PWD/private/keystores/swico-upload-key.jks"
+export SWICO_UPLOAD_KEY_ALIAS="swico-upload"
+export SWICO_UPLOAD_STORE_PASSWORD="YOUR_STORE_PASSWORD"
+export SWICO_UPLOAD_KEY_PASSWORD="YOUR_KEY_PASSWORD"
+
+./scripts/build-android_release-apk.sh
+```
+
+You can also create an untracked `release-signing.properties` file:
+
+```properties
+storeFile=/absolute/path/to/swico-upload-key.jks
+storePassword=YOUR_STORE_PASSWORD
+keyAlias=swico-upload
+keyPassword=YOUR_KEY_PASSWORD
+```
+
+The Google Play upload artifact is:
+
+```text
+dist/tamil-ai-release.aab
+```
+
+Never commit the upload key, passwords, `release-signing.properties`, generated
+`key.properties`, `.jks`, or `.keystore` files. The release script fails before
+building if upload-key signing is missing, and it validates that the generated
+AAB/APK certificates are not Android Debug certificates.
+
 ### Backend
 
 ```bash

@@ -40,6 +40,11 @@ ANDROID_16KB_UTILS="$ROOT_DIR/scripts/android-16kb-utils.sh"
 # shellcheck disable=SC1090
 source "$ANDROID_16KB_UTILS"
 
+ANDROID_RELEASE_SIGNING_UTILS="$ROOT_DIR/scripts/android-release-signing.sh"
+[[ -f "$ANDROID_RELEASE_SIGNING_UTILS" ]] || fail "Android release signing helper not found at: $ANDROID_RELEASE_SIGNING_UTILS"
+# shellcheck disable=SC1090
+source "$ANDROID_RELEASE_SIGNING_UTILS"
+
 MOBILE_ENV_FILE_KEYS=()
 ORIGINAL_MOBILE_ENV_KEYS=()
 
@@ -188,6 +193,10 @@ is_truthy() {
 
 if is_truthy "$BUILD_AAB" && [[ "$BUILD_TYPE" != "release" ]]; then
   fail "BUILD_AAB=1 is only supported for release builds."
+fi
+
+if [[ "$BUILD_TYPE" == "release" ]]; then
+  swico_android_require_release_signing "$REPO_DIR"
 fi
 
 EAS_PROFILE="$(runtime_mode_normalized "${EAS_BUILD_PROFILE:-}")"
@@ -490,6 +499,12 @@ configure_gradle_jvmargs() {
 
 configure_gradle_jvmargs
 
+if [[ "$BUILD_TYPE" == "release" ]]; then
+  info "Configuring generated Android release signing"
+  swico_android_configure_generated_gradle_release_signing "$REPO_DIR" \
+    || fail "Android release signing configuration failed. Do not use debug signing for Play Store artifacts."
+fi
+
 if [[ "$BUILD_TYPE" == "debug" ]]; then
   GRADLE_TASKS=("assembleDebug")
   SOURCE_APK="android/app/build/outputs/apk/debug/app-debug.apk"
@@ -514,7 +529,7 @@ else
   if [[ "$BUILD_TYPE" == "release" ]]; then
     echo ""
     echo "Release Gradle build failed."
-    echo "If Gradle reports a signing or keystore error, configure release signing in the generated Expo/React Native Android project or through CI/EAS secrets."
+    echo "If Gradle reports a signing or keystore error, verify SWICO_UPLOAD_* env vars or release-signing.properties."
     echo "Do not commit keystores, key.properties, passwords, or signing certificates."
   fi
   exit "$gradle_status"
