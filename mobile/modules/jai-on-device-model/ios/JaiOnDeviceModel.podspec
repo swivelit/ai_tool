@@ -25,6 +25,8 @@ Pod::Spec.new do |s|
   llama_header = File.join(llama_dir, 'include', 'llama.h')
   llama_cmake = File.join(llama_dir, 'CMakeLists.txt')
   has_llama_cpp = File.exist?(llama_header) && File.exist?(llama_cmake)
+  prebuilt_libs = has_llama_cpp ? Dir[File.join(llama_dir, 'build-ios', '**', 'lib*.a')] : []
+  has_linkable_llama_cpp = prebuilt_libs.any?
 
   normalize_env = lambda { |value| value.to_s.strip.downcase }
   truthy_env = lambda { |value| %w[1 true yes y on].include?(normalize_env.call(value)) }
@@ -47,24 +49,23 @@ Pod::Spec.new do |s|
     MSG
   end
 
-  if production_native_on_device && !has_llama_cpp
+  if production_native_on_device && !has_linkable_llama_cpp
     raise <<~MSG
-      Release/production native_on_device iOS build requires llama.cpp at #{default_llama_dir} or JAI_LLAMA_CPP_DIR.
-      Run `npm run native:sync-llama` from mobile/ or `git submodule update --init --recursive` before pod install/build.
+      Release/production native_on_device iOS build requires prebuilt llama.cpp static libraries under #{File.join(default_llama_dir, 'build-ios')} or JAI_LLAMA_CPP_DIR/build-ios.
+      Build or copy the iOS llama.cpp static libraries before pod install/build.
       Refusing to compile with JAI_LLAMA_CPP_AVAILABLE=0.
     MSG
   end
 
-  s.source_files = [
+  source_files = [
     '**/*.{h,m,mm,swift}',
   ]
-  s.public_header_files = '**/*.h'
 
   header_search_paths = [
     '$(PODS_TARGET_SRCROOT)',
   ]
 
-  if has_llama_cpp
+  if has_linkable_llama_cpp
     s.preserve_paths = [
       File.join(llama_spec_path, '**/*'),
     ]
@@ -77,38 +78,8 @@ Pod::Spec.new do |s|
       "$(PODS_TARGET_SRCROOT)/#{llama_spec_path}/ggml/src/ggml-cpu",
     ]
 
-    prebuilt_libs = Dir[File.join(llama_dir, 'build-ios', '**', 'lib*.a')]
-    if prebuilt_libs.any?
-      s.vendored_libraries = prebuilt_libs.map do |lib|
-        lib.start_with?(module_root + '/') ? lib.sub(module_root + '/', '../') : lib
-      end
-    else
-      s.source_files += [
-        File.join(llama_spec_path, 'include/**/*.h'),
-        File.join(llama_spec_path, 'src/**/*.{c,cc,cpp,h,hpp}'),
-        File.join(llama_spec_path, 'ggml/include/**/*.h'),
-        File.join(llama_spec_path, 'ggml/src/**/*.{c,cc,cpp,h,hpp}'),
-      ]
-      s.exclude_files = [
-        File.join(llama_spec_path, 'src/**/*-cuda*'),
-        File.join(llama_spec_path, 'src/**/*-vulkan*'),
-        File.join(llama_spec_path, 'src/**/*-sycl*'),
-        File.join(llama_spec_path, 'src/**/*-kompute*'),
-        File.join(llama_spec_path, 'src/**/*-rpc*'),
-        File.join(llama_spec_path, 'ggml/src/**/*-cuda*'),
-        File.join(llama_spec_path, 'ggml/src/**/*-vulkan*'),
-        File.join(llama_spec_path, 'ggml/src/**/*-sycl*'),
-        File.join(llama_spec_path, 'ggml/src/**/*-kompute*'),
-        File.join(llama_spec_path, 'ggml/src/**/*-rpc*'),
-        File.join(llama_spec_path, 'ggml/src/ggml-vulkan/**/*'),
-        File.join(llama_spec_path, 'ggml/src/ggml-cuda/**/*'),
-        File.join(llama_spec_path, 'ggml/src/ggml-sycl/**/*'),
-        File.join(llama_spec_path, 'ggml/src/ggml-kompute/**/*'),
-        File.join(llama_spec_path, 'ggml/src/ggml-rpc/**/*'),
-        File.join(llama_spec_path, 'examples/**/*'),
-        File.join(llama_spec_path, 'tools/**/*'),
-        File.join(llama_spec_path, 'tests/**/*'),
-      ]
+    s.vendored_libraries = prebuilt_libs.map do |lib|
+      lib.start_with?(module_root + '/') ? lib.sub(module_root + '/', '../') : lib
     end
 
     s.pod_target_xcconfig = {
@@ -128,4 +99,7 @@ Pod::Spec.new do |s|
       'OTHER_CPLUSPLUSFLAGS' => '$(inherited) -fexceptions -frtti',
     }
   end
+
+  s.source_files = source_files
+  s.public_header_files = '**/*.h'
 end

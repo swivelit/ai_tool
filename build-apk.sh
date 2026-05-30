@@ -171,6 +171,8 @@ case "$BUILD_TYPE" in
 esac
 
 APK_NAME="tamil-ai-${BUILD_TYPE}.apk"
+AAB_NAME="tamil-ai-release.aab"
+BUILD_AAB="${BUILD_AAB:-false}"
 DIST_DIR="$REPO_DIR/dist"
 
 runtime_mode_normalized() {
@@ -183,6 +185,10 @@ is_truthy() {
     *) return 1 ;;
   esac
 }
+
+if is_truthy "$BUILD_AAB" && [[ "$BUILD_TYPE" != "release" ]]; then
+  fail "BUILD_AAB=1 is only supported for release builds."
+fi
 
 EAS_PROFILE="$(runtime_mode_normalized "${EAS_BUILD_PROFILE:-}")"
 JAI_BUILD_PROFILE="$(runtime_mode_normalized "${JAI_BUILD_PROFILE:-}")"
@@ -349,17 +355,26 @@ fi
 cd "$MOBILE_DIR"
 
 info "Installing mobile dependencies"
-if [[ -f package-lock.json ]]; then
-  # NODE_ENV=production makes npm omit dev dependencies by default. Keep the
-  # existing full lockfile install behavior for Expo/Gradle build tooling.
-  if npm ci --include=dev; then
-    info "Dependencies installed with npm ci"
-  else
-    warn "package-lock.json is out of sync with package.json. Falling back to npm install to refresh the lockfile."
-    npm install --include=dev
-  fi
+if is_truthy "${SKIP_NPM_CI:-}"; then
+  warn "SKIP_NPM_CI=true; skipping mobile dependency install."
 else
-  npm install --include=dev
+  npm_args=(--include=dev)
+  if [[ -n "${NPM_REGISTRY:-}" ]]; then
+    npm_args+=(--registry "$NPM_REGISTRY")
+  fi
+
+  if [[ -f package-lock.json ]]; then
+    # NODE_ENV=production makes npm omit dev dependencies by default. Keep the
+    # existing full lockfile install behavior for Expo/Gradle build tooling.
+    if npm ci "${npm_args[@]}"; then
+      info "Dependencies installed with npm ci"
+    else
+      warn "package-lock.json is out of sync with package.json. Falling back to npm install to refresh the lockfile."
+      npm install "${npm_args[@]}"
+    fi
+  else
+    npm install "${npm_args[@]}"
+  fi
 fi
 
 info "Ensuring Expo CLI is available"
@@ -367,6 +382,37 @@ npx expo --version >/dev/null
 
 info "Ensuring Firebase google-services.json configuration"
 node scripts/ensure-google-services-json.js --mode "$BUILD_TYPE"
+
+RELEASE_PREFLIGHT_VERIFIED_BACKEND_FIRST=0
+if [[ "$BUILD_TYPE" == "release" ]] && is_truthy "${RUN_MOBILE_RELEASE_PREFLIGHT:-}"; then
+  info "Running mobile typecheck"
+  npm run typecheck
+
+  info "Running mobile tests"
+  mobile_test_env=(env)
+  for env_name in "${MOBILE_ENV_FILE_KEYS[@]:-}"; do
+    [[ -z "$env_name" ]] && continue
+    mobile_test_env+=(-u "$env_name")
+  done
+  mobile_test_env+=(
+    -u BUILD_TYPE
+    -u JAI_BUILD_TYPE
+    -u EAS_BUILD_PROFILE
+    -u JAI_BUILD_PROFILE
+    -u JAI_REQUIRE_RELEASE_BACKEND_FIRST_CONFIG
+    NODE_ENV=test
+    npm test -- --run
+  )
+  "${mobile_test_env[@]}"
+
+  info "Verifying backend-first release configuration"
+  if npm run release:verify-backend-first; then
+    RELEASE_PREFLIGHT_VERIFIED_BACKEND_FIRST=1
+    info "Backend-first release configuration verified"
+  else
+    fail "Backend-first release verification failed. Keep EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false and EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false for release builds, and configure Firebase public env values."
+  fi
+fi
 
 if [[ "$SHOULD_SYNC_LLAMA_CPP" == "1" ]]; then
   info "Ensuring llama.cpp native backend is available"
@@ -381,7 +427,9 @@ fi
 
 if [[ "$IS_PRODUCTION_OR_RELEASE_BUILD" == "1" ]]; then
   info "Verifying backend-first release configuration"
-  if npm run release:verify-backend-first; then
+  if [[ "$RELEASE_PREFLIGHT_VERIFIED_BACKEND_FIRST" == "1" ]]; then
+    info "Backend-first release configuration already verified"
+  elif npm run release:verify-backend-first; then
     info "Backend-first release configuration verified"
   else
     fail "Backend-first release verification failed. Keep EXPO_PUBLIC_USE_LOCAL_CHAT_PIPELINE=false and EXPO_PUBLIC_USE_LOCAL_VOICE_PIPELINE=false for release builds, and configure Firebase public env values."
@@ -443,20 +491,39 @@ configure_gradle_jvmargs() {
 configure_gradle_jvmargs
 
 if [[ "$BUILD_TYPE" == "debug" ]]; then
-  GRADLE_TASK="assembleDebug"
+  GRADLE_TASKS=("assembleDebug")
   SOURCE_APK="android/app/build/outputs/apk/debug/app-debug.apk"
 else
-  GRADLE_TASK="assembleRelease"
+  if is_truthy "$BUILD_AAB"; then
+    GRADLE_TASKS=("bundleRelease" "assembleRelease")
+    SOURCE_AAB="android/app/build/outputs/bundle/release/app-release.aab"
+  else
+    GRADLE_TASKS=("assembleRelease")
+  fi
   SOURCE_APK="android/app/build/outputs/apk/release/app-release.apk"
 fi
 
-info "Building APK with Gradle ($GRADLE_TASK)"
+info "Building Android artifact(s) with Gradle (${GRADLE_TASKS[*]})"
 cd android
 chmod +x gradlew
-./gradlew "$GRADLE_TASK"
-cd ..
+if ./gradlew "${GRADLE_TASKS[@]}"; then
+  cd ..
+else
+  gradle_status=$?
+  cd ..
+  if [[ "$BUILD_TYPE" == "release" ]]; then
+    echo ""
+    echo "Release Gradle build failed."
+    echo "If Gradle reports a signing or keystore error, configure release signing in the generated Expo/React Native Android project or through CI/EAS secrets."
+    echo "Do not commit keystores, key.properties, passwords, or signing certificates."
+  fi
+  exit "$gradle_status"
+fi
 
-[[ -f "$SOURCE_APK" ]] || fail "APK was not found at: $SOURCE_APK"
+[[ -s "$SOURCE_APK" ]] || fail "APK was not found or is empty at: $SOURCE_APK"
+if is_truthy "$BUILD_AAB"; then
+  [[ -s "$SOURCE_AAB" ]] || fail "AAB was not found or is empty at: $SOURCE_AAB"
+fi
 
 validate_apk_native_libraries() {
   local apk_path="$1"
@@ -523,6 +590,9 @@ validate_apk_native_libraries "$SOURCE_APK" "$JAI_ANDROID_ABIS"
 
 mkdir -p "$DIST_DIR"
 cp "$SOURCE_APK" "$DIST_DIR/$APK_NAME"
+if is_truthy "$BUILD_AAB"; then
+  cp "$SOURCE_AAB" "$DIST_DIR/$AAB_NAME"
+fi
 
 info "Validating APK 16 KB native library compatibility"
 if ! jai_android_validate_apk_16kb_or_allow_debug_skip "$DIST_DIR/$APK_NAME" "$BUILD_TYPE" "$ANDROID_SDK"; then
@@ -531,6 +601,9 @@ fi
 
 info "APK ready"
 echo "Saved to: $DIST_DIR/$APK_NAME"
+if is_truthy "$BUILD_AAB"; then
+  echo "Saved to: $DIST_DIR/$AAB_NAME"
+fi
 echo ""
 echo "Install it with:"
 echo "  adb install -r '$DIST_DIR/$APK_NAME'"

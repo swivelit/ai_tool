@@ -407,22 +407,14 @@ private enum JaiLlamaCppBinding {
     maxTokens: Int,
     requestId: String
   ) throws -> String {
-    var error: NSError?
-    if let text = JaiLlamaCppBridge.completeChat(
+    return try JaiLlamaCppBridge.completeChat(
       withModelPath: modelPath,
       prompt: prompt,
       contextSize: contextSize,
       threads: threads,
       temperature: temperature,
       maxTokens: maxTokens,
-      requestId: requestId,
-      error: &error
-    ) {
-      return text
-    }
-    throw error ?? JaiOnDeviceModelError(
-      "JAI_LLAMA_CPP_BACKEND_MISSING",
-      "JaiOnDeviceModel found the Swift bridge and local model path \(modelPath), but the llama.cpp iOS binding returned no text and no NSError."
+      requestId: requestId
     )
   }
 
@@ -432,20 +424,13 @@ private enum JaiLlamaCppBinding {
     contextSize: Int,
     threads: Int
   ) throws -> [Float] {
-    var error: NSError?
-    if let embedding = JaiLlamaCppBridge.embedText(
+    let embedding = try JaiLlamaCppBridge.embedText(
       withModelPath: modelPath,
       text: text,
       contextSize: contextSize,
-      threads: threads,
-      error: &error
-    ) as? [NSNumber] {
-      return embedding.map { $0.floatValue }
-    }
-    throw error ?? JaiOnDeviceModelError(
-      "JAI_LLAMA_CPP_BACKEND_MISSING",
-      "JaiOnDeviceModel found the Swift bridge and local model path \(modelPath), but the llama.cpp iOS embedding binding returned no vector and no NSError."
+      threads: threads
     )
+    return embedding.map { $0.floatValue }
   }
 
   static func cancelRequest(_ requestId: String) {

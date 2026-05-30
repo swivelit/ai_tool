@@ -227,6 +227,50 @@ cd mobile
 npx vitest run test/firebase.test.ts test/appBoot.test.ts test/authUi.test.ts
 ```
 
+## Build scripts
+
+Debug Android APK:
+
+```bash
+./scripts/build-android-apk.sh
+```
+
+Release Android AAB/APK:
+
+```bash
+./scripts/build-android_release-apk.sh
+```
+
+Root compatibility scripts:
+
+```bash
+./build-apk.sh
+./launch-debug_apk.sh
+./launch-release_apk.sh
+./test_apk.sh
+```
+
+iOS simulator:
+
+```bash
+./scripts/build-ios-simulator.sh
+```
+
+iOS archive:
+
+```bash
+IOS_TEAM_ID=YOUR_TEAM_ID ./scripts/build-ios-archive.sh
+```
+
+Outputs:
+
+- `dist/tamil-ai-debug.apk`
+- `dist/tamil-ai-release.aab`
+- `dist/tamil-ai-release.apk`
+- `dist/ios/TamilAI.xcarchive`
+
+Release builds must not use E2E/mock/debug flags such as `EXPO_PUBLIC_E2E_*` or `JAI_DEBUG_LITE`. Release chat and voice default to backend routing; `JAI_ALLOW_RELEASE_LOCAL_VOICE_PIPELINE=1` is the explicit release override for experimental local voice builds. Do not commit signing secrets, keystores, provisioning profiles, `key.properties`, or passwords. Upload the AAB to Google Play; the APK is for local QA.
+
 ### Backend
 
 ```bash
