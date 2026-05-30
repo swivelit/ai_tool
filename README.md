@@ -282,7 +282,26 @@ Google Play rejects bundles signed with the Android debug key. The error
 AAB from Play Console, configure the Swico upload key, rebuild, and upload the
 new release-signed AAB.
 
-Create the upload key once and keep it safe:
+For local release signing setup:
+
+```bash
+./scripts/setup-android-release-signing.sh
+./scripts/build-android_release-apk.sh
+```
+
+The setup script creates a local upload key at
+`private/keystores/swico-upload-key.jks` and writes ignored local signing config
+to `release-signing.properties`. That upload key signs the Google Play artifact:
+
+```text
+dist/tamil-ai-release.aab
+```
+
+The AAB is what should be uploaded to Google Play. Never commit
+`private/keystores`, `release-signing.properties`, passwords, generated
+`key.properties`, `.jks`, or `.keystore` files.
+
+Manual setup is also supported. Create the upload key once and keep it safe:
 
 ```bash
 mkdir -p private/keystores
@@ -315,16 +334,10 @@ keyAlias=swico-upload
 keyPassword=YOUR_KEY_PASSWORD
 ```
 
-The Google Play upload artifact is:
-
-```text
-dist/tamil-ai-release.aab
-```
-
-Never commit the upload key, passwords, `release-signing.properties`, generated
-`key.properties`, `.jks`, or `.keystore` files. The release script fails before
-building if upload-key signing is missing, and it validates that the generated
-AAB/APK certificates are not Android Debug certificates.
+The release script fails before building if upload-key signing is missing, and it
+validates that the generated AAB/APK certificates are not Android Debug
+certificates. If Play Console says `signed in debug mode`, delete that failed
+AAB from the release and upload a newly release-signed AAB.
 
 ### Backend
 

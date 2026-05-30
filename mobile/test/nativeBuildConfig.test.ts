@@ -38,6 +38,11 @@ const releaseAndroidScriptPath = path.join(
   "scripts",
   "build-android_release-apk.sh",
 );
+const setupAndroidSigningScriptPath = path.join(
+  repoRoot,
+  "scripts",
+  "setup-android-release-signing.sh",
+);
 const androidPackageName = "com.swico.tamilai";
 const oldAndroidPackageName = ["com", "harishajahan", "tamilai"].join(".");
 const oldMarketplacePackageName = ["com", "goodone", "marketplace"].join(".");
@@ -634,6 +639,40 @@ export const runtime = {
     expect(output).not.toContain("Building release Android AAB and APK");
   });
 
+  it("provides a local-only Android upload-key setup helper", () => {
+    const setupScript = readRepo("scripts/setup-android-release-signing.sh");
+    const syntax = spawnSync("bash", ["-n", setupAndroidSigningScriptPath], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+
+    expect(fs.existsSync(setupAndroidSigningScriptPath)).toBe(true);
+    expect(syntax.status).toBe(0);
+    expect(setupScript).toContain("private/keystores/swico-upload-key.jks");
+    expect(setupScript).toContain('KEY_ALIAS="swico-upload"');
+    expect(setupScript).toContain("-keyalg RSA");
+    expect(setupScript).toContain("-keysize 2048");
+    expect(setupScript).toContain("-validity 10000");
+    expect(setupScript).toContain("read -r -s");
+    expect(setupScript).toContain("chmod 600");
+    expect(setupScript).toContain("chmod 700");
+    expect(setupScript).toContain("FORCE_RECREATE_UPLOAD_KEY=true");
+    expect(setupScript).toContain("Install Java/JDK first. On macOS, use: brew install openjdk");
+    expect(setupScript).toContain("Release signing config created. Now run ./scripts/build-android_release-apk.sh");
+    expect(setupScript).toContain("Back up private/keystores/swico-upload-key.jks safely. Do not commit it.");
+  });
+
+  it("does not hardcode Android signing passwords in the local setup helper", () => {
+    const setupScript = readRepo("scripts/setup-android-release-signing.sh");
+
+    expect(setupScript).not.toContain("YOUR_STORE_PASSWORD");
+    expect(setupScript).not.toContain("YOUR_KEY_PASSWORD");
+    expect(setupScript).not.toContain("androiddebugkey");
+    expect(setupScript).not.toContain("changeit");
+    expect(setupScript).not.toMatch(/^storePassword=(?!%s$).+/m);
+    expect(setupScript).not.toMatch(/^keyPassword=(?!%s$).+/m);
+  });
+
   it("configures generated Gradle release signing after clean Expo prebuild", () => {
     const buildApk = readRepo("build-apk.sh");
     const prebuildIndex = buildApk.indexOf("npx expo prebuild --platform android --clean");
@@ -887,6 +926,18 @@ export const runtime = {
     expect(gitignore).toMatch(/^mobile\/android\/key\.properties$/m);
     expect(gitignore).toMatch(/^mobile\/android\/app\/\*\.jks$/m);
     expect(gitignore).toMatch(/^mobile\/android\/app\/\*\.keystore$/m);
+  });
+
+  it("documents the local Google Play upload-key setup flow", () => {
+    const readme = readRepo("README.md");
+
+    expect(readme).toContain("./scripts/setup-android-release-signing.sh");
+    expect(readme).toContain("./scripts/build-android_release-apk.sh");
+    expect(readme).toContain("private/keystores/swico-upload-key.jks");
+    expect(readme).toContain("release-signing.properties");
+    expect(readme).toContain("dist/tamil-ai-release.aab");
+    expect(readme).toContain("signed in debug mode");
+    expect(readme).toContain("delete that failed");
   });
 
   it("keys model delivery validation to production/release native_on_device download_on_first_launch builds", () => {
