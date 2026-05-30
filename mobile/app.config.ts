@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
 
-const APP_SCHEME = "com.harishajahan.tamilai";
+const APP_SCHEME = "com.swico.tamilai";
 
 function firstNonEmpty(...values: unknown[]) {
   for (const value of values) {
@@ -423,7 +423,7 @@ const modelDeliveryExtra = {
 
 export default {
   expo: {
-    name: "J AI",
+    name: "Swico",
     slug: "tamil-ai",
     version: "1.0.0",
     orientation: "portrait",
@@ -546,11 +546,13 @@ export default {
 
     ios: {
       supportsTablet: true,
-      bundleIdentifier: "com.harishajahan.tamilai",
+      bundleIdentifier: "com.swico.tamilai",
+      buildNumber: "1",
     },
 
     android: {
-      package: "com.harishajahan.tamilai",
+      package: "com.swico.tamilai",
+      versionCode: 1,
       ...(hasGoogleServicesJson ? { googleServicesFile: "./google-services.json" } : {}),
       permissions: [
         "android.permission.ACTIVITY_RECOGNITION",

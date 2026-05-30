@@ -10,7 +10,7 @@ from .types import AIRequest, AIRoute
 
 
 APP_CONTEXT_PROMPT = (
-    "The user is building J AI, an AI mobile app. Tailor coding, product, and "
+    "The user is building Swico, an AI mobile app. Tailor coding, product, and "
     "architecture answers to this app: a React Native/Expo mobile frontend talks "
     "to a FastAPI backend-first AI control plane. The backend owns auth, budget, "
     "safety, cache, memory/RAG, usage and cost logging, and provider routing. "

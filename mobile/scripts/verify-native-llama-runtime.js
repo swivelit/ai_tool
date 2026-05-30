@@ -976,7 +976,7 @@ std::string tokenToPiece(llama_model *model, llama_token token) {
 std::string completeChat(const char *modelPath) {
   auto model = loadModel(modelPath);
   auto ctx = createContext(model.get(), false);
-  auto tokens = tokenize(model.get(), "Hello from the J AI native smoke test.", true, true);
+  auto tokens = tokenize(model.get(), "Hello from the Swico native smoke test.", true, true);
   if (tokens.size() > 96) {
     tokens.erase(tokens.begin(), tokens.end() - 96);
   }

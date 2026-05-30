@@ -74,7 +74,7 @@ export BUILD_TYPE=release
 export JAI_BUILD_TYPE=release
 export NODE_ENV="${NODE_ENV:-production}"
 
-info "Building release Android AAB and APK for com.harishajahan.tamilai"
+info "Building release Android AAB and APK for com.swico.tamilai"
 BUILD_AAB=1 RUN_MOBILE_RELEASE_PREFLIGHT=1 "$ROOT_DIR/build-apk.sh"
 
 [[ -s "$AAB_PATH" ]] || fail "Expected release AAB was not created or is empty: $AAB_PATH"

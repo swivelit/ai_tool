@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APK_PATH="$DIST_DIR/tamil-ai-release.apk"
-PACKAGE_NAME="com.harishajahan.tamilai"
+PACKAGE_NAME="com.swico.tamilai"
 
 info() {
   printf "\n▶ %s\n" "$1"

@@ -145,7 +145,7 @@ def test_public_health_does_not_leak_auth_configuration(client: TestClient) -> N
         payload = response.json()
 
         assert set(payload) == {"status", "app"}
-        assert payload["app"] == "J AI"
+        assert payload["app"] == "Swico"
         assert "auth" not in payload
         assert "services" not in payload
         assert "errors" not in payload

@@ -4,7 +4,8 @@ const path = require("node:path");
 
 const mobileRoot = path.resolve(__dirname, "..");
 const googleServicesFile = path.join(mobileRoot, "google-services.json");
-const ANDROID_PACKAGE_NAME = "com.harishajahan.tamilai";
+const ANDROID_PACKAGE_NAME = "com.swico.tamilai";
+const OLD_ANDROID_PACKAGE_NAME = ["com", "harishajahan", "tamilai"].join(".");
 
 const FIREBASE_PUBLIC_ENV_NAMES = [
   "EXPO_PUBLIC_FIREBASE_API_KEY",
@@ -45,6 +46,41 @@ function fail(message) {
   process.exit(1);
 }
 
+function packageNamesFromGoogleServicesConfig(config) {
+  const names = new Set();
+  const clients = Array.isArray(config?.client) ? config.client : [];
+  for (const client of clients) {
+    const packageName = client?.client_info?.android_client_info?.package_name;
+    if (typeof packageName === "string" && packageName.trim()) {
+      names.add(packageName.trim());
+    }
+  }
+  return [...names];
+}
+
+function validateGoogleServicesConfig(config) {
+  const packageNames = packageNamesFromGoogleServicesConfig(config);
+  if (packageNames.includes(OLD_ANDROID_PACKAGE_NAME)) {
+    fail(
+      `google-services.json is for ${OLD_ANDROID_PACKAGE_NAME}, but this build now requires ${ANDROID_PACKAGE_NAME}. Create a new Firebase Android app or update Firebase config, then download a new google-services.json.`,
+    );
+  }
+
+  if (packageNames.includes(ANDROID_PACKAGE_NAME)) {
+    return;
+  }
+
+  if (packageNames.length === 0) {
+    fail(
+      `google-services.json does not contain an Android package_name for ${ANDROID_PACKAGE_NAME}. Create a Firebase Android app for ${ANDROID_PACKAGE_NAME}, then download a new google-services.json.`,
+    );
+  }
+
+  fail(
+    `google-services.json is for ${packageNames.join(", ")}, but this build requires ${ANDROID_PACKAGE_NAME}. Create a Firebase Android app for ${ANDROID_PACKAGE_NAME}, then download a new google-services.json.`,
+  );
+}
+
 function missingFirebasePublicEnvNames() {
   return FIREBASE_PUBLIC_ENV_NAMES.filter((name) => !String(process.env[name] || "").trim());
 }
@@ -53,7 +89,7 @@ function writeJsonFromEnv(name, value, { base64 = false } = {}) {
   let content = "";
   try {
     content = base64 ? Buffer.from(String(value), "base64").toString("utf8") : String(value);
-    JSON.parse(content);
+    validateGoogleServicesConfig(JSON.parse(content));
   } catch (_error) {
     fail(`${name} is set but does not contain valid google-services JSON.`);
   }
@@ -97,6 +133,7 @@ function synthesizeGoogleServicesJsonFromPublicEnv() {
     configuration_version: "1",
   };
 
+  validateGoogleServicesConfig(content);
   fs.writeFileSync(googleServicesFile, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 });
   console.log(
     `[ensure-google-services-json] Wrote mobile/google-services.json from complete EXPO_PUBLIC_FIREBASE_* environment for ${ANDROID_PACKAGE_NAME}. JSON content was not printed.`,
@@ -107,6 +144,11 @@ function synthesizeGoogleServicesJsonFromPublicEnv() {
 const mode = modeFromArgs();
 
 if (fs.existsSync(googleServicesFile)) {
+  try {
+    validateGoogleServicesConfig(JSON.parse(fs.readFileSync(googleServicesFile, "utf8")));
+  } catch (_error) {
+    fail("mobile/google-services.json exists but does not contain valid google-services JSON.");
+  }
   console.log("[ensure-google-services-json] mobile/google-services.json already exists.");
   process.exit(0);
 }

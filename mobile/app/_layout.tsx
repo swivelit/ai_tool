@@ -75,7 +75,7 @@ function BootScreen() {
       <GlassCard style={styles.bootCardShell}>
         <View style={styles.bootCard}>
           <ActivityIndicator size="small" color={Brand.bronze} />
-          <Text style={styles.bootTitle}>Loading J AI...</Text>
+          <Text style={styles.bootTitle}>Loading Swico...</Text>
           <Text style={styles.bootText}>Setting things up.</Text>
         </View>
       </GlassCard>

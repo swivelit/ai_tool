@@ -5,13 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOBILE_DIR="$ROOT_DIR/mobile"
 DIST_DIR="$ROOT_DIR/dist"
 APK_PATH="$DIST_DIR/tamil-ai-debug.apk"
-PACKAGE_NAME="com.harishajahan.tamilai"
+PACKAGE_NAME="com.swico.tamilai"
 METRO_PORT="${METRO_PORT:-8081}"
 METRO_LOG="$DIST_DIR/launch-debug-metro-${METRO_PORT}.log"
 METRO_PID_FILE="/tmp/tamil-ai-metro-${METRO_PORT}.pid"
 REQUESTED_E2E_REPLY_LANGUAGE="${EXPO_PUBLIC_E2E_REPLY_LANGUAGE:-}"
 
-LOG_CMD="adb logcat | grep --line-buffered -E 'ReactNativeJS|AndroidRuntime|FATAL EXCEPTION|Expo|tamilai|harishajahan|${PACKAGE_NAME}'"
+LOG_CMD="adb logcat | grep --line-buffered -E 'ReactNativeJS|AndroidRuntime|FATAL EXCEPTION|Expo|tamilai|swico|${PACKAGE_NAME}'"
 
 info() {
   printf "\n▶ %s\n" "$1"

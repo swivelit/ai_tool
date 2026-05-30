@@ -35,7 +35,7 @@ def test_core_health_stays_available_without_optional_wake_dependencies(
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "app": "J AI"}
+    assert response.json() == {"status": "ok", "app": "Swico"}
 
 
 def test_normal_backend_requirements_keep_wakeword_dependencies_optional():

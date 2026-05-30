@@ -1,4 +1,4 @@
-# J AI mobile app
+# Swico mobile app
 
 This Expo/React Native app is configured so normal public chat and recorded
 voice enter the authenticated backend AI router first:
@@ -60,7 +60,7 @@ GOOGLE_SERVICES_JSON_BASE64=<base64-google-services-json>
 
 # C. Provide all six public Firebase env values below; the preflight script
 #    synthesizes mobile/google-services.json locally with package
-#    com.harishajahan.tamilai.
+#    com.swico.tamilai.
 EXPO_PUBLIC_FIREBASE_API_KEY=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=<firebase-public-value>
 EXPO_PUBLIC_FIREBASE_PROJECT_ID=<firebase-public-value>

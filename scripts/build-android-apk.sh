@@ -19,7 +19,7 @@ fail() {
 
 cd "$ROOT_DIR"
 
-info "Building debug Android APK for com.harishajahan.tamilai"
+info "Building debug Android APK for com.swico.tamilai"
 BUILD_TYPE=debug "$ROOT_DIR/build-apk.sh"
 
 [[ -s "$APK_PATH" ]] || fail "Expected debug APK was not created or is empty: $APK_PATH"

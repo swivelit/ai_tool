@@ -329,7 +329,7 @@ CORS_ALLOW_ORIGINS = [
     if origin.strip()
 ] or DEFAULT_CORS_ORIGINS
 
-app = FastAPI(title="J AI Backend")
+app = FastAPI(title="Swico Backend")
 RUNTIME_STATUS: Dict[str, Any] = {
     "status": "starting",
     "services": {},
@@ -1083,7 +1083,7 @@ async def log_requests(request: Request, call_next):
 def root():
     return {
         "ok": True,
-        "app": "J AI",
+        "app": "Swico",
         "message": "Persona-aware Tamil assistant backend is running.",
         "endpoints": {
             "health": "/health",
@@ -1100,14 +1100,14 @@ def _health_status_code(payload: Dict[str, Any]) -> int:
 def _public_health_payload() -> Dict[str, Any]:
     return {
         "status": RUNTIME_STATUS.get("status") or "starting",
-        "app": "J AI",
+        "app": "Swico",
     }
 
 
 def _debug_health_payload() -> Dict[str, Any]:
     return {
         "status": RUNTIME_STATUS.get("status") or "starting",
-        "app": "J AI",
+        "app": "Swico",
         "pipeline_version": PIPELINE_VERSION,
         "services": RUNTIME_STATUS.get("services", {}),
         "auth": {

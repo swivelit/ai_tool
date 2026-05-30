@@ -3,9 +3,9 @@ require 'pathname'
 Pod::Spec.new do |s|
   s.name           = 'JaiOnDeviceModel'
   s.version        = '0.1.0'
-  s.summary        = 'Local-only Gemma/Qwen on-device inference bridge for J AI.'
+  s.summary        = 'Local-only Gemma/Qwen on-device inference bridge for Swico.'
   s.description    = 'Expo module bridge for local llama.cpp GGUF inference. It does not call backend/OpenAI.'
-  s.author         = 'J AI'
+  s.author         = 'Swico'
   s.homepage       = 'https://example.invalid/jai-on-device-model'
   s.license        = { :type => 'UNLICENSED' }
   s.platforms      = { :ios => '15.1' }

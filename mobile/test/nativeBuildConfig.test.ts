@@ -32,6 +32,8 @@ const ensureGoogleServicesPath = path.join(
   "scripts",
   "ensure-google-services-json.js",
 );
+const androidPackageName = "com.swico.tamilai";
+const oldAndroidPackageName = ["com", "harishajahan", "tamilai"].join(".");
 const ENV_KEYS_USED_BY_APP_CONFIG = [
   "BUILD_TYPE",
   "EAS_BUILD_PROFILE",
@@ -159,7 +161,18 @@ const validReleaseFirebaseEnv = {
   EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "1234567890",
   EXPO_PUBLIC_FIREBASE_APP_ID: "1:1234567890:android:abcdef",
   GOOGLE_SERVICES_JSON_BASE64: Buffer.from(
-    JSON.stringify({ project_info: { project_id: "firebase-project" }, client: [] }),
+    JSON.stringify({
+      project_info: { project_id: "firebase-project" },
+      client: [
+        {
+          client_info: {
+            android_client_info: {
+              package_name: androidPackageName,
+            },
+          },
+        },
+      ],
+    }),
   ).toString("base64"),
 };
 
@@ -543,6 +556,54 @@ export const runtime = {
     );
   });
 
+  it("declares Swico public app identity and release versions", async () => {
+    const appConfig = await importAppConfigWithEnv({
+      BUILD_TYPE: "debug",
+    });
+
+    expect(appConfig.expo.name).toBe("Swico");
+    expect(appConfig.expo.slug).toBe("tamil-ai");
+    expect(appConfig.expo.version).toBe("1.0.0");
+    expect(appConfig.expo.scheme).toBe(androidPackageName);
+    expect(appConfig.expo.android.package).toBe(androidPackageName);
+    expect(appConfig.expo.android.versionCode).toBe(1);
+    expect(appConfig.expo.ios.bundleIdentifier).toBe(androidPackageName);
+    expect(appConfig.expo.ios.buildNumber).toBe("1");
+  });
+
+  it("uses the Swico Android package in launch/build scripts while preserving tamil-ai artifacts", () => {
+    const scripts = [
+      "scripts/build-android-apk.sh",
+      "scripts/build-android_release-apk.sh",
+      "launch-debug_apk.sh",
+      "launch-release_apk.sh",
+      "test_apk.sh",
+      "build-apk.sh",
+    ]
+      .map((file) => readRepo(file))
+      .join("\n");
+
+    expect(scripts).toContain(androidPackageName);
+    expect(scripts).not.toContain(oldAndroidPackageName);
+    expect(scripts).toContain("tamil-ai-debug.apk");
+    expect(scripts).toContain("tamil-ai-release.aab");
+    expect(scripts).toContain("tamil-ai-release.apk");
+  });
+
+  it("keeps user-facing Swico branding out of the old public app name", () => {
+    const userFacingSources = [
+      read("app.config.ts"),
+      read("app/_layout.tsx"),
+      read("README.md"),
+      readRepo("README.md"),
+      readRepo("backend/app/main.py"),
+      readRepo("backend/app/ai/prompts.py"),
+    ].join("\n");
+
+    expect(userFacingSources).toContain("Swico");
+    expect(userFacingSources).not.toContain(["J", "AI"].join(" "));
+  });
+
   it("ensure-google-services-json decodes base64 without printing JSON content", () => {
     const googleServicesPath = path.join(mobileRoot, "google-services.json");
     const backup = fs.existsSync(googleServicesPath)
@@ -559,7 +620,18 @@ export const runtime = {
           env: {
             ...process.env,
             GOOGLE_SERVICES_JSON_BASE64: Buffer.from(
-              JSON.stringify({ project_info: { project_id: secretProjectId }, client: [] }),
+              JSON.stringify({
+                project_info: { project_id: secretProjectId },
+                client: [
+                  {
+                    client_info: {
+                      android_client_info: {
+                        package_name: androidPackageName,
+                      },
+                    },
+                  },
+                ],
+              }),
             ).toString("base64"),
           },
           encoding: "utf8",
@@ -593,7 +665,7 @@ export const runtime = {
 
       expect(result.status).toBe(0);
       expect(result.stdout + result.stderr).toContain("EXPO_PUBLIC_FIREBASE_*");
-      expect(result.stdout + result.stderr).toContain("com.harishajahan.tamilai");
+      expect(result.stdout + result.stderr).toContain(androidPackageName);
       expect(result.stdout + result.stderr).not.toContain(secretApiKey);
       expect(fs.statSync(googleServicesPath).mode & 0o777).toBe(0o600);
 
@@ -609,7 +681,7 @@ export const runtime = {
             client_info: {
               mobilesdk_app_id: "1:1234567890:android:abcdef",
               android_client_info: {
-                package_name: "com.harishajahan.tamilai",
+                package_name: androidPackageName,
               },
             },
             oauth_client: [],
@@ -627,6 +699,41 @@ export const runtime = {
         ],
         configuration_version: "1",
       });
+    } finally {
+      fs.rmSync(googleServicesPath, { force: true });
+      if (backup !== null) fs.writeFileSync(googleServicesPath, backup);
+    }
+  });
+
+  it("ensure-google-services-json rejects the previous Android Firebase package", () => {
+    const googleServicesPath = path.join(mobileRoot, "google-services.json");
+    const backup = fs.existsSync(googleServicesPath)
+      ? fs.readFileSync(googleServicesPath, "utf8")
+      : null;
+    fs.writeFileSync(
+      googleServicesPath,
+      `${JSON.stringify({
+        project_info: { project_id: "firebase-project" },
+        client: [
+          {
+            client_info: {
+              android_client_info: {
+                package_name: oldAndroidPackageName,
+              },
+            },
+          },
+        ],
+      })}\n`,
+    );
+    try {
+      const result = runEnsureGoogleServicesJson({
+        BUILD_TYPE: "release",
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout + result.stderr).toContain(
+        `google-services.json is for ${oldAndroidPackageName}, but this build now requires ${androidPackageName}. Create a new Firebase Android app or update Firebase config, then download a new google-services.json.`,
+      );
     } finally {
       fs.rmSync(googleServicesPath, { force: true });
       if (backup !== null) fs.writeFileSync(googleServicesPath, backup);

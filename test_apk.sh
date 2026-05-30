@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOBILE_DIR="$ROOT_DIR/mobile"
 DIST_DIR="$ROOT_DIR/dist"
-PACKAGE_NAME="com.harishajahan.tamilai"
+PACKAGE_NAME="com.swico.tamilai"
 APK_PATH="$DIST_DIR/tamil-ai-debug.apk"
 METRO_PORT="${METRO_PORT:-8081}"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
