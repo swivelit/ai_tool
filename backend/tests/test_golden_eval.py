@@ -37,6 +37,7 @@ def _golden_cases() -> list[dict[str, Any]]:
     assert 50 <= len(cases) <= 100
     return cases
 
+
 def _validate_seed_quality(cases: list[dict[str, Any]]) -> list[str]:
     failures: list[str] = []
 
@@ -413,3 +414,29 @@ def test_backend_golden_eval(
     _print_summary(rows)
 
     assert failures == []
+def test_prompt_changes_do_not_break_routing_or_memory() -> None:
+    cases = _golden_cases()
+
+    routing_cases = [
+        case
+        for case in cases
+        if case["surface"] == "backend_agentic"
+    ]
+
+    assert routing_cases, (
+        "No backend_agentic cases found. "
+        "Routing regression coverage is required."
+    )
+
+    memory_cases = [
+        case
+        for case in routing_cases
+        if case.get("expected", {}).get(
+            "onboardingProfileInMetadata"
+        )
+    ]
+
+    assert memory_cases, (
+        "No onboarding profile memory cases found. "
+        "Memory regression coverage is required."
+    )
