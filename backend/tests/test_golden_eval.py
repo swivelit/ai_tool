@@ -37,6 +37,49 @@ def _golden_cases() -> list[dict[str, Any]]:
     assert 50 <= len(cases) <= 100
     return cases
 
+def _validate_seed_quality(cases: list[dict[str, Any]]) -> list[str]:
+    failures: list[str] = []
+
+    seen_prompts: dict[str, str] = {}
+
+    for case in cases:
+        prompt = case.get("prompt", "").strip().lower()
+
+        if not prompt:
+            continue
+
+        if prompt in seen_prompts:
+            failures.append(
+                f"duplicate prompt: '{prompt}' "
+                f"({seen_prompts[prompt]} vs {case['id']})"
+            )
+        else:
+            seen_prompts[prompt] = case["id"]
+
+    prompt_routes: dict[str, str] = {}
+
+    for case in cases:
+        prompt = case.get("prompt", "").strip().lower()
+
+        if not prompt:
+            continue
+
+        route = case.get("expected", {}).get("route")
+
+        if not route:
+            continue
+
+        if prompt in prompt_routes:
+            if prompt_routes[prompt] != route:
+                failures.append(
+                    f"contradictory route for prompt '{prompt}': "
+                    f"{prompt_routes[prompt]} vs {route}"
+                )
+        else:
+            prompt_routes[prompt] = route
+
+    return failures
+
 
 def _medical_profile() -> dict[str, Any]:
     return {
@@ -337,6 +380,14 @@ def test_backend_golden_eval(
             "backend_agentic",
         }
     ]
+
+    seed_failures = _validate_seed_quality(_golden_cases())
+
+    if seed_failures:
+        pytest.fail(
+            "Seed quality failures:\n"
+            + "\n".join(seed_failures)
+        )
 
     for case in backend_cases:
         if case["surface"] == "backend_health":
