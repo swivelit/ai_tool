@@ -1,180 +1,190 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MOBILE_DIR="$ROOT_DIR/mobile"
-IOS_DIR="$MOBILE_DIR/ios"
-IOS_DIST_DIR="$ROOT_DIR/dist/ios"
-ARCHIVE_PATH="$IOS_DIST_DIR/TamilAI.xcarchive"
-IPA_DIR="$IOS_DIST_DIR/ipa"
+CLIENT_DIR="$ROOT_DIR/client"
+IOS_APP_DIR="$CLIENT_DIR/ios/App"
+OUTPUT_DIR="$ROOT_DIR/dist/ios"
+ARCHIVE_PATH="$OUTPUT_DIR/GoodOne.xcarchive"
+IPA_EXPORT_DIR="$OUTPUT_DIR/ipa"
+NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}"
+USE_ADMOB_TEST_ADS="${REACT_APP_USE_ADMOB_TEST_ADS:-true}"
+IOS_SCHEME="${IOS_SCHEME:-App}"
 IOS_CONFIGURATION="${IOS_CONFIGURATION:-Release}"
 IOS_DESTINATION="${IOS_DESTINATION:-generic/platform=iOS}"
+IOS_TEAM_ID="${IOS_TEAM_ID:-}"
+IOS_ALLOW_LOCAL_SIGNING="${IOS_ALLOW_LOCAL_SIGNING:-false}"
+IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-}"
+IOS_EXPORT_OPTIONS_PLIST="${IOS_EXPORT_OPTIONS_PLIST:-}"
+GENERATE_SOURCEMAP="${GENERATE_SOURCEMAP:-false}"
 
-info() {
-  printf "\n> %s\n" "$1"
-}
+cat <<'BANNER'
+========================================
+ GoodOne iOS Archive Build
+========================================
+BANNER
 
-warn() {
-  printf "\nWARN: %s\n" "$1" >&2
-}
-
-fail() {
-  printf "\nERROR: %s\n" "$1" >&2
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "ERROR: iOS builds require macOS with Xcode installed."
   exit 1
-}
+fi
 
-normalize_flag() {
-  printf "%s" "${1:-}" | tr "[:upper:]" "[:lower:]" | tr -d "[:space:]"
-}
+if [ ! -d "$CLIENT_DIR" ]; then
+  echo "ERROR: client directory not found."
+  echo "Run this script from the project root."
+  exit 1
+fi
 
-is_truthy() {
-  case "$(normalize_flag "${1:-}")" in
-    1|true|yes|y|on) return 0 ;;
-    *) return 1 ;;
-  esac
-}
+if [ ! -d "$IOS_APP_DIR" ]; then
+  echo "ERROR: iOS project not found at client/ios/App."
+  echo "Run: cd client && npx cap add ios"
+  exit 1
+fi
 
-install_mobile_dependencies() {
-  cd "$MOBILE_DIR"
+if ! command -v xcodebuild >/dev/null 2>&1; then
+  echo "ERROR: xcodebuild not found. Install Xcode and run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
+  exit 1
+fi
 
-  if is_truthy "${SKIP_NPM_CI:-}"; then
-    warn "SKIP_NPM_CI=true; skipping mobile dependency install."
-    return 0
-  fi
+if ! xcodebuild -version >/dev/null 2>&1; then
+  echo "ERROR: xcodebuild is installed but Xcode is not ready. Open Xcode, accept the license, and run first launch setup."
+  exit 1
+fi
 
-  npm_args=(--include=dev)
-  if [[ -n "${NPM_REGISTRY:-}" ]]; then
-    npm_args+=(--registry "$NPM_REGISTRY")
-  fi
+if ! command -v pod >/dev/null 2>&1; then
+  echo "ERROR: CocoaPods not found. Install it with: sudo gem install cocoapods"
+  exit 1
+fi
 
-  if [[ -f package-lock.json ]]; then
-    if npm ci "${npm_args[@]}"; then
-      info "Dependencies installed with npm ci"
-    else
-      warn "package-lock.json is out of sync with package.json. Falling back to npm install."
-      npm install "${npm_args[@]}"
-    fi
+if [ -z "$IOS_TEAM_ID" ] && [ "$IOS_ALLOW_LOCAL_SIGNING" != "true" ]; then
+  cat <<'EOF'
+ERROR: IOS_TEAM_ID is not set, so a signed iOS archive cannot start.
+
+Archive and device distribution builds require Apple signing. The signing team
+must come from your environment or local Xcode configuration; do not commit Team
+IDs, certificates, provisioning profiles, private keys, or Apple account data.
+
+Use one of these paths:
+  Simulator verification, no signing required:
+    IOS_BUILD_MODE=simulator ./scripts/build-ios.sh
+
+  Local iPhone Debug testing:
+    Open client/ios/App/App.xcworkspace in Xcode, sign in with a free Apple
+    Account, select your Personal Team in Signing & Capabilities, then run:
+    IOS_BUILD_MODE=device ./scripts/build-ios.sh
+
+  TestFlight/App Store/archive distribution:
+    Join the Apple Developer Program, then run:
+    IOS_TEAM_ID=YOUR_TEAM_ID IOS_BUILD_MODE=archive ./scripts/build-ios.sh
+
+If this Mac already has local Xcode signing configured and you intentionally
+want xcodebuild to use it without passing IOS_TEAM_ID, rerun with:
+  IOS_ALLOW_LOCAL_SIGNING=true ./scripts/build-ios-archive.sh
+EOF
+  exit 1
+fi
+
+if [ -n "$IOS_EXPORT_OPTIONS_PLIST" ] && [ ! -f "$IOS_EXPORT_OPTIONS_PLIST" ]; then
+  echo "ERROR: IOS_EXPORT_OPTIONS_PLIST was set but file does not exist: $IOS_EXPORT_OPTIONS_PLIST"
+  exit 1
+fi
+
+echo ""
+echo "Xcode:"
+xcodebuild -version
+
+echo ""
+echo "Installing frontend dependencies..."
+echo "Using npm registry: $NPM_REGISTRY"
+cd "$CLIENT_DIR"
+if [ "${SKIP_NPM_CI:-false}" = "true" ]; then
+  echo "Skipping npm ci because SKIP_NPM_CI=true"
+elif ! npm ci --prefer-offline --no-audit --registry="$NPM_REGISTRY"; then
+  if [ -d node_modules ]; then
+    echo "WARNING: npm ci failed, but node_modules exists. Continuing with existing dependencies."
+    echo "For a clean build, fix npm/network access and rerun without SKIP_NPM_CI."
   else
-    npm install "${npm_args[@]}"
+    echo "ERROR: npm ci failed and node_modules is missing."
+    echo "Check your network/proxy/npm registry, then rerun."
+    exit 1
   fi
-}
-
-run_pod_install() {
-  [[ -f "$IOS_DIR/Podfile" ]] || return 0
-  command -v pod >/dev/null 2>&1 || fail "CocoaPods is required. Install CocoaPods, then rerun this script."
-
-  info "Installing iOS pods"
-  cd "$IOS_DIR"
-  if [[ -f Gemfile ]] && command -v bundle >/dev/null 2>&1; then
-    bundle exec pod install
-  else
-    pod install
-  fi
-}
-
-find_ios_workspace() {
-  local workspace
-  workspace="$(find "$IOS_DIR" -maxdepth 1 -name "*.xcworkspace" -print -quit)"
-  [[ -n "$workspace" ]] || fail "Could not find an Xcode workspace in $IOS_DIR after Expo prebuild."
-  printf "%s\n" "$workspace"
-}
-
-resolve_ios_scheme() {
-  local workspace="$1"
-  local workspace_name
-  local scheme
-  if [[ -n "${IOS_SCHEME:-}" ]]; then
-    printf "%s\n" "$IOS_SCHEME"
-    return 0
-  fi
-
-  workspace_name="$(basename "$workspace" .xcworkspace)"
-  if [[ -f "$IOS_DIR/$workspace_name.xcodeproj/xcshareddata/xcschemes/$workspace_name.xcscheme" ]]; then
-    printf "%s\n" "$workspace_name"
-    return 0
-  fi
-
-  if [[ -f "$IOS_DIR/JAI.xcodeproj/xcshareddata/xcschemes/JAI.xcscheme" ]]; then
-    printf "%s\n" "JAI"
-    return 0
-  fi
-
-  scheme="$(xcodebuild -workspace "$workspace" -list 2>/dev/null | awk '
-    /^[[:space:]]*Schemes:/ { in_schemes = 1; next }
-    in_schemes && NF { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit }
-  ')"
-  [[ -n "$scheme" ]] || scheme="JAI"
-  printf "%s\n" "$scheme"
-}
-
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  fail "iOS archive builds require macOS with Xcode. Shell syntax is valid, but this host cannot run xcodebuild."
 fi
 
-command -v xcodebuild >/dev/null 2>&1 || fail "xcodebuild is required. Install Xcode and run xcode-select if needed."
-command -v node >/dev/null 2>&1 || fail "Node.js is required but was not found in PATH."
-command -v npm >/dev/null 2>&1 || fail "npm is required but was not found in PATH."
-[[ -d "$MOBILE_DIR" ]] || fail "Mobile app folder not found at: $MOBILE_DIR"
+echo ""
+echo "Building React app..."
+echo "REACT_APP_USE_ADMOB_TEST_ADS=$USE_ADMOB_TEST_ADS"
+echo "GENERATE_SOURCEMAP=$GENERATE_SOURCEMAP"
+GENERATE_SOURCEMAP="$GENERATE_SOURCEMAP" REACT_APP_USE_ADMOB_TEST_ADS="$USE_ADMOB_TEST_ADS" npm run build
 
-if [[ -z "${IOS_TEAM_ID:-}" ]]; then
-  warn "IOS_TEAM_ID is not set. Xcode signing may fail unless signing is configured in the generated project or Xcode account."
-fi
-warn "Do not commit signing secrets, provisioning profiles, export options containing secrets, or key files."
+echo ""
+echo "Syncing Capacitor iOS..."
+npx cap sync ios
 
-mkdir -p "$IOS_DIST_DIR"
+echo ""
+echo "Installing iOS pods..."
+cd "$IOS_APP_DIR"
+pod install --repo-update
 
-install_mobile_dependencies
+echo ""
+echo "Archiving iOS app..."
+mkdir -p "$OUTPUT_DIR"
+rm -rf "$ARCHIVE_PATH"
 
-info "Generating native iOS project with Expo prebuild"
-cd "$MOBILE_DIR"
-CI=1 npx expo prebuild --platform ios
-
-run_pod_install
-
-IOS_WORKSPACE="$(find_ios_workspace)"
-IOS_SCHEME_RESOLVED="$(resolve_ios_scheme "$IOS_WORKSPACE")"
-
-xcodebuild_settings=()
-if [[ -n "${IOS_TEAM_ID:-}" ]]; then
-  xcodebuild_settings+=(DEVELOPMENT_TEAM="$IOS_TEAM_ID")
-fi
-if [[ -n "${IOS_BUNDLE_ID:-}" ]]; then
-  xcodebuild_settings+=(PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID")
-fi
-
-info "Building iOS archive"
-archive_command=(
-  xcodebuild
-  -workspace "$IOS_WORKSPACE" \
-  -scheme "$IOS_SCHEME_RESOLVED" \
-  -configuration "$IOS_CONFIGURATION" \
-  -destination "$IOS_DESTINATION" \
+XCODEBUILD_ARGS=(
+  -workspace "App.xcworkspace"
+  -scheme "$IOS_SCHEME"
+  -configuration "$IOS_CONFIGURATION"
+  -destination "$IOS_DESTINATION"
   -archivePath "$ARCHIVE_PATH"
+  ENABLE_USER_SCRIPT_SANDBOXING=NO
 )
-if ((${#xcodebuild_settings[@]} > 0)); then
-  archive_command+=("${xcodebuild_settings[@]}")
+
+if [ -n "$IOS_TEAM_ID" ]; then
+  XCODEBUILD_ARGS+=(DEVELOPMENT_TEAM="$IOS_TEAM_ID" CODE_SIGN_STYLE=Automatic)
+else
+  echo "IOS_ALLOW_LOCAL_SIGNING=true: using local Xcode signing settings for archive."
 fi
-archive_command+=(
-  archive
-)
 
-"${archive_command[@]}"
+if [ -n "$IOS_BUNDLE_ID" ]; then
+  XCODEBUILD_ARGS+=(PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID")
+fi
 
-[[ -d "$ARCHIVE_PATH" ]] || fail "Expected archive was not created: $ARCHIVE_PATH"
+xcodebuild "${XCODEBUILD_ARGS[@]}" -allowProvisioningUpdates archive
 
-if [[ -n "${IOS_EXPORT_OPTIONS_PLIST:-}" ]]; then
-  [[ -f "$IOS_EXPORT_OPTIONS_PLIST" ]] || fail "IOS_EXPORT_OPTIONS_PLIST does not exist: $IOS_EXPORT_OPTIONS_PLIST"
-  mkdir -p "$IPA_DIR"
+cat <<EOF2
 
-  info "Exporting IPA"
+========================================
+ iOS archive complete
+========================================
+Archive location:
+$ARCHIVE_PATH
+EOF2
+
+if [ -n "$IOS_EXPORT_OPTIONS_PLIST" ]; then
+  echo ""
+  echo "Exporting IPA..."
+  rm -rf "$IPA_EXPORT_DIR"
+  mkdir -p "$IPA_EXPORT_DIR"
   xcodebuild \
     -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
+    -exportPath "$IPA_EXPORT_DIR" \
     -exportOptionsPlist "$IOS_EXPORT_OPTIONS_PLIST" \
-    -exportPath "$IPA_DIR"
+    -allowProvisioningUpdates
 
-  printf "IPA export directory: %s\n" "$IPA_DIR"
+  cat <<EOF3
+
+IPA export complete.
+IPA folder:
+$IPA_EXPORT_DIR
+EOF3
+else
+  cat <<EOF4
+
+IPA export skipped.
+To export an IPA, create an ExportOptions.plist in Xcode or App Store Connect workflow, then rerun with:
+IOS_EXPORT_OPTIONS_PLIST=/absolute/path/to/ExportOptions.plist ./scripts/build-ios-archive.sh
+
+For local iPhone testing, open this archive in Xcode Organizer or run the app directly from Xcode after setting Signing & Capabilities.
+EOF4
 fi
-
-info "iOS archive ready"
-printf "Archive: %s\n" "$ARCHIVE_PATH"
