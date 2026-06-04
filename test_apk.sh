@@ -1807,13 +1807,13 @@ fi
 
 final_chat_xml="$ARTIFACT_DIR/ui-after-message-tell_me_about_solo_leveling.xml"
 if [[ -f "$final_chat_xml" ]]; then
-  if ! grep -q 'text="hello"' "$ARTIFACT_DIR"/ui-after-message-*.xml 2>/dev/null; then
+  if ! grep -Fqi 'text="hello"' "$final_chat_xml" 2>/dev/null; then
     mark_failed "first-message-not-visible-after-second"
   fi
-  if ! grep -q 'text="what can you do"' "$ARTIFACT_DIR"/ui-after-message-*.xml 2>/dev/null; then
+  if ! grep -Fqi 'text="what can you do"' "$final_chat_xml" 2>/dev/null; then
     mark_failed "second-message-not-visible"
   fi
-  if ! grep -q 'text="tell me about solo leveling"' "$ARTIFACT_DIR"/ui-after-message-*.xml 2>/dev/null; then
+  if ! grep -Fqi 'text="tell me about solo leveling"' "$final_chat_xml" 2>/dev/null; then
     mark_failed "general-message-not-visible"
   fi
 fi

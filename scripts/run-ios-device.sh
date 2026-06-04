@@ -1,73 +1,95 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLIENT_DIR="$ROOT_DIR/client"
-IOS_APP_DIR="$CLIENT_DIR/ios/App"
+MOBILE_DIR="$ROOT_DIR/mobile"
+IOS_DIR="$MOBILE_DIR/ios"
 OUTPUT_DIR="$ROOT_DIR/dist/ios-device"
 DERIVED_DATA_DIR="$OUTPUT_DIR/DerivedData"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}"
-USE_ADMOB_TEST_ADS="${REACT_APP_USE_ADMOB_TEST_ADS:-true}"
-GENERATE_SOURCEMAP="${GENERATE_SOURCEMAP:-false}"
-IOS_SCHEME="${IOS_SCHEME:-App}"
+IOS_SCHEME="${IOS_SCHEME:-Swico}"
 IOS_CONFIGURATION="${IOS_CONFIGURATION:-Debug}"
 IOS_TEAM_ID="${IOS_TEAM_ID:-}"
 IOS_DEVICE_ID="${IOS_DEVICE_ID:-}"
 IOS_DEVICE_DESTINATION="${IOS_DEVICE_DESTINATION:-}"
-IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-}"
-DEFAULT_BUNDLE_ID="com.goodone.marketplace"
-LAUNCH_BUNDLE_ID="${IOS_BUNDLE_ID:-$DEFAULT_BUNDLE_ID}"
-APP_PATH="$DERIVED_DATA_DIR/Build/Products/${IOS_CONFIGURATION}-iphoneos/App.app"
+IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.swico.tamilai}"
+APP_PATH="$DERIVED_DATA_DIR/Build/Products/${IOS_CONFIGURATION}-iphoneos/Swico.app"
+
+info() {
+  printf "\n▶ %s\n" "$1"
+}
+
+fail() {
+  printf "ERROR: %s\n" "$1" >&2
+  exit 1
+}
+
+find_xcode_workspace() {
+  find "$IOS_DIR" -maxdepth 1 -name "*.xcworkspace" -print -quit 2>/dev/null
+}
+
+find_xcode_project() {
+  find "$IOS_DIR" -maxdepth 1 -name "*.xcodeproj" -print -quit 2>/dev/null
+}
+
+install_mobile_dependencies() {
+  info "Installing mobile dependencies"
+  cd "$MOBILE_DIR"
+  if [[ "${SKIP_NPM_CI:-false}" == "true" ]]; then
+    printf "Skipping npm ci because SKIP_NPM_CI=true\n"
+  elif [[ -f package-lock.json ]]; then
+    npm ci --include=dev --prefer-offline --no-audit --registry="$NPM_REGISTRY"
+  else
+    npm install --include=dev --no-audit --registry="$NPM_REGISTRY"
+  fi
+}
+
+ensure_ios_project() {
+  local workspace
+  local project
+
+  workspace="$(find_xcode_workspace || true)"
+  project="$(find_xcode_project || true)"
+  if [[ -n "$workspace" || -n "$project" ]]; then
+    return 0
+  fi
+
+  info "Generating native iOS project with Expo prebuild"
+  cd "$MOBILE_DIR"
+  CI=1 npx expo prebuild --platform ios
+}
+
+prepare_xcode_container_args() {
+  local workspace
+  local project
+
+  workspace="$(find_xcode_workspace || true)"
+  project="$(find_xcode_project || true)"
+
+  if [[ -n "$workspace" ]]; then
+    XCODE_CONTAINER_ARGS=(-workspace "$(basename "$workspace")")
+  elif [[ -n "$project" ]]; then
+    XCODE_CONTAINER_ARGS=(-project "$(basename "$project")")
+  else
+    fail "Expo iOS project was not generated under mobile/ios."
+  fi
+}
 
 cat <<'BANNER'
 ========================================
- GoodOne iOS Device Debug Build
+ Swico iOS Device Debug Build
 ========================================
 BANNER
 
-if [ "$(uname -s)" != "Darwin" ]; then
-  echo "ERROR: iOS device builds require macOS with Xcode installed."
-  exit 1
-fi
+[[ "$(uname -s)" == "Darwin" ]] || fail "iOS device builds require macOS with Xcode installed."
+[[ -d "$MOBILE_DIR" ]] || fail "Mobile app folder not found at mobile/."
+command -v node >/dev/null 2>&1 || fail "Node.js is required."
+command -v npm >/dev/null 2>&1 || fail "npm is required."
+command -v npx >/dev/null 2>&1 || fail "npx is required."
+command -v xcodebuild >/dev/null 2>&1 || fail "xcodebuild not found. Install Xcode and select it with xcode-select."
+command -v pod >/dev/null 2>&1 || fail "CocoaPods not found. Install it with: sudo gem install cocoapods"
 
-if [ ! -d "$CLIENT_DIR" ]; then
-  echo "ERROR: client directory not found."
-  echo "Run this script from the project root or through: cd client && npm run run:ios:device"
-  exit 1
-fi
-
-if [ ! -d "$IOS_APP_DIR" ]; then
-  echo "ERROR: iOS project not found at client/ios/App."
-  echo "Run: cd client && npx cap add ios"
-  exit 1
-fi
-
-if ! command -v xcodebuild >/dev/null 2>&1; then
-  echo "ERROR: xcodebuild not found. Install Xcode and run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
-  exit 1
-fi
-
-if ! xcodebuild -version >/dev/null 2>&1; then
-  echo "ERROR: xcodebuild is installed but Xcode is not ready. Open Xcode, accept the license, and run first launch setup."
-  exit 1
-fi
-
-if ! command -v pod >/dev/null 2>&1; then
-  echo "ERROR: CocoaPods not found. Install it with: sudo gem install cocoapods"
-  exit 1
-fi
-
-if ! command -v npm >/dev/null 2>&1; then
-  echo "ERROR: npm not found. Install Node.js and npm, then rerun this script."
-  exit 1
-fi
-
-if ! command -v npx >/dev/null 2>&1; then
-  echo "ERROR: npx not found. Install Node.js/npm, then rerun this script."
-  exit 1
-fi
-
-if [ -z "$IOS_TEAM_ID" ]; then
+if [[ -z "$IOS_TEAM_ID" ]]; then
   cat <<'EOF'
 IOS_TEAM_ID is not set.
 
@@ -75,119 +97,84 @@ A physical iPhone build must be signed. This script will use Xcode automatic
 signing and any local target signing settings already configured on this Mac.
 If xcodebuild reports that a development team is required:
 
-  1. Open client/ios/App/App.xcworkspace in Xcode.
-  2. Select the App target.
-  3. Open Signing & Capabilities.
-  4. Sign in with a free Apple Account and select your Personal Team.
-  5. Use a local bundle identifier override if the production ID is unavailable:
-     IOS_BUNDLE_ID=com.goodone.marketplace.dev.$USER ./scripts/run-ios-device.sh
-  6. Do not commit DEVELOPMENT_TEAM or signing changes from project.pbxproj.
+  1. Run: cd mobile && npx expo prebuild --platform ios
+  2. Open mobile/ios/*.xcworkspace in Xcode.
+  3. Select the Swico target.
+  4. Open Signing & Capabilities.
+  5. Sign in with an Apple Account and select your Team.
+  6. Use a local bundle identifier override if the production ID is unavailable:
+     IOS_BUNDLE_ID=com.swico.tamilai.dev.$USER ./scripts/run-ios-device.sh
+  7. Do not commit DEVELOPMENT_TEAM or signing changes from project.pbxproj.
 
 TestFlight and App Store distribution require Apple Developer Program membership.
 EOF
 fi
 
-echo ""
-echo "Xcode:"
 xcodebuild -version
+install_mobile_dependencies
+ensure_ios_project
+prepare_xcode_container_args
 
-echo ""
-echo "Installing frontend dependencies..."
-echo "Using npm registry: $NPM_REGISTRY"
-cd "$CLIENT_DIR"
-if [ "${SKIP_NPM_CI:-false}" = "true" ]; then
-  echo "Skipping npm ci because SKIP_NPM_CI=true"
-elif ! npm ci --prefer-offline --no-audit --registry="$NPM_REGISTRY"; then
-  if [ -d node_modules ]; then
-    echo "WARNING: npm ci failed, but node_modules exists. Continuing with existing dependencies."
-    echo "For a clean build, fix npm/network access and rerun without SKIP_NPM_CI."
-  else
-    echo "ERROR: npm ci failed and node_modules is missing."
-    echo "Check your network/proxy/npm registry, then rerun."
-    exit 1
-  fi
-fi
-
-echo ""
-echo "Building React app..."
-echo "REACT_APP_USE_ADMOB_TEST_ADS=$USE_ADMOB_TEST_ADS"
-echo "GENERATE_SOURCEMAP=$GENERATE_SOURCEMAP"
-GENERATE_SOURCEMAP="$GENERATE_SOURCEMAP" REACT_APP_USE_ADMOB_TEST_ADS="$USE_ADMOB_TEST_ADS" npm run build
-
-echo ""
-echo "Syncing Capacitor iOS..."
-npx cap sync ios
-
-echo ""
-echo "Installing iOS pods..."
-cd "$IOS_APP_DIR"
+info "Installing iOS pods"
+cd "$IOS_DIR"
 pod install --repo-update
 
-if [ -n "$IOS_DEVICE_DESTINATION" ]; then
+if [[ -n "$IOS_DEVICE_DESTINATION" ]]; then
   XCODE_DESTINATION="$IOS_DEVICE_DESTINATION"
-elif [ -n "$IOS_DEVICE_ID" ]; then
+elif [[ -n "$IOS_DEVICE_ID" ]]; then
   XCODE_DESTINATION="id=$IOS_DEVICE_ID"
 else
   XCODE_DESTINATION="generic/platform=iOS"
 fi
 
-echo ""
-echo "Building signed Debug app for physical iPhone..."
-echo "Destination: $XCODE_DESTINATION"
+info "Building signed Debug app for physical iPhone"
+printf "Destination: %s\n" "$XCODE_DESTINATION"
 mkdir -p "$DERIVED_DATA_DIR"
 
 XCODEBUILD_ARGS=(
-  -workspace "App.xcworkspace"
+  "${XCODE_CONTAINER_ARGS[@]}"
   -scheme "$IOS_SCHEME"
   -configuration "$IOS_CONFIGURATION"
   -sdk iphoneos
   -destination "$XCODE_DESTINATION"
   -derivedDataPath "$DERIVED_DATA_DIR"
-  ENABLE_USER_SCRIPT_SANDBOXING=NO
   CODE_SIGNING_ALLOWED=YES
   CODE_SIGN_STYLE=Automatic
+  PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID"
 )
 
-if [ -n "$IOS_TEAM_ID" ]; then
+if [[ -n "$IOS_TEAM_ID" ]]; then
   XCODEBUILD_ARGS+=(DEVELOPMENT_TEAM="$IOS_TEAM_ID")
 fi
 
-if [ -n "$IOS_BUNDLE_ID" ]; then
-  XCODEBUILD_ARGS+=(PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID")
-fi
-
 if ! xcodebuild "${XCODEBUILD_ARGS[@]}" -allowProvisioningUpdates build; then
-  if [ -z "$IOS_TEAM_ID" ]; then
+  if [[ -z "$IOS_TEAM_ID" ]]; then
     cat <<'EOF'
 
 The device Debug build failed and IOS_TEAM_ID was not provided.
-This usually means Xcode signing has not been configured for a Personal Team.
-Open client/ios/App/App.xcworkspace in Xcode, select the App target, choose a
-Team under Signing & Capabilities, then rerun this script. Keep any Team ID or
-provisioning changes out of git.
+Open mobile/ios/*.xcworkspace in Xcode, select the Swico target, choose a Team
+under Signing & Capabilities, then rerun this script.
 EOF
   fi
   exit 1
 fi
 
-if [ ! -d "$APP_PATH" ] && [ -d "$DERIVED_DATA_DIR/Build/Products" ]; then
-  APP_PATH="$(find "$DERIVED_DATA_DIR/Build/Products" -maxdepth 4 -type d -name "*.app" -path "*/${IOS_CONFIGURATION}-iphoneos/*" | head -n 1)"
+if [[ ! -d "$APP_PATH" && -d "$DERIVED_DATA_DIR/Build/Products" ]]; then
+  APP_PATH="$(find "$DERIVED_DATA_DIR/Build/Products" -maxdepth 4 -type d -name "*.app" -path "*/${IOS_CONFIGURATION}-iphoneos/*" -print -quit)"
 fi
 
-cat <<EOF2
+cat <<EOF
 
-========================================
- iOS device Debug build complete
-========================================
+iOS device Debug build complete.
 Derived data:
 $DERIVED_DATA_DIR
 
 App bundle:
 $APP_PATH
-EOF2
+EOF
 
-if [ -z "$IOS_DEVICE_ID" ]; then
-  cat <<'EOF3'
+if [[ -z "$IOS_DEVICE_ID" ]]; then
+  cat <<'EOF'
 
 CLI install/launch was not attempted because IOS_DEVICE_ID is not set.
 
@@ -198,41 +185,33 @@ To run on a physical iPhone:
   3. Rerun:
      IOS_DEVICE_ID=YOUR_DEVICE_ID ./scripts/run-ios-device.sh
 
-Or open client/ios/App/App.xcworkspace in Xcode, select the iPhone destination,
+Or open mobile/ios/*.xcworkspace in Xcode, select the iPhone destination,
 confirm Signing & Capabilities, and choose Product > Run.
-EOF3
+EOF
   exit 0
 fi
 
-if [ ! -d "$APP_PATH" ]; then
-  echo ""
-  echo "WARNING: Built app bundle was not found, so CLI install/launch was skipped."
-  echo "Open client/ios/App/App.xcworkspace in Xcode and choose Product > Run."
+if [[ ! -d "$APP_PATH" ]]; then
+  printf "WARNING: Built app bundle was not found, so CLI install/launch was skipped.\n"
   exit 0
 fi
 
 if ! command -v xcrun >/dev/null 2>&1 || ! xcrun devicectl help >/dev/null 2>&1; then
-  cat <<'EOF4'
+  cat <<'EOF'
 
 CLI install/launch was skipped because xcrun devicectl is unavailable.
-Open client/ios/App/App.xcworkspace in Xcode, select the connected iPhone,
+Open mobile/ios/*.xcworkspace in Xcode, select the connected iPhone,
 confirm Signing & Capabilities, and choose Product > Run.
-EOF4
+EOF
   exit 0
 fi
 
-echo ""
-echo "Installing app on iPhone device $IOS_DEVICE_ID..."
-if ! xcrun devicectl device install app --device "$IOS_DEVICE_ID" "$APP_PATH"; then
-  echo "WARNING: devicectl install failed. Open the workspace in Xcode and choose Product > Run."
-  exit 0
-fi
+info "Installing app on iPhone"
+xcrun devicectl device install app --device "$IOS_DEVICE_ID" "$APP_PATH" \
+  || fail "devicectl install failed. Open the workspace in Xcode and choose Product > Run."
 
-echo ""
-echo "Launching $LAUNCH_BUNDLE_ID on iPhone device $IOS_DEVICE_ID..."
-if ! xcrun devicectl device process launch --device "$IOS_DEVICE_ID" "$LAUNCH_BUNDLE_ID"; then
-  echo "WARNING: devicectl launch failed. The app may still be installed; launch it manually on the iPhone or use Xcode Product > Run."
-  exit 0
-fi
+info "Launching com.swico.tamilai on iPhone"
+xcrun devicectl device process launch --device "$IOS_DEVICE_ID" "$IOS_BUNDLE_ID" \
+  || fail "devicectl launch failed. The app may still be installed; launch it manually or use Xcode Product > Run."
 
-echo "iOS device install and launch complete."
+printf "iOS device install and launch complete.\n"

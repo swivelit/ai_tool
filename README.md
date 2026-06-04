@@ -267,7 +267,7 @@ Outputs:
 - `dist/tamil-ai-debug.apk`
 - `dist/tamil-ai-release.aab`
 - `dist/tamil-ai-release.apk`
-- `dist/ios/TamilAI.xcarchive`
+- `dist/ios/Swico.xcarchive`
 
 Play/App Store release branding uses the app name `Swico`, Android package
 `com.swico.tamilai`, and iOS bundle identifier `com.swico.tamilai`. The Expo

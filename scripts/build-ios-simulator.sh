@@ -1,113 +1,113 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLIENT_DIR="$ROOT_DIR/client"
-IOS_APP_DIR="$CLIENT_DIR/ios/App"
+MOBILE_DIR="$ROOT_DIR/mobile"
+IOS_DIR="$MOBILE_DIR/ios"
 OUTPUT_DIR="$ROOT_DIR/dist/ios-simulator"
 DERIVED_DATA_DIR="$OUTPUT_DIR/DerivedData"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}"
-USE_ADMOB_TEST_ADS="${REACT_APP_USE_ADMOB_TEST_ADS:-true}"
-IOS_SCHEME="${IOS_SCHEME:-App}"
+IOS_SCHEME="${IOS_SCHEME:-Swico}"
 IOS_SIMULATOR_DESTINATION="${IOS_SIMULATOR_DESTINATION:-generic/platform=iOS Simulator}"
-GENERATE_SOURCEMAP="${GENERATE_SOURCEMAP:-false}"
+
+info() {
+  printf "\n▶ %s\n" "$1"
+}
+
+fail() {
+  printf "ERROR: %s\n" "$1" >&2
+  exit 1
+}
+
+find_xcode_workspace() {
+  find "$IOS_DIR" -maxdepth 1 -name "*.xcworkspace" -print -quit 2>/dev/null
+}
+
+find_xcode_project() {
+  find "$IOS_DIR" -maxdepth 1 -name "*.xcodeproj" -print -quit 2>/dev/null
+}
+
+install_mobile_dependencies() {
+  info "Installing mobile dependencies"
+  cd "$MOBILE_DIR"
+  if [[ "${SKIP_NPM_CI:-false}" == "true" ]]; then
+    printf "Skipping npm ci because SKIP_NPM_CI=true\n"
+  elif [[ -f package-lock.json ]]; then
+    npm ci --include=dev --prefer-offline --no-audit --registry="$NPM_REGISTRY"
+  else
+    npm install --include=dev --no-audit --registry="$NPM_REGISTRY"
+  fi
+}
+
+ensure_ios_project() {
+  local workspace
+  local project
+
+  workspace="$(find_xcode_workspace || true)"
+  project="$(find_xcode_project || true)"
+  if [[ -n "$workspace" || -n "$project" ]]; then
+    return 0
+  fi
+
+  info "Generating native iOS project with Expo prebuild"
+  cd "$MOBILE_DIR"
+  CI=1 npx expo prebuild --platform ios
+}
+
+prepare_xcode_container_args() {
+  local workspace
+  local project
+
+  workspace="$(find_xcode_workspace || true)"
+  project="$(find_xcode_project || true)"
+
+  if [[ -n "$workspace" ]]; then
+    XCODE_CONTAINER_ARGS=(-workspace "$(basename "$workspace")")
+  elif [[ -n "$project" ]]; then
+    XCODE_CONTAINER_ARGS=(-project "$(basename "$project")")
+  else
+    fail "Expo iOS project was not generated under mobile/ios."
+  fi
+}
 
 cat <<'BANNER'
 ========================================
- GoodOne iOS Simulator Build
+ Swico iOS Simulator Build
 ========================================
 BANNER
 
-if [ "$(uname -s)" != "Darwin" ]; then
-  echo "ERROR: iOS Simulator builds require macOS with Xcode installed."
-  exit 1
-fi
+[[ "$(uname -s)" == "Darwin" ]] || fail "iOS Simulator builds require macOS with Xcode installed."
+[[ -d "$MOBILE_DIR" ]] || fail "Mobile app folder not found at mobile/."
+command -v node >/dev/null 2>&1 || fail "Node.js is required."
+command -v npm >/dev/null 2>&1 || fail "npm is required."
+command -v npx >/dev/null 2>&1 || fail "npx is required."
+command -v xcodebuild >/dev/null 2>&1 || fail "xcodebuild not found. Install Xcode and select it with xcode-select."
+command -v pod >/dev/null 2>&1 || fail "CocoaPods not found. Install it with: sudo gem install cocoapods"
 
-if [ ! -d "$CLIENT_DIR" ]; then
-  echo "ERROR: client directory not found."
-  echo "Run this script from the project root or through: cd client && npm run build:ios:simulator"
-  exit 1
-fi
-
-if [ ! -d "$IOS_APP_DIR" ]; then
-  echo "ERROR: iOS project not found at client/ios/App."
-  echo "Run: cd client && npx cap add ios"
-  exit 1
-fi
-
-if ! command -v xcodebuild >/dev/null 2>&1; then
-  echo "ERROR: xcodebuild not found. Install Xcode and run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
-  exit 1
-fi
-
-if ! xcodebuild -version >/dev/null 2>&1; then
-  echo "ERROR: xcodebuild is installed but Xcode is not ready. Open Xcode, accept the license, and run first launch setup."
-  exit 1
-fi
-
-if ! command -v pod >/dev/null 2>&1; then
-  echo "ERROR: CocoaPods not found. Install it with: sudo gem install cocoapods"
-  exit 1
-fi
-
-if ! command -v npm >/dev/null 2>&1; then
-  echo "ERROR: npm not found. Install Node.js and npm, then rerun this script."
-  exit 1
-fi
-
-if ! command -v npx >/dev/null 2>&1; then
-  echo "ERROR: npx not found. Install Node.js/npm, then rerun this script."
-  exit 1
-fi
-
-echo ""
-echo "Xcode:"
 xcodebuild -version
+install_mobile_dependencies
+ensure_ios_project
+prepare_xcode_container_args
 
-echo ""
-echo "Installing frontend dependencies..."
-echo "Using npm registry: $NPM_REGISTRY"
-cd "$CLIENT_DIR"
-if [ "${SKIP_NPM_CI:-false}" = "true" ]; then
-  echo "Skipping npm ci because SKIP_NPM_CI=true"
-else
-  npm ci --no-audit --registry="$NPM_REGISTRY"
-fi
-
-echo ""
-echo "Building React app..."
-echo "REACT_APP_USE_ADMOB_TEST_ADS=$USE_ADMOB_TEST_ADS"
-echo "GENERATE_SOURCEMAP=$GENERATE_SOURCEMAP"
-GENERATE_SOURCEMAP="$GENERATE_SOURCEMAP" REACT_APP_USE_ADMOB_TEST_ADS="$USE_ADMOB_TEST_ADS" npm run build
-
-echo ""
-echo "Syncing Capacitor iOS..."
-npx cap sync ios
-
-echo ""
-echo "Installing iOS pods..."
-cd "$IOS_APP_DIR"
+info "Installing iOS pods"
+cd "$IOS_DIR"
 pod install --repo-update
 
-echo ""
-echo "Building iOS Simulator app without code signing..."
+info "Building iOS Simulator app without code signing"
 mkdir -p "$DERIVED_DATA_DIR"
 xcodebuild \
-  -workspace App.xcworkspace \
+  "${XCODE_CONTAINER_ARGS[@]}" \
   -scheme "$IOS_SCHEME" \
   -configuration Debug \
   -sdk iphonesimulator \
   -destination "$IOS_SIMULATOR_DESTINATION" \
   -derivedDataPath "$DERIVED_DATA_DIR" \
-  ENABLE_USER_SCRIPT_SANDBOXING=NO \
   CODE_SIGNING_ALLOWED=NO \
   build
 
-cat <<EOF2
+cat <<EOF
 
-========================================
- iOS Simulator build complete
-========================================
+iOS Simulator build complete.
 Derived data:
 $DERIVED_DATA_DIR
-EOF2
+EOF
