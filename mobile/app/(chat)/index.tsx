@@ -32,6 +32,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GlassCard } from "@/components/Glass";
 import { AssistantCharacter } from "@/components/AssistantCharacter";
 import { Orb } from "@/components/Orb";
+import { BACKCHANNEL_CLIPS } from "@/assets/audio/backchannel/clips";
 import {
   VoiceSessionTranscript,
   type VoiceSessionTurn,
@@ -325,6 +326,13 @@ function openReturnedFile(file: ReturnType<typeof firstOpenableFile>) {
   });
 }
 
+function isSameWakeModelState(
+  current: WakeModelState | null,
+  next: WakeModelState | null
+) {
+  return JSON.stringify(current) === JSON.stringify(next);
+}
+
 export default function Home() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -594,6 +602,7 @@ export default function Home() {
     }
 
     const controller = createBackchannelController({
+      clips: BACKCHANNEL_CLIPS,
       minGapMs: 4500,
       maxGapMs: 9000,
       volume: 0.18,
@@ -1313,7 +1322,9 @@ export default function Home() {
     void (async () => {
       const next = await ensureWakeModel(settings);
       if (cancelled) return;
-      setWakeModelState(next);
+      setWakeModelState((current) =>
+        isSameWakeModelState(current, next) ? current : next
+      );
       if (next.ready) {
         dispatchHandsFree({ type: "WAKE_READY" });
       } else {
@@ -4083,19 +4094,56 @@ export default function Home() {
     ]);
   }
 
+  const morphTranslateX = Math.min(contentMaxWidth * 0.28, 112);
+  const morphTranslateY = Math.min(height * 0.26, 210);
   const floatingAssistantAnimatedStyle = {
-    opacity: floatingAssistantProgress,
+    opacity: floatingAssistantProgress.interpolate({
+      inputRange: [0, 0.18, 1],
+      outputRange: [0.04, 0.38, 1],
+    }),
     transform: [
+      {
+        translateX: floatingAssistantProgress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [-morphTranslateX, 0],
+        }),
+      },
       {
         translateY: floatingAssistantProgress.interpolate({
           inputRange: [0, 1],
-          outputRange: [18, 0],
+          outputRange: [-morphTranslateY, 0],
         }),
       },
       {
         scale: floatingAssistantProgress.interpolate({
           inputRange: [0, 1],
-          outputRange: [0.86, 1],
+          outputRange: [2.45, 1],
+        }),
+      },
+    ],
+  };
+  const voiceHeroMorphStyle = {
+    opacity: floatingAssistantProgress.interpolate({
+      inputRange: [0, 0.7, 1],
+      outputRange: [1, 0.82, 0.28],
+    }),
+    transform: [
+      {
+        translateX: floatingAssistantProgress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, morphTranslateX],
+        }),
+      },
+      {
+        translateY: floatingAssistantProgress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, morphTranslateY],
+        }),
+      },
+      {
+        scale: floatingAssistantProgress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [1, 0.42],
         }),
       },
     ],
@@ -4616,23 +4664,55 @@ export default function Home() {
             </View>
 
             <View style={styles.voiceTopSpacer} />
+
+            {e2eVoiceTurnEnabled || e2eHandsFreeEnabled ? (
+              <View style={styles.e2eVoiceTopControls}>
+                <Pressable
+                  onPress={() => {
+                    void closeVoiceSheetSafely();
+                  }}
+                  testID="e2e-close-voice-button"
+                  accessibilityLabel="e2e-close-voice-button"
+                  accessibilityRole="button"
+                  style={styles.e2eHandsFreeButton}
+                >
+                  <Text style={styles.e2eHandsFreeButtonText}>E2E close</Text>
+                </Pressable>
+
+                {e2eHandsFreeEnabled && (handsFreeActive || handsFreeConversationActive) ? (
+                  <Pressable
+                    onPress={() => {
+                      void simulateE2eHandsFreeStop();
+                    }}
+                    testID="e2e-hands-free-stop-button"
+                    accessibilityLabel="e2e-hands-free-stop-button"
+                    accessibilityRole="button"
+                    style={styles.e2eHandsFreeButton}
+                  >
+                    <Text style={styles.e2eHandsFreeButtonText}>E2E stop</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
           </View>
 
           <View style={styles.voiceCenter}>
             <View pointerEvents="none" style={styles.voiceAssistantGlow} />
-            <Orb
-              listening={listening && activeSurface === "live"}
-              state={assistantCharacterState}
-              emotion={assistantCharacterEmotion}
-              mouthOpenness={mouthOpenness}
-              onPressIn={() => {
-                void handleLiveOrbPressIn();
-              }}
-              onPressOut={() => {
-                void handleLiveOrbPressOut();
-              }}
-              size={assistantHeroSize}
-            />
+            <Animated.View style={voiceHeroMorphStyle}>
+              <Orb
+                listening={listening && activeSurface === "live"}
+                state={assistantCharacterState}
+                emotion={assistantCharacterEmotion}
+                mouthOpenness={mouthOpenness}
+                onPressIn={() => {
+                  void handleLiveOrbPressIn();
+                }}
+                onPressOut={() => {
+                  void handleLiveOrbPressOut();
+                }}
+                size={assistantHeroSize}
+              />
+            </Animated.View>
 
             <Text style={styles.voiceTitle}>
               {recordingStopping && activeSurface === "live"
@@ -4672,8 +4752,8 @@ export default function Home() {
                 onPress={() => {
                   void simulateE2eHandsFreeStop();
                 }}
-                testID="e2e-hands-free-stop-button"
-                accessibilityLabel="e2e-hands-free-stop-button"
+                testID="e2e-hands-free-stop-inline-button"
+                accessibilityLabel="e2e-hands-free-stop-inline-button"
                 accessibilityRole="button"
                 style={styles.e2eHandsFreeButton}
               >
@@ -4705,7 +4785,7 @@ export default function Home() {
                 styles.e2eHandsFreeButton,
                 styles.e2eHandsFreeVoiceButton,
                 {
-                  top: topPadding,
+                  top: topPadding + 46,
                   right: horizontalPadding,
                 },
               ]}
@@ -4874,6 +4954,13 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
+  },
+
+  e2eVoiceTopControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    zIndex: 30,
   },
 
   e2eHandsFreeVoiceButton: {

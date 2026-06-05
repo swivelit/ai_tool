@@ -5,32 +5,30 @@ the user is talking (see `mobile/lib/backchannel.ts`). They are the spoken nods
 a human makes — "aaha", "hmm", "mm-hmm" — emitted on a randomized ~3–7s cadence
 and stopped the instant the user stops speaking or the assistant starts talking.
 
-## Placeholder status
+## Current clips
 
-The app currently uses tiny synthetic WAV data-URI placeholders in
-`mobile/lib/backchannel.ts`, not checked-in human recordings. This avoids Metro
-missing-asset failures while keeping the controller active. Replace those
-placeholders with real, short acknowledgement recordings before shipping this as
-production audio.
+This folder includes short synthetic WAV clips so the app has real bundled
+assets and Metro never sees missing audio files. They are intentionally quiet and
+under about 300ms. Replace them with real, natural acknowledgement recordings
+before shipping this as production audio.
 
-## Suggested files if replacing placeholders
+## Bundled files
 
-| Cue       | File         |
+| Cue       | Bundled file |
 | --------- | ------------ |
-| `aaha`    | `aaha.mp3`   |
-| `hmm`     | `hmm.mp3`    |
-| `mm-hmm`  | `mmhmm.mp3`  |
+| `aaha`    | `aaha.wav`   |
+| `hmm`     | `hmm.wav`    |
+| `mm-hmm`  | `mm-hmm.wav` |
 
-After adding real files, either pass them through
-`createBackchannelController({ clips: { aaha: require(...) } })` or update
-`defaultClipSources()` in `mobile/lib/backchannel.ts` to point at them.
+The cue map lives in `clips.ts` and is passed through
+`createBackchannelController({ clips: BACKCHANNEL_CLIPS })`.
 
 ## Recording guidance
 
-- Keep each clip **short** (≈0.4–1.2s) and **quiet** — these should sit under
+- Keep each clip **short** (roughly 0.2–0.4s) and **quiet** — these should sit under
   the user's voice, not interrupt it. Playback volume is further attenuated in
   `createBackchannelController` (`volume` option, default `0.65`).
-- Mono, 44.1kHz MP3 is plenty. Trim leading/trailing silence so the cue fires
+- Mono WAV or MP3 is plenty. Trim leading/trailing silence so the cue fires
   promptly.
 - Record a few natural variants if you like and extend the `clips` map / cue
   list in `lib/backchannel.ts`.
@@ -39,5 +37,5 @@ After adding real files, either pass them through
 
 `createBackchannelController()` resolves these files lazily (only when a cue
 actually plays), so the pure scheduling logic in `backchannel.ts` stays unit
-testable in node. To point at different assets without touching the defaults,
-pass `clips` into `createBackchannelController({ clips: { aaha: require(...) } })`.
+testable in node. `mobile/lib/backchannel.ts` still has data-URI fallbacks for
+tests or experiments that construct a controller without bundled clips.

@@ -1,6 +1,13 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { computeChatScreenLayout } from "../lib/chatScreenLayout";
+
+const chatSource = fs.readFileSync(
+  path.join(__dirname, "..", "app", "(chat)", "index.tsx"),
+  "utf8",
+);
 
 describe("chat screen layout", () => {
   it("keeps the composer above the Android keyboard on small screens", () => {
@@ -110,5 +117,14 @@ describe("chat screen layout", () => {
     });
 
     expect(layout.contentMaxWidth).toBe(560);
+  });
+
+  it("morphs the assistant between the voice hero and floating chat anchor", () => {
+    expect(chatSource).toContain("const morphTranslateX = Math.min(contentMaxWidth");
+    expect(chatSource).toContain("const morphTranslateY = Math.min(height");
+    expect(chatSource).toContain("floatingAssistantProgress.interpolate");
+    expect(chatSource).toContain("const voiceHeroMorphStyle");
+    expect(chatSource).toContain("<Animated.View style={voiceHeroMorphStyle}>");
+    expect(chatSource).toContain("accessibilityHidden");
   });
 });

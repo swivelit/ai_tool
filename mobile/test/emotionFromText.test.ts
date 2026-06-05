@@ -20,4 +20,14 @@ describe("emotionFromText", () => {
   it("detects thinking or uncertain replies", () => {
     expect(emotionFromText("Let me think. It depends on your schedule?")).toBe("thinking");
   });
+
+  it("detects surprised replies from words, emoji, and punctuation", () => {
+    expect(emotionFromText("Wow, I did not expect that?!")).toBe("surprised");
+    expect(emotionFromText("That is new 🤯")).toBe("surprised");
+  });
+
+  it("detects sad replies separately from warnings or errors", () => {
+    expect(emotionFromText("That sounds hard. I am sad this happened.")).toBe("sad");
+    expect(emotionFromText("Warning: that failed, sorry.")).toBe("concerned");
+  });
 });

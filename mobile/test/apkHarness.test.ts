@@ -73,6 +73,7 @@ describe("APK test harness", () => {
     const chatSource = readMobile("app/(chat)/index.tsx");
 
     expect(source).toContain('"hello" "what can you do" "tell me about solo leveling"');
+    expect(source).toContain('text="tell me about solo');
     expect(source).toContain("wait_for_chat_input_cleared");
     expect(source).toContain("message-not-submitted");
     expect(source).toContain("first-message-not-visible-after-second");
@@ -173,6 +174,9 @@ describe("APK test harness", () => {
     expect(source).toContain("./test_apk.sh");
     expect(source).toContain('METRO_LOG="$DIST_DIR/launch-debug-metro-${METRO_PORT}.log"');
     expect(source).toContain("stop_old_metro");
+    expect(source).toContain("reset_metro_reverse");
+    expect(source).toContain('for port in "$METRO_PORT" 8081 8082');
+    expect(source).toContain('adb reverse --remove "tcp:${port}"');
     expect(source).toContain('adb shell am force-stop "$PACKAGE_NAME"');
     expect(source).toContain('adb shell pm clear "$PACKAGE_NAME"');
     expect(source).toContain('app-pid-during-voice-test.log');
@@ -257,7 +261,14 @@ describe("APK test harness", () => {
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_GENERAL_CHAT=");
       expect(source).toContain("EXPO_PUBLIC_ENABLE_UNVERIFIED_NATIVE_EMBEDDINGS=");
       expect(source).toContain("npx expo start --dev-client");
+      expect(source).toContain("reset_metro_reverse");
+      expect(source).toContain('for port in "$METRO_PORT" 8081 8082');
+      expect(source).toContain('adb reverse --remove "tcp:${port}"');
+      expect(source).toContain('adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}"');
     }
+    expect(testApk).toContain(
+      'collect_cmd "force-stop-before-launch" adb shell am force-stop "$PACKAGE_NAME"',
+    );
   });
 
   it("sets each APK language before starting Metro for that scenario", () => {
@@ -315,6 +326,8 @@ describe("APK test harness", () => {
     expect(source).toContain('end_x=$((width * 80 / 100))');
     expect(source).toContain("swipe-chat-to-voice");
     expect(source).toContain("e2e-open-voice-button");
+    expect(source).toContain("e2e-close-voice-button");
+    expect(source).toContain("tap_e2e_voice_close_fallback");
     expect(source).toContain("voice_assistant_center_from_window");
     expect(source).toContain("strict voice telemetry markers were used");
     expect(source).toContain("voice-swipe-right-close");
@@ -389,6 +402,8 @@ describe("APK test harness", () => {
     expect(source).toContain("en-IN");
     expect(source).toContain("ta-IN");
     expect(source).toContain("local_tamil");
+    expect(source).toContain("requested_reply_language['\\\": ]+['\\\"]?");
+    expect(source).toContain("target_language_code['\\\": ]+['\\\"]?");
     expect(source).toContain("client_voice_reply_tts_failed");
     expect(source).toContain("client_voice_reply_playback_failed");
   });
@@ -413,11 +428,16 @@ describe("APK test harness", () => {
     expect(source).toContain("width * 72 / 100");
     expect(source).toContain("width * 50 / 100");
     expect(source).toContain("scan_hands_free_reply_markers");
+    expect(source).toContain("normalized=");
+    expect(source).toContain("tr -d");
+    expect(source).toContain('recent="$(cat "$log_file"');
     expect(source).toContain("onCommandAudio");
     expect(source).toContain("/api/transcribe-and-analyze");
     expect(source).toContain("client_source");
+    expect(source).toContain("client_source[[:space:]:]+handsfree");
     expect(source).toContain("client_voice_upload_started");
     expect(source).toContain("client_voice_upload_completed");
+    expect(source).toContain("requested_reply_language[[:space:]:]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}");
     expect(source).toContain("hands-free-before");
     expect(source).toContain("hands-free-after-reply");
     expect(source).toContain("hands-free-after-stop");
@@ -449,6 +469,10 @@ describe("APK test harness", () => {
     expect(testApk).toContain("final-dumpsys-meminfo");
     expect(testApk).toContain("adb-reverse-list");
     expect(testApk).toContain("metro-status-before-launch");
+    expect(testApk).toContain("APK_COLLECT_TIMEOUT_SECONDS");
+    expect(testApk).toContain("run_collect_with_timeout");
+    expect(testApk).toContain("gtimeout");
+    expect(testApk).toContain("perl -e 'alarm shift; exec @ARGV'");
   });
 
   it("dismisses only external System UI ANR overlays without hiding app crashes", () => {

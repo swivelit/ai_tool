@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,6 +10,13 @@ import {
   pickCue,
   randomGapMs,
 } from "../lib/backchannel";
+
+const audioDir = path.join(__dirname, "..", "assets", "audio", "backchannel");
+const clipsSource = fs.readFileSync(path.join(audioDir, "clips.ts"), "utf8");
+const chatSource = fs.readFileSync(
+  path.join(__dirname, "..", "app", "(chat)", "index.tsx"),
+  "utf8",
+);
 
 describe("backchannel scheduling", () => {
   it("picks cue gaps inside the configured range", () => {
@@ -72,5 +81,32 @@ describe("backchannel scheduling", () => {
 
     controller.setListening(false);
     await controller.dispose();
+  });
+
+  it("ships real bundled WAV clips and exports a cue map", () => {
+    for (const fileName of ["aaha.wav", "hmm.wav", "mm-hmm.wav"]) {
+      const clip = fs.readFileSync(path.join(audioDir, fileName));
+      const dataBytes = clip.readUInt32LE(40);
+      const sampleRate = clip.readUInt32LE(24);
+      const bytesPerSecond = clip.readUInt32LE(28);
+      const durationMs = (dataBytes / bytesPerSecond) * 1000;
+
+      expect(clip.subarray(0, 4).toString("ascii")).toBe("RIFF");
+      expect(clip.subarray(8, 12).toString("ascii")).toBe("WAVE");
+      expect(sampleRate).toBeGreaterThanOrEqual(16000);
+      expect(durationMs).toBeGreaterThan(80);
+      expect(durationMs).toBeLessThan(320);
+    }
+
+    expect(clipsSource).toContain('aaha: require("./aaha.wav")');
+    expect(clipsSource).toContain('hmm: require("./hmm.wav")');
+    expect(clipsSource).toContain('"mm-hmm": require("./mm-hmm.wav")');
+  });
+
+  it("passes bundled clips into the chat screen controller", () => {
+    expect(chatSource).toContain('import { BACKCHANNEL_CLIPS } from "@/assets/audio/backchannel/clips"');
+    expect(chatSource).toContain("clips: BACKCHANNEL_CLIPS");
+    expect(chatSource).toContain("setTtsActive(replyAudioPlaying)");
+    expect(chatSource).toContain("setListening(backchannelListeningActive)");
   });
 });

@@ -22,6 +22,17 @@ describe("viseme scheduler", () => {
     );
   });
 
+  it("produces multiple distinct lip positions during a short spoken reply", () => {
+    const values = [0, 80, 160, 240, 320, 400].map((positionMillis) =>
+      nextMouthOpenness({ isPlaying: true, positionMillis }),
+    );
+    const distinct = new Set(values.map((value) => value.toFixed(3)));
+
+    expect(Math.min(...values)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...values)).toBeLessThanOrEqual(1);
+    expect(distinct.size).toBeGreaterThanOrEqual(3);
+  });
+
   it("handles invalid playback positions", () => {
     expect(nextMouthOpenness({ isPlaying: true, positionMillis: Number.NaN })).toBeGreaterThanOrEqual(0);
   });
