@@ -19,6 +19,24 @@ GOOGLE_APPLICATION_CREDENTIALS=
 DOWNLOAD_TOKEN_SECRET=
 ```
 
+Email OTP signup and password reset use SMTP from the backend only:
+
+```bash
+EMAIL_USER=<smtp username>
+EMAIL_PASS=<smtp password or app password>
+EMAIL_FROM=<optional sender address>
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+EMAIL_OTP_SECRET=<long random secret>
+EMAIL_OTP_TTL_SECONDS=600
+EMAIL_OTP_COOLDOWN_SECONDS=60
+EMAIL_OTP_MAX_ATTEMPTS=5
+EMAIL_OTP_DEV_RETURN_CODE=false
+```
+
+For Gmail, `EMAIL_PASS` must be a Gmail app password. Do not use your normal Google account password.
+
 For Postgres URLs, use the SQLAlchemy psycopg 3 driver form:
 
 ```bash

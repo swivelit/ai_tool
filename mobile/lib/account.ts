@@ -25,7 +25,7 @@ export type UserProfile = {
   assistantName?: string;
   email?: string;
   avatarUrl?: string;
-  authProvider?: "password" | "google";
+  authProvider?: "password" | "email_otp" | "google";
   questionnaireCompleted?: boolean;
   replyLanguage?: "en" | "ta";
   profileSummary?: string;

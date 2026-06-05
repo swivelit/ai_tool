@@ -27,12 +27,7 @@ function emailLooksValid(value: string) {
 }
 
 export default function LoginScreen() {
-  const {
-    signInWithPassword,
-    signInWithGoogle,
-    googleConfigured,
-    googleReady,
-  } = useAuth();
+  const { signInWithPassword } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -82,20 +77,6 @@ export default function LoginScreen() {
     }
   }
 
-  async function handleGoogle() {
-    try {
-      setBusy(true);
-      setErrorText("");
-      await signInWithGoogle();
-    } catch (error: unknown) {
-      setErrorText(
-        error instanceof Error ? error.message : "Google sign-in failed."
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
       <StatusBar style="light" />
@@ -133,17 +114,6 @@ export default function LoginScreen() {
               maxWidth: contentMaxWidth,
             }}
           >
-            <Pressable
-              onPress={() => router.replace("/auth/login")}
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Ionicons name="chevron-back" size={18} color={Brand.cocoa} />
-              <Text style={styles.backButtonText}>Back</Text>
-            </Pressable>
-
             <View style={styles.headerBlock}>
             </View>
 
@@ -245,6 +215,18 @@ export default function LoginScreen() {
               </View>
 
               <Pressable
+                onPress={() => router.push("/auth/forgot-password" as any)}
+                testID="forgot-password-link"
+                accessibilityLabel="forgot-password-link"
+                style={({ pressed }) => [
+                  styles.forgotPasswordLink,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.forgotPasswordText}>Forgot password?</Text>
+              </Pressable>
+
+              <Pressable
                 onPress={handleLogin}
                 disabled={!canSubmit}
                 testID="login-submit-button"
@@ -275,36 +257,6 @@ export default function LoginScreen() {
                   )}
                 </LinearGradient>
               </Pressable>
-
-              <View style={styles.dividerRow}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>or continue with</Text>
-                <View style={styles.dividerLine} />
-              </View>
-
-              <Pressable
-                onPress={handleGoogle}
-                disabled={busy || !googleReady || !googleConfigured}
-                style={({ pressed }) => [
-                  styles.googleButton,
-                  pressed && styles.pressed,
-                  (busy || !googleReady || !googleConfigured) &&
-                    styles.disabled,
-                  { minHeight: buttonHeight },
-                ]}
-              >
-                <Ionicons name="logo-google" size={18} color={Brand.ink} />
-                <Text style={styles.googleButtonText}>
-                  Continue with Google
-                </Text>
-              </Pressable>
-
-              {!googleConfigured ? (
-                <Text style={styles.helperText}>
-                  Add your EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID in your env file
-                  to enable Google sign-in.
-                </Text>
-              ) : null}
 
               <View style={styles.footerRow}>
                 <Text style={styles.footerCopy}>Don’t have an account yet?</Text>
@@ -522,6 +474,19 @@ const styles = StyleSheet.create({
     width: 46,
     alignItems: "center",
     justifyContent: "center",
+  },
+
+  forgotPasswordLink: {
+    alignSelf: "flex-end",
+    marginTop: 12,
+    minHeight: 34,
+    justifyContent: "center",
+  },
+
+  forgotPasswordText: {
+    color: Brand.cocoa,
+    fontSize: 13,
+    fontWeight: "900",
   },
 
   buttonShell: {

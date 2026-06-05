@@ -169,18 +169,13 @@ export default function QuestionnaireScreen() {
           if (existing?.userId) {
             nextUserId = existing.userId;
           } else {
-            const provider =
-              user.providerData?.some((item) => item.providerId === "google.com")
-                ? "google"
-                : "password";
-
             const rebuilt = await createProfileOnBackend({
               userId: undefined,
               firebaseUid: user.uid,
               firebaseEmailVerified: user.emailVerified,
               email: user.email || "",
               avatarUrl: user.photoURL || undefined,
-              authProvider: provider,
+              authProvider: "password",
               name: profile?.name || user.displayName || "User",
               place: profile?.place || "",
               assistantName: profile?.assistantName || assistantName || "Elli",

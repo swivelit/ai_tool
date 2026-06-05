@@ -55,14 +55,8 @@ export default function ProfileScreen() {
   const bottomPadding = Math.max(insets.bottom + 24, 24);
   const maxFormWidth = Math.min(width - horizontalPadding * 2, 560);
 
-  const provider = useMemo(() => {
-    if (user?.providerData?.some((item) => item.providerId === "google.com")) {
-      return "google" as const;
-    }
-    return "password" as const;
-  }, [user?.providerData]);
-
-  const providerLabel = provider === "google" ? "Google sign-in" : "Email & password";
+  const provider = "password" as const;
+  const providerLabel = user?.emailVerified ? "Email verified" : "Email & password";
   const profileCompletion = useMemo(() => {
     let score = 25;
     if (name.trim()) score += 25;
@@ -274,7 +268,7 @@ export default function ProfileScreen() {
                 <ReadonlyInfoCard
                   label="Sign-in"
                   value={providerLabel}
-                  icon={provider === "google" ? "logo-google" : "key-outline"}
+                  icon={user?.emailVerified ? "shield-checkmark-outline" : "key-outline"}
                 />
                 <ReadonlyInfoCard
                   label="Timezone"

@@ -85,8 +85,17 @@ describe("syncProfileForAuthenticatedUser", () => {
     );
   });
 
-  it("sends a new Google user to profile onboarding when no backend profile exists", async () => {
+  it("does not treat legacy Google provider data specially for new profile creation", async () => {
     restoreProfileForFirebaseUidMock.mockResolvedValueOnce({ status: "not_found" });
+    createProfileOnBackendMock.mockResolvedValueOnce({
+      userId: 9,
+      firebaseUid: "uid-google",
+      email: "g@example.com",
+      name: "g",
+      assistantName: "Elli",
+      timezone: "Asia/Kolkata",
+      questionnaireCompleted: false,
+    });
 
     const { syncProfileForAuthenticatedUser } = await import("../lib/profileSync");
     const result = await syncProfileForAuthenticatedUser({
@@ -95,8 +104,13 @@ describe("syncProfileForAuthenticatedUser", () => {
       providerData: [{ providerId: "google.com" }],
     });
 
-    expect(result.status).toBe("not_found");
-    expect(createProfileOnBackendMock).not.toHaveBeenCalled();
+    expect(result.status).toBe("ok");
+    expect(createProfileOnBackendMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authProvider: "password",
+        firebaseUid: "uid-google",
+      }),
+    );
   });
 
   it("does not let stale backend Tamil overwrite a locally changed English setting", async () => {

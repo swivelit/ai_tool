@@ -37,11 +37,7 @@ export type ProfileSyncResult =
 
 export function detectAuthProvider(
   user: AuthenticatedProfileUser
-): "password" | "google" {
-  if (user.providerData?.some((item) => item.providerId === "google.com")) {
-    return "google";
-  }
-
+): "password" | "email_otp" {
   return "password";
 }
 
@@ -105,10 +101,6 @@ export async function syncProfileForAuthenticatedUser(
   const restored = await restoreProfileForFirebaseUid(authUser.uid, authUser.email);
 
   if (restored.status === "not_found") {
-    if (provider === "google") {
-      return { status: "not_found" };
-    }
-
     try {
       const createdProfile = await createProfileOnBackend({
         userId: undefined,

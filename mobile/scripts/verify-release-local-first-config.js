@@ -255,12 +255,6 @@ function verifyPublicEnvNameTypos() {
     `Mistyped variable name(s): ${typoNames.join(', ')}`,
   ];
 
-  if (typoNames.includes('EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID')) {
-    details.push(
-      'EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID is likely a typo for EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID.',
-    );
-  }
-
   fail(
     'Found environment variables starting with EEXPO_PUBLIC_. Use EXPO_PUBLIC_ instead.',
     details.join('\n'),

@@ -5,30 +5,24 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Platform } from "react-native";
-import Constants from "expo-constants";
 import {
-  AuthCredential,
   EmailAuthProvider,
-  GoogleAuthProvider,
   User,
-  createUserWithEmailAndPassword,
   deleteUser,
   linkWithCredential,
   onAuthStateChanged,
-  signInWithCredential,
   signInWithEmailAndPassword,
   signOut,
   updateProfile,
 } from "firebase/auth";
-import {
-  GoogleSignin,
-  isErrorWithCode,
-  isSuccessResponse,
-  statusCodes,
-} from "@react-native-google-signin/google-signin";
 
 import { auth, firebaseConfigStatus } from "@/lib/firebase";
+import {
+  completeSignupWithOtp as completeSignupWithOtpRequest,
+  confirmPasswordResetOtp as confirmPasswordResetOtpRequest,
+  requestPasswordResetOtp as requestPasswordResetOtpRequest,
+  requestSignupOtp as requestSignupOtpRequest,
+} from "@/lib/authOtp";
 import {
   clearProfile,
   getProfile,
@@ -47,18 +41,6 @@ import {
 } from "@/lib/profileSync";
 import { clearAssistantStorage } from "@/lib/storage";
 import { clearLocalAgentDataForUser } from "@/lib/localAgents";
-
-const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | undefined>;
-
-const googleWebClientId =
-  extra.googleWebClientId || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
-
-type PendingGoogleLink = {
-  email?: string;
-  credential: AuthCredential;
-};
-
-let pendingGoogleLink: PendingGoogleLink | null = null;
 
 function normalizeEmail(email?: string | null) {
   const value = (email || "").trim().toLowerCase();
@@ -83,9 +65,6 @@ function mapFirebaseError(error: any) {
     case "auth/email-already-in-use":
       return "This email is already registered. Please log in instead.";
 
-    case "auth/account-exists-with-different-credential":
-      return "This email is already linked to a different sign-in method. Please use the original login method for this account.";
-
     case "auth/provider-already-linked":
       return "This sign-in method is already linked to your account.";
 
@@ -107,30 +86,6 @@ function mapFirebaseError(error: any) {
     default:
       return message || "Authentication failed. Please try again.";
   }
-}
-
-function mapGoogleError(error: any) {
-  if (isErrorWithCode(error)) {
-    switch (error.code) {
-      case statusCodes.IN_PROGRESS:
-        return "Google sign-in is already in progress.";
-
-      case statusCodes.PLAY_SERVICES_NOT_AVAILABLE:
-        return "Google Play Services is missing or outdated on this device.";
-    }
-  }
-
-  const message = typeof error?.message === "string" ? error.message : "";
-
-  if (/developer_error/i.test(message)) {
-    return "Google configuration mismatch. Check the package name, SHA-1 fingerprint, Web client ID, and google-services.json.";
-  }
-
-  if (/cancelled/i.test(message) || /canceled/i.test(message)) {
-    return "Google sign-in was cancelled.";
-  }
-
-  return message || "Google sign-in failed. Please try again.";
 }
 
 function requireConfiguredAuth() {
@@ -159,13 +114,17 @@ type ProfileSyncIssue = {
 type AuthContextType = {
   user: User | null;
   loading: boolean;
-  googleReady: boolean;
-  googleConfigured: boolean;
   passwordLinked: boolean;
-  googleLinked: boolean;
   signInWithPassword: (email: string, password: string) => Promise<void>;
-  signUpWithPassword: (name: string, email: string, password: string) => Promise<void>;
-  signInWithGoogle: () => Promise<void>;
+  requestSignupOtp: (email: string, name?: string) => Promise<{ cooldown_seconds?: number; message?: string }>;
+  completeSignupWithOtp: (
+    name: string,
+    email: string,
+    password: string,
+    otp: string
+  ) => Promise<void>;
+  requestPasswordResetOtp: (email: string) => Promise<{ cooldown_seconds?: number; message?: string }>;
+  confirmPasswordResetOtp: (email: string, otp: string, newPassword: string) => Promise<void>;
   linkPasswordForCurrentUser: (password: string, displayName?: string) => Promise<void>;
   signOutUser: () => Promise<void>;
   deleteCurrentAccount: (backendUserId?: number) => Promise<void>;
@@ -183,38 +142,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const [firebaseUser, setFirebaseUser] = useState<User | null>(e2eUser);
   const [loading, setLoading] = useState(!e2eMockAuth);
-  const [googleReady, setGoogleReady] = useState(false);
   const [locallySignedOut, setLocallySignedOut] = useState(false);
   const [profileSyncIssue, setProfileSyncIssue] = useState<ProfileSyncIssue | null>(null);
   const blockAuthRestoreRef = useRef(false);
   const lastAuthUserRef = useRef<User | null>(null);
 
-  const googleConfigured = Platform.OS !== "web" && Boolean(googleWebClientId);
   const user = locallySignedOut ? null : firebaseUser;
-
-  useEffect(() => {
-    if (e2eMockAuth) {
-      setGoogleReady(false);
-      return;
-    }
-
-    if (Platform.OS === "web") {
-      setGoogleReady(false);
-      return;
-    }
-
-    if (!googleWebClientId) {
-      setGoogleReady(false);
-      return;
-    }
-
-    GoogleSignin.configure({
-      webClientId: googleWebClientId,
-      scopes: ["email", "profile"],
-    });
-
-    setGoogleReady(true);
-  }, [e2eMockAuth]);
 
   useEffect(() => {
     if (e2eMockAuth) {
@@ -362,37 +295,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setProfileSyncIssue(null);
   }
 
-  async function tryLinkPendingGoogleCredential(authUser: User) {
-    const configuredAuth = requireConfiguredAuth();
-    const pending = pendingGoogleLink;
-    if (!pending?.credential) {
-      return authUser;
-    }
-
-    const currentEmail = normalizeEmail(authUser.email);
-    if (pending.email && currentEmail && pending.email !== currentEmail) {
-      return authUser;
-    }
-
-    try {
-      await linkWithCredential(authUser, pending.credential);
-    } catch (error: any) {
-      const code = error?.code || "";
-
-      if (
-        code !== "auth/provider-already-linked" &&
-        code !== "auth/credential-already-in-use" &&
-        code !== "auth/email-already-in-use"
-      ) {
-        console.warn("[auth] Failed to auto-link pending Google credential.");
-      }
-    } finally {
-      pendingGoogleLink = null;
-    }
-
-    return configuredAuth.currentUser || authUser;
-  }
-
   async function signInWithPassword(email: string, password: string) {
     if (e2eMockAuth) {
       setFirebaseUser(e2eUser);
@@ -410,8 +312,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         normalizedEmail,
         password
       );
-      const maybeLinkedUser = await tryLinkPendingGoogleCredential(credential.user);
-      await finalizeAuthenticatedUser(maybeLinkedUser);
+      await finalizeAuthenticatedUser(credential.user);
     } catch (error) {
       throw new Error(mapFirebaseError(error));
     }
@@ -466,7 +367,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function signUpWithPassword(name: string, email: string, password: string) {
+  async function requestSignupOtp(email: string, name?: string) {
+    if (e2eMockAuth) {
+      return { cooldown_seconds: 60, message: "OTP sent. Check your email." };
+    }
+
+    return requestSignupOtpRequest(email, name);
+  }
+
+  async function completeSignupWithOtp(
+    name: string,
+    email: string,
+    password: string,
+    otp: string
+  ) {
     if (e2eMockAuth) {
       setFirebaseUser(e2eUser);
       setLocallySignedOut(false);
@@ -474,153 +388,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const normalizedEmail = email.trim();
-
     try {
+      await completeSignupWithOtpRequest(name, email, password, otp);
       const configuredAuth = requireConfiguredAuth();
-      const currentUser = configuredAuth.currentUser;
-      const currentUserEmail = normalizeEmail(currentUser?.email);
-
-      if (currentUser && currentUserEmail && currentUserEmail === normalizeEmail(normalizedEmail)) {
-        await linkPasswordForCurrentUser(password, name.trim());
-        return;
-      }
-
-      const credential = await createUserWithEmailAndPassword(
+      const credential = await signInWithEmailAndPassword(
         configuredAuth,
-        normalizedEmail,
+        email.trim(),
         password
       );
-
-      if (name.trim()) {
+      if (name.trim() && !credential.user.displayName) {
         await updateProfile(credential.user, { displayName: name.trim() });
       }
-
-      const maybeLinkedUser = await tryLinkPendingGoogleCredential(
-        configuredAuth.currentUser || credential.user
-      );
-      await finalizeAuthenticatedUser(maybeLinkedUser);
-    } catch (error: any) {
-      if (
-        error?.code === "auth/email-already-in-use" &&
-        pendingGoogleLink?.email &&
-        pendingGoogleLink.email === normalizeEmail(normalizedEmail)
-      ) {
-        try {
-          const existingCredential = await signInWithEmailAndPassword(
-            requireConfiguredAuth(),
-            normalizedEmail,
-            password
-          );
-
-          if (name.trim() && !existingCredential.user.displayName) {
-            await updateProfile(existingCredential.user, { displayName: name.trim() });
-          }
-
-          const maybeLinkedUser = await tryLinkPendingGoogleCredential(existingCredential.user);
-          await finalizeAuthenticatedUser(maybeLinkedUser);
-          return;
-        } catch (linkError) {
-          throw new Error(mapFirebaseError(linkError));
-        }
-      }
-
-      throw new Error(mapFirebaseError(error));
+      await finalizeAuthenticatedUser(configuredAuth.currentUser || credential.user);
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : "Account creation failed.");
     }
   }
 
-  async function signInWithGoogle() {
+  async function requestPasswordResetOtp(email: string) {
     if (e2eMockAuth) {
-      setFirebaseUser(e2eUser);
-      setLocallySignedOut(false);
-      setLoading(false);
+      return {
+        cooldown_seconds: 60,
+        message: "If an account exists for this email, we sent a reset code.",
+      };
+    }
+    return requestPasswordResetOtpRequest(email);
+  }
+
+  async function confirmPasswordResetOtp(
+    email: string,
+    otp: string,
+    newPassword: string
+  ) {
+    if (e2eMockAuth) {
       return;
     }
-
-    if (Platform.OS === "web") {
-      throw new Error("Google sign-in is currently enabled only for Android/iOS builds.");
-    }
-
-    if (!googleWebClientId) {
-      throw new Error("Missing EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID in your .env file.");
-    }
-
-    if (!googleReady) {
-      throw new Error("Google sign-in is still preparing. Please try again.");
-    }
-
-    let googleEmail: string | undefined;
-    let googleCredential: AuthCredential | null = null;
-
-    try {
-      const configuredAuth = requireConfiguredAuth();
-
-      await GoogleSignin.hasPlayServices({
-        showPlayServicesUpdateDialog: true,
-      });
-
-      const result = await GoogleSignin.signIn();
-
-      if (!isSuccessResponse(result)) {
-        return;
-      }
-
-      const idToken = result.data.idToken;
-      googleEmail = normalizeEmail(result.data.user?.email);
-
-      if (!idToken) {
-        throw new Error(
-          "Google sign-in did not return an ID token. Check your Web client ID and google-services.json setup."
-        );
-      }
-
-      googleCredential = GoogleAuthProvider.credential(idToken);
-
-      const currentUser = configuredAuth.currentUser;
-      const currentEmail = normalizeEmail(currentUser?.email);
-
-      if (currentUser && currentEmail && googleEmail && currentEmail === googleEmail) {
-        try {
-          await linkWithCredential(currentUser, googleCredential);
-        } catch (error: any) {
-          const code = error?.code || "";
-
-          if (
-            code !== "auth/provider-already-linked" &&
-            code !== "auth/credential-already-in-use"
-          ) {
-            throw error;
-          }
-        }
-
-        pendingGoogleLink = null;
-        await finalizeAuthenticatedUser(configuredAuth.currentUser || currentUser);
-        return;
-      }
-
-      const userCredential = await signInWithCredential(configuredAuth, googleCredential);
-      pendingGoogleLink = null;
-      await finalizeAuthenticatedUser(userCredential.user);
-    } catch (error: any) {
-      if (error?.code === "auth/account-exists-with-different-credential" && googleCredential) {
-        pendingGoogleLink = {
-          email: normalizeEmail(error?.customData?.email) || googleEmail,
-          credential: googleCredential,
-        };
-
-        throw new Error(
-          "This Google email is already registered with email/password. Log in once with email/password using the same email and Google will be linked automatically."
-        );
-      }
-
-      const message = mapGoogleError(error);
-
-      if (message === "Google sign-in was cancelled.") {
-        return;
-      }
-
-      throw new Error(message);
-    }
+    await confirmPasswordResetOtpRequest(email, otp, newPassword);
   }
 
   async function clearCachedSensitiveData(backendUserId?: number) {
@@ -634,7 +437,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function primeLocalSignedOutState(backendUserId?: number) {
     await clearCachedSensitiveData(backendUserId);
-    pendingGoogleLink = null;
     blockAuthRestoreRef.current = true;
     setLocallySignedOut(true);
     setProfileSyncIssue(null);
@@ -642,27 +444,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await Promise.all([clearProfile(), clearAssistantStorage()]);
   }
 
-  async function cleanupGoogleSdk(options?: { revokeGoogleAccess?: boolean }) {
-    if (Platform.OS === "web") {
-      return;
-    }
-
-    if (options?.revokeGoogleAccess) {
-      try {
-        await GoogleSignin.revokeAccess();
-      } catch {
-        // Ignore revoke errors.
-      }
-    }
-
-    try {
-      await GoogleSignin.signOut();
-    } catch {
-      // Ignore Google SDK sign-out errors.
-    }
-  }
-
-  async function clearLocalSession(options?: { revokeGoogleAccess?: boolean }) {
+  async function clearLocalSession() {
     if (e2eMockAuth) {
       await primeLocalSignedOutState();
       setFirebaseUser(null);
@@ -680,7 +462,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Ignore Firebase sign-out errors during forced local cleanup.
     }
 
-    await cleanupGoogleSdk(options);
   }
 
   async function signOutUser() {
@@ -707,7 +488,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       currentUser.email
     );
     const resolvedBackendUserId = backendUserId || restoredProfile?.userId;
-    const shouldCleanupGoogleSdk = hasProvider(currentUser, "google.com");
 
     try {
       if (resolvedBackendUserId) {
@@ -742,19 +522,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Ignore sign-out errors after account deletion attempts.
     }
 
-    await cleanupGoogleSdk({ revokeGoogleAccess: shouldCleanupGoogleSdk });
   }
 
   const value: AuthContextType = {
     user,
     loading,
-    googleReady,
-    googleConfigured,
     passwordLinked: hasProvider(user, "password"),
-    googleLinked: hasProvider(user, "google.com"),
     signInWithPassword,
-    signUpWithPassword,
-    signInWithGoogle,
+    requestSignupOtp,
+    completeSignupWithOtp,
+    requestPasswordResetOtp,
+    confirmPasswordResetOtp,
     linkPasswordForCurrentUser,
     signOutUser,
     deleteCurrentAccount,

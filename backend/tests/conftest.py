@@ -44,7 +44,7 @@ from sqlmodel import SQLModel, delete
 
 from app.database import SessionLocal, engine
 from app.main import app, _get_job_queue
-from app.models import AIUsageEvent, AgentRun, AgentStep, Conversation, DailyRoutine, DocumentArtifact, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
+from app.models import AIUsageEvent, AgentRun, AgentStep, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
 
 
 def auth_headers(uid: str, email: str | None = None) -> dict[str, str]:
@@ -74,13 +74,13 @@ def clean_db():
     queue = _get_job_queue()
     queue.stop()
     with SessionLocal() as session:
-        for model in [AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User]:
+        for model in [AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User, EmailOtpCode]:
             session.exec(delete(model))
         session.commit()
     yield
     queue.stop()
     with SessionLocal() as session:
-        for model in [AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User]:
+        for model in [AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User, EmailOtpCode]:
             session.exec(delete(model))
         session.commit()
 

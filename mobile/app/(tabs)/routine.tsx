@@ -100,7 +100,6 @@ export default function RoutineScreen() {
     deleteCurrentAccount,
     linkPasswordForCurrentUser,
     passwordLinked,
-    googleLinked,
   } = useAuth();
 
   const {
@@ -155,11 +154,10 @@ export default function RoutineScreen() {
   );
 
   const signInMethods = useMemo(() => {
-    const methods: string[] = [];
-    if (googleLinked) methods.push("Google");
-    if (passwordLinked) methods.push("Email/password");
-    return methods.length ? methods.join(", ") : "Not linked";
-  }, [googleLinked, passwordLinked]);
+    if (user?.emailVerified) return "Email verified";
+    if (passwordLinked) return "Email sign-in";
+    return "Password not linked";
+  }, [passwordLinked, user?.emailVerified]);
 
   const targetUserId =
     resolvedUserId || userId || profile?.userId || resolvedProfile?.userId || null;
@@ -602,14 +600,9 @@ export default function RoutineScreen() {
 
             <View style={styles.inlineStatusRow}>
               <StatusChip
-                icon="logo-google"
-                label={googleLinked ? "Google linked" : "Google not linked"}
-                positive={googleLinked}
-              />
-              <StatusChip
-                icon="mail-outline"
-                label={passwordLinked ? "Password linked" : "Password not linked"}
-                positive={passwordLinked}
+                icon={user?.emailVerified ? "shield-checkmark-outline" : "mail-outline"}
+                label={user?.emailVerified ? "Email verified" : "Email sign-in"}
+                positive={Boolean(user?.emailVerified || passwordLinked)}
               />
             </View>
 

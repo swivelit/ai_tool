@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -40,13 +40,15 @@ function passwordStrengthTone(value: string) {
 }
 
 export default function SignupScreen() {
-  const { signUpWithPassword, signInWithGoogle, googleConfigured, googleReady } =
-    useAuth();
+  const { requestSignupOtp, completeSignupWithOtp } = useAuth();
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [stage, setStage] = useState<"details" | "otp">("details");
+  const [cooldownRemaining, setCooldownRemaining] = useState(0);
   const [busy, setBusy] = useState(false);
   const [errorText, setErrorText] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -64,7 +66,7 @@ export default function SignupScreen() {
   const inputHeight = isCompact ? 56 : 60;
   const buttonHeight = isCompact ? 54 : 58;
 
-  const canSubmit = useMemo(() => {
+  const canSendOtp = useMemo(() => {
     return (
       name.trim().length > 0 &&
       email.trim().length > 0 &&
@@ -74,7 +76,21 @@ export default function SignupScreen() {
     );
   }, [busy, confirmPassword, email, name, password]);
 
-  async function handleSignup() {
+  const canComplete = useMemo(() => otp.trim().length === 6 && !busy, [busy, otp]);
+
+  useEffect(() => {
+    if (cooldownRemaining <= 0) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setCooldownRemaining((value) => Math.max(0, value - 1));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [cooldownRemaining]);
+
+  function validateDetails() {
     const nextName = name.trim();
     const nextEmail = email.trim();
 
@@ -100,29 +116,68 @@ export default function SignupScreen() {
 
     if (password !== confirmPassword) {
       setErrorText("Passwords do not match.");
+      return null;
+    }
+
+    return { nextName, nextEmail };
+  }
+
+  async function handleSendOtp() {
+    const valid = validateDetails();
+    if (!valid) return;
+
+    try {
+      setBusy(true);
+      setErrorText("");
+      const response = await requestSignupOtp(valid.nextEmail, valid.nextName);
+      setCooldownRemaining(response.cooldown_seconds || 60);
+      setStage("otp");
+    } catch (error: unknown) {
+      setErrorText(error instanceof Error ? error.message : "Could not send OTP.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleResendOtp() {
+    if (cooldownRemaining > 0 || busy) return;
+
+    const valid = validateDetails();
+    if (!valid) return;
+
+    try {
+      setBusy(true);
+      setErrorText("");
+      const response = await requestSignupOtp(valid.nextEmail, valid.nextName);
+      setCooldownRemaining(response.cooldown_seconds || 60);
+    } catch (error: unknown) {
+      setErrorText(error instanceof Error ? error.message : "Could not resend OTP.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCompleteSignup() {
+    const valid = validateDetails();
+    if (!valid) return;
+
+    const normalizedOtp = otp.trim();
+    if (!/^\d{6}$/.test(normalizedOtp)) {
+      setErrorText("Enter the 6-digit code from your email.");
       return;
     }
 
     try {
       setBusy(true);
       setErrorText("");
-      await signUpWithPassword(nextName, nextEmail, password);
+      await completeSignupWithOtp(
+        valid.nextName,
+        valid.nextEmail,
+        password,
+        normalizedOtp
+      );
     } catch (error: unknown) {
       setErrorText(error instanceof Error ? error.message : "Sign up failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleGoogle() {
-    try {
-      setBusy(true);
-      setErrorText("");
-      await signInWithGoogle();
-    } catch (error: unknown) {
-      setErrorText(
-        error instanceof Error ? error.message : "Google sign-in failed."
-      );
     } finally {
       setBusy(false);
     }
@@ -199,6 +254,8 @@ export default function SignupScreen() {
                 </View>
               ) : null}
 
+              {stage === "details" ? (
+                <>
               <View style={{ marginTop: errorText ? 16 : 18 }}>
                 <Text style={styles.label}>Name</Text>
                 <View style={[styles.inputShell, { minHeight: inputHeight }]}>
@@ -336,7 +393,7 @@ export default function SignupScreen() {
                     style={styles.input}
                     editable={!busy}
                     returnKeyType="go"
-                    onSubmitEditing={handleSignup}
+                    onSubmitEditing={handleSendOtp}
                   />
                   <Pressable
                     onPress={() =>
@@ -357,15 +414,102 @@ export default function SignupScreen() {
                 </View>
               </View>
 
+                </>
+              ) : (
+                <>
+                  <View style={styles.infoBanner}>
+                    <Ionicons
+                      name="mail-unread-outline"
+                      size={16}
+                      color={Brand.bronze}
+                    />
+                    <Text style={styles.infoBannerText}>
+                      We sent a 6-digit code to {email.trim()}.
+                    </Text>
+                  </View>
+
+                  <View style={{ marginTop: 16 }}>
+                    <Text style={styles.label}>OTP code</Text>
+                    <View style={[styles.inputShell, { minHeight: inputHeight }]}>
+                      <View style={styles.inputIconWrap}>
+                        <Ionicons
+                          name="keypad-outline"
+                          size={16}
+                          color={Brand.bronze}
+                        />
+                      </View>
+                      <TextInput
+                        value={otp}
+                        testID="signup-otp-input"
+                        accessibilityLabel="signup-otp-input"
+                        onChangeText={(value) => {
+                          setOtp(value.replace(/\D/g, "").slice(0, 6));
+                          if (errorText) setErrorText("");
+                        }}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        keyboardType="number-pad"
+                        textContentType="oneTimeCode"
+                        placeholder="123456"
+                        placeholderTextColor="rgba(226, 238, 255, 0.46)"
+                        style={styles.input}
+                        editable={!busy}
+                        returnKeyType="go"
+                        onSubmitEditing={handleCompleteSignup}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.otpActionRow}>
+                    <Pressable
+                      onPress={() => {
+                        setStage("details");
+                        setOtp("");
+                        setErrorText("");
+                      }}
+                      disabled={busy}
+                      style={({ pressed }) => [
+                        styles.secondaryAction,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Ionicons name="create-outline" size={15} color={Brand.cocoa} />
+                      <Text style={styles.secondaryActionText}>Edit details</Text>
+                    </Pressable>
+
+                    <Pressable
+                      onPress={handleResendOtp}
+                      disabled={busy || cooldownRemaining > 0}
+                      testID="signup-resend-otp-button"
+                      accessibilityLabel="signup-resend-otp-button"
+                      style={({ pressed }) => [
+                        styles.secondaryAction,
+                        pressed && styles.pressed,
+                        (busy || cooldownRemaining > 0) && styles.disabled,
+                      ]}
+                    >
+                      <Ionicons name="refresh-outline" size={15} color={Brand.cocoa} />
+                      <Text style={styles.secondaryActionText}>Resend code</Text>
+                    </Pressable>
+                  </View>
+
+                  <Text style={styles.cooldownText}>
+                    {cooldownRemaining > 0
+                      ? `You can resend in ${cooldownRemaining}s.`
+                      : "You can resend the code now."}
+                  </Text>
+                </>
+              )}
+
               <Pressable
-                onPress={handleSignup}
-                disabled={!canSubmit}
-                testID="signup-submit-button"
-                accessibilityLabel="signup-submit-button"
+                onPress={stage === "details" ? handleSendOtp : handleCompleteSignup}
+                disabled={stage === "details" ? !canSendOtp : !canComplete}
+                testID={stage === "details" ? "signup-send-otp-button" : "signup-complete-button"}
+                accessibilityLabel={stage === "details" ? "signup-send-otp-button" : "signup-complete-button"}
                 style={({ pressed }) => [
                   styles.buttonShell,
                   pressed && styles.pressed,
-                  !canSubmit && styles.disabled,
+                  (stage === "details" ? !canSendOtp : !canComplete) && styles.disabled,
                 ]}
               >
                 <LinearGradient
@@ -379,7 +523,7 @@ export default function SignupScreen() {
                   ) : (
                     <>
                       <Text style={styles.primaryButtonText}>
-                        Create account
+                        {stage === "details" ? "Send OTP" : "Verify and create account"}
                       </Text>
                       <Ionicons
                         name="arrow-forward"
@@ -390,33 +534,6 @@ export default function SignupScreen() {
                   )}
                 </LinearGradient>
               </Pressable>
-
-              <View style={styles.dividerRow}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>or continue with</Text>
-                <View style={styles.dividerLine} />
-              </View>
-
-              <Pressable
-                onPress={handleGoogle}
-                disabled={busy || !googleReady || !googleConfigured}
-                style={({ pressed }) => [
-                  styles.googleButton,
-                  pressed && styles.pressed,
-                  (busy || !googleReady || !googleConfigured) && styles.disabled,
-                  { minHeight: buttonHeight },
-                ]}
-              >
-                <Ionicons name="logo-google" size={18} color={Brand.ink} />
-                <Text style={styles.googleButtonText}>Continue with Google</Text>
-              </Pressable>
-
-              {!googleConfigured ? (
-                <Text style={styles.helperText}>
-                  Add your EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID in your env file
-                  to enable Google sign-in.
-                </Text>
-              ) : null}
 
               <View style={styles.footerRow}>
                 <Text style={styles.footerCopy}>Already have an account?</Text>
@@ -664,6 +781,40 @@ const styles = StyleSheet.create({
   infoBannerText: {
     flex: 1,
     color: Brand.ink,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+
+  otpActionRow: {
+    marginTop: 16,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+
+  secondaryAction: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 13,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
+  },
+
+  secondaryActionText: {
+    color: Brand.cocoa,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+
+  cooldownText: {
+    marginTop: 10,
+    color: Brand.muted,
     fontSize: 12,
     lineHeight: 18,
     fontWeight: "700",
