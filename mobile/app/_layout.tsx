@@ -711,7 +711,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 18,
-    backgroundColor: "rgba(72, 46, 18, 0.18)",
+    backgroundColor: "rgba(0, 0, 0, 0.58)",
   },
 
   alertCardWrap: {
@@ -766,7 +766,7 @@ const styles = StyleSheet.create({
   },
 
   alertPrimaryButton: {
-    backgroundColor: "#9a6328",
+    backgroundColor: "#2857d7",
   },
 
   alertPrimaryText: {
@@ -796,7 +796,7 @@ const styles = StyleSheet.create({
   },
 
   alertDestructiveText: {
-    color: "#fff8f5",
+    color: "#f7fbff",
   },
 
   alertPressed: {
@@ -805,31 +805,28 @@ const styles = StyleSheet.create({
 
   topGlow: {
     position: "absolute",
-    top: -120,
-    right: -80,
-    width: 260,
-    height: 260,
-    borderRadius: 160,
-    backgroundColor: "rgba(244, 191, 117, 0.18)",
+    top: 0,
+    right: 0,
+    width: "62%",
+    height: 2,
+    backgroundColor: "rgba(87, 222, 255, 0.14)",
   },
 
   leftGlow: {
     position: "absolute",
-    left: -110,
-    top: 110,
-    width: 220,
+    left: 0,
+    top: 132,
+    width: 2,
     height: 220,
-    borderRadius: 140,
-    backgroundColor: "rgba(236, 206, 152, 0.12)",
+    backgroundColor: "rgba(110, 91, 255, 0.10)",
   },
 
   bottomGlow: {
     position: "absolute",
-    bottom: -130,
-    left: 20,
-    width: 260,
-    height: 260,
-    borderRadius: 180,
-    backgroundColor: "rgba(212, 154, 79, 0.10)",
+    bottom: 0,
+    left: 24,
+    right: 24,
+    height: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.10)",
   },
 });

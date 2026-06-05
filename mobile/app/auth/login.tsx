@@ -159,7 +159,7 @@ export default function LoginScreen() {
                   <Ionicons
                     name="alert-circle-outline"
                     size={16}
-                    color="#fff4ef"
+                    color="#f7fbff"
                   />
                   <Text style={styles.errorText}>{errorText}</Text>
                 </View>
@@ -189,7 +189,7 @@ export default function LoginScreen() {
                     autoComplete="email"
                     textContentType="username"
                     placeholder="you@example.com"
-                    placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                    placeholderTextColor="rgba(226, 238, 255, 0.46)"
                     style={styles.input}
                     editable={!busy}
                     returnKeyType="next"
@@ -221,7 +221,7 @@ export default function LoginScreen() {
                     autoComplete="password"
                     textContentType="password"
                     placeholder="Your password"
-                    placeholderTextColor="rgba(124, 99, 80, 0.55)"
+                    placeholderTextColor="rgba(226, 238, 255, 0.46)"
                     style={styles.input}
                     editable={!busy}
                     returnKeyType="go"
@@ -342,7 +342,7 @@ const styles = StyleSheet.create({
     width: 200,
     height: 200,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   bottomGlow: {
@@ -352,7 +352,7 @@ const styles = StyleSheet.create({
     width: 240,
     height: 240,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   backButton: {
@@ -482,7 +482,7 @@ const styles = StyleSheet.create({
 
   errorText: {
     flex: 1,
-    color: "#fff4ef",
+    color: "#f7fbff",
     fontSize: 13,
     lineHeight: 18,
     fontWeight: "700",
@@ -536,7 +536,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    shadowColor: "#d4934f",
+    shadowColor: "#57deff",
     shadowOpacity: 0.24,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 10 },
@@ -696,7 +696,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   benefitTitle: {

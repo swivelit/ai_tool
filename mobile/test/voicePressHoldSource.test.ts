@@ -6,6 +6,10 @@ const source = fs.readFileSync(
   path.join(__dirname, "..", "app", "(chat)", "index.tsx"),
   "utf8",
 );
+const orbSource = fs.readFileSync(
+  path.join(__dirname, "..", "components", "Orb.tsx"),
+  "utf8",
+);
 const transcriptSource = fs.readFileSync(
   path.join(__dirname, "..", "components", "VoiceSessionTranscript.tsx"),
   "utf8",
@@ -53,7 +57,7 @@ describe("chat voice press-and-hold source", () => {
     expect(source).toContain('testID="chat-send-button"');
   });
 
-  it("uses press-in and press-out for the live orb without tap toggle", () => {
+  it("uses press-in and press-out for the live assistant without tap toggle", () => {
     const block = source.match(/<Orb[\s\S]*?\/>/)?.[0] || "";
 
     expect(block).toBeTruthy();
@@ -62,11 +66,15 @@ describe("chat voice press-and-hold source", () => {
     expect(block).toContain("onPressOut");
     expect(block).toContain("handleLiveOrbPressOut");
     expect(block).not.toContain("onPress=");
+    expect(orbSource).toContain("AssistantCharacter");
+    expect(orbSource).toContain('accessibilityLabel="Hold the assistant to talk"');
   });
 
-  it("keeps voice recording and reply playback on the live orb route", () => {
+  it("keeps voice recording and reply playback on the live assistant route", () => {
     expect(source).toContain("openVoiceSession");
     expect(source).toContain("<Orb");
+    expect(source).toContain("assistantCharacterState");
+    expect(source).toContain("mouthOpenness");
     expect(source).toContain("handleLiveOrbPressIn");
     expect(source).toContain("handleLiveOrbPressOut");
     expect(source).toContain('startRecording("live")');
@@ -141,7 +149,7 @@ describe("chat voice press-and-hold source", () => {
     expect(source).not.toContain('accessibilityLabel="open-voice-mode-button"');
   });
 
-  it("keeps live orb voice turns inside the voice-session transcript", () => {
+  it("keeps live assistant voice turns inside the voice-session transcript", () => {
     expect(source).toContain("activeVoiceSessionId");
     expect(source).toContain("voiceSessionTurns");
     expect(source).toContain("voiceSessionMode");
@@ -152,12 +160,12 @@ describe("chat voice press-and-hold source", () => {
     expect(transcriptSource).toContain("voice-session-scroll");
     expect(transcriptSource).toContain("LinearGradient");
     expect(transcriptSource).toContain("topFade");
-    expect(transcriptSource).not.toContain("Hold the orb. Your speech and reply will appear here.");
+    expect(transcriptSource).not.toContain("Hold the assistant. Your speech and reply will appear here.");
     expect(source).toContain('const voiceSessionId = ensureVoiceSession("live")');
     expect(source).toContain("updateVoiceSessionTurn");
   });
 
-  it("keeps live orb voice out of the normal chat thread while the sheet is active", () => {
+  it("keeps live assistant voice out of the normal chat thread while the sheet is active", () => {
     const liveBlock = sliceAround("async function stopAndAnalyze", 8200);
 
     expect(liveBlock).toContain("voiceSessionItemsPendingHistoryRef");

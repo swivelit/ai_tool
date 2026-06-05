@@ -10,8 +10,9 @@
  * pure `decideBackchannel` function below so it can be unit-tested in node. The
  * `createBackchannelController` factory wires that decision to `expo-av`. To
  * keep the pure function importable without pulling native modules into the
- * test runtime, `expo-av` and the placeholder audio assets are required lazily
- * (only when a cue actually plays in the app).
+ * test runtime, `expo-av` is required lazily (only when a cue actually plays in
+ * the app). The bundled defaults are tiny synthetic WAV data URIs so Metro does
+ * not crash on missing local recordings.
  */
 
 export type BackchannelCue = "aaha" | "hmm" | "mm-hmm";
@@ -113,14 +114,20 @@ export type BackchannelController = {
   dispose(): Promise<void>;
 };
 
+const PLACEHOLDER_WAV_BASE64 =
+  "UklGRiQFAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAFAAAAAAYAGwA8AGkAnwDdAB8BYwGmAeUBHAJJAmgCdwJ0Al0CMgLxAZoBLwGxACEAhP/b/ir+dv3D/BX8cvvf+l/6+Pms+YH5ePmT+dX5PfrL+n37UvxF/VT+ef+tAO0BMANwBKYFyQbUB78IhAkeCoYKugq3CnoKAgpRCWkISwf+BYUE6QIxAWX/jv22++f5KviK9hD1xvOz8t7xT/EJ8Q/xZfEJ8vvyN/S59Xr3cvmY++L9RACzAiMFhQfNCe8L3g2PD/kQERLREjMTMhPOEgUS2xBUD3UNRwvUCCcGTQNVAE/9R/pP93f0zvFj70TtfOsX6k7p+ega6bDpt+os7AXuO/DB8ov1iviv++v+KwJgBXsIagseDosQoxJcFK0Vjxb+FvcWfBaNFTAUbBJKENUNGQskCAYFzgGO/lT7M/g59Xby+O/M7f3rleqZ6RHp/ehf6TTqeesn7TXvmfFG9C/3Rvp5/bkA9gMeByIK8wyBD8ARpBMkFTkW2xYJF8EWBRbYFEETSBH2DlgMewltBj8DAADB/JP5hfao8wrxuO6/7Cjr++k/6ffoJenH6dzqXOxA7n/wDfPe9eL4CvxH/4cCugXRCLoLZw7LENkShxTMFaEWAxfvFmcWaxUDFDQSCBCKDccKzQesBHIBMv76+tz35/Qr8rbvlO3Q63PqhOkJ6QLpcelT6qTrXe117+LxlvSF96D61f0VAVEEdgd1Cj8NxQ/7EdQTSRVQFuYWBxeyFukVsBQOEwoRrw4JDCYJFAbjAqT/Zvw6+TH2WvPE8HzujewB6+HpMen26DHp4ekB643sfO7E8FrzMfY6+Wb8pP/jAhQGJgkJDK8OChEOE7AU6RWyFgcX5hZQFkkV1BP7EcUPPw11CnYHUQQVAdX9oPqF95b04vF1713tpOtT6nHpAukJ6YTpc+rQ65Tttu8r8uf03Pf6+jL+cgGsBM0HxwqKDQgQNBIDFGsVZxbvFgMXoRbMFYcU2RLLEGcOugvRCLoFhwJH/wr84vje9Q3zf/BA7lzs3OrH6SXp9+g/6fvpKOu/7LjuCvGo84X2k/nB/AAAPwNtBnsJWAz2DkgRQRPYFAUWwRYJF9sWORYkFaQTwBGBD/MMIgoeB/YDuQB5/Ub6L/dG9JnxNe8n7XnrNOpf6f3oEemZ6ZXq/evM7fjvdvI59TP4VPuO/s4BBgUkCBkL1Q1KEGwSMBSNFXwW9xb+Fo8WrRVcFKMSixAeDmoLewhgBSsC6/6v+4r4i/XB8jvwBe4s7LfqsOka6fnoTukX6nHrL+1I76/xV/Qy9zD6Qv1XAGADTwYSCZ8L5w3gD4ERxBKiExkUKBTQExUT+hGIEMgOwgyDChcIiwXtAkoAsf0t+8z4mfaf9OfyefFb8JHvH+8F70Lv0++08N/xTvP29ND20Pjr+hb9R/9vAYcDgwVZBwAJcQqmC5kMRg2tDcsNow01DYYMmwt6CikJsQcaBm0EswL1AD7/lP0B/Iv6O/kW+CH3X/bU9YD1ZfWA9dH1VPYF9+D33fj4+Sr7bPy2/QL/RwCCAasCvAOxBIYFNgbABiIHXAdtB1cHHAe+BkEGqAX3BDUEZQOMAq8B1AAAADb/ev7P/Tn9u/xU/Aj81fu8+7z71PsA/ED8kfzv/Ff9xv05/qz+Hf+I/+z/RACSANMABgErAUIBSwFIATkBIQEBAdwAswCJAGAAOgAZAA==";
+
+function placeholderClipSource(): ClipSource {
+  return { uri: `data:audio/wav;base64,${PLACEHOLDER_WAV_BASE64}` };
+}
+
 function defaultClipSources(): ClipSources {
-  // `require` of the bundled placeholder clips — resolved lazily so node-side
-  // tests never try to load an `.mp3`. Replace the files under
-  // assets/audio/backchannel/ with real recordings; see the README there.
+  // These are synthetic placeholders. Pass `clips` with local `require(...)`
+  // sources when real short acknowledgement recordings are available.
   return {
-    aaha: require("../assets/audio/backchannel/aaha.mp3"),
-    hmm: require("../assets/audio/backchannel/hmm.mp3"),
-    "mm-hmm": require("../assets/audio/backchannel/mmhmm.mp3"),
+    aaha: placeholderClipSource(),
+    hmm: placeholderClipSource(),
+    "mm-hmm": placeholderClipSource(),
   };
 }
 

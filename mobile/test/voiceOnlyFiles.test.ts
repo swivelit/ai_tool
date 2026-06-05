@@ -25,7 +25,7 @@ describe("voice-only file handling", () => {
     expect(chatSource).not.toContain("voiceOnlyInitialOpenRef");
     expect(chatSource).not.toContain("voiceOnlyMode &&");
     expect(chatSource).not.toContain("openVoiceSession();\n    }\n  }, [voiceOnlyMode");
-    expect(transcriptSource).not.toContain("Hold the orb. Your speech and reply will appear here.");
+    expect(transcriptSource).not.toContain("Hold the assistant. Your speech and reply will appear here.");
   });
 
   it("uses resolved voice language params instead of hard-coded Tamil defaults", () => {

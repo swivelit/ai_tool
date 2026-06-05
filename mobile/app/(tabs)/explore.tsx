@@ -126,9 +126,9 @@ function getStatusConfig(item: Item) {
     return {
       label: "Draft",
       text: Brand.cocoa,
-      bg: "rgba(255,255,255,0.62)",
+      bg: "rgba(255,255,255,0.07)",
       border: Brand.line,
-      dot: "rgba(185,120,54,0.88)",
+      dot: "rgba(87,222,255,0.88)",
       icon: "ellipse" as const,
     };
   }
@@ -136,10 +136,10 @@ function getStatusConfig(item: Item) {
   if (date.getTime() < Date.now()) {
     return {
       label: "Completed",
-      text: "#7b6552",
-      bg: "rgba(124, 99, 80, 0.10)",
-      border: "rgba(124, 99, 80, 0.16)",
-      dot: "rgba(124, 99, 80, 0.60)",
+      text: "#c5d1e2",
+      bg: "rgba(255, 255, 255, 0.07)",
+      border: "rgba(255, 255, 255, 0.14)",
+      dot: "rgba(197,209,226,0.60)",
       icon: "checkmark-circle" as const,
     };
   }
@@ -599,7 +599,7 @@ export default function Explore() {
               <LinearGradient
                 colors={[
                   "rgba(255,255,255,0.72)",
-                  "rgba(255,236,204,0.64)",
+                  "rgba(87,222,255,0.05)",
                 ]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
@@ -655,13 +655,13 @@ export default function Explore() {
               <Ionicons
                 name="search"
                 size={17}
-                color="rgba(124, 99, 80, 0.62)"
+                color="rgba(226, 238, 255, 0.58)"
               />
               <TextInput
                 value={q}
                 onChangeText={setQ}
                 placeholder="Search reminders, meetings, notes..."
-                placeholderTextColor="rgba(124, 99, 80, 0.48)"
+                placeholderTextColor="rgba(226, 238, 255, 0.44)"
                 style={styles.searchInput}
               />
 
@@ -775,7 +775,7 @@ export default function Explore() {
               <LinearGradient
                 colors={[
                   "rgba(255,255,255,0.94)",
-                  "rgba(255,239,210,0.88)",
+                  "rgba(87,222,255,0.06)",
                 ]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
@@ -798,7 +798,7 @@ export default function Explore() {
                     <Ionicons
                       name="chevron-forward"
                       size={16}
-                      color="rgba(124, 99, 80, 0.56)"
+                      color="rgba(226, 238, 255, 0.52)"
                     />
                   </View>
 
@@ -876,7 +876,7 @@ const styles = StyleSheet.create({
     width: 190,
     height: 190,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   bottomGlow: {
@@ -886,7 +886,7 @@ const styles = StyleSheet.create({
     width: 260,
     height: 260,
     borderRadius: 999,
-    backgroundColor: "rgba(215,154,89,0.16)",
+    backgroundColor: "rgba(87,222,255,0.10)",
   },
 
   topBar: {
@@ -1009,7 +1009,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   metricLabel: {
@@ -1143,8 +1143,8 @@ const styles = StyleSheet.create({
   },
 
   filterChipActive: {
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
-    borderColor: "rgba(185,120,54,0.22)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    borderColor: "rgba(87,222,255,0.18)",
   },
 
   filterChipText: {
@@ -1230,7 +1230,7 @@ const styles = StyleSheet.create({
     padding: 14,
     flexDirection: "row",
     alignItems: "stretch",
-    shadowColor: "#d09858",
+    shadowColor: "#57deff",
     shadowOpacity: 0.1,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 10 },
@@ -1250,9 +1250,9 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
     borderWidth: 1,
-    borderColor: "rgba(185,120,54,0.16)",
+    borderColor: "rgba(87,222,255,0.14)",
   },
 
   itemDateChipText: {
@@ -1268,7 +1268,7 @@ const styles = StyleSheet.create({
     flex: 1,
     marginTop: 10,
     borderRadius: 999,
-    backgroundColor: "rgba(185,120,54,0.12)",
+    backgroundColor: "rgba(87,222,255,0.10)",
   },
 
   itemMain: {
@@ -1355,7 +1355,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     alignSelf: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
     marginBottom: 14,
   },
 
@@ -1387,7 +1387,7 @@ const styles = StyleSheet.create({
   },
 
   emptyCtaText: {
-    color: "#fff8ec",
+    color: "#f7fbff",
     fontSize: 14,
     fontWeight: "900",
   },

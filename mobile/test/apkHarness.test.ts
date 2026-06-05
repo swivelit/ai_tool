@@ -285,6 +285,7 @@ describe("APK test harness", () => {
     expect(source).toContain("-u EXPO_PUBLIC_E2E_MOCK_LIFE_CONTEXT");
     expect(source).toContain("-u EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE");
     expect(source).toContain("-u EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND");
+    expect(source).toContain("-u JAI_DEBUG_LITE");
   });
 
   it("debug APK scripts default voice tests to backend routing and keep manual local opt-in", () => {
@@ -301,7 +302,7 @@ describe("APK test harness", () => {
     }
   });
 
-  it("APK harness exercises the live voice reply path with the E2E mock", () => {
+  it("APK harness exercises the live assistant voice reply path with the E2E mock", () => {
     const source = readRepo("test_apk.sh");
 
     expect(source).toContain("android.permission.RECORD_AUDIO");
@@ -314,11 +315,11 @@ describe("APK test harness", () => {
     expect(source).toContain('end_x=$((width * 80 / 100))');
     expect(source).toContain("swipe-chat-to-voice");
     expect(source).toContain("e2e-open-voice-button");
-    expect(source).toContain("voice_orb_center_from_window");
+    expect(source).toContain("voice_assistant_center_from_window");
     expect(source).toContain("strict voice telemetry markers were used");
     expect(source).toContain("voice-swipe-right-close");
     expect(source).not.toContain("tap-voice-entry-button");
-    expect(source).toContain("Hold the orb to record");
+    expect(source).toContain("Hold the assistant to talk");
     expect(source).toContain("input swipe");
     expect(source).toContain("voice-session-transcript");
     expect(source).toContain("voice-session-user-turn");
@@ -376,7 +377,7 @@ describe("APK test harness", () => {
     expect(source).toContain("3.5 hours");
   });
 
-  it("test_apk.sh checks Spitzola orb transcript and both TTS languages", () => {
+  it("test_apk.sh checks Spitzola assistant transcript and both TTS languages", () => {
     const source = readRepo("test_apk.sh");
 
     expect(source).toContain("EXPO_PUBLIC_E2E_VOICE_QUERY");

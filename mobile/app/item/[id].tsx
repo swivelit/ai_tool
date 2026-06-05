@@ -111,9 +111,9 @@ function getStatus(item: Item) {
     return {
       label: "Draft",
       text: Brand.cocoa,
-      bg: "rgba(255,255,255,0.60)",
+      bg: "rgba(255,255,255,0.07)",
       border: Brand.line,
-      dot: "rgba(185,120,54,0.92)",
+      dot: "rgba(87,222,255,0.88)",
       icon: "ellipse-outline" as const,
       helper: "No schedule set yet",
     };
@@ -122,10 +122,10 @@ function getStatus(item: Item) {
   if (date.getTime() < Date.now()) {
     return {
       label: "Completed",
-      text: "#7b6552",
-      bg: "rgba(124, 99, 80, 0.10)",
-      border: "rgba(124, 99, 80, 0.16)",
-      dot: "rgba(124, 99, 80, 0.70)",
+      text: "#c5d1e2",
+      bg: "rgba(255, 255, 255, 0.07)",
+      border: "rgba(255, 255, 255, 0.14)",
+      dot: "rgba(197,209,226,0.70)",
       icon: "checkmark-circle-outline" as const,
       helper: "This item is now in the past",
     };
@@ -439,7 +439,7 @@ export default function ItemDetail() {
                 <LinearGradient
                   colors={[
                     "rgba(255,255,255,0.86)",
-                    "rgba(255,239,210,0.68)",
+                    "rgba(87,222,255,0.06)",
                   ]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
@@ -774,7 +774,7 @@ function ExportCard({
       style={({ pressed }) => [styles.exportCard, pressed && styles.pressed]}
     >
       <LinearGradient
-        colors={["rgba(255,255,255,0.94)", "rgba(255,239,210,0.88)"]}
+        colors={["rgba(255,255,255,0.94)", "rgba(87,222,255,0.06)"]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.exportGradient}
@@ -818,7 +818,7 @@ const styles = StyleSheet.create({
     width: 210,
     height: 210,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   bottomGlow: {
@@ -828,7 +828,7 @@ const styles = StyleSheet.create({
     width: 270,
     height: 270,
     borderRadius: 999,
-    backgroundColor: "rgba(215,154,89,0.16)",
+    backgroundColor: "rgba(87,222,255,0.10)",
   },
 
   topBar: {
@@ -901,9 +901,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
     borderWidth: 1,
-    borderColor: "rgba(185,120,54,0.18)",
+    borderColor: "rgba(87,222,255,0.16)",
   },
 
   dateChipText: {
@@ -1075,7 +1075,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   infoCardLabel: {
@@ -1139,7 +1139,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   systemRowLabel: {
@@ -1173,7 +1173,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   exportHeroTitle: {
@@ -1217,7 +1217,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   exportLabel: {
@@ -1292,7 +1292,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   emptyTitle: {
@@ -1322,7 +1322,7 @@ const styles = StyleSheet.create({
   },
 
   emptyActionBtnText: {
-    color: "#fff8ec",
+    color: "#f7fbff",
     fontSize: 14,
     fontWeight: "900",
   },

@@ -30,6 +30,7 @@ import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
+import { AssistantCharacter } from "@/components/AssistantCharacter";
 import { Orb } from "@/components/Orb";
 import {
   VoiceSessionTranscript,
@@ -39,6 +40,12 @@ import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { Brand } from "@/constants/theme";
+import { type CharacterState, type Emotion } from "@/lib/assistantCharacter";
+import {
+  createBackchannelController,
+  type BackchannelController,
+} from "@/lib/backchannel";
+import { emotionFromText } from "@/lib/emotionFromText";
 import {
   BACKEND_CHAT_FALLBACK_TIMEOUT_MS,
   API_BASE,
@@ -136,6 +143,7 @@ import { loadCloudFallbackConsent } from "@/lib/localAssistantSettings";
 import { shouldAutoSpeakReply } from "@/lib/replyPlaybackPolicy";
 import { resolveVoiceLanguageParams, type VoiceLanguageParams } from "@/lib/replyLanguage";
 import { ensureNotificationsReady, scheduleReminder } from "@/lib/reminders";
+import { nextMouthOpenness } from "@/lib/visemeScheduler";
 import {
   EMPTY_AUDIO_MESSAGE,
   MIN_VOICE_RECORDING_MS,
@@ -370,11 +378,15 @@ export default function Home() {
   );
   const [appState, setAppState] = useState(AppState.currentState);
   const [pendingChatTurn, setPendingChatTurn] = useState<PendingChatTurn | null>(null);
+  const [assistantEmotion, setAssistantEmotion] = useState<Emotion>("neutral");
+  const [replyAudioPlaying, setReplyAudioPlaying] = useState(false);
+  const [mouthOpenness, setMouthOpenness] = useState(0);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const replySoundRef = useRef<Audio.Sound | null>(null);
   const replyAudioUriRef = useRef<string | null>(null);
   const replyPlaybackTokenRef = useRef(0);
+  const backchannelControllerRef = useRef<BackchannelController | null>(null);
   const activeSurfaceRef = useRef<RecorderSurface | null>(null);
   const activeVoiceSessionIdRef = useRef<string | null>(null);
   const voiceSessionItemsPendingHistoryRef = useRef<ChatHistoryItem[]>([]);
@@ -387,6 +399,7 @@ export default function Home() {
   const voiceRecordingStartedAtRef = useRef<number | null>(null);
   const voiceBusyRequestIdRef = useRef<string | null>(null);
   const drawerProgress = useRef(new Animated.Value(0)).current;
+  const floatingAssistantProgress = useRef(new Animated.Value(1)).current;
   const [drawerMounted, setDrawerMounted] = useState(false);
   const scrollViewRef = useRef<ScrollView | null>(null);
   const activeChatSessionIdRef = useRef<string | null>(null);
@@ -444,7 +457,8 @@ export default function Home() {
   const bottomPadding = layout.composerBottomPadding;
   const contentMaxWidth = layout.contentMaxWidth;
   const drawerWidth = Math.min(width * 0.84, 360);
-  const orbSize = clamp(width * 0.38, 156, 208);
+  const assistantHeroSize = clamp(width * 0.4, 158, 212);
+  const assistantFloatingSize = clamp(width * 0.17, 58, 74);
 
   const assistantLabel = useMemo(() => (name || "Elli").trim(), [name]);
   const handsFreeWakePhrase = useMemo(
@@ -475,6 +489,26 @@ export default function Home() {
   const handsFreePlaybackMode: HandsFreePlaybackMode = handsFreeConversationActive
     ? "conversation"
     : "off";
+  const pressToTalkListeningActive = listening && activeSurface === "live";
+  const assistantListeningActive =
+    pressToTalkListeningActive || handsFreeActive || handsFreeConversationActive;
+  const assistantThinkingActive =
+    recordingPreparing ||
+    recordingStopping ||
+    busy ||
+    pendingChatTurn?.status === "thinking" ||
+    handsFreeMachine.state === "submitting";
+  const assistantCharacterState: CharacterState = replyAudioPlaying
+    ? "speaking"
+    : assistantListeningActive
+      ? "listening"
+      : "idle";
+  const assistantCharacterEmotion: Emotion =
+    !replyAudioPlaying && assistantThinkingActive ? "thinking" : assistantEmotion;
+  const backchannelListeningActive =
+    voiceSheetOpen &&
+    !replyAudioPlaying &&
+    (pressToTalkListeningActive || handsFreeMachine.state === "commandListening");
   handsFreeRuntimeRef.current = {
     busy,
     listening,
@@ -544,6 +578,41 @@ export default function Home() {
   useEffect(() => {
     handsFreeEligibleRef.current = handsFreeForegroundEnabled;
   }, [handsFreeForegroundEnabled]);
+
+  useEffect(() => {
+    Animated.timing(floatingAssistantProgress, {
+      toValue: voiceSheetOpen ? 0 : 1,
+      duration: 260,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [floatingAssistantProgress, voiceSheetOpen]);
+
+  useEffect(() => {
+    if (e2eVoiceTurnEnabled || e2eHandsFreeEnabled || e2eHandsFreeAudioEnabled) {
+      return undefined;
+    }
+
+    const controller = createBackchannelController({
+      minGapMs: 4500,
+      maxGapMs: 9000,
+      volume: 0.18,
+    });
+    backchannelControllerRef.current = controller;
+
+    return () => {
+      backchannelControllerRef.current = null;
+      void controller.dispose();
+    };
+  }, [e2eHandsFreeAudioEnabled, e2eHandsFreeEnabled, e2eVoiceTurnEnabled]);
+
+  useEffect(() => {
+    backchannelControllerRef.current?.setListening(backchannelListeningActive);
+  }, [backchannelListeningActive]);
+
+  useEffect(() => {
+    backchannelControllerRef.current?.setTtsActive(replyAudioPlaying);
+  }, [replyAudioPlaying]);
 
   const latestHistory = useMemo(() => {
     return chatSessions
@@ -1123,6 +1192,8 @@ export default function Home() {
   }, []);
 
   const releaseReplySound = useCallback(async (soundToRelease?: Audio.Sound | null) => {
+    setReplyAudioPlaying(false);
+    setMouthOpenness(0);
     const target = soundToRelease ?? replySoundRef.current;
     if (!target) return;
     const cachedUri =
@@ -1967,6 +2038,7 @@ export default function Home() {
     fallbackUserMessage: string,
     source: ChatRequestSource,
   ) {
+    markAssistantConcerned();
     setPendingChatTurn((current) => {
       if (current?.requestId === requestId) {
         return {
@@ -2111,6 +2183,19 @@ export default function Home() {
   function uriScheme(value?: string | null) {
     const match = String(value || "").match(/^([A-Za-z][A-Za-z0-9+.-]*):/);
     return match?.[1]?.toLowerCase() || null;
+  }
+
+  function updateAssistantEmotionFromReply(reply: string) {
+    setAssistantEmotion(emotionFromText(reply));
+  }
+
+  function markAssistantConcerned() {
+    setAssistantEmotion("concerned");
+  }
+
+  function resetAssistantMouth() {
+    setReplyAudioPlaying(false);
+    setMouthOpenness(0);
   }
 
   function logVoiceTelemetry(
@@ -2329,6 +2414,13 @@ export default function Home() {
           playback_uri_scheme: uriScheme(mockPlaybackUri),
           e2e_mock: true,
         } as any);
+        setReplyAudioPlaying(true);
+        setMouthOpenness(nextMouthOpenness({ isPlaying: true, positionMillis: 120 }));
+        await wait(650);
+        if (replyPlaybackTokenRef.current !== playbackToken) {
+          resetAssistantMouth();
+          return;
+        }
         if (isVoiceReply && context.voiceSessionId) {
           updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
             ttsStatus: "playback_finished",
@@ -2349,6 +2441,7 @@ export default function Home() {
           playback_uri_scheme: uriScheme(mockPlaybackUri),
           e2e_mock: true,
         } as any);
+        resetAssistantMouth();
         if (isHandsFreeReply) {
           dispatchHandsFree({ type: "TTS_COMPLETED" });
           await notifyHandsFreeTtsCompleted();
@@ -2375,6 +2468,7 @@ export default function Home() {
       const logPlaybackStarted = () => {
         if (playbackStartedLogged) return;
         playbackStartedLogged = true;
+        setReplyAudioPlaying(true);
         if (isVoiceReply && context.voiceSessionId) {
           updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
             ttsStatus: "playback_started",
@@ -2399,6 +2493,7 @@ export default function Home() {
       const logPlaybackFinished = () => {
         if (playbackFinishedLogged) return;
         playbackFinishedLogged = true;
+        resetAssistantMouth();
         if (isVoiceReply && context.voiceSessionId) {
           updateVoiceSessionTurn(context.requestId || context.voiceSessionId, {
             ttsStatus: "playback_finished",
@@ -2424,6 +2519,8 @@ export default function Home() {
         if (!status.isLoaded) {
           const statusError = String((status as any)?.error || "");
           if (statusError && replySoundRef.current === sound) {
+            markAssistantConcerned();
+            resetAssistantMouth();
             logVoiceTelemetry("client_voice_reply_playback_failed", {
               request_id: context.requestId,
               route_taken: "voice_reply_tts",
@@ -2446,11 +2543,22 @@ export default function Home() {
           if (replySoundRef.current === sound) {
             replySoundRef.current = null;
           }
+          resetAssistantMouth();
           return;
         }
 
         if (status.isPlaying || status.positionMillis > 0) {
           logPlaybackStarted();
+        }
+        if (status.isPlaying) {
+          setMouthOpenness(
+            nextMouthOpenness({
+              isPlaying: true,
+              positionMillis: status.positionMillis,
+            }),
+          );
+        } else if (!status.didJustFinish) {
+          resetAssistantMouth();
         }
 
         if (status.didJustFinish) {
@@ -2514,6 +2622,8 @@ export default function Home() {
       }
       logPlaybackStarted();
     } catch (error: unknown) {
+      markAssistantConcerned();
+      resetAssistantMouth();
       if (sound) {
         await releaseReplySound(sound);
       }
@@ -2689,6 +2799,7 @@ export default function Home() {
         normalizeChatTurnPayload(response, cleaned),
         source,
       );
+      updateAssistantEmotionFromReply(nextItem.details || "");
       clearPendingAssistant(requestId);
       if (isHandsFreeTurn) {
         updateVoiceSessionTurn(requestId, {
@@ -2810,6 +2921,7 @@ export default function Home() {
                 normalizeChatTurnPayload(backendResponse, cleaned),
                 source,
               );
+              updateAssistantEmotionFromReply(nextItem.details || "");
               clearPendingAssistant(requestId);
               if (isHandsFreeTurn) {
                 updateVoiceSessionTurn(requestId, {
@@ -3066,7 +3178,7 @@ export default function Home() {
     await resetAudioMode();
   }
 
-  // Normal chat is intentionally text-only. Audio input belongs in the live orb
+  // Normal chat is intentionally text-only. Audio input belongs in the live assistant
   // voice screen; do not reintroduce a composer mic without updating UX tests.
   async function startRecording(surface: RecorderSurface) {
     if (busy || recordingPhaseRef.current !== "idle") return;
@@ -3378,6 +3490,7 @@ export default function Home() {
       const nextItem = normalizeItemForRequestSource(normalizeChatTurnPayload(res), "voice");
       const assistantReplyText = String(nextItem.details || "").trim();
       const userTranscript = String(nextItem.raw_text || nextItem.transcript || "Voice message").trim();
+      updateAssistantEmotionFromReply(assistantReplyText);
       updateVoiceSessionTurn(requestId, {
         userText: userTranscript,
         assistantText: assistantReplyText,
@@ -3427,6 +3540,7 @@ export default function Home() {
         e2e_mock: true,
       } as any);
       if (isActiveChatRequest(requestId)) {
+        markAssistantConcerned();
         updateVoiceSessionTurn(requestId, {
           userText: "Voice message",
           assistantText: VOICE_UNAVAILABLE_MESSAGE,
@@ -3539,6 +3653,7 @@ export default function Home() {
       const nextItem = normalizeItemForRequestSource(normalizeChatTurnPayload(res), "handsfree");
       const assistantReplyText = String(nextItem.details || "").trim();
       const userTranscript = String(nextItem.raw_text || nextItem.transcript || "Voice message").trim();
+      updateAssistantEmotionFromReply(assistantReplyText);
       keepHandsFreeVoiceSheetOpen();
       setHandsFreeTranscript(userTranscript);
       updateVoiceSessionTurn(requestId, {
@@ -3613,6 +3728,7 @@ export default function Home() {
               ),
       } as any);
       if (isActiveChatRequest(requestId)) {
+        markAssistantConcerned();
         const message = emptyAudio
           ? EMPTY_AUDIO_MESSAGE
           : tooShortAudio
@@ -3755,6 +3871,7 @@ export default function Home() {
       const nextItem = normalizeItemForRequestSource(normalizeChatTurnPayload(res), "voice");
       const assistantReplyText = String(nextItem.details || "").trim();
       const userTranscript = String(nextItem.raw_text || nextItem.transcript || "Voice message").trim();
+      updateAssistantEmotionFromReply(assistantReplyText);
       updateVoiceSessionTurn(requestId, {
         userText: userTranscript,
         assistantText: assistantReplyText,
@@ -3820,6 +3937,7 @@ export default function Home() {
         error_type: errorType,
       });
       if (isActiveChatRequest(requestId)) {
+        markAssistantConcerned();
         const message = emptyAudio
           ? EMPTY_AUDIO_MESSAGE
           : tooShortAudio
@@ -3964,6 +4082,24 @@ export default function Home() {
       },
     ]);
   }
+
+  const floatingAssistantAnimatedStyle = {
+    opacity: floatingAssistantProgress,
+    transform: [
+      {
+        translateY: floatingAssistantProgress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [18, 0],
+        }),
+      },
+      {
+        scale: floatingAssistantProgress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.86, 1],
+        }),
+      },
+    ],
+  };
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.screen}>
@@ -4182,6 +4318,31 @@ export default function Home() {
             </View>
           </ScrollView>
 
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.floatingAssistantOverlay,
+              {
+                paddingHorizontal: horizontalPadding,
+                bottom: layout.composerBottomOffset + Math.max(composerHeight, 58) + 8,
+              },
+              floatingAssistantAnimatedStyle,
+            ]}
+          >
+            <View style={{ width: "100%", maxWidth: contentMaxWidth, alignItems: "flex-end" }}>
+              <AssistantCharacter
+                testID="floating-assistant-character"
+                mode="floating"
+                size={assistantFloatingSize}
+                state={assistantCharacterState}
+                emotion={assistantCharacterEmotion}
+                mouthOpenness={mouthOpenness}
+                listening={assistantListeningActive}
+                accessibilityHidden
+              />
+            </View>
+          </Animated.View>
+
           <View
             style={[
               styles.composerOverlay,
@@ -4201,7 +4362,7 @@ export default function Home() {
                     accessibilityLabel="chat-input"
                     onChangeText={setText}
                     placeholder={composerPlaceholder}
-                    placeholderTextColor="rgba(124, 99, 80, 0.58)"
+                    placeholderTextColor="rgba(226, 238, 255, 0.46)"
                     multiline
                     returnKeyType="send"
                     submitBehavior="submit"
@@ -4278,12 +4439,12 @@ export default function Home() {
             >
               <LinearGradient colors={Brand.gradients.softCard} style={styles.drawerGradient}>
                 <View style={styles.drawerSearchWrap}>
-                  <Ionicons name="search-outline" size={18} color="rgba(124, 99, 80, 0.56)" />
+                  <Ionicons name="search-outline" size={18} color="rgba(226, 238, 255, 0.52)" />
                   <TextInput
                     value={historySearch}
                     onChangeText={setHistorySearch}
                     placeholder="Search chat history"
-                    placeholderTextColor="rgba(124, 99, 80, 0.56)"
+                    placeholderTextColor="rgba(226, 238, 255, 0.46)"
                     style={styles.drawerSearchInput}
                   />
                 </View>
@@ -4408,7 +4569,7 @@ export default function Home() {
               </Text>
               <Pressable onPress={deleteSelectedHistoryItem} style={styles.actionSheetRow}>
                 <View style={[styles.actionSheetIconWrap, styles.actionSheetDeleteIconWrap]}>
-                  <Ionicons name="trash-outline" size={18} color="#fff5ef" />
+                  <Ionicons name="trash-outline" size={18} color={Brand.cream} />
                 </View>
                 <Text style={styles.actionSheetDeleteText}>Delete</Text>
               </Pressable>
@@ -4458,16 +4619,19 @@ export default function Home() {
           </View>
 
           <View style={styles.voiceCenter}>
-            <View pointerEvents="none" style={styles.voiceOrbGlow} />
+            <View pointerEvents="none" style={styles.voiceAssistantGlow} />
             <Orb
               listening={listening && activeSurface === "live"}
+              state={assistantCharacterState}
+              emotion={assistantCharacterEmotion}
+              mouthOpenness={mouthOpenness}
               onPressIn={() => {
                 void handleLiveOrbPressIn();
               }}
               onPressOut={() => {
                 void handleLiveOrbPressOut();
               }}
-              size={orbSize}
+              size={assistantHeroSize}
             />
 
             <Text style={styles.voiceTitle}>
@@ -4623,32 +4787,29 @@ const styles = StyleSheet.create({
 
   topGlow: {
     position: "absolute",
-    top: -40,
-    right: -30,
-    width: 220,
-    height: 220,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 233, 189, 0.44)",
+    top: 0,
+    right: 0,
+    width: "62%",
+    height: 2,
+    backgroundColor: "rgba(87, 222, 255, 0.16)",
   },
 
   leftGlow: {
     position: "absolute",
-    left: -80,
-    top: 240,
-    width: 180,
-    height: 180,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 217, 157, 0.28)",
+    left: 0,
+    top: 192,
+    width: 2,
+    height: 220,
+    backgroundColor: "rgba(110, 91, 255, 0.12)",
   },
 
   bottomGlow: {
     position: "absolute",
-    bottom: -40,
+    bottom: 0,
     alignSelf: "center",
-    width: 320,
-    height: 180,
-    borderRadius: 999,
-    backgroundColor: "rgba(215, 154, 89, 0.16)",
+    width: "84%",
+    height: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.10)",
   },
 
   topBar: {
@@ -4791,7 +4952,7 @@ const styles = StyleSheet.create({
     maxWidth: "82%",
     backgroundColor: Brand.bronze,
     borderBottomRightRadius: 8,
-    shadowColor: "#6f4928",
+    shadowColor: "#000000",
     shadowOpacity: 0.08,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 5 },
@@ -4872,6 +5033,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
+  floatingAssistantOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    alignItems: "center",
+    zIndex: 6,
+  },
+
   composerCard: {
     borderRadius: 26,
     backgroundColor: "rgba(255, 255, 255, 0.10)",
@@ -4879,7 +5048,7 @@ const styles = StyleSheet.create({
     borderColor: Brand.lineStrong,
     paddingHorizontal: 8,
     paddingVertical: 6,
-    shadowColor: "#6f4928",
+    shadowColor: "#000000",
     shadowOpacity: 0.12,
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 8 },
@@ -4972,7 +5141,7 @@ const styles = StyleSheet.create({
     marginTop: 14,
     minHeight: 54,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(124, 99, 80, 0.14)",
+    borderBottomColor: Brand.line,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -4992,7 +5161,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(124, 99, 80, 0.32)",
+    borderColor: Brand.lineStrong,
     backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
@@ -5057,7 +5226,7 @@ const styles = StyleSheet.create({
   },
 
   chatListItemActive: {
-    backgroundColor: "rgba(124, 99, 80, 0.10)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   chatListTitle: {
@@ -5072,13 +5241,13 @@ const styles = StyleSheet.create({
     minWidth: 42,
     alignItems: "center",
     borderRadius: 999,
-    backgroundColor: "rgba(124, 99, 80, 0.10)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     paddingHorizontal: 8,
     paddingVertical: 3,
   },
 
   chatListKindBadgeVoice: {
-    backgroundColor: "rgba(168, 103, 52, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.12)",
   },
 
   chatListKindBadgeText: {
@@ -5169,7 +5338,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#2c1d13",
+    backgroundColor: "rgba(255, 138, 138, 0.16)",
   },
 
   accountSignOutText: {
@@ -5185,7 +5354,7 @@ const styles = StyleSheet.create({
   actionSheetBackdrop: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(47, 33, 24, 0.18)",
+    backgroundColor: "rgba(0, 0, 0, 0.58)",
   },
 
   actionSheetWrap: {
@@ -5207,7 +5376,7 @@ const styles = StyleSheet.create({
     width: 42,
     height: 5,
     borderRadius: 999,
-    backgroundColor: "rgba(124, 99, 80, 0.28)",
+    backgroundColor: "rgba(255, 255, 255, 0.20)",
     marginBottom: 12,
   },
 
@@ -5317,12 +5486,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
 
-  voiceOrbGlow: {
+  voiceAssistantGlow: {
     position: "absolute",
-    width: 320,
-    height: 320,
+    width: 280,
+    height: 160,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 227, 180, 0.34)",
+    backgroundColor: "rgba(87, 222, 255, 0.13)",
+    transform: [{ translateY: 28 }],
   },
 
   voiceTitle: {
@@ -5369,7 +5539,7 @@ const styles = StyleSheet.create({
 
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(47, 33, 24, 0.22)",
+    backgroundColor: "rgba(0, 0, 0, 0.58)",
     alignItems: "center",
     justifyContent: "center",
     padding: 20,

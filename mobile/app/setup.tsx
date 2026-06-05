@@ -835,7 +835,7 @@ export default function Setup() {
               value={input}
               onChangeText={setInput}
               placeholder={`Default: ${name || "Elli"}`}
-              placeholderTextColor="rgba(124, 99, 80, 0.52)"
+              placeholderTextColor="rgba(226, 238, 255, 0.46)"
               style={styles.input}
               autoCapitalize="words"
               autoCorrect={false}
@@ -846,7 +846,7 @@ export default function Setup() {
               value={wakePhrase}
               onChangeText={setWakePhrase}
               placeholder={`Example: Hey ${selectedName}`}
-              placeholderTextColor="rgba(124, 99, 80, 0.52)"
+              placeholderTextColor="rgba(226, 238, 255, 0.46)"
               style={styles.input}
               autoCapitalize="words"
               autoCorrect={false}
@@ -1065,7 +1065,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(244,214,174,0.46)",
+    backgroundColor: "rgba(255,255,255,0.08)",
   },
   stateChipText: {
     fontSize: 12,

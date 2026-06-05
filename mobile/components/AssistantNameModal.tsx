@@ -64,7 +64,7 @@ export default function AssistantNameModal({
 
         <BlurView
           intensity={22}
-          tint="light"
+          tint="dark"
           style={[
             styles.cardWrap,
             {
@@ -73,7 +73,7 @@ export default function AssistantNameModal({
           ]}
         >
           <LinearGradient
-            colors={["rgba(255,255,255,0.96)", "rgba(255,236,204,0.92)"]}
+            colors={Brand.gradients.softCard}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.card}
@@ -115,7 +115,7 @@ export default function AssistantNameModal({
                 value={name}
                 onChangeText={setName}
                 placeholder="Eg: Kavi, Tara, Aruvi..."
-                placeholderTextColor="rgba(124, 99, 80, 0.45)"
+                placeholderTextColor="rgba(226, 238, 255, 0.46)"
                 style={styles.input}
                 autoCapitalize="words"
                 autoCorrect={false}
@@ -126,7 +126,7 @@ export default function AssistantNameModal({
             </View>
 
             <LinearGradient
-              colors={["rgba(255,255,255,0.84)", "rgba(255,239,210,0.70)"]}
+              colors={["rgba(255,255,255,0.08)", "rgba(87,222,255,0.05)"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.previewCard}
@@ -185,7 +185,7 @@ const styles = StyleSheet.create({
     padding: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(72, 46, 18, 0.22)",
+    backgroundColor: "rgba(0, 0, 0, 0.58)",
   },
 
   cardWrap: {
@@ -193,7 +193,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255,249,239,0.78)",
+    backgroundColor: Brand.glassStrong,
   },
 
   card: {
@@ -215,7 +215,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255,255,255,0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -232,7 +232,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.68)",
+    backgroundColor: "rgba(255,255,255,0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -270,7 +270,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.62)",
+    backgroundColor: "rgba(255,255,255,0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -285,7 +285,7 @@ const styles = StyleSheet.create({
     marginTop: 18,
     minHeight: 56,
     borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.78)",
+    backgroundColor: "rgba(255,255,255,0.07)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
     flexDirection: "row",
@@ -322,7 +322,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
-    backgroundColor: "rgba(255,255,255,0.74)",
+    backgroundColor: "rgba(255,255,255,0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -363,7 +363,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255,255,255,0.07)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
   },

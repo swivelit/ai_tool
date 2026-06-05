@@ -230,7 +230,7 @@ device_window_size() {
   return 1
 }
 
-voice_orb_center_from_window() {
+voice_assistant_center_from_window() {
   local width height
   if ! read -r width height < <(device_window_size); then
     return 1
@@ -525,7 +525,7 @@ PY
 
 wait_for_voice_mode_ready() {
   wait_for_desc "voice-swipe-surface" 8 ||
-    wait_for_desc "Hold the orb to record" 4 ||
+    wait_for_desc "Hold the assistant to talk" 4 ||
     wait_for_text "Hold to Talk" 4 ||
     wait_for_text "Listening" 4 ||
     wait_for_desc "voice-session-transcript" 4
@@ -1117,6 +1117,7 @@ if ! is_truthy "${SKIP_PRECHECKS:-}"; then
     -u EXPO_PUBLIC_E2E_EXPECT_ORB_TRANSCRIPT \
     -u EXPO_PUBLIC_E2E_HANDS_FREE_WAKE_PHRASE \
     -u EXPO_PUBLIC_E2E_HANDS_FREE_COMMAND \
+    -u JAI_DEBUG_LITE \
     bash -lc "cd '$MOBILE_DIR' && npm test -- --run"
   run_step "mobile-release-verify-backend-first" bash -lc "cd '$MOBILE_DIR' && npm run release:verify-backend-first"
   run_step "bash-n-build-apk" bash -n "$ROOT_DIR/build-apk.sh"
@@ -1335,7 +1336,7 @@ if complete_onboarding_smoke_if_present; then
 fi
 
 launch_chat_ready_timeout="${APK_LAUNCH_CHAT_READY_TIMEOUT:-240}"
-if wait_for_desc "chat-input" "$launch_chat_ready_timeout"; then
+if wait_for_desc "chat-input" "$launch_chat_ready_timeout" || ensure_chat_input_ready "launch"; then
   dismiss_expo_warning || true
   capture_step "chat-ready"
   assert_desc_absent "chat-mic-button" "chat-mic-button-absent-after-launch" || true
@@ -1399,18 +1400,18 @@ if [[ "$voice_sheet_opened" != "1" ]]; then
   capture_step "voice-sheet-not-ready"
 else
     capture_step "voice-modal-open"
-    orb_center=""
-    if ! orb_center="$(find_ui_center desc "Hold the orb to record" "voice-orb")"; then
-      if orb_center="$(voice_orb_center_from_window)"; then
-        record_skip "voice-orb-not-found-in-uiautomator; used coordinate fallback"
+    assistant_center=""
+    if ! assistant_center="$(find_ui_center desc "Hold the assistant to talk" "voice-assistant")"; then
+      if assistant_center="$(voice_assistant_center_from_window)"; then
+        record_skip "voice-assistant-not-found-in-uiautomator; used coordinate fallback"
       else
-        mark_failed "voice-orb-not-found"
-        capture_step "voice-orb-not-found"
+        mark_failed "voice-assistant-not-found"
+        capture_step "voice-assistant-not-found"
       fi
     fi
-    if [[ -n "$orb_center" ]]; then
-      read -r orb_x orb_y <<< "$orb_center"
-      adb shell input swipe "$orb_x" "$orb_y" "$orb_x" "$orb_y" 2200 >/dev/null 2>&1 || mark_failed "voice-orb-long-press"
+    if [[ -n "$assistant_center" ]]; then
+      read -r assistant_x assistant_y <<< "$assistant_center"
+      adb shell input swipe "$assistant_x" "$assistant_y" "$assistant_x" "$assistant_y" 2200 >/dev/null 2>&1 || mark_failed "voice-assistant-long-press"
 
       voice_reply_seen=0
       voice_reply_ui_seen=0
@@ -1468,7 +1469,7 @@ else
         fi
       fi
 
-      if [[ "$voice_reply_ui_seen" == "1" ]] && wait_for_text "Hold the orb. Your speech and reply will appear here." 1; then
+      if [[ "$voice_reply_ui_seen" == "1" ]] && wait_for_text "Hold the assistant. Your speech and reply will appear here." 1; then
         mark_failed "voice-empty-helper-visible"
       fi
       if [[ "$voice_reply_ui_seen" == "1" ]] && wait_for_desc "voice-reply-status" 1; then

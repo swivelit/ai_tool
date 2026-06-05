@@ -3,6 +3,8 @@ import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 
+import { Brand } from "@/constants/theme";
+
 export function GlassCard({
   children,
   style,
@@ -33,7 +35,7 @@ export function GlassCard({
       style={[styles.shell, radiusStyle, style]}
     >
       <BlurView
-        intensity={28}
+        intensity={22}
         tint="dark"
         experimentalBlurMethod="dimezisBlurView"
         style={StyleSheet.absoluteFillObject}
@@ -41,9 +43,9 @@ export function GlassCard({
 
       <LinearGradient
         colors={[
-          "rgba(255,255,255,0.10)",
-          "rgba(255,244,224,0.05)",
-          "rgba(215,154,89,0.06)",
+          "rgba(255,255,255,0.075)",
+          "rgba(255,255,255,0.032)",
+          "rgba(86,222,255,0.045)",
         ]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -61,8 +63,8 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(255,240,220,0.14)",
-    backgroundColor: "rgba(24, 22, 31, 0.62)",
+    borderColor: Brand.line,
+    backgroundColor: Brand.glass,
     shadowColor: "#000000",
     shadowOpacity: 0.4,
     shadowRadius: 28,
@@ -80,7 +82,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: "46%",
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: "rgba(255,255,255,0.035)",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
   },

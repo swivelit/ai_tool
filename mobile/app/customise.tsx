@@ -381,7 +381,7 @@ export default function CustomiseScreen() {
                 }}
                 testID="life-context-enable-toggle"
                 accessibilityLabel="life-context-enable-toggle"
-                trackColor={{ false: "rgba(124, 99, 80, 0.18)", true: "rgba(215,154,89,0.55)" }}
+                trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
                 thumbColor="#fff7ef"
               />
             </View>
@@ -447,7 +447,7 @@ export default function CustomiseScreen() {
                 disabled={!lifeContextEnabled}
                 testID="life-context-share-backend-toggle"
                 accessibilityLabel="life-context-share-backend-toggle"
-                trackColor={{ false: "rgba(124, 99, 80, 0.18)", true: "rgba(215,154,89,0.55)" }}
+                trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
                 thumbColor="#fff7ef"
               />
             </View>
@@ -465,7 +465,7 @@ export default function CustomiseScreen() {
                 disabled={!lifeContextEnabled}
                 testID="life-context-share-app-names-toggle"
                 accessibilityLabel="life-context-share-app-names-toggle"
-                trackColor={{ false: "rgba(124, 99, 80, 0.18)", true: "rgba(215,154,89,0.55)" }}
+                trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
                 thumbColor="#fff7ef"
               />
             </View>
@@ -491,7 +491,7 @@ export default function CustomiseScreen() {
                 }}
                 testID="customise-hands-free-switch"
                 accessibilityLabel="customise-hands-free-switch"
-                trackColor={{ false: "rgba(124, 99, 80, 0.18)", true: "rgba(215,154,89,0.55)" }}
+                trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
                 thumbColor="#fff7ef"
               />
             </View>
@@ -526,7 +526,7 @@ export default function CustomiseScreen() {
               <Switch
                 value={allowCloudFallback}
                 onValueChange={setAllowCloudFallback}
-                trackColor={{ false: "rgba(124, 99, 80, 0.18)", true: "rgba(215,154,89,0.55)" }}
+                trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
                 thumbColor="#fff7ef"
               />
             </View>
@@ -624,7 +624,7 @@ function LabeledInput({
           accessibilityLabel={accessibilityLabel}
           onChangeText={onChangeText}
           placeholder={placeholder}
-          placeholderTextColor="rgba(124, 99, 80, 0.52)"
+          placeholderTextColor="rgba(226, 238, 255, 0.46)"
           autoCapitalize="words"
           style={styles.input}
         />
@@ -651,7 +651,7 @@ const styles = StyleSheet.create({
     width: 210,
     height: 210,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
   bottomGlow: {
     position: "absolute",
@@ -660,7 +660,7 @@ const styles = StyleSheet.create({
     width: 270,
     height: 270,
     borderRadius: 999,
-    backgroundColor: "rgba(215,154,89,0.16)",
+    backgroundColor: "rgba(87,222,255,0.10)",
   },
   topBar: {
     minHeight: 48,
@@ -746,8 +746,8 @@ const styles = StyleSheet.create({
     borderColor: Brand.line,
   },
   optionCardActive: {
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
-    borderColor: "rgba(185,120,54,0.22)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    borderColor: "rgba(87,222,255,0.18)",
   },
   optionIconWrap: {
     width: 36,
@@ -772,9 +772,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
     borderWidth: 1,
-    borderColor: "rgba(185,120,54,0.18)",
+    borderColor: "rgba(87,222,255,0.16)",
   },
   statusChipText: { color: Brand.ink, fontSize: 12, fontWeight: "900" },
   secondaryBtn: {
@@ -798,7 +798,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    shadowColor: "#d4934f",
+    shadowColor: "#57deff",
     shadowOpacity: 0.24,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 10 },

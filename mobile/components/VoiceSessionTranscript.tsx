@@ -77,7 +77,7 @@ export function VoiceSessionTranscript({
       </ScrollView>
       <LinearGradient
         pointerEvents="none"
-        colors={["rgba(255, 247, 236, 0.98)", "rgba(255, 247, 236, 0)"]}
+        colors={["rgba(3, 4, 5, 0.96)", "rgba(3, 4, 5, 0)"]}
         style={styles.topFade}
       />
     </View>
@@ -135,7 +135,7 @@ const styles = StyleSheet.create({
     maxWidth: "92%",
     borderRadius: 8,
     overflow: "hidden",
-    backgroundColor: "rgba(255, 245, 231, 0.92)",
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
     color: Brand.ink,
     fontSize: 13,
     lineHeight: 18,

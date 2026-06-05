@@ -648,10 +648,10 @@ export default function SettingsModal() {
               ]}
             >
               {deleting ? (
-                <ActivityIndicator color="#fff8f5" />
+                <ActivityIndicator color="#f7fbff" />
               ) : (
                 <>
-                  <Ionicons name="trash-outline" size={16} color="#fff8f5" />
+                  <Ionicons name="trash-outline" size={16} color="#f7fbff" />
                   <Text style={styles.dangerButtonText}>Delete account permanently</Text>
                 </>
               )}
@@ -845,7 +845,7 @@ function Field({
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
-          placeholderTextColor="rgba(124, 99, 80, 0.52)"
+          placeholderTextColor="rgba(226, 238, 255, 0.46)"
           multiline={multiline}
           secureTextEntry={secureTextEntry}
           autoCapitalize="none"
@@ -885,7 +885,7 @@ const styles = StyleSheet.create({
     width: 210,
     height: 210,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   bottomGlow: {
@@ -895,7 +895,7 @@ const styles = StyleSheet.create({
     width: 270,
     height: 270,
     borderRadius: 999,
-    backgroundColor: "rgba(215,154,89,0.16)",
+    backgroundColor: "rgba(87,222,255,0.10)",
   },
 
   topBar: {
@@ -1017,7 +1017,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   metricLabel: {
@@ -1173,8 +1173,8 @@ const styles = StyleSheet.create({
   },
 
   choiceCardActive: {
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
-    borderColor: "rgba(185,120,54,0.22)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    borderColor: "rgba(87,222,255,0.18)",
   },
 
   choiceCardIconWrap: {
@@ -1307,8 +1307,8 @@ const styles = StyleSheet.create({
   },
 
   trainingStatusPillActive: {
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
-    borderColor: "rgba(185,120,54,0.28)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    borderColor: "rgba(87,222,255,0.22)",
   },
 
   trainingStatusPillSuccess: {
@@ -1344,8 +1344,8 @@ const styles = StyleSheet.create({
   },
 
   trainingMicOuterActive: {
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
-    borderColor: "rgba(185,120,54,0.24)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    borderColor: "rgba(87,222,255,0.20)",
   },
 
   trainingMicOuterSuccess: {
@@ -1372,7 +1372,7 @@ const styles = StyleSheet.create({
   },
 
   trainingMicInnerSuccess: {
-    backgroundColor: "rgba(244,255,239,0.98)",
+    backgroundColor: "rgba(125,226,173,0.14)",
   },
 
   trainingMicInnerError: {
@@ -1400,7 +1400,7 @@ const styles = StyleSheet.create({
     width: "100%",
     height: 12,
     borderRadius: 999,
-    backgroundColor: "rgba(124,99,80,0.10)",
+    backgroundColor: "rgba(255,255,255,0.07)",
     overflow: "hidden",
     marginTop: 18,
   },
@@ -1574,7 +1574,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    shadowColor: "#d4934f",
+    shadowColor: "#57deff",
     shadowOpacity: 0.24,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 10 },
@@ -1638,7 +1638,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   accountAvatarText: {
@@ -1697,7 +1697,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   infoCardLabel: {
@@ -1818,7 +1818,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   timelinePointLabel: {
@@ -1839,7 +1839,7 @@ const styles = StyleSheet.create({
   timelineDivider: {
     width: 1,
     marginVertical: 6,
-    backgroundColor: "rgba(185,120,54,0.16)",
+    backgroundColor: "rgba(87,222,255,0.14)",
   },
 
   twoColRow: {
@@ -1871,7 +1871,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   miniStatValue: {
@@ -1919,7 +1919,7 @@ const styles = StyleSheet.create({
   },
 
   dangerButtonText: {
-    color: "#fff8f5",
+    color: "#f7fbff",
     fontSize: 14,
     fontWeight: "900",
   },
@@ -1928,7 +1928,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     paddingHorizontal: 18,
-    backgroundColor: "rgba(72, 46, 18, 0.18)",
+    backgroundColor: "rgba(0, 0, 0, 0.58)",
   },
 
   noticeIconWrap: {
@@ -1986,7 +1986,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#9a6328",
+    backgroundColor: "#2857d7",
   },
 
   noticePrimaryText: {

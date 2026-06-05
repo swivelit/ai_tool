@@ -22,7 +22,7 @@ function TabIcon({
     <View style={[styles.iconWrap, focused && styles.iconWrapActive]}>
       {focused ? (
         <LinearGradient
-          colors={["#ffeec9", "#ffd99d", "#e4a85d"]}
+          colors={Brand.gradients.button}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.iconGradient}
@@ -94,7 +94,7 @@ export default function TabLayout() {
         tabBarButton: HapticTab,
         sceneStyle: { backgroundColor: "transparent" },
         tabBarActiveTintColor: Brand.ink,
-        tabBarInactiveTintColor: "rgba(124, 99, 80, 0.68)",
+        tabBarInactiveTintColor: "rgba(226, 238, 255, 0.58)",
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: "800",
@@ -111,19 +111,19 @@ export default function TabLayout() {
           borderTopWidth: 0,
           backgroundColor: "transparent",
           elevation: 0,
-          shadowColor: "#c8863d",
+          shadowColor: "#000000",
           shadowOpacity: 0.12,
           shadowRadius: 18,
           shadowOffset: { width: 0, height: -6 },
         },
         tabBarBackground: () => (
           <View style={StyleSheet.absoluteFill}>
-            <BlurView intensity={18} tint="light" style={StyleSheet.absoluteFill} />
+            <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFill} />
             <LinearGradient
               colors={[
-                "rgba(255,250,242,0.96)",
-                "rgba(255,239,208,0.95)",
-                "rgba(255,229,180,0.97)",
+                "rgba(14,18,25,0.96)",
+                "rgba(6,8,12,0.96)",
+                "rgba(16,20,28,0.98)",
               ]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
     left: 16,
     right: 16,
     height: 1,
-    backgroundColor: "rgba(124, 84, 52, 0.10)",
+    backgroundColor: Brand.line,
   },
 
   iconWrap: {
@@ -189,7 +189,7 @@ const styles = StyleSheet.create({
   },
 
   iconWrapActive: {
-    shadowColor: "#d4924e",
+    shadowColor: "#57deff",
     shadowOpacity: 0.22,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
@@ -203,6 +203,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.58)",
+    borderColor: Brand.lineStrong,
   },
 });

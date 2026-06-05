@@ -5,7 +5,15 @@ the user is talking (see `mobile/lib/backchannel.ts`). They are the spoken nods
 a human makes — "aaha", "hmm", "mm-hmm" — emitted on a randomized ~3–7s cadence
 and stopped the instant the user stops speaking or the assistant starts talking.
 
-## Files (drop real recordings here, same names)
+## Placeholder status
+
+The app currently uses tiny synthetic WAV data-URI placeholders in
+`mobile/lib/backchannel.ts`, not checked-in human recordings. This avoids Metro
+missing-asset failures while keeping the controller active. Replace those
+placeholders with real, short acknowledgement recordings before shipping this as
+production audio.
+
+## Suggested files if replacing placeholders
 
 | Cue       | File         |
 | --------- | ------------ |
@@ -13,9 +21,9 @@ and stopped the instant the user stops speaking or the assistant starts talking.
 | `hmm`     | `hmm.mp3`    |
 | `mm-hmm`  | `mmhmm.mp3`  |
 
-The files currently checked in are **placeholders** (not real audio). Replace
-each with a real recording of the same name. The controller loads whatever is at
-these paths via `require(...)`, so no code change is needed once you swap them.
+After adding real files, either pass them through
+`createBackchannelController({ clips: { aaha: require(...) } })` or update
+`defaultClipSources()` in `mobile/lib/backchannel.ts` to point at them.
 
 ## Recording guidance
 
