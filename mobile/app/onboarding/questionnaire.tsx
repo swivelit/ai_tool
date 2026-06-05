@@ -512,7 +512,7 @@ export default function QuestionnaireScreen() {
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.screen}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -757,7 +757,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   assistantBubble: {
-    backgroundColor: "rgba(255,255,255,0.92)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: "rgba(135,70,40,0.08)",
   },
@@ -804,7 +804,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    backgroundColor: "rgba(255,255,255,0.92)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: "rgba(135,70,40,0.14)",
   },

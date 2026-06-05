@@ -793,7 +793,7 @@ export default function Setup() {
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
       <KeyboardAvoidingView
         style={styles.page}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -1027,7 +1027,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
   tagText: {
     fontSize: 12,
@@ -1038,7 +1038,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
   skipButtonText: {
     fontSize: 13,
@@ -1089,7 +1089,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 14,
     borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.78)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     fontSize: 15,
     color: Brand.ink,
   },
@@ -1107,7 +1107,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.74)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
   sampleChipLabel: {
     flex: 1,
@@ -1124,7 +1124,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
     padding: 16,
     borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
   statusTitle: {
     fontSize: 13,
@@ -1154,7 +1154,7 @@ const styles = StyleSheet.create({
     backgroundColor: Brand.bronze,
   },
   actionButtonSecondary: {
-    backgroundColor: "rgba(255,255,255,0.78)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
   actionButtonDisabled: {
     opacity: 0.55,

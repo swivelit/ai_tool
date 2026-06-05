@@ -98,7 +98,7 @@ export default function LoginScreen() {
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
 
       <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
         <View style={styles.topGlow} />
@@ -332,7 +332,7 @@ const styles = StyleSheet.create({
     width: 220,
     height: 220,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.55)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   leftGlow: {
@@ -342,7 +342,7 @@ const styles = StyleSheet.create({
     width: 200,
     height: 200,
     borderRadius: 999,
-    backgroundColor: "rgba(255,229,180,0.28)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
 
   bottomGlow: {
@@ -352,7 +352,7 @@ const styles = StyleSheet.create({
     width: 240,
     height: 240,
     borderRadius: 999,
-    backgroundColor: "rgba(255,229,180,0.35)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
 
   backButton: {
@@ -385,7 +385,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: Brand.line,
-    backgroundColor: "rgba(255,255,255,0.62)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   titlePillText: {
@@ -420,7 +420,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.58)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -458,7 +458,7 @@ const styles = StyleSheet.create({
     gap: 7,
     paddingHorizontal: 11,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.66)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -499,7 +499,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     flexDirection: "row",
     alignItems: "center",
     overflow: "hidden",
@@ -573,7 +573,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255,255,255,0.80)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -590,7 +590,7 @@ const styles = StyleSheet.create({
     marginTop: 18,
     padding: 16,
     borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.62)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
     gap: 10,
@@ -608,7 +608,7 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingHorizontal: 10,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -654,7 +654,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255,255,255,0.82)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -685,7 +685,7 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 14,
     borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.52)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -696,7 +696,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.68)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
 
   benefitTitle: {

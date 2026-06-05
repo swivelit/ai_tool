@@ -498,7 +498,7 @@ function AppShell() {
 
   return (
     <View style={styles.appShell}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
 
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
@@ -599,7 +599,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     padding: 20,
-    backgroundColor: "rgba(255,248,240,0.86)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   restoreCard: {
@@ -653,13 +653,13 @@ const styles = StyleSheet.create({
   },
 
   restorePrimaryButton: {
-    backgroundColor: Brand.ink,
+    backgroundColor: Brand.bronze,
   },
 
   restoreSecondaryButton: {
     borderWidth: 1,
     borderColor: "rgba(74,49,38,0.18)",
-    backgroundColor: "rgba(255,255,255,0.58)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   restorePrimaryText: {
@@ -729,7 +729,7 @@ const styles = StyleSheet.create({
     borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -766,7 +766,7 @@ const styles = StyleSheet.create({
   },
 
   alertPrimaryButton: {
-    backgroundColor: "#efbf7c",
+    backgroundColor: "#9a6328",
   },
 
   alertPrimaryText: {
@@ -781,7 +781,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255,255,255,0.62)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   alertSecondaryText: {

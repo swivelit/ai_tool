@@ -33,17 +33,17 @@ export function GlassCard({
       style={[styles.shell, radiusStyle, style]}
     >
       <BlurView
-        intensity={24}
-        tint="light"
+        intensity={28}
+        tint="dark"
         experimentalBlurMethod="dimezisBlurView"
         style={StyleSheet.absoluteFillObject}
       />
 
       <LinearGradient
         colors={[
-          "rgba(255,255,255,0.42)",
-          "rgba(255,244,224,0.24)",
-          "rgba(215,154,89,0.08)",
+          "rgba(255,255,255,0.10)",
+          "rgba(255,244,224,0.05)",
+          "rgba(215,154,89,0.06)",
         ]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -61,10 +61,10 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.38)",
-    backgroundColor: "rgba(255, 249, 239, 0.34)",
-    shadowColor: "#a56522",
-    shadowOpacity: 0.1,
+    borderColor: "rgba(255,240,220,0.14)",
+    backgroundColor: "rgba(24, 22, 31, 0.62)",
+    shadowColor: "#000000",
+    shadowOpacity: 0.4,
     shadowRadius: 28,
     shadowOffset: { width: 0, height: 12 },
     elevation: 10,
@@ -80,7 +80,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: "46%",
-    backgroundColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
   },

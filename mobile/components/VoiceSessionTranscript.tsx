@@ -123,7 +123,7 @@ const styles = StyleSheet.create({
     maxWidth: "88%",
     borderRadius: 8,
     overflow: "hidden",
-    backgroundColor: Brand.cocoa,
+    backgroundColor: Brand.bronze,
     color: Brand.cream,
     fontSize: 13,
     lineHeight: 18,

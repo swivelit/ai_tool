@@ -272,7 +272,7 @@ export default function CustomiseScreen() {
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
 
       <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
         <View style={styles.topGlow} />
@@ -642,7 +642,7 @@ const styles = StyleSheet.create({
     width: 220,
     height: 220,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.56)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
   leftGlow: {
     position: "absolute",
@@ -651,7 +651,7 @@ const styles = StyleSheet.create({
     width: 210,
     height: 210,
     borderRadius: 999,
-    backgroundColor: "rgba(255,229,180,0.34)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
   bottomGlow: {
     position: "absolute",
@@ -674,7 +674,7 @@ const styles = StyleSheet.create({
     borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.68)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -692,7 +692,7 @@ const styles = StyleSheet.create({
   inputLabel: { color: Brand.cocoa, fontSize: 13, fontWeight: "800", marginBottom: 8 },
   inputShell: {
     borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
     minHeight: 56,
@@ -708,7 +708,7 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "rgba(255,255,255,0.58)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
     flexDirection: "row",
@@ -727,7 +727,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
     borderRadius: 20,
     padding: 14,
-    backgroundColor: "rgba(255,255,255,0.6)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
     gap: 6,
@@ -741,12 +741,12 @@ const styles = StyleSheet.create({
     minWidth: 140,
     borderRadius: 22,
     padding: 14,
-    backgroundColor: "rgba(255,255,255,0.58)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
   optionCardActive: {
-    backgroundColor: "rgba(255,229,180,0.78)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
     borderColor: "rgba(185,120,54,0.22)",
   },
   optionIconWrap: {
@@ -755,7 +755,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
   optionTitle: { marginTop: 12, color: Brand.cocoa, fontSize: 14, fontWeight: "900" },
   optionTitleActive: { color: Brand.ink },
@@ -772,7 +772,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.66)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
     borderWidth: 1,
     borderColor: "rgba(185,120,54,0.18)",
   },
@@ -782,7 +782,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255,255,255,0.68)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",

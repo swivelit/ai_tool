@@ -3967,7 +3967,7 @@ export default function Home() {
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.screen}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
 
       <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
         <View style={styles.topGlow} />
@@ -4430,7 +4430,7 @@ export default function Home() {
         }}
       >
         <LinearGradient colors={Brand.gradients.page} style={styles.voiceScreen}>
-          <StatusBar style="dark" />
+          <StatusBar style="light" />
 
           <View
             style={styles.voiceSwipeSurface}
@@ -4683,7 +4683,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.74)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
   },
@@ -4710,7 +4710,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.84)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
   },
@@ -4757,7 +4757,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.74)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
     marginBottom: 18,
@@ -4789,7 +4789,7 @@ const styles = StyleSheet.create({
 
   userBubble: {
     maxWidth: "82%",
-    backgroundColor: Brand.cocoa,
+    backgroundColor: Brand.bronze,
     borderBottomRightRadius: 8,
     shadowColor: "#6f4928",
     shadowOpacity: 0.08,
@@ -4799,7 +4799,7 @@ const styles = StyleSheet.create({
   },
 
   assistantBubble: {
-    backgroundColor: "rgba(255,255,255,0.82)",
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
     borderWidth: 1,
     borderColor: Brand.line,
     borderBottomLeftRadius: 8,
@@ -4861,7 +4861,7 @@ const styles = StyleSheet.create({
   },
 
   errorBubble: {
-    backgroundColor: "rgba(255,255,255,0.9)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderColor: "rgba(180, 82, 52, 0.32)",
   },
 
@@ -4874,7 +4874,7 @@ const styles = StyleSheet.create({
 
   composerCard: {
     borderRadius: 26,
-    backgroundColor: "rgba(255, 250, 242, 0.92)",
+    backgroundColor: "rgba(255, 255, 255, 0.10)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
     paddingHorizontal: 8,
@@ -4930,7 +4930,7 @@ const styles = StyleSheet.create({
 
   drawerScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(47, 33, 24, 0.18)",
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
   },
 
   drawerRow: {
@@ -4956,7 +4956,7 @@ const styles = StyleSheet.create({
     height: 52,
     paddingHorizontal: 16,
     borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.74)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -4993,7 +4993,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 1,
     borderColor: "rgba(124, 99, 80, 0.32)",
-    backgroundColor: "rgba(255,255,255,0.4)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   drawerSectionHeader: {
@@ -5100,7 +5100,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
     minHeight: 58,
     borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
     flexDirection: "row",
@@ -5115,7 +5115,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 239, 213, 0.9)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   settingsText: {
@@ -5127,7 +5127,7 @@ const styles = StyleSheet.create({
   accountCard: {
     marginTop: 14,
     borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
     padding: 16,
@@ -5233,7 +5233,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -5262,7 +5262,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginTop: 12,
-    backgroundColor: "rgba(255,255,255,0.52)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -5294,7 +5294,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.66)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -5340,7 +5340,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: Brand.line,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
@@ -5388,7 +5388,7 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 239, 213, 0.9)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   modalTitle: {
@@ -5412,7 +5412,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 1,
     borderColor: Brand.line,
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   modalInfoLabel: {
@@ -5445,7 +5445,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255,255,255,0.76)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   modalSecondaryButtonText: {

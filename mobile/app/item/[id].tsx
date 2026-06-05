@@ -331,7 +331,7 @@ export default function ItemDetail() {
 
   return (
     <LinearGradient colors={Brand.gradients.page} style={styles.page}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
 
       <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
         <View style={styles.topGlow} />
@@ -808,7 +808,7 @@ const styles = StyleSheet.create({
     width: 220,
     height: 220,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.56)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
   },
 
   leftGlow: {
@@ -818,7 +818,7 @@ const styles = StyleSheet.create({
     width: 210,
     height: 210,
     borderRadius: 999,
-    backgroundColor: "rgba(255,229,180,0.34)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
 
   bottomGlow: {
@@ -844,7 +844,7 @@ const styles = StyleSheet.create({
     borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.68)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -901,7 +901,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.66)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
     borderWidth: 1,
     borderColor: "rgba(185,120,54,0.18)",
   },
@@ -960,7 +960,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
-    backgroundColor: "rgba(255,255,255,0.62)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -987,7 +987,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
-    backgroundColor: "rgba(255,255,255,0.7)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -1040,7 +1040,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.66)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -1064,7 +1064,7 @@ const styles = StyleSheet.create({
     minHeight: 110,
     borderRadius: 20,
     padding: 14,
-    backgroundColor: "rgba(255,255,255,0.58)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -1075,7 +1075,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.64)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
 
   infoCardLabel: {
@@ -1105,7 +1105,7 @@ const styles = StyleSheet.create({
     marginTop: 18,
     padding: 16,
     borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.58)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -1128,7 +1128,7 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 14,
     borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.58)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -1139,7 +1139,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.68)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
 
   systemRowLabel: {
@@ -1162,7 +1162,7 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 14,
     borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.56)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -1173,7 +1173,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.68)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
 
   exportHeroTitle: {
@@ -1217,7 +1217,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.68)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
 
   exportLabel: {
@@ -1248,7 +1248,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "rgba(255,255,255,0.64)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
   },
@@ -1292,7 +1292,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,229,180,0.60)",
+    backgroundColor: "rgba(255, 218, 160, 0.14)",
   },
 
   emptyTitle: {
@@ -1318,7 +1318,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: Brand.ink,
+    backgroundColor: Brand.bronze,
   },
 
   emptyActionBtnText: {
