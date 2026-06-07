@@ -48,6 +48,16 @@ describe("email OTP auth flow source contract", () => {
     expect(source).not.toContain("logo-google");
   });
 
+  it("signup error banner stays visible without oversized solid danger styling", () => {
+    const source = read("app/auth/signup.tsx");
+    const errorCardBlock = source.match(/errorCard:\s*\{[\s\S]*?\n  \},/)?.[0] || "";
+
+    expect(errorCardBlock).toContain("paddingVertical: 10");
+    expect(errorCardBlock).toContain("borderRadius: 12");
+    expect(errorCardBlock).toContain("borderWidth: 1");
+    expect(errorCardBlock).not.toContain("backgroundColor: Brand.danger");
+  });
+
   it("forgot-password screen exposes expected controls", () => {
     const source = read("app/auth/forgot-password.tsx");
 

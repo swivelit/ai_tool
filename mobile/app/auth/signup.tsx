@@ -699,14 +699,16 @@ const styles = StyleSheet.create({
   },
 
   errorCard: {
-    marginTop: 18,
+    marginTop: 14,
     flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    backgroundColor: Brand.danger,
+    alignItems: "flex-start",
+    gap: 8,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "rgba(244, 90, 90, 0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(244, 90, 90, 0.34)",
   },
 
   errorText: {

@@ -68,10 +68,13 @@ from .email_otp import (
     verify_and_consume_otp,
 )
 from .email_service import (
+    EMAIL_DELIVERY_UNAVAILABLE_MESSAGE,
+    EmailDeliverySendError,
     EmailServiceConfigurationError,
     build_otp_email_body,
+    email_delivery_runtime_status,
     get_email_sender,
-    safe_email_unavailable_detail,
+    validate_email_delivery_configuration,
 )
 from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
@@ -950,12 +953,21 @@ def _register_job_handlers() -> None:
     queue.register("export", _job_handle_export)
     queue.register("chat", _job_handle_chat)
 
-def _record_runtime_service(name: str, *, ok: bool, required: bool, detail: str = "") -> None:
+def _record_runtime_service(
+    name: str,
+    *,
+    ok: bool,
+    required: bool,
+    detail: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
     RUNTIME_STATUS["services"][name] = {
         "ok": ok,
         "required": required,
         "detail": detail,
     }
+    if metadata is not None:
+        RUNTIME_STATUS["services"][name]["metadata"] = metadata
     if not ok:
         RUNTIME_STATUS["errors"].append({"service": name, "detail": detail, "required": required})
 
@@ -1023,6 +1035,33 @@ def startup_runtime_services() -> None:
             required=auth_required,
             detail=str(exc),
         )
+
+    email_status = email_delivery_runtime_status(app_env=APP_ENV)
+    email_log_extra = {
+        "event": "email_delivery_config",
+        "configured": bool(email_status.get("configured")),
+        "missing": list(email_status.get("missing") or []),
+        "invalid": list(email_status.get("invalid") or []),
+        "smtp_host": email_status.get("smtp_host"),
+        "smtp_port": email_status.get("smtp_port"),
+        "smtp_use_tls": email_status.get("smtp_use_tls"),
+    }
+    if email_status.get("configured"):
+        logger.info("email_delivery_config", extra=email_log_extra)
+        email_detail = "configured"
+    else:
+        logger.warning("email_delivery_config", extra=email_log_extra)
+        email_detail = (
+            "warning: email delivery is not fully configured; "
+            f"missing={email_log_extra['missing']} invalid={email_log_extra['invalid']}"
+        )
+    _record_runtime_service(
+        "email_delivery",
+        ok=bool(email_status.get("configured")),
+        required=False,
+        detail=email_detail,
+        metadata=email_status,
+    )
 
     auto_create_tables = os.getenv("AUTO_CREATE_TABLES", "").strip().lower() in {"1", "true", "yes", "on"}
     if str(engine.url).startswith("sqlite"):
@@ -1345,6 +1384,10 @@ class PasswordResetConfirmRequest(BaseModel):
     email: str
     otp: str
     new_password: str
+
+
+class AdminEmailSendTestRequest(BaseModel):
+    to_email: str
 
 
 class ChatAPIRequest(BaseModel):
@@ -3083,6 +3126,124 @@ EMAIL_ALREADY_REGISTERED_MESSAGE = (
 )
 
 
+def _email_delivery_error_detail(code: str) -> Dict[str, str]:
+    return {
+        "code": code,
+        "message": EMAIL_DELIVERY_UNAVAILABLE_MESSAGE,
+    }
+
+
+def _email_delivery_http_exception(code: str) -> HTTPException:
+    return HTTPException(status_code=503, detail=_email_delivery_error_detail(code))
+
+
+def _email_delivery_status_for_log(
+    exc: EmailServiceConfigurationError | None = None,
+) -> Dict[str, Any]:
+    status = getattr(exc, "status", None) if exc is not None else None
+    if isinstance(status, dict) and status:
+        return status
+    return email_delivery_runtime_status()
+
+
+def _log_email_delivery_config_issue(
+    *,
+    event: str,
+    purpose: str,
+    exc: EmailServiceConfigurationError | EmailOtpConfigurationError | None = None,
+) -> None:
+    status = _email_delivery_status_for_log(
+        exc if isinstance(exc, EmailServiceConfigurationError) else None
+    )
+    logger.warning(
+        event,
+        extra={
+            "event": event,
+            "request_id": get_request_id(),
+            "purpose": purpose,
+            "exception_class": exc.__class__.__name__ if exc is not None else None,
+            "missing": list(status.get("missing") or []),
+            "invalid": list(status.get("invalid") or []),
+            "smtp_host": status.get("smtp_host"),
+            "smtp_port": status.get("smtp_port"),
+            "smtp_use_tls": status.get("smtp_use_tls"),
+        },
+    )
+
+
+def _log_email_delivery_send_issue(
+    *,
+    event: str,
+    purpose: str,
+    exc: BaseException,
+) -> None:
+    extra: Dict[str, Any] = {
+        "event": event,
+        "request_id": get_request_id(),
+        "purpose": purpose,
+        "exception_class": exc.__class__.__name__,
+    }
+    if isinstance(exc, EmailDeliverySendError):
+        extra.update(
+            {
+                "smtp_stage": exc.stage,
+                "smtp_exception_class": exc.exception_class,
+                "smtp_host": exc.host,
+                "smtp_port": exc.port,
+                "smtp_use_tls": exc.use_tls,
+            }
+        )
+    logger.warning(event, extra=extra)
+
+
+@app.get("/api/admin/email/status")
+def admin_email_status(
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    return email_delivery_runtime_status()
+
+
+@app.post("/api/admin/email/send-test")
+def admin_email_send_test(
+    payload: AdminEmailSendTestRequest,
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    try:
+        to_email = require_valid_email(payload.to_email)
+    except EmailOtpError as exc:
+        raise otp_http_exception(exc) from exc
+
+    try:
+        get_email_sender().send(
+            to_email=to_email,
+            subject="Swico email delivery test",
+            text_body="Email delivery is configured.",
+        )
+    except EmailServiceConfigurationError as exc:
+        _log_email_delivery_config_issue(
+            event="admin_email_test_config_unavailable",
+            purpose="admin_test",
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unconfigured") from exc
+    except EmailDeliverySendError as exc:
+        _log_email_delivery_send_issue(
+            event="admin_email_test_send_failed",
+            purpose="admin_test",
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unavailable") from exc
+    except Exception as exc:
+        _log_email_delivery_send_issue(
+            event="admin_email_test_send_failed",
+            purpose="admin_test",
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unavailable") from exc
+
+    return {"ok": True}
+
+
 def _validate_name(name: str) -> str:
     normalized = str(name or "").strip()
     if len(normalized) < 2:
@@ -3133,28 +3294,40 @@ def _send_email_otp(*, email: str, code: str, purpose: str) -> None:
     try:
         get_email_sender().send(to_email=email, subject=subject, text_body=body)
     except EmailServiceConfigurationError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=safe_email_unavailable_detail(),
-        ) from exc
+        _log_email_delivery_config_issue(
+            event="otp_email_delivery_config_unavailable",
+            purpose=purpose,
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unconfigured") from exc
+    except EmailDeliverySendError as exc:
+        _log_email_delivery_send_issue(
+            event="otp_email_delivery_send_failed",
+            purpose=purpose,
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unavailable") from exc
     except Exception as exc:
-        logger.exception("OTP email delivery failed", extra={"purpose": purpose})
-        raise HTTPException(
-            status_code=503,
-            detail="Email delivery is temporarily unavailable. Please try again later.",
-        ) from exc
+        _log_email_delivery_send_issue(
+            event="otp_email_delivery_send_failed",
+            purpose=purpose,
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unavailable") from exc
 
 
 def _require_email_delivery_configured_in_production() -> None:
     if not is_production_environment():
         return
     try:
-        get_email_sender()
+        validate_email_delivery_configuration()
     except EmailServiceConfigurationError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=safe_email_unavailable_detail(),
-        ) from exc
+        _log_email_delivery_config_issue(
+            event="email_delivery_config_required_failed",
+            purpose="otp_request",
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unconfigured") from exc
 
 
 def _create_and_send_otp(
@@ -3168,10 +3341,12 @@ def _create_and_send_otp(
     except EmailOtpError as exc:
         raise otp_http_exception(exc) from exc
     except EmailOtpConfigurationError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Email verification is temporarily unavailable. Please try again later.",
-        ) from exc
+        _log_email_delivery_config_issue(
+            event="email_otp_secret_config_unavailable",
+            purpose=purpose,
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unconfigured") from exc
 
     try:
         _send_email_otp(email=email, code=stored.code, purpose=purpose)

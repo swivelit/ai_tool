@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
+import re
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
 from sqlmodel import select
 
+import app.main as main_module
 from app.database import SessionLocal
 from app.email_otp import (
     EmailOtpError,
@@ -17,6 +20,7 @@ from app.email_otp import (
     verify_and_consume_otp,
     verify_otp_hash,
 )
+from app.email_service import EmailDeliverySendError, email_delivery_runtime_status
 from app.models import EmailOtpCode, User, UserProfile
 from app.time_utils import utc_now
 
@@ -31,14 +35,60 @@ class FakeEmailSender:
         )
 
 
+class FailingEmailSender(FakeEmailSender):
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_code = ""
+
+    def send(self, *, to_email: str, subject: str, text_body: str) -> None:
+        self.sent.append(
+            {"to_email": to_email, "subject": subject, "text_body": text_body}
+        )
+        match = re.search(r"\b(\d{6})\b", text_body)
+        self.last_code = match.group(1) if match else ""
+        raise EmailDeliverySendError(
+            stage="login",
+            exception_class="SMTPAuthenticationError",
+            host="smtp.gmail.com",
+            port=587,
+            use_tls=True,
+        )
+
+
 def _patch_email_sender(monkeypatch) -> FakeEmailSender:
     sender = FakeEmailSender()
     monkeypatch.setattr("app.main.get_email_sender", lambda: sender)
     return sender
 
 
+def _patch_failing_email_sender(monkeypatch) -> FailingEmailSender:
+    sender = FailingEmailSender()
+    monkeypatch.setattr("app.main.get_email_sender", lambda: sender)
+    return sender
+
+
 def _patch_firebase_exists(monkeypatch, exists: bool = False) -> None:
     monkeypatch.setattr("app.main.firebase_user_exists_by_email", lambda email: exists)
+
+
+def _set_production_email_env(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("EMAIL_USER", "sender@example.com")
+    monkeypatch.setenv("EMAIL_PASS", "smtp-test-password")
+    monkeypatch.setenv("EMAIL_FROM", "sender@example.com")
+    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    monkeypatch.setenv("SMTP_USE_TLS", "true")
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+
+
+def _assert_safe_email_delivery_detail(response, code: str) -> None:
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail == {
+        "code": code,
+        "message": "Email delivery is temporarily unavailable. Please try again later.",
+    }
 
 
 def test_email_otp_pure_functions_hash_without_raw_code(monkeypatch) -> None:
@@ -377,8 +427,7 @@ def test_password_reset_confirm_updates_firebase_password(
 
 
 def test_production_never_returns_dev_otp(client: TestClient, monkeypatch) -> None:
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    _set_production_email_env(monkeypatch)
     monkeypatch.setenv("EMAIL_OTP_DEV_RETURN_CODE", "true")
     _patch_firebase_exists(monkeypatch, False)
     _patch_email_sender(monkeypatch)
@@ -392,23 +441,195 @@ def test_production_never_returns_dev_otp(client: TestClient, monkeypatch) -> No
     assert "otp" not in response.json()
 
 
-def test_missing_smtp_config_returns_safe_error(
+def test_missing_email_user_in_production_returns_safe_503(
     client: TestClient,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    _set_production_email_env(monkeypatch)
     monkeypatch.delenv("EMAIL_USER", raising=False)
+    _patch_firebase_exists(monkeypatch, False)
+
+    response = client.post(
+        "/auth/email-otp/signup/request",
+        json={"email": "smtp-user@example.com", "name": "Smtp User"},
+    )
+
+    _assert_safe_email_delivery_detail(response, "email_delivery_unconfigured")
+    assert "smtp-test-password" not in response.text
+    assert "otp-test-secret" not in response.text
+
+
+def test_missing_email_pass_in_production_returns_safe_503(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    _set_production_email_env(monkeypatch)
     monkeypatch.delenv("EMAIL_PASS", raising=False)
     _patch_firebase_exists(monkeypatch, False)
 
     response = client.post(
         "/auth/email-otp/signup/request",
-        json={"email": "smtp@example.com", "name": "Smtp User"},
+        json={"email": "smtp-pass@example.com", "name": "Smtp Pass"},
     )
 
-    assert response.status_code == 503
-    assert "EMAIL_PASS" in response.json()["detail"]
+    _assert_safe_email_delivery_detail(response, "email_delivery_unconfigured")
+    assert "sender@example.com" not in response.text
     assert "otp-test-secret" not in response.text
+
+
+def test_missing_email_otp_secret_is_diagnosed_and_blocks_otp(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    _set_production_email_env(monkeypatch)
+    monkeypatch.delenv("EMAIL_OTP_SECRET", raising=False)
+    _patch_firebase_exists(monkeypatch, False)
+
+    status = email_delivery_runtime_status()
+    assert status["email_otp_secret_set"] is False
+    assert "EMAIL_OTP_SECRET" in status["missing"]
+    assert status["configured"] is False
+
+    response = client.post(
+        "/auth/email-otp/signup/request",
+        json={"email": "otp-secret@example.com", "name": "Otp Secret"},
+    )
+
+    _assert_safe_email_delivery_detail(response, "email_delivery_unconfigured")
+    assert "otp-test-secret" not in response.text
+
+
+def test_email_diagnostics_do_not_expose_secret_values(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DEBUG_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("ADMIN_EMAILS", "")
+    monkeypatch.setenv("EMAIL_USER", "harisender@example.com")
+    monkeypatch.setenv("EMAIL_PASS", "super-secret-email-pass")
+    monkeypatch.setenv("EMAIL_FROM", "harisender@example.com")
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "super-secret-otp")
+    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    monkeypatch.setenv("SMTP_USE_TLS", "true")
+
+    response = client.get(
+        "/api/admin/email/status",
+        headers={"x-admin-token": "admin-token"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configured"] is True
+    assert payload["email_user_set"] is True
+    assert payload["email_pass_set"] is True
+    assert payload["email_otp_secret_set"] is True
+    assert payload["masked_email_user"] == "ha***@example.com"
+    text = response.text
+    assert "harisender@example.com" not in text
+    assert "super-secret-email-pass" not in text
+    assert "super-secret-otp" not in text
+
+
+def test_smtp_send_failure_returns_safe_503_cleans_up_otp_and_omits_raw_code_from_logs(
+    client: TestClient,
+    monkeypatch,
+    caplog,
+) -> None:
+    _set_production_email_env(monkeypatch)
+    _patch_firebase_exists(monkeypatch, False)
+    sender = _patch_failing_email_sender(monkeypatch)
+    caplog.set_level(logging.WARNING)
+
+    response = client.post(
+        "/auth/email-otp/signup/request",
+        json={"email": "send-fail@example.com", "name": "Send Fail"},
+        headers={"x-request-id": "req-send-fail"},
+    )
+
+    _assert_safe_email_delivery_detail(response, "email_delivery_unavailable")
+    with SessionLocal() as session:
+        records = session.exec(select(EmailOtpCode)).all()
+    assert records == []
+    assert sender.last_code
+    assert sender.last_code not in response.text
+    assert sender.last_code not in caplog.text
+    assert "smtp-test-password" not in caplog.text
+    assert "otp-test-secret" not in caplog.text
+    delivery_record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "otp_email_delivery_send_failed"
+    )
+    assert getattr(delivery_record, "request_id") == "req-send-fail"
+    assert getattr(delivery_record, "smtp_stage") == "login"
+    assert getattr(delivery_record, "smtp_exception_class") == "SMTPAuthenticationError"
+
+
+def test_admin_email_status_requires_admin_token_in_production(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DEBUG_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("ADMIN_EMAILS", "")
+
+    response = client.get("/api/admin/email/status")
+
+    assert response.status_code == 403
+
+
+def test_admin_email_send_test_uses_fake_sender_and_hides_secrets(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DEBUG_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("ADMIN_EMAILS", "")
+    monkeypatch.setenv("EMAIL_PASS", "super-secret-email-pass")
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "super-secret-otp")
+    sender = _patch_email_sender(monkeypatch)
+
+    response = client.post(
+        "/api/admin/email/send-test",
+        headers={"x-admin-token": "admin-token"},
+        json={"to_email": "admin@example.com"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert sender.sent == [
+        {
+            "to_email": "admin@example.com",
+            "subject": "Swico email delivery test",
+            "text_body": "Email delivery is configured.",
+        }
+    ]
+    assert "super-secret-email-pass" not in response.text
+    assert "super-secret-otp" not in response.text
+
+
+def test_startup_records_safe_email_delivery_runtime_status(
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setattr(main_module, "APP_ENV", "production")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
+    monkeypatch.setenv("EMAIL_USER", "runtime@example.com")
+    monkeypatch.setenv("EMAIL_PASS", "runtime-secret-pass")
+    monkeypatch.setenv("EMAIL_FROM", "runtime@example.com")
+    monkeypatch.delenv("EMAIL_OTP_SECRET", raising=False)
+    caplog.set_level(logging.WARNING)
+
+    main_module.startup_runtime_services()
+
+    email_service = main_module.RUNTIME_STATUS["services"]["email_delivery"]
+    assert email_service["ok"] is False
+    assert email_service["required"] is False
+    assert email_service["metadata"]["email_otp_secret_set"] is False
+    assert "EMAIL_OTP_SECRET" in email_service["metadata"]["missing"]
+    assert "runtime-secret-pass" not in caplog.text
 
 
 def test_existing_protected_routes_still_require_auth(client: TestClient) -> None:

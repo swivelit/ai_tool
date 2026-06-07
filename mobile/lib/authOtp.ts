@@ -27,7 +27,7 @@ function parseBackendDetail(error: unknown): any {
   }
 }
 
-function friendlyOtpError(error: unknown) {
+export function friendlyOtpError(error: unknown) {
   const detail = parseBackendDetail(error);
   const details = getApiErrorDetails(error);
   const status = details.status;
@@ -52,6 +52,10 @@ function friendlyOtpError(error: unknown) {
       return "Too many incorrect attempts. Request a new code.";
     case "otp_cooldown":
       return backendMessage || "Please wait before requesting another code.";
+    case "email_delivery_unconfigured":
+    case "email_delivery_unavailable":
+    case "email_otp_secret_missing":
+      return "We couldn't send the OTP email right now. Please try again in a few minutes.";
   }
 
   if (status === 409 || /already registered/i.test(backendMessage)) {
@@ -63,7 +67,7 @@ function friendlyOtpError(error: unknown) {
   }
 
   if (status === 503) {
-    return "Email delivery is temporarily unavailable. Please try again later.";
+    return "We couldn't send the OTP email right now. Please try again in a few minutes.";
   }
 
   if (backendMessage && !/[{}[\]]/.test(backendMessage)) {

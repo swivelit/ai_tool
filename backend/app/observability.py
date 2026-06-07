@@ -156,6 +156,15 @@ _SAFE_EXTRA_KEYS = {
     "chat_routing",
     "voice_routing",
     "native_safety_status",
+    "configured",
+    "missing",
+    "invalid",
+    "purpose",
+    "smtp_host",
+    "smtp_port",
+    "smtp_use_tls",
+    "smtp_stage",
+    "smtp_exception_class",
 }
 
 _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")
