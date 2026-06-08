@@ -4,7 +4,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
 @dataclass(frozen=True)
 class IntentDecision:
     intent: str
@@ -176,6 +175,10 @@ def looks_like_question_after_greeting(message: str) -> bool:
 
 def classify_intent(message: str) -> IntentDecision:
     return classify_intent_with_metadata(message)
+
+
+def classify_intent_with_metadata(message: str) -> IntentDecision:
+    ...
 
 
 def classify_intent_with_metadata(message: str) -> IntentDecision:
