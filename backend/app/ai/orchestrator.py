@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import json
@@ -65,6 +66,7 @@ def run_text_turn(
 
     agent_result = None
     if agentic_mode_enabled():
+        # Execute Master Agent pipeline
         agent_result = AgentRuntime().run(session, ai_request)
         ai_request.metadata.setdefault("agent_run_id", agent_result.run_id)
         if agent_result.response is not None:

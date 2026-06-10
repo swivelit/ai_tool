@@ -29,7 +29,11 @@ from .types import AIRequest
 def agentic_mode_enabled() -> bool:
     return os.getenv("AGENTIC_MODE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
-
+# ============================================================================
+# Master Agent Runtime
+# Central orchestrator coordinating Intent, Planning, Memory, Retrieval,
+# Cost Optimization, Verification, Tool Execution and Provider Routing.
+# ============================================================================
 class AgentRuntime:
     def __init__(self) -> None:
         self.intent_agent = TamilIntentAgent()
@@ -42,10 +46,14 @@ class AgentRuntime:
         self.verifier_agent = VerifierAgent()
 
     def run(self, session: Session, request: AIRequest) -> AgentRuntimeResult:
+
+        print("AGENT RUNTIME STARTED")
+        
         started = time.perf_counter()
         run = self._create_run(session, request)
         pending = _pending_reminder_from_context(request)
-
+        print("STEP 1 - Intent Agent")
+        
         intent = self._step(
             session,
             run,
@@ -53,13 +61,24 @@ class AgentRuntime:
             {"message": _safe_message_payload(request), "pending_reminder": bool(pending)},
             lambda: self.intent_agent.classify(request, pending_reminder=pending),
         )
-        plan = self._step(
-            session,
-            run,
-            "planner_agent",
-            {"intent": asdict(intent)},
-            lambda: self.planner_agent.plan(request, intent, pending_reminder=bool(pending)),
-        )
+
+        print("STEP 2 - Memory Agent")
+        memory_result = self.memory_agent.should_use_local_memory(
+        session,
+        plan
+    )
+        print("Memory Result:", memory_result) 
+
+        print("STEP 3 - Retrieval Agent")
+
+        retrieval_result = self.retrieval_agent.can_handle(
+        plan
+    )
+
+        print("Retrieval Result:", retrieval_result)
+        
+        print("STEP 4 - Cost Optimzer Agent")
+
         plan = self._step(
             session,
             run,
@@ -67,6 +86,7 @@ class AgentRuntime:
             {"plan": asdict(plan)},
             lambda: self.cost_optimizer_agent.optimize(plan),
         )
+        print("STEP 5- Verifier Agent")
         plan = self._step(
             session,
             run,
@@ -75,13 +95,14 @@ class AgentRuntime:
             lambda: self.verifier_agent.verify(request, plan),
         )
 
+        print("STEP 6 - Tool Execution Agent")
         response = None
         if plan.action != "provider_qa":
             response = self._step(
                 session,
                 run,
                 "tool_execution_agent",
-                {"plan": asdict(plan)},
+                {"plan": asdict(plan)}, 
                 lambda: self.tool_execution_agent.execute(session, request, plan),
             )
 
