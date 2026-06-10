@@ -30,6 +30,7 @@ import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
+import { Screen } from "@/components/ui";
 import { AssistantCharacter } from "@/components/AssistantCharacter";
 import { Orb } from "@/components/Orb";
 import { BACKCHANNEL_CLIPS } from "@/assets/audio/backchannel/clips";
@@ -40,7 +41,7 @@ import {
 import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
-import { Brand } from "@/constants/theme";
+import { Brand, Radius, Spacing, Type } from "@/constants/theme";
 import { type CharacterState, type Emotion } from "@/lib/assistantCharacter";
 import {
   createBackchannelController,
@@ -206,7 +207,7 @@ const VOICE_NAV_SWIPE_MIN_DISTANCE = 72;
 const VOICE_NAV_SWIPE_CAPTURE_DISTANCE = 18;
 const VOICE_NAV_SWIPE_HORIZONTAL_RATIO = 1.35;
 const VOICE_UNAVAILABLE_MESSAGE =
-  "Voice is unavailable right now. Please try again.";
+  "Voice is unavailable. Try again.";
 const CHAT_LOCAL_SOFT_NOTICE_MESSAGE =
   "Still working...";
 
@@ -4150,14 +4151,8 @@ export default function Home() {
   };
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.screen}>
+    <Screen safeArea={false} style={styles.screen}>
       <StatusBar style="light" />
-
-      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
-        <View style={styles.topGlow} />
-        <View style={styles.leftGlow} />
-        <View style={styles.bottomGlow} />
-      </View>
 
       <View style={styles.screenColumn}>
         <View
@@ -4638,7 +4633,7 @@ export default function Home() {
           void closeVoiceSheetSafely();
         }}
       >
-        <LinearGradient colors={Brand.gradients.page} style={styles.voiceScreen}>
+        <Screen safeArea={false} style={styles.voiceScreen}>
           <StatusBar style="light" />
 
           <View
@@ -4793,7 +4788,7 @@ export default function Home() {
               <Text style={styles.e2eHandsFreeButtonText}>E2E hands-free</Text>
             </Pressable>
           ) : null}
-        </LinearGradient>
+        </Screen>
       </Modal>
 
       <Modal
@@ -4842,7 +4837,7 @@ export default function Home() {
           </GlassCard>
         </View>
       </Modal>
-    </LinearGradient>
+    </Screen>
   );
 }
 
@@ -4865,39 +4860,12 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  topGlow: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    width: "62%",
-    height: 2,
-    backgroundColor: "rgba(87, 222, 255, 0.16)",
-  },
-
-  leftGlow: {
-    position: "absolute",
-    left: 0,
-    top: 192,
-    width: 2,
-    height: 220,
-    backgroundColor: "rgba(110, 91, 255, 0.12)",
-  },
-
-  bottomGlow: {
-    position: "absolute",
-    bottom: 0,
-    alignSelf: "center",
-    width: "84%",
-    height: 1,
-    backgroundColor: "rgba(255, 255, 255, 0.10)",
-  },
-
   topBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingBottom: 10,
-    gap: 12,
+    paddingBottom: Spacing.sm,
+    gap: Spacing.md,
   },
 
   topBarCenter: {
@@ -4906,25 +4874,23 @@ const styles = StyleSheet.create({
   },
 
   topBarTitle: {
+    ...Type.subheading,
     color: Brand.ink,
-    fontSize: 16,
-    fontWeight: "900",
   },
 
   topBarSubtitle: {
-    marginTop: 2,
+    ...Type.overline,
+    marginTop: Spacing.xxs,
     color: Brand.textMuted,
-    fontSize: 11,
-    fontWeight: "700",
   },
 
   iconButton: {
     width: 36,
     height: 36,
-    borderRadius: 18,
+    borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
   },
@@ -5054,8 +5020,7 @@ const styles = StyleSheet.create({
   },
 
   messageText: {
-    fontSize: 15,
-    lineHeight: 22,
+    ...Type.body,
     fontWeight: "600",
   },
 
@@ -5109,8 +5074,8 @@ const styles = StyleSheet.create({
   },
 
   errorBubble: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
-    borderColor: "rgba(180, 82, 52, 0.32)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderColor: "rgba(255, 138, 138, 0.32)",
   },
 
   composerOverlay: {
@@ -5129,12 +5094,12 @@ const styles = StyleSheet.create({
   },
 
   composerCard: {
-    borderRadius: 26,
+    borderRadius: Radius.xl,
     backgroundColor: "rgba(255, 255, 255, 0.10)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
     shadowColor: "#000000",
     shadowOpacity: 0.12,
     shadowRadius: 18,
@@ -5145,8 +5110,8 @@ const styles = StyleSheet.create({
   composerMainRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 2,
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.xxs,
     paddingVertical: 0,
   },
 
@@ -5156,16 +5121,16 @@ const styles = StyleSheet.create({
     color: Brand.ink,
     fontSize: 16,
     lineHeight: 22,
-    fontWeight: "600",
+    fontWeight: "500",
     paddingTop: 0,
     paddingBottom: 0,
-    paddingHorizontal: 8,
+    paddingHorizontal: Spacing.sm,
   },
 
   sendButton: {
     width: 40,
     height: 40,
-    borderRadius: 20,
+    borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: Brand.soft,
@@ -5583,10 +5548,9 @@ const styles = StyleSheet.create({
   },
 
   voiceTitle: {
-    marginTop: 24,
+    ...Type.title,
+    marginTop: Spacing.xxl,
     color: Brand.ink,
-    fontSize: 26,
-    fontWeight: "900",
   },
 
   handsFreeBadge: {

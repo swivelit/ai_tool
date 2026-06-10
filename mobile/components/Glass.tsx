@@ -3,7 +3,7 @@ import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 
-import { Brand } from "@/constants/theme";
+import { Brand, Elevation, Radius, Spacing } from "@/constants/theme";
 
 export function GlassCard({
   children,
@@ -53,6 +53,7 @@ export function GlassCard({
       />
 
       <View style={[styles.topSheen, topRadiusStyle]} />
+      <View style={styles.hairline} pointerEvents="none" />
       <View style={[styles.content, contentStyle]}>{children}</View>
     </View>
   );
@@ -60,20 +61,16 @@ export function GlassCard({
 
 const styles = StyleSheet.create({
   shell: {
-    borderRadius: 24,
+    borderRadius: Radius.xl,
     overflow: "hidden",
     borderWidth: 1,
     borderColor: Brand.line,
     backgroundColor: Brand.glass,
-    shadowColor: "#000000",
-    shadowOpacity: 0.4,
-    shadowRadius: 28,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 10,
+    ...Elevation.medium,
   },
 
   content: {
-    padding: 18,
+    padding: Spacing.xl,
   },
 
   topSheen: {
@@ -83,7 +80,16 @@ const styles = StyleSheet.create({
     right: 0,
     height: "46%",
     backgroundColor: "rgba(255,255,255,0.035)",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: Radius.xl,
+    borderTopRightRadius: Radius.xl,
+  },
+
+  hairline: {
+    position: "absolute",
+    top: 0,
+    left: Spacing.lg,
+    right: Spacing.lg,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.16)",
   },
 });

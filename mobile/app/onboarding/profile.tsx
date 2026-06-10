@@ -27,7 +27,8 @@ import { setAssistantName } from "@/lib/storage";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { GlassCard } from "@/components/Glass";
-import { Brand } from "@/constants/theme";
+import { Screen } from "@/components/ui";
+import { Brand, Elevation, Radius, Spacing, Type } from "@/constants/theme";
 
 type NoticeState = {
   title: string;
@@ -154,14 +155,8 @@ export default function ProfileScreen() {
   }
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+    <Screen safeArea={false} style={styles.page}>
       <StatusBar style="light" />
-
-      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
-        <View style={styles.topGlow} />
-        <View style={styles.leftGlow} />
-        <View style={styles.bottomGlow} />
-      </View>
 
       <KeyboardAvoidingView
         style={styles.page}
@@ -216,12 +211,11 @@ export default function ProfileScreen() {
                   },
                 ]}
               >
-                Complete your profile to get started.
+                Set up your profile
               </Text>
 
               <Text style={styles.subtitle}>
-                Tell {assistantName || "Elli"} a little about you to make 
-                every response more useful.
+                Tell {assistantName || "Elli"} a little about you.
               </Text>
 
               <View style={styles.metricRow}>
@@ -231,19 +225,19 @@ export default function ProfileScreen() {
               </View>
 
               <LinearGradient
-                colors={["rgba(255,255,255,0.84)", "rgba(255,239,210,0.66)"]}
+                colors={["rgba(40, 87, 215, 0.18)", "rgba(8, 11, 16, 0.55)"]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={styles.previewCard}
               >
                 <View style={styles.previewBadge}>
-                  <Ionicons name="sparkles" size={14} color={Brand.bronze} />
+                  <Ionicons name="sparkles" size={14} color={Brand.caramel} />
                   <Text style={styles.previewBadgeText}>How it will sound</Text>
                 </View>
 
                 <Text style={styles.previewTitle}>{assistantName.trim() || "Elli"}</Text>
                 <Text style={styles.previewText}>
-                  “Hi {name.trim() || "there"}, I am ready to help with your day.”
+                  “Hi {name.trim() || "there"} — ready when you are.”
                 </Text>
               </LinearGradient>
             </GlassCard>
@@ -252,9 +246,7 @@ export default function ProfileScreen() {
               <View style={styles.sectionHeaderRow}>
                 <View>
                   <Text style={styles.sectionTitle}>Account</Text>
-                  <Text style={styles.sectionSubtitle}>
-                    Your account information is ready to go.
-                  </Text>
+                  <Text style={styles.sectionSubtitle}>Pulled from your account.</Text>
                 </View>
                 <SectionPill label="Secure" />
               </View>
@@ -287,9 +279,7 @@ export default function ProfileScreen() {
               <View style={styles.sectionHeaderRow}>
                 <View>
                   <Text style={styles.sectionTitle}>Personal details</Text>
-                  <Text style={styles.sectionSubtitle}>
-                    This information helps personalize your experience.
-                  </Text>
+                  <Text style={styles.sectionSubtitle}>Helps personalize your replies.</Text>
                 </View>
                 <SectionPill label="Required" />
               </View>
@@ -331,7 +321,7 @@ export default function ProfileScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.tipTitle}>Quick tip</Text>
                   <Text style={styles.tipText}>
-                    Pick a name you will enjoy using. You can update it anytime.
+                    Pick any name — you can change it later.
                   </Text>
                 </View>
               </View>
@@ -367,9 +357,9 @@ export default function ProfileScreen() {
 
         <Modal transparent visible={!!notice} animationType="fade" onRequestClose={closeNotice}>
           <View style={styles.noticeOverlay}>
-            <GlassCard style={{ borderRadius: 28 }}>
+            <GlassCard style={{ borderRadius: Radius.xxl }}>
               <View style={styles.noticeIconWrap}>
-                <Ionicons name="information-circle" size={22} color={Brand.bronze} />
+                <Ionicons name="information-circle" size={22} color={Brand.caramel} />
               </View>
 
               <Text style={styles.noticeTitle}>{notice?.title}</Text>
@@ -393,7 +383,7 @@ export default function ProfileScreen() {
           </View>
         </Modal>
       </KeyboardAvoidingView>
-    </LinearGradient>
+    </Screen>
   );
 }
 
@@ -477,7 +467,7 @@ function InputField({
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
-        placeholderTextColor="rgba(124, 99, 80, 0.52)"
+        placeholderTextColor="rgba(226, 238, 255, 0.42)"
         style={styles.input}
         editable={editable}
       />
@@ -488,36 +478,6 @@ function InputField({
 const styles = StyleSheet.create({
   page: {
     flex: 1,
-  },
-
-  topGlow: {
-    position: "absolute",
-    top: -90,
-    right: -20,
-    width: 220,
-    height: 220,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
-  },
-
-  leftGlow: {
-    position: "absolute",
-    top: 240,
-    left: -80,
-    width: 200,
-    height: 200,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
-  },
-
-  bottomGlow: {
-    position: "absolute",
-    bottom: -100,
-    right: 10,
-    width: 260,
-    height: 260,
-    borderRadius: 999,
-    backgroundColor: "rgba(215,154,89,0.16)",
   },
 
   topBar: {
@@ -531,18 +491,18 @@ const styles = StyleSheet.create({
     minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.pill,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
 
   topBarPillText: {
+    ...Type.caption,
+    fontWeight: "700",
     color: Brand.cocoa,
-    fontSize: 12,
-    fontWeight: "800",
   },
 
   backBtn: {
@@ -551,7 +511,7 @@ const styles = StyleSheet.create({
     borderRadius: 19,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -560,72 +520,72 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: Spacing.md,
   },
 
   heroPill: {
     alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
 
   heroPillText: {
+    ...Type.caption,
+    fontWeight: "700",
     color: Brand.cocoa,
-    fontSize: 12,
-    fontWeight: "800",
   },
 
   heroStatusChip: {
     minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 11,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.pill,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
 
   heroStatusText: {
+    ...Type.caption,
+    fontWeight: "700",
     color: Brand.cocoa,
-    fontSize: 12,
-    fontWeight: "800",
   },
 
   title: {
-    marginTop: 18,
+    marginTop: Spacing.lg,
     color: Brand.ink,
-    fontWeight: "900",
+    fontWeight: "800",
+    letterSpacing: -0.4,
   },
 
   subtitle: {
-    marginTop: 10,
+    ...Type.body,
+    marginTop: Spacing.sm,
     color: Brand.muted,
-    fontSize: 14,
-    lineHeight: 22,
   },
 
   metricRow: {
-    marginTop: 20,
+    marginTop: Spacing.xl,
     flexDirection: "row",
-    gap: 10,
+    gap: Spacing.sm,
   },
 
   metricCard: {
     flex: 1,
     minHeight: 96,
-    borderRadius: 22,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.lg,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -633,32 +593,31 @@ const styles = StyleSheet.create({
   metricIconWrap: {
     width: 32,
     height: 32,
-    borderRadius: 12,
+    borderRadius: Radius.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   metricValue: {
-    marginTop: 12,
+    ...Type.subheading,
+    marginTop: Spacing.md,
     color: Brand.ink,
-    fontSize: 17,
-    fontWeight: "900",
   },
 
   metricLabel: {
-    marginTop: 4,
-    color: Brand.muted,
-    fontSize: 12,
+    ...Type.caption,
     fontWeight: "700",
+    marginTop: Spacing.xs,
+    color: Brand.muted,
   },
 
   previewCard: {
-    marginTop: 18,
-    borderRadius: 24,
-    padding: 16,
+    marginTop: Spacing.lg,
+    borderRadius: Radius.xl,
+    padding: Spacing.lg,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: "rgba(87, 222, 255, 0.18)",
   },
 
   previewBadge: {
@@ -666,32 +625,29 @@ const styles = StyleSheet.create({
     minHeight: 30,
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.pill,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
 
   previewBadgeText: {
+    ...Type.overline,
     color: Brand.cocoa,
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 0.3,
   },
 
   previewTitle: {
-    marginTop: 14,
+    ...Type.subheading,
+    marginTop: Spacing.md,
     color: Brand.ink,
-    fontSize: 18,
-    fontWeight: "900",
   },
 
   previewText: {
-    marginTop: 6,
+    ...Type.caption,
+    marginTop: Spacing.xs,
     color: Brand.muted,
-    fontSize: 13,
     lineHeight: 20,
   },
 
@@ -699,54 +655,50 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: 12,
+    gap: Spacing.md,
   },
 
   sectionTitle: {
+    ...Type.heading,
     color: Brand.ink,
-    fontSize: 20,
-    fontWeight: "900",
   },
 
   sectionSubtitle: {
-    marginTop: 6,
+    ...Type.caption,
+    marginTop: Spacing.xs,
     color: Brand.muted,
-    fontSize: 13,
-    lineHeight: 19,
     maxWidth: 255,
   },
 
   sectionPill: {
     minHeight: 30,
-    paddingHorizontal: 10,
-    borderRadius: 999,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
 
   sectionPillText: {
+    ...Type.overline,
     color: Brand.cocoa,
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.3,
   },
 
   infoGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
-    marginTop: 18,
+    gap: Spacing.sm,
+    marginTop: Spacing.lg,
   },
 
   infoCard: {
     width: "48.5%",
     minHeight: 106,
-    borderRadius: 20,
-    padding: 14,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -754,38 +706,37 @@ const styles = StyleSheet.create({
   infoIconWrap: {
     width: 34,
     height: 34,
-    borderRadius: 12,
+    borderRadius: Radius.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   infoLabel: {
-    marginTop: 12,
-    color: Brand.muted,
-    fontSize: 12,
+    ...Type.caption,
     fontWeight: "700",
+    marginTop: Spacing.md,
+    color: Brand.muted,
   },
 
   infoValue: {
-    marginTop: 8,
-    color: Brand.ink,
-    fontSize: 14,
-    lineHeight: 19,
+    ...Type.callout,
     fontWeight: "800",
+    marginTop: Spacing.sm,
+    color: Brand.ink,
   },
 
   label: {
-    marginTop: 16,
-    marginBottom: 8,
+    ...Type.caption,
+    fontWeight: "700",
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.sm,
     color: Brand.cocoa,
-    fontSize: 13,
-    fontWeight: "800",
   },
 
   inputShell: {
-    borderRadius: 18,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderRadius: Radius.md,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
     flexDirection: "row",
@@ -802,18 +753,18 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     color: Brand.ink,
-    fontSize: 15,
-    paddingRight: 14,
+    fontSize: Type.body.fontSize,
+    paddingRight: Spacing.lg,
   },
 
   tipCard: {
-    marginTop: 16,
-    borderRadius: 20,
-    padding: 14,
+    marginTop: Spacing.lg,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 12,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    gap: Spacing.md,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -821,48 +772,42 @@ const styles = StyleSheet.create({
   tipIconWrap: {
     width: 34,
     height: 34,
-    borderRadius: 12,
+    borderRadius: Radius.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 218, 160, 0.14)",
+    backgroundColor: "rgba(87, 222, 255, 0.10)",
   },
 
   tipTitle: {
+    ...Type.callout,
+    fontWeight: "800",
     color: Brand.ink,
-    fontSize: 14,
-    fontWeight: "900",
   },
 
   tipText: {
-    marginTop: 4,
+    ...Type.caption,
+    marginTop: Spacing.xs,
     color: Brand.muted,
-    fontSize: 13,
-    lineHeight: 19,
   },
 
   buttonShell: {
-    borderRadius: 18,
+    borderRadius: Radius.md,
     overflow: "hidden",
-    marginTop: 22,
+    marginTop: Spacing.xl,
   },
 
   primaryButton: {
-    borderRadius: 18,
+    borderRadius: Radius.md,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
-    shadowColor: "#d4934f",
-    shadowOpacity: 0.24,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
+    gap: Spacing.sm,
+    ...Elevation.glow,
   },
 
   primaryButtonText: {
+    ...Type.subheading,
     color: Brand.ink,
-    fontSize: 15,
-    fontWeight: "900",
   },
 
   disabled: {
@@ -877,71 +822,69 @@ const styles = StyleSheet.create({
   noticeOverlay: {
     flex: 1,
     justifyContent: "center",
-    paddingHorizontal: 18,
-    backgroundColor: "rgba(72, 46, 18, 0.18)",
+    paddingHorizontal: Spacing.lg,
+    backgroundColor: Brand.overlay,
   },
 
   noticeIconWrap: {
     width: 42,
     height: 42,
-    borderRadius: 21,
+    borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
 
   noticeTitle: {
-    marginTop: 14,
+    ...Type.title,
+    marginTop: Spacing.md,
     color: Brand.ink,
-    fontSize: 22,
-    fontWeight: "900",
   },
 
   noticeMessage: {
-    marginTop: 10,
+    ...Type.body,
+    marginTop: Spacing.sm,
     color: Brand.muted,
-    fontSize: 14,
-    lineHeight: 22,
   },
 
   noticeActions: {
-    marginTop: 18,
+    marginTop: Spacing.lg,
     flexDirection: "row",
     justifyContent: "flex-end",
-    gap: 10,
+    gap: Spacing.sm,
   },
 
   noticeSecondaryBtn: {
     minHeight: 46,
-    paddingHorizontal: 16,
-    borderRadius: 16,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: Radius.md,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
   },
 
   noticeSecondaryText: {
+    ...Type.callout,
+    fontWeight: "700",
     color: Brand.cocoa,
-    fontWeight: "800",
-    fontSize: 14,
   },
 
   noticePrimaryBtn: {
     minHeight: 46,
-    paddingHorizontal: 16,
-    borderRadius: 16,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: Radius.md,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#9a6328",
+    backgroundColor: Brand.bronze,
   },
 
   noticePrimaryText: {
+    ...Type.callout,
+    fontWeight: "800",
     color: Brand.ink,
-    fontWeight: "900",
-    fontSize: 14,
   },
 });

@@ -246,6 +246,20 @@ export function AssistantCharacter({
     };
   });
 
+  // Soft ambient halo sitting behind the aura — gives the hero depth and a
+  // calm "alive" presence that intensifies as the assistant wakes.
+  const haloStyle = useAnimatedStyle(() => {
+    const pulse = interpolate(breathe.value, [0, 1], [0.92, 1.05]);
+    const stateBoost = interpolate(active.value, [0, 1], [0, 0.14]);
+    const opacity =
+      interpolate(active.value, [0, 1], [0.16, 0.42]) *
+      interpolate(breathe.value, [0, 1], [0.78, 1]);
+    return {
+      opacity,
+      transform: [{ scale: pulse + stateBoost }],
+    };
+  });
+
   const shimmerStyle = useAnimatedStyle(() => {
     const x = interpolate(shimmer.value, [0, 1], [-bodyWidth * 1.2, bodyWidth * 1.2]);
     return {
@@ -307,6 +321,25 @@ export function AssistantCharacter({
         },
       ]}
     >
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.halo,
+          haloStyle,
+          {
+            width: size * 1.74,
+            height: size * 1.74,
+            borderRadius: size,
+            backgroundColor:
+              effectiveState === "listening"
+                ? "rgba(82, 221, 255, 0.10)"
+                : effectiveState === "speaking"
+                  ? "rgba(137, 118, 255, 0.10)"
+                  : "rgba(120, 150, 200, 0.05)",
+          },
+        ]}
+      />
+
       <Animated.View
         style={[
           styles.aura,
@@ -664,6 +697,14 @@ const styles = StyleSheet.create({
   frame: {
     alignItems: "center",
     justifyContent: "center",
+  },
+  halo: {
+    position: "absolute",
+    shadowColor: "#57deff",
+    shadowOpacity: 0.42,
+    shadowRadius: 44,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
   },
   aura: {
     position: "absolute",

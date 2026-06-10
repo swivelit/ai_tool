@@ -20,8 +20,9 @@ import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { GlassCard } from "@/components/Glass";
+import { Screen } from "@/components/ui";
 import { useAssistant } from "@/components/AssistantProvider";
-import { Brand } from "@/constants/theme";
+import { Brand, Radius, Spacing, Type } from "@/constants/theme";
 import { apiGet, apiPost, apiPostForm } from "@/lib/api";
 import {
   downloadAndSaveWakeModelBundle,
@@ -792,7 +793,7 @@ export default function Setup() {
   }
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+    <Screen safeArea={false} style={styles.page}>
       <StatusBar style="light" />
       <KeyboardAvoidingView
         style={styles.page}
@@ -801,18 +802,18 @@ export default function Setup() {
         <ScrollView
           style={styles.page}
           contentContainerStyle={{
-            paddingTop: insets.top + 16,
-            paddingBottom: Math.max(insets.bottom + 24, 24),
-            paddingHorizontal: 18,
-            gap: 16,
+            paddingTop: insets.top + Spacing.lg,
+            paddingBottom: Math.max(insets.bottom + Spacing.xxl, 24),
+            paddingHorizontal: Spacing.lg,
+            gap: Spacing.lg,
           }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.headerRow}>
             <View style={styles.tag}>
-              <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
-              <Text style={styles.tagText}>Wake phrase</Text>
+              <Ionicons name="sparkles-outline" size={14} color={Brand.caramel} />
+              <Text style={styles.tagText}>VOICE</Text>
             </View>
             <Pressable
               onPress={onSkip}
@@ -940,7 +941,7 @@ export default function Setup() {
           </GlassCard>
         </ScrollView>
       </KeyboardAvoidingView>
-    </LinearGradient>
+    </Screen>
   );
 }
 
@@ -1023,25 +1024,26 @@ const styles = StyleSheet.create({
   tag: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderWidth: 1,
+    borderColor: Brand.line,
   },
   tagText: {
-    fontSize: 12,
-    fontWeight: "700",
+    ...Type.overline,
     color: Brand.cocoa,
   },
   skipButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
   },
   skipButtonText: {
-    fontSize: 13,
+    ...Type.caption,
     fontWeight: "700",
     color: Brand.cocoa,
   },
@@ -1049,98 +1051,96 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 12,
+    gap: Spacing.md,
   },
   title: {
+    ...Type.title,
     flex: 1,
-    fontSize: 30,
-    lineHeight: 36,
-    fontWeight: "800",
     color: Brand.ink,
   },
   stateChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.pill,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
   },
   stateChipText: {
-    fontSize: 12,
+    ...Type.caption,
     fontWeight: "700",
     color: Brand.cocoa,
   },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: "800",
+    ...Type.subheading,
     color: Brand.ink,
   },
   label: {
-    marginTop: 16,
-    marginBottom: 8,
-    fontSize: 13,
+    ...Type.caption,
     fontWeight: "700",
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.sm,
     color: Brand.cocoa,
   },
   input: {
     minHeight: 52,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderRadius: 18,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
-    fontSize: 15,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.md,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderWidth: 1,
+    borderColor: Brand.line,
+    fontSize: Type.body.fontSize,
     color: Brand.ink,
   },
   sampleChipRow: {
     flexDirection: "row",
-    gap: 12,
-    marginTop: 16,
+    gap: Spacing.md,
+    marginTop: Spacing.lg,
   },
   sampleChip: {
     flex: 1,
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.pill,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
   },
   sampleChipLabel: {
-    flex: 1,
-    fontSize: 13,
+    ...Type.caption,
     fontWeight: "700",
+    flex: 1,
     color: Brand.muted,
   },
   sampleChipValue: {
-    fontSize: 13,
+    ...Type.caption,
     fontWeight: "800",
     color: Brand.ink,
   },
   statusBox: {
-    marginTop: 16,
-    padding: 16,
-    borderRadius: 18,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    marginTop: Spacing.lg,
+    padding: Spacing.lg,
+    borderRadius: Radius.md,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
   },
   statusTitle: {
-    fontSize: 13,
+    ...Type.caption,
     fontWeight: "700",
     color: Brand.cocoa,
   },
   errorText: {
-    marginTop: 10,
-    fontSize: 13,
-    lineHeight: 20,
-    color: "#9f2f1f",
+    ...Type.caption,
+    marginTop: Spacing.sm,
+    color: Brand.danger,
   },
   buttonRow: {
     flexDirection: "row",
-    gap: 12,
-    marginTop: 16,
+    gap: Spacing.md,
+    marginTop: Spacing.lg,
   },
   actionButton: {
     flex: 1,
@@ -1148,19 +1148,21 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    borderRadius: 18,
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md,
     backgroundColor: Brand.bronze,
   },
   actionButtonSecondary: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderWidth: 1,
+    borderColor: Brand.lineStrong,
   },
   actionButtonDisabled: {
     opacity: 0.55,
   },
   actionButtonText: {
-    fontSize: 14,
+    ...Type.callout,
     fontWeight: "800",
     color: Brand.ink,
   },
@@ -1168,17 +1170,17 @@ const styles = StyleSheet.create({
     color: Brand.cocoa,
   },
   uploadRow: {
-    marginTop: 12,
+    marginTop: Spacing.md,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: Spacing.sm,
   },
   uploadText: {
-    fontSize: 13,
+    ...Type.caption,
     color: Brand.muted,
   },
   primaryButtonWrap: {
-    borderRadius: 20,
+    borderRadius: Radius.lg,
     overflow: "hidden",
   },
   primaryButton: {
@@ -1186,12 +1188,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
-    borderRadius: 20,
+    gap: Spacing.sm,
+    borderRadius: Radius.lg,
   },
   primaryButtonText: {
-    fontSize: 16,
-    fontWeight: "800",
+    ...Type.subheading,
     color: Brand.ink,
   },
   pressed: {

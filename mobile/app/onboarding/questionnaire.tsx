@@ -11,14 +11,14 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
-import { Brand } from "@/constants/theme";
+import { Screen } from "@/components/ui";
+import { Brand, Radius, Spacing, Type } from "@/constants/theme";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import profilerSlotsSeed from "@/data/config/profiler_slots.json";
@@ -506,7 +506,7 @@ export default function QuestionnaireScreen() {
     sending || done || completionState !== "incomplete";
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.screen}>
+    <Screen safeArea={false} style={styles.screen}>
       <StatusBar style="light" />
       <KeyboardAvoidingView
         style={styles.flex}
@@ -634,10 +634,10 @@ export default function QuestionnaireScreen() {
                     </Text>
                     <Text style={styles.doneText}>
                       {completionState === "complete_synced"
-                        ? "You can improve this later in chat."
+                        ? "You can refine this later in chat."
                         : completionState === "sync_failed"
-                          ? "Your answers are saved locally, but backend sync failed. Retry sync before continuing."
-                          : "Your answers are saved locally. Waiting for backend confirmation…"}
+                          ? "Saved on your device — retry sync to continue."
+                          : "Saved on your device. Confirming…"}
                     </Text>
 
                     {completionState === "sync_failed" ? (
@@ -702,7 +702,7 @@ export default function QuestionnaireScreen() {
           ) : null}
         </View>
       </KeyboardAvoidingView>
-    </LinearGradient>
+    </Screen>
   );
 }
 
@@ -711,8 +711,8 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: {
     flex: 1,
-    paddingHorizontal: 18,
-    gap: 14,
+    paddingHorizontal: Spacing.lg,
+    gap: Spacing.md,
   },
   chatWrap: {
     flex: 1,
@@ -721,19 +721,19 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
+    gap: Spacing.sm,
   },
   loadingText: {
+    ...Type.callout,
     color: Brand.textMuted,
-    fontSize: 14,
   },
   chatScroll: {
     flex: 1,
   },
   chatContent: {
-    paddingVertical: 6,
-    paddingBottom: 8,
-    gap: 10,
+    paddingVertical: Spacing.xs,
+    paddingBottom: Spacing.sm,
+    gap: Spacing.sm,
   },
   bubbleRow: {
     flexDirection: "row",
@@ -746,28 +746,26 @@ const styles = StyleSheet.create({
   },
   bubble: {
     maxWidth: "86%",
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 4,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    gap: Spacing.xs,
   },
   assistantBubble: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
-    borderColor: "rgba(135,70,40,0.08)",
+    borderColor: Brand.line,
   },
   userBubble: {
     backgroundColor: Brand.bronze,
   },
   assistantLabel: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: Brand.bronze,
+    ...Type.overline,
+    color: Brand.caramel,
     textTransform: "uppercase",
-    letterSpacing: 0.7,
   },
   bubbleText: {
-    fontSize: 15,
+    ...Type.body,
     lineHeight: 21,
   },
   assistantBubbleText: {
@@ -777,38 +775,36 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
   optionsCard: {
-    padding: 16,
-    gap: 12,
+    padding: Spacing.lg,
+    gap: Spacing.md,
   },
   optionsTitle: {
-    fontSize: 16,
-    fontWeight: "800",
+    ...Type.subheading,
     color: Brand.text,
   },
   optionsSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
+    ...Type.caption,
     color: Brand.textMuted,
   },
   chipsWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: Spacing.sm,
   },
   optionChip: {
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
-    borderColor: "rgba(135,70,40,0.14)",
+    borderColor: Brand.lineStrong,
   },
   optionChipSelected: {
     backgroundColor: Brand.bronze,
     borderColor: Brand.bronze,
   },
   optionChipText: {
-    fontSize: 14,
+    ...Type.callout,
     fontWeight: "700",
     color: Brand.text,
   },
@@ -816,80 +812,79 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
   multiSubmitButton: {
-    marginTop: 2,
-    borderRadius: 14,
+    marginTop: Spacing.xxs,
+    borderRadius: Radius.md,
     backgroundColor: Brand.bronze,
-    paddingHorizontal: 16,
-    paddingVertical: 13,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
     alignItems: "center",
   },
   multiSubmitButtonDisabled: {
     opacity: 0.5,
   },
   multiSubmitButtonText: {
-    color: "#fff",
+    ...Type.callout,
     fontWeight: "800",
-    fontSize: 14,
+    color: "#fff",
   },
   doneCard: {
-    marginTop: 8,
-    padding: 18,
-    gap: 10,
+    marginTop: Spacing.sm,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
   },
   doneTitle: {
-    fontSize: 18,
-    fontWeight: "800",
+    ...Type.subheading,
     color: Brand.text,
   },
   doneText: {
-    fontSize: 14,
-    lineHeight: 20,
+    ...Type.body,
     color: Brand.textMuted,
   },
   doneButton: {
-    marginTop: 4,
-    borderRadius: 16,
+    marginTop: Spacing.xs,
+    borderRadius: Radius.md,
     backgroundColor: Brand.bronze,
-    paddingHorizontal: 16,
-    paddingVertical: 13,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
     alignItems: "center",
   },
   doneButtonDisabled: {
     opacity: 0.5,
   },
   doneButtonText: {
-    color: "#fff",
+    ...Type.callout,
     fontWeight: "800",
-    fontSize: 14,
+    color: "#fff",
   },
   composerCard: {
-    padding: 10,
-    gap: 8,
+    padding: Spacing.sm,
+    gap: Spacing.sm,
   },
   composerHint: {
+    ...Type.caption,
     fontSize: 12,
     color: Brand.textMuted,
-    paddingHorizontal: 4,
+    paddingHorizontal: Spacing.xs,
   },
   composerRow: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 10,
+    gap: Spacing.sm,
   },
   input: {
     flex: 1,
     minHeight: 48,
     maxHeight: 120,
-    fontSize: 15,
+    fontSize: Type.body.fontSize,
     lineHeight: 21,
     color: Brand.text,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
   },
   sendButton: {
     width: 46,
     height: 46,
-    borderRadius: 23,
+    borderRadius: Radius.pill,
     backgroundColor: Brand.bronze,
     alignItems: "center",
     justifyContent: "center",

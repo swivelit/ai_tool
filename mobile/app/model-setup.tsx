@@ -10,13 +10,13 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
-import { Brand } from "@/constants/theme";
+import { Screen } from "@/components/ui";
+import { Brand, Radius, Spacing, Type } from "@/constants/theme";
 import { getCachedDeviceCapabilities } from "@/lib/deviceCapabilities";
 import { isE2eSkipModelSetupEnabled } from "@/lib/e2eMode";
 import {
@@ -173,7 +173,7 @@ export default function ModelSetupScreen() {
     : "Retry";
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+    <Screen safeArea={false} style={styles.page}>
       <StatusBar style="light" />
       <Pressable
         onPress={() => router.back()}
@@ -307,7 +307,7 @@ export default function ModelSetupScreen() {
           </View>
         </GlassCard>
       </ScrollView>
-    </LinearGradient>
+    </Screen>
   );
 }
 
@@ -318,10 +318,10 @@ const styles = StyleSheet.create({
     zIndex: 2,
     width: 40,
     height: 40,
-    borderRadius: 20,
+    borderRadius: Radius.lg,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
   },
@@ -331,20 +331,21 @@ const styles = StyleSheet.create({
   iconWrap: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
   title: {
-    marginTop: 18,
-    fontWeight: "900",
+    marginTop: Spacing.lg,
+    fontWeight: "800",
+    letterSpacing: -0.3,
     color: Brand.ink,
   },
   subtitleRow: {
-    marginTop: 10,
+    marginTop: Spacing.sm,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: Spacing.sm,
   },
   subtitle: {
     color: Brand.muted,
@@ -352,53 +353,52 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   progressHeader: {
-    marginTop: 24,
+    marginTop: Spacing.xxl,
     justifyContent: "space-between",
-    gap: 8,
+    gap: Spacing.sm,
     flexWrap: "wrap",
   },
   progressLabel: {
+    ...Type.caption,
+    fontWeight: "700",
     flexShrink: 1,
-    fontSize: 13,
-    fontWeight: "800",
     color: Brand.cocoa,
   },
   progressTrack: {
-    marginTop: 10,
+    marginTop: Spacing.sm,
     height: 10,
-    borderRadius: 999,
+    borderRadius: Radius.pill,
     overflow: "hidden",
-    backgroundColor: "rgba(124,99,80,0.16)",
+    backgroundColor: "rgba(255, 255, 255, 0.10)",
   },
   progressFill: {
     height: "100%",
-    borderRadius: 999,
-    backgroundColor: Brand.bronze,
+    borderRadius: Radius.pill,
+    backgroundColor: Brand.caramel,
   },
   errorText: {
-    marginTop: 16,
-    fontSize: 13,
-    lineHeight: 20,
+    ...Type.caption,
+    marginTop: Spacing.lg,
     color: Brand.danger,
     flexShrink: 1,
   },
   actions: {
-    marginTop: 20,
-    gap: 10,
+    marginTop: Spacing.xl,
+    gap: Spacing.sm,
   },
   actionsCompact: {
-    marginTop: 16,
+    marginTop: Spacing.lg,
   },
   primaryButton: {
     flexDirection: "row",
-    gap: 10,
+    gap: Spacing.sm,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: Brand.bronze,
   },
   primaryButtonText: {
-    fontSize: 15,
-    fontWeight: "900",
+    ...Type.callout,
+    fontWeight: "800",
     color: Brand.ink,
   },
   buttonDisabled: { opacity: 0.56 },

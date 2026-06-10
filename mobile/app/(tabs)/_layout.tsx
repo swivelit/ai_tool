@@ -7,7 +7,7 @@ import { LinearGradient } from "expo-linear-gradient";
 
 import { HapticTab } from "@/components/haptic-tab";
 import { useAuth } from "@/components/AuthProvider";
-import { Brand } from "@/constants/theme";
+import { Brand, Spacing } from "@/constants/theme";
 
 function TabIcon({
   focused,
@@ -97,12 +97,13 @@ export default function TabLayout() {
         tabBarInactiveTintColor: "rgba(226, 238, 255, 0.58)",
         tabBarLabelStyle: {
           fontSize: 11,
-          fontWeight: "800",
-          marginTop: 2,
-          marginBottom: Platform.OS === "ios" ? 0 : 4,
+          fontWeight: "700",
+          letterSpacing: 0.3,
+          marginTop: Spacing.xxs,
+          marginBottom: Platform.OS === "ios" ? 0 : Spacing.xs,
         },
         tabBarItemStyle: {
-          paddingTop: 6,
+          paddingTop: Spacing.xs,
         },
         tabBarStyle: {
           height: Platform.OS === "ios" ? 84 : 74,

@@ -20,9 +20,10 @@ import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
+import { Screen } from "@/components/ui";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
-import { Brand } from "@/constants/theme";
+import { Brand, Radius, Spacing, Type } from "@/constants/theme";
 import { apiGet, apiPut } from "@/lib/api";
 import { getProfileForFirebaseUid } from "@/lib/account";
 
@@ -410,14 +411,8 @@ export default function SettingsModal() {
   }
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+    <Screen safeArea={false} style={styles.page}>
       <StatusBar style="light" />
-
-      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
-        <View style={styles.topGlow} />
-        <View style={styles.leftGlow} />
-        <View style={styles.bottomGlow} />
-      </View>
 
       <KeyboardAvoidingView
         style={styles.page}
@@ -687,7 +682,7 @@ export default function SettingsModal() {
           </GlassCard>
         </View>
       </Modal>
-    </LinearGradient>
+    </Screen>
   );
 }
 
@@ -868,36 +863,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  topGlow: {
-    position: "absolute",
-    top: -90,
-    right: -20,
-    width: 220,
-    height: 220,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
-  },
-
-  leftGlow: {
-    position: "absolute",
-    top: 240,
-    left: -80,
-    width: 210,
-    height: 210,
-    borderRadius: 999,
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
-  },
-
-  bottomGlow: {
-    position: "absolute",
-    bottom: -100,
-    right: 10,
-    width: 270,
-    height: 270,
-    borderRadius: 999,
-    backgroundColor: "rgba(87,222,255,0.10)",
-  },
-
   topBar: {
     minHeight: 48,
     flexDirection: "row",
@@ -908,10 +873,10 @@ const styles = StyleSheet.create({
   topIconBtn: {
     width: 42,
     height: 42,
-    borderRadius: 21,
+    borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -920,22 +885,19 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: Spacing.md,
   },
 
   topCaption: {
+    ...Type.overline,
     color: Brand.muted,
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.4,
     textTransform: "uppercase",
   },
 
   topTitle: {
-    marginTop: 2,
+    ...Type.subheading,
+    marginTop: Spacing.xxs,
     color: Brand.ink,
-    fontSize: 18,
-    fontWeight: "900",
   },
 
   heroHeaderRow: {
@@ -1085,15 +1047,14 @@ const styles = StyleSheet.create({
   },
 
   sectionTitle: {
+    ...Type.heading,
     color: Brand.ink,
-    fontSize: 19,
-    fontWeight: "900",
   },
 
   sectionSubtitle: {
-    marginTop: 6,
+    ...Type.caption,
+    marginTop: Spacing.xs,
     color: Brand.muted,
-    fontSize: 13,
     lineHeight: 19,
     maxWidth: 260,
   },
@@ -1110,8 +1071,8 @@ const styles = StyleSheet.create({
   },
 
   dangerBadge: {
-    backgroundColor: "rgba(185, 98, 72, 0.10)",
-    borderColor: "rgba(185, 98, 72, 0.18)",
+    backgroundColor: "rgba(255, 138, 138, 0.10)",
+    borderColor: "rgba(255, 138, 138, 0.18)",
   },
 
   sectionBadgeText: {
@@ -1318,7 +1279,7 @@ const styles = StyleSheet.create({
 
   trainingStatusPillError: {
     backgroundColor: "rgba(255, 255, 255, 0.07)",
-    borderColor: "rgba(185,98,72,0.26)",
+    borderColor: "rgba(255, 138, 138,0.26)",
   },
 
   trainingStatusPillText: {
@@ -1355,7 +1316,7 @@ const styles = StyleSheet.create({
 
   trainingMicOuterError: {
     backgroundColor: "rgba(255, 255, 255, 0.07)",
-    borderColor: "rgba(185,98,72,0.22)",
+    borderColor: "rgba(255, 138, 138,0.22)",
   },
 
   trainingMicInner: {
@@ -1482,7 +1443,7 @@ const styles = StyleSheet.create({
     gap: 8,
     backgroundColor: "rgba(255, 255, 255, 0.07)",
     borderWidth: 1,
-    borderColor: "rgba(185,98,72,0.22)",
+    borderColor: "rgba(255, 138, 138,0.22)",
   },
 
   trainingErrorBannerText: {
