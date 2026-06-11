@@ -61,23 +61,44 @@ class AgentRuntime:
             {"message": _safe_message_payload(request), "pending_reminder": bool(pending)},
             lambda: self.intent_agent.classify(request, pending_reminder=pending),
         )
+        print("STEP 2 - Planner Agent")
 
-        print("STEP 2 - Memory Agent")
+        plan = self._step(
+            session,
+            run,
+            "planner_agent",
+        {
+        "message": _safe_message_payload(request),
+        "intent": asdict(intent),
+        },
+        lambda: self.planner_agent.plan(
+            request,
+            intent,
+            pending_reminder=bool(pending),
+        ),
+        )
+
+        print("Planner Result:", plan)
+
+        print("STEP 3 - Memory Agent")
+
         memory_result = self.memory_agent.should_use_local_memory(
-        session,
-        plan
-    )
-        print("Memory Result:", memory_result) 
+            session,
+            plan,
+        )
 
-        print("STEP 3 - Retrieval Agent")
+        print("Memory Result:", memory_result)
+
+        print("STEP 4 - Retrieval Agent")
 
         retrieval_result = self.retrieval_agent.can_handle(
-        plan
-    )
+        plan,
+        )
 
         print("Retrieval Result:", retrieval_result)
         
-        print("STEP 4 - Cost Optimzer Agent")
+        
+        print("STEP 5 - Cost Optimzer Agent")
 
         plan = self._step(
             session,
@@ -86,7 +107,7 @@ class AgentRuntime:
             {"plan": asdict(plan)},
             lambda: self.cost_optimizer_agent.optimize(plan),
         )
-        print("STEP 5- Verifier Agent")
+        print("STEP 6- Verifier Agent")
         plan = self._step(
             session,
             run,
@@ -95,7 +116,7 @@ class AgentRuntime:
             lambda: self.verifier_agent.verify(request, plan),
         )
 
-        print("STEP 6 - Tool Execution Agent")
+        print("STEP 7 - Tool Execution Agent")
         response = None
         if plan.action != "provider_qa":
             response = self._step(
