@@ -13,8 +13,31 @@ class RetrievalAgent:
     @staticmethod
     def resolve_relative_date(message: str) -> date | None:
         text = str(message or "").lower()
+
         if any(token in text for token in ("yesterday", "நேத்து", "நேற்று")):
             return (utc_now() - timedelta(days=1)).date()
+
         if any(token in text for token in ("today", "இன்று")):
             return utc_now().date()
+
         return None
+    
+    def search(self, query: str):
+
+
+        docs = [
+            "SWICO V1 architecture",
+            "Master Agent integration",
+            "Token optimization design",
+            "Semantic cache implementation"
+        ]
+
+
+        matches = []
+
+
+        for doc in docs:
+            if query.lower() in doc.lower():
+                matches.append(doc)
+
+        return matches[:3]

@@ -6,6 +6,7 @@ from .agents.memory_agent import MemoryAgent
 from .agents.retrieval_agent import RetrievalAgent
 from .agents.tool_execution_agent import ToolExecutionAgent
 from .agents.cost_optimizer_agent import CostOptimizerAgent
+from .context_compressor import ContextCompressor
 
 
 class MasterAgent:
@@ -16,6 +17,7 @@ class MasterAgent:
         self.retrieval = RetrievalAgent()
         self.tool_executor = ToolExecutionAgent()
         self.cost_optimizer = CostOptimizerAgent()
+        self.compressor = ContextCompressor()
 
     def process(self, message: str):
 
@@ -41,6 +43,7 @@ class MasterAgent:
         try:
             if hasattr(self.memory, "search"):
                 memory_result = self.memory.search(message)
+                print("Memory Result:", memory_result)
         except Exception as e:
             print("Memory Error:", e)
 
@@ -50,6 +53,13 @@ class MasterAgent:
         try:
             if hasattr(self.retrieval, "search"):
                 retrieval_result = self.retrieval.search(message)
+
+            if retrieval_result:
+                retrieval_result = self.compressor.compress(
+                    retrieval_result
+                )    
+                print("Retrieval Result:", retrieval_result)
+    
         except Exception as e:
             print("Retrieval Error:", e)
 
