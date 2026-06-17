@@ -17,7 +17,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GlassCard } from "@/components/Glass";
 import { AppText, Button, Screen } from "@/components/ui";
 import { useAuth } from "@/components/AuthProvider";
-import { Brand, Radius, Spacing } from "@/constants/theme";
+import { Radius, Spacing, type Palette } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 import { getPasswordVisibilityProps } from "@/lib/authUi";
 
 function emailLooksValid(value: string) {
@@ -31,14 +32,16 @@ function passwordStrengthLabel(value: string) {
   return "Strong";
 }
 
-function passwordStrengthTone(value: string) {
-  if (!value || value.length < 6) return Brand.danger;
-  if (value.length < 9) return Brand.caramel;
-  return Brand.success;
+function passwordStrengthTone(value: string, t: Palette) {
+  if (!value || value.length < 6) return t.danger;
+  if (value.length < 9) return t.caramel;
+  return t.success;
 }
 
 export default function SignupScreen() {
   const { requestSignupOtp, completeSignupWithOtp } = useAuth();
+  const { palette: t, isDark } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -180,14 +183,14 @@ export default function SignupScreen() {
     }
   }
 
-  const passwordTone = passwordStrengthTone(password);
+  const passwordTone = passwordStrengthTone(password, t);
   const passwordLabel = passwordStrengthLabel(password);
   const passwordVisibility = getPasswordVisibilityProps(showPassword);
   const confirmPasswordVisibility = getPasswordVisibilityProps(showConfirmPassword);
 
   return (
     <Screen safeArea={false}>
-      <StatusBar style="light" />
+      <StatusBar style={isDark ? "light" : "dark"} />
 
       <KeyboardAvoidingView
         style={styles.page}
@@ -210,7 +213,7 @@ export default function SignupScreen() {
               onPress={() => router.replace("/auth/login")}
               style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
             >
-              <Ionicons name="chevron-back" size={18} color={Brand.cocoa} />
+              <Ionicons name="chevron-back" size={18} color={t.cocoa} />
               <AppText variant="callout" color="muted">
                 Back
               </AppText>
@@ -228,7 +231,7 @@ export default function SignupScreen() {
             <GlassCard style={styles.card}>
               {errorText ? (
                 <View style={styles.errorCard}>
-                  <Ionicons name="alert-circle-outline" size={16} color={Brand.danger} />
+                  <Ionicons name="alert-circle-outline" size={16} color={t.danger} />
                   <AppText variant="caption" style={styles.errorText}>
                     {errorText}
                   </AppText>
@@ -243,7 +246,7 @@ export default function SignupScreen() {
                     </AppText>
                     <View style={[styles.inputShell, { minHeight: inputHeight }]}>
                       <View style={styles.inputIconWrap}>
-                        <Ionicons name="person-outline" size={16} color={Brand.caramel} />
+                        <Ionicons name="person-outline" size={16} color={t.caramel} />
                       </View>
                       <TextInput
                         value={name}
@@ -254,7 +257,7 @@ export default function SignupScreen() {
                           if (errorText) setErrorText("");
                         }}
                         placeholder="Your name"
-                        placeholderTextColor="rgba(226, 238, 255, 0.42)"
+                        placeholderTextColor={t.placeholder}
                         style={styles.input}
                         editable={!busy}
                         returnKeyType="next"
@@ -268,7 +271,7 @@ export default function SignupScreen() {
                     </AppText>
                     <View style={[styles.inputShell, { minHeight: inputHeight }]}>
                       <View style={styles.inputIconWrap}>
-                        <Ionicons name="mail-outline" size={16} color={Brand.caramel} />
+                        <Ionicons name="mail-outline" size={16} color={t.caramel} />
                       </View>
                       <TextInput
                         value={email}
@@ -284,7 +287,7 @@ export default function SignupScreen() {
                         autoComplete="email"
                         textContentType="emailAddress"
                         placeholder="you@example.com"
-                        placeholderTextColor="rgba(226, 238, 255, 0.42)"
+                        placeholderTextColor={t.placeholder}
                         style={styles.input}
                         editable={!busy}
                         returnKeyType="next"
@@ -307,7 +310,7 @@ export default function SignupScreen() {
                         <Ionicons
                           name="shield-checkmark-outline"
                           size={16}
-                          color={Brand.caramel}
+                          color={t.caramel}
                         />
                       </View>
                       <TextInput
@@ -324,7 +327,7 @@ export default function SignupScreen() {
                         autoComplete="new-password"
                         textContentType="newPassword"
                         placeholder="Minimum 6 characters"
-                        placeholderTextColor="rgba(226, 238, 255, 0.42)"
+                        placeholderTextColor={t.placeholder}
                         style={styles.input}
                         editable={!busy}
                         returnKeyType="next"
@@ -340,7 +343,7 @@ export default function SignupScreen() {
                         <Ionicons
                           name={passwordVisibility.iconName}
                           size={18}
-                          color={Brand.cocoa}
+                          color={t.cocoa}
                         />
                       </Pressable>
                     </View>
@@ -352,7 +355,7 @@ export default function SignupScreen() {
                     </AppText>
                     <View style={[styles.inputShell, { minHeight: inputHeight }]}>
                       <View style={styles.inputIconWrap}>
-                        <Ionicons name="key-outline" size={16} color={Brand.caramel} />
+                        <Ionicons name="key-outline" size={16} color={t.caramel} />
                       </View>
                       <TextInput
                         value={confirmPassword}
@@ -366,7 +369,7 @@ export default function SignupScreen() {
                         autoCapitalize="none"
                         autoCorrect={false}
                         placeholder="Re-enter password"
-                        placeholderTextColor="rgba(226, 238, 255, 0.42)"
+                        placeholderTextColor={t.placeholder}
                         style={styles.input}
                         editable={!busy}
                         returnKeyType="go"
@@ -383,7 +386,7 @@ export default function SignupScreen() {
                         <Ionicons
                           name={confirmPasswordVisibility.iconName}
                           size={18}
-                          color={Brand.cocoa}
+                          color={t.cocoa}
                         />
                       </Pressable>
                     </View>
@@ -392,7 +395,7 @@ export default function SignupScreen() {
               ) : (
                 <>
                   <View style={styles.infoBanner}>
-                    <Ionicons name="mail-unread-outline" size={16} color={Brand.caramel} />
+                    <Ionicons name="mail-unread-outline" size={16} color={t.caramel} />
                     <AppText variant="caption" style={styles.infoBannerText}>
                       Code sent to {email.trim()}.
                     </AppText>
@@ -404,7 +407,7 @@ export default function SignupScreen() {
                     </AppText>
                     <View style={[styles.inputShell, { minHeight: inputHeight }]}>
                       <View style={styles.inputIconWrap}>
-                        <Ionicons name="keypad-outline" size={16} color={Brand.caramel} />
+                        <Ionicons name="keypad-outline" size={16} color={t.caramel} />
                       </View>
                       <TextInput
                         value={otp}
@@ -419,7 +422,7 @@ export default function SignupScreen() {
                         keyboardType="number-pad"
                         textContentType="oneTimeCode"
                         placeholder="123456"
-                        placeholderTextColor="rgba(226, 238, 255, 0.42)"
+                        placeholderTextColor={t.placeholder}
                         style={styles.input}
                         editable={!busy}
                         returnKeyType="go"
@@ -495,7 +498,8 @@ export default function SignupScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(t: Palette) {
+  return StyleSheet.create({
   page: {
     flex: 1,
   },
@@ -516,7 +520,7 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xl,
   },
   heroTitle: {
-    color: Brand.ink,
+    color: t.ink,
   },
   card: {
     borderRadius: Radius.xxl,
@@ -547,8 +551,8 @@ const styles = StyleSheet.create({
   inputShell: {
     borderRadius: Radius.md,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderColor: t.lineStrong,
+    backgroundColor: t.surface,
     flexDirection: "row",
     alignItems: "center",
     overflow: "hidden",
@@ -560,7 +564,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 15,
     paddingRight: Spacing.md,
   },
@@ -577,13 +581,13 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
-    backgroundColor: "rgba(87, 222, 255, 0.08)",
+    backgroundColor: t.accentSoft,
     borderWidth: 1,
-    borderColor: "rgba(87, 222, 255, 0.16)",
+    borderColor: t.accentSoft,
   },
   infoBannerText: {
     flex: 1,
-    color: Brand.ink,
+    color: t.ink,
   },
   otpActionRow: {
     marginTop: Spacing.lg,
@@ -609,4 +613,5 @@ const styles = StyleSheet.create({
     opacity: 0.95,
     transform: [{ scale: 0.995 }],
   },
-});
+  });
+}

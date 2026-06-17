@@ -42,6 +42,153 @@ export const Brand = {
   },
 } as const;
 
+/* -------------------------------------------------------------------------- */
+/*  Adaptive palettes (light + dark)                                          */
+/*                                                                            */
+/*  `Palette` mirrors every `Brand` key the app already references (so a      */
+/*  screen can be re-themed by swapping `Brand.x` → `palette.x`) and adds a    */
+/*  handful of semantic tokens for the redesigned chat/voice surfaces. Read    */
+/*  the resolved palette through `useAppTheme()`; never hardcode dark colors   */
+/*  in new code. `Brand` stays as the dark literal so untouched screens keep   */
+/*  working — `darkPalette` is backed by it.                                   */
+/* -------------------------------------------------------------------------- */
+export type Palette = {
+  isDark: boolean;
+  // base backgrounds
+  background: string;
+  night: string;
+  charcoal: string;
+  raised: string;
+  // surfaces / glass
+  surface: string;
+  surfaceStrong: string;
+  soft: string;
+  glass: string;
+  glassStrong: string;
+  // borders
+  line: string;
+  lineStrong: string;
+  // text
+  ink: string;
+  text: string;
+  cocoa: string;
+  muted: string;
+  textMuted: string;
+  cream: string;
+  placeholder: string;
+  // accents
+  caramel: string;
+  bronze: string;
+  accent: string;
+  accentStrong: string;
+  accentSoft: string;
+  online: string;
+  // status
+  danger: string;
+  dangerSoft: string;
+  success: string;
+  // overlays
+  overlay: string;
+  scrim: string;
+  // ambient glow (Screen)
+  glowTop: string;
+  glowSide: string;
+  glowBottom: string;
+  // gradients
+  gradients: {
+    page: readonly [string, string, string];
+    hero: readonly [string, string, string];
+    button: readonly [string, string, string];
+    softCard: readonly [string, string];
+  };
+};
+
+/** Dark palette — backs `Brand`, so it is the source of truth for dark mode. */
+export const darkPalette: Palette = {
+  isDark: true,
+  background: Brand.night,
+  night: Brand.night,
+  charcoal: Brand.charcoal,
+  raised: Brand.raised,
+  surface: "rgba(255, 255, 255, 0.07)",
+  surfaceStrong: "rgba(255, 255, 255, 0.10)",
+  soft: Brand.soft,
+  glass: Brand.glass,
+  glassStrong: Brand.glassStrong,
+  line: Brand.line,
+  lineStrong: Brand.lineStrong,
+  ink: Brand.ink,
+  text: Brand.text,
+  cocoa: Brand.cocoa,
+  muted: Brand.muted,
+  textMuted: Brand.textMuted,
+  cream: Brand.cream,
+  placeholder: "rgba(226, 238, 255, 0.46)",
+  caramel: Brand.caramel,
+  bronze: Brand.bronze,
+  accent: Brand.caramel,
+  accentStrong: "#2f73ff",
+  accentSoft: "rgba(87, 222, 255, 0.13)",
+  online: "#5ce6a8",
+  danger: Brand.danger,
+  dangerSoft: "rgba(255, 138, 138, 0.16)",
+  success: Brand.success,
+  overlay: Brand.overlay,
+  scrim: "rgba(0, 0, 0, 0.55)",
+  glowTop: "rgba(40, 87, 215, 0.16)",
+  glowSide: "rgba(87, 222, 255, 0.08)",
+  glowBottom: "rgba(110, 91, 255, 0.10)",
+  gradients: {
+    page: Brand.gradients.page,
+    hero: Brand.gradients.hero,
+    button: Brand.gradients.button,
+    softCard: Brand.gradients.softCard,
+  },
+};
+
+/** Light palette — airy off-white surfaces with the same electric accents. */
+export const lightPalette: Palette = {
+  isDark: false,
+  background: "#eef2f8",
+  night: "#eef2f8",
+  charcoal: "#e3e9f2",
+  raised: "#ffffff",
+  surface: "rgba(15, 23, 42, 0.04)",
+  surfaceStrong: "#ffffff",
+  soft: "rgba(15, 23, 42, 0.05)",
+  glass: "rgba(255, 255, 255, 0.78)",
+  glassStrong: "rgba(255, 255, 255, 0.92)",
+  line: "rgba(15, 23, 42, 0.10)",
+  lineStrong: "rgba(15, 23, 42, 0.16)",
+  ink: "#0e1726",
+  text: "#0e1726",
+  cocoa: "#3c4858",
+  muted: "#5d6877",
+  textMuted: "#5d6877",
+  cream: "#ffffff",
+  placeholder: "rgba(15, 23, 42, 0.40)",
+  caramel: "#0aa7c2",
+  bronze: "#2563eb",
+  accent: "#0aa7c2",
+  accentStrong: "#2563eb",
+  accentSoft: "rgba(37, 99, 235, 0.10)",
+  online: "#16a34a",
+  danger: "#dc2626",
+  dangerSoft: "rgba(220, 38, 38, 0.10)",
+  success: "#16a34a",
+  overlay: "rgba(15, 23, 42, 0.32)",
+  scrim: "rgba(15, 23, 42, 0.32)",
+  glowTop: "rgba(37, 99, 235, 0.10)",
+  glowSide: "rgba(10, 167, 194, 0.08)",
+  glowBottom: "rgba(110, 91, 255, 0.06)",
+  gradients: {
+    page: ["#f7f9fc", "#eef2f8", "#e5ebf5"],
+    hero: ["#ffffff", "#f2f6fb", "#e8eef7"],
+    button: ["#2f73ff", "#17c8d8", "#6e5bff"],
+    softCard: ["rgba(255, 255, 255, 0.94)", "rgba(244, 247, 251, 0.90)"],
+  },
+};
+
 export const Colors = {
   light: {
     text: Brand.text,

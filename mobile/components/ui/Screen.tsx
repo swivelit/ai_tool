@@ -3,21 +3,22 @@ import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView, type Edge } from "react-native-safe-area-context";
 
-import { Brand } from "@/constants/theme";
+import type { Palette } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 
-/** Calm, full-bleed page background: dark gradient + restrained ambient glow. */
-function AmbientGlow() {
+/** Calm, full-bleed page background: themed gradient + restrained ambient glow. */
+function AmbientGlow({ palette }: { palette: Palette }) {
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-      <View style={styles.glowTop} />
-      <View style={styles.glowSide} />
-      <View style={styles.glowBottom} />
+      <View style={[styles.glowTop, { backgroundColor: palette.glowTop }]} />
+      <View style={[styles.glowSide, { backgroundColor: palette.glowSide }]} />
+      <View style={[styles.glowBottom, { backgroundColor: palette.glowBottom }]} />
     </View>
   );
 }
 
 /**
- * Page shell every screen sits on: the shared dark gradient, an optional
+ * Page shell every screen sits on: the shared themed gradient, an optional
  * ambient glow, and a safe-area container. Pass `safeArea={false}` when a
  * screen manages its own insets (e.g. keyboard-aware composers).
  */
@@ -40,14 +41,16 @@ export function Screen({
   testID?: string;
   accessibilityLabel?: string;
 }) {
+  const { palette } = useAppTheme();
+
   return (
     <LinearGradient
-      colors={Brand.gradients.page}
+      colors={palette.gradients.page}
       style={[styles.fill, style]}
       testID={testID}
       accessibilityLabel={accessibilityLabel}
     >
-      {glow ? <AmbientGlow /> : null}
+      {glow ? <AmbientGlow palette={palette} /> : null}
       {safeArea ? (
         <SafeAreaView edges={edges} style={[styles.fill, contentStyle]}>
           {children}
@@ -70,7 +73,6 @@ const styles = StyleSheet.create({
     width: 360,
     height: 360,
     borderRadius: 360,
-    backgroundColor: "rgba(40, 87, 215, 0.16)",
   },
   glowSide: {
     position: "absolute",
@@ -79,7 +81,6 @@ const styles = StyleSheet.create({
     width: 300,
     height: 300,
     borderRadius: 300,
-    backgroundColor: "rgba(87, 222, 255, 0.08)",
   },
   glowBottom: {
     position: "absolute",
@@ -88,6 +89,5 @@ const styles = StyleSheet.create({
     right: 40,
     height: 320,
     borderRadius: 320,
-    backgroundColor: "rgba(110, 91, 255, 0.10)",
   },
 });

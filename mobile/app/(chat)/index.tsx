@@ -41,7 +41,8 @@ import {
 import { Waveform } from "@/components/Waveform";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
-import { Brand, Radius, Spacing, Type } from "@/constants/theme";
+import { Elevation, Radius, Spacing, Type, type Palette } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 import { type CharacterState, type Emotion } from "@/lib/assistantCharacter";
 import {
   createBackchannelController,
@@ -334,11 +335,18 @@ function isSameWakeModelState(
   return JSON.stringify(current) === JSON.stringify(next);
 }
 
+const SUGGESTIONS: readonly string[] = [
+  "Schedule a meeting",
+  "Give me a Diet plan?",
+];
+
 export default function Home() {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const { name, settings, profile, updateSettings } = useAssistant();
   const { signOutUser } = useAuth();
+  const { palette: t, isDark } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   const voiceOnlyMode = useMemo(() => getMobileBuildInfo().voice_only_mode, []);
   const e2eHandsFreeEnabled = useMemo(() => isE2eMockHandsFreeEnabled(), []);
   const e2eVoiceTurnEnabled = useMemo(() => isE2eMockVoiceTurnEnabled(), []);
@@ -468,6 +476,8 @@ export default function Home() {
   const drawerWidth = Math.min(width * 0.84, 360);
   const assistantHeroSize = clamp(width * 0.4, 158, 212);
   const assistantFloatingSize = clamp(width * 0.17, 58, 74);
+  const voiceRingInner = assistantHeroSize + 52;
+  const voiceRingOuter = assistantHeroSize + 120;
 
   const assistantLabel = useMemo(() => (name || "Elli").trim(), [name]);
   const handsFreeWakePhrase = useMemo(
@@ -689,7 +699,7 @@ export default function Home() {
     });
   }, [historySearch, latestHistory]);
 
-  const composerPlaceholder = `Ask ${assistantLabel}`;
+  const composerPlaceholder = "Ask me anything…";
   const openVoiceFromChatSwipe = useCallback(
     (dx: number, dy: number) => {
       if (
@@ -4152,7 +4162,7 @@ export default function Home() {
 
   return (
     <Screen safeArea={false} style={styles.screen}>
-      <StatusBar style="light" />
+      <StatusBar style={isDark ? "light" : "dark"} />
 
       <View style={styles.screenColumn}>
         <View
@@ -4172,14 +4182,23 @@ export default function Home() {
             accessibilityLabel="chat-drawer-button"
             accessibilityRole="button"
           >
-            <Ionicons name="menu" size={20} color={Brand.cocoa} />
+            <Ionicons name="menu" size={20} color={t.cocoa} />
           </Pressable>
 
           <View style={styles.topBarCenter}>
+            <View style={styles.onlineDot} />
             <Text style={styles.topBarTitle}>{assistantLabel}</Text>
           </View>
 
-          <View style={styles.iconButtonSpacer} />
+          <Pressable
+            onPress={startNewChat}
+            style={styles.iconButton}
+            testID="chat-new-chat-button"
+            accessibilityLabel="chat-new-chat-button"
+            accessibilityRole="button"
+          >
+            <Ionicons name="add" size={22} color={t.cocoa} />
+          </Pressable>
         </View>
 
         {e2eHandsFreeEnabled ? (
@@ -4241,7 +4260,7 @@ export default function Home() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
+            <View style={{ width: "100%", maxWidth: contentMaxWidth, flexGrow: 1 }}>
               {chatTimeline.length > 0 || activePendingChatTurn ? (
                 <View style={styles.chatThread}>
                   {chatTimeline.map((item) => {
@@ -4288,7 +4307,7 @@ export default function Home() {
                                   onPress={() => openReturnedFile(firstOpenableFile(item))}
                                   style={styles.fileActionButton}
                                 >
-                                  <Ionicons name="document-attach-outline" size={16} color={Brand.cocoa} />
+                                  <Ionicons name="document-attach-outline" size={16} color={t.cocoa} />
                                   <Text style={styles.fileActionText}>Open file</Text>
                                 </Pressable>
                               ) : null}
@@ -4339,7 +4358,7 @@ export default function Home() {
                           >
                             {activePendingChatTurn.status === "thinking" ? (
                               <>
-                                <ActivityIndicator size="small" color={Brand.cocoa} />
+                                <ActivityIndicator size="small" color={t.cocoa} />
                                 <Text style={styles.typingText}>
                                   {activePendingChatTurn.assistantText || "Thinking…"}
                                 </Text>
@@ -4356,7 +4375,16 @@ export default function Home() {
                     </View>
                   ) : null}
                 </View>
-              ) : null}
+              ) : (
+                <View style={styles.heroWrap} testID="chat-empty-hero">
+                  <Text style={styles.heroGreeting}>
+                    Hello! {profile?.name || "there"}
+                  </Text>
+                  <Text style={styles.heroTitle}>
+                    {"HOW CAN I ASSIST\nYOU TODAY?"}
+                  </Text>
+                </View>
+              )}
 
             </View>
           </ScrollView>
@@ -4397,6 +4425,27 @@ export default function Home() {
             ]}
           >
             <View style={{ width: "100%", maxWidth: contentMaxWidth }}>
+              {chatTimeline.length === 0 && !activePendingChatTurn ? (
+                <View style={styles.suggestionsWrap}>
+                  <Text style={styles.suggestionsOverline}>Suggestions</Text>
+                  {SUGGESTIONS.map((suggestion, index) => (
+                    <Pressable
+                      key={suggestion}
+                      onPress={() => {
+                        setText(suggestion);
+                        void submitChatMessage(suggestion, "text");
+                      }}
+                      testID={`chat-suggestion-${index}`}
+                      accessibilityLabel={`chat-suggestion-${index}`}
+                      accessibilityRole="button"
+                      style={styles.suggestionChip}
+                    >
+                      <Text style={styles.suggestionChipText}>{suggestion}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+
               <View style={styles.composerCard} onLayout={handleComposerLayout}>
                 <View style={styles.composerMainRow}>
                   <TextInput
@@ -4405,7 +4454,7 @@ export default function Home() {
                     accessibilityLabel="chat-input"
                     onChangeText={setText}
                     placeholder={composerPlaceholder}
-                    placeholderTextColor="rgba(226, 238, 255, 0.46)"
+                    placeholderTextColor={t.placeholder}
                     multiline
                     returnKeyType="send"
                     submitBehavior="submit"
@@ -4434,23 +4483,43 @@ export default function Home() {
                   />
 
                   <View style={styles.composerInlineActions}>
-                    <Pressable
-                      onPress={handleChatSend}
-                      disabled={!text.trim() || busy || listening}
-                      testID="chat-send-button"
-                      accessibilityLabel="chat-send-button"
-                      accessibilityRole="button"
-                      style={[
-                        styles.sendButton,
-                        (!text.trim() || busy || listening) && styles.iconButtonDisabled,
-                      ]}
-                    >
-                      {busy && !listening ? (
-                        <ActivityIndicator size="small" color={Brand.cocoa} />
-                      ) : (
-                        <Ionicons name="arrow-up" size={18} color={Brand.cocoa} />
-                      )}
-                    </Pressable>
+                    {text.trim().length > 0 || (busy && !listening) ? (
+                      <Pressable
+                        onPress={handleChatSend}
+                        disabled={!text.trim() || busy || listening}
+                        testID="chat-send-button"
+                        accessibilityLabel="chat-send-button"
+                        accessibilityRole="button"
+                        style={[
+                          styles.sendButton,
+                          (!text.trim() || busy || listening) && styles.iconButtonDisabled,
+                        ]}
+                      >
+                        {busy && !listening ? (
+                          <ActivityIndicator size="small" color={t.cream} />
+                        ) : (
+                          <Ionicons name="arrow-up" size={18} color={t.cream} />
+                        )}
+                      </Pressable>
+                    ) : (
+                      <>
+                        <Ionicons
+                          name="mic-outline"
+                          size={20}
+                          color={t.cocoa}
+                          style={styles.composerMicIcon}
+                        />
+                        <Pressable
+                          onPress={openVoiceSession}
+                          testID="chat-open-voice-button"
+                          accessibilityLabel="chat-open-voice-button"
+                          accessibilityRole="button"
+                          style={styles.composerVoiceButton}
+                        >
+                          <Ionicons name="mic" size={20} color={t.cream} />
+                        </Pressable>
+                      </>
+                    )}
                   </View>
                 </View>
               </View>
@@ -4480,14 +4549,14 @@ export default function Home() {
                 },
               ]}
             >
-              <LinearGradient colors={Brand.gradients.softCard} style={styles.drawerGradient}>
+              <LinearGradient colors={t.gradients.softCard} style={styles.drawerGradient}>
                 <View style={styles.drawerSearchWrap}>
-                  <Ionicons name="search-outline" size={18} color="rgba(226, 238, 255, 0.52)" />
+                  <Ionicons name="search-outline" size={18} color={t.placeholder} />
                   <TextInput
                     value={historySearch}
                     onChangeText={setHistorySearch}
                     placeholder="Search chat history"
-                    placeholderTextColor="rgba(226, 238, 255, 0.46)"
+                    placeholderTextColor={t.placeholder}
                     style={styles.drawerSearchInput}
                   />
                 </View>
@@ -4495,7 +4564,7 @@ export default function Home() {
                 <Pressable onPress={startNewChat} style={styles.newChatRow}>
                   <Text style={styles.newChatText}>New chat</Text>
                   <View style={styles.newChatIconWrap}>
-                    <Ionicons name="create-outline" size={16} color={Brand.cocoa} />
+                    <Ionicons name="create-outline" size={16} color={t.cocoa} />
                   </View>
                 </Pressable>
 
@@ -4566,7 +4635,7 @@ export default function Home() {
 
                 <Pressable onPress={openSettings} style={styles.settingsCard}>
                   <View style={styles.settingsIconWrap}>
-                    <Ionicons name="settings-outline" size={16} color={Brand.cocoa} />
+                    <Ionicons name="settings-outline" size={16} color={t.cocoa} />
                   </View>
                   <Text style={styles.settingsText}>Settings</Text>
                 </Pressable>
@@ -4604,7 +4673,7 @@ export default function Home() {
           <Pressable style={StyleSheet.absoluteFillObject} onPress={closeHistoryItemActions} />
 
           <View style={styles.actionSheetWrap}>
-            <LinearGradient colors={Brand.gradients.softCard} style={styles.actionSheetCard}>
+            <LinearGradient colors={t.gradients.softCard} style={styles.actionSheetCard}>
               <View style={styles.actionSheetHandle} />
 
               <Text numberOfLines={1} style={styles.actionSheetTitle}>
@@ -4612,7 +4681,7 @@ export default function Home() {
               </Text>
               <Pressable onPress={deleteSelectedHistoryItem} style={styles.actionSheetRow}>
                 <View style={[styles.actionSheetIconWrap, styles.actionSheetDeleteIconWrap]}>
-                  <Ionicons name="trash-outline" size={18} color={Brand.cream} />
+                  <Ionicons name="trash-outline" size={18} color={t.cream} />
                 </View>
                 <Text style={styles.actionSheetDeleteText}>Delete</Text>
               </Pressable>
@@ -4634,7 +4703,7 @@ export default function Home() {
         }}
       >
         <Screen safeArea={false} style={styles.voiceScreen}>
-          <StatusBar style="light" />
+          <StatusBar style={isDark ? "light" : "dark"} />
 
           <View
             style={styles.voiceSwipeSurface}
@@ -4654,7 +4723,7 @@ export default function Home() {
             ]}
           >
             <View style={styles.voiceLiveBadge}>
-              <Ionicons name="radio-outline" size={12} color={Brand.cocoa} />
+              <Ionicons name="radio-outline" size={12} color={t.cocoa} />
               <Text style={styles.voiceLiveBadgeText}>Live</Text>
             </View>
 
@@ -4692,22 +4761,90 @@ export default function Home() {
           </View>
 
           <View style={styles.voiceCenter}>
-            <View pointerEvents="none" style={styles.voiceAssistantGlow} />
-            <Animated.View style={voiceHeroMorphStyle}>
-              <Orb
-                listening={listening && activeSurface === "live"}
-                state={assistantCharacterState}
-                emotion={assistantCharacterEmotion}
-                mouthOpenness={mouthOpenness}
-                onPressIn={() => {
-                  void handleLiveOrbPressIn();
-                }}
-                onPressOut={() => {
-                  void handleLiveOrbPressOut();
-                }}
-                size={assistantHeroSize}
-              />
-            </Animated.View>
+            <View style={styles.voiceHeader}>
+              <View style={styles.voiceHeaderRow}>
+                <Ionicons name="pulse" size={20} color={t.accent} />
+                <Text style={styles.voiceHeaderTitle}>{"I'm Listening…"}</Text>
+              </View>
+              <Text style={styles.voiceHeaderSubtitle}>
+                {"Speak naturally, I'm here to help."}
+              </Text>
+            </View>
+
+            <View style={[styles.voiceOrbStage, { height: voiceRingOuter }]}>
+              <View
+                pointerEvents="none"
+                style={[StyleSheet.absoluteFill, styles.voiceStageCenter]}
+              >
+                <View
+                  style={[
+                    styles.voiceRing,
+                    {
+                      width: voiceRingOuter,
+                      height: voiceRingOuter,
+                      borderRadius: voiceRingOuter / 2,
+                    },
+                  ]}
+                />
+              </View>
+              <View
+                pointerEvents="none"
+                style={[StyleSheet.absoluteFill, styles.voiceStageCenter]}
+              >
+                <View
+                  style={[
+                    styles.voiceRing,
+                    styles.voiceRingStrong,
+                    {
+                      width: voiceRingInner,
+                      height: voiceRingInner,
+                      borderRadius: voiceRingInner / 2,
+                    },
+                  ]}
+                />
+              </View>
+              <View
+                pointerEvents="none"
+                style={[StyleSheet.absoluteFill, styles.voiceStageCenter]}
+              >
+                <View
+                  style={[
+                    styles.voiceGlowOrb,
+                    {
+                      width: voiceRingInner,
+                      height: voiceRingInner,
+                      borderRadius: voiceRingInner / 2,
+                    },
+                  ]}
+                />
+              </View>
+              <View
+                pointerEvents="none"
+                style={[
+                  StyleSheet.absoluteFill,
+                  styles.voiceStageCenter,
+                  styles.voiceOrbWaveform,
+                ]}
+              >
+                <Waveform active={listening && activeSurface === "live"} />
+              </View>
+
+              <Animated.View style={voiceHeroMorphStyle}>
+                <Orb
+                  listening={listening && activeSurface === "live"}
+                  state={assistantCharacterState}
+                  emotion={assistantCharacterEmotion}
+                  mouthOpenness={mouthOpenness}
+                  onPressIn={() => {
+                    void handleLiveOrbPressIn();
+                  }}
+                  onPressOut={() => {
+                    void handleLiveOrbPressOut();
+                  }}
+                  size={assistantHeroSize}
+                />
+              </Animated.View>
+            </View>
 
             <Text style={styles.voiceTitle}>
               {recordingStopping && activeSurface === "live"
@@ -4728,7 +4865,7 @@ export default function Home() {
                 <Ionicons
                   name={handsFreeActive ? "radio" : "radio-outline"}
                   size={14}
-                  color={Brand.cocoa}
+                  color={t.cocoa}
                 />
                 <Text style={styles.handsFreeBadgeText}>
                   {handsFreeStatus || (handsFreeMachine.state === "wakeListening" ? "Listening" : "Listening")}
@@ -4766,6 +4903,55 @@ export default function Home() {
               </View>
             ) : null}
           </View>
+
+          <View
+            style={[
+              styles.voiceControlBar,
+              {
+                paddingHorizontal: horizontalPadding,
+                paddingBottom: Math.max(insets.bottom, Spacing.lg),
+              },
+            ]}
+          >
+            <Pressable
+              onPress={() => {
+                void closeVoiceSheetSafely();
+              }}
+              testID="voice-open-chat-button"
+              accessibilityLabel="voice-open-chat-button"
+              accessibilityRole="button"
+              style={styles.voiceControlSideButton}
+            >
+              <Ionicons name="chatbubble-outline" size={22} color={t.cocoa} />
+            </Pressable>
+
+            <Pressable
+              onPressIn={() => {
+                void handleLiveOrbPressIn();
+              }}
+              onPressOut={() => {
+                void handleLiveOrbPressOut();
+              }}
+              testID="voice-mic-button"
+              accessibilityLabel="voice-mic-button"
+              accessibilityRole="button"
+              style={styles.voiceControlMicButton}
+            >
+              <Ionicons name="mic" size={30} color={t.cream} />
+            </Pressable>
+
+            <Pressable
+              onPress={() => {
+                void closeVoiceSheetSafely();
+              }}
+              testID="voice-close-button"
+              accessibilityLabel="voice-close-button"
+              accessibilityRole="button"
+              style={styles.voiceControlSideButton}
+            >
+              <Ionicons name="close" size={24} color={t.cocoa} />
+            </Pressable>
+          </View>
           </View>
 
           {e2eHandsFreeEnabled ? (
@@ -4800,7 +4986,7 @@ export default function Home() {
         <View style={styles.modalBackdrop}>
           <GlassCard style={styles.modalCard}>
             <View style={styles.modalIconWrap}>
-              <Ionicons name="notifications-outline" size={20} color={Brand.bronze} />
+              <Ionicons name="notifications-outline" size={20} color={t.bronze} />
             </View>
 
             <Text style={styles.modalTitle}>Confirm reminder</Text>
@@ -4829,7 +5015,7 @@ export default function Home() {
               </Pressable>
 
               <Pressable onPress={confirmScheduleReminder} style={styles.modalPrimaryButton}>
-                <LinearGradient colors={Brand.gradients.button} style={styles.modalPrimaryGradient}>
+                <LinearGradient colors={t.gradients.button} style={styles.modalPrimaryGradient}>
                   <Text style={styles.modalPrimaryButtonText}>Schedule</Text>
                 </LinearGradient>
               </Pressable>
@@ -4841,7 +5027,8 @@ export default function Home() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(t: Palette) {
+  return StyleSheet.create({
   screen: {
     flex: 1,
   },
@@ -4870,18 +5057,28 @@ const styles = StyleSheet.create({
 
   topBarCenter: {
     flex: 1,
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+  },
+
+  onlineDot: {
+    width: 9,
+    height: 9,
+    borderRadius: Radius.pill,
+    backgroundColor: t.online,
   },
 
   topBarTitle: {
     ...Type.subheading,
-    color: Brand.ink,
+    color: t.ink,
   },
 
   topBarSubtitle: {
     ...Type.overline,
     marginTop: Spacing.xxs,
-    color: Brand.textMuted,
+    color: t.textMuted,
   },
 
   iconButton: {
@@ -4890,14 +5087,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
-  },
-
-  iconButtonSpacer: {
-    width: 36,
-    height: 36,
+    borderColor: t.lineStrong,
   },
 
   iconButtonDisabled: {
@@ -4917,9 +5109,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
   },
 
   e2eVoiceTopControls: {
@@ -4936,9 +5128,60 @@ const styles = StyleSheet.create({
   },
 
   e2eHandsFreeButtonText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 11,
     fontWeight: "900",
+  },
+
+  heroWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.md,
+    paddingBottom: 132,
+  },
+
+  heroGreeting: {
+    ...Type.heading,
+    fontWeight: "500",
+    color: t.textMuted,
+    textAlign: "center",
+  },
+
+  heroTitle: {
+    ...Type.display,
+    color: t.ink,
+    textAlign: "center",
+    textTransform: "uppercase",
+  },
+
+  suggestionsWrap: {
+    marginBottom: Spacing.md,
+    gap: Spacing.sm,
+    alignItems: "flex-start",
+  },
+
+  suggestionsOverline: {
+    ...Type.overline,
+    color: t.textMuted,
+    textTransform: "uppercase",
+    marginLeft: Spacing.xs,
+  },
+
+  suggestionChip: {
+    alignSelf: "flex-start",
+    maxWidth: "92%",
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm + 2,
+    borderRadius: Radius.pill,
+    backgroundColor: t.surface,
+    borderWidth: 1,
+    borderColor: t.line,
+  },
+
+  suggestionChipText: {
+    ...Type.callout,
+    color: t.ink,
   },
 
   chatThread: {
@@ -4971,14 +5214,14 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
     marginBottom: 18,
   },
 
   assistantAvatarText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 13,
     fontWeight: "900",
   },
@@ -4990,7 +5233,7 @@ const styles = StyleSheet.create({
   messageSender: {
     marginLeft: 4,
     marginBottom: 6,
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 11,
     fontWeight: "800",
   },
@@ -5003,7 +5246,7 @@ const styles = StyleSheet.create({
 
   userBubble: {
     maxWidth: "82%",
-    backgroundColor: Brand.bronze,
+    backgroundColor: t.bronze,
     borderBottomRightRadius: 8,
     shadowColor: "#000000",
     shadowOpacity: 0.08,
@@ -5013,9 +5256,9 @@ const styles = StyleSheet.create({
   },
 
   assistantBubble: {
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
     borderBottomLeftRadius: 8,
   },
 
@@ -5025,17 +5268,17 @@ const styles = StyleSheet.create({
   },
 
   userMessageText: {
-    color: Brand.cream,
+    color: t.cream,
   },
 
   assistantMessageText: {
-    color: Brand.ink,
+    color: t.ink,
   },
 
   messageMeta: {
     marginTop: 6,
     marginLeft: 4,
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 11,
     fontWeight: "700",
   },
@@ -5047,15 +5290,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
-    backgroundColor: Brand.soft,
+    borderColor: t.lineStrong,
+    backgroundColor: t.soft,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
   },
 
   fileActionText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 13,
     fontWeight: "800",
   },
@@ -5068,13 +5311,13 @@ const styles = StyleSheet.create({
   },
 
   typingText: {
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 14,
     fontWeight: "700",
   },
 
   errorBubble: {
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderColor: "rgba(255, 138, 138, 0.32)",
   },
 
@@ -5095,9 +5338,9 @@ const styles = StyleSheet.create({
 
   composerCard: {
     borderRadius: Radius.xl,
-    backgroundColor: "rgba(255, 255, 255, 0.10)",
+    backgroundColor: t.surfaceStrong,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
     paddingHorizontal: Spacing.sm,
     paddingVertical: Spacing.xs,
     shadowColor: "#000000",
@@ -5118,7 +5361,7 @@ const styles = StyleSheet.create({
   composerInput: {
     flex: 1,
     maxHeight: MAX_INPUT_HEIGHT,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 16,
     lineHeight: 22,
     fontWeight: "500",
@@ -5133,11 +5376,24 @@ const styles = StyleSheet.create({
     borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: Brand.soft,
-    borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    backgroundColor: t.accentStrong,
+    ...Elevation.glow,
   },
 
+  composerMicIcon: {
+    marginRight: Spacing.xxs,
+    opacity: 0.9,
+  },
+
+  composerVoiceButton: {
+    width: 40,
+    height: 40,
+    borderRadius: Radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: t.accentStrong,
+    ...Elevation.glow,
+  },
 
   composerInlineActions: {
     flexDirection: "row",
@@ -5151,7 +5407,7 @@ const styles = StyleSheet.create({
 
   drawerScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    backgroundColor: t.scrim,
   },
 
   drawerRow: {
@@ -5177,14 +5433,14 @@ const styles = StyleSheet.create({
     height: 52,
     paddingHorizontal: 16,
     borderRadius: 18,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   drawerSearchInput: {
     flex: 1,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 15,
     fontWeight: "700",
   },
@@ -5193,7 +5449,7 @@ const styles = StyleSheet.create({
     marginTop: 14,
     minHeight: 54,
     borderBottomWidth: 1,
-    borderBottomColor: Brand.line,
+    borderBottomColor: t.line,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -5201,7 +5457,7 @@ const styles = StyleSheet.create({
   },
 
   newChatText: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 14,
     fontWeight: "900",
   },
@@ -5213,8 +5469,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderColor: t.lineStrong,
+    backgroundColor: t.surface,
   },
 
   drawerSectionHeader: {
@@ -5224,7 +5480,7 @@ const styles = StyleSheet.create({
   },
 
   drawerSectionTitle: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 15,
     fontWeight: "900",
   },
@@ -5240,14 +5496,14 @@ const styles = StyleSheet.create({
   },
 
   drawerEmptyTitle: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 14,
     fontWeight: "900",
   },
 
   drawerEmptyText: {
     marginTop: 6,
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 12,
     lineHeight: 18,
     fontWeight: "600",
@@ -5278,12 +5534,12 @@ const styles = StyleSheet.create({
   },
 
   chatListItemActive: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
   },
 
   chatListTitle: {
     flex: 1,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 13,
     lineHeight: 18,
     fontWeight: "800",
@@ -5293,17 +5549,17 @@ const styles = StyleSheet.create({
     minWidth: 42,
     alignItems: "center",
     borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     paddingHorizontal: 8,
     paddingVertical: 3,
   },
 
   chatListKindBadgeVoice: {
-    backgroundColor: "rgba(87, 222, 255, 0.12)",
+    backgroundColor: t.accentSoft,
   },
 
   chatListKindBadgeText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 10,
     lineHeight: 13,
     fontWeight: "900",
@@ -5311,7 +5567,7 @@ const styles = StyleSheet.create({
 
   chatListPreview: {
     marginTop: 2,
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 11,
     lineHeight: 16,
     fontWeight: "700",
@@ -5321,9 +5577,9 @@ const styles = StyleSheet.create({
     marginTop: 10,
     minHeight: 58,
     borderRadius: 18,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
@@ -5336,11 +5592,11 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
   },
 
   settingsText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 14,
     fontWeight: "900",
   },
@@ -5348,9 +5604,9 @@ const styles = StyleSheet.create({
   accountCard: {
     marginTop: 14,
     borderRadius: 22,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
     padding: 16,
     flexDirection: "row",
     alignItems: "center",
@@ -5363,7 +5619,7 @@ const styles = StyleSheet.create({
   },
 
   accountLabel: {
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 11,
     fontWeight: "900",
     letterSpacing: 0.4,
@@ -5371,14 +5627,14 @@ const styles = StyleSheet.create({
 
   accountName: {
     marginTop: 6,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 18,
     fontWeight: "900",
   },
 
   accountMeta: {
     marginTop: 4,
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 12,
     fontWeight: "700",
   },
@@ -5390,11 +5646,11 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 138, 138, 0.16)",
+    backgroundColor: t.dangerSoft,
   },
 
   accountSignOutText: {
-    color: Brand.cream,
+    color: t.cream,
     fontSize: 14,
     fontWeight: "900",
   },
@@ -5406,7 +5662,7 @@ const styles = StyleSheet.create({
   actionSheetBackdrop: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(0, 0, 0, 0.58)",
+    backgroundColor: t.scrim,
   },
 
   actionSheetWrap: {
@@ -5420,7 +5676,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 14,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
   },
 
   actionSheetHandle: {
@@ -5428,19 +5684,19 @@ const styles = StyleSheet.create({
     width: 42,
     height: 5,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.20)",
+    backgroundColor: t.lineStrong,
     marginBottom: 12,
   },
 
   actionSheetTitle: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 16,
     fontWeight: "900",
   },
 
   actionSheetSubtitle: {
     marginTop: 6,
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 12,
     lineHeight: 18,
     fontWeight: "700",
@@ -5454,9 +5710,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   actionSheetIconWrap: {
@@ -5483,13 +5739,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginTop: 12,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   actionSheetCancelText: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 14,
     fontWeight: "900",
   },
@@ -5515,13 +5771,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   voiceLiveBadgeText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 12,
     fontWeight: "800",
   },
@@ -5536,21 +5792,65 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 24,
+    gap: Spacing.lg,
   },
 
-  voiceAssistantGlow: {
-    position: "absolute",
-    width: 280,
-    height: 160,
-    borderRadius: 999,
-    backgroundColor: "rgba(87, 222, 255, 0.13)",
-    transform: [{ translateY: 28 }],
+  voiceHeader: {
+    alignItems: "center",
+    gap: Spacing.xs,
+  },
+
+  voiceHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+
+  voiceHeaderTitle: {
+    ...Type.title,
+    color: t.accent,
+  },
+
+  voiceHeaderSubtitle: {
+    ...Type.callout,
+    color: t.textMuted,
+    textAlign: "center",
+  },
+
+  voiceOrbStage: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  voiceStageCenter: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  voiceRing: {
+    borderWidth: 1,
+    borderColor: t.accentSoft,
+  },
+
+  voiceRingStrong: {
+    borderColor: t.accent,
+    opacity: 0.55,
+  },
+
+  voiceGlowOrb: {
+    backgroundColor: t.accentSoft,
+    ...Elevation.glow,
+  },
+
+  voiceOrbWaveform: {
+    opacity: 0.5,
   },
 
   voiceTitle: {
-    ...Type.title,
-    marginTop: Spacing.xxl,
-    color: Brand.ink,
+    ...Type.subheading,
+    marginTop: Spacing.xs,
+    color: t.cocoa,
+    textAlign: "center",
   },
 
   handsFreeBadge: {
@@ -5560,21 +5860,21 @@ const styles = StyleSheet.create({
     gap: 8,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: Brand.line,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderColor: t.line,
+    backgroundColor: t.surface,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
 
   handsFreeBadgeText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 12,
     fontWeight: "800",
   },
 
   handsFreeTranscript: {
     marginTop: 12,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 14,
     lineHeight: 20,
     fontWeight: "700",
@@ -5588,9 +5888,38 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
+  voiceControlBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.xxl,
+    paddingTop: Spacing.lg,
+  },
+
+  voiceControlSideButton: {
+    width: 56,
+    height: 56,
+    borderRadius: Radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: t.surface,
+    borderWidth: 1,
+    borderColor: t.lineStrong,
+  },
+
+  voiceControlMicButton: {
+    width: 78,
+    height: 78,
+    borderRadius: Radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: t.accentStrong,
+    ...Elevation.glow,
+  },
+
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.58)",
+    backgroundColor: t.scrim,
     alignItems: "center",
     justifyContent: "center",
     padding: 20,
@@ -5609,19 +5938,19 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
   },
 
   modalTitle: {
     marginTop: 18,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 20,
     fontWeight: "900",
   },
 
   modalSubtitle: {
     marginTop: 10,
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 14,
     lineHeight: 21,
     fontWeight: "600",
@@ -5632,12 +5961,12 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: Brand.line,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderColor: t.line,
+    backgroundColor: t.surface,
   },
 
   modalInfoLabel: {
-    color: Brand.textMuted,
+    color: t.textMuted,
     fontSize: 11,
     fontWeight: "800",
     textTransform: "uppercase",
@@ -5646,7 +5975,7 @@ const styles = StyleSheet.create({
 
   modalInfoValue: {
     marginTop: 4,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 15,
     lineHeight: 21,
     fontWeight: "800",
@@ -5665,12 +5994,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderColor: t.lineStrong,
+    backgroundColor: t.surface,
   },
 
   modalSecondaryButtonText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 14,
     fontWeight: "900",
   },
@@ -5688,8 +6017,9 @@ const styles = StyleSheet.create({
   },
 
   modalPrimaryButtonText: {
-    color: Brand.cream,
+    color: t.cream,
     fontSize: 14,
     fontWeight: "900",
   },
-});
+  });
+}

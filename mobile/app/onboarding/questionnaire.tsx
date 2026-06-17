@@ -18,7 +18,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
 import { Screen } from "@/components/ui";
-import { Brand, Radius, Spacing, Type } from "@/constants/theme";
+import { Radius, Spacing, Type, type Palette } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import profilerSlotsSeed from "@/data/config/profiler_slots.json";
@@ -62,6 +63,8 @@ function formatSelectedOptions(options: string[]) {
 }
 
 export default function QuestionnaireScreen() {
+  const { palette: t, isDark } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView | null>(null);
 
@@ -507,7 +510,7 @@ export default function QuestionnaireScreen() {
 
   return (
     <Screen safeArea={false} style={styles.screen}>
-      <StatusBar style="light" />
+      <StatusBar style={isDark ? "light" : "dark"} />
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -522,7 +525,7 @@ export default function QuestionnaireScreen() {
           <View style={styles.chatWrap}>
             {loading ? (
               <View style={styles.loadingWrap}>
-                <ActivityIndicator color={Brand.bronze} />
+                <ActivityIndicator color={t.bronze} />
                 <Text style={styles.loadingText}>Getting things ready…</Text>
               </View>
             ) : (
@@ -681,7 +684,7 @@ export default function QuestionnaireScreen() {
                   value={input}
                   onChangeText={setInput}
                   placeholder={sessionReplyLanguage === "ta" ? "உங்களைப் பற்றி பதில் சொல்லுங்கள்…" : "Reply naturally…"}
-                  placeholderTextColor={Brand.textMuted}
+                  placeholderTextColor={t.textMuted}
                   style={styles.input}
                   multiline
                   textAlignVertical="top"
@@ -706,7 +709,8 @@ export default function QuestionnaireScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(t: Palette) {
+  return StyleSheet.create({
   screen: { flex: 1 },
   flex: { flex: 1 },
   container: {
@@ -725,7 +729,7 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     ...Type.callout,
-    color: Brand.textMuted,
+    color: t.textMuted,
   },
   chatScroll: {
     flex: 1,
@@ -752,16 +756,16 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
   },
   assistantBubble: {
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
   userBubble: {
-    backgroundColor: Brand.bronze,
+    backgroundColor: t.bronze,
   },
   assistantLabel: {
     ...Type.overline,
-    color: Brand.caramel,
+    color: t.caramel,
     textTransform: "uppercase",
   },
   bubbleText: {
@@ -769,7 +773,7 @@ const styles = StyleSheet.create({
     lineHeight: 21,
   },
   assistantBubbleText: {
-    color: Brand.text,
+    color: t.text,
   },
   userBubbleText: {
     color: "#fff",
@@ -780,11 +784,11 @@ const styles = StyleSheet.create({
   },
   optionsTitle: {
     ...Type.subheading,
-    color: Brand.text,
+    color: t.text,
   },
   optionsSubtitle: {
     ...Type.caption,
-    color: Brand.textMuted,
+    color: t.textMuted,
   },
   chipsWrap: {
     flexDirection: "row",
@@ -795,18 +799,18 @@ const styles = StyleSheet.create({
     borderRadius: Radius.pill,
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.sm,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
   },
   optionChipSelected: {
-    backgroundColor: Brand.bronze,
-    borderColor: Brand.bronze,
+    backgroundColor: t.bronze,
+    borderColor: t.bronze,
   },
   optionChipText: {
     ...Type.callout,
     fontWeight: "700",
-    color: Brand.text,
+    color: t.text,
   },
   optionChipTextSelected: {
     color: "#fff",
@@ -814,7 +818,7 @@ const styles = StyleSheet.create({
   multiSubmitButton: {
     marginTop: Spacing.xxs,
     borderRadius: Radius.md,
-    backgroundColor: Brand.bronze,
+    backgroundColor: t.bronze,
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
     alignItems: "center",
@@ -834,16 +838,16 @@ const styles = StyleSheet.create({
   },
   doneTitle: {
     ...Type.subheading,
-    color: Brand.text,
+    color: t.text,
   },
   doneText: {
     ...Type.body,
-    color: Brand.textMuted,
+    color: t.textMuted,
   },
   doneButton: {
     marginTop: Spacing.xs,
     borderRadius: Radius.md,
-    backgroundColor: Brand.bronze,
+    backgroundColor: t.bronze,
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
     alignItems: "center",
@@ -863,7 +867,7 @@ const styles = StyleSheet.create({
   composerHint: {
     ...Type.caption,
     fontSize: 12,
-    color: Brand.textMuted,
+    color: t.textMuted,
     paddingHorizontal: Spacing.xs,
   },
   composerRow: {
@@ -877,7 +881,7 @@ const styles = StyleSheet.create({
     maxHeight: 120,
     fontSize: Type.body.fontSize,
     lineHeight: 21,
-    color: Brand.text,
+    color: t.text,
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
   },
@@ -885,11 +889,12 @@ const styles = StyleSheet.create({
     width: 46,
     height: 46,
     borderRadius: Radius.pill,
-    backgroundColor: Brand.bronze,
+    backgroundColor: t.bronze,
     alignItems: "center",
     justifyContent: "center",
   },
   sendButtonDisabled: {
     opacity: 0.5,
   },
-});
+  });
+}

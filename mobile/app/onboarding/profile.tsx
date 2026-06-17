@@ -28,7 +28,8 @@ import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import { GlassCard } from "@/components/Glass";
 import { Screen } from "@/components/ui";
-import { Brand, Elevation, Radius, Spacing, Type } from "@/constants/theme";
+import { Elevation, Radius, Spacing, Type, type Palette } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 
 type NoticeState = {
   title: string;
@@ -38,6 +39,8 @@ type NoticeState = {
 } | null;
 
 export default function ProfileScreen() {
+  const { palette: t, isDark } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const { name: currentAssistantName, profile, refresh, settings } = useAssistant();
@@ -156,7 +159,7 @@ export default function ProfileScreen() {
 
   return (
     <Screen safeArea={false} style={styles.page}>
-      <StatusBar style="light" />
+      <StatusBar style={isDark ? "light" : "dark"} />
 
       <KeyboardAvoidingView
         style={styles.page}
@@ -177,7 +180,7 @@ export default function ProfileScreen() {
           <View style={{ width: "100%", alignSelf: "center", maxWidth: maxFormWidth }}>
             <View style={styles.topBar}>
               <View style={styles.topBarPill}>
-                <Ionicons name="layers-outline" size={14} color={Brand.bronze} />
+                <Ionicons name="layers-outline" size={14} color={t.bronze} />
                 <Text style={styles.topBarPillText}>Let’s begin</Text>
               </View>
 
@@ -185,19 +188,19 @@ export default function ProfileScreen() {
                 onPress={() => router.replace("/auth/login")}
                 style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
               >
-                <Ionicons name="close-outline" size={18} color={Brand.cocoa} />
+                <Ionicons name="close-outline" size={18} color={t.cocoa} />
               </Pressable>
             </View>
 
             <GlassCard style={{ borderRadius: 32, marginTop: 14 }}>
               <View style={styles.heroHeaderRow}>
                 <View style={styles.heroPill}>
-                  <Ionicons name="person-circle-outline" size={14} color={Brand.bronze} />
+                  <Ionicons name="person-circle-outline" size={14} color={t.bronze} />
                   <Text style={styles.heroPillText}>Profile setup</Text>
                 </View>
 
                 <View style={styles.heroStatusChip}>
-                  <Ionicons name="sparkles-outline" size={14} color={Brand.bronze} />
+                  <Ionicons name="sparkles-outline" size={14} color={t.bronze} />
                   <Text style={styles.heroStatusText}>Step 1 of 2</Text>
                 </View>
               </View>
@@ -231,7 +234,7 @@ export default function ProfileScreen() {
                 style={styles.previewCard}
               >
                 <View style={styles.previewBadge}>
-                  <Ionicons name="sparkles" size={14} color={Brand.caramel} />
+                  <Ionicons name="sparkles" size={14} color={t.caramel} />
                   <Text style={styles.previewBadgeText}>How it will sound</Text>
                 </View>
 
@@ -316,7 +319,7 @@ export default function ProfileScreen() {
 
               <View style={styles.tipCard}>
                 <View style={styles.tipIconWrap}>
-                  <Ionicons name="bulb-outline" size={16} color={Brand.bronze} />
+                  <Ionicons name="bulb-outline" size={16} color={t.bronze} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.tipTitle}>Quick tip</Text>
@@ -336,17 +339,17 @@ export default function ProfileScreen() {
                 disabled={busy}
               >
                 <LinearGradient
-                  colors={Brand.gradients.button}
+                  colors={t.gradients.button}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
                   style={[styles.primaryButton, { minHeight: isSmallPhone ? 54 : 58 }]}
                 >
                   {busy ? (
-                    <ActivityIndicator color={Brand.ink} />
+                    <ActivityIndicator color={t.ink} />
                   ) : (
                     <>
                       <Text style={styles.primaryButtonText}>Save and continue</Text>
-                      <Ionicons name="arrow-forward" size={18} color={Brand.ink} />
+                      <Ionicons name="arrow-forward" size={18} color={t.ink} />
                     </>
                   )}
                 </LinearGradient>
@@ -359,7 +362,7 @@ export default function ProfileScreen() {
           <View style={styles.noticeOverlay}>
             <GlassCard style={{ borderRadius: Radius.xxl }}>
               <View style={styles.noticeIconWrap}>
-                <Ionicons name="information-circle" size={22} color={Brand.caramel} />
+                <Ionicons name="information-circle" size={22} color={t.caramel} />
               </View>
 
               <Text style={styles.noticeTitle}>{notice?.title}</Text>
@@ -388,10 +391,14 @@ export default function ProfileScreen() {
 }
 
 function FieldLabel({ label }: { label: string }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return <Text style={styles.label}>{label}</Text>;
 }
 
 function SectionPill({ label }: { label: string }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={styles.sectionPill}>
       <Text style={styles.sectionPillText}>{label}</Text>
@@ -408,10 +415,12 @@ function MetricCard({
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={styles.metricCard}>
       <View style={styles.metricIconWrap}>
-        <Ionicons name={icon} size={15} color={Brand.bronze} />
+        <Ionicons name={icon} size={15} color={t.bronze} />
       </View>
       <Text style={styles.metricValue} numberOfLines={1}>
         {value}
@@ -430,10 +439,12 @@ function ReadonlyInfoCard({
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={styles.infoCard}>
       <View style={styles.infoIconWrap}>
-        <Ionicons name={icon} size={15} color={Brand.bronze} />
+        <Ionicons name={icon} size={15} color={t.bronze} />
       </View>
       <Text style={styles.infoLabel}>{label}</Text>
       <Text style={styles.infoValue} numberOfLines={2}>
@@ -458,16 +469,18 @@ function InputField({
   editable: boolean;
   compact: boolean;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={[styles.inputShell, { minHeight: compact ? 52 : 56 }]}>
       <View style={styles.inputIconWrap}>
-        <Ionicons name={icon} size={16} color={Brand.bronze} />
+        <Ionicons name={icon} size={16} color={t.bronze} />
       </View>
       <TextInput
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
-        placeholderTextColor="rgba(226, 238, 255, 0.42)"
+        placeholderTextColor={t.placeholder}
         style={styles.input}
         editable={editable}
       />
@@ -475,7 +488,8 @@ function InputField({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(t: Palette) {
+  return StyleSheet.create({
   page: {
     flex: 1,
   },
@@ -494,15 +508,15 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     paddingHorizontal: Spacing.md,
     borderRadius: Radius.pill,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   topBarPillText: {
     ...Type.caption,
     fontWeight: "700",
-    color: Brand.cocoa,
+    color: t.cocoa,
   },
 
   backBtn: {
@@ -511,9 +525,9 @@ const styles = StyleSheet.create({
     borderRadius: 19,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   heroHeaderRow: {
@@ -531,15 +545,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     borderRadius: Radius.pill,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   heroPillText: {
     ...Type.caption,
     fontWeight: "700",
-    color: Brand.cocoa,
+    color: t.cocoa,
   },
 
   heroStatusChip: {
@@ -549,20 +563,20 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     paddingHorizontal: Spacing.md,
     borderRadius: Radius.pill,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   heroStatusText: {
     ...Type.caption,
     fontWeight: "700",
-    color: Brand.cocoa,
+    color: t.cocoa,
   },
 
   title: {
     marginTop: Spacing.lg,
-    color: Brand.ink,
+    color: t.ink,
     fontWeight: "800",
     letterSpacing: -0.4,
   },
@@ -570,7 +584,7 @@ const styles = StyleSheet.create({
   subtitle: {
     ...Type.body,
     marginTop: Spacing.sm,
-    color: Brand.muted,
+    color: t.muted,
   },
 
   metricRow: {
@@ -585,9 +599,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.lg,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   metricIconWrap: {
@@ -596,20 +610,20 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    backgroundColor: t.accentSoft,
   },
 
   metricValue: {
     ...Type.subheading,
     marginTop: Spacing.md,
-    color: Brand.ink,
+    color: t.ink,
   },
 
   metricLabel: {
     ...Type.caption,
     fontWeight: "700",
     marginTop: Spacing.xs,
-    color: Brand.muted,
+    color: t.muted,
   },
 
   previewCard: {
@@ -617,7 +631,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.xl,
     padding: Spacing.lg,
     borderWidth: 1,
-    borderColor: "rgba(87, 222, 255, 0.18)",
+    borderColor: t.accentSoft,
   },
 
   previewBadge: {
@@ -628,26 +642,26 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     paddingHorizontal: Spacing.md,
     borderRadius: Radius.pill,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   previewBadgeText: {
     ...Type.overline,
-    color: Brand.cocoa,
+    color: t.cocoa,
   },
 
   previewTitle: {
     ...Type.subheading,
     marginTop: Spacing.md,
-    color: Brand.ink,
+    color: t.ink,
   },
 
   previewText: {
     ...Type.caption,
     marginTop: Spacing.xs,
-    color: Brand.muted,
+    color: t.muted,
     lineHeight: 20,
   },
 
@@ -660,13 +674,13 @@ const styles = StyleSheet.create({
 
   sectionTitle: {
     ...Type.heading,
-    color: Brand.ink,
+    color: t.ink,
   },
 
   sectionSubtitle: {
     ...Type.caption,
     marginTop: Spacing.xs,
-    color: Brand.muted,
+    color: t.muted,
     maxWidth: 255,
   },
 
@@ -676,14 +690,14 @@ const styles = StyleSheet.create({
     borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   sectionPillText: {
     ...Type.overline,
-    color: Brand.cocoa,
+    color: t.cocoa,
   },
 
   infoGrid: {
@@ -698,9 +712,9 @@ const styles = StyleSheet.create({
     minHeight: 106,
     borderRadius: Radius.lg,
     padding: Spacing.lg,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   infoIconWrap: {
@@ -709,21 +723,21 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    backgroundColor: t.accentSoft,
   },
 
   infoLabel: {
     ...Type.caption,
     fontWeight: "700",
     marginTop: Spacing.md,
-    color: Brand.muted,
+    color: t.muted,
   },
 
   infoValue: {
     ...Type.callout,
     fontWeight: "800",
     marginTop: Spacing.sm,
-    color: Brand.ink,
+    color: t.ink,
   },
 
   label: {
@@ -731,14 +745,14 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginTop: Spacing.lg,
     marginBottom: Spacing.sm,
-    color: Brand.cocoa,
+    color: t.cocoa,
   },
 
   inputShell: {
     borderRadius: Radius.md,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
     flexDirection: "row",
     alignItems: "center",
     overflow: "hidden",
@@ -752,7 +766,7 @@ const styles = StyleSheet.create({
 
   input: {
     flex: 1,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: Type.body.fontSize,
     paddingRight: Spacing.lg,
   },
@@ -764,9 +778,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: Spacing.md,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   tipIconWrap: {
@@ -775,19 +789,19 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    backgroundColor: t.accentSoft,
   },
 
   tipTitle: {
     ...Type.callout,
     fontWeight: "800",
-    color: Brand.ink,
+    color: t.ink,
   },
 
   tipText: {
     ...Type.caption,
     marginTop: Spacing.xs,
-    color: Brand.muted,
+    color: t.muted,
   },
 
   buttonShell: {
@@ -807,7 +821,7 @@ const styles = StyleSheet.create({
 
   primaryButtonText: {
     ...Type.subheading,
-    color: Brand.ink,
+    color: t.ink,
   },
 
   disabled: {
@@ -823,7 +837,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     paddingHorizontal: Spacing.lg,
-    backgroundColor: Brand.overlay,
+    backgroundColor: t.overlay,
   },
 
   noticeIconWrap: {
@@ -832,21 +846,21 @@ const styles = StyleSheet.create({
     borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   noticeTitle: {
     ...Type.title,
     marginTop: Spacing.md,
-    color: Brand.ink,
+    color: t.ink,
   },
 
   noticeMessage: {
     ...Type.body,
     marginTop: Spacing.sm,
-    color: Brand.muted,
+    color: t.muted,
   },
 
   noticeActions: {
@@ -862,15 +876,15 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
   },
 
   noticeSecondaryText: {
     ...Type.callout,
     fontWeight: "700",
-    color: Brand.cocoa,
+    color: t.cocoa,
   },
 
   noticePrimaryBtn: {
@@ -879,12 +893,13 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: Brand.bronze,
+    backgroundColor: t.bronze,
   },
 
   noticePrimaryText: {
     ...Type.callout,
     fontWeight: "800",
-    color: Brand.ink,
+    color: t.ink,
   },
-});
+  });
+}

@@ -17,7 +17,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GlassCard } from "@/components/Glass";
 import { AppText, Button, Screen } from "@/components/ui";
 import { useAuth } from "@/components/AuthProvider";
-import { Brand, Radius, Spacing } from "@/constants/theme";
+import { Radius, Spacing, type Palette } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 import { getPasswordVisibilityProps } from "@/lib/authUi";
 
 function emailLooksValid(value: string) {
@@ -26,6 +27,8 @@ function emailLooksValid(value: string) {
 
 export default function LoginScreen() {
   const { signInWithPassword } = useAuth();
+  const { palette: t, isDark } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -76,7 +79,7 @@ export default function LoginScreen() {
 
   return (
     <Screen safeArea={false}>
-      <StatusBar style="light" />
+      <StatusBar style={isDark ? "light" : "dark"} />
 
       <KeyboardAvoidingView
         style={styles.page}
@@ -109,7 +112,7 @@ export default function LoginScreen() {
             <GlassCard style={styles.card}>
               {errorText ? (
                 <View style={styles.errorCard}>
-                  <Ionicons name="alert-circle-outline" size={16} color={Brand.danger} />
+                  <Ionicons name="alert-circle-outline" size={16} color={t.danger} />
                   <AppText variant="caption" style={styles.errorText}>
                     {errorText}
                   </AppText>
@@ -122,7 +125,7 @@ export default function LoginScreen() {
                 </AppText>
                 <View style={[styles.inputShell, { minHeight: inputHeight }]}>
                   <View style={styles.inputIconWrap}>
-                    <Ionicons name="mail-outline" size={16} color={Brand.caramel} />
+                    <Ionicons name="mail-outline" size={16} color={t.caramel} />
                   </View>
                   <TextInput
                     value={email}
@@ -138,7 +141,7 @@ export default function LoginScreen() {
                     autoComplete="email"
                     textContentType="username"
                     placeholder="you@example.com"
-                    placeholderTextColor="rgba(226, 238, 255, 0.42)"
+                    placeholderTextColor={t.placeholder}
                     style={styles.input}
                     editable={!busy}
                     returnKeyType="next"
@@ -152,7 +155,7 @@ export default function LoginScreen() {
                 </AppText>
                 <View style={[styles.inputShell, { minHeight: inputHeight }]}>
                   <View style={styles.inputIconWrap}>
-                    <Ionicons name="key-outline" size={16} color={Brand.caramel} />
+                    <Ionicons name="key-outline" size={16} color={t.caramel} />
                   </View>
                   <TextInput
                     value={password}
@@ -168,7 +171,7 @@ export default function LoginScreen() {
                     autoComplete="password"
                     textContentType="password"
                     placeholder="Your password"
-                    placeholderTextColor="rgba(226, 238, 255, 0.42)"
+                    placeholderTextColor={t.placeholder}
                     style={styles.input}
                     editable={!busy}
                     returnKeyType="go"
@@ -185,7 +188,7 @@ export default function LoginScreen() {
                     <Ionicons
                       name={passwordVisibility.iconName}
                       size={18}
-                      color={Brand.cocoa}
+                      color={t.cocoa}
                     />
                   </Pressable>
                 </View>
@@ -235,7 +238,8 @@ export default function LoginScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(t: Palette) {
+  return StyleSheet.create({
   page: {
     flex: 1,
   },
@@ -251,7 +255,7 @@ const styles = StyleSheet.create({
   },
 
   heroTitle: {
-    color: Brand.ink,
+    color: t.ink,
   },
 
   card: {
@@ -282,8 +286,8 @@ const styles = StyleSheet.create({
   inputShell: {
     borderRadius: Radius.md,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderColor: t.lineStrong,
+    backgroundColor: t.surface,
     flexDirection: "row",
     alignItems: "center",
     overflow: "hidden",
@@ -297,7 +301,7 @@ const styles = StyleSheet.create({
 
   input: {
     flex: 1,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 15,
     paddingRight: Spacing.md,
   },
@@ -332,4 +336,5 @@ const styles = StyleSheet.create({
     opacity: 0.95,
     transform: [{ scale: 0.995 }],
   },
-});
+  });
+}

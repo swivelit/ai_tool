@@ -23,7 +23,8 @@ import { GlassCard } from "@/components/Glass";
 import { Screen } from "@/components/ui";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
-import { Brand, Radius, Spacing, Type } from "@/constants/theme";
+import { Radius, Spacing, Type, type Palette } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 import { apiGet, apiPut } from "@/lib/api";
 import { getProfileForFirebaseUid } from "@/lib/account";
 
@@ -93,6 +94,8 @@ function getDayMode(wake?: string | null) {
 
 
 export default function SettingsModal() {
+  const { palette: t, isDark } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
 
@@ -412,7 +415,7 @@ export default function SettingsModal() {
 
   return (
     <Screen safeArea={false} style={styles.page}>
-      <StatusBar style="light" />
+      <StatusBar style={isDark ? "light" : "dark"} />
 
       <KeyboardAvoidingView
         style={styles.page}
@@ -430,7 +433,7 @@ export default function SettingsModal() {
         >
           <View style={styles.topBar}>
             <Pressable style={styles.topIconBtn} onPress={() => router.back()}>
-              <Ionicons name="sparkles-outline" size={18} color={Brand.cocoa} />
+              <Ionicons name="sparkles-outline" size={18} color={t.cocoa} />
             </Pressable>
 
             <View style={styles.topCenter}>
@@ -450,14 +453,14 @@ export default function SettingsModal() {
               style={({ pressed }) => [styles.accountHeroCard, pressed && styles.pressed]}
             >
               <View style={styles.accountAvatar}>
-                <Ionicons name="color-palette-outline" size={22} color={Brand.ink} />
+                <Ionicons name="color-palette-outline" size={22} color={t.ink} />
               </View>
 
               <View style={styles.accountHeroContent}>
                 <Text style={styles.accountName}>{`Customise (${name || "Elli"})`}</Text>
               </View>
 
-              <Ionicons name="chevron-forward" size={18} color={Brand.cocoa} />
+              <Ionicons name="chevron-forward" size={18} color={t.cocoa} />
             </Pressable>
           </GlassCard>
 
@@ -509,13 +512,13 @@ export default function SettingsModal() {
                   ]}
                 >
                   {linkingPassword ? (
-                    <ActivityIndicator color={Brand.ink} />
+                    <ActivityIndicator color={t.ink} />
                   ) : (
                     <>
                       <Ionicons
                         name="shield-checkmark-outline"
                         size={16}
-                        color={Brand.ink}
+                        color={t.ink}
                       />
                       <Text style={styles.secondaryButtonText}>
                         Add email/password login
@@ -594,17 +597,17 @@ export default function SettingsModal() {
               ]}
             >
               <LinearGradient
-                colors={Brand.gradients.button}
+                colors={t.gradients.button}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={styles.primaryButton}
               >
                 {savingRoutine || loading ? (
-                  <ActivityIndicator color={Brand.ink} />
+                  <ActivityIndicator color={t.ink} />
                 ) : (
                   <>
                     <Text style={styles.primaryButtonText}>Save routine</Text>
-                    <Ionicons name="checkmark" size={16} color={Brand.ink} />
+                    <Ionicons name="checkmark" size={16} color={t.ink} />
                   </>
                 )}
               </LinearGradient>
@@ -624,10 +627,10 @@ export default function SettingsModal() {
               ]}
             >
               {signingOut ? (
-                <ActivityIndicator color={Brand.cocoa} />
+                <ActivityIndicator color={t.cocoa} />
               ) : (
                 <>
-                  <Ionicons name="log-out-outline" size={16} color={Brand.cocoa} />
+                  <Ionicons name="log-out-outline" size={16} color={t.cocoa} />
                   <Text style={styles.dangerGhostButtonText}>Sign out</Text>
                 </>
               )}
@@ -659,7 +662,7 @@ export default function SettingsModal() {
         <View style={styles.noticeOverlay}>
           <GlassCard style={{ borderRadius: 28 }}>
             <View style={styles.noticeIconWrap}>
-              <Ionicons name="information-circle" size={22} color={Brand.bronze} />
+              <Ionicons name="information-circle" size={22} color={t.bronze} />
             </View>
 
             <Text style={styles.noticeTitle}>{notice?.title}</Text>
@@ -695,10 +698,12 @@ function OverviewMetric({
   label: string;
   value: string;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={styles.metricCard}>
       <View style={styles.metricIconWrap}>
-        <Ionicons name={icon} size={16} color={Brand.bronze} />
+        <Ionicons name={icon} size={16} color={t.bronze} />
       </View>
       <Text style={styles.metricLabel}>{label}</Text>
       <Text style={styles.metricValue} numberOfLines={1}>
@@ -709,6 +714,8 @@ function OverviewMetric({
 }
 
 function SectionPill({ label, danger = false }: { label: string; danger?: boolean }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={[styles.sectionBadge, danger && styles.dangerBadge]}>
       <Text style={[styles.sectionBadgeText, danger && styles.dangerBadgeText]}>{label}</Text>
@@ -727,10 +734,12 @@ function InfoCard({
   icon: keyof typeof Ionicons.glyphMap;
   fullWidth?: boolean;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={[styles.infoCard, fullWidth && styles.infoCardFullWidth]}>
       <View style={styles.infoCardIconWrap}>
-        <Ionicons name={icon} size={15} color={Brand.bronze} />
+        <Ionicons name={icon} size={15} color={t.bronze} />
       </View>
       <Text style={styles.infoCardLabel}>{label}</Text>
       <Text style={styles.infoCardValue} numberOfLines={fullWidth ? 3 : 2}>
@@ -749,6 +758,8 @@ function StatusChip({
   label: string;
   positive: boolean;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View
       style={[
@@ -756,9 +767,9 @@ function StatusChip({
         positive ? styles.statusChipPositive : styles.statusChipNeutral,
       ]}
     >
-      <Ionicons name={icon} size={14} color={positive ? Brand.success : Brand.cocoa} />
+      <Ionicons name={icon} size={14} color={positive ? t.success : t.cocoa} />
       <Text
-        style={[styles.statusChipText, { color: positive ? Brand.success : Brand.cocoa }]}
+        style={[styles.statusChipText, { color: positive ? t.success : t.cocoa }]}
       >
         {label}
       </Text>
@@ -775,10 +786,12 @@ function TimelinePoint({
   label: string;
   value: string;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={styles.timelinePoint}>
       <View style={styles.timelinePointIconWrap}>
-        <Ionicons name={icon} size={15} color={Brand.bronze} />
+        <Ionicons name={icon} size={15} color={t.bronze} />
       </View>
       <Text style={styles.timelinePointLabel}>{label}</Text>
       <Text style={styles.timelinePointValue} numberOfLines={1}>
@@ -797,10 +810,12 @@ function MiniStatCard({
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={styles.miniStatCard}>
       <View style={styles.miniStatIconWrap}>
-        <Ionicons name={icon} size={14} color={Brand.bronze} />
+        <Ionicons name={icon} size={14} color={t.bronze} />
       </View>
       <Text style={styles.miniStatValue} numberOfLines={1}>
         {value}
@@ -829,18 +844,20 @@ function Field({
   secureTextEntry?: boolean;
   icon: keyof typeof Ionicons.glyphMap;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={{ marginTop: 16 }}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <View style={[styles.fieldShell, { minHeight: height }]}>
         <View style={styles.fieldIconWrap}>
-          <Ionicons name={icon} size={16} color={Brand.bronze} />
+          <Ionicons name={icon} size={16} color={t.bronze} />
         </View>
         <TextInput
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
-          placeholderTextColor="rgba(226, 238, 255, 0.46)"
+          placeholderTextColor={t.placeholder}
           multiline={multiline}
           secureTextEntry={secureTextEntry}
           autoCapitalize="none"
@@ -858,7 +875,8 @@ function Field({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(t: Palette) {
+  return StyleSheet.create({
   page: {
     flex: 1,
   },
@@ -876,9 +894,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   topCenter: {
@@ -890,14 +908,14 @@ const styles = StyleSheet.create({
 
   topCaption: {
     ...Type.overline,
-    color: Brand.muted,
+    color: t.muted,
     textTransform: "uppercase",
   },
 
   topTitle: {
     ...Type.subheading,
     marginTop: Spacing.xxs,
-    color: Brand.ink,
+    color: t.ink,
   },
 
   heroHeaderRow: {
@@ -914,13 +932,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   heroPillText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 12,
     fontWeight: "800",
   },
@@ -932,26 +950,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   heroStatusText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 12,
     fontWeight: "800",
   },
 
   heroTitle: {
     marginTop: 18,
-    color: Brand.ink,
+    color: t.ink,
     fontWeight: "900",
   },
 
   heroSubtitle: {
     marginTop: 10,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 14,
     lineHeight: 22,
   },
@@ -968,9 +986,9 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     paddingHorizontal: 14,
     paddingVertical: 14,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   metricIconWrap: {
@@ -979,19 +997,19 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    backgroundColor: t.accentSoft,
   },
 
   metricLabel: {
     marginTop: 12,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 12,
     fontWeight: "700",
   },
 
   metricValue: {
     marginTop: 8,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 17,
     fontWeight: "900",
   },
@@ -1001,7 +1019,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 16,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   heroInsightBadge: {
@@ -1012,13 +1030,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   heroInsightBadgeText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 11,
     fontWeight: "900",
     letterSpacing: 0.3,
@@ -1026,14 +1044,14 @@ const styles = StyleSheet.create({
 
   heroInsightTitle: {
     marginTop: 14,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 17,
     fontWeight: "900",
   },
 
   heroInsightText: {
     marginTop: 6,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 13,
     lineHeight: 20,
   },
@@ -1048,13 +1066,13 @@ const styles = StyleSheet.create({
 
   sectionTitle: {
     ...Type.heading,
-    color: Brand.ink,
+    color: t.ink,
   },
 
   sectionSubtitle: {
     ...Type.caption,
     marginTop: Spacing.xs,
-    color: Brand.muted,
+    color: t.muted,
     lineHeight: 19,
     maxWidth: 260,
   },
@@ -1065,9 +1083,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   dangerBadge: {
@@ -1076,18 +1094,18 @@ const styles = StyleSheet.create({
   },
 
   sectionBadgeText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 11,
     fontWeight: "800",
     letterSpacing: 0.3,
   },
 
   dangerBadgeText: {
-    color: Brand.danger,
+    color: t.danger,
   },
 
   fieldLabel: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 13,
     fontWeight: "800",
     marginBottom: 8,
@@ -1095,9 +1113,9 @@ const styles = StyleSheet.create({
 
   fieldShell: {
     borderRadius: 18,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
     flexDirection: "row",
     alignItems: "flex-start",
     overflow: "hidden",
@@ -1113,7 +1131,7 @@ const styles = StyleSheet.create({
   fieldInput: {
     flex: 1,
     paddingRight: 14,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 15,
   },
 
@@ -1128,14 +1146,14 @@ const styles = StyleSheet.create({
     minWidth: 140,
     borderRadius: 22,
     padding: 14,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   choiceCardActive: {
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
-    borderColor: "rgba(87,222,255,0.18)",
+    backgroundColor: t.accentSoft,
+    borderColor: t.accentSoft,
   },
 
   choiceCardIconWrap: {
@@ -1144,23 +1162,23 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
   },
 
   choiceCardTitle: {
     marginTop: 12,
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 14,
     fontWeight: "900",
   },
 
   choiceCardTitleActive: {
-    color: Brand.ink,
+    color: t.ink,
   },
 
   choiceCardHelper: {
     marginTop: 5,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 12,
     lineHeight: 18,
   },
@@ -1174,14 +1192,14 @@ const styles = StyleSheet.create({
 
   helperInlineText: {
     marginTop: 4,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 12,
     lineHeight: 18,
   },
 
   trainingInlineHint: {
     marginTop: 10,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 12,
     lineHeight: 18,
   },
@@ -1202,9 +1220,9 @@ const styles = StyleSheet.create({
     borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   trainingHeaderButtonPlaceholder: {
@@ -1213,7 +1231,7 @@ const styles = StyleSheet.create({
   },
 
   trainingHeaderTitle: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 18,
     fontWeight: "900",
   },
@@ -1223,7 +1241,7 @@ const styles = StyleSheet.create({
   },
 
   trainingHeroEyebrow: {
-    color: Brand.bronze,
+    color: t.bronze,
     fontSize: 12,
     fontWeight: "900",
     letterSpacing: 0.6,
@@ -1232,7 +1250,7 @@ const styles = StyleSheet.create({
 
   trainingHeroTitle: {
     marginTop: 10,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 28,
     lineHeight: 34,
     fontWeight: "900",
@@ -1240,7 +1258,7 @@ const styles = StyleSheet.create({
 
   trainingHeroText: {
     marginTop: 10,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 14,
     lineHeight: 21,
   },
@@ -1250,8 +1268,8 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 18,
     borderWidth: 1,
-    borderColor: Brand.line,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderColor: t.line,
+    backgroundColor: t.surface,
     alignItems: "center",
   },
 
@@ -1262,14 +1280,14 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   trainingStatusPillActive: {
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
-    borderColor: "rgba(87,222,255,0.22)",
+    backgroundColor: t.accentSoft,
+    borderColor: t.accentSoft,
   },
 
   trainingStatusPillSuccess: {
@@ -1278,12 +1296,12 @@ const styles = StyleSheet.create({
   },
 
   trainingStatusPillError: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderColor: "rgba(255, 138, 138,0.26)",
   },
 
   trainingStatusPillText: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 12,
     fontWeight: "900",
   },
@@ -1299,14 +1317,14 @@ const styles = StyleSheet.create({
     borderRadius: 66,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   trainingMicOuterActive: {
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
-    borderColor: "rgba(87,222,255,0.20)",
+    backgroundColor: t.accentSoft,
+    borderColor: t.accentSoft,
   },
 
   trainingMicOuterSuccess: {
@@ -1315,7 +1333,7 @@ const styles = StyleSheet.create({
   },
 
   trainingMicOuterError: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderColor: "rgba(255, 138, 138,0.22)",
   },
 
@@ -1325,11 +1343,11 @@ const styles = StyleSheet.create({
     borderRadius: 41,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
   },
 
   trainingMicInnerActive: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
   },
 
   trainingMicInnerSuccess: {
@@ -1337,12 +1355,12 @@ const styles = StyleSheet.create({
   },
 
   trainingMicInnerError: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
   },
 
   trainingStatusTitleLarge: {
     marginTop: 8,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 22,
     lineHeight: 28,
     fontWeight: "900",
@@ -1351,7 +1369,7 @@ const styles = StyleSheet.create({
 
   trainingStatusTextLarge: {
     marginTop: 8,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 14,
     lineHeight: 21,
     textAlign: "center",
@@ -1361,7 +1379,7 @@ const styles = StyleSheet.create({
     width: "100%",
     height: 12,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.07)",
+    backgroundColor: t.surface,
     overflow: "hidden",
     marginTop: 18,
   },
@@ -1369,12 +1387,12 @@ const styles = StyleSheet.create({
   trainingMeterFill: {
     height: "100%",
     borderRadius: 999,
-    backgroundColor: Brand.caramel,
+    backgroundColor: t.caramel,
   },
 
   trainingMeterCaption: {
     marginTop: 8,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 12,
     fontWeight: "700",
   },
@@ -1404,9 +1422,9 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
   },
 
   trainingInfoShell: {
@@ -1415,21 +1433,21 @@ const styles = StyleSheet.create({
   },
 
   trainingInfoTitle: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 15,
     fontWeight: "900",
   },
 
   trainingTranscriptValueLarge: {
     marginTop: 10,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 17,
     lineHeight: 24,
     fontWeight: "800",
   },
 
   trainingTranscriptPlaceholder: {
-    color: Brand.muted,
+    color: t.muted,
     fontWeight: "700",
   },
 
@@ -1441,14 +1459,14 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
     borderColor: "rgba(255, 138, 138,0.22)",
   },
 
   trainingErrorBannerText: {
     flex: 1,
-    color: Brand.danger,
+    color: t.danger,
     fontSize: 13,
     lineHeight: 19,
     fontWeight: "700",
@@ -1460,13 +1478,13 @@ const styles = StyleSheet.create({
   },
 
   trainingChecklistItem: {
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 14,
     lineHeight: 21,
   },
 
   trainingChecklistStrong: {
-    color: Brand.ink,
+    color: t.ink,
     fontWeight: "900",
   },
 
@@ -1474,13 +1492,13 @@ const styles = StyleSheet.create({
     marginTop: 12,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: Brand.line,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderColor: t.line,
+    backgroundColor: t.surface,
     padding: 12,
   },
 
   trainingResultLabel: {
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 12,
     fontWeight: "800",
     textTransform: "uppercase",
@@ -1489,13 +1507,13 @@ const styles = StyleSheet.create({
 
   trainingResultValue: {
     marginTop: 6,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 15,
     fontWeight: "800",
   },
 
   trainingSamplesTitle: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 13,
     fontWeight: "900",
   },
@@ -1511,13 +1529,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   samplePillText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 12,
     fontWeight: "800",
   },
@@ -1543,7 +1561,7 @@ const styles = StyleSheet.create({
   },
 
   primaryButtonText: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 15,
     fontWeight: "900",
   },
@@ -1556,13 +1574,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
     gap: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
   },
 
   secondaryButtonText: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 14,
     fontWeight: "900",
   },
@@ -1583,9 +1601,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   accountHeroContent: {
@@ -1599,31 +1617,31 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    backgroundColor: t.accentSoft,
   },
 
   accountAvatarText: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 20,
     fontWeight: "900",
   },
 
   accountName: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 16,
     fontWeight: "900",
   },
 
   accountEmail: {
     marginTop: 4,
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 13,
     fontWeight: "700",
   },
 
   accountMeta: {
     marginTop: 4,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 12,
     fontWeight: "600",
   },
@@ -1642,9 +1660,9 @@ const styles = StyleSheet.create({
     minHeight: 106,
     borderRadius: 20,
     padding: 14,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   infoCardFullWidth: {
@@ -1658,19 +1676,19 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    backgroundColor: t.accentSoft,
   },
 
   infoCardLabel: {
     marginTop: 12,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 12,
     fontWeight: "700",
   },
 
   infoCardValue: {
     marginTop: 8,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 14,
     lineHeight: 19,
     fontWeight: "800",
@@ -1700,8 +1718,8 @@ const styles = StyleSheet.create({
   },
 
   statusChipNeutral: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
-    borderColor: Brand.line,
+    backgroundColor: t.surface,
+    borderColor: t.line,
   },
 
   statusChipText: {
@@ -1714,20 +1732,20 @@ const styles = StyleSheet.create({
     marginTop: 16,
     borderRadius: 18,
     padding: 14,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   helperPanelTitle: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 13,
     fontWeight: "900",
   },
 
   helperPanelText: {
     marginTop: 6,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 13,
     lineHeight: 19,
   },
@@ -1747,7 +1765,7 @@ const styles = StyleSheet.create({
 
   successBannerText: {
     flex: 1,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 13,
     lineHeight: 18,
     fontWeight: "700",
@@ -1758,7 +1776,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 16,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   timelineRow: {
@@ -1779,19 +1797,19 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    backgroundColor: t.accentSoft,
   },
 
   timelinePointLabel: {
     marginTop: 10,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 12,
     fontWeight: "700",
   },
 
   timelinePointValue: {
     marginTop: 6,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 14,
     fontWeight: "900",
     textAlign: "center",
@@ -1800,7 +1818,7 @@ const styles = StyleSheet.create({
   timelineDivider: {
     width: 1,
     marginVertical: 6,
-    backgroundColor: "rgba(87,222,255,0.14)",
+    backgroundColor: t.accentSoft,
   },
 
   twoColRow: {
@@ -1821,9 +1839,9 @@ const styles = StyleSheet.create({
     minWidth: 96,
     borderRadius: 20,
     padding: 12,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   miniStatIconWrap: {
@@ -1832,19 +1850,19 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
+    backgroundColor: t.accentSoft,
   },
 
   miniStatValue: {
     marginTop: 10,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 14,
     fontWeight: "900",
   },
 
   miniStatLabel: {
     marginTop: 4,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 11,
     fontWeight: "700",
   },
@@ -1857,13 +1875,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
     gap: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
   },
 
   dangerGhostButtonText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 14,
     fontWeight: "900",
   },
@@ -1876,7 +1894,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
     gap: 8,
-    backgroundColor: Brand.danger,
+    backgroundColor: t.danger,
   },
 
   dangerButtonText: {
@@ -1889,7 +1907,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     paddingHorizontal: 18,
-    backgroundColor: "rgba(0, 0, 0, 0.58)",
+    backgroundColor: t.scrim,
   },
 
   noticeIconWrap: {
@@ -1898,21 +1916,21 @@ const styles = StyleSheet.create({
     borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.line,
+    borderColor: t.line,
   },
 
   noticeTitle: {
     marginTop: 14,
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 22,
     fontWeight: "900",
   },
 
   noticeMessage: {
     marginTop: 10,
-    color: Brand.muted,
+    color: t.muted,
     fontSize: 14,
     lineHeight: 22,
   },
@@ -1930,13 +1948,13 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
   },
 
   noticeSecondaryText: {
-    color: Brand.cocoa,
+    color: t.cocoa,
     fontSize: 14,
     fontWeight: "800",
   },
@@ -1951,8 +1969,9 @@ const styles = StyleSheet.create({
   },
 
   noticePrimaryText: {
-    color: Brand.ink,
+    color: t.ink,
     fontSize: 14,
     fontWeight: "900",
   },
-});
+  });
+}
