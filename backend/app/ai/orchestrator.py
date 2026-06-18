@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import json
@@ -19,6 +20,7 @@ from .router import AIProviderRouter
 from .tools import handle_backend_tool, try_handle_pending_reminder
 from .types import AIProviderResponse, AIRequest, AIRoute
 from .usage import record_ai_usage_event
+from app.ai.master_agent import MasterAgent
 
 
 def run_text_turn(
@@ -64,6 +66,7 @@ def run_text_turn(
 
     agent_result = None
     if agentic_mode_enabled():
+        # Execute Master Agent pipeline
         agent_result = AgentRuntime().run(session, ai_request)
         ai_request.metadata.setdefault("agent_run_id", agent_result.run_id)
         if agent_result.response is not None:
@@ -85,8 +88,22 @@ def run_text_turn(
         ai_request = contextual[0]
         if contextual[1] is not None:
             return _record(session, contextual[1], ai_request, started)
+        
+    # Master Agent
+    master = MasterAgent()
+
+    decision = master.process(ai_request.message)
+
+    print("MASTER AGENT:", decision)
+
+    ai_request.metadata["master_intent"] = decision["intent"]
+    ai_request.metadata["master_provider"] = decision["provider"]
+    ai_request.metadata["master_agent"] = decision["agent"]  
 
     route = context.get("router", AIProviderRouter()).select_route(ai_request)
+    print("MASTER AGENT:", decision)
+    print("ROUTER PROVIDER:", route.provider)
+    print("ROUTER INTENT:", route.intent)
     if agent_result is not None and agent_result.plan.action == "provider_qa" and route.provider in {"openai", "sarvam"}:
         route = replace(
             route,

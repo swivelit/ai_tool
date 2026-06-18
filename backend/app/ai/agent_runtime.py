@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from dataclasses import asdict
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from sqlmodel import Session, select
 
@@ -29,7 +32,11 @@ from .types import AIRequest
 def agentic_mode_enabled() -> bool:
     return os.getenv("AGENTIC_MODE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
-
+# ============================================================================
+# Master Agent Runtime
+# Central orchestrator coordinating Intent, Planning, Memory, Retrieval,
+# Cost Optimization, Verification, Tool Execution and Provider Routing.
+# ============================================================================
 class AgentRuntime:
     def __init__(self) -> None:
         self.intent_agent = TamilIntentAgent()
@@ -42,10 +49,14 @@ class AgentRuntime:
         self.verifier_agent = VerifierAgent()
 
     def run(self, session: Session, request: AIRequest) -> AgentRuntimeResult:
+
+        logger.info("Agent runtime started")
+        
         started = time.perf_counter()
         run = self._create_run(session, request)
         pending = _pending_reminder_from_context(request)
-
+        logger.info("Step 1 - Intent Agent")
+        
         intent = self._step(
             session,
             run,
@@ -53,13 +64,45 @@ class AgentRuntime:
             {"message": _safe_message_payload(request), "pending_reminder": bool(pending)},
             lambda: self.intent_agent.classify(request, pending_reminder=pending),
         )
+        logger.info("Step 2 - Planner Agent")
+
         plan = self._step(
             session,
             run,
             "planner_agent",
-            {"intent": asdict(intent)},
-            lambda: self.planner_agent.plan(request, intent, pending_reminder=bool(pending)),
+        {
+        "message": _safe_message_payload(request),
+        "intent": asdict(intent),
+        },
+        lambda: self.planner_agent.plan(
+            request,
+            intent,
+            pending_reminder=bool(pending),
+        ),
         )
+
+        logger.debug("Planner Result: %s", plan)
+
+        logger.info("Step 3 - Memory Agent")
+
+        memory_result = self.memory_agent.should_use_local_memory(
+            session,
+            plan,
+        )
+
+        logger.debug("Memory Result: %s", memory_result)
+
+        logger.info("Step 4 - Retrieval Agent")
+
+        retrieval_result = self.retrieval_agent.can_handle(
+        plan,
+        )
+
+        logger.debug("Retrieval Result: %s", retrieval_result)
+        
+        
+        logger.info("Step 5 - Cost Optimizer Agent")
+
         plan = self._step(
             session,
             run,
@@ -67,6 +110,7 @@ class AgentRuntime:
             {"plan": asdict(plan)},
             lambda: self.cost_optimizer_agent.optimize(plan),
         )
+        logger.info("Step 6 - Verifier Agent")
         plan = self._step(
             session,
             run,
@@ -75,13 +119,14 @@ class AgentRuntime:
             lambda: self.verifier_agent.verify(request, plan),
         )
 
+        logger.info("Step 7 - Tool Execution Agent")
         response = None
         if plan.action != "provider_qa":
             response = self._step(
                 session,
                 run,
                 "tool_execution_agent",
-                {"plan": asdict(plan)},
+                {"plan": asdict(plan)}, 
                 lambda: self.tool_execution_agent.execute(session, request, plan),
             )
 
