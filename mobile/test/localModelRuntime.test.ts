@@ -17,12 +17,12 @@ const nativeAssets = {
     modelPath: "models/gemma-3-4b-it-q4_k_m.gguf",
     chatTemplate: "gemma3",
   },
-  "Qwen/Qwen3-Embedding-0.6B": {
-    id: "Qwen/Qwen3-Embedding-0.6B",
+  "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF": {
+    id: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
     backend: "llama_cpp",
     format: "gguf",
     quantization: "Q8_0",
-    modelPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
+    modelPath: "models/"minilm-l12-finetuned.gguf",
     promptFormat: "embedding",
     embedding: true,
   },
@@ -148,7 +148,7 @@ describe("local model runtime architecture", () => {
       maxTokens: 123,
     });
     const embeddings = await runtime.embedTexts({
-      model: "Qwen/Qwen3-Embedding-0.6B",
+      model: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
       texts: ["hello"],
     });
 
@@ -164,7 +164,7 @@ describe("local model runtime architecture", () => {
     expect(chat.choices[0].message.content).toBe("Native answer.");
     expect(embedTexts).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: "Qwen/Qwen3-Embedding-0.6B",
+        model: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
         asset: expect.objectContaining({ embedding: true }),
       }),
     );
@@ -229,7 +229,7 @@ describe("local model runtime architecture", () => {
     });
 
     const pending = runtime.embedTexts({
-      model: "Qwen/Qwen3-Embedding-0.6B",
+      model: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUFB",
       texts: ["slow"],
     });
     const assertion = expect(pending).rejects.toMatchObject({
@@ -288,7 +288,7 @@ describe("local model runtime architecture", () => {
 
     const downloadedFiles = new Set([
       "file:///mock/models/gemma-3-4b-it-q4_k_m.gguf",
-      "file:///mock/models/qwen3-embedding-0.6b-q8_0.gguf",
+      "file:///mock/models/"minilm-l12-finetuned.gguf",
     ]);
 
     vi.doMock("expo-constants", () => ({
@@ -348,16 +348,16 @@ describe("local model runtime architecture", () => {
           lite: {
             requiredModelIds: [
               "google/gemma-3-4b-it",
-              "Qwen/Qwen3-Embedding-0.6B",
+              "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
             ],
           },
           standard: {
-            requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+            requiredModelIds: ["Qwen/Qwen3-8B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
             minRamBytes: 8 * 1024 * 1024 * 1024,
             minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
           },
           pro: {
-            requiredModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+            requiredModelIds: ["Qwen/Qwen3-14B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
             minRamBytes: 16 * 1024 * 1024 * 1024,
             minFreeStorageBytes: 16 * 1024 * 1024 * 1024,
           },
@@ -366,7 +366,7 @@ describe("local model runtime architecture", () => {
           { id: "google/gemma-3-4b-it", fileName: "gemma-3-4b-it-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/gemma.gguf", localPath: "models/gemma-3-4b-it-q4_k_m.gguf", required: true, requiredForTiers: ["lite"] },
           { id: "Qwen/Qwen3-8B", fileName: "qwen3-8b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen8.gguf", localPath: "models/qwen3-8b-q4_k_m.gguf", required: false, requiredForTiers: ["standard"] },
           { id: "Qwen/Qwen3-14B", fileName: "qwen3-14b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen14.gguf", localPath: "models/qwen3-14b-q4_k_m.gguf", required: false, requiredForTiers: ["pro"] },
-          { id: "Qwen/Qwen3-Embedding-0.6B", fileName: "qwen3-embedding-0.6b-q8_0.gguf", downloadUrl: "https://cdn.example.test/embed.gguf", localPath: "models/qwen3-embedding-0.6b-q8_0.gguf", required: true, requiredForTiers: ["lite", "standard", "pro"] },
+          { id: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF", fileName: "minilm-l12-finetuned.gguf", downloadUrl: "https://cdn.example.test/embed.gguf", localPath: "models/minilm-l12-finetuned.gguf", required: true, requiredForTiers: ["lite", "standard", "pro"] },
         ],
       },
     });
@@ -403,7 +403,7 @@ describe("local model runtime architecture", () => {
 
     const downloadedFiles = new Set([
       "file:///mock/models/qwen3-8b-q4_k_m.gguf",
-      "file:///mock/models/qwen3-embedding-0.6b-q8_0.gguf",
+      "file:///mock/models/minilm-l12-finetuned.gguf",
     ]);
 
     vi.doMock("expo-constants", () => ({
@@ -460,11 +460,11 @@ describe("local model runtime architecture", () => {
           lite: {
             requiredModelIds: [
               "google/gemma-3-4b-it",
-              "Qwen/Qwen3-Embedding-0.6B",
+              "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
             ],
           },
           standard: {
-            requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+            requiredModelIds: ["Qwen/Qwen3-8B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF."],
             minRamBytes: 8 * 1024 * 1024 * 1024,
             minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
           },
@@ -472,7 +472,7 @@ describe("local model runtime architecture", () => {
         models: [
           { id: "google/gemma-3-4b-it", fileName: "gemma-3-4b-it-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/gemma.gguf", localPath: "models/gemma-3-4b-it-q4_k_m.gguf", required: true, requiredForTiers: ["lite"] },
           { id: "Qwen/Qwen3-8B", fileName: "qwen3-8b-q4_k_m.gguf", downloadUrl: "https://cdn.example.test/qwen8.gguf", localPath: "models/qwen3-8b-q4_k_m.gguf", required: false, requiredForTiers: ["standard"] },
-          { id: "Qwen/Qwen3-Embedding-0.6B", fileName: "qwen3-embedding-0.6b-q8_0.gguf", downloadUrl: "https://cdn.example.test/embed.gguf", localPath: "models/qwen3-embedding-0.6b-q8_0.gguf", required: true, requiredForTiers: ["lite", "standard"] },
+          { id: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF", fileName: "minilm-l12-finetuned.gguf", downloadUrl: "https://cdn.example.test/embed.gguf", localPath: "models/minilm-l12-finetuned.gguf", required: true, requiredForTiers: ["lite", "standard"] },
         ],
       },
     });
@@ -496,7 +496,7 @@ describe("local model runtime architecture", () => {
       }),
     );
   });
-
+6B
   it("fails clearly when native_on_device has no native binding and never configures backend", async () => {
     const runtime = createLocalModelRuntime({
       mode: "native_on_device",

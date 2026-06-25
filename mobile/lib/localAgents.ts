@@ -711,7 +711,7 @@ function isLoopbackLocalModelBaseUrl(value: unknown) {
   return isLoopbackLocalRuntimeBaseUrl(value);
 }
 
-const EMBEDDING_DIMS = 1024;
+const EMBEDDING_DIMS = 384;
 
 const LOCAL_TASK_MAX_TOKENS = {
   classifier: 128,
@@ -778,14 +778,14 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
         label: "Lite",
         requiredModelIds: [
           "google/gemma-3-4b-it",
-          "Qwen/Qwen3-Embedding-0.6B",
+          "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
         ],
         optionalModelIds: ["Qwen/Qwen3-8B"],
       },
       standard: {
         id: "standard",
         label: "Standard",
-        requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+        requiredModelIds: ["Qwen/Qwen3-8B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
         optionalModelIds: ["google/gemma-3-4b-it"],
         minRamBytes: 8 * 1024 * 1024 * 1024,
         minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
@@ -793,7 +793,7 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
       pro: {
         id: "pro",
         label: "Pro",
-        requiredModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+        requiredModelIds: ["Qwen/Qwen3-14B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
         optionalModelIds: ["Qwen/Qwen3-8B", "google/gemma-3-4b-it"],
         minRamBytes: 16 * 1024 * 1024 * 1024,
         minFreeStorageBytes: 16 * 1024 * 1024 * 1024,
@@ -845,16 +845,16 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
         requiredForTiers: ["pro"],
       },
       {
-        id: "Qwen/Qwen3-Embedding-0.6B",
-        fileName: "qwen3-embedding-0.6b-q8_0.gguf",
-        downloadUrl: "cdn://models/qwen3-embedding-0.6b-q8_0.gguf",
-        downloadUrlEnv: "LOCAL_MODEL_URL_QWEN_EMBED",
-        downloadPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
+        id: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
+        fileName: "minilm-l12-finetuned.gguf",
+        downloadUrl: "cdn://models/minilm-l12-finetuned.gguf",
+        downloadUrlEnv: "LOCAL_MODEL_URL_MINILM",
+        downloadPath: "models/minilm-l12-finetuned.gguf",
         expectedBytes: null,
-        expectedBytesEnv: "LOCAL_MODEL_BYTES_QWEN_EMBED",
+        expectedBytesEnv: "LOCAL_MODEL_BYTES_MINILM",
         sha256: null,
-        sha256Env: "LOCAL_MODEL_SHA256_QWEN_EMBED",
-        localPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
+        sha256Env: "LOCAL_MODEL_SHA256_MINILM",
+        localPath: "models/minilm-l12-finetuned.gguf",
         required: true,
         requiredForTiers: ["lite", "standard", "pro"],
       },
@@ -925,15 +925,15 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
         acceleration: "cpu_only",
         description: "Pro tier 14B orchestrator for high-RAM devices or explicit opt-in; replace with the actual quantized Qwen3 14B GGUF file.",
       },
-      "Qwen/Qwen3-Embedding-0.6B": {
-        id: "Qwen/Qwen3-Embedding-0.6B",
+      "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF": {
+        id: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
         roles: ["memory_embedding"],
         backend: "llama_cpp",
         format: "gguf",
         quantization: "Q8_0",
         promptFormat: "embedding",
-        fileName: "qwen3-embedding-0.6b-q8_0.gguf",
-        modelPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
+        fileName: "minilm-l12-finetuned.gguf",
+        modelPath: "models/minilm-l12-finetuned.gguf",
         contextSize: 4096,
         batchSize: 512,
         threads: 4,
@@ -953,7 +953,7 @@ const DEFAULT_MODEL_CONFIG: LocalModelConfig = {
     orchestratorLarge: "Qwen/Qwen3-8B",
     orchestratorPro: "Qwen/Qwen3-14B",
     aligner: "google/gemma-3-4b-it",
-    embedding: "Qwen/Qwen3-Embedding-0.6B",
+    embedding: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
     summarizer: "google/gemma-3-4b-it",
   },
   thresholds: {
@@ -2708,7 +2708,7 @@ async function embedTexts(
     if (!runtime.isConfigured()) {
       if (nativeMode) {
         throw new Error(
-          "Native Qwen embedding runtime is not configured. runtime.mode=native_on_device requires the JaiOnDeviceModel bridge and downloaded Qwen/Qwen3-Embedding-0.6B GGUF file; hash embeddings are disabled in production native mode.",
+          "Native  MiniLM embedding runtime is not configured. runtime.mode=native_on_device requires the JaiOnDeviceModel bridge and downloaded shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF GGUF file; hash embeddings are disabled in production native mode.",
         );
       }
       return texts.map((text) => hashEmbedding(text));

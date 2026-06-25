@@ -96,8 +96,8 @@
         "acceleration": "cpu_only",
         "description": "Pro tier 14B orchestrator for high-RAM devices or explicit opt-in. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; in production this path is replaced at runtime with the downloaded file:// GGUF path."
       },
-      "Qwen/Qwen3-Embedding-0.6B": {
-        "id": "Qwen/Qwen3-Embedding-0.6B",
+      "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF": {
+        "id": "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
         "roles": [
           "memory_embedding"
         ],
@@ -105,8 +105,8 @@
         "format": "gguf",
         "quantization": "Q8_0",
         "promptFormat": "embedding",
-        "fileName": "qwen3-embedding-0.6b-q8_0.gguf",
-        "modelPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
+        "fileName": "minilm-l12-finetuned.gguf",
+        "modelPath": "models/minilm-l12-finetuned.gguf",
         "contextSize": 4096,
         "batchSize": 512,
         "threads": 4,
@@ -116,6 +116,8 @@
         "useGpu": false,
         "acceleration": "cpu_only",
         "embedding": true,
+        "embeddingDimensions": 384,
+
         "description": "Semantic cache and memory embedding model. Current native llama.cpp runtime initializes CPU-only with n_gpu_layers=0; production native_on_device mode must use this downloaded GGUF file; hash embeddings are disabled."
       }
     }
@@ -126,7 +128,7 @@
     "orchestratorLarge": "Qwen/Qwen3-8B",
     "orchestratorPro": "Qwen/Qwen3-14B",
     "aligner": "google/gemma-3-4b-it",
-    "embedding": "Qwen/Qwen3-Embedding-0.6B",
+    "embedding": "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
     "summarizer": "google/gemma-3-4b-it"
   },
   "thresholds": {
@@ -146,7 +148,7 @@
         "description": "Phone-safe first-launch pack for basic local chat and memory.",
         "requiredModelIds": [
           "google/gemma-3-4b-it",
-          "Qwen/Qwen3-Embedding-0.6B"
+          "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"
         ],
         "optionalModelIds": [
           "Qwen/Qwen3-8B"
@@ -158,7 +160,7 @@
         "description": "7B/8B class chat pack for capable devices.",
         "requiredModelIds": [
           "Qwen/Qwen3-8B",
-          "Qwen/Qwen3-Embedding-0.6B"
+          "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"
         ],
         "optionalModelIds": [
           "google/gemma-3-4b-it"
@@ -172,7 +174,7 @@
         "description": "14B model pack for high-RAM devices or explicit opt-in.",
         "requiredModelIds": [
           "Qwen/Qwen3-14B",
-          "Qwen/Qwen3-Embedding-0.6B"
+          "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"
         ],
         "optionalModelIds": [
           "Qwen/Qwen3-8B",
@@ -233,22 +235,22 @@
         "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B"
       },
       {
-        "id": "Qwen/Qwen3-Embedding-0.6B",
-        "fileName": "qwen3-embedding-0.6b-q8_0.gguf",
-        "downloadUrl": "cdn://models/qwen3-embedding-0.6b-q8_0.gguf",
-        "expectedBytes": null,
-        "sha256": null,
-        "localPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
+        "id": "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
+        "fileName": "minilm-l12-finetuned.gguf",
+        "downloadUrl": "cdn://models/minilm-l12-finetuned.gguf",
+        "expectedBytes": 138412032,
+        "sha256": "947792203a3c36988410424c0689eaf8071b0849eb6e5a4dbf89d22c36071495",
+        "localPath": "models/minilm-l12-finetuned.gguf",
         "required": true,
         "requiredForTiers": [
           "lite",
           "standard",
           "pro"
         ],
-        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED",
-        "downloadPath": "models/qwen3-embedding-0.6b-q8_0.gguf",
-        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED",
-        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED"
+        "downloadUrlEnv": "EXPO_PUBLIC_LOCAL_MODEL_URL_MINILM",
+        "downloadPath": "models/minilm-l12-finetuned.gguf",
+        "expectedBytesEnv": "EXPO_PUBLIC_LOCAL_MODEL_BYTES_MINILM",
+        "sha256Env": "EXPO_PUBLIC_LOCAL_MODEL_SHA256_MINILM"
       }
     ],
     "developmentModes": {
@@ -263,19 +265,19 @@
         "EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B",
         "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B",
         "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B",
-        "EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED"
+        "EXPO_PUBLIC_LOCAL_MODEL_URL_MINILM"
       ],
       "expectedBytes": [
         "EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B",
         "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B",
         "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B",
-        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED"
+        "EXPO_PUBLIC_LOCAL_MODEL_BYTES_MINILM"
       ],
       "sha256": [
         "EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B",
         "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B",
         "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B",
-        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED"
+        "EXPO_PUBLIC_LOCAL_MODEL_SHA256_MINILM"
       ]
     }
   }

@@ -12,7 +12,7 @@ const REQUIRED_GGUF_FILES = [
   "gemma-3-4b-it-q4_k_m.gguf",
   "qwen3-8b-q4_k_m.gguf",
   "qwen3-14b-q4_k_m.gguf",
-  "qwen3-embedding-0.6b-q8_0.gguf",
+  "minilm-l12-finetuned.gguf",
 ];
 const DEFAULT_ANDROID_NATIVE_ABIS = ["arm64-v8a"];
 const SUPPORTED_ANDROID_NATIVE_ABIS = new Set(["arm64-v8a", "x86_64"]);

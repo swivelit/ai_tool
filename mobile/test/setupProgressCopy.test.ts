@@ -41,7 +41,7 @@ describe("setupProgressCopy", () => {
   it("surfaces actionable model setup diagnostics without leaking secrets", () => {
     expect(
       friendlySetupError(
-        new Error("Required local GGUF models are not ready: Qwen/Qwen3-Embedding-0.6B missing model file qwen.gguf at file:///mock/models/qwen.gguf"),
+        new Error("Required local GGUF models are not ready: shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF missing model file qwen.gguf at file:///mock/models/qwen.gguf"),
       ).userMessage,
     ).toMatch(/model file is missing/i);
     expect(
@@ -61,7 +61,7 @@ describe("setupProgressCopy", () => {
     ).toMatch(/byte-size metadata is missing/i);
     expect(
       friendlySetupError(
-        new Error("Production model Qwen/Qwen3-Embedding-0.6B is missing sha256 integrity metadata."),
+        new Error("Production model shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF is missing sha256 integrity metadata."),
       ).userMessage,
     ).toMatch(/SHA-256 metadata is missing/i);
     expect(

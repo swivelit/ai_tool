@@ -111,10 +111,10 @@ const baseModels = [
     requiredForTiers: ["pro"],
   },
   {
-    id: "Qwen/Qwen3-Embedding-0.6B",
-    fileName: "qwen3-embedding-0.6b-q8_0.gguf",
+    id: "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
+    fileName: "minilm-l12-finetuned.gguf",
     downloadUrl: "https://cdn.example.test/embed.gguf",
-    localPath: "models/qwen3-embedding-0.6b-q8_0.gguf",
+    localPath: "models/minilm-l12-finetuned.gguf",
     required: true,
     requiredForTiers: ["lite", "standard", "pro"],
   },
@@ -131,17 +131,17 @@ function testConfig(overrides: Record<string, any> = {}) {
         lite: {
           requiredModelIds: [
             "google/gemma-3-4b-it",
-            "Qwen/Qwen3-Embedding-0.6B",
+            "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
           ],
           optionalModelIds: ["Qwen/Qwen3-8B"],
         },
         standard: {
-          requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+          requiredModelIds: ["Qwen/Qwen3-8B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
           minRamBytes: 8 * 1024 * 1024 * 1024,
           minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
         },
         pro: {
-          requiredModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+          requiredModelIds: ["Qwen/Qwen3-14B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
           minRamBytes: 16 * 1024 * 1024 * 1024,
           minFreeStorageBytes: 16 * 1024 * 1024 * 1024,
         },
@@ -182,7 +182,7 @@ describe("modelDownloadManager", () => {
     expect(status.ready).toBe(false);
     expect(status.selectedTier).toBe("lite");
     expect(status.missing.map((entry) => entry.id).sort()).toEqual([
-      "Qwen/Qwen3-Embedding-0.6B",
+      "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
       "google/gemma-3-4b-it",
     ].sort());
     expect(status.storageRoot).toBe("file:///mock/models/");
@@ -216,7 +216,7 @@ describe("modelDownloadManager", () => {
 
     expect(status.ready).toBe(true);
     expect(status.required.map((entry) => entry.id).sort()).toEqual([
-      "Qwen/Qwen3-Embedding-0.6B",
+      "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
       "google/gemma-3-4b-it",
     ].sort());
     expect(state.downloadAttempts).toBe(2);
@@ -356,7 +356,7 @@ describe("modelDownloadManager", () => {
     expect(status.selectedTier).toBe("standard");
     expect(status.required.map((entry) => entry.id).sort()).toEqual([
       "Qwen/Qwen3-8B",
-      "Qwen/Qwen3-Embedding-0.6B",
+      "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
     ].sort());
     expect(status.optional.map((entry) => entry.id)).toContain("google/gemma-3-4b-it");
     expect(state.downloadAttempts).toBe(2);

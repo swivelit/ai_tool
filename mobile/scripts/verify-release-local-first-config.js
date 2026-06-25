@@ -44,32 +44,32 @@ const PRODUCTION_MODEL_IDS = [
   'google/gemma-3-4b-it',
   'Qwen/Qwen3-8B',
   'Qwen/Qwen3-14B',
-  'Qwen/Qwen3-Embedding-0.6B',
+  'shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF',
 ];
 const DEFAULT_REQUIRED_MODEL_IDS = [
   'google/gemma-3-4b-it',
-  'Qwen/Qwen3-Embedding-0.6B',
+  'shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF',
 ];
 
 const PER_MODEL_URL_ENV = {
   'google/gemma-3-4b-it': 'EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B',
   'Qwen/Qwen3-8B': 'EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B',
   'Qwen/Qwen3-14B': 'EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B',
-  'Qwen/Qwen3-Embedding-0.6B': 'EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED',
+  'shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF': 'EXPO_PUBLIC_LOCAL_MODEL_URL_MINILM',
 };
 
 const EXPECTED_BYTES_ENV = {
   'google/gemma-3-4b-it': 'EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B',
   'Qwen/Qwen3-8B': 'EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_8B',
   'Qwen/Qwen3-14B': 'EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_14B',
-  'Qwen/Qwen3-Embedding-0.6B': 'EXPO_PUBLIC_LOCAL_MODEL_BYTES_QWEN_EMBED',
+  'shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF': 'EXPO_PUBLIC_LOCAL_MODEL_BYTES_MINILM',
 };
 
 const SHA256_ENV = {
   'google/gemma-3-4b-it': 'EXPO_PUBLIC_LOCAL_MODEL_SHA256_GEMMA_4B',
   'Qwen/Qwen3-8B': 'EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_8B',
   'Qwen/Qwen3-14B': 'EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_14B',
-  'Qwen/Qwen3-Embedding-0.6B': 'EXPO_PUBLIC_LOCAL_MODEL_SHA256_QWEN_EMBED',
+  'shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF': 'EXPO_PUBLIC_LOCAL_MODEL_SHA256_MINILM',
 };
 
 const FIREBASE_ENV_NAMES = [

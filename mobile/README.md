@@ -227,7 +227,7 @@ Lite first-launch required files:
 
 ```text
 gemma-3-4b-it-q4_k_m.gguf
-qwen3-embedding-0.6b-q8_0.gguf
+minilm-l12-finetuned.gguf
 ```
 
 Tiered/optional files:
@@ -272,7 +272,7 @@ EXPO_PUBLIC_LOCAL_MODEL_CDN_BASE_URL=https://cdn.example.com/jai
 EXPO_PUBLIC_LOCAL_MODEL_URL_GEMMA_4B=https://cdn.example.com/jai/models/gemma-3-4b-it-q4_k_m.gguf
 EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_8B=https://cdn.example.com/jai/models/qwen3-8b-q4_k_m.gguf
 EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_14B=https://cdn.example.com/jai/models/qwen3-14b-q4_k_m.gguf
-EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED=https://cdn.example.com/jai/models/qwen3-embedding-0.6b-q8_0.gguf
+EXPO_PUBLIC_LOCAL_MODEL_URL_QWEN_EMBED=https://cdn.example.com/jai/models/minilm-l12-finetuned.gguf
 
 # Exact byte sizes from your release artifact pipeline
 EXPO_PUBLIC_LOCAL_MODEL_BYTES_GEMMA_4B=<exact-bytes>
@@ -353,7 +353,7 @@ Use `mobile/models/` only when intentionally testing a bundled-assets developmen
 mobile/models/gemma-3-4b-it-q4_k_m.gguf
 mobile/models/qwen3-8b-q4_k_m.gguf
 mobile/models/qwen3-14b-q4_k_m.gguf
-mobile/models/qwen3-embedding-0.6b-q8_0.gguf
+mobile/models/minilm-l12-finetuned.gguf
 ```
 
 Then set:

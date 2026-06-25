@@ -122,7 +122,7 @@ function queueJsonResponse(payload: any) {
 }
 
 function unitEmbedding() {
-  const out = new Array(1024).fill(0);
+  const out = new Array(384).fill(0);
   out[0] = 1;
   return out;
 }
@@ -160,7 +160,7 @@ describe("phone-local agent configuration", () => {
     expect(models.models.orchestratorLarge).toBe("Qwen/Qwen3-8B");
     expect(models.models.orchestratorPro).toBe("Qwen/Qwen3-14B");
     expect(models.models.aligner).toBe("google/gemma-3-4b-it");
-    expect(models.models.embedding).toBe("Qwen/Qwen3-Embedding-0.6B");
+    expect(models.models.embedding).toBe("shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF");
     expect(models.models.summarizer).toBe("google/gemma-3-4b-it");
     expect(agentRegistry.agents.profiler.enabled).toBe(true);
     expect(agentRegistry.agents.orchestrator.enabled).toBe(true);
@@ -618,14 +618,14 @@ describe("local orchestrator and alignment", () => {
     expect(
       selectReasoner(models as any, orchestratorRoutes as any, complexPrompt, 0, undefined, {
         selectedTier: "lite",
-        installedModelIds: ["google/gemma-3-4b-it", "Qwen/Qwen3-Embedding-0.6B"],
+        installedModelIds: ["google/gemma-3-4b-it", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
       }),
     ).toBe("google/gemma-3-4b-it");
 
     expect(
       selectReasoner(models as any, orchestratorRoutes as any, complexPrompt, 0, undefined, {
         selectedTier: "standard",
-        installedModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+        installedModelIds: ["Qwen/Qwen3-8B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
       }),
     ).toBe("Qwen/Qwen3-8B");
 
@@ -635,7 +635,7 @@ describe("local orchestrator and alignment", () => {
         installedModelIds: [
           "Qwen/Qwen3-8B",
           "Qwen/Qwen3-14B",
-          "Qwen/Qwen3-Embedding-0.6B",
+          "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
         ],
       }),
     ).toBe("Qwen/Qwen3-8B");
@@ -643,7 +643,7 @@ describe("local orchestrator and alignment", () => {
     expect(
       selectReasoner(models as any, orchestratorRoutes as any, complexPrompt, 0, undefined, {
         selectedTier: "pro",
-        installedModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+        installedModelIds: ["Qwen/Qwen3-14B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
       }),
     ).toBe("Qwen/Qwen3-14B");
   });

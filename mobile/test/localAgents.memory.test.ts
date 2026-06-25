@@ -107,7 +107,7 @@ function queueEmbeddingResponse(vectors: number[][]) {
 }
 
 function testEmbedding(values: Record<number, number>) {
-  const vector = Array.from({ length: 1024 }, () => 0);
+  const vector = Array.from({ length: 384 }, () => 0);
   Object.entries(values).forEach(([index, value]) => {
     vector[Number(index)] = value;
   });
@@ -455,7 +455,7 @@ describe("local memory and semantic cache", () => {
     await flushLocalLearningJobs();
 
     const store = readJson(`${dataRoot}/cache/semantic_cache.json`);
-    expect(store.entries[0].embedding).toHaveLength(1024);
+    expect(store.entries[0].embedding).toHaveLength(384);
   });
 
   it("clears one user's semantic cache data without corrupting the shared store", async () => {

@@ -15,7 +15,7 @@ Required filenames for bundled-assets development builds:
 - `gemma-3-4b-it-q4_k_m.gguf`
 - `qwen3-8b-q4_k_m.gguf`
 - `qwen3-14b-q4_k_m.gguf`
-- `qwen3-embedding-0.6b-q8_0.gguf`
+- `minilm-l12-finetuned.gguf`
 
 Android prebuild copies non-empty files from this directory into
 `android/app/src/main/assets/models/` via

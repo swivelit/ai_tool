@@ -132,7 +132,7 @@ function writeJson(path: string, payload: any) {
 }
 
 function unitEmbedding() {
-  const out = new Array(1024).fill(0);
+  const out = new Array(384).fill(0);
   out[0] = 1;
   return out;
 }

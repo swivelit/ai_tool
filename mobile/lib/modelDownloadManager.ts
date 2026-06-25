@@ -185,13 +185,13 @@ type ModelFileSystem = Pick<
 const DEFAULT_STORAGE_FOLDER = "models";
 const LITE_REQUIRED_MODEL_IDS = [
   "google/gemma-3-4b-it",
-  "Qwen/Qwen3-Embedding-0.6B",
+  "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
 ];
 const ALL_KNOWN_MODEL_IDS = [
   "google/gemma-3-4b-it",
   "Qwen/Qwen3-8B",
   "Qwen/Qwen3-14B",
-  "Qwen/Qwen3-Embedding-0.6B",
+  "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF",
 ];
 const DEFAULT_MODEL_TIERS: Record<string, ModelTierConfig> = {
   lite: {
@@ -202,7 +202,7 @@ const DEFAULT_MODEL_TIERS: Record<string, ModelTierConfig> = {
   },
   standard: {
     id: "standard",
-    requiredModelIds: ["Qwen/Qwen3-8B", "Qwen/Qwen3-Embedding-0.6B"],
+    requiredModelIds: ["Qwen/Qwen3-8B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
     optionalModelIds: ["google/gemma-3-4b-it"],
     minRamBytes: 8 * 1024 * 1024 * 1024,
     minFreeStorageBytes: 8 * 1024 * 1024 * 1024,
@@ -210,7 +210,7 @@ const DEFAULT_MODEL_TIERS: Record<string, ModelTierConfig> = {
   },
   pro: {
     id: "pro",
-    requiredModelIds: ["Qwen/Qwen3-14B", "Qwen/Qwen3-Embedding-0.6B"],
+    requiredModelIds: ["Qwen/Qwen3-14B", "shahidha/Paraphrase-multilingual-MiniLM-L12-v2-GGUF"],
     optionalModelIds: ["Qwen/Qwen3-8B", "google/gemma-3-4b-it"],
     minRamBytes: 16 * 1024 * 1024 * 1024,
     minFreeStorageBytes: 16 * 1024 * 1024 * 1024,
