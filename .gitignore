@@ -59,6 +59,9 @@ mobile/android/app/*.keystore
 # Build outputs
 dist/
 dist/*.apk
+node_modules/
+.gradle/
+**/.gradle/
 mobile/.expo/
 mobile/android/
 mobile/ios/
@@ -67,3 +70,6 @@ mobile/.turbo/
 mobile/coverage/
 # Native dependency synced by mobile/scripts/sync-llama-cpp.js
 /mobile/modules/jai-on-device-model/vendor/llama.cpp/
+
+# Local diagnostics
+view_token_usage.py

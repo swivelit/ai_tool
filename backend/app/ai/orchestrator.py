@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import re
 from dataclasses import replace
@@ -21,6 +22,9 @@ from .tools import handle_backend_tool, try_handle_pending_reminder
 from .types import AIProviderResponse, AIRequest, AIRoute
 from .usage import record_ai_usage_event
 from app.ai.master_agent import MasterAgent
+
+
+logger = logging.getLogger(__name__)
 
 
 def run_text_turn(
@@ -94,16 +98,21 @@ def run_text_turn(
 
     decision = master.process(ai_request.message)
 
-    print("MASTER AGENT:", decision)
-
     ai_request.metadata["master_intent"] = decision["intent"]
     ai_request.metadata["master_provider"] = decision["provider"]
     ai_request.metadata["master_agent"] = decision["agent"]  
 
     route = context.get("router", AIProviderRouter()).select_route(ai_request)
-    print("MASTER AGENT:", decision)
-    print("ROUTER PROVIDER:", route.provider)
-    print("ROUTER INTENT:", route.intent)
+    logger.debug(
+        "master_agent_route_decision",
+        extra={
+            "master_intent": decision.get("intent"),
+            "master_provider": decision.get("provider"),
+            "master_agent": decision.get("agent"),
+            "router_provider": route.provider,
+            "router_intent": route.intent,
+        },
+    )
     if agent_result is not None and agent_result.plan.action == "provider_qa" and route.provider in {"openai", "sarvam"}:
         route = replace(
             route,

@@ -1,4 +1,6 @@
 
+import logging
+
 from .intent import classify_intent
 
 from .agents.planner_agent import PlannerAgent
@@ -7,6 +9,9 @@ from .agents.retrieval_agent import RetrievalAgent
 from .agents.tool_execution_agent import ToolExecutionAgent
 from .agents.cost_optimizer_agent import CostOptimizerAgent
 from .context_compressor import ContextCompressor
+
+
+logger = logging.getLogger(__name__)
 
 
 class MasterAgent:
@@ -24,10 +29,15 @@ class MasterAgent:
         # Step 1: Intent Detection
         intent_result = classify_intent(message)
 
-        print(intent_result)
-        print(type(intent_result))
-
         intent = intent_result.intent
+        logger.debug(
+            "master_agent_intent_detected",
+            extra={
+                "intent": intent,
+                "route": getattr(intent_result, "route", None),
+                "intent_result_type": type(intent_result).__name__,
+            },
+        )
 
         # Step 2: Provider Selection
         provider = self.select_provider(intent) 
@@ -43,9 +53,12 @@ class MasterAgent:
         try:
             if hasattr(self.memory, "search"):
                 memory_result = self.memory.search(message)
-                print("Memory Result:", memory_result)
-        except Exception as e:
-            print("Memory Error:", e)
+                logger.debug(
+                    "master_agent_memory_lookup_completed",
+                    extra={"has_memory_result": memory_result is not None},
+                )
+        except Exception:
+            logger.exception("master_agent_memory_lookup_failed")
 
         # Step 5: Retrieval Check
         retrieval_result = None
@@ -58,10 +71,10 @@ class MasterAgent:
                 retrieval_result = self.compressor.compress(
                     retrieval_result
                 )    
-                print("Retrieval Result:", retrieval_result)
+                logger.debug("master_agent_retrieval_lookup_completed")
     
-        except Exception as e:
-            print("Retrieval Error:", e)
+        except Exception:
+            logger.exception("master_agent_retrieval_lookup_failed")
 
         # Step 6: Tool Execution
         tool_result = None

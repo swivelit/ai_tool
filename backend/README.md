@@ -9,6 +9,14 @@ pip install -r requirements.txt
 python -m pytest
 ```
 
+If the virtualenv already exists, run the backend suite from the repo without
+depending on the shell's global Python:
+
+```bash
+cd backend
+.venv/bin/python -m pytest
+```
+
 Local `.env` defaults:
 
 ```bash
