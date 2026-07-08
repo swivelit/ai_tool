@@ -42,6 +42,12 @@ class OpenAIProvider(AIProvider):
             candidates.append(candidate)
         instructions = build_system_instructions(request, route, provider="openai")
         messages = build_provider_messages(request, route, provider="openai")
+        # If simple query, inject stop sequences to enforce single-line response cut-off (Method F)
+        extra_kwargs = {}
+        from ..prompts import detailed_answer_requested
+        if not detailed_answer_requested(request.message):
+            extra_kwargs["stop"] = ["\n"]
+
         response = tracked_openai_generation(
             self._client_or_create(),
             task=task,
@@ -55,6 +61,7 @@ class OpenAIProvider(AIProvider):
             messages=messages,
             temperature=0.2,
             max_output_tokens=route.max_output_tokens,
+            **extra_kwargs
         )
         text = _extract_response_text(response)
         metadata = get_tracked_chat_completion_metadata(response)
