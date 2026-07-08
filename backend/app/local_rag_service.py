@@ -82,9 +82,9 @@ except Exception:  # pragma: no cover
     RAG_MAX_ITEM_CANDIDATES = max(20, _env_int("RAG_MAX_ITEM_CANDIDATES", 250))
     RAG_MAX_CONVERSATION_CANDIDATES = max(10, _env_int("RAG_MAX_CONVERSATION_CANDIDATES", 80))
     RAG_MAX_CACHE_CANDIDATES = max(10, _env_int("RAG_MAX_CACHE_CANDIDATES", 60))
-    RAG_TOP_K = max(2, _env_int("RAG_TOP_K", 6))
+    RAG_TOP_K = max(2, _env_int("RAG_TOP_K", 3))
     RAG_MIN_SCORE = _env_float("RAG_MIN_SCORE", 0.56)
-    RAG_MAX_CONTEXT_CHARS = max(800, _env_int("RAG_MAX_CONTEXT_CHARS", 3200))
+    RAG_MAX_CONTEXT_CHARS = max(800, _env_int("RAG_MAX_CONTEXT_CHARS", 1200))
     RAG_RECENCY_HALF_LIFE_DAYS = max(0.1, _env_float("RAG_RECENCY_HALF_LIFE_DAYS", 14.0))
     RAG_EMBED_CACHE_SIZE = max(256, _env_int("RAG_EMBED_CACHE_SIZE", 4096))
 

@@ -2729,6 +2729,27 @@ def _resolve_chat_text(payload: ChatAPIRequest) -> str:
     text = (payload.message or payload.text or "").strip()
     if not text:
         raise HTTPException(400, "message or text is required")
+    import re
+    # Compress multiple spaces or tabs into a single space
+    text = re.sub(r"[ \t]+", " ", text)
+    # Compress multiple newlines into a single newline
+    text = re.sub(r"\n+", "\n", text)
+    text = text.strip()
+    # Strip common filler/greeting prefixes to save input tokens
+    lower = text.lower()
+    fillers = [
+        "please tell me about ",
+        "can you explain ",
+        "please can you ",
+        "can you ",
+        "please ",
+        "hey assistant ",
+        "hey ",
+    ]
+    for filler in fillers:
+        if lower.startswith(filler):
+            text = text[len(filler):].strip()
+            lower = text.lower()
     return text
 
 
