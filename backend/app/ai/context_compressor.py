@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import logging
 from typing import Any, Dict, List, Optional, Union
@@ -18,9 +19,9 @@ class ContextCompressor:
     - Deduplication: removes duplicate content
     """
 
-    DEFAULT_MAX_CHUNKS = 3
-    DEFAULT_MAX_CHUNK_CHARS = 800
-    DEFAULT_MAX_TOTAL_CHARS = 2000
+    DEFAULT_MAX_CHUNKS = int(os.getenv("CONTEXT_COMPRESSOR_MAX_CHUNKS", "2"))
+    DEFAULT_MAX_CHUNK_CHARS = int(os.getenv("CONTEXT_COMPRESSOR_MAX_CHUNK_CHARS", "400"))
+    DEFAULT_MAX_TOTAL_CHARS = int(os.getenv("CONTEXT_COMPRESSOR_MAX_TOTAL_CHARS", "1000"))
 
     def __init__(
         self,
