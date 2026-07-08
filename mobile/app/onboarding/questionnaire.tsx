@@ -11,14 +11,15 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
-import { Brand } from "@/constants/theme";
+import { Screen } from "@/components/ui";
+import { Radius, Spacing, Type, type Palette } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 import { useAssistant } from "@/components/AssistantProvider";
 import { useAuth } from "@/components/AuthProvider";
 import profilerSlotsSeed from "@/data/config/profiler_slots.json";
@@ -62,6 +63,8 @@ function formatSelectedOptions(options: string[]) {
 }
 
 export default function QuestionnaireScreen() {
+  const { palette: t, isDark } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView | null>(null);
 
@@ -169,18 +172,13 @@ export default function QuestionnaireScreen() {
           if (existing?.userId) {
             nextUserId = existing.userId;
           } else {
-            const provider =
-              user.providerData?.some((item) => item.providerId === "google.com")
-                ? "google"
-                : "password";
-
             const rebuilt = await createProfileOnBackend({
               userId: undefined,
               firebaseUid: user.uid,
               firebaseEmailVerified: user.emailVerified,
               email: user.email || "",
               avatarUrl: user.photoURL || undefined,
-              authProvider: provider,
+              authProvider: "password",
               name: profile?.name || user.displayName || "User",
               place: profile?.place || "",
               assistantName: profile?.assistantName || assistantName || "Elli",
@@ -511,8 +509,8 @@ export default function QuestionnaireScreen() {
     sending || done || completionState !== "incomplete";
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.screen}>
-      <StatusBar style="light" />
+    <Screen safeArea={false} style={styles.screen}>
+      <StatusBar style={isDark ? "light" : "dark"} />
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -527,7 +525,7 @@ export default function QuestionnaireScreen() {
           <View style={styles.chatWrap}>
             {loading ? (
               <View style={styles.loadingWrap}>
-                <ActivityIndicator color={Brand.bronze} />
+                <ActivityIndicator color={t.bronze} />
                 <Text style={styles.loadingText}>Getting things ready…</Text>
               </View>
             ) : (
@@ -639,10 +637,10 @@ export default function QuestionnaireScreen() {
                     </Text>
                     <Text style={styles.doneText}>
                       {completionState === "complete_synced"
-                        ? "You can improve this later in chat."
+                        ? "You can refine this later in chat."
                         : completionState === "sync_failed"
-                          ? "Your answers are saved locally, but backend sync failed. Retry sync before continuing."
-                          : "Your answers are saved locally. Waiting for backend confirmation…"}
+                          ? "Saved on your device — retry sync to continue."
+                          : "Saved on your device. Confirming…"}
                     </Text>
 
                     {completionState === "sync_failed" ? (
@@ -686,7 +684,7 @@ export default function QuestionnaireScreen() {
                   value={input}
                   onChangeText={setInput}
                   placeholder={sessionReplyLanguage === "ta" ? "உங்களைப் பற்றி பதில் சொல்லுங்கள்…" : "Reply naturally…"}
-                  placeholderTextColor={Brand.textMuted}
+                  placeholderTextColor={t.textMuted}
                   style={styles.input}
                   multiline
                   textAlignVertical="top"
@@ -707,17 +705,18 @@ export default function QuestionnaireScreen() {
           ) : null}
         </View>
       </KeyboardAvoidingView>
-    </LinearGradient>
+    </Screen>
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(t: Palette) {
+  return StyleSheet.create({
   screen: { flex: 1 },
   flex: { flex: 1 },
   container: {
     flex: 1,
-    paddingHorizontal: 18,
-    gap: 14,
+    paddingHorizontal: Spacing.lg,
+    gap: Spacing.md,
   },
   chatWrap: {
     flex: 1,
@@ -726,19 +725,19 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
+    gap: Spacing.sm,
   },
   loadingText: {
-    color: Brand.textMuted,
-    fontSize: 14,
+    ...Type.callout,
+    color: t.textMuted,
   },
   chatScroll: {
     flex: 1,
   },
   chatContent: {
-    paddingVertical: 6,
-    paddingBottom: 8,
-    gap: 10,
+    paddingVertical: Spacing.xs,
+    paddingBottom: Spacing.sm,
+    gap: Spacing.sm,
   },
   bubbleRow: {
     flexDirection: "row",
@@ -751,155 +750,151 @@ const styles = StyleSheet.create({
   },
   bubble: {
     maxWidth: "86%",
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 4,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    gap: Spacing.xs,
   },
   assistantBubble: {
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: "rgba(135,70,40,0.08)",
+    borderColor: t.line,
   },
   userBubble: {
-    backgroundColor: Brand.bronze,
+    backgroundColor: t.bronze,
   },
   assistantLabel: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: Brand.bronze,
+    ...Type.overline,
+    color: t.caramel,
     textTransform: "uppercase",
-    letterSpacing: 0.7,
   },
   bubbleText: {
-    fontSize: 15,
+    ...Type.body,
     lineHeight: 21,
   },
   assistantBubbleText: {
-    color: Brand.text,
+    color: t.text,
   },
   userBubbleText: {
     color: "#fff",
   },
   optionsCard: {
-    padding: 16,
-    gap: 12,
+    padding: Spacing.lg,
+    gap: Spacing.md,
   },
   optionsTitle: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: Brand.text,
+    ...Type.subheading,
+    color: t.text,
   },
   optionsSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: Brand.textMuted,
+    ...Type.caption,
+    color: t.textMuted,
   },
   chipsWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: Spacing.sm,
   },
   optionChip: {
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: "rgba(135,70,40,0.14)",
+    borderColor: t.lineStrong,
   },
   optionChipSelected: {
-    backgroundColor: Brand.bronze,
-    borderColor: Brand.bronze,
+    backgroundColor: t.bronze,
+    borderColor: t.bronze,
   },
   optionChipText: {
-    fontSize: 14,
+    ...Type.callout,
     fontWeight: "700",
-    color: Brand.text,
+    color: t.text,
   },
   optionChipTextSelected: {
     color: "#fff",
   },
   multiSubmitButton: {
-    marginTop: 2,
-    borderRadius: 14,
-    backgroundColor: Brand.bronze,
-    paddingHorizontal: 16,
-    paddingVertical: 13,
+    marginTop: Spacing.xxs,
+    borderRadius: Radius.md,
+    backgroundColor: t.bronze,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
     alignItems: "center",
   },
   multiSubmitButtonDisabled: {
     opacity: 0.5,
   },
   multiSubmitButtonText: {
-    color: "#fff",
+    ...Type.callout,
     fontWeight: "800",
-    fontSize: 14,
+    color: "#fff",
   },
   doneCard: {
-    marginTop: 8,
-    padding: 18,
-    gap: 10,
+    marginTop: Spacing.sm,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
   },
   doneTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: Brand.text,
+    ...Type.subheading,
+    color: t.text,
   },
   doneText: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: Brand.textMuted,
+    ...Type.body,
+    color: t.textMuted,
   },
   doneButton: {
-    marginTop: 4,
-    borderRadius: 16,
-    backgroundColor: Brand.bronze,
-    paddingHorizontal: 16,
-    paddingVertical: 13,
+    marginTop: Spacing.xs,
+    borderRadius: Radius.md,
+    backgroundColor: t.bronze,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
     alignItems: "center",
   },
   doneButtonDisabled: {
     opacity: 0.5,
   },
   doneButtonText: {
-    color: "#fff",
+    ...Type.callout,
     fontWeight: "800",
-    fontSize: 14,
+    color: "#fff",
   },
   composerCard: {
-    padding: 10,
-    gap: 8,
+    padding: Spacing.sm,
+    gap: Spacing.sm,
   },
   composerHint: {
+    ...Type.caption,
     fontSize: 12,
-    color: Brand.textMuted,
-    paddingHorizontal: 4,
+    color: t.textMuted,
+    paddingHorizontal: Spacing.xs,
   },
   composerRow: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 10,
+    gap: Spacing.sm,
   },
   input: {
     flex: 1,
     minHeight: 48,
     maxHeight: 120,
-    fontSize: 15,
+    fontSize: Type.body.fontSize,
     lineHeight: 21,
-    color: Brand.text,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    color: t.text,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
   },
   sendButton: {
     width: 46,
     height: 46,
-    borderRadius: 23,
-    backgroundColor: Brand.bronze,
+    borderRadius: Radius.pill,
+    backgroundColor: t.bronze,
     alignItems: "center",
     justifyContent: "center",
   },
   sendButtonDisabled: {
     opacity: 0.5,
   },
-});
+  });
+}

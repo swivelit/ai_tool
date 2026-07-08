@@ -552,7 +552,7 @@ export async function ensureWakeModel(settings: AssistantSettings): Promise<Wake
       sampleRate: 16000,
       frameMs: 80,
       modelRoles: ["wake", "melspectrogram", "embedding"],
-      updatedAt: new Date().toISOString(),
+      updatedAt: settings.wakeModel?.updatedAt || "e2e_mock",
     });
   }
 

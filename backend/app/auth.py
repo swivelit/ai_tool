@@ -216,6 +216,72 @@ def verify_firebase_id_token(token: str) -> dict[str, Any]:
         raise
 
 
+def get_firebase_user_by_email(email: str) -> Any | None:
+    normalized_email = str(email or "").strip().lower()
+    if not normalized_email:
+        return None
+
+    firebase_auth = _firebase_auth_module()
+    try:
+        return firebase_auth.get_user_by_email(normalized_email)
+    except Exception as exc:
+        if exc.__class__.__name__ == "UserNotFoundError":
+            return None
+        if _looks_like_firebase_configuration_error(exc):
+            raise AuthConfigurationError(
+                "Firebase Admin user lookup is not configured correctly. Check FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
+            ) from exc
+        raise
+
+
+def firebase_user_exists_by_email(email: str) -> bool:
+    return get_firebase_user_by_email(email) is not None
+
+
+def create_firebase_email_password_user(
+    *,
+    email: str,
+    password: str,
+    display_name: str,
+    email_verified: bool = True,
+) -> dict[str, Any]:
+    firebase_auth = _firebase_auth_module()
+    user = firebase_auth.create_user(
+        email=str(email or "").strip().lower(),
+        password=password,
+        display_name=display_name.strip() or None,
+        email_verified=email_verified,
+    )
+    return {
+        "uid": str(getattr(user, "uid", "") or ""),
+        "email": str(getattr(user, "email", "") or email).strip().lower(),
+        "email_verified": bool(getattr(user, "email_verified", email_verified)),
+    }
+
+
+def update_firebase_user_password_by_email(*, email: str, new_password: str) -> dict[str, Any]:
+    firebase_auth = _firebase_auth_module()
+    user = get_firebase_user_by_email(email)
+    if user is None:
+        raise ValueError("Firebase user not found")
+
+    updated = firebase_auth.update_user(getattr(user, "uid"), password=new_password)
+    return {
+        "uid": str(getattr(updated, "uid", getattr(user, "uid", "")) or ""),
+        "email": str(getattr(updated, "email", email) or email).strip().lower(),
+    }
+
+
+def revoke_firebase_refresh_tokens_by_email(email: str) -> bool:
+    firebase_auth = _firebase_auth_module()
+    user = get_firebase_user_by_email(email)
+    if user is None:
+        return False
+
+    firebase_auth.revoke_refresh_tokens(getattr(user, "uid"))
+    return True
+
+
 async def get_current_user(
     authorization: str | None = Header(default=None),
 ) -> AuthUser:

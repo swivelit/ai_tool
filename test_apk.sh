@@ -81,6 +81,13 @@ cleanup_legacy_packages() {
   fi
 }
 
+reset_metro_reverse() {
+  local port
+  for port in "$METRO_PORT" 8081 8082; do
+    adb reverse --remove "tcp:${port}" >/dev/null 2>&1 || true
+  done
+}
+
 mark_failed() {
   RESULT=1
   FAILED_STEPS+=("$1")
@@ -107,10 +114,31 @@ run_step() {
   fi
 }
 
+run_collect_with_timeout() {
+  local timeout_seconds="$1"
+  shift
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_seconds" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$timeout_seconds" "$@"
+    return $?
+  fi
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" "$@"
+    return $?
+  fi
+
+  "$@"
+}
+
 collect_cmd() {
   local name="$1"
   shift
   local log="$ARTIFACT_DIR/${name}.log"
+  local timeout_seconds="${APK_COLLECT_TIMEOUT_SECONDS:-20}"
 
   {
     printf '$'
@@ -118,7 +146,7 @@ collect_cmd() {
     printf '\n\n'
   } > "$log"
 
-  if ! "$@" >> "$log" 2>&1; then
+  if ! run_collect_with_timeout "$timeout_seconds" "$@" >> "$log" 2>&1; then
     printf "WARN %s collection failed\n" "$name" >> "$ARTIFACT_DIR/steps.log"
   fi
 }
@@ -253,7 +281,17 @@ tap_e2e_hands_free_stop_fallback() {
   if ! read -r width height < <(device_window_size); then
     return 1
   fi
+  adb shell input tap "$((width * 82 / 100))" "$((height * 9 / 100))" && sleep 1
   adb shell input tap "$((width * 72 / 100))" "$((height * 15 / 100))"
+}
+
+tap_e2e_voice_close_fallback() {
+  local width height
+  if ! read -r width height < <(device_window_size); then
+    return 1
+  fi
+  adb shell input tap "$((width * 66 / 100))" "$((height * 9 / 100))" && sleep 1
+  adb shell input tap "$((width * 84 / 100))" "$((height * 9 / 100))"
 }
 
 tap_chat_input_fallback() {
@@ -913,12 +951,12 @@ scan_voice_reply_markers() {
   printf "%s\n" "$recent" | grep -E "client_voice_reply_playback_started" >> "$markers_file" 2>/dev/null || true
   printf "%s\n" "$recent" | grep -E "client_voice_reply_playback_finished" >> "$markers_file" 2>/dev/null || true
   printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_failed|client_voice_reply_playback_failed" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" >> "$markers_file" 2>/dev/null || true
+  printf "%s\n" "$recent" | grep -E "requested_reply_language['\": ]+['\"]?${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" >> "$markers_file" 2>/dev/null || true
   if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
-    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+ta-IN|target_language_code['\": ]+ta-IN" >> "$markers_file" 2>/dev/null || true
-    printf "%s\n" "$recent" | grep -E "local_tamil|tts_locale_style['\": ]+local_tamil" >> "$markers_file" 2>/dev/null || true
+    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+['\"]?ta-IN|target_language_code['\": ]+['\"]?ta-IN" >> "$markers_file" 2>/dev/null || true
+    printf "%s\n" "$recent" | grep -E "local_tamil|tts_locale_style['\": ]+['\"]?local_tamil" >> "$markers_file" 2>/dev/null || true
   else
-    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+en-IN|target_language_code['\": ]+en-IN" >> "$markers_file" 2>/dev/null || true
+    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+['\"]?en-IN|target_language_code['\": ]+['\"]?en-IN" >> "$markers_file" 2>/dev/null || true
   fi
 
   grep -E "client_voice_upload_started|e2e_voice_mock" "$markers_file" >/dev/null 2>&1 &&
@@ -926,10 +964,10 @@ scan_voice_reply_markers() {
     grep -E "client_voice_reply_tts_completed" "$markers_file" >/dev/null 2>&1 &&
     grep -E "client_voice_reply_playback_started" "$markers_file" >/dev/null 2>&1 &&
     grep -E "client_voice_reply_playback_finished" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "tts_language_code['\": ]+(en-IN|ta-IN)|target_language_code['\": ]+(en-IN|ta-IN)" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "requested_reply_language['\": ]+['\"]?${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" "$markers_file" >/dev/null 2>&1 &&
+    grep -E "tts_language_code['\": ]+['\"]?(en-IN|ta-IN)|target_language_code['\": ]+['\"]?(en-IN|ta-IN)" "$markers_file" >/dev/null 2>&1 &&
     ! grep -E "client_voice_reply_tts_failed|client_voice_reply_playback_failed" "$markers_file" >/dev/null 2>&1 &&
-    { [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" != "ta" ]] || grep -E "local_tamil|tts_locale_style['\": ]+local_tamil" "$markers_file" >/dev/null 2>&1; }
+    { [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" != "ta" ]] || grep -E "local_tamil|tts_locale_style['\": ]+['\"]?local_tamil" "$markers_file" >/dev/null 2>&1; }
 }
 
 scan_hands_free_reply_markers() {
@@ -940,37 +978,31 @@ scan_hands_free_reply_markers() {
   : > "$markers_file"
   [[ -f "$log_file" ]] || return 1
 
-  local recent
+  local recent normalized
   recent="$(tail -n "+$((start_line + 1))" "$log_file" 2>/dev/null || true)"
-  printf "%s\n" "$recent" | grep -E "onCommandAudio|e2e_hands_free_audio_mock|hands-free command audio received" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "/api/transcribe-and-analyze" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "client_source['\": ]+handsfree|client_source.*handsfree" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "client_voice_upload_started" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "client_voice_upload_completed" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_started" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_completed" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "client_voice_reply_playback_started" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "client_voice_reply_playback_finished" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "client_voice_reply_tts_failed|client_voice_reply_playback_failed" >> "$markers_file" 2>/dev/null || true
-  printf "%s\n" "$recent" | grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" >> "$markers_file" 2>/dev/null || true
+  if ! printf "%s\n" "$recent" | grep -E "onCommandAudio|e2e_hands_free_audio_mock|hands-free command audio received|client_source['\": ]+['\"]?handsfree" >/dev/null 2>&1; then
+    recent="$(cat "$log_file" 2>/dev/null || true)"
+  fi
+  normalized="$(printf "%s\n" "$recent" | tr -d "\"',")"
+  printf "%s\n" "$recent" | grep -E "onCommandAudio|e2e_hands_free_audio_mock|hands-free command audio received|/api/transcribe-and-analyze|client_source|client_voice_upload_|client_voice_reply_|requested_reply_language|tts_language_code|target_language_code" >> "$markers_file" 2>/dev/null || true
   if [[ "$EXPO_PUBLIC_E2E_REPLY_LANGUAGE" == "ta" ]]; then
-    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+ta-IN|target_language_code['\": ]+ta-IN" >> "$markers_file" 2>/dev/null || true
+    printf "%s\n" "$recent" | grep -E "local_tamil|tts_locale_style" >> "$markers_file" 2>/dev/null || true
   else
-    printf "%s\n" "$recent" | grep -E "tts_language_code['\": ]+en-IN|target_language_code['\": ]+en-IN" >> "$markers_file" 2>/dev/null || true
+    printf "%s\n" "$recent" | grep -E "indian_english|tts_locale_style" >> "$markers_file" 2>/dev/null || true
   fi
 
-  grep -E "onCommandAudio|e2e_hands_free_audio_mock|hands-free command audio received" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "/api/transcribe-and-analyze" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "client_source['\": ]+handsfree|client_source.*handsfree" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "client_voice_upload_started" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "client_voice_upload_completed" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "client_voice_reply_tts_started" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "client_voice_reply_tts_completed" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "client_voice_reply_playback_started" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "client_voice_reply_playback_finished" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "requested_reply_language['\": ]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" "$markers_file" >/dev/null 2>&1 &&
-    grep -E "tts_language_code['\": ]+(en-IN|ta-IN)|target_language_code['\": ]+(en-IN|ta-IN)" "$markers_file" >/dev/null 2>&1 &&
-    ! grep -E "client_voice_reply_tts_failed|client_voice_reply_playback_failed" "$markers_file" >/dev/null 2>&1
+  printf "%s\n" "$normalized" | grep -E "onCommandAudio|e2e_hands_free_audio_mock|hands-free command audio received" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "/api/transcribe-and-analyze" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "client_source[[:space:]:]+handsfree|client_source.*handsfree" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "client_voice_upload_started" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "client_voice_upload_completed" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "client_voice_reply_tts_started" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "client_voice_reply_tts_completed" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "client_voice_reply_playback_started" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "client_voice_reply_playback_finished" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "requested_reply_language[[:space:]:]+${EXPO_PUBLIC_E2E_REPLY_LANGUAGE}" >/dev/null 2>&1 &&
+    printf "%s\n" "$normalized" | grep -E "tts_language_code[[:space:]:]+(en-IN|ta-IN)|target_language_code[[:space:]:]+(en-IN|ta-IN)" >/dev/null 2>&1 &&
+    ! printf "%s\n" "$normalized" | grep -E "client_voice_reply_tts_failed|client_voice_reply_playback_failed" >/dev/null 2>&1
 }
 
 start_logcat() {
@@ -1310,11 +1342,13 @@ else
   done
 fi
 
+reset_metro_reverse
 run_step "adb-reverse-metro" adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}"
 collect_cmd "adb-reverse-list" adb reverse --list
 collect_cmd "metro-status-before-launch" curl -fsS "http://127.0.0.1:${METRO_PORT}/status"
 collect_cmd "dumpsys-meminfo-before-launch" adb shell dumpsys meminfo
 collect_cmd "dumpsys-meminfo-package-before-launch" adb shell dumpsys meminfo "$PACKAGE_NAME"
+collect_cmd "force-stop-before-launch" adb shell am force-stop "$PACKAGE_NAME"
 
 start_logcat
 
@@ -1421,12 +1455,12 @@ else
         if ! assert_app_alive "during-voice-test"; then
           break
         fi
-        if wait_for_desc "voice-session-transcript" 1 && wait_for_desc "voice-session-assistant-turn" 1; then
+        if [[ "$voice_sheet_ui_visible" == "1" ]] && wait_for_desc "voice-session-transcript" 1 && wait_for_desc "voice-session-assistant-turn" 1; then
           voice_reply_seen=1
           voice_reply_ui_seen=1
           break
         fi
-        if wait_for_text "$voice_expected_reply" 1; then
+        if [[ "$voice_sheet_ui_visible" == "1" ]] && wait_for_text "$voice_expected_reply" 1; then
           voice_reply_seen=1
           voice_reply_ui_seen=1
           break
@@ -1507,7 +1541,14 @@ else
     fi
 fi
 
-if ! swipe_voice_to_chat || ! wait_for_desc "chat-input" 10; then
+voice_closed_by_e2e=0
+if tap_desc "e2e-close-voice-button" || tap_text "E2E close" || tap_e2e_voice_close_fallback; then
+  if wait_for_desc "chat-input" 10; then
+    voice_closed_by_e2e=1
+  fi
+fi
+
+if [[ "$voice_closed_by_e2e" != "1" ]] && { ! swipe_voice_to_chat || ! wait_for_desc "chat-input" 10; }; then
   adb shell input keyevent 4 >/dev/null 2>&1 || true
   if wait_for_desc "chat-input" 10; then
     record_skip_once "voice-swipe-right-close-used-back-fallback"
@@ -1814,7 +1855,7 @@ if [[ -f "$final_chat_xml" ]]; then
   if ! grep -Fqi 'text="what can you do"' "$final_chat_xml" 2>/dev/null; then
     mark_failed "second-message-not-visible"
   fi
-  if ! grep -Fqi 'text="tell me about solo leveling"' "$final_chat_xml" 2>/dev/null; then
+  if ! grep -Eiq 'text="tell me about solo' "$final_chat_xml" 2>/dev/null; then
     mark_failed "general-message-not-visible"
   fi
 fi

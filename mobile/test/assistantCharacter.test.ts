@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   clamp01,
+  CHARACTER_LAYER_DEPTHS,
   emotionShape,
+  resolveLayerParallax,
   resolveCharacterVisuals,
   resolveEyeOpenness,
   resolveMouthOpenness,
@@ -22,7 +24,22 @@ describe("assistant character visuals", () => {
     expect(emotionShape("excited").eyeOpenBias).toBeGreaterThan(0);
     expect(emotionShape("thinking").pupilShiftY).toBeLessThan(0);
     expect(emotionShape("concerned").mouthCurve).toBeLessThan(0);
+    expect(emotionShape("surprised").mouthRest).toBeGreaterThan(0.3);
+    expect(emotionShape("sad").mouthCurve).toBeLessThan(emotionShape("concerned").mouthCurve);
     expect(emotionShape("neutral").mouthRest).toBeGreaterThan(0);
+  });
+
+  it("resolves layered parallax for the pseudo-3D body stack", () => {
+    const hero = resolveLayerParallax({ mode: "hero", tiltX: 1, tiltY: -1 });
+    const floating = resolveLayerParallax({ mode: "floating", tiltX: 1, tiltY: -1 });
+
+    expect(Object.keys(hero).sort()).toEqual(Object.keys(CHARACTER_LAYER_DEPTHS).sort());
+    expect(hero.facePlane.translateX).toBeGreaterThan(0);
+    expect(hero.bodyBack.translateX).toBeLessThan(0);
+    expect(hero.specular.scale).toBeGreaterThan(hero.bodyBack.scale);
+    expect(Math.abs(floating.facePlane.translateX)).toBeLessThan(
+      Math.abs(hero.facePlane.translateX),
+    );
   });
 
   it("opens the mouth only from speech amplitude while speaking", () => {

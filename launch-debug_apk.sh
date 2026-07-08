@@ -66,6 +66,76 @@ stop_old_metro() {
   sleep 2
 }
 
+reset_metro_reverse() {
+  info "Resetting adb Metro reverse mappings"
+  local port
+  for port in "$METRO_PORT" 8081 8082; do
+    adb reverse --remove "tcp:${port}" >/dev/null 2>&1 || true
+  done
+}
+
+wait_for_android_boot() {
+  local timeout_seconds="${1:-240}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local boot_completed
+
+  while [[ "$SECONDS" -lt "$deadline" ]]; do
+    if adb get-state >/dev/null 2>&1; then
+      boot_completed="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' | tr -d '[:space:]' || true)"
+      if [[ "$boot_completed" == "1" ]]; then
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
+start_android_emulator_if_missing() {
+  adb get-state >/dev/null 2>&1 && return 0
+  is_truthy "${RUN_APK_TESTS:-}" || return 1
+
+  local emulator_bin=""
+  if [[ -n "${ANDROID_SDK:-}" && -x "$ANDROID_SDK/emulator/emulator" ]]; then
+    emulator_bin="$ANDROID_SDK/emulator/emulator"
+  elif command -v emulator >/dev/null 2>&1; then
+    emulator_bin="$(command -v emulator)"
+  fi
+  [[ -n "$emulator_bin" ]] || return 1
+
+  local avd_name="${JAI_ANDROID_AVD:-${DEBUG_APK_AVD_NAME:-}}"
+  if [[ -z "${avd_name//[[:space:]]/}" ]]; then
+    avd_name="$("$emulator_bin" -list-avds 2>/dev/null | sed '/^[[:space:]]*$/d' | head -1 || true)"
+  fi
+  [[ -n "${avd_name//[[:space:]]/}" ]] || return 1
+
+  info "No Android device/emulator detected; starting AVD ${avd_name}"
+  local emulator_log="$DIST_DIR/launch-debug-emulator-${avd_name}.log"
+  nohup "$emulator_bin" -avd "$avd_name" -no-snapshot-load -no-window -no-audio \
+    > "$emulator_log" 2>&1 &
+  echo "$!" > "$DIST_DIR/launch-debug-emulator-${avd_name}.pid"
+
+  if wait_for_android_boot 240; then
+    info "Android emulator is booted"
+    return 0
+  fi
+
+  warn "Timed out waiting for AVD ${avd_name} to boot. Emulator log: ${emulator_log}"
+  return 1
+}
+
+ensure_android_device() {
+  if adb get-state >/dev/null 2>&1; then
+    if is_truthy "${RUN_APK_TESTS:-}"; then
+      wait_for_android_boot 180 || return 1
+    fi
+    return 0
+  fi
+
+  start_android_emulator_if_missing
+}
+
 start_metro() {
   info "Starting Metro on port ${METRO_PORT}"
   : > "$METRO_LOG"
@@ -159,8 +229,12 @@ run_apk_harness_scenario() {
   local status=0
   while true; do
     status=0
+    if ! ensure_android_device; then
+      warn "No booted Android device available before ${label}; test_apk.sh will record the device failure."
+    fi
     adb shell am force-stop "$PACKAGE_NAME" >/dev/null 2>&1 || true
     adb shell pm clear "$PACKAGE_NAME" >/dev/null 2>&1 || true
+    reset_metro_reverse
     adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
     REUSE_APK=1 SKIP_PRECHECKS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh || status=$?
     if [[ "$status" == "0" ]]; then
@@ -194,6 +268,7 @@ run_apk_harness_scenario() {
     if [[ "$attempt" -lt "$max_attempts" && -n "$latest_artifact" && "$external_instability" == "1" && "$app_crash" == "0" && "$app_lowmemory" == "0" && "$actual_voice_or_handsfree_started" == "0" ]]; then
       warn "APK harness saw external emulator/System UI instability before the app E2E path, with no app crash marker; retrying ${label} once."
       adb shell am force-stop "$PACKAGE_NAME" >/dev/null 2>&1 || true
+      reset_metro_reverse
       adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
       attempt=$((attempt + 1))
       continue
@@ -280,7 +355,7 @@ fi
 cd "$ROOT_DIR"
 
 info "Checking Android device/emulator"
-if ! adb get-state >/dev/null 2>&1; then
+if ! ensure_android_device; then
   if is_truthy "${RUN_APK_TESTS:-}"; then
     warn "No Android device/emulator detected. Delegating to test_apk.sh so non-device tests still run and the skip reason is recorded."
     RUN_APK_TESTS=1 METRO_PORT="$METRO_PORT" ./test_apk.sh
@@ -399,6 +474,7 @@ wait_for_metro
 prewarm_metro_android_bundle
 
 info "Forwarding device port ${METRO_PORT} to Metro"
+reset_metro_reverse
 adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
 
 if is_truthy "${RUN_APK_TESTS:-}"; then
@@ -411,10 +487,12 @@ if is_truthy "${RUN_APK_TESTS:-}"; then
       scenario_status=1
     fi
     export EXPO_PUBLIC_E2E_REPLY_LANGUAGE="ta"
+    ensure_android_device || warn "No booted Android device available before restarting Metro for Tamil Settings."
     stop_old_metro
     start_metro
     wait_for_metro
     prewarm_metro_android_bundle
+    reset_metro_reverse
     adb reverse "tcp:${METRO_PORT}" "tcp:${METRO_PORT}" >/dev/null 2>&1 || true
     if ! run_apk_harness_scenario "ta" "Tamil Settings"; then
       scenario_status=1

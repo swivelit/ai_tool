@@ -20,8 +20,9 @@ import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GlassCard } from "@/components/Glass";
+import { Screen } from "@/components/ui";
 import { useAssistant } from "@/components/AssistantProvider";
-import { Brand } from "@/constants/theme";
+import { Brand, Elevation, Radius, Spacing, Type } from "@/constants/theme";
 import {
   getLifeContextPermissionState,
   getTodayLifeContextForAi,
@@ -271,14 +272,8 @@ export default function CustomiseScreen() {
   }
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+    <Screen safeArea={false} style={styles.page}>
       <StatusBar style="light" />
-
-      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
-        <View style={styles.topGlow} />
-        <View style={styles.leftGlow} />
-        <View style={styles.bottomGlow} />
-      </View>
 
       <KeyboardAvoidingView
         style={styles.page}
@@ -287,9 +282,9 @@ export default function CustomiseScreen() {
         <ScrollView
           style={styles.page}
           contentContainerStyle={{
-            paddingTop: insets.top + 10,
-            paddingHorizontal: 18,
-            paddingBottom: Math.max(insets.bottom + 28, 28),
+            paddingTop: insets.top + Spacing.sm,
+            paddingHorizontal: Spacing.lg,
+            paddingBottom: Math.max(insets.bottom + Spacing.xxl, 28),
           }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
@@ -356,9 +351,8 @@ export default function CustomiseScreen() {
           >
             <Text style={styles.sectionTitle}>Life Intelligence</Text>
             <Text style={styles.helperText}>
-              Opt-in only: uses Android step counter and Usage Access foreground app time. No
-              camera, gaze tracking, or hidden monitoring. App names stay hidden unless you share
-              them.
+              Opt-in. Uses your step counter and app-usage time — no camera, gaze tracking, or
+              hidden monitoring. App names stay private unless you share them.
             </Text>
 
             <View style={styles.switchCard}>
@@ -367,7 +361,7 @@ export default function CustomiseScreen() {
                   {lifeContextEnabled ? "Life Intelligence enabled" : "Enable Life Intelligence"}
                 </Text>
                 <Text style={styles.switchHint}>
-                  Lets the assistant adapt to steps, screen time, permissions, and age group.
+                  Adapts replies to your steps, screen time, and routine.
                 </Text>
               </View>
               <Switch
@@ -382,7 +376,7 @@ export default function CustomiseScreen() {
                 testID="life-context-enable-toggle"
                 accessibilityLabel="life-context-enable-toggle"
                 trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
-                thumbColor="#fff7ef"
+                thumbColor="#eaf4ff"
               />
             </View>
 
@@ -430,15 +424,15 @@ export default function CustomiseScreen() {
                 style={({ pressed }) => [styles.secondaryBtn, styles.lifeButton, pressed && styles.pressed]}
               >
                 <Ionicons name="phone-portrait-outline" size={16} color={Brand.ink} />
-                <Text style={styles.secondaryBtnText}>Open Usage Access Settings</Text>
+                <Text style={styles.secondaryBtnText}>Usage access settings</Text>
               </Pressable>
             </View>
 
             <View style={styles.switchCard}>
               <View style={styles.switchTextBlock}>
-                <Text style={styles.inputLabel}>Share compact life context with AI</Text>
+                <Text style={styles.inputLabel}>Share life context with AI</Text>
                 <Text style={styles.switchHint}>
-                  Sends steps, distance, screen time, app categories, confidence, and permission state.
+                  Shares steps, screen time, and app categories.
                 </Text>
               </View>
               <Switch
@@ -448,7 +442,7 @@ export default function CustomiseScreen() {
                 testID="life-context-share-backend-toggle"
                 accessibilityLabel="life-context-share-backend-toggle"
                 trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
-                thumbColor="#fff7ef"
+                thumbColor="#eaf4ff"
               />
             </View>
 
@@ -456,7 +450,7 @@ export default function CustomiseScreen() {
               <View style={styles.switchTextBlock}>
                 <Text style={styles.inputLabel}>Share app names with AI</Text>
                 <Text style={styles.switchHint}>
-                  Off by default. When off, only high-level app categories are shared.
+                  Off by default — only app categories are shared.
                 </Text>
               </View>
               <Switch
@@ -466,7 +460,7 @@ export default function CustomiseScreen() {
                 testID="life-context-share-app-names-toggle"
                 accessibilityLabel="life-context-share-app-names-toggle"
                 trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
-                thumbColor="#fff7ef"
+                thumbColor="#eaf4ff"
               />
             </View>
           </GlassCard>
@@ -481,7 +475,7 @@ export default function CustomiseScreen() {
                 onValueChange={(enabled) => {
                   if (enabled && !wakeModelReady) {
                     setHandsFreeEnabled(false);
-                    Alert.alert("Needs model", "Needs model");
+                    Alert.alert("Wake model needed", "Train your wake phrase to turn this on.");
                     return;
                   }
                   setHandsFreeEnabled(enabled);
@@ -492,7 +486,7 @@ export default function CustomiseScreen() {
                 testID="customise-hands-free-switch"
                 accessibilityLabel="customise-hands-free-switch"
                 trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
-                thumbColor="#fff7ef"
+                thumbColor="#eaf4ff"
               />
             </View>
 
@@ -527,7 +521,7 @@ export default function CustomiseScreen() {
                 value={allowCloudFallback}
                 onValueChange={setAllowCloudFallback}
                 trackColor={{ false: "rgba(255, 255, 255, 0.14)", true: "rgba(87,222,255,0.44)" }}
-                thumbColor="#fff7ef"
+                thumbColor="#eaf4ff"
               />
             </View>
 
@@ -562,7 +556,7 @@ export default function CustomiseScreen() {
           </GlassCard>
         </ScrollView>
       </KeyboardAvoidingView>
-    </LinearGradient>
+    </Screen>
   );
 }
 
@@ -635,33 +629,6 @@ function LabeledInput({
 
 const styles = StyleSheet.create({
   page: { flex: 1 },
-  topGlow: {
-    position: "absolute",
-    top: -90,
-    right: -20,
-    width: 220,
-    height: 220,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
-  },
-  leftGlow: {
-    position: "absolute",
-    top: 240,
-    left: -80,
-    width: 210,
-    height: 210,
-    borderRadius: 999,
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
-  },
-  bottomGlow: {
-    position: "absolute",
-    bottom: -100,
-    right: 10,
-    width: 270,
-    height: 270,
-    borderRadius: 999,
-    backgroundColor: "rgba(87,222,255,0.10)",
-  },
   topBar: {
     minHeight: 48,
     flexDirection: "row",
@@ -671,28 +638,27 @@ const styles = StyleSheet.create({
   iconBtn: {
     width: 42,
     height: 42,
-    borderRadius: 21,
+    borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
   iconBtnPlaceholder: { width: 42, height: 42 },
-  topTitle: { color: Brand.ink, fontSize: 18, fontWeight: "900" },
-  card: { borderRadius: 28, marginTop: 16 },
-  sectionTitle: { color: Brand.ink, fontSize: 19, fontWeight: "900" },
+  topTitle: { ...Type.subheading, color: Brand.ink },
+  card: { borderRadius: Radius.xxl, marginTop: Spacing.lg },
+  sectionTitle: { ...Type.heading, color: Brand.ink },
   helperText: {
-    marginTop: 8,
+    ...Type.caption,
+    fontWeight: "500",
+    marginTop: Spacing.sm,
     color: Brand.cocoa,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: "600",
   },
-  inputLabel: { color: Brand.cocoa, fontSize: 13, fontWeight: "800", marginBottom: 8 },
+  inputLabel: { ...Type.caption, fontWeight: "700", color: Brand.cocoa, marginBottom: Spacing.sm },
   inputShell: {
-    borderRadius: 18,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderRadius: Radius.md,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.lineStrong,
     minHeight: 56,
@@ -701,110 +667,107 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   inputIconWrap: { width: 46, minHeight: 56, alignItems: "center", justifyContent: "center" },
-  input: { flex: 1, minHeight: 56, paddingRight: 14, color: Brand.ink, fontSize: 15 },
+  input: { flex: 1, minHeight: 56, paddingRight: Spacing.lg, color: Brand.ink, fontSize: Type.body.fontSize },
   switchCard: {
-    marginTop: 16,
+    marginTop: Spacing.lg,
     minHeight: 66,
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: Spacing.md,
   },
   switchTextBlock: { flex: 1, minWidth: 0 },
   switchHint: {
-    color: "rgba(67, 50, 38, 0.68)",
+    ...Type.caption,
     fontSize: 12,
     lineHeight: 17,
-    fontWeight: "600",
+    fontWeight: "500",
+    color: Brand.muted,
   },
   lifeSummaryBox: {
-    marginTop: 16,
-    borderRadius: 20,
-    padding: 14,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    marginTop: Spacing.lg,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
-    gap: 6,
+    gap: Spacing.xs,
   },
-  lifeSummaryText: { color: Brand.ink, fontSize: 13, lineHeight: 18, fontWeight: "700" },
-  lifeButtonRow: { marginTop: 14, gap: 10 },
+  lifeSummaryText: { ...Type.caption, fontWeight: "700", color: Brand.ink, lineHeight: 18 },
+  lifeButtonRow: { marginTop: Spacing.md, gap: Spacing.sm },
   lifeButton: { justifyContent: "flex-start" },
-  optionRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16 },
+  optionRow: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.sm, marginTop: Spacing.lg },
   optionCard: {
     flex: 1,
     minWidth: 140,
-    borderRadius: 22,
-    padding: 14,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
   optionCardActive: {
     backgroundColor: "rgba(87, 222, 255, 0.10)",
-    borderColor: "rgba(87,222,255,0.18)",
+    borderColor: "rgba(87, 222, 255, 0.20)",
   },
   optionIconWrap: {
     width: 36,
     height: 36,
-    borderRadius: 14,
+    borderRadius: Radius.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
   },
-  optionTitle: { marginTop: 12, color: Brand.cocoa, fontSize: 14, fontWeight: "900" },
+  optionTitle: { ...Type.callout, fontWeight: "800", marginTop: Spacing.md, color: Brand.cocoa },
   optionTitleActive: { color: Brand.ink },
   statusRow: {
-    marginTop: 16,
+    marginTop: Spacing.lg,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: Spacing.md,
   },
   statusChip: {
     minHeight: 38,
-    borderRadius: 999,
-    paddingHorizontal: 14,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.lg,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(87, 222, 255, 0.10)",
     borderWidth: 1,
-    borderColor: "rgba(87,222,255,0.16)",
+    borderColor: "rgba(87, 222, 255, 0.18)",
   },
-  statusChipText: { color: Brand.ink, fontSize: 12, fontWeight: "900" },
+  statusChipText: { ...Type.caption, fontWeight: "800", color: Brand.ink },
   secondaryBtn: {
     minHeight: 44,
-    borderRadius: 18,
+    borderRadius: Radius.md,
     borderWidth: 1,
     borderColor: Brand.lineStrong,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
-    paddingHorizontal: 16,
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
   },
-  secondaryBtnText: { color: Brand.ink, fontSize: 14, fontWeight: "800" },
-  primaryShell: { borderRadius: 18, overflow: "hidden", marginTop: 22 },
+  secondaryBtnText: { ...Type.callout, fontWeight: "700", color: Brand.ink },
+  primaryShell: { borderRadius: Radius.md, overflow: "hidden", marginTop: Spacing.xl },
   primaryBtn: {
     minHeight: 54,
-    borderRadius: 18,
+    borderRadius: Radius.md,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
-    shadowColor: "#57deff",
-    shadowOpacity: 0.24,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
+    gap: Spacing.sm,
+    ...Elevation.glow,
   },
-  primaryBtnText: { color: Brand.ink, fontSize: 15, fontWeight: "900" },
+  primaryBtnText: { ...Type.subheading, color: Brand.ink },
   disabled: { opacity: 0.6 },
   pressed: { opacity: 0.94, transform: [{ scale: 0.995 }] },
 });

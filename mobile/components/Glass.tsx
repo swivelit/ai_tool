@@ -1,10 +1,20 @@
 import React from "react";
 import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
-import { BlurView } from "expo-blur";
-import { LinearGradient } from "expo-linear-gradient";
 
-import { Brand } from "@/constants/theme";
+import { Elevation, Radius, Spacing } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 
+/**
+ * Card surface used across ~16 screens.
+ *
+ * Was a stack of BlurView + near-white gradient film + a top "sheen" overlay
+ * over the near-black page, which composited into a hazy, glossy panel and
+ * smeared the text on top. It is now a single OPAQUE, theme-aware surface:
+ * a solid themed fill, one hairline border, rounded corners and a soft
+ * elevation shadow — crisp and readable in both light and dark mode.
+ *
+ * The public API is unchanged so every existing call site keeps working.
+ */
 export function GlassCard({
   children,
   style,
@@ -22,37 +32,29 @@ export function GlassCard({
   accessibilityLabel?: string;
   accessible?: boolean;
 }) {
+  const { palette } = useAppTheme();
   const radiusStyle = radius == null ? null : { borderRadius: radius };
-  const topRadiusStyle =
-    radius == null
-      ? null
-      : { borderTopLeftRadius: radius, borderTopRightRadius: radius };
+
   return (
     <View
       testID={testID}
       accessible={accessible}
       accessibilityLabel={accessibilityLabel}
-      style={[styles.shell, radiusStyle, style]}
+      style={[
+        styles.shell,
+        {
+          // Dark: a fully opaque raised panel so the card reads as a clean
+          // solid surface against the page gradient + ambient glow (no
+          // see-through). Light: the opaque white surface token.
+          backgroundColor: palette.isDark
+            ? palette.raised
+            : palette.surfaceStrong,
+          borderColor: palette.line,
+        },
+        radiusStyle,
+        style,
+      ]}
     >
-      <BlurView
-        intensity={22}
-        tint="dark"
-        experimentalBlurMethod="dimezisBlurView"
-        style={StyleSheet.absoluteFillObject}
-      />
-
-      <LinearGradient
-        colors={[
-          "rgba(255,255,255,0.075)",
-          "rgba(255,255,255,0.032)",
-          "rgba(86,222,255,0.045)",
-        ]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFillObject}
-      />
-
-      <View style={[styles.topSheen, topRadiusStyle]} />
       <View style={[styles.content, contentStyle]}>{children}</View>
     </View>
   );
@@ -60,30 +62,13 @@ export function GlassCard({
 
 const styles = StyleSheet.create({
   shell: {
-    borderRadius: 24,
+    borderRadius: Radius.xl,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: Brand.line,
-    backgroundColor: Brand.glass,
-    shadowColor: "#000000",
-    shadowOpacity: 0.4,
-    shadowRadius: 28,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 10,
+    ...Elevation.medium,
   },
 
   content: {
-    padding: 18,
-  },
-
-  topSheen: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: "46%",
-    backgroundColor: "rgba(255,255,255,0.035)",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    padding: Spacing.xl,
   },
 });

@@ -107,7 +107,7 @@ const ENV_KEYS_USED_BY_APP_CONFIG = [
   "GOOGLE_SERVICES_JSON_BASE64",
   "GOOGLE_SERVICES_JSON",
   "FIREBASE_GOOGLE_SERVICES_JSON",
-  "EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID",
+  "EEXPO_PUBLIC_FIREBASE_API_KEY",
 ];
 
 function createMockLlamaCppCheckout() {
@@ -425,13 +425,13 @@ describe("native llama.cpp production build config", () => {
 
   it("fails clearly for EEXPO_PUBLIC_ environment variable typos without printing values", () => {
     const result = runReleaseVerifier({
-      EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID: "do-not-print-this-value",
+      EEXPO_PUBLIC_FIREBASE_API_KEY: "do-not-print-this-value",
     });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("EEXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID");
+    expect(result.stderr).toContain("EEXPO_PUBLIC_FIREBASE_API_KEY");
     expect(result.stderr).toContain(
-      "likely a typo for EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID",
+      "EEXPO_PUBLIC_FIREBASE_API_KEY is likely a typo for EXPO_PUBLIC_FIREBASE_API_KEY",
     );
     expect(result.stderr).not.toContain("do-not-print-this-value");
   });

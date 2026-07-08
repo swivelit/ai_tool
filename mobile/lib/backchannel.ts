@@ -11,8 +11,8 @@
  * `createBackchannelController` factory wires that decision to `expo-av`. To
  * keep the pure function importable without pulling native modules into the
  * test runtime, `expo-av` is required lazily (only when a cue actually plays in
- * the app). The bundled defaults are tiny synthetic WAV data URIs so Metro does
- * not crash on missing local recordings.
+ * the app). The bundled defaults are tiny synthetic WAV data URIs as a fallback;
+ * the app passes bundled WAV clips through `createBackchannelController`.
  */
 
 export type BackchannelCue = "aaha" | "hmm" | "mm-hmm";
@@ -89,12 +89,12 @@ export function decideBackchannel(input: BackchannelInput): BackchannelDecision 
 // importable in the node test runtime.
 // ---------------------------------------------------------------------------
 
-type ClipSource = number | { uri: string };
-type ClipSources = Record<BackchannelCue, ClipSource>;
+export type ClipSource = number | { uri: string };
+export type ClipSources = Record<BackchannelCue, ClipSource>;
 type LoadedSound = import("expo-av").Audio.Sound;
 
 export type BackchannelControllerOptions = {
-  /** Override the cue → audio asset map (defaults to the bundled placeholders). */
+  /** Override the cue -> audio asset map (defaults to synthetic fallbacks). */
   clips?: Partial<ClipSources>;
   minGapMs?: number;
   maxGapMs?: number;
@@ -122,8 +122,8 @@ function placeholderClipSource(): ClipSource {
 }
 
 function defaultClipSources(): ClipSources {
-  // These are synthetic placeholders. Pass `clips` with local `require(...)`
-  // sources when real short acknowledgement recordings are available.
+  // These are synthetic placeholders. The app passes bundled `require(...)`
+  // sources; the data URIs remain as a safe fallback for tests and experiments.
   return {
     aaha: placeholderClipSource(),
     hmm: placeholderClipSource(),

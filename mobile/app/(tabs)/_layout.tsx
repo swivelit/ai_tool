@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, Platform, StyleSheet, View } from "react-native";
 import { Tabs, router, useRootNavigationState } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,7 +7,8 @@ import { LinearGradient } from "expo-linear-gradient";
 
 import { HapticTab } from "@/components/haptic-tab";
 import { useAuth } from "@/components/AuthProvider";
-import { Brand } from "@/constants/theme";
+import { Spacing, type Palette } from "@/constants/theme";
+import { useAppTheme } from "@/hooks/use-app-theme";
 
 function TabIcon({
   focused,
@@ -18,16 +19,18 @@ function TabIcon({
   color: string;
   name: keyof typeof Ionicons.glyphMap;
 }) {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
     <View style={[styles.iconWrap, focused && styles.iconWrapActive]}>
       {focused ? (
         <LinearGradient
-          colors={Brand.gradients.button}
+          colors={t.gradients.button}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.iconGradient}
         >
-          <Ionicons name={name} size={18} color={Brand.ink} />
+          <Ionicons name={name} size={18} color={t.ink} />
         </LinearGradient>
       ) : (
         <Ionicons name={name} size={18} color={color} />
@@ -37,15 +40,19 @@ function TabIcon({
 }
 
 function LoadingScreen() {
+  const { palette: t } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.loadingPage}>
-      <ActivityIndicator size="small" color={Brand.bronze} />
+    <LinearGradient colors={t.gradients.page} style={styles.loadingPage}>
+      <ActivityIndicator size="small" color={t.bronze} />
     </LinearGradient>
   );
 }
 
 export default function TabLayout() {
   const { user, loading } = useAuth();
+  const { palette: t, isDark } = useAppTheme();
+  const styles = useMemo(() => createStyles(t), [t]);
   const rootNavigationState = useRootNavigationState();
   const hasRedirectedRef = useRef(false);
 
@@ -93,16 +100,17 @@ export default function TabLayout() {
         tabBarHideOnKeyboard: true,
         tabBarButton: HapticTab,
         sceneStyle: { backgroundColor: "transparent" },
-        tabBarActiveTintColor: Brand.ink,
-        tabBarInactiveTintColor: "rgba(226, 238, 255, 0.58)",
+        tabBarActiveTintColor: t.ink,
+        tabBarInactiveTintColor: t.muted,
         tabBarLabelStyle: {
           fontSize: 11,
-          fontWeight: "800",
-          marginTop: 2,
-          marginBottom: Platform.OS === "ios" ? 0 : 4,
+          fontWeight: "700",
+          letterSpacing: 0.3,
+          marginTop: Spacing.xxs,
+          marginBottom: Platform.OS === "ios" ? 0 : Spacing.xs,
         },
         tabBarItemStyle: {
-          paddingTop: 6,
+          paddingTop: Spacing.xs,
         },
         tabBarStyle: {
           height: Platform.OS === "ios" ? 84 : 74,
@@ -118,13 +126,13 @@ export default function TabLayout() {
         },
         tabBarBackground: () => (
           <View style={StyleSheet.absoluteFill}>
-            <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFill} />
+            <BlurView
+              intensity={18}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
             <LinearGradient
-              colors={[
-                "rgba(14,18,25,0.96)",
-                "rgba(6,8,12,0.96)",
-                "rgba(16,20,28,0.98)",
-              ]}
+              colors={t.gradients.softCard}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={StyleSheet.absoluteFill}
@@ -164,7 +172,8 @@ export default function TabLayout() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(t: Palette) {
+  return StyleSheet.create({
   loadingPage: {
     flex: 1,
     alignItems: "center",
@@ -177,7 +186,7 @@ const styles = StyleSheet.create({
     left: 16,
     right: 16,
     height: 1,
-    backgroundColor: Brand.line,
+    backgroundColor: t.line,
   },
 
   iconWrap: {
@@ -203,6 +212,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: Brand.lineStrong,
+    borderColor: t.lineStrong,
   },
-});
+  });
+}

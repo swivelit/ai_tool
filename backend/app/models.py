@@ -25,6 +25,23 @@ class User(SQLModel, table=True):
 
 
 # --------------------
+# Email OTP codes (signup / password reset)
+# --------------------
+class EmailOtpCode(SQLModel, table=True):
+    __tablename__ = "email_otp_code"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(index=True)
+    purpose: str = Field(index=True)
+    otp_hash: str
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    expires_at: datetime = Field(index=True)
+    consumed_at: Optional[datetime] = Field(default=None, index=True)
+    attempts: int = Field(default=0)
+    last_sent_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+# --------------------
 # Item (core memory / notes / tasks / reminders)
 # --------------------
 class Item(SQLModel, table=True):

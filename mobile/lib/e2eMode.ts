@@ -17,7 +17,7 @@ function isTruthy(value: unknown) {
 }
 
 function publicEnv(name: string) {
-  return extra[name] ?? (globalThis as any)?.process?.env?.[name];
+  return (globalThis as any)?.process?.env?.[name] ?? extra[name];
 }
 
 function isDevOrTestRuntime() {

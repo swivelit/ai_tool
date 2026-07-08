@@ -533,10 +533,6 @@ export default {
         process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
       firebaseAppId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 
-      googleAndroidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
-      googleIosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-      googleWebClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-
       router: {},
 
       eas: {
@@ -579,7 +575,6 @@ export default {
       "expo-asset",
       "./plugins/withJaiOnDeviceModelAssets",
       "expo-secure-store",
-      "@react-native-google-signin/google-signin",
       [
         "expo-speech-recognition",
         {

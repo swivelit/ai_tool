@@ -13,7 +13,9 @@ export type Emotion =
   | "happy"
   | "thinking"
   | "concerned"
-  | "excited";
+  | "excited"
+  | "surprised"
+  | "sad";
 
 export type CharacterState = "idle" | "listening" | "speaking";
 
@@ -79,6 +81,24 @@ export function emotionShape(emotion: Emotion): EmotionShape {
         mouthCurve: -0.7,
         mouthRest: 0.07,
         pupilShiftY: 0.18,
+      };
+    case "surprised":
+      return {
+        eyeScaleY: 1.24,
+        browTilt: 16,
+        eyeOpenBias: 0.18,
+        mouthCurve: 0.02,
+        mouthRest: 0.34,
+        pupilShiftY: -0.08,
+      };
+    case "sad":
+      return {
+        eyeScaleY: 0.92,
+        browTilt: -13,
+        eyeOpenBias: -0.08,
+        mouthCurve: -0.9,
+        mouthRest: 0.06,
+        pupilShiftY: 0.34,
       };
     case "neutral":
     default:
@@ -147,6 +167,74 @@ export type CharacterVisuals = {
   listening: boolean;
   speaking: boolean;
 };
+
+export type CharacterLayer =
+  | "bodyBack"
+  | "facePlane"
+  | "foregroundRim"
+  | "specular"
+  | "castShadow";
+
+export type LayerParallax = {
+  translateX: number;
+  translateY: number;
+  scale: number;
+  opacity: number;
+};
+
+export const CHARACTER_LAYER_DEPTHS: Record<CharacterLayer, number> = {
+  bodyBack: -0.42,
+  castShadow: -0.3,
+  facePlane: 0.36,
+  foregroundRim: 0.62,
+  specular: 0.82,
+};
+
+function clampSigned(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < -1) return -1;
+  if (value > 1) return 1;
+  return value;
+}
+
+/**
+ * Pure parallax numbers for the pseudo-3D React Native view stack. Positive
+ * depth moves with the face/rim; negative depth lags behind as the body tilts.
+ */
+export function resolveLayerParallax(input: {
+  mode: CharacterMode;
+  tiltX: number;
+  tiltY: number;
+}): Record<CharacterLayer, LayerParallax> {
+  const tiltX = clampSigned(input.tiltX);
+  const tiltY = clampSigned(input.tiltY);
+  const strength = input.mode === "floating" ? 3.2 : 5.8;
+
+  const layer = (name: CharacterLayer): LayerParallax => {
+    const depth = CHARACTER_LAYER_DEPTHS[name];
+    return {
+      translateX: Number((tiltX * depth * strength).toFixed(3)),
+      translateY: Number((tiltY * depth * strength).toFixed(3)),
+      scale: Number((1 + Math.max(0, depth) * 0.018).toFixed(3)),
+      opacity:
+        name === "castShadow"
+          ? 0.72
+          : name === "bodyBack"
+            ? 0.82
+            : name === "specular"
+              ? 0.38
+              : 1,
+    };
+  };
+
+  return {
+    bodyBack: layer("bodyBack"),
+    facePlane: layer("facePlane"),
+    foregroundRim: layer("foregroundRim"),
+    specular: layer("specular"),
+    castShadow: layer("castShadow"),
+  };
+}
 
 /**
  * The single entry point the component (and tests) use to turn props into the

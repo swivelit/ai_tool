@@ -19,7 +19,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 
 import { GlassCard } from "@/components/Glass";
-import { Brand } from "@/constants/theme";
+import { Screen } from "@/components/ui";
+import { Brand, Radius, Spacing, Type } from "@/constants/theme";
 import { apiGet, apiPost, API_BASE } from "@/lib/api";
 import { createCsvFromItem, createPdfFromItem } from "@/lib/localDocs";
 import { Item } from "@/lib/types";
@@ -330,14 +331,8 @@ export default function ItemDetail() {
   }
 
   return (
-    <LinearGradient colors={Brand.gradients.page} style={styles.page}>
+    <Screen safeArea={false} style={styles.page}>
       <StatusBar style="light" />
-
-      <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
-        <View style={styles.topGlow} />
-        <View style={styles.leftGlow} />
-        <View style={styles.bottomGlow} />
-      </View>
 
       <ScrollView
         style={styles.page}
@@ -438,8 +433,8 @@ export default function ItemDetail() {
 
                 <LinearGradient
                   colors={[
-                    "rgba(255,255,255,0.86)",
-                    "rgba(87,222,255,0.06)",
+                    "rgba(40, 87, 215, 0.18)",
+                    "rgba(8, 11, 16, 0.5)",
                   ]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
@@ -463,7 +458,7 @@ export default function ItemDetail() {
                       ? `${formatWhen(item.datetime)} · ${getDayWindow(
                           item.datetime
                         )}`
-                      : "No exact time is attached yet. You can still export and review the item content."}
+                      : "No time attached yet."}
                   </Text>
                 </LinearGradient>
               </View>
@@ -706,7 +701,7 @@ export default function ItemDetail() {
           </GlassCard>
         )}
       </ScrollView>
-    </LinearGradient>
+    </Screen>
   );
 }
 
@@ -774,7 +769,7 @@ function ExportCard({
       style={({ pressed }) => [styles.exportCard, pressed && styles.pressed]}
     >
       <LinearGradient
-        colors={["rgba(255,255,255,0.94)", "rgba(87,222,255,0.06)"]}
+        colors={["rgba(255, 255, 255, 0.06)", "rgba(87, 222, 255, 0.05)"]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.exportGradient}
@@ -801,36 +796,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  topGlow: {
-    position: "absolute",
-    top: -90,
-    right: -20,
-    width: 220,
-    height: 220,
-    borderRadius: 999,
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
-  },
-
-  leftGlow: {
-    position: "absolute",
-    top: 250,
-    left: -80,
-    width: 210,
-    height: 210,
-    borderRadius: 999,
-    backgroundColor: "rgba(87, 222, 255, 0.10)",
-  },
-
-  bottomGlow: {
-    position: "absolute",
-    bottom: -100,
-    right: 10,
-    width: 270,
-    height: 270,
-    borderRadius: 999,
-    backgroundColor: "rgba(87,222,255,0.10)",
-  },
-
   topBar: {
     minHeight: 48,
     flexDirection: "row",
@@ -841,10 +806,10 @@ const styles = StyleSheet.create({
   topIconBtn: {
     width: 42,
     height: 42,
-    borderRadius: 21,
+    borderRadius: Radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: Brand.line,
   },
@@ -853,29 +818,26 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: Spacing.md,
   },
 
   topCaption: {
+    ...Type.overline,
     color: Brand.muted,
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.4,
     textTransform: "uppercase",
   },
 
   topTitle: {
-    marginTop: 2,
+    ...Type.subheading,
+    marginTop: Spacing.xxs,
     color: Brand.ink,
-    fontSize: 18,
-    fontWeight: "900",
   },
 
   loadingWrap: {
     minHeight: 160,
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
+    gap: Spacing.md,
   },
 
   loadingText: {

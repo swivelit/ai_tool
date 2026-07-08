@@ -42,18 +42,43 @@ from .auth import (
     AuthConfigurationError,
     AuthUser,
     assert_owner,
+    create_firebase_email_password_user,
     firebase_auth_runtime_status,
+    firebase_user_exists_by_email,
     get_current_user,
     get_owned_user,
     is_production_environment,
     normalize_app_env,
+    revoke_firebase_refresh_tokens_by_email,
+    update_firebase_user_password_by_email,
     verify_firebase_id_token,
     validate_auth_configuration,
 )
 from .database import SessionLocal, engine, get_session
+from .email_otp import (
+    EmailOtpConfigurationError,
+    EmailOtpError,
+    can_return_dev_code,
+    create_otp_code,
+    get_otp_settings,
+    normalize_email as normalize_otp_email,
+    otp_http_exception,
+    require_valid_email,
+    validate_otp_format,
+    verify_and_consume_otp,
+)
+from .email_service import (
+    EMAIL_DELIVERY_UNAVAILABLE_MESSAGE,
+    EmailDeliverySendError,
+    EmailServiceConfigurationError,
+    build_otp_email_body,
+    email_delivery_runtime_status,
+    get_email_sender,
+    validate_email_delivery_configuration,
+)
 from .job_queue import DBJobQueue
 from .model_runtime import patch_openai_client
-from .models import AgentRun, AgentStep, Conversation, DailyRoutine, DocumentArtifact, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
+from .models import AgentRun, AgentStep, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
 from .time_utils import utc_now as _utc_now
 from .observability import (
     APP_RELEASE,
@@ -928,12 +953,21 @@ def _register_job_handlers() -> None:
     queue.register("export", _job_handle_export)
     queue.register("chat", _job_handle_chat)
 
-def _record_runtime_service(name: str, *, ok: bool, required: bool, detail: str = "") -> None:
+def _record_runtime_service(
+    name: str,
+    *,
+    ok: bool,
+    required: bool,
+    detail: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
     RUNTIME_STATUS["services"][name] = {
         "ok": ok,
         "required": required,
         "detail": detail,
     }
+    if metadata is not None:
+        RUNTIME_STATUS["services"][name]["metadata"] = metadata
     if not ok:
         RUNTIME_STATUS["errors"].append({"service": name, "detail": detail, "required": required})
 
@@ -1001,6 +1035,33 @@ def startup_runtime_services() -> None:
             required=auth_required,
             detail=str(exc),
         )
+
+    email_status = email_delivery_runtime_status(app_env=APP_ENV)
+    email_log_extra = {
+        "event": "email_delivery_config",
+        "configured": bool(email_status.get("configured")),
+        "missing": list(email_status.get("missing") or []),
+        "invalid": list(email_status.get("invalid") or []),
+        "smtp_host": email_status.get("smtp_host"),
+        "smtp_port": email_status.get("smtp_port"),
+        "smtp_use_tls": email_status.get("smtp_use_tls"),
+    }
+    if email_status.get("configured"):
+        logger.info("email_delivery_config", extra=email_log_extra)
+        email_detail = "configured"
+    else:
+        logger.warning("email_delivery_config", extra=email_log_extra)
+        email_detail = (
+            "warning: email delivery is not fully configured; "
+            f"missing={email_log_extra['missing']} invalid={email_log_extra['invalid']}"
+        )
+    _record_runtime_service(
+        "email_delivery",
+        ok=bool(email_status.get("configured")),
+        required=False,
+        detail=email_detail,
+        metadata=email_status,
+    )
 
     auto_create_tables = os.getenv("AUTO_CREATE_TABLES", "").strip().lower() in {"1", "true", "yes", "on"}
     if str(engine.url).startswith("sqlite"):
@@ -1301,6 +1362,32 @@ class UserCreate(BaseModel):
     timezone: Optional[str] = "Asia/Kolkata"
     assistant_name: Optional[str] = "Elli"
     reply_language: Optional[str] = "ta"
+
+
+class SignupOtpRequest(BaseModel):
+    email: str
+    name: str
+
+
+class SignupOtpCompleteRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    otp: str
+
+
+class PasswordResetOtpRequest(BaseModel):
+    email: str
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    email: str
+    otp: str
+    new_password: str
+
+
+class AdminEmailSendTestRequest(BaseModel):
+    to_email: str
 
 
 class ChatAPIRequest(BaseModel):
@@ -3050,6 +3137,428 @@ def _serialize_user_payload(user: User, profile: Optional[UserProfile]) -> Dict[
         "profile_user_id": int(profile.user_id) if profile and profile.user_id is not None else None,
         "questionnaire_completed": _questionnaire_completed(profile),
     }
+
+
+OTP_SENT_MESSAGE = "OTP sent. Check your email."
+RESET_REQUEST_MESSAGE = "If an account exists for this email, we sent a reset code."
+RESET_SUCCESS_MESSAGE = "Password updated. Please log in with your new password."
+EMAIL_ALREADY_REGISTERED_MESSAGE = (
+    "This email is already registered. Please log in or reset your password."
+)
+
+
+def _email_delivery_error_detail(code: str) -> Dict[str, str]:
+    return {
+        "code": code,
+        "message": EMAIL_DELIVERY_UNAVAILABLE_MESSAGE,
+    }
+
+
+def _email_delivery_http_exception(code: str) -> HTTPException:
+    return HTTPException(status_code=503, detail=_email_delivery_error_detail(code))
+
+
+def _email_delivery_status_for_log(
+    exc: EmailServiceConfigurationError | None = None,
+) -> Dict[str, Any]:
+    status = getattr(exc, "status", None) if exc is not None else None
+    if isinstance(status, dict) and status:
+        return status
+    return email_delivery_runtime_status()
+
+
+def _log_email_delivery_config_issue(
+    *,
+    event: str,
+    purpose: str,
+    exc: EmailServiceConfigurationError | EmailOtpConfigurationError | None = None,
+) -> None:
+    status = _email_delivery_status_for_log(
+        exc if isinstance(exc, EmailServiceConfigurationError) else None
+    )
+    logger.warning(
+        event,
+        extra={
+            "event": event,
+            "request_id": get_request_id(),
+            "purpose": purpose,
+            "exception_class": exc.__class__.__name__ if exc is not None else None,
+            "missing": list(status.get("missing") or []),
+            "invalid": list(status.get("invalid") or []),
+            "smtp_host": status.get("smtp_host"),
+            "smtp_port": status.get("smtp_port"),
+            "smtp_use_tls": status.get("smtp_use_tls"),
+        },
+    )
+
+
+def _log_email_delivery_send_issue(
+    *,
+    event: str,
+    purpose: str,
+    exc: BaseException,
+) -> None:
+    extra: Dict[str, Any] = {
+        "event": event,
+        "request_id": get_request_id(),
+        "purpose": purpose,
+        "exception_class": exc.__class__.__name__,
+    }
+    if isinstance(exc, EmailDeliverySendError):
+        extra.update(
+            {
+                "smtp_stage": exc.stage,
+                "smtp_exception_class": exc.exception_class,
+                "smtp_host": exc.host,
+                "smtp_port": exc.port,
+                "smtp_use_tls": exc.use_tls,
+            }
+        )
+    logger.warning(event, extra=extra)
+
+
+@app.get("/api/admin/email/status")
+def admin_email_status(
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    return email_delivery_runtime_status()
+
+
+@app.post("/api/admin/email/send-test")
+def admin_email_send_test(
+    payload: AdminEmailSendTestRequest,
+    _admin_user: Optional[AuthUser] = Depends(require_debug_admin),
+):
+    try:
+        to_email = require_valid_email(payload.to_email)
+    except EmailOtpError as exc:
+        raise otp_http_exception(exc) from exc
+
+    try:
+        get_email_sender().send(
+            to_email=to_email,
+            subject="Swico email delivery test",
+            text_body="Email delivery is configured.",
+        )
+    except EmailServiceConfigurationError as exc:
+        _log_email_delivery_config_issue(
+            event="admin_email_test_config_unavailable",
+            purpose="admin_test",
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unconfigured") from exc
+    except EmailDeliverySendError as exc:
+        _log_email_delivery_send_issue(
+            event="admin_email_test_send_failed",
+            purpose="admin_test",
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unavailable") from exc
+    except Exception as exc:
+        _log_email_delivery_send_issue(
+            event="admin_email_test_send_failed",
+            purpose="admin_test",
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unavailable") from exc
+
+    return {"ok": True}
+
+
+def _validate_name(name: str) -> str:
+    normalized = str(name or "").strip()
+    if len(normalized) < 2:
+        raise HTTPException(status_code=400, detail="Please enter a valid name.")
+    return normalized
+
+
+def _validate_password(password: str, *, field_name: str = "password") -> str:
+    value = str(password or "")
+    if len(value) < 6:
+        label = "New password" if field_name == "new_password" else "Password"
+        raise HTTPException(status_code=400, detail=f"{label} should be at least 6 characters.")
+    return value
+
+
+def _validate_otp_or_http(otp: str) -> str:
+    try:
+        return validate_otp_format(otp)
+    except EmailOtpError as exc:
+        raise otp_http_exception(exc) from exc
+
+
+def _email_exists_in_backend(session: Session, email: str) -> bool:
+    return session.exec(select(User).where(User.email == email)).first() is not None
+
+
+def _firebase_email_exists_safe(email: str) -> bool:
+    try:
+        return firebase_user_exists_by_email(email)
+    except AuthConfigurationError as exc:
+        if is_production_environment():
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.warning("Firebase Admin email lookup unavailable in non-production.")
+        return False
+
+
+def _account_exists_for_email(session: Session, email: str) -> bool:
+    return _email_exists_in_backend(session, email) or _firebase_email_exists_safe(email)
+
+
+def _send_email_otp(*, email: str, code: str, purpose: str) -> None:
+    ttl_minutes = max(1, int(get_otp_settings().ttl_seconds / 60))
+    subject, body = build_otp_email_body(
+        code=code,
+        purpose=purpose,
+        ttl_minutes=ttl_minutes,
+    )
+    try:
+        get_email_sender().send(to_email=email, subject=subject, text_body=body)
+    except EmailServiceConfigurationError as exc:
+        _log_email_delivery_config_issue(
+            event="otp_email_delivery_config_unavailable",
+            purpose=purpose,
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unconfigured") from exc
+    except EmailDeliverySendError as exc:
+        _log_email_delivery_send_issue(
+            event="otp_email_delivery_send_failed",
+            purpose=purpose,
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unavailable") from exc
+    except Exception as exc:
+        _log_email_delivery_send_issue(
+            event="otp_email_delivery_send_failed",
+            purpose=purpose,
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unavailable") from exc
+
+
+def _require_email_delivery_configured_in_production() -> None:
+    if not is_production_environment():
+        return
+    try:
+        validate_email_delivery_configuration()
+    except EmailServiceConfigurationError as exc:
+        _log_email_delivery_config_issue(
+            event="email_delivery_config_required_failed",
+            purpose="otp_request",
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unconfigured") from exc
+
+
+def _create_and_send_otp(
+    session: Session,
+    *,
+    email: str,
+    purpose: str,
+) -> Dict[str, Any]:
+    try:
+        stored = create_otp_code(session, email=email, purpose=purpose)
+    except EmailOtpError as exc:
+        raise otp_http_exception(exc) from exc
+    except EmailOtpConfigurationError as exc:
+        _log_email_delivery_config_issue(
+            event="email_otp_secret_config_unavailable",
+            purpose=purpose,
+            exc=exc,
+        )
+        raise _email_delivery_http_exception("email_delivery_unconfigured") from exc
+
+    try:
+        _send_email_otp(email=email, code=stored.code, purpose=purpose)
+    except HTTPException:
+        session.delete(stored.record)
+        session.commit()
+        raise
+
+    response: Dict[str, Any] = {
+        "ok": True,
+        "message": OTP_SENT_MESSAGE if purpose == "signup" else RESET_REQUEST_MESSAGE,
+        "cooldown_seconds": stored.cooldown_seconds,
+    }
+    if can_return_dev_code():
+        response["otp"] = stored.code
+    return response
+
+
+@app.post("/auth/email-otp/signup/request")
+def request_signup_email_otp(
+    payload: SignupOtpRequest,
+    session: Session = Depends(get_session),
+):
+    try:
+        email = require_valid_email(payload.email)
+    except EmailOtpError as exc:
+        raise otp_http_exception(exc) from exc
+    _validate_name(payload.name)
+    _require_email_delivery_configured_in_production()
+
+    if _account_exists_for_email(session, email):
+        raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE)
+
+    return _create_and_send_otp(session, email=email, purpose="signup")
+
+
+@app.post("/auth/email-otp/signup/complete")
+def complete_signup_email_otp(
+    payload: SignupOtpCompleteRequest,
+    session: Session = Depends(get_session),
+):
+    name = _validate_name(payload.name)
+    try:
+        email = require_valid_email(payload.email)
+    except EmailOtpError as exc:
+        raise otp_http_exception(exc) from exc
+    password = _validate_password(payload.password)
+    otp = _validate_otp_or_http(payload.otp)
+
+    if _account_exists_for_email(session, email):
+        raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE)
+
+    try:
+        verify_and_consume_otp(session, email=email, purpose="signup", otp=otp)
+    except EmailOtpError as exc:
+        raise otp_http_exception(exc) from exc
+    except EmailOtpConfigurationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Email verification is temporarily unavailable. Please try again later.",
+        ) from exc
+
+    try:
+        firebase_user = create_firebase_email_password_user(
+            email=email,
+            password=password,
+            display_name=name,
+            email_verified=True,
+        )
+    except AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        if exc.__class__.__name__ in {"EmailAlreadyExistsError", "UidAlreadyExistsError"}:
+            raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE) from exc
+        logger.exception("Firebase user creation failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Account creation is temporarily unavailable. Please try again later.",
+        ) from exc
+
+    firebase_uid = str(firebase_user.get("uid") or "").strip()
+    if not firebase_uid:
+        raise HTTPException(
+            status_code=503,
+            detail="Account creation is temporarily unavailable. Please try again later.",
+        )
+
+    existing_by_email = session.exec(select(User).where(User.email == email)).first()
+    existing_by_uid = session.exec(select(User).where(User.firebase_uid == firebase_uid)).first()
+    if existing_by_email and existing_by_uid and existing_by_email.id != existing_by_uid.id:
+        raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE)
+
+    user = existing_by_uid or existing_by_email
+    if user and user.firebase_uid and user.firebase_uid != firebase_uid:
+        raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE)
+
+    try:
+        if user is None:
+            user = User(
+                firebase_uid=firebase_uid,
+                email=email,
+                name=name,
+                timezone="Asia/Kolkata",
+                assistant_name="Elli",
+                reply_language=_normalize_reply_language(DEFAULT_REPLY_LANGUAGE),
+            )
+        else:
+            user.firebase_uid = firebase_uid
+            user.email = email
+            user.name = name
+            user.timezone = user.timezone or "Asia/Kolkata"
+            user.assistant_name = user.assistant_name or "Elli"
+            user.reply_language = _normalize_reply_language(
+                getattr(user, "reply_language", None) or DEFAULT_REPLY_LANGUAGE
+            )
+
+        session.add(user)
+        safe_commit(session, "complete_signup_email_otp")
+        session.refresh(user)
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=EMAIL_ALREADY_REGISTERED_MESSAGE) from exc
+
+    profile = _ensure_user_profile(session, int(user.id))
+    _get_agentic_service().persist_profile_snapshot(session, int(user.id))
+    return {"ok": True, "user": _serialize_user_payload(user, profile)}
+
+
+@app.post("/auth/email-otp/password-reset/request")
+def request_password_reset_email_otp(
+    payload: PasswordResetOtpRequest,
+    session: Session = Depends(get_session),
+):
+    try:
+        email = require_valid_email(payload.email)
+    except EmailOtpError:
+        return {"ok": True, "message": RESET_REQUEST_MESSAGE, "cooldown_seconds": get_otp_settings().cooldown_seconds}
+    _require_email_delivery_configured_in_production()
+
+    if not _account_exists_for_email(session, email):
+        return {"ok": True, "message": RESET_REQUEST_MESSAGE, "cooldown_seconds": get_otp_settings().cooldown_seconds}
+
+    response = _create_and_send_otp(session, email=email, purpose="password_reset")
+    response["message"] = RESET_REQUEST_MESSAGE
+    return response
+
+
+@app.post("/auth/email-otp/password-reset/confirm")
+def confirm_password_reset_email_otp(
+    payload: PasswordResetConfirmRequest,
+    session: Session = Depends(get_session),
+):
+    try:
+        email = require_valid_email(payload.email)
+    except EmailOtpError as exc:
+        raise otp_http_exception(exc) from exc
+    new_password = _validate_password(payload.new_password, field_name="new_password")
+    otp = _validate_otp_or_http(payload.otp)
+
+    try:
+        verify_and_consume_otp(
+            session,
+            email=email,
+            purpose="password_reset",
+            otp=otp,
+        )
+    except EmailOtpError as exc:
+        raise otp_http_exception(exc) from exc
+    except EmailOtpConfigurationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Email verification is temporarily unavailable. Please try again later.",
+        ) from exc
+
+    try:
+        update_firebase_user_password_by_email(email=email, new_password=new_password)
+        try:
+            revoke_firebase_refresh_tokens_by_email(email)
+        except Exception:
+            logger.warning("Firebase token revocation failed after password reset.")
+    except AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Firebase password reset failed")
+        raise HTTPException(
+            status_code=400,
+            detail="Password reset could not be completed. Request a new code and try again.",
+        ) from exc
+
+    return {"ok": True, "message": RESET_SUCCESS_MESSAGE}
+
 
 def _find_existing_user(
     session: Session,
