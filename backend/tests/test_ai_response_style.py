@@ -58,7 +58,7 @@ def test_compiler_answer_uses_mobile_concise_policy(monkeypatch):
 
     assert route.max_output_tokens <= 240
     assert response.text.count("\n") == 0
-    assert "one short paragraph" in client.responses.calls[0]["instructions"]
+    assert "single sentence" in client.responses.calls[0]["instructions"]
 
 
 def test_architecture_answer_default_is_concise_but_structured(monkeypatch):
@@ -83,8 +83,8 @@ def test_english_mode_prompt_enforces_english_only():
 
     instructions = build_system_instructions(request, _route("en"), provider="openai")
 
-    assert "answer only in English" in instructions
-    assert "even if the user spoke Tamil or Tanglish" in instructions
+    assert "Reply only in English" in instructions
+    assert "Do not translate to Tamil" in instructions
 
 
 def test_tamil_mode_prompt_enforces_chennai_conversational_style():
@@ -92,9 +92,8 @@ def test_tamil_mode_prompt_enforces_chennai_conversational_style():
 
     instructions = build_system_instructions(request, _route("ta"), provider="sarvam")
 
-    assert "natural light Chennai Tamil/Tanglish" in instructions
+    assert "Chennai Tamil/Tanglish" in instructions
     assert "not formal textbook Tamil" in instructions
-    assert "excessive da/machi" in instructions
 
 
 def test_provider_messages_include_hidden_profile_context():
@@ -125,9 +124,8 @@ def test_system_prompt_constrains_life_context_usage():
 
     instructions = build_system_instructions(request, _route("en"), provider="openai")
 
-    assert "Use life context only when provided" in instructions
-    assert "Do not claim exact gaze" in instructions
-    assert "Never invent missing life data" in instructions
+    assert "Use life context if provided" in instructions
+    assert "Never invent life data" in instructions
 
 
 def test_response_adapter_keeps_requested_english_reply_as_english_for_sarvam():
@@ -190,8 +188,8 @@ def test_unclear_medical_english_response_remains_english():
 
     instructions = build_system_instructions(request, _route("en"), provider="openai")
 
-    assert "answer only in English" in instructions
-    assert "Do not translate the final answer into Tamil" in instructions
+    assert "Reply only in English" in instructions
+    assert "Do not translate to Tamil" in instructions
 
 
 def test_unclear_medical_tamil_response_uses_local_tanglish_contract():
@@ -199,6 +197,5 @@ def test_unclear_medical_tamil_response_uses_local_tanglish_contract():
 
     instructions = build_system_instructions(request, _route("ta"), provider="sarvam")
 
-    assert "natural light Chennai Tamil/Tanglish" in instructions
-    assert "local conversational" in instructions
+    assert "Chennai Tamil/Tanglish" in instructions
     assert "qualified clinician" in instructions

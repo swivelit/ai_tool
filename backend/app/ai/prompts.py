@@ -73,20 +73,18 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
     
     # Base instructions
     parts = [
-        "You are a backend-controlled assistant for a mobile app. Answer directly.",
-        f"Requested reply language: {language}. The final answer must obey this requested reply_language.",
+        "Mobile assistant. Answer directly.",
+        f"Reply in {language}.",
     ]
     
     # 1. Intent-Based System Prompt Trimming (Method D)
-    # Greeting and safety_block do not need language contracts, onboarding preference, life context, or medical term checking.
     if intent not in {"greeting", "safety_block"}:
-        parts.append("Do not claim access to live/current data unless it was provided.")
+        parts.append("No live data unless provided.")
         parts.append(_language_contract(language))
-        parts.append("Apply saved profile preferences and onboarding answers when available. Do not invent profile facts.")
+        parts.append("Use profile preferences. Don't invent facts.")
         parts.append(
-            "Use life context only when provided. If the user asks about walking, movement, screen time, or app usage, "
-            "answer from the provided context and mention confidence or permission gaps. Do not claim exact gaze or screen-looking time. "
-            "Never invent missing life data."
+            "Use life context if provided. For walking/screen time questions, use context and note permission gaps. "
+            "Never invent life data."
         )
         if _looks_unclear_medical_like(request.message):
             parts.append(UNCLEAR_MEDICAL_TERM_INSTRUCTION)
@@ -297,18 +295,13 @@ def format_recent_context(context_turns: list[dict[str, str]], *, max_turns: int
 def _language_contract(language: Any) -> str:
     normalized = str(language or "").strip().lower()
     if normalized in {"en", "english"}:
-        return (
-            "Language contract: answer only in English, even if the user spoke Tamil or Tanglish. "
-            "Do not translate the final answer into Tamil."
-        )
+        return "Reply only in English. Do not translate to Tamil."
     if normalized in {"ta", "tamil", "mixed", "tanglish"}:
         return (
-            "Language contract: answer in natural light Chennai Tamil/Tanglish by default, not formal textbook Tamil. "
-            "Use simple local conversational phrasing such as seri, ipdi, unga, konjam, romba, or na only where natural. "
-            "Do not overdo slang, do not use caricature, offensive dialect imitation, or excessive da/machi. "
-            "Keep technical, medical, and legal facts accurate and clear. Use formal Tamil only if the user asks for formal Tamil."
+            "Reply in conversational Chennai Tamil/Tanglish, not formal textbook Tamil. "
+            "Keep terms accurate. Use formal only if requested."
         )
-    return "Language contract: answer in the requested language clearly and naturally."
+    return f"Reply in {normalized} naturally."
 
 
 def detailed_answer_requested(message: Any) -> bool:
@@ -365,17 +358,15 @@ def _style_policy(message: Any, context_turns: Optional[list[dict[str, str]]] = 
     paragraphs = _env_int("AI_DEFAULT_MAX_PARAGRAPHS", 3)
     if is_detailed:
         style_rule = (
-            "The user asked for detail; a longer, structured answer is allowed (up to 240 tokens). "
-            f"Use at most {paragraphs} short paragraphs / {bullets} bullets."
+            f"Detailed query. Structured answer allowed (up to 240 tokens). "
+            f"Max {paragraphs} paragraphs / {bullets} bullets."
         )
     else:
         style_rule = (
-            "Default mobile style: keep normal answers concise. Use one short paragraph for simple facts. "
-            "However, because this is a simple/general question, you MUST reply in a single sentence or a single line. "
-            "Keep it extremely short and direct (under 25-30 words)."
+            "Simple query. Reply in a single sentence (under 25-30 words). Keep it short and direct."
         )
         
-    return f"Style Contract: {style_rule}\n{anti_repetition_rule}".strip()
+    return f"Style: {style_rule}\n{anti_repetition_rule}".strip()
 
 
 def _is_app_architecture_question(message: Any) -> bool:

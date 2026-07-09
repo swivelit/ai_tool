@@ -106,7 +106,7 @@ def test_sarvam_chat_gets_chennai_tamil_style_instruction_for_tamil_reply(monkey
     )
 
     system_prompt = completions.calls[0]["messages"][0]["content"]
-    assert "natural light Chennai Tamil/Tanglish" in system_prompt
+    assert "Chennai Tamil/Tanglish" in system_prompt
     assert "not formal textbook Tamil" in system_prompt
 
 
