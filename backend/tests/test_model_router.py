@@ -78,6 +78,7 @@ def test_select_model_never_returns_empty_model(monkeypatch):
 
 
 def test_model_router_uses_cheap_for_classification(monkeypatch):
+    _clear_model_env(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-model")
     monkeypatch.setenv("OPENAI_MODEL_STANDARD", "standard-model")
     router = OpenAIModelRouter()
@@ -89,6 +90,7 @@ def test_model_router_uses_cheap_for_classification(monkeypatch):
 
 
 def test_model_router_uses_cheap_or_standard_for_simple_qa(monkeypatch):
+    _clear_model_env(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-model")
     monkeypatch.setenv("OPENAI_MODEL_STANDARD", "standard-model")
     monkeypatch.delenv("OPENAI_NORMAL_QA_USE_STANDARD", raising=False)
@@ -101,6 +103,7 @@ def test_model_router_uses_cheap_or_standard_for_simple_qa(monkeypatch):
 
 
 def test_model_router_uses_reasoning_for_complex_coding(monkeypatch):
+    _clear_model_env(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-model")
     monkeypatch.setenv("OPENAI_MODEL_STANDARD", "standard-model")
     monkeypatch.setenv("OPENAI_MODEL_REASONING", "reasoning-model")
@@ -169,6 +172,7 @@ def test_select_candidates_reasoning_ladder(monkeypatch):
 
 
 def test_openai_usage_log_records_model_and_estimated_cost(monkeypatch):
+    _clear_model_env(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-model")
     router = OpenAIModelRouter()
     selected = router.select_model("classification", "classify this")
@@ -249,6 +253,7 @@ class _FakeEmbeddings:
 
 
 def test_tracked_chat_completion_uses_router_and_writes_usage(monkeypatch):
+    _clear_model_env(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-tracked")
     client = _FakeClient()
 
@@ -276,6 +281,7 @@ def test_tracked_chat_completion_uses_router_and_writes_usage(monkeypatch):
 
 
 def test_tracked_chat_completion_exposes_actual_model_metadata_and_usage(monkeypatch):
+    _clear_model_env(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-actual")
     monkeypatch.setenv("OPENAI_PRICE_CHEAP_ACTUAL_INPUT_PER_1M", "1")
     monkeypatch.setenv("OPENAI_PRICE_CHEAP_ACTUAL_OUTPUT_PER_1M", "2")
@@ -367,6 +373,7 @@ def test_daily_budget_blocks_call_that_would_cross_budget(monkeypatch):
 
 
 def test_daily_budget_safety_margin_blocks_near_limit_call(monkeypatch):
+    _clear_model_env(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL_CHEAP", "cheap-budget")
     monkeypatch.setenv("OPENAI_DAILY_BUDGET_USD", "0.00029")
     monkeypatch.setenv("OPENAI_BUDGET_SAFETY_MARGIN_RATIO", "0.10")

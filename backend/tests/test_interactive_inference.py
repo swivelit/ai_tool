@@ -5,11 +5,6 @@ import sys
 # Ensure backend directory (parent of tests) is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Disable logging spam during interactive demo
-import logging
-logging.basicConfig(level=logging.WARNING)
-logging.getLogger("app.ai").setLevel(logging.WARNING)
-
 # ANSI color codes
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -150,4 +145,8 @@ def main():
         print(f"  {BOLD}Orchestration:{RESET} {orchestration_desc}")
 
 if __name__ == "__main__":
+    # Disable logging spam during interactive demo
+    import logging
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger("app.ai").setLevel(logging.WARNING)
     main()

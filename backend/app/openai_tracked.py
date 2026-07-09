@@ -130,15 +130,24 @@ def _usage_int(usage: Any, *names: str) -> Optional[int]:
     return None
 
 
-def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any) -> dict[str, Any]:
+def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any, prompt_text: Optional[str] = None) -> dict[str, Any]:
     usage = getattr(response, "usage", None)
-    if usage is None:
-        return {}
-    input_tokens = _usage_int(usage, "prompt_tokens", "input_tokens")
-    output_tokens = _usage_int(usage, "completion_tokens", "output_tokens")
-    total_tokens = _usage_int(usage, "total_tokens")
-    if output_tokens is None and input_tokens is not None and total_tokens is not None:
-        output_tokens = max(0, total_tokens - input_tokens)
+    input_tokens = None
+    output_tokens = None
+    if usage is not None:
+        input_tokens = _usage_int(usage, "prompt_tokens", "input_tokens")
+        output_tokens = _usage_int(usage, "completion_tokens", "output_tokens")
+        total_tokens = _usage_int(usage, "total_tokens")
+        if output_tokens is None and input_tokens is not None and total_tokens is not None:
+            output_tokens = max(0, total_tokens - input_tokens)
+    
+    if input_tokens is None and prompt_text is not None:
+        input_tokens = router.estimate_tokens(prompt_text)
+    if output_tokens is None:
+        output_text = _chat_output_text(response) or _response_output_text(response)
+        if output_text:
+            output_tokens = router.estimate_tokens(output_text)
+            
     metadata: dict[str, Any] = {}
     if input_tokens is not None:
         metadata["actual_input_tokens"] = input_tokens
@@ -498,7 +507,7 @@ def tracked_openai_generation(
                 )
                 continue
 
-            actual_metadata = _usage_metadata(router, selection.model, response)
+            actual_metadata = _usage_metadata(router, selection.model, response, prompt_text)
             actual_input = actual_metadata.get("actual_input_tokens")
             actual_output = actual_metadata.get("actual_output_tokens")
             actual_cost = actual_metadata.get("actual_cost_usd")
@@ -521,9 +530,9 @@ def tracked_openai_generation(
                 "selected_model_reason": selected_model_reason,
                 "skipped_models": list(skipped_models),
                 "model_health_skip_reason": _model_health_skip_reason(skipped_models),
-                "estimated_input_tokens": input_tokens,
-                "estimated_output_tokens": output_tokens,
-                "estimated_cost_usd": estimated_cost,
+                "estimated_input_tokens": actual_input if actual_input is not None else input_tokens,
+                "estimated_output_tokens": actual_output if actual_output is not None else output_tokens,
+                "estimated_cost_usd": actual_cost if actual_cost is not None else estimated_cost,
                 **actual_metadata,
             }
             record_openai_usage(
@@ -533,9 +542,9 @@ def tracked_openai_generation(
                 route=route,
                 selection=selection,
                 reason=selected_model_reason,
-                estimated_input_tokens=input_tokens,
-                estimated_output_tokens=output_tokens,
-                estimated_cost_usd=estimated_cost,
+                estimated_input_tokens=actual_input if actual_input is not None else input_tokens,
+                estimated_output_tokens=actual_output if actual_output is not None else output_tokens,
+                estimated_cost_usd=actual_cost if actual_cost is not None else estimated_cost,
                 actual_input_tokens=actual_input,
                 actual_output_tokens=actual_output,
                 actual_cost_usd=actual_cost,
@@ -553,12 +562,9 @@ def tracked_openai_generation(
                     "selected_model_reason": selected_model_reason,
                     "primary_model_candidate": primary_model_candidate,
                     "model_health_skip_reason": _model_health_skip_reason(skipped_models),
-                    "estimated_input_tokens": input_tokens,
-                    "estimated_output_tokens": output_tokens,
-                    "estimated_cost_usd": round(estimated_cost, 8),
-                    "actual_input_tokens": actual_input,
-                    "actual_output_tokens": actual_output,
-                    "actual_cost_usd": round(float(actual_cost or 0.0), 8) if actual_cost is not None else None,
+                    "actual_input_tokens": actual_input if actual_input is not None else input_tokens,
+                    "actual_output_tokens": actual_output if actual_output is not None else output_tokens,
+                    "actual_cost_usd": round(float(actual_cost if actual_cost is not None else estimated_cost), 8),
                 },
             )
             return _attach_metadata(response, metadata)
@@ -653,14 +659,17 @@ def tracked_chat_completion(
             request_kwargs["response_format"] = response_format
 
         response = client.chat.completions.create(**request_kwargs)
-        actual_metadata = _usage_metadata(router, selection.model, response)
+        actual_metadata = _usage_metadata(router, selection.model, response, prompt_text)
+        actual_input = actual_metadata.get("actual_input_tokens")
+        actual_output = actual_metadata.get("actual_output_tokens")
+        actual_cost = actual_metadata.get("actual_cost_usd")
         metadata = {
             "model_used": selection.model,
             "model_tier": selection.tier,
             "reason": selection.reason,
-            "estimated_input_tokens": input_tokens,
-            "estimated_output_tokens": output_tokens,
-            "estimated_cost_usd": estimated_cost,
+            "estimated_input_tokens": actual_input if actual_input is not None else input_tokens,
+            "estimated_output_tokens": actual_output if actual_output is not None else output_tokens,
+            "estimated_cost_usd": actual_cost if actual_cost is not None else estimated_cost,
             **actual_metadata,
         }
         record_openai_usage(
@@ -669,12 +678,13 @@ def tracked_chat_completion(
             request_id=request_id,
             route=route,
             selection=selection,
-            estimated_input_tokens=input_tokens,
-            estimated_output_tokens=output_tokens,
-            estimated_cost_usd=estimated_cost,
-            actual_input_tokens=actual_metadata.get("actual_input_tokens"),
-            actual_output_tokens=actual_metadata.get("actual_output_tokens"),
-            actual_cost_usd=actual_metadata.get("actual_cost_usd"),
+            reason=selection.reason,
+            estimated_input_tokens=actual_input if actual_input is not None else input_tokens,
+            estimated_output_tokens=actual_output if actual_output is not None else output_tokens,
+            estimated_cost_usd=actual_cost if actual_cost is not None else estimated_cost,
+            actual_input_tokens=actual_input,
+            actual_output_tokens=actual_output,
+            actual_cost_usd=actual_cost,
             cache_hit=False,
         )
         logger.info(
@@ -685,14 +695,9 @@ def tracked_chat_completion(
                 "model_used": selection.model,
                 "model_tier": selection.tier,
                 "reason": selection.reason,
-                "estimated_input_tokens": input_tokens,
-                "estimated_output_tokens": output_tokens,
-                "estimated_cost_usd": round(estimated_cost, 8),
-                "actual_input_tokens": actual_metadata.get("actual_input_tokens"),
-                "actual_output_tokens": actual_metadata.get("actual_output_tokens"),
-                "actual_cost_usd": round(float(actual_metadata.get("actual_cost_usd") or 0.0), 8)
-                if actual_metadata.get("actual_cost_usd") is not None
-                else None,
+                "actual_input_tokens": actual_input if actual_input is not None else input_tokens,
+                "actual_output_tokens": actual_output if actual_output is not None else output_tokens,
+                "actual_cost_usd": round(float(actual_cost if actual_cost is not None else estimated_cost), 8),
             },
         )
         return _attach_metadata(response, metadata)
@@ -773,14 +778,9 @@ def tracked_embedding(
                 "model_used": embedding_model,
                 "model_tier": "embedding",
                 "reason": "embedding",
-                "estimated_input_tokens": input_tokens,
-                "estimated_output_tokens": 0,
-                "estimated_cost_usd": round(estimated_cost, 8),
-                "actual_input_tokens": actual_metadata.get("actual_input_tokens"),
-                "actual_output_tokens": actual_metadata.get("actual_output_tokens"),
-                "actual_cost_usd": round(float(actual_metadata.get("actual_cost_usd") or 0.0), 8)
-                if actual_metadata.get("actual_cost_usd") is not None
-                else None,
+                "actual_input_tokens": input_tokens,
+                "actual_output_tokens": 0,
+                "actual_cost_usd": round(estimated_cost, 8),
             },
         )
         return response

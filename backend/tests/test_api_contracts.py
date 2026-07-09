@@ -1215,7 +1215,10 @@ def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatc
         calls.append((args, kwargs))
         return DummyResponse()
 
+    monkeypatch.setattr(main_module, "SARVAM_PROVIDER", None)
     monkeypatch.setattr(main_module.requests, "post", fake_post)
+    import app.ai.providers.sarvam_provider as sarvam_provider_module
+    monkeypatch.setattr(sarvam_provider_module.requests, "post", fake_post)
 
     with caplog.at_level(logging.INFO):
         response = client.post(
@@ -1415,7 +1418,10 @@ def test_sarvam_stt_timeout_returns_504(client, monkeypatch, caplog):
     def fake_post(*args, **kwargs):
         raise main_module.requests.Timeout("slow provider")
 
+    monkeypatch.setattr(main_module, "SARVAM_PROVIDER", None)
     monkeypatch.setattr(main_module.requests, "post", fake_post)
+    import app.ai.providers.sarvam_provider as sarvam_provider_module
+    monkeypatch.setattr(sarvam_provider_module.requests, "post", fake_post)
 
     with caplog.at_level(logging.INFO):
         response = client.post(
