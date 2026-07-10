@@ -35,7 +35,7 @@ def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str
     instructions = build_system_instructions(request, route, provider=provider)
     messages: list[dict[str, str]] = [{"role": "system", "content": instructions}]
     
-    # 2. Profile Trimming for Simple General Queries
+    # 2. Profile Trimming — skip profile for simple general AND generic coding queries
     intent = str(route.intent or "").strip().lower()
     has_life_keywords = bool(re.search(r"\b(phone|screen|step|steps|walk|walking|sleep|active|usage|heart|movement)\b", request.message.lower()))
     has_personal_pronouns = bool(re.search(r"\b(i|me|my|we|our|us|myself)\b", request.message.lower()))
@@ -46,9 +46,15 @@ def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str
         and not has_life_keywords
         and not has_personal_pronouns
     )
+    is_generic_coding = (
+        intent in {"coding", "complex_reasoning"}
+        and not has_personal_pronouns
+        and not _is_app_architecture_question(request.message)
+    )
+    skip_profile = is_simple_general or is_generic_coding
     
     profile_context = str((request.metadata or {}).get("profile_prompt_context") or "").strip()
-    if profile_context and not is_simple_general:
+    if profile_context and not skip_profile:
         messages.append(
             {
                 "role": "system",
@@ -105,14 +111,17 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
                 _language_contract(language),
                 "No live data unless provided. Don't invent facts.",
             ]
-            parts.append(
-                "Use life context if provided. For walking/screen time questions, use context and note permission gaps. "
-                "Never invent life data."
-            )
+            # Only include life context rule when life keywords are present
+            if has_life_keywords:
+                parts.append(
+                    "Use life context if provided. For walking/screen time questions, use context and note permission gaps. "
+                    "Never invent life data."
+                )
             if _looks_unclear_medical_like(request.message):
                 parts.append(UNCLEAR_MEDICAL_TERM_INSTRUCTION)
                 
-            if route.intent in {"coding", "complex_reasoning"} or _is_app_architecture_question(request.message):
+            # Only load app context for app-specific architecture questions, not generic coding
+            if _is_app_architecture_question(request.message):
                 parts.append(APP_CONTEXT_PROMPT)
                 parts.append(
                     "For architecture answers, mention the mobile app, backend API gateway, AI router or "
