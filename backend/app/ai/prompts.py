@@ -84,13 +84,7 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
     language = request.reply_language or route.language or "en"
     intent = str(route.intent or "").strip().lower()
     
-    # Base instructions
-    parts = [
-        "Mobile assistant. Answer directly.",
-        f"Reply in {language}.",
-    ]
-    
-    # 1. Intent-Based System Prompt Trimming (Method D)
+    # 1. Intent-Based System Prompt Trimming
     if intent not in {"greeting", "safety_block"}:
         has_life_keywords = bool(re.search(r"\b(phone|screen|step|steps|walk|walking|sleep|active|usage|heart|movement)\b", request.message.lower()))
         is_simple_general = (
@@ -101,12 +95,16 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
         )
         
         if is_simple_general:
-            # Aggressive prompt stripping for simple questions
-            parts.append(_language_contract(language))
+            # Method 3: Ultra-compact system prompt for simple queries
+            lang_tag = _compact_language_tag(language)
+            parts = [f"Answer in one {lang_tag} sentence, under 25 words."]
         else:
-            parts.append("No live data unless provided.")
-            parts.append(_language_contract(language))
-            parts.append("Use profile preferences. Don't invent facts.")
+            # Standard prompt for complex/personal/follow-up queries
+            parts = [
+                "Mobile assistant. Answer directly.",
+                _language_contract(language),
+                "No live data unless provided. Don't invent facts.",
+            ]
             parts.append(
                 "Use life context if provided. For walking/screen time questions, use context and note permission gaps. "
                 "Never invent life data."
@@ -139,7 +137,7 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
                 parts.append(life_insight)
     else:
         # Minimalist contract for greetings and safety
-        parts.append("Keep greetings or safety warnings extremely concise (under 10 words).")
+        parts = ["Keep greetings or safety warnings extremely concise (under 10 words)."]
 
     # Always append style policy (which handles capping and anti-repetition)
     parts.append(_style_policy(request.message, request.context_turns))
@@ -317,12 +315,22 @@ def format_recent_context(context_turns: list[dict[str, str]], *, max_turns: int
     return _compact(text, max_chars)
 
 
+def _compact_language_tag(language: Any) -> str:
+    """Return a short human-readable language name for ultra-compact prompts."""
+    normalized = str(language or "").strip().lower()
+    if normalized in {"en", "english"}:
+        return "English"
+    if normalized in {"ta", "tamil", "mixed", "tanglish"}:
+        return "Tamil"
+    return normalized.capitalize() if normalized else "English"
+
+
 def _language_contract(language: Any) -> str:
     normalized = str(language or "").strip().lower()
     if normalized in {"en", "english"}:
-        return "Reply only in English. Do not translate to Tamil."
+        return "English only."
     if normalized in {"ta", "tamil", "mixed", "tanglish"}:
-        return "Reply in conversational Chennai Tamil/Tanglish, not formal textbook Tamil. Keep terms accurate."
+        return "Reply in conversational Chennai Tamil/Tanglish. Keep terms accurate."
     return f"Reply in {normalized}."
 
 
@@ -360,7 +368,6 @@ def concise_max_output_tokens(message: Any, *, configured_default: int, configur
 def _style_policy(message: Any, context_turns: Optional[list[dict[str, str]]] = None) -> str:
     is_detailed = detailed_answer_requested(message)
     
-    # 1. Anti-repetition check (Approach C)
     anti_repetition_rule = ""
     if context_turns:
         for turn in reversed(context_turns):
@@ -369,24 +376,15 @@ def _style_policy(message: Any, context_turns: Optional[list[dict[str, str]]] = 
                 compact_prev = str(last_assistant_text).strip()
                 if len(compact_prev) > 150:
                     compact_prev = compact_prev[:147] + "..."
-                anti_repetition_rule = (
-                    f"CRITICAL: Do NOT repeat or duplicate your previous answer: '{compact_prev}'. "
-                    "Provide a different response, new phrasing, or the additional explanation requested."
-                )
+                anti_repetition_rule = f"Do not repeat previous answer: '{compact_prev}'."
                 break
                 
-    # 2. Simple vs Detailed query capping instructions (Approach B)
     bullets = _env_int("AI_DEFAULT_MAX_BULLETS", 5)
     paragraphs = _env_int("AI_DEFAULT_MAX_PARAGRAPHS", 3)
     if is_detailed:
-        style_rule = (
-            f"Detailed query. Structured answer allowed (up to 240 tokens). "
-            f"Max {paragraphs} paragraphs / {bullets} bullets."
-        )
+        style_rule = f"Detailed. Structured answer allowed (up to 240 tokens). Max {paragraphs} paragraphs / {bullets} bullets."
     else:
-        style_rule = (
-            "Simple query. Reply in a single sentence (under 25-30 words). Keep it short and direct."
-        )
+        style_rule = "Concise. Reply in a single sentence (under 25 words). Keep it short and direct."
         
     return f"Style: {style_rule}\n{anti_repetition_rule}".strip()
 

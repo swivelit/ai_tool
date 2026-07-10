@@ -2151,10 +2151,64 @@ def build_profile_prompt_context(session: Session, user_id: Optional[int]) -> Di
     return context
 
 
-def _profile_prompt_context_text(profile_context: Dict[str, Any]) -> str:
+def _profile_prompt_context_text(profile_context: Dict[str, Any], message: str = "") -> str:
     if not profile_context:
         return ""
-    return json.dumps(profile_context, ensure_ascii=False, sort_keys=True)
+
+    if not message:
+        return json.dumps(profile_context, ensure_ascii=False, sort_keys=True)
+
+    msg_lower = str(message).strip().lower()
+    is_voice = bool(re.search(r"\b(speak|voice|say|audio|pronounce|listen|talk)\b", msg_lower))
+    is_translation = bool(re.search(r"\b(translate|translation|in tamil|tamil text|tanglish)\b", msg_lower))
+    is_personal = bool(re.search(r"\b(i|me|my|we|our|us|myself|name|age|focus)\b", msg_lower))
+    
+    if not is_voice and not is_translation and not is_personal:
+        return ""
+
+    compressed = {}
+    user_data = profile_context.get("user") or {}
+    answers = profile_context.get("onboarding_answers") or {}
+    
+    if is_personal:
+        name = user_data.get("name")
+        if name:
+            compressed["name"] = name
+        place = user_data.get("place")
+        if place:
+            compressed["place"] = place
+        tz = user_data.get("timezone")
+        if tz:
+            compressed["tz"] = tz
+
+    if is_translation or is_personal:
+        lang = user_data.get("reply_language")
+        if lang:
+            compressed["lang"] = "ta" if "tamil" in str(lang).lower() else "en"
+
+    if is_voice or is_personal:
+        voice = answers.get("voice") or "female"
+        compressed["voice"] = "m" if "male" in str(voice).lower() else "f"
+
+    if is_personal:
+        summary = profile_context.get("profile_summary")
+        if summary:
+            words = str(summary).split()
+            compressed["summary"] = " ".join(words[:10])
+        tone = profile_context.get("communication_tone")
+        if tone:
+            compressed["tone"] = "c" if "concise" in str(tone).lower() else "e"
+
+    if "life_context" in profile_context:
+        compressed["life_context"] = profile_context["life_context"]
+    if "age_group" in profile_context:
+        compressed["age_group"] = profile_context["age_group"]
+    if "age_safety_note" in profile_context:
+        compressed["age_safety_note"] = profile_context["age_safety_note"]
+
+    if not compressed:
+        return ""
+    return json.dumps(compressed, ensure_ascii=False, sort_keys=True)
 
 
 def _profile_answer_age_group(profile_context: Dict[str, Any]) -> str:
@@ -4709,7 +4763,7 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
             **profile_context,
             "life_context": life_context,
         }
-    profile_prompt_context = _profile_prompt_context_text(profile_context)
+    profile_prompt_context = _profile_prompt_context_text(profile_context, text)
     ai_response = run_text_turn(
         session,
         AIRequest(
@@ -6028,7 +6082,7 @@ async def _transcribe_and_analyze_upload(
             limit = _determine_history_limit(session, int(user.id), transcript_text)
             context_turns = _recent_ai_context_turns(session, int(user.id), limit=limit)
             profile_context = build_profile_prompt_context(session, int(user.id))
-            profile_prompt_context = _profile_prompt_context_text(profile_context)
+            profile_prompt_context = _profile_prompt_context_text(profile_context, transcript_text)
             ai_response = run_text_turn(
                 session,
                 AIRequest(

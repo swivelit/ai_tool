@@ -134,12 +134,17 @@ def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any, prompt
     usage = getattr(response, "usage", None)
     input_tokens = None
     output_tokens = None
+    cached_tokens = None
     if usage is not None:
         input_tokens = _usage_int(usage, "prompt_tokens", "input_tokens")
         output_tokens = _usage_int(usage, "completion_tokens", "output_tokens")
         total_tokens = _usage_int(usage, "total_tokens")
         if output_tokens is None and input_tokens is not None and total_tokens is not None:
             output_tokens = max(0, total_tokens - input_tokens)
+        # Extract cached input tokens from prompt_tokens_details or input_tokens_details
+        details = getattr(usage, "prompt_tokens_details", None) or getattr(usage, "input_tokens_details", None)
+        if details is not None:
+            cached_tokens = getattr(details, "cached_tokens", None) or getattr(details, "cached_input_tokens", None)
     
     if input_tokens is None and prompt_text is not None:
         input_tokens = router.estimate_tokens(prompt_text)
@@ -153,6 +158,8 @@ def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any, prompt
         metadata["actual_input_tokens"] = input_tokens
     if output_tokens is not None:
         metadata["actual_output_tokens"] = output_tokens
+    if cached_tokens is not None and cached_tokens > 0:
+        metadata["cached_input_tokens"] = cached_tokens
     if input_tokens is not None or output_tokens is not None:
         metadata["actual_cost_usd"] = router.estimate_cost(model, input_tokens or 0, output_tokens or 0)
     return metadata
