@@ -759,6 +759,16 @@ def is_cacheable_global_question(question: str, answer: str) -> bool:
         return False
     if is_high_risk_personal_advice(q, a):
         return False
+
+    q_lower = q.lower()
+    # Exclude context-dependent follow-ups from being cached
+    pronoun_pattern = r"\b(he|she|it|they|this|that|those|these|him|her|them|its|his|hers|their|theirs)\b"
+    if re.search(pronoun_pattern, q_lower):
+        return False
+    generic_patterns = r"^(explain|explain\s+more|explain\s+briefly|elaborate|clarify|why|how|continue|yes|no|correct)$"
+    if re.match(generic_patterns, q_lower):
+        return False
+
     return True
 
 

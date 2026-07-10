@@ -1096,6 +1096,23 @@ def startup_runtime_services() -> None:
         logger.exception("Job queue initialization failed")
         _record_runtime_service("job_queue", ok=False, required=True, detail=str(exc))
 
+    try:
+        with Session(engine) as session:
+            rows = list(session.exec(select(QACache)).all())
+            deleted_count = 0
+            for r in rows:
+                q = str(r.question or "").strip().lower()
+                pronoun_pattern = r"\b(he|she|it|they|this|that|those|these|him|her|them|its|his|hers|their|theirs)\b"
+                generic_patterns = r"^(explain|explain\s+more|explain\s+briefly|elaborate|clarify|why|how|continue|yes|no|correct)$"
+                if re.search(pronoun_pattern, q) or re.match(generic_patterns, q):
+                    session.delete(r)
+                    deleted_count += 1
+            if deleted_count > 0:
+                session.commit()
+                logger.info(f"Cleaned up {deleted_count} stale context-dependent cached queries from QACache during startup.")
+    except Exception as exc:
+        logger.warning(f"Database QACache cleanup failed (non-blocking): {exc}")
+
     required_errors = [error for error in RUNTIME_STATUS["errors"] if error.get("required")]
     RUNTIME_STATUS["status"] = "degraded" if required_errors else "ok"
 
