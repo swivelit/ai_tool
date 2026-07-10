@@ -1650,6 +1650,63 @@ def _compress_history_text(text: str, max_words: int) -> str:
     return " ".join(words[:max_words]) + "..."
 
 
+def _extract_main_info(text: str, max_words: int = 25) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    if not sentences:
+        return ""
+
+    filler_phrases = [
+        "sure", "certainly", "here is", "here are", "okay", "ok", "yes", "i can help",
+        "no problem", "as requested", "to answer your question", "of course"
+    ]
+    informative_sentences = []
+    for sentence in sentences:
+        lower_s = sentence.lower()
+        if any(lower_s.startswith(filler) for filler in filler_phrases) and len(sentence.split()) < 8:
+            continue
+        informative_sentences.append(sentence)
+
+    if not informative_sentences:
+        informative_sentences = sentences
+
+    summary = " ".join(informative_sentences[:2])
+    words = summary.split()
+    if len(words) <= max_words:
+        return summary
+    return " ".join(words[:max_words]) + "..."
+
+
+def _determine_history_limit(session: Session, user_id: Optional[int], message: str) -> int:
+    if not _is_continuation_query(message):
+        return 0
+    if not user_id:
+        return 1
+    try:
+        last_turns = list(
+            session.exec(
+                select(Conversation)
+                .where(Conversation.user_id == int(user_id))
+                .order_by(Conversation.created_at.desc())
+                .limit(2)
+            ).all()
+        )
+    except Exception:
+        session.rollback()
+        return 1
+
+    if not last_turns:
+        return 0
+
+    # If the user is in a continuous chain of follow-ups, load 2 turns.
+    # Otherwise, just load 1 turn (the immediate previous turn).
+    if len(last_turns) >= 2:
+        prev_msg = last_turns[0].user_input or ""
+        if _is_continuation_query(prev_msg):
+            return 2
+    return 1
+
+
 def _recent_ai_context_turns(session: Session, user_id: Optional[int], *, limit: int = 6) -> List[Dict[str, str]]:
     if user_id is None:
         return []
@@ -1670,7 +1727,7 @@ def _recent_ai_context_turns(session: Session, user_id: Optional[int], *, limit:
     for row in reversed(rows):
         user_text = _compress_history_text(row.user_input or "", max_words=20)
         assistant_raw = _assistant_text_from_conversation(row)
-        assistant_text = _compress_history_text(assistant_raw, max_words=25)
+        assistant_text = _extract_main_info(assistant_raw, max_words=25)
         if not user_text and not assistant_text:
             continue
         turns.append(
@@ -4610,7 +4667,7 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
     global_hit = _run_ai_router_global_cache_lookup(session, payload, text)
     if global_hit is not None:
         return _build_ai_router_global_cache_response(session, payload, text, global_hit, request_id)
-    limit = 2 if _is_continuation_query(text) else 0
+    limit = _determine_history_limit(session, payload.user_id, text)
     context_turns = _recent_ai_context_turns(session, payload.user_id, limit=limit)
     profile_context = build_profile_prompt_context(session, payload.user_id)
     life_context = sanitized_client_context.get("life_context")
@@ -5936,7 +5993,7 @@ async def _transcribe_and_analyze_upload(
 
         use_ai_router = _ai_router_enabled()
         if use_ai_router:
-            limit = 2 if _is_continuation_query(transcript_text) else 0
+            limit = _determine_history_limit(session, int(user.id), transcript_text)
             context_turns = _recent_ai_context_turns(session, int(user.id), limit=limit)
             profile_context = build_profile_prompt_context(session, int(user.id))
             profile_prompt_context = _profile_prompt_context_text(profile_context)
