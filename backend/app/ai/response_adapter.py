@@ -19,7 +19,8 @@ def ai_response_to_pipeline(response: AIProviderResponse) -> dict[str, Any]:
     raw = response.raw if isinstance(response.raw, dict) else {}
     requested_reply_language = str(raw.get("reply_language") or response.language or "en").lower()
     language = "en" if requested_reply_language in {"en", "english"} else str(response.language or "en").lower()
-    text = str(response.text or "").strip()
+    import re
+    text = re.sub(r"\s+", " ", str(response.text or "")).strip()
     is_english = language == "en"
     direct_source = response.provider
     if isinstance(response.raw, dict) and response.raw.get("source"):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -10,6 +11,10 @@ from ...openai_tracked import get_tracked_chat_completion_metadata, tracked_open
 from ..prompts import build_provider_messages, build_system_instructions
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import AIProvider
+
+
+def normalize_prompt(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
 class OpenAIProvider(AIProvider):
@@ -40,13 +45,31 @@ class OpenAIProvider(AIProvider):
             if index < len(route.provider_endpoint_candidates):
                 candidate["endpoint"] = route.provider_endpoint_candidates[index]
             candidates.append(candidate)
-        instructions = build_system_instructions(request, route, provider="openai")
-        messages = build_provider_messages(request, route, provider="openai")
+        instructions = normalize_prompt(build_system_instructions(request, route, provider="openai"))
+        raw_messages = build_provider_messages(request, route, provider="openai")
+        messages = [
+            {"role": m["role"], "content": normalize_prompt(m["content"])}
+            for m in raw_messages
+        ]
         # If simple query, inject stop sequences to enforce single-line response cut-off (Method F)
         extra_kwargs = {}
         from ..prompts import detailed_answer_requested
-        if not detailed_answer_requested(request.message):
+        clean_message = normalize_prompt(request.message)
+        if not detailed_answer_requested(clean_message):
             extra_kwargs["stop"] = ["\n"]
+
+        # Dynamic max output tokens calculation (Method 4)
+        length = len(clean_message)
+        if length < 20:
+            max_tokens = 40
+        elif length < 60:
+            max_tokens = 80
+        elif route.intent in ("translation", "weather"):
+            max_tokens = 100
+        elif route.intent == "coding":
+            max_tokens = route.max_output_tokens
+        else:
+            max_tokens = min(route.max_output_tokens, 180)
 
         response = tracked_openai_generation(
             self._client_or_create(),
@@ -56,11 +79,11 @@ class OpenAIProvider(AIProvider):
             user_id=request.user_id,
             request_id=request.request_id,
             candidates=candidates,
-            input_text=request.message,
+            input_text=clean_message,
             instructions=instructions,
             messages=messages,
             temperature=0.2,
-            max_output_tokens=route.max_output_tokens,
+            max_output_tokens=max_tokens,
             **extra_kwargs
         )
         text = _extract_response_text(response)
@@ -96,6 +119,7 @@ class OpenAIProvider(AIProvider):
             or route.metadata.get("model_health_skip_reason")
             or "",
         }
+        raw = {k: v for k, v in raw.items() if v not in ("", None, [], {})}
         return AIProviderResponse(
             text=text or "I could not produce an answer. Please try again.",
             provider="openai",

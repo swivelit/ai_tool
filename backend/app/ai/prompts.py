@@ -309,11 +309,8 @@ def _language_contract(language: Any) -> str:
     if normalized in {"en", "english"}:
         return "Reply only in English. Do not translate to Tamil."
     if normalized in {"ta", "tamil", "mixed", "tanglish"}:
-        return (
-            "Reply in conversational Chennai Tamil/Tanglish, not formal textbook Tamil. "
-            "Keep terms accurate. Use formal only if requested."
-        )
-    return f"Reply in {normalized} naturally."
+        return "Reply in conversational Chennai Tamil/Tanglish, not formal textbook Tamil. Keep terms accurate."
+    return f"Reply in {normalized}."
 
 
 def detailed_answer_requested(message: Any) -> bool:

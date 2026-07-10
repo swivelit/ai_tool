@@ -1632,6 +1632,24 @@ def log_conversation(
         logger.exception("Failed to log conversation", extra={"user_id": user_id, "channel": channel})
 
 
+def _is_continuation_query(message: str) -> bool:
+    msg = str(message or "").strip().lower()
+    continuation_pattern = (
+        r"\b(he|she|it|they|this|that|those|these|him|her|them|its|his|hers|their|theirs|"
+        r"more|explain|simplify|translate|code|example|show|rewrite|shorten|summarize|"
+        r"brief|briefly|clarify|describe|elaborate|why|how|what else|yes|no|correct|tell me|give me|continue)\b"
+    )
+    return bool(re.search(continuation_pattern, msg))
+
+
+def _compress_history_text(text: str, max_words: int) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words]) + "..."
+
+
 def _recent_ai_context_turns(session: Session, user_id: Optional[int], *, limit: int = 6) -> List[Dict[str, str]]:
     if user_id is None:
         return []
@@ -1650,14 +1668,15 @@ def _recent_ai_context_turns(session: Session, user_id: Optional[int], *, limit:
 
     turns: List[Dict[str, str]] = []
     for row in reversed(rows):
-        user_text = " ".join(str(row.user_input or "").strip().split())
-        assistant_text = _assistant_text_from_conversation(row)
+        user_text = _compress_history_text(row.user_input or "", max_words=20)
+        assistant_raw = _assistant_text_from_conversation(row)
+        assistant_text = _compress_history_text(assistant_raw, max_words=25)
         if not user_text and not assistant_text:
             continue
         turns.append(
             {
-                "user": user_text[:500],
-                "assistant": assistant_text[:900],
+                "user": user_text,
+                "assistant": assistant_text,
             }
         )
     return turns[-limit:]
@@ -4591,7 +4610,8 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
     global_hit = _run_ai_router_global_cache_lookup(session, payload, text)
     if global_hit is not None:
         return _build_ai_router_global_cache_response(session, payload, text, global_hit, request_id)
-    context_turns = _recent_ai_context_turns(session, payload.user_id, limit=6)
+    limit = 2 if _is_continuation_query(text) else 0
+    context_turns = _recent_ai_context_turns(session, payload.user_id, limit=limit)
     profile_context = build_profile_prompt_context(session, payload.user_id)
     life_context = sanitized_client_context.get("life_context")
     effective_age_group = _add_effective_age_to_profile_context(profile_context, life_context)
@@ -5916,7 +5936,8 @@ async def _transcribe_and_analyze_upload(
 
         use_ai_router = _ai_router_enabled()
         if use_ai_router:
-            context_turns = _recent_ai_context_turns(session, int(user.id), limit=6)
+            limit = 2 if _is_continuation_query(transcript_text) else 0
+            context_turns = _recent_ai_context_turns(session, int(user.id), limit=limit)
             profile_context = build_profile_prompt_context(session, int(user.id))
             profile_prompt_context = _profile_prompt_context_text(profile_context)
             ai_response = run_text_turn(
