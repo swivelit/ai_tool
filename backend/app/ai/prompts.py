@@ -34,8 +34,21 @@ UNCLEAR_MEDICAL_TERM_INSTRUCTION = (
 def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str) -> list[dict[str, str]]:
     instructions = build_system_instructions(request, route, provider=provider)
     messages: list[dict[str, str]] = [{"role": "system", "content": instructions}]
+    
+    # 2. Profile Trimming for Simple General Queries
+    intent = str(route.intent or "").strip().lower()
+    has_life_keywords = bool(re.search(r"\b(phone|screen|step|steps|walk|walking|sleep|active|usage|heart|movement)\b", request.message.lower()))
+    has_personal_pronouns = bool(re.search(r"\b(i|me|my|we|our|us|myself)\b", request.message.lower()))
+    is_simple_general = (
+        intent == "general"
+        and not detailed_answer_requested(request.message)
+        and not _looks_unclear_medical_like(request.message)
+        and not has_life_keywords
+        and not has_personal_pronouns
+    )
+    
     profile_context = str((request.metadata or {}).get("profile_prompt_context") or "").strip()
-    if profile_context:
+    if profile_context and not is_simple_general:
         messages.append(
             {
                 "role": "system",

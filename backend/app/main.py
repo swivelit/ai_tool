@@ -1642,6 +1642,19 @@ def _is_continuation_query(message: str) -> bool:
     return bool(re.search(continuation_pattern, msg))
 
 
+def _is_context_dependent_query(message: str) -> bool:
+    msg = str(message or "").strip().lower()
+    # Pronouns that make the reference ambiguous without history
+    pronoun_pattern = r"\b(he|she|it|they|this|that|those|these|him|her|them|its|his|hers|their|theirs)\b"
+    if re.search(pronoun_pattern, msg):
+        return True
+    # Short continuation/transition answers (e.g. "explain more", "why", "how", "elaborate")
+    generic_patterns = r"^(explain|explain\s+more|explain\s+briefly|elaborate|clarify|why|how|continue|yes|no|correct)$"
+    if re.match(generic_patterns, msg):
+        return True
+    return False
+
+
 def _compress_history_text(text: str, max_words: int) -> str:
     text = re.sub(r"\s+", " ", str(text or "")).strip()
     words = text.split()
@@ -4664,7 +4677,9 @@ def _run_ai_router_chat_request(session: Session, payload: ChatAPIRequest) -> Di
     text = _resolve_chat_text(payload)
     request_id = payload.request_id or get_request_id()
     sanitized_client_context = sanitize_client_context(payload.client_context)
-    global_hit = _run_ai_router_global_cache_lookup(session, payload, text)
+    global_hit = None
+    if not _is_context_dependent_query(text):
+        global_hit = _run_ai_router_global_cache_lookup(session, payload, text)
     if global_hit is not None:
         return _build_ai_router_global_cache_response(session, payload, text, global_hit, request_id)
     limit = _determine_history_limit(session, payload.user_id, text)
