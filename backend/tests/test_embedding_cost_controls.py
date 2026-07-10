@@ -49,6 +49,7 @@ def _request(message: str) -> AIRequest:
 
 def test_simple_english_chat_makes_zero_embedding_calls_by_default(monkeypatch):
     monkeypatch.setenv("AI_RAG_LOOKUP_FOR_SIMPLE_CHAT", "false")
+    monkeypatch.setenv("AI_SEMANTIC_CACHE_LOOKUP_FOR_SIMPLE_CHAT", "false")
     rag = _RagService()
     provider = _Provider()
 

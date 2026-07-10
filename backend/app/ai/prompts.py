@@ -79,39 +79,51 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
     
     # 1. Intent-Based System Prompt Trimming (Method D)
     if intent not in {"greeting", "safety_block"}:
-        parts.append("No live data unless provided.")
-        parts.append(_language_contract(language))
-        parts.append("Use profile preferences. Don't invent facts.")
-        parts.append(
-            "Use life context if provided. For walking/screen time questions, use context and note permission gaps. "
-            "Never invent life data."
+        has_life_keywords = bool(re.search(r"\b(phone|screen|step|steps|walk|walking|sleep|active|usage|heart|movement)\b", request.message.lower()))
+        is_simple_general = (
+            intent == "general"
+            and not detailed_answer_requested(request.message)
+            and not _looks_unclear_medical_like(request.message)
+            and not has_life_keywords
         )
-        if _looks_unclear_medical_like(request.message):
-            parts.append(UNCLEAR_MEDICAL_TERM_INSTRUCTION)
-            
-        if route.intent in {"coding", "complex_reasoning"} or _is_app_architecture_question(request.message):
-            parts.append(APP_CONTEXT_PROMPT)
+        
+        if is_simple_general:
+            # Aggressive prompt stripping for simple questions
+            parts.append(_language_contract(language))
+        else:
+            parts.append("No live data unless provided.")
+            parts.append(_language_contract(language))
+            parts.append("Use profile preferences. Don't invent facts.")
             parts.append(
-                "For architecture answers, mention the mobile app, backend API gateway, AI router or "
-                "orchestrator, Sarvam provider, OpenAI provider/model ladder, cache/memory/RAG, usage/cost "
-                "logging, auth/rate limits, and safety when relevant. Keep it implementation-focused."
+                "Use life context if provided. For walking/screen time questions, use context and note permission gaps. "
+                "Never invent life data."
             )
-        if route.intent.startswith("contextual_"):
-            parts.append(
-                "This is a contextual follow-up. Use the recent conversation to identify the subject. "
-                "If the user asks to simplify, translate, shorten, or explain, transform the previous "
-                "answer/topic rather than treating the current sentence as a standalone question."
-            )
-            if _requests_tamil(request.message, language):
-                parts.append("Answer in simple Tamil or natural Tanglish as requested; preserve the prior topic.")
-
-        age_style = _age_adaptive_style(request.metadata)
-        if age_style:
-            parts.append(age_style)
-
-        life_insight = _life_context_insight_prompt(request.metadata)
-        if life_insight:
-            parts.append(life_insight)
+            if _looks_unclear_medical_like(request.message):
+                parts.append(UNCLEAR_MEDICAL_TERM_INSTRUCTION)
+                
+            if route.intent in {"coding", "complex_reasoning"} or _is_app_architecture_question(request.message):
+                parts.append(APP_CONTEXT_PROMPT)
+                parts.append(
+                    "For architecture answers, mention the mobile app, backend API gateway, AI router or "
+                    "orchestrator, Sarvam provider, OpenAI provider/model ladder, cache/memory/RAG, usage/cost "
+                    "logging, auth/rate limits, and safety when relevant. Keep it implementation-focused."
+                )
+            if route.intent.startswith("contextual_"):
+                parts.append(
+                    "This is a contextual follow-up. Use the recent conversation to identify the subject. "
+                    "If the user asks to simplify, translate, shorten, or explain, transform the previous "
+                    "answer/topic rather than treating the current sentence as a standalone question."
+                )
+                if _requests_tamil(request.message, language):
+                    parts.append("Answer in simple Tamil or natural Tanglish as requested; preserve the prior topic.")
+    
+            age_style = _age_adaptive_style(request.metadata)
+            if age_style:
+                parts.append(age_style)
+    
+            life_insight = _life_context_insight_prompt(request.metadata)
+            if life_insight:
+                parts.append(life_insight)
     else:
         # Minimalist contract for greetings and safety
         parts.append("Keep greetings or safety warnings extremely concise (under 10 words).")
