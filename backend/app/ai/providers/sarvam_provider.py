@@ -5,6 +5,7 @@ import re
 import subprocess
 import time
 import wave
+import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -16,6 +17,13 @@ from ...openai_model_router import OpenAIModelRouter
 from ..prompts import build_provider_messages
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import AIProvider
+
+
+logger = logging.getLogger(__name__)
+# Provider lifecycle events are intentionally INFO-level operational records.
+# Keep this child logger explicit so unrelated app.ai verbosity settings do not
+# suppress STT/TTS completion and failure audit events.
+logger.setLevel(logging.INFO)
 
 
 SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
@@ -57,6 +65,31 @@ _MOBILE_AUDIO_UPLOAD_MIME_TYPES = {
     "audio/x-m4a",
     "application/mp4",
 }
+
+
+def _extract_chat_usage(raw: Any) -> dict[str, int]:
+    usage = getattr(raw, "usage", None)
+    if usage is None and isinstance(raw, dict):
+        usage = raw.get("usage")
+    if usage is None:
+        return {}
+
+    def value(*names: str) -> int:
+        for name in names:
+            found = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+            if found is not None:
+                try:
+                    return max(0, int(found))
+                except Exception:
+                    pass
+        return 0
+
+    result = {
+        "input_tokens": value("prompt_tokens", "input_tokens"),
+        "output_tokens": value("completion_tokens", "output_tokens"),
+        "cached_input_tokens": value("cached_input_tokens", "cached_tokens"),
+    }
+    return result if result["input_tokens"] or result["output_tokens"] else {}
 
 
 def normalize_sarvam_tts_model(model: str | None, premium: bool = False) -> str:
@@ -221,8 +254,9 @@ class SarvamProvider(AIProvider):
             exc = HTTPException(status_code=502, detail="Sarvam chat returned empty text.")
             exc.metadata = {"provider_error_type": "empty_sarvam_response"}  # type: ignore[attr-defined]
             raise exc
-        input_tokens = OpenAIModelRouter.estimate_tokens(request.message)
-        output_tokens = OpenAIModelRouter.estimate_tokens(text)
+        usage = _extract_chat_usage(raw)
+        input_tokens = int(usage.get("input_tokens") or OpenAIModelRouter.estimate_tokens(request.message))
+        output_tokens = int(usage.get("output_tokens") or OpenAIModelRouter.estimate_tokens(text))
         cost = estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens)
         response = AIProviderResponse(
             text=text,
@@ -248,11 +282,62 @@ class SarvamProvider(AIProvider):
                 "stripped_prefix": route.metadata.get("stripped_prefix") or "",
                 "intent_before_cleanup": route.metadata.get("intent_before_cleanup") or route.intent,
                 "intent_after_cleanup": route.metadata.get("intent_after_cleanup") or route.intent,
+                "usage_actual": bool(usage),
+                "cached_input_tokens": int(usage.get("cached_input_tokens") or 0),
             },
         )
         if self._cache_recorder is not None:
             self._cache_recorder(request, route, response)
         return response
+
+    def stream_complete(
+        self, request: AIRequest, route: AIRoute, on_delta: Callable[[str], None]
+    ) -> AIProviderResponse:
+        client = self._client_or_create()
+        messages = build_provider_messages(request, route, provider="sarvam")
+        completions = getattr(getattr(client, "chat", None), "completions", None)
+        create = getattr(completions, "create", None)
+        caller = completions if callable(completions) else create
+        if not callable(caller):
+            return self.complete(request, route)
+        try:
+            stream = caller(
+                model=route.model or chat_model_for_intent(route.intent), messages=messages,
+                max_tokens=route.max_output_tokens, temperature=0.2, stream=True,
+            )
+        except TypeError:
+            response = self.complete(request, route)
+            on_delta(response.text)
+            return response
+        parts: list[str] = []
+        final_usage: dict[str, int] = {}
+        try:
+            for chunk in stream:
+                final_usage = _extract_chat_usage(chunk) or final_usage
+                choices = getattr(chunk, "choices", None) or (chunk.get("choices") if isinstance(chunk, dict) else []) or []
+                choice = choices[0] if choices else None
+                delta_obj = choice.get("delta") if isinstance(choice, dict) else getattr(choice, "delta", None)
+                delta = delta_obj.get("content") if isinstance(delta_obj, dict) else getattr(delta_obj, "content", None)
+                if delta:
+                    value = str(delta); parts.append(value); on_delta(value)
+        except TypeError:
+            response = self.complete(request, route)
+            on_delta(response.text)
+            return response
+        text = "".join(parts).strip()
+        if not text:
+            response = self.complete(request, route)
+            on_delta(response.text)
+            return response
+        input_tokens = int(final_usage.get("input_tokens") or OpenAIModelRouter.estimate_tokens(request.message))
+        output_tokens = int(final_usage.get("output_tokens") or OpenAIModelRouter.estimate_tokens(text))
+        return AIProviderResponse(
+            text=text, provider="sarvam", model=route.model, route=route.route, reason=route.reason,
+            language=route.language, intent=route.intent, input_tokens=input_tokens, output_tokens=output_tokens,
+            characters=len(text), estimated_cost_amount=estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens),
+            estimated_cost_currency="INR", raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0)},
+        )
+
 
     def _call_chat(self, client: Any, model: str, messages: list[dict[str, str]], max_tokens: int) -> Any:
         completions = getattr(getattr(client, "chat", None), "completions", None)
@@ -736,9 +821,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _log_sarvam_event(event: str, *, started: float, **fields: Any) -> None:
-    import logging
-
-    logging.getLogger(__name__).info(
+    logger.info(
         event,
         extra=chat_log_payload(
             event=event,

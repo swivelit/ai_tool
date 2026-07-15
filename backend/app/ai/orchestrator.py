@@ -31,11 +31,16 @@ def run_text_turn(
 ) -> AIProviderResponse:
     context = existing_context or {}
     started = time.perf_counter()
-    enforce_free_text_quota(
-        session,
-        ai_request.user_id,
-        admin_email=str(ai_request.metadata.get("admin_email") or ""),
-    )
+    if not (
+        ai_request.metadata.get("client_surface") == "web"
+        and ai_request.metadata.get("billing_required") is True
+        and ai_request.metadata.get("skip_free_text_quota") is True
+    ):
+        enforce_free_text_quota(
+            session,
+            ai_request.user_id,
+            admin_email=str(ai_request.metadata.get("admin_email") or ""),
+        )
     try:
         from .agents.negative_cache_agent import default_negative_cache_agent
 

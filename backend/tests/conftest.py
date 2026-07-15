@@ -27,6 +27,10 @@ os.environ["USER_QA_SYNC_TTL_DAYS"] = "30"
 os.environ["SARVAM_API_KEY"] = ""
 os.environ["SENTRY_DSN"] = ""
 os.environ["AUTH_ALLOW_DEV_TOKENS"] = "true"
+os.environ["WEB_APP_ENABLED"] = "true"
+os.environ["RAZORPAY_KEY_ID"] = "rzp_test_public"
+os.environ["RAZORPAY_KEY_SECRET"] = "test_checkout_secret"
+os.environ["RAZORPAY_WEBHOOK_SECRET"] = "test_webhook_secret"
 for name in (
     "FIREBASE_CREDENTIALS_JSON",
     "GOOGLE_APPLICATION_CREDENTIALS",
@@ -44,7 +48,9 @@ from sqlmodel import SQLModel, delete
 
 from app.database import SessionLocal, engine
 from app.main import app, _get_job_queue
-from app.models import AIUsageEvent, AgentRun, AgentStep, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, QACache, RagEmbedding, User, UserProfile
+from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, PaymentOrder, ProcessedWebhook, QACache, RagEmbedding, UsageCharge, User, UserProfile, WalletAccount, WalletLedger, WebChatMessage, WebChatThread
+
+WEB_MODELS = [ProcessedWebhook, WalletLedger, UsageCharge, WebChatMessage, WebChatThread, PaymentOrder, WalletAccount, ApiRateLimit]
 
 
 def auth_headers(uid: str, email: str | None = None) -> dict[str, str]:
@@ -74,13 +80,13 @@ def clean_db():
     queue = _get_job_queue()
     queue.stop()
     with SessionLocal() as session:
-        for model in [AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User, EmailOtpCode]:
+        for model in [*WEB_MODELS, AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User, EmailOtpCode]:
             session.exec(delete(model))
         session.commit()
     yield
     queue.stop()
     with SessionLocal() as session:
-        for model in [AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User, EmailOtpCode]:
+        for model in [*WEB_MODELS, AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User, EmailOtpCode]:
             session.exec(delete(model))
         session.commit()
 

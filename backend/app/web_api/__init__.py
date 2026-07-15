@@ -1,0 +1,2 @@
+"""Standalone web application API."""
+

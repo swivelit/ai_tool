@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import HTTPException
 
@@ -88,6 +88,10 @@ class OpenAIProvider(AIProvider):
             "model_health_skip_reason": metadata.get("model_health_skip_reason")
             or route.metadata.get("model_health_skip_reason")
             or "",
+            "usage_actual": metadata.get("actual_input_tokens") is not None
+            or metadata.get("actual_output_tokens") is not None,
+            "cached_input_tokens": int(metadata.get("cached_input_tokens") or 0),
+            "actual_cost_usd": metadata.get("actual_cost_usd"),
         }
         return AIProviderResponse(
             text=text or "I could not produce an answer. Please try again.",
@@ -103,6 +107,65 @@ class OpenAIProvider(AIProvider):
             estimated_cost_amount=estimated_cost,
             estimated_cost_currency="USD",
             raw=raw,
+        )
+
+    def stream_complete(
+        self, request: AIRequest, route: AIRoute, on_delta: Callable[[str], None]
+    ) -> AIProviderResponse:
+        """Stream upstream OpenAI deltas and retain final provider usage for billing."""
+        client = self._client_or_create()
+        model = (route.model_candidates or [route.model])[0] or route.model or "gpt-4o-mini"
+        messages = build_provider_messages(request, route, provider="openai")
+        text_parts: list[str] = []
+        input_tokens = output_tokens = cached_tokens = 0
+        endpoint = str((route.provider_endpoint_candidates or [""])[0] or "chat_completions")
+        if endpoint == "responses" and hasattr(client, "responses"):
+            stream = client.responses.create(
+                model=model, input=messages, max_output_tokens=route.max_output_tokens, stream=True
+            )
+            for event in stream:
+                event_type = str(getattr(event, "type", "") or "")
+                if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+                    delta = str(getattr(event, "delta", "") or "")
+                    if delta:
+                        text_parts.append(delta); on_delta(delta)
+                response = getattr(event, "response", None)
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+                    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                    details = getattr(usage, "input_tokens_details", None)
+                    cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+        else:
+            stream = client.chat.completions.create(
+                model=model, messages=messages, max_tokens=route.max_output_tokens,
+                temperature=0.2, stream=True, stream_options={"include_usage": True},
+            )
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    delta = str(getattr(getattr(choices[0], "delta", None), "content", "") or "")
+                    if delta:
+                        text_parts.append(delta); on_delta(delta)
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+                    output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+                    details = getattr(usage, "prompt_tokens_details", None)
+                    cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+        text = "".join(text_parts).strip()
+        if not text:
+            raise HTTPException(status_code=502, detail="OpenAI returned an empty streamed response.")
+        router = OpenAIModelRouter()
+        input_tokens = input_tokens or router.estimate_tokens(request.message)
+        output_tokens = output_tokens or router.estimate_tokens(text)
+        return AIProviderResponse(
+            text=text, provider="openai", model=model, route=route.route, reason=route.reason,
+            language=route.language, intent=route.intent, input_tokens=input_tokens,
+            output_tokens=output_tokens, characters=len(text),
+            estimated_cost_amount=router.estimate_cost(model, input_tokens, output_tokens),
+            estimated_cost_currency="USD",
+            raw={"usage_actual": bool(input_tokens and output_tokens), "cached_input_tokens": cached_tokens, "endpoint": endpoint},
         )
 
 

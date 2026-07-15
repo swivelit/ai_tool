@@ -354,12 +354,20 @@ CORS_ALLOW_ORIGINS = [
     if origin.strip()
 ] or DEFAULT_CORS_ORIGINS
 
+if APP_ENV in {"prod", "production"} and "*" in CORS_ALLOW_ORIGINS:
+    raise RuntimeError('CORS_ALLOW_ORIGINS must not contain "*" in production.')
+
 app = FastAPI(title="Swico Backend")
 RUNTIME_STATUS: Dict[str, Any] = {
     "status": "starting",
     "services": {},
     "errors": [],
 }
+
+if os.getenv("WEB_APP_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+    from .web_api.router import router as web_api_router
+
+    app.include_router(web_api_router)
 
 if openwakeword_router is not None:
     app.include_router(openwakeword_router)

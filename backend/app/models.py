@@ -1,7 +1,10 @@
 from typing import Optional
 from datetime import datetime
+from decimal import Decimal
+from uuid import uuid4
 from .time_utils import utc_now
 from sqlmodel import SQLModel, Field
+from sqlalchemy import BigInteger, Column, Index, Numeric, String, Text, UniqueConstraint
 
 
 # --------------------
@@ -227,6 +230,160 @@ class AIUsageEvent(SQLModel, table=True):
     cache_hit_source: Optional[str] = Field(default=None, index=True)
     latency_ms: Optional[int] = Field(default=None)
     metadata_json: str = Field(default="{}")
+
+
+# --------------------
+# Web application billing and chat
+# --------------------
+def _public_id() -> str:
+    return str(uuid4())
+
+
+class WalletAccount(SQLModel, table=True):
+    __tablename__ = "wallet_account"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_wallet_account_user_id"),)
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    balance_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    reserved_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    version: int = Field(default=0)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WalletLedger(SQLModel, table=True):
+    __tablename__ = "wallet_ledger"
+    __table_args__ = (
+        Index("ix_wallet_ledger_user_created", "user_id", "created_at"),
+        Index("ix_wallet_ledger_reference", "reference_type", "reference_id"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    entry_type: str = Field(max_length=32, index=True)
+    amount_micros: int = Field(sa_column=Column(BigInteger, nullable=False))
+    balance_after_micros: int = Field(sa_column=Column(BigInteger, nullable=False))
+    reference_type: str = Field(max_length=48)
+    reference_id: str = Field(max_length=128)
+    idempotency_key: str = Field(unique=True, max_length=200)
+    metadata_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class PaymentOrder(SQLModel, table=True):
+    __tablename__ = "payment_order"
+    __table_args__ = (Index("ix_payment_order_user_created", "user_id", "created_at"),)
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    provider: str = Field(default="razorpay", max_length=24)
+    provider_order_id: Optional[str] = Field(default=None, unique=True, max_length=80)
+    provider_payment_id: Optional[str] = Field(default=None, unique=True, max_length=80)
+    receipt: str = Field(unique=True, max_length=40)
+    gross_amount_paise: int
+    credited_amount_micros: int = Field(sa_column=Column(BigInteger, nullable=False))
+    platform_share_paise: int
+    refunded_amount_paise: int = Field(default=0)
+    status: str = Field(default="creating", max_length=32, index=True)
+    checkout_signature: Optional[str] = Field(default=None, max_length=256)
+    metadata_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    paid_at: Optional[datetime] = None
+    refunded_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class ProcessedWebhook(SQLModel, table=True):
+    __tablename__ = "processed_webhook"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_processed_webhook_event_id"),
+        UniqueConstraint("provider", "event_id", name="uq_processed_webhook_provider_event"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    provider: str = Field(max_length=24, index=True)
+    event_id: str = Field(max_length=160, index=True)
+    event_type: str = Field(max_length=80, index=True)
+    payload_sha256: str = Field(max_length=64)
+    processed_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebChatThread(SQLModel, table=True):
+    __tablename__ = "web_chat_thread"
+    __table_args__ = (Index("ix_web_chat_thread_user_updated", "user_id", "updated_at"),)
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    title: str = Field(default="New chat", max_length=120)
+    archived_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebChatMessage(SQLModel, table=True):
+    __tablename__ = "web_chat_message"
+    __table_args__ = (
+        Index("ix_web_chat_message_thread_created", "thread_id", "created_at"),
+        UniqueConstraint("user_id", "request_id", "role", name="uq_web_message_user_request_role"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    thread_id: str = Field(foreign_key="web_chat_thread.id", ondelete="CASCADE", index=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    role: str = Field(max_length=16, index=True)
+    content: str = Field(sa_column=Column(Text, nullable=False))
+    request_id: Optional[str] = Field(default=None, max_length=64, index=True)
+    provider: Optional[str] = Field(default=None, max_length=24)
+    model: Optional[str] = Field(default=None, max_length=100)
+    input_tokens: int = Field(default=0)
+    output_tokens: int = Field(default=0)
+    usage_source: Optional[str] = Field(default=None, max_length=16)
+    charge_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    status: str = Field(default="complete", max_length=24, index=True)
+    metadata_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class UsageCharge(SQLModel, table=True):
+    __tablename__ = "usage_charge"
+    __table_args__ = (
+        Index("ix_usage_charge_user_created", "user_id", "created_at"),
+        UniqueConstraint("request_id", name="uq_usage_charge_request_id"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    request_id: str = Field(max_length=64, index=True)
+    user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    thread_id: Optional[str] = Field(default=None, foreign_key="web_chat_thread.id", ondelete="SET NULL", index=True, max_length=36)
+    assistant_message_id: Optional[str] = Field(default=None, foreign_key="web_chat_message.id", ondelete="SET NULL", max_length=36)
+    provider: str = Field(max_length=24)
+    model: str = Field(max_length=100)
+    input_tokens: int = Field(default=0)
+    cached_input_tokens: int = Field(default=0)
+    output_tokens: int = Field(default=0)
+    usage_source: str = Field(default="estimated", max_length=16)
+    provider_cost_amount_decimal: Decimal = Field(default=Decimal("0"), sa_column=Column(Numeric(24, 12), nullable=False, server_default="0"))
+    provider_cost_currency: str = Field(default="INR", max_length=8)
+    usd_to_inr_rate: Optional[Decimal] = Field(default=None, sa_column=Column(Numeric(18, 8), nullable=True))
+    provider_cost_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    reserved_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    debited_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    status: str = Field(default="reserving", max_length=16, index=True)
+    pricing_snapshot_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    settled_at: Optional[datetime] = None
+
+
+class ApiRateLimit(SQLModel, table=True):
+    __tablename__ = "api_rate_limit"
+    __table_args__ = (UniqueConstraint("scope_key", "window_started_at", name="uq_api_rate_limit_scope_window"),)
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    scope_key: str = Field(max_length=160, index=True)
+    window_started_at: datetime = Field(index=True)
+    request_count: int = Field(default=0)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class AgentRun(SQLModel, table=True):

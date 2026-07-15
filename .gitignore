@@ -13,6 +13,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.tsbuildinfo
+**/.gradle/
 
 # macOS/editor junk
 .DS_Store
@@ -63,6 +65,7 @@ mobile/.expo/
 mobile/android/
 mobile/ios/
 mobile/node_modules/
+web/node_modules/
 mobile/.turbo/
 mobile/coverage/
 # Native dependency synced by mobile/scripts/sync-llama-cpp.js
