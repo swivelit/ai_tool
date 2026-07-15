@@ -1,18 +1,34 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { ShieldCheck, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import { apiJson } from '../api/client'
 import type { BillingConfig, BillingPackage } from '../types'
 import { loadRazorpay } from './razorpay'
+import { pollPaymentStatus } from './paymentPolling'
 
 type Order = { key_id: string; provider_order_id: string; amount: number; currency: string; internal_order_id: string; credited_amount_micros: number; platform_share_paise: number }
 
 export function BillingModal({ user, config, close, refreshed }: { user: User; config: BillingConfig; close: () => void; refreshed: () => void }) {
   const [selected, setSelected] = useState<BillingPackage | null>(config.packages[0] ?? null)
-  const [status, setStatus] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState(''); const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'topup' | 'history'>('topup')
   const [history, setHistory] = useState<Array<{ id: string; label: string; detail: string }>>([])
-  useEffect(() => { document.querySelector<HTMLButtonElement>('.billing-modal button')?.focus() }, [])
+  const dialogRef = useRef<HTMLElement>(null); const closeRef = useRef<HTMLButtonElement>(null)
+  const testMode = config.razorpay_key_id.startsWith('rzp_test_')
+  useEffect(() => {
+    closeRef.current?.focus()
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !busy) close()
+      if (event.key === 'Tab') {
+        const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled),a,input') ?? [])]
+        if (!focusable.length) return
+        const first = focusable[0]; const last = focusable[focusable.length - 1]
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+      }
+    }
+    window.addEventListener('keydown', keyboard); return () => window.removeEventListener('keydown', keyboard)
+  }, [busy, close])
   useEffect(() => {
     void Promise.all([
       apiJson<{ items: Array<{ id: string; entry_type: string; amount_micros: number; created_at: string }> }>(user, '/api/web/billing/ledger'),
@@ -23,8 +39,16 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
     ])).catch(() => undefined)
   }, [user])
 
+  const finishPending = async (internalOrderId: string) => {
+    setStatus('Payment received. Waiting for secure confirmation…')
+    const final = await pollPaymentStatus(user, internalOrderId)
+    if (!final) { setStatus('Confirmation is still pending. Your balance will update automatically after the webhook arrives.'); return }
+    if (final.status === 'credited') { await Promise.resolve(refreshed()); setStatus('Credit added.'); window.setTimeout(close, 500); return }
+    setStatus(final.status === 'failed' ? 'Payment failed. No credit was added.' : `Payment status: ${final.status.replaceAll('_', ' ')}.`)
+  }
+
   const checkout = async () => {
-    if (!selected) return
+    if (!selected || busy) return
     setBusy(true); setStatus('Creating secure order…')
     try {
       const order = await apiJson<Order>(user, '/api/web/billing/orders', {
@@ -41,36 +65,28 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
           const verified = await apiJson<{ status: string; credited: boolean }>(user, '/api/web/billing/verify', {
             method: 'POST', body: JSON.stringify({ internal_order_id: order.internal_order_id, ...result }),
           })
-          setStatus(verified.credited ? 'Credit added.' : 'Payment confirmation pending.')
-          refreshed(); setBusy(false)
-        })().catch(() => { setStatus('Payment confirmation pending. Your credit will update after the provider webhook.'); setBusy(false) }) },
+          if (verified.credited) { refreshed(); setStatus('Credit added.'); window.setTimeout(close, 500) }
+          else await finishPending(order.internal_order_id)
+          setBusy(false)
+        })().catch(async () => { await finishPending(order.internal_order_id).catch(() => setStatus('Payment confirmation is pending.')); setBusy(false) }) },
       })
       checkoutInstance.on('payment.failed', () => { setStatus('Payment failed. No credit was added.'); setBusy(false) })
       checkoutInstance.open()
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Order creation failed. Checkout was not opened.')
-      setBusy(false)
+      setStatus(error instanceof Error ? error.message : 'Order creation failed. Checkout was not opened.'); setBusy(false)
     }
   }
-  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) close() }}>
-    <section className="billing-modal" role="dialog" aria-modal="true" aria-labelledby="billing-title">
-      <button className="modal-close" aria-label="Close add credit" onClick={close}>×</button>
-      <span className="eyebrow">AI credits</span><h2 id="billing-title">Keep the conversation flowing</h2>
-      <div className="billing-tabs"><button className={tab === 'topup' ? 'active' : ''} onClick={() => setTab('topup')}>Add credit</button><button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>History</button></div>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) close() }}>
+    <section ref={dialogRef} className="billing-modal" role="dialog" aria-modal="true" aria-labelledby="billing-title">
+      <button ref={closeRef} className="modal-close icon-button" aria-label="Close add credit" title="Close" disabled={busy} onClick={close}><X size={20} /></button>
+      <div className="modal-heading"><span className="modal-icon"><ShieldCheck size={21} /></span><div><h2 id="billing-title">Add AI credit</h2><p>Secure prepaid usage for Swico</p></div>{testMode && <strong className="test-mode">Test Mode</strong>}</div>
+      <div className="billing-tabs" role="tablist"><button role="tab" aria-selected={tab === 'topup'} className={tab === 'topup' ? 'active' : ''} onClick={() => setTab('topup')}>Add credit</button><button role="tab" aria-selected={tab === 'history'} className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>History</button></div>
       {tab === 'history' ? <div className="billing-history">{history.length ? history.map(item => <div key={item.id}><strong>{item.label}</strong><span>{item.detail}</span></div>) : <p>No payment or usage history yet.</p>}</div> : <>
-      <p>Choose a prepaid package. Credits pay only for AI usage and are not withdrawable cash.</p>
-      <div className="packages">{config.packages.map(item => <button key={item.gross_amount_paise} className={selected === item ? 'selected' : ''} onClick={() => setSelected(item)}>
-        <strong>₹{item.gross_amount_paise / 100}</strong>
-        <span>Receive ₹{item.credited_amount_micros / 1_000_000} AI usage credit</span>
-      </button>)}</div>
-      {selected && <div className="allocation">
-        <span>You pay <strong>₹{selected.gross_amount_paise / 100}</strong></span>
-        <span>AI credits <strong>₹{selected.credited_amount_micros / 1_000_000}</strong></span>
-        <span>Service/platform allocation <strong>₹{selected.platform_share_paise / 100}</strong></span>
-      </div>}
+      <p>Choose a package. AI credit pays for model usage and is not withdrawable cash.</p>
+      <div className="packages">{config.packages.map(item => <button key={item.gross_amount_paise} className={selected === item ? 'selected' : ''} aria-pressed={selected === item} onClick={() => setSelected(item)}><strong>₹{item.gross_amount_paise / 100}</strong><span>₹{item.credited_amount_micros / 1_000_000} AI credit</span></button>)}</div>
+      {selected && <div className="allocation"><span>You pay <strong>₹{selected.gross_amount_paise / 100}</strong></span><span>AI credit <strong>₹{selected.credited_amount_micros / 1_000_000}</strong></span><span>Platform allocation <strong>₹{selected.platform_share_paise / 100}</strong></span></div>}
       <button className="primary wide" disabled={busy || !selected} onClick={() => void checkout()}>{busy ? 'Please wait…' : selected ? `Pay ₹${selected.gross_amount_paise / 100} securely` : 'Choose a package'}</button>
-      {status && <p className="payment-status" role="status">{status}</p>}
-      </>}
+      {status && <p className="payment-status" role="status">{status}</p>}</>}
     </section>
   </div>
 }

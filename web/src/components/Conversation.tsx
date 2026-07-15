@@ -1,27 +1,59 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Check, ChevronDown, Copy, RefreshCw } from 'lucide-react'
 import type { Message } from '../types'
 import { MarkdownMessage } from './MarkdownMessage'
 
-export function Conversation({ messages, pendingText, retry }: { messages: Message[]; pendingText: string; retry: (message: Message) => void }) {
-  return <div className="conversation" aria-live="polite">
-    {!messages.length && !pendingText && <EmptyState />}
-    {messages.map(message => <MessageView key={message.id} message={message} retry={retry} />)}
-    {pendingText && <article className="message assistant"><div className="assistant-glyph">S</div><div className="message-body"><MarkdownMessage>{pendingText}</MarkdownMessage><span className="cursor" /></div></article>}
+export function Conversation({ messages, phase, retry, suggest }: {
+  messages: Message[]; phase?: string; retry: (message: Message) => void; suggest: (text: string) => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const nearBottom = useRef(true)
+  const [showBottom, setShowBottom] = useState(false)
+  const onScroll = () => {
+    const element = scrollRef.current
+    if (!element) return
+    nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 120
+    setShowBottom(!nearBottom.current)
+  }
+  useEffect(() => {
+    if (!nearBottom.current) return
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [messages])
+  const scrollBottom = () => {
+    nearBottom.current = true; setShowBottom(false)
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  }
+  return <div className="conversation-frame">
+    <div className="conversation" ref={scrollRef} onScroll={onScroll} aria-live="polite" data-testid="conversation">
+      {!messages.length && <EmptyState suggest={suggest} />}
+      {messages.map(message => <MessageView key={message.id} message={message} retry={retry} />)}
+      {phase && ['connecting', 'routing', 'reserved'].includes(phase) && <div className="thinking" role="status"><span />Swico is thinking</div>}
+    </div>
+    {showBottom && <button className="scroll-bottom" aria-label="Scroll to bottom" title="Scroll to bottom" onClick={scrollBottom}><ChevronDown size={19} /></button>}
   </div>
 }
 
-function EmptyState() {
-  return <div className="empty-state"><div className="orb">S</div><p className="eyebrow">Your thinking space</p><h1>What are we working through?</h1><p>Explore a question, shape an idea, or turn a messy problem into a clear next step.</p><div className="prompts"><span>Plan a focused week</span><span>Explain something complex</span><span>Draft with the right tone</span></div></div>
+function EmptyState({ suggest }: { suggest: (text: string) => void }) {
+  const suggestions = ['Help me plan a focused week', 'Explain a complex idea simply', 'Draft a thoughtful message']
+  return <div className="empty-state"><div className="swico-mark" aria-hidden="true">S</div><h1>How can I help?</h1>
+    <div className="prompts">{suggestions.map(item => <button key={item} onClick={() => suggest(item)}>{item}</button>)}</div>
+  </div>
 }
 
 function MessageView({ message, retry }: { message: Message; retry: (message: Message) => void }) {
   const [copied, setCopied] = useState(false)
-  if (message.role === 'user') return <article className="message user"><div className="user-bubble">{message.content}</div>{message.status === 'retryable' && <button className="retry" onClick={() => retry(message)}>Retry</button>}</article>
-  return <article className="message assistant"><div className="assistant-glyph">S</div><div className="message-body">
-    <MarkdownMessage>{message.content}</MarkdownMessage>
-    <div className="message-meta"><span>{[message.provider, message.model].filter(Boolean).join(' · ') || 'Swico'}</span>
-      {message.charge_micros > 0 && <span>{message.usage_source} · ₹{(message.charge_micros / 1_000_000).toFixed(4)}</span>}
-      <button aria-label="Copy answer" onClick={() => void navigator.clipboard.writeText(message.content).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}>{copied ? 'Copied' : 'Copy'}</button>
-    </div>
+  if (message.role === 'user') return <article className="message user"><div className="user-bubble">{message.content}</div>{message.status === 'retryable' && <button className="retry" onClick={() => retry(message)}><RefreshCw size={14} /> Retry</button>}</article>
+  return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''}`}><div className="message-body">
+    {message.content ? <MarkdownMessage>{message.content}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
+    {message.status === 'streaming' && message.content && <span className="cursor" />}
+    {message.status !== 'streaming' && <div className="answer-actions">
+      <button aria-label="Copy answer" title="Copy answer" onClick={() => void navigator.clipboard.writeText(message.content).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1200) })}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
+      {message.status === 'retryable' && <button aria-label="Retry answer" title="Retry answer" onClick={() => retry(message)}><RefreshCw size={16} /></button>}
+      {(message.provider || message.charge_micros > 0) && <details className="message-details"><summary>Details</summary><div>
+        <span>{[message.provider, message.model].filter(Boolean).join(' · ') || 'Swico'}</span>
+        <span>{message.input_tokens + message.output_tokens} tokens · {message.usage_source || 'estimated'}</span>
+        {message.charge_micros > 0 && <span>₹{(message.charge_micros / 1_000_000).toFixed(4)}</span>}
+      </div></details>}
+    </div>}
   </div></article>
 }

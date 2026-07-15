@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -21,6 +22,7 @@ from ..billing.service import (
     credit_payment_once, enforce_rate_limit, get_wallet_summary, list_wallet_ledger,
     reverse_credit_for_refund,
 )
+from ..ai.providers.base import GenerationCancellation, GenerationCancelled
 from ..database import SessionLocal, get_session
 from ..models import PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage, WebChatThread
 from ..time_utils import utc_now
@@ -29,6 +31,8 @@ from .schemas import ThreadCreate, ThreadPatch, WebChatRequest
 
 router = APIRouter(prefix="/api/web", tags=["web"])
 logger = logging.getLogger(__name__)
+_active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
+_active_generations_lock = threading.Lock()
 
 
 def _rate_limit(session: Session, *, user_id: int, action: str, limit: int) -> None:
@@ -123,15 +127,20 @@ def bootstrap(session: Session = Depends(get_session), auth: AuthUser = Depends(
 
 @router.get("/threads")
 def list_threads(
-    archived: bool = False, limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0),
+    archived: bool = False, q: str | None = Query(None, max_length=120),
+    limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0),
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
     condition = WebChatThread.archived_at.is_not(None) if archived else WebChatThread.archived_at.is_(None)
-    rows = session.exec(select(WebChatThread).where(
-        WebChatThread.user_id == user.id, condition
-    ).order_by(WebChatThread.updated_at.desc()).offset(offset).limit(limit)).all()
-    return {"items": [_serialize_thread(row) for row in rows], "limit": limit, "offset": offset}
+    statement = select(WebChatThread).where(WebChatThread.user_id == user.id, condition)
+    if q and q.strip():
+        statement = statement.where(WebChatThread.title.ilike(f"%{q.strip()}%"))
+    rows = session.exec(statement.order_by(WebChatThread.updated_at.desc()).offset(offset).limit(limit + 1)).all()
+    return {
+        "items": [_serialize_thread(row) for row in rows[:limit]], "limit": limit,
+        "offset": offset, "has_more": len(rows) > limit,
+    }
 
 
 @router.post("/threads", status_code=201)
@@ -216,6 +225,11 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
     except DuplicateRequestInProgress as exc:
         raise HTTPException(409, str(exc))
 
+    cancellation = GenerationCancellation()
+    prepared.ai_request.metadata["cancellation_signal"] = cancellation
+    with _active_generations_lock:
+        _active_generations[prepared.request_id] = (user_id, cancellation)
+
     async def events():
         queue: asyncio.Queue[str] = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -224,6 +238,12 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             loop.call_soon_threadsafe(queue.put_nowait, value)
 
         task = asyncio.create_task(asyncio.to_thread(execute_web_turn, prepared, on_delta=delta))
+
+        def unregister(_task: asyncio.Task[Any]) -> None:
+            with _active_generations_lock:
+                _active_generations.pop(prepared.request_id, None)
+
+        task.add_done_callback(unregister)
         yield _sse("thread", {"thread_id": prepared.thread_id})
         yield _sse("status", {"phase": "routing"})
         if prepared.reserved_micros:
@@ -246,15 +266,57 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                 "charged_micros": completed.message.charge_micros,
             })
             yield _sse("wallet", completed.wallet)
-            yield _sse("done", {"message_id": completed.message.id, "thread_id": completed.thread_id})
+            yield _sse("done", {
+                "message_id": completed.message.id, "thread_id": completed.thread_id,
+                "cancelled": completed.message.status == "cancelled",
+            })
         except asyncio.CancelledError:
-            # The worker either settles provider-reported usage or releases the reservation.
+            cancellation.cancel()
+            # The cooperative worker owns settlement. Some provider consumption
+            # may already have occurred before cancellation reaches the provider.
             raise
+        except GenerationCancelled:
+            with SessionLocal() as session:
+                yield _sse("wallet", get_wallet_summary(session, user_id))
+            yield _sse("status", {"phase": "stopped"})
+            yield _sse("done", {"thread_id": prepared.thread_id, "cancelled": True})
         except Exception:
             logger.exception("web_chat_generation_failed", extra={"request_id": prepared.request_id})
             yield _sse("error", {"code": "generation_failed", "message": "The AI provider could not complete this request. Please retry."})
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/chat/requests/{request_id}/cancel")
+async def cancel_chat_request(
+    request_id: str, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    charge = session.exec(select(UsageCharge).where(
+        UsageCharge.request_id == request_id, UsageCharge.user_id == user.id
+    )).first()
+    if charge is None:
+        raise HTTPException(404, "Generation request not found")
+    with _active_generations_lock:
+        active = _active_generations.get(request_id)
+    if active and active[0] == int(user.id):
+        active[1].cancel()
+        deadline = asyncio.get_running_loop().time() + float(os.getenv("WEB_CANCELLATION_WAIT_SECONDS", "10"))
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+            with SessionLocal() as check_session:
+                current = check_session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
+                if current and current.status in {"released", "settled", "failed"}:
+                    assistant = check_session.exec(select(WebChatMessage).where(
+                        WebChatMessage.request_id == request_id,
+                        WebChatMessage.user_id == user.id,
+                        WebChatMessage.role == "assistant",
+                    )).first()
+                    stopped = current.status == "released" or (assistant is not None and assistant.status == "cancelled")
+                    return {"status": "stopped" if stopped else "completed", "request_id": request_id}
+        return {"status": "cancelling", "request_id": request_id}
+    return {"status": charge.status, "request_id": request_id}
 
 
 @router.get("/billing/wallet")
@@ -291,6 +353,36 @@ def payments(
         "platform_share_paise": row.platform_share_paise, "refunded_amount_paise": row.refunded_amount_paise,
         "status": row.status, "created_at": row.created_at,
     } for row in rows]}
+
+
+def _payment_status_response(row: PaymentOrder) -> dict[str, Any]:
+    return {
+        "internal_order_id": row.id,
+        "gross_amount_paise": row.gross_amount_paise,
+        "credited_amount_micros": row.credited_amount_micros,
+        "platform_share_paise": row.platform_share_paise,
+        "refunded_amount_paise": row.refunded_amount_paise,
+        "status": row.status,
+        "provider_payment_id": row.provider_payment_id,
+        "created_at": row.created_at,
+        "paid_at": row.paid_at,
+        "refunded_at": row.refunded_at,
+        "updated_at": row.updated_at,
+    }
+
+
+@router.get("/billing/payments/{internal_order_id}")
+def payment_status(
+    internal_order_id: str, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    row = session.exec(select(PaymentOrder).where(
+        PaymentOrder.id == internal_order_id, PaymentOrder.user_id == user.id
+    )).first()
+    if row is None:
+        raise HTTPException(404, "Payment order not found")
+    return _payment_status_response(row)
 
 
 @router.post("/billing/orders", status_code=201)

@@ -36,6 +36,12 @@ class RazorpayClient:
     def fetch_payment(self, payment_id: str) -> dict[str, Any]:
         return self._request("GET", f"/payments/{payment_id}")
 
+    def fetch_order_payments(self, order_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/orders/{order_id}/payments")
+
+    def fetch_payment_refunds(self, payment_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/payments/{payment_id}/refunds")
+
 
 def verify_checkout_signature(provider_order_id: str, payment_id: str, signature: str, secret: str | None = None) -> bool:
     key = (secret if secret is not None else os.getenv("RAZORPAY_KEY_SECRET", "")).encode()
@@ -47,4 +53,3 @@ def verify_webhook_signature(raw_body: bytes, signature: str, secret: str | None
     key = (secret if secret is not None else os.getenv("RAZORPAY_WEBHOOK_SECRET", "")).encode()
     expected = hmac.new(key, raw_body, hashlib.sha256).hexdigest()
     return bool(key) and hmac.compare_digest(expected, str(signature or ""))
-

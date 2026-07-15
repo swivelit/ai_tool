@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.ai.types import AIProviderResponse, AIRequest
+from app.ai.providers.base import GenerationCancelled
 from app.billing.pricing import calculate_topup
 from app.billing.service import credit_payment_once, get_wallet_summary
 from app.database import SessionLocal
@@ -86,4 +87,31 @@ def test_provider_failure_releases_complete_reservation(client, monkeypatch):
     with SessionLocal() as session:
         charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).one()
         assert charge.status == "released"
+        assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
+
+
+def test_cancellation_before_output_releases_full_reservation(client, monkeypatch):
+    user = create_test_user(); _fund(int(user.id))
+    monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", lambda *args, **kwargs: (_ for _ in ()).throw(GenerationCancelled()))
+    request_id = "d80de6e0-c5cd-4de6-bf9a-9ce2f376a3c4"
+    response = client.post("/api/web/chat/stream", headers=auth_headers("test-uid"), json={"request_id":request_id,"message":"Explain database indexes"})
+    assert response.status_code == 200 and '"cancelled": true' in response.text
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).one()
+        assert charge.status == "released" and charge.debited_micros == 0
+        assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
+
+
+def test_cancellation_after_partial_output_settles_usage(client, monkeypatch):
+    user = create_test_user(); _fund(int(user.id))
+    def partial(self, request, route, on_delta):
+        on_delta("Partial")
+        raise GenerationCancelled(AIProviderResponse(text="Partial", provider="openai", model=route.model, route=route.route, reason=route.reason, language="en", intent=route.intent, input_tokens=100, output_tokens=12, raw={"usage_actual":False,"cancelled":True}))
+    monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", partial)
+    request_id = "f51aa637-0dde-44f2-b352-e5aaf5c56469"
+    response = client.post("/api/web/chat/stream", headers=auth_headers("test-uid"), json={"request_id":request_id,"message":"Explain database indexes"})
+    assert response.status_code == 200 and '"cancelled": true' in response.text and "Partial" in response.text
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).one()
+        assert charge.status == "settled" and charge.debited_micros > 0 and charge.usage_source == "estimated"
         assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0

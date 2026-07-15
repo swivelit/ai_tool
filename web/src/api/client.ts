@@ -10,6 +10,10 @@ export class ApiError extends Error {
   }
 }
 
+export class SSEStreamError extends Error {
+  constructor(public code: string, message: string) { super(message) }
+}
+
 export async function authorizedFetch(user: User, path: string, init: RequestInit = {}, retry = true): Promise<Response> {
   const token = await user.getIdToken(!retry)
   const headers = new Headers(init.headers)
@@ -39,5 +43,13 @@ export async function streamChat(
     const body = await response.json().catch(() => ({})) as unknown
     throw new ApiError(response.status, body)
   }
-  await consumeSSE(response, onEvent, signal)
+  let streamError: SSEStreamError | null = null
+  await consumeSSE(response, event => {
+    onEvent(event)
+    if (event.event === 'error') {
+      const data = typeof event.data === 'object' && event.data ? event.data as Record<string, unknown> : {}
+      streamError = new SSEStreamError(String(data.code ?? 'generation_failed'), String(data.message ?? 'Generation failed.'))
+    }
+  }, signal)
+  if (streamError) throw streamError
 }

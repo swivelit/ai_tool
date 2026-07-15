@@ -16,7 +16,7 @@ from ...observability import chat_log_payload
 from ...openai_model_router import OpenAIModelRouter
 from ..prompts import build_provider_messages
 from ..types import AIProviderResponse, AIRequest, AIRoute
-from .base import AIProvider
+from .base import AIProvider, GenerationCancellation, GenerationCancelled
 
 
 logger = logging.getLogger(__name__)
@@ -294,6 +294,11 @@ class SarvamProvider(AIProvider):
         self, request: AIRequest, route: AIRoute, on_delta: Callable[[str], None]
     ) -> AIProviderResponse:
         client = self._client_or_create()
+        cancellation = request.metadata.get("cancellation_signal")
+        if not isinstance(cancellation, GenerationCancellation):
+            cancellation = None
+        if cancellation and cancellation.cancelled:
+            raise GenerationCancelled()
         messages = build_provider_messages(request, route, provider="sarvam")
         completions = getattr(getattr(client, "chat", None), "completions", None)
         create = getattr(completions, "create", None)
@@ -306,13 +311,32 @@ class SarvamProvider(AIProvider):
                 max_tokens=route.max_output_tokens, temperature=0.2, stream=True,
             )
         except TypeError:
+            if cancellation and cancellation.cancelled:
+                raise GenerationCancelled()
             response = self.complete(request, route)
             on_delta(response.text)
             return response
+        if cancellation:
+            cancellation.bind_stream(stream)
         parts: list[str] = []
         final_usage: dict[str, int] = {}
         try:
             for chunk in stream:
+                if cancellation and cancellation.cancelled:
+                    text = "".join(parts).strip()
+                    response = None
+                    if text or final_usage:
+                        input_tokens = int(final_usage.get("input_tokens") or OpenAIModelRouter.estimate_tokens(request.message))
+                        output_tokens = int(final_usage.get("output_tokens") or OpenAIModelRouter.estimate_tokens(text))
+                        response = AIProviderResponse(
+                            text=text, provider="sarvam", model=route.model, route=route.route,
+                            reason=route.reason, language=route.language, intent=route.intent,
+                            input_tokens=input_tokens, output_tokens=output_tokens, characters=len(text),
+                            estimated_cost_amount=estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens),
+                            estimated_cost_currency="INR",
+                            raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cancelled": True},
+                        )
+                    raise GenerationCancelled(response)
                 final_usage = _extract_chat_usage(chunk) or final_usage
                 choices = getattr(chunk, "choices", None) or (chunk.get("choices") if isinstance(chunk, dict) else []) or []
                 choice = choices[0] if choices else None
@@ -321,6 +345,12 @@ class SarvamProvider(AIProvider):
                 if delta:
                     value = str(delta); parts.append(value); on_delta(value)
         except TypeError:
+            # A stream that already emitted text must never be followed by a full
+            # completion, which would duplicate the visible and billable answer.
+            if parts:
+                raise HTTPException(status_code=502, detail="Sarvam streaming ended unexpectedly.")
+            if cancellation and cancellation.cancelled:
+                raise GenerationCancelled()
             response = self.complete(request, route)
             on_delta(response.text)
             return response

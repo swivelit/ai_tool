@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from ..ai.prompts import build_provider_messages
 from ..ai.providers.openai_provider import OpenAIProvider
 from ..ai.providers.sarvam_provider import SarvamProvider
+from ..ai.providers.base import GenerationCancelled
 from ..ai.router import AIProviderRouter
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import estimate_tokens, env_decimal, openai_reported_price, price_usage, reserve_price, snapshot_json
@@ -88,7 +89,7 @@ def prepare_web_turn(*, user_id: int, message: str, request_id: str, thread_id: 
             WebChatMessage.role == "user",
         )).first()
         existing_charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
-        if existing_user_message is not None and existing_charge is not None:
+        if existing_user_message is not None and existing_charge is not None and existing_charge.status != "released":
             raise DuplicateRequestInProgress("This request is already being processed.")
 
         if thread_id:
@@ -159,8 +160,11 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 route="idempotent_replay", reason="already_complete", language="en", intent="replay",
                 input_tokens=message.input_tokens, output_tokens=message.output_tokens,
             )
+            if on_delta:
+                on_delta(message.content)
             return CompletedWebTurn(prepared.thread_id, message, get_wallet_summary(session, prepared.user_id), response)
 
+    cancelled = False
     try:
         if prepared.route.provider in {"openai", "sarvam"}:
             provider_map = providers or {}
@@ -175,6 +179,23 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             response = _deterministic_response(prepared.ai_request, prepared.route)
         if on_delta and not (prepared.route.provider in {"openai", "sarvam"} and hasattr(provider, "stream_complete")):
             on_delta(response.text)
+    except GenerationCancelled as exc:
+        cancelled = True
+        if exc.response is not None:
+            response = exc.response
+        else:
+            with SessionLocal() as session:
+                release_usage_reservation(session, prepared.request_id, reason="cancelled_before_provider_usage")
+                user_message = session.exec(select(WebChatMessage).where(
+                    WebChatMessage.user_id == prepared.user_id,
+                    WebChatMessage.request_id == prepared.request_id,
+                    WebChatMessage.role == "user",
+                )).first()
+                if user_message:
+                    user_message.status = "retryable"
+                    session.add(user_message)
+                session.commit()
+            raise
     except BaseException:
         with SessionLocal() as session:
             release_usage_reservation(session, prepared.request_id)
@@ -207,15 +228,15 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             )
         assistant = WebChatMessage(
             thread_id=prepared.thread_id, user_id=prepared.user_id, role="assistant",
-            content=response.text, request_id=prepared.request_id, provider=response.provider,
+            content=response.text or "Generation stopped.", request_id=prepared.request_id, provider=response.provider,
             model=response.model, input_tokens=response.input_tokens, output_tokens=response.output_tokens,
-            usage_source=usage_source, charge_micros=price.micros, status="complete",
+            usage_source=usage_source, charge_micros=price.micros, status="cancelled" if cancelled else "complete",
         )
         session.add(assistant)
         # UsageCharge references this message. An explicit flush guarantees the
         # FK target exists before settlement updates the charge on every SQLAlchemy dialect.
         session.flush([assistant])
-        user_message.status = "complete"
+        user_message.status = "complete" if not cancelled else "cancelled"
         session.add(user_message)
         if prepared.reserved_micros:
             settle_usage_reservation(

@@ -9,7 +9,7 @@ from ...openai_model_router import OpenAIModelRouter
 from ...openai_tracked import get_tracked_chat_completion_metadata, tracked_openai_generation
 from ..prompts import build_provider_messages, build_system_instructions
 from ..types import AIProviderResponse, AIRequest, AIRoute
-from .base import AIProvider
+from .base import AIProvider, GenerationCancellation, GenerationCancelled
 
 
 class OpenAIProvider(AIProvider):
@@ -118,12 +118,41 @@ class OpenAIProvider(AIProvider):
         messages = build_provider_messages(request, route, provider="openai")
         text_parts: list[str] = []
         input_tokens = output_tokens = cached_tokens = 0
+        provider_usage_received = False
         endpoint = str((route.provider_endpoint_candidates or [""])[0] or "chat_completions")
+        cancellation = request.metadata.get("cancellation_signal")
+        if not isinstance(cancellation, GenerationCancellation):
+            cancellation = None
+
+        def partial_response() -> AIProviderResponse | None:
+            text = "".join(text_parts).strip()
+            if not text and not provider_usage_received:
+                return None
+            router = OpenAIModelRouter()
+            billed_input = input_tokens or router.estimate_tokens(request.message)
+            billed_output = output_tokens or router.estimate_tokens(text)
+            return AIProviderResponse(
+                text=text, provider="openai", model=model, route=route.route, reason=route.reason,
+                language=route.language, intent=route.intent, input_tokens=billed_input,
+                output_tokens=billed_output, characters=len(text),
+                estimated_cost_amount=router.estimate_cost(model, billed_input, billed_output),
+                estimated_cost_currency="USD",
+                raw={"usage_actual": provider_usage_received, "cached_input_tokens": cached_tokens, "endpoint": endpoint, "cancelled": True},
+            )
+
+        def check_cancelled() -> None:
+            if cancellation and cancellation.cancelled:
+                raise GenerationCancelled(partial_response())
+
+        check_cancelled()
         if endpoint == "responses" and hasattr(client, "responses"):
             stream = client.responses.create(
                 model=model, input=messages, max_output_tokens=route.max_output_tokens, stream=True
             )
+            if cancellation:
+                cancellation.bind_stream(stream)
             for event in stream:
+                check_cancelled()
                 event_type = str(getattr(event, "type", "") or "")
                 if event_type in {"response.output_text.delta", "response.refusal.delta"}:
                     delta = str(getattr(event, "delta", "") or "")
@@ -132,6 +161,7 @@ class OpenAIProvider(AIProvider):
                 response = getattr(event, "response", None)
                 usage = getattr(response, "usage", None)
                 if usage is not None:
+                    provider_usage_received = True
                     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
                     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
                     details = getattr(usage, "input_tokens_details", None)
@@ -141,7 +171,10 @@ class OpenAIProvider(AIProvider):
                 model=model, messages=messages, max_tokens=route.max_output_tokens,
                 temperature=0.2, stream=True, stream_options={"include_usage": True},
             )
+            if cancellation:
+                cancellation.bind_stream(stream)
             for chunk in stream:
+                check_cancelled()
                 choices = getattr(chunk, "choices", None) or []
                 if choices:
                     delta = str(getattr(getattr(choices[0], "delta", None), "content", "") or "")
@@ -149,6 +182,7 @@ class OpenAIProvider(AIProvider):
                         text_parts.append(delta); on_delta(delta)
                 usage = getattr(chunk, "usage", None)
                 if usage is not None:
+                    provider_usage_received = True
                     input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
                     output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
                     details = getattr(usage, "prompt_tokens_details", None)
@@ -165,7 +199,7 @@ class OpenAIProvider(AIProvider):
             output_tokens=output_tokens, characters=len(text),
             estimated_cost_amount=router.estimate_cost(model, input_tokens, output_tokens),
             estimated_cost_currency="USD",
-            raw={"usage_actual": bool(input_tokens and output_tokens), "cached_input_tokens": cached_tokens, "endpoint": endpoint},
+            raw={"usage_actual": provider_usage_received, "cached_input_tokens": cached_tokens, "endpoint": endpoint},
         )
 
 

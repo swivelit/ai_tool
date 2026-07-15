@@ -16,4 +16,11 @@ export type Bootstrap = {
   wallet: Wallet; billing: BillingConfig;
   features: { web_chat: boolean; prepaid_billing: boolean; local_models: false };
 }
-export type SSEEvent = { event: string; data: unknown }
+export type StreamEventName = 'thread' | 'status' | 'delta' | 'usage' | 'wallet' | 'done' | 'error'
+export type SSEEvent = { event: StreamEventName | (string & {}); data: unknown }
+export type PaymentStatus = {
+  internal_order_id: string; gross_amount_paise: number; credited_amount_micros: number;
+  platform_share_paise: number; refunded_amount_paise: number; status: string;
+  provider_payment_id: string | null; created_at: string; paid_at: string | null;
+  refunded_at: string | null; updated_at: string;
+}

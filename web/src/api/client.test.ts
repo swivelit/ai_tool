@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { authorizedFetch } from './client'
+import { authorizedFetch, SSEStreamError, streamChat } from './client'
 
 describe('authorizedFetch', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -16,4 +16,13 @@ describe('authorizedFetch', () => {
     const response = await authorizedFetch(user as never, '/x')
     expect(response.ok).toBe(true); expect(user.getIdToken).toHaveBeenCalledWith(true)
   })
+})
+
+it('treats an event:error as a failed stream even when HTTP status is 200', async () => {
+  const body = 'event: error\ndata: {"code":"provider_failed","message":"Try again"}\n\n'
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }))
+  const user = { getIdToken: vi.fn().mockResolvedValue('token') }
+  const seen = vi.fn()
+  await expect(streamChat(user as never, { request_id:'r', message:'hello' }, seen, new AbortController().signal)).rejects.toBeInstanceOf(SSEStreamError)
+  expect(seen).toHaveBeenCalledWith({ event:'error', data:{ code:'provider_failed', message:'Try again' } })
 })

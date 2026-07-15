@@ -102,3 +102,25 @@ curl -sS -X POST -H "content-type: application/json" \
 ```
 
 The status response only returns safe metadata: booleans for whether each SMTP/OTP variable is set, masked sender fields, SMTP host/port/TLS, `from_matches_user`, and missing/invalid env names. It never returns `EMAIL_PASS`, `EMAIL_OTP_SECRET`, raw OTP codes, Firebase credentials, or full email bodies.
+
+## Render billing maintenance
+
+Run these as private Render cron jobs against the same database. The stale age
+must remain longer than the longest configured provider timeout so an active
+generation is never released:
+
+```bash
+python -m scripts.billing_maintenance stale-reservations --age-seconds 1800
+python -m scripts.billing_maintenance razorpay --age-seconds 900
+python -m scripts.billing_maintenance razorpay --age-seconds 900 --apply
+```
+
+The Razorpay command is dry-run unless `--apply` is supplied. It reports
+long-lived attempted orders and idempotently repairs captured-but-not-credited
+orders and processed refunds. Duplicate webhook deliveries remain protected by
+the processed-event and wallet-ledger idempotency keys. Review dry-run output
+before enabling the apply job and alert on platform-absorbed usage overages.
+
+Some upstream provider consumption can occur before a cancellation reaches the
+provider. Swico settles reported or conservatively estimated partial usage; it
+releases the full reservation only when no provider usage/output was observed.

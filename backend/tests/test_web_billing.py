@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -12,10 +13,11 @@ from app.billing.errors import InsufficientCreditError
 from app.billing.pricing import calculate_topup, openai_price, sarvam_price, snapshot_json
 from app.billing.service import (
     create_usage_reservation, credit_payment_once, get_wallet_summary,
-    release_usage_reservation, reverse_credit_for_refund, settle_usage_reservation,
+    recover_stale_usage_reservations, release_usage_reservation, reverse_credit_for_refund, settle_usage_reservation,
 )
 from app.database import SessionLocal
-from app.models import PaymentOrder, WalletLedger
+from app.models import PaymentOrder, UsageCharge, WalletLedger
+from app.time_utils import utc_now
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -176,3 +178,53 @@ def test_out_of_order_refund_links_and_credits_before_reversal(client):
 
 def test_webhook_requires_signature_but_not_firebase(client):
     assert client.post("/api/web/billing/razorpay/webhook", content=b"{}").status_code == 400
+
+
+@pytest.mark.parametrize("actual,reserved,expected_balance", [
+    (250_000, 500_000, 4_750_000), (500_000, 500_000, 4_500_000), (750_000, 500_000, 4_250_000),
+])
+def test_settlement_less_equal_and_greater_than_reservation(actual, reserved, expected_balance):
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); session.add(order); session.flush(); credit_payment_once(session, order)
+        charge = create_usage_reservation(session, request_id=f"settle-{actual}", user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=reserved, pricing_snapshot_json="{}")
+        settle_usage_reservation(session, request_id=charge.request_id, provider_cost_amount=Decimal("1"), provider_cost_currency="INR", provider_cost_micros=actual, input_tokens=10, cached_input_tokens=0, output_tokens=10, usage_source="actual", pricing_snapshot_json="{}")
+        summary = get_wallet_summary(session, int(user.id))
+        assert summary["balance_micros"] == expected_balance and summary["reserved_micros"] == 0
+
+
+def test_provider_overage_is_absorbed_instead_of_making_normal_wallet_negative():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); session.add(order); session.flush(); credit_payment_once(session, order)
+        charge = create_usage_reservation(session, request_id="absorbed-overage", user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=1_000_000, pricing_snapshot_json="{}")
+        settled = settle_usage_reservation(session, request_id=charge.request_id, provider_cost_amount=Decimal("8"), provider_cost_currency="INR", provider_cost_micros=8_000_000, input_tokens=10, cached_input_tokens=0, output_tokens=10, usage_source="actual", pricing_snapshot_json="{}")
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
+        assert settled.provider_cost_micros == 8_000_000 and settled.debited_micros == 5_000_000
+        assert json.loads(settled.pricing_snapshot_json)["reconciliation"]["amount_micros"] == 3_000_000
+
+
+def test_stale_reservation_recovery_is_aged_idempotent_and_records_reason():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); session.add(order); session.flush(); credit_payment_once(session, order)
+        stale = create_usage_reservation(session, request_id="stale-charge", user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=100_000, pricing_snapshot_json="{}")
+        fresh = create_usage_reservation(session, request_id="fresh-charge", user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=100_000, pricing_snapshot_json="{}")
+        stale.created_at = utc_now() - timedelta(hours=2); session.add(stale); session.flush()
+        assert recover_stale_usage_reservations(session, age_seconds=1800) == ["stale-charge"]
+        assert recover_stale_usage_reservations(session, age_seconds=1800) == []
+        assert session.get(UsageCharge, fresh.id).status == "reserved"
+        ledger = session.exec(select(WalletLedger).where(WalletLedger.reference_id == stale.id, WalletLedger.entry_type == "reservation_release")).one()
+        assert json.loads(ledger.metadata_json)["reason"] == "stale_reservation_recovery"
+
+
+def test_payment_status_requires_auth_and_enforces_ownership(client):
+    owner = create_test_user(uid="owner", email="owner@example.com")
+    with SessionLocal() as session:
+        order = make_order(int(owner.id)); session.add(order); session.commit(); order_id = order.id
+    assert client.get(f"/api/web/billing/payments/{order_id}").status_code == 401
+    assert client.get(f"/api/web/billing/payments/{order_id}", headers=auth_headers("other", "other@example.com")).status_code == 404
+    response = client.get(f"/api/web/billing/payments/{order_id}", headers=auth_headers("owner", "owner@example.com"))
+    assert response.status_code == 200
+    assert response.json()["gross_amount_paise"] == 1000
+    assert "checkout_signature" not in response.json()

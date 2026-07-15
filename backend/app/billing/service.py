@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_FLOOR
 from typing import Any
 from uuid import uuid4
@@ -119,18 +119,39 @@ def create_usage_reservation(
     provider: str, model: str, reserved_micros: int, pricing_snapshot_json: str,
 ) -> UsageCharge:
     existing = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
-    if existing:
+    if existing and existing.status != "released":
         return existing
     required = max(0, int(reserved_micros))
     wallet = _locked_wallet(session, user_id)
     available = int(wallet.balance_micros - wallet.reserved_micros)
     if available < required or wallet.balance_micros <= 0:
         raise InsufficientCreditError(available, required)
-    charge = UsageCharge(
-        request_id=request_id, user_id=user_id, thread_id=thread_id, provider=provider,
-        model=model, reserved_micros=required, status="reserved",
-        pricing_snapshot_json=pricing_snapshot_json,
-    )
+    attempt = 1
+    if existing:
+        charge = existing
+        try:
+            prior_snapshot = json.loads(charge.pricing_snapshot_json or "{}")
+            attempt = int(prior_snapshot.get("reservation_attempt") or 1) + 1
+        except (TypeError, ValueError):
+            attempt = 2
+        charge.provider = provider
+        charge.model = model
+        charge.reserved_micros = required
+        charge.status = "reserved"
+        charge.settled_at = None
+        charge.pricing_snapshot_json = pricing_snapshot_json
+    else:
+        charge = UsageCharge(
+            request_id=request_id, user_id=user_id, thread_id=thread_id, provider=provider,
+            model=model, reserved_micros=required, status="reserved",
+            pricing_snapshot_json=pricing_snapshot_json,
+        )
+    try:
+        reservation_snapshot = json.loads(pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        reservation_snapshot = {}
+    reservation_snapshot["reservation_attempt"] = attempt
+    charge.pricing_snapshot_json = json.dumps(reservation_snapshot, sort_keys=True, separators=(",", ":"))
     session.add(charge)
     wallet.reserved_micros += required
     wallet.version += 1
@@ -140,7 +161,8 @@ def create_usage_reservation(
     _ledger(
         session, wallet, entry_type="reservation", amount_micros=-required,
         reference_type="usage_charge", reference_id=charge.id,
-        idempotency_key=f"usage-reserve:{request_id}", metadata={"request_id": request_id},
+        idempotency_key=f"usage-reserve:{request_id}:attempt:{attempt}",
+        metadata={"request_id": request_id, "attempt": attempt},
     )
     return charge
 
@@ -160,22 +182,38 @@ def settle_usage_reservation(
     if charge.status != "reserved":
         raise PaymentValidationError("Usage reservation is not active.")
     wallet = _locked_wallet(session, charge.user_id)
-    debit = max(0, int(provider_cost_micros))
+    provider_debit = max(0, int(provider_cost_micros))
     reserved = int(charge.reserved_micros)
+    reservation_attempt = _reservation_attempt(charge)
     wallet.reserved_micros = max(0, wallet.reserved_micros - reserved)
+    # Provider usage can rarely exceed a conservative reservation. Consume any
+    # remaining wallet balance under the same lock, but normal usage must never
+    # create a negative balance. The unmatched provider cost remains explicit on
+    # the charge as a platform-absorbed overage for reconciliation.
+    debit = min(provider_debit, max(0, int(wallet.balance_micros)))
+    absorbed_overage = max(0, provider_debit - debit)
     wallet.balance_micros -= debit
     wallet.version += 1
     wallet.updated_at = utc_now()
     session.add(wallet)
     charge.provider_cost_amount_decimal = provider_cost_amount
     charge.provider_cost_currency = provider_cost_currency
-    charge.provider_cost_micros = debit
+    charge.provider_cost_micros = provider_debit
     charge.debited_micros = debit
     charge.input_tokens = max(0, input_tokens)
     charge.cached_input_tokens = max(0, cached_input_tokens)
     charge.output_tokens = max(0, output_tokens)
     charge.usage_source = usage_source if usage_source in {"actual", "estimated"} else "estimated"
-    charge.pricing_snapshot_json = pricing_snapshot_json
+    try:
+        pricing_snapshot = json.loads(pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        pricing_snapshot = {}
+    if absorbed_overage:
+        pricing_snapshot["reconciliation"] = {
+            "state": "platform_absorbed_overage",
+            "amount_micros": absorbed_overage,
+        }
+    charge.pricing_snapshot_json = json.dumps(pricing_snapshot, sort_keys=True, separators=(",", ":"))
     charge.usd_to_inr_rate = usd_to_inr_rate
     charge.assistant_message_id = assistant_message_id
     charge.status = "settled"
@@ -185,21 +223,30 @@ def settle_usage_reservation(
         session, wallet, entry_type="usage_debit", amount_micros=-debit,
         reference_type="usage_charge", reference_id=charge.id,
         idempotency_key=f"usage-debit:{request_id}",
-        metadata={"provider": charge.provider, "model": charge.model, "usage_source": charge.usage_source},
+        metadata={
+            "provider": charge.provider, "model": charge.model,
+            "usage_source": charge.usage_source,
+            "provider_cost_micros": provider_debit,
+            "platform_absorbed_overage_micros": absorbed_overage,
+        },
     )
     _ledger(
         session, wallet, entry_type="reservation_release", amount_micros=reserved,
         reference_type="usage_charge", reference_id=charge.id,
-        idempotency_key=f"usage-release:{request_id}", metadata={"unused_micros": max(0, reserved - debit)},
+        idempotency_key=f"usage-release:{request_id}:attempt:{reservation_attempt}",
+        metadata={"unused_micros": max(0, reserved - debit), "attempt": reservation_attempt},
     )
     return charge
 
 
-def release_usage_reservation(session: Session, request_id: str) -> UsageCharge | None:
+def release_usage_reservation(
+    session: Session, request_id: str, *, reason: str = "provider_failed_or_cancelled"
+) -> UsageCharge | None:
     charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()).first()
     if charge is None or charge.status in {"released", "settled", "failed"}:
         return charge
     wallet = _locked_wallet(session, charge.user_id)
+    reservation_attempt = _reservation_attempt(charge)
     wallet.reserved_micros = max(0, wallet.reserved_micros - int(charge.reserved_micros))
     wallet.version += 1
     wallet.updated_at = utc_now()
@@ -210,9 +257,42 @@ def release_usage_reservation(session: Session, request_id: str) -> UsageCharge 
     _ledger(
         session, wallet, entry_type="reservation_release", amount_micros=int(charge.reserved_micros),
         reference_type="usage_charge", reference_id=charge.id,
-        idempotency_key=f"usage-release:{request_id}", metadata={"reason": "provider_failed_or_cancelled"},
+        idempotency_key=f"usage-release:{request_id}:attempt:{reservation_attempt}",
+        metadata={"reason": reason, "attempt": reservation_attempt},
     )
     return charge
+
+
+def _reservation_attempt(charge: UsageCharge) -> int:
+    try:
+        return max(1, int(json.loads(charge.pricing_snapshot_json or "{}").get("reservation_attempt") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def recover_stale_usage_reservations(
+    session: Session, *, age_seconds: int, now: datetime | None = None,
+    reason: str = "stale_reservation_recovery",
+) -> list[str]:
+    """Release reservations older than a conservative operator-selected age.
+
+    The operation is row-locked and idempotent. Render should invoke the bundled
+    command from a scheduled job with an age longer than the maximum provider
+    timeout; it must not be run with a threshold that overlaps active requests.
+    """
+    minimum_age = max(60, int(age_seconds))
+    cutoff = (now or utc_now()) - timedelta(seconds=minimum_age)
+    rows = list(session.exec(
+        select(UsageCharge).where(
+            UsageCharge.status == "reserved", UsageCharge.created_at < cutoff
+        ).order_by(UsageCharge.created_at.asc()).with_for_update()
+    ).all())
+    recovered: list[str] = []
+    for charge in rows:
+        released = release_usage_reservation(session, charge.request_id, reason=reason)
+        if released is not None and released.status == "released":
+            recovered.append(charge.request_id)
+    return recovered
 
 
 def reverse_credit_for_refund(session: Session, order: PaymentOrder, new_refunded_amount_paise: int) -> int:

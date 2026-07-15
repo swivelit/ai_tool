@@ -354,8 +354,12 @@ CORS_ALLOW_ORIGINS = [
     if origin.strip()
 ] or DEFAULT_CORS_ORIGINS
 
-if APP_ENV in {"prod", "production"} and "*" in CORS_ALLOW_ORIGINS:
-    raise RuntimeError('CORS_ALLOW_ORIGINS must not contain "*" in production.')
+CORS_CONFIGURATION_ERROR: str | None = None
+if APP_ENV in {"prod", "production"}:
+    if not os.getenv("CORS_ALLOW_ORIGINS", "").strip():
+        CORS_CONFIGURATION_ERROR = "CORS_ALLOW_ORIGINS must list exact approved origins in production."
+    elif any("*" in origin or not origin.startswith("https://") or origin.endswith("/") for origin in CORS_ALLOW_ORIGINS):
+        CORS_CONFIGURATION_ERROR = "Production CORS origins must be exact HTTPS origins without wildcards or trailing slashes."
 
 app = FastAPI(title="Swico Backend")
 RUNTIME_STATUS: Dict[str, Any] = {
@@ -1044,6 +1048,11 @@ def startup_runtime_services() -> None:
             detail=str(exc),
         )
 
+    _record_runtime_service(
+        "cors", ok=CORS_CONFIGURATION_ERROR is None, required=auth_required,
+        detail=CORS_CONFIGURATION_ERROR or "exact origins configured",
+    )
+
     email_status = email_delivery_runtime_status(app_env=APP_ENV)
     email_log_extra = {
         "event": "email_delivery_config",
@@ -1135,6 +1144,12 @@ async def log_requests(request: Request, call_next):
         raise
     duration_ms = round((time.perf_counter() - start) * 1000, 2)
     response.headers["x-request-id"] = request_id
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=()"
+    response.headers["X-Frame-Options"] = "DENY"
+    if APP_ENV in {"prod", "production"}:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     logger.info(
         "request completed",
         extra={
@@ -1153,10 +1168,12 @@ def root():
     return {
         "ok": True,
         "app": "Swico",
-        "message": "Persona-aware Tamil assistant backend is running.",
+        "message": "Swico mobile assistant and standalone web workspace backend are running.",
         "endpoints": {
             "health": "/health",
-            "text": "/api/chat",
+            "web_health": "/api/web/health",
+            "mobile_chat": "/api/chat",
+            "web_chat_stream": "/api/web/chat/stream",
             "voice": "/transcribe-and-analyze",
         },
     }
