@@ -6,6 +6,7 @@ import {
   getE2eHandsFreeCommand,
   isE2eMockHandsFreeAudioEnabled,
   isE2eMockHandsFreeEnabled,
+  isPlayFgsMicrophoneDemoEnabled,
 } from "./e2eMode";
 import type { AssistantSettings, WakeModelSettings, WakeModelStatus } from "./storage";
 
@@ -14,6 +15,7 @@ type NativeWakeWordModule = {
   getStatus?: () => Promise<WakeWordNativeStatus>;
   configure?: (config: WakeWordStartConfig) => Promise<{ ok: true }>;
   startSession?: (config: WakeWordStartConfig) => Promise<{ ok: true }>;
+  startDemoSession?: () => Promise<{ ok: true }>;
   stopSession?: () => Promise<{ ok: true }>;
   cancelCommand?: () => Promise<{ ok: true }>;
   notifyTtsStarted?: () => Promise<{ ok: true }>;
@@ -542,7 +544,7 @@ function normalizeSha(value: unknown) {
 }
 
 export async function ensureWakeModel(settings: AssistantSettings): Promise<WakeModelState> {
-  if (isE2eMockHandsFreeEnabled()) {
+  if (isE2eMockHandsFreeEnabled() || isPlayFgsMicrophoneDemoEnabled()) {
     return toWakeModelState({
       status: "e2e_mock",
       phraseKey: "e2e-mock",
@@ -551,6 +553,9 @@ export async function ensureWakeModel(settings: AssistantSettings): Promise<Wake
       threshold: 0.5,
       sampleRate: 16000,
       frameMs: 80,
+      modelPaths: {
+        wakeModel: "play-demo-fixture.onnx",
+      },
       modelRoles: ["wake", "melspectrogram", "embedding"],
       updatedAt: settings.wakeModel?.updatedAt || "e2e_mock",
     });
@@ -940,6 +945,9 @@ export async function startHandsFreeSession(
   sessionSubscriptions = attachHandsFreeNativeListeners(handlers);
 
   try {
+    if (isPlayFgsMicrophoneDemoEnabled() && nativeModule.startDemoSession) {
+      return await nativeModule.startDemoSession();
+    }
     return await nativeModule.startSession(startConfig);
   } catch (error) {
     sessionSubscriptions.forEach((subscription) => subscription.remove());
@@ -997,7 +1005,9 @@ function normalizeStartConfig(config: WakeWordStartConfig | WakeModelState): Wak
       throw new Error("Wake model is not ready.");
     }
     const rawModelPaths = maybeState.modelPaths || {};
-    const wakeModel = rawModelPaths.wakeModel || "";
+    const wakeModel =
+      rawModelPaths.wakeModel ||
+      (maybeState.status === "e2e_mock" ? "play-demo-fixture.onnx" : "");
     if (!wakeModel && maybeState.status !== "e2e_mock") {
       throw new Error("Wake model path is missing.");
     }

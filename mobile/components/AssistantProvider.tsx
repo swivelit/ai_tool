@@ -22,6 +22,7 @@ import {
   isE2eMockAuthEnabled,
   isE2eMockHandsFreeEnabled,
   isE2eMockLifeContextEnabled,
+  isPlayFgsMicrophoneDemoEnabled,
 } from "@/lib/e2eMode";
 import { resolveSettingsLanguageAfterProfileRestore } from "@/lib/profileSync";
 import {
@@ -67,11 +68,19 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(async () => {
     if (isE2eMockAuthEnabled()) {
-      const mockProfile = getE2eMockUserProfile();
+      const playFgsMicrophoneDemo = isPlayFgsMicrophoneDemoEnabled();
+      const mockProfile = playFgsMicrophoneDemo
+        ? {
+            ...getE2eMockUserProfile(),
+            name: "Swico Demo User",
+            place: "Local Device",
+            email: "demo@swico.local",
+          }
+        : getE2eMockUserProfile();
       const mockSettings: AssistantSettings = {
         ...DEFAULTS.settings,
         languageMode: mockProfile.replyLanguage || "en",
-        ...(isE2eMockHandsFreeEnabled()
+        ...(isE2eMockHandsFreeEnabled() || playFgsMicrophoneDemo
           ? {
               handsFreeEnabled: true,
               autoSpeakReplies: true,
@@ -82,6 +91,9 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
                 phraseKey: "e2e-mock",
                 wakePhrase: getE2eHandsFreeWakePhrase(),
                 modelType: "e2e_mock",
+                modelPaths: {
+                  wakeModel: "play-demo-fixture.onnx",
+                },
               },
             }
           : {}),

@@ -308,6 +308,15 @@ class OpenWakeWordEngine {
       )
     }
 
+    if (parsed.wakeModelPath == "play-demo-fixture.onnx") {
+      return DeterministicWakeWordPipeline(
+        modelName = "play-demo-fixture.onnx",
+        phraseKey = parsed.phraseKey.ifBlank { null },
+        acceptedFrameSamples = 1280,
+        scores = listOf(0.12, 0.12, 0.12, 0.12),
+      )
+    }
+
     val wakeModel = resolveFilePath(parsed.wakeModelPath, "wakeModel")
     val melModel = parsed.melspectrogramModelPath?.let {
       resolveFilePath(it, "melspectrogramModel")
