@@ -534,6 +534,9 @@ async def razorpay_webhook(request: Request):
             credit_payment_once(session, order)
         elif event_type == "refund.processed":
             payment_id = str(refund.get("payment_id") or payment.get("id") or "")
+            refund_id = str(refund.get("id") or "").strip()
+            if not refund_id:
+                raise HTTPException(400, "Missing refund ID.")
             order = session.exec(select(PaymentOrder).where(PaymentOrder.provider_payment_id == payment_id).with_for_update()).first()
             if order is None and payment.get("order_id"):
                 order = session.exec(select(PaymentOrder).where(
@@ -556,7 +559,17 @@ async def razorpay_webhook(request: Request):
             amount = int(refund.get("amount", -1))
             if amount <= 0 or order.refunded_amount_paise + amount > order.gross_amount_paise:
                 raise HTTPException(400, "Refund amount does not match.")
-            reverse_credit_for_refund(session, order, order.refunded_amount_paise + amount)
+            try:
+                order_metadata = json.loads(order.metadata_json or "{}")
+            except (TypeError, ValueError):
+                order_metadata = {}
+            processed_refund_ids = set(order_metadata.get("processed_refund_ids") or [])
+            if refund_id not in processed_refund_ids:
+                reverse_credit_for_refund(session, order, order.refunded_amount_paise + amount)
+                processed_refund_ids.add(refund_id)
+                order_metadata["processed_refund_ids"] = sorted(processed_refund_ids)
+                order.metadata_json = json.dumps(order_metadata, sort_keys=True, separators=(",", ":"))
+                session.add(order)
         elif event_type == "refund.failed":
             pass  # Valid event is recorded without reversing user credit.
         else:

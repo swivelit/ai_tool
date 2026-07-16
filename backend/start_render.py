@@ -11,6 +11,8 @@ from typing import Optional
 
 import uvicorn
 
+from app.production_config import ProductionConfigurationError, validate_production_configuration
+
 BACKEND_ROOT = Path(__file__).resolve().parent
 
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
@@ -208,10 +210,18 @@ def main() -> None:
     os.environ.setdefault("AUTO_CREATE_TABLES", "false")
     startup_failure_default = "true" if _is_production_environment() else "false"
     os.environ.setdefault("FAIL_STARTUP_ON_REQUIRED_SERVICE_ERROR", startup_failure_default)
-    os.environ.setdefault(
-        "REQUIRE_MIGRATIONS_BEFORE_STARTUP",
-        "true" if _is_production_environment() else "false",
-    )
+    # Render's pre-deploy command owns production migrations. Running the same
+    # migration again during HTTP startup creates a second failure mode and can
+    # delay health checks.
+    os.environ.setdefault("RUN_MIGRATIONS_ON_STARTUP", "false" if _is_production_environment() else "true")
+    os.environ.setdefault("REQUIRE_MIGRATIONS_BEFORE_STARTUP", "false")
+
+    if _is_production_environment():
+        try:
+            validate_production_configuration()
+        except ProductionConfigurationError as exc:
+            logger.error("production_configuration_invalid %s", exc)
+            sys.exit(78)
 
     _start_migrations_with_grace_period()
 

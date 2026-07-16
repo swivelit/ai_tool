@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, SunMoon, Trash2, X } from 'lucide-react'
+import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, SunMoon, Trash2, X } from 'lucide-react'
 import type { Thread, Wallet } from '../types'
 
 type Group = { label: string; threads: Thread[] }
@@ -69,7 +69,6 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
       <button className="credit-card" onClick={addCredit}><span><small>AI credits</small><strong>₹{((wallet?.available_micros ?? 0) / 1_000_000).toFixed(2)}</strong></span><b><Plus size={14} /> Add credit</b></button>
       <div className="account-wrap"><button className="account-button" aria-expanded={account} onClick={() => setAccount(!account)}><span className="avatar">{userName.slice(0, 1).toUpperCase()}</span><span>{userName}</span><MoreHorizontal size={17} /></button>
         {account && <div className="account-menu" role="menu">
-          <button role="menuitem" onClick={() => setAccount(false)}><Settings size={16} />Settings</button>
           <button role="menuitem" onClick={() => { toggleTheme(); setAccount(false) }}><SunMoon size={16} />Toggle theme</button>
           <button role="menuitem" onClick={signOut}><LogOut size={16} />Sign out</button>
         </div>}

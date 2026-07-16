@@ -213,7 +213,7 @@ class AIUsageEvent(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     created_at: datetime = Field(default_factory=utc_now, index=True)
-    request_id: Optional[str] = Field(default=None, index=True)
+    request_id: Optional[str] = Field(default=None)
     user_id_hash: Optional[str] = Field(default=None, index=True)
     provider: str = Field(index=True)
     model: Optional[str] = Field(default=None, index=True)
@@ -442,7 +442,6 @@ class DailyRoutine(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
     user_id: int = Field(
-        index=True,
         foreign_key="user.id",
         unique=True,
     )
@@ -466,15 +465,15 @@ class UserProfile(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
     user_id: int = Field(
-        index=True,
         foreign_key="user.id",
+        ondelete="CASCADE",
         unique=True,
     )
 
-    answers_json: str
+    answers_json: str = Field(sa_column=Column(Text, nullable=False))
     questions_version: int = 1
 
-    profile_summary: Optional[str] = None
+    profile_summary: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     updated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -483,6 +482,11 @@ class UserProfile(SQLModel, table=True):
 # --------------------
 class RagEmbedding(SQLModel, table=True):
     __tablename__ = "rag_embedding"
+    __table_args__ = (
+        Index("ix_rag_embedding_content_hash_unique", "content_hash", unique=True),
+        Index("ix_rag_embedding_user_source_updated", "user_id", "source_type", "updated_at"),
+        Index("ix_rag_embedding_user_updated", "user_id", "updated_at"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: Optional[int] = Field(default=None, index=True, foreign_key="user.id")

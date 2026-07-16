@@ -390,20 +390,19 @@ def set_request_context(*, request_id: Optional[str] = None, route: Optional[str
         _user_ctx.set(str(user_id))
 
     if sentry_sdk is not None:
-        with sentry_sdk.configure_scope() as scope:  # pragma: no branch
-            scope.set_tag("request_id", _request_id_ctx.get(""))
-            scope.set_tag("route", _route_ctx.get(""))
-            if _user_ctx.get(""):
-                scope.set_user({"id": _user_ctx.get("")})
-            else:
-                scope.set_user(None)
+        scope = sentry_sdk.get_isolation_scope()
+        scope.set_tag("request_id", _request_id_ctx.get(""))
+        scope.set_tag("route", _route_ctx.get(""))
+        if _user_ctx.get(""):
+            scope.set_user({"id": _user_ctx.get("")})
+        else:
+            scope.set_user(None)
 
 
 def add_sentry_context(name: str, payload: Dict[str, Any]) -> None:
     if sentry_sdk is None:
         return
-    with sentry_sdk.configure_scope() as scope:  # pragma: no branch
-        scope.set_context(str(name), payload)
+    sentry_sdk.get_isolation_scope().set_context(str(name), payload)
 
 
 def capture_exception(exc: BaseException) -> None:
@@ -417,7 +416,7 @@ def clear_request_context() -> None:
     _route_ctx.set("")
     _user_ctx.set("")
     if sentry_sdk is not None:
-        with sentry_sdk.configure_scope() as scope:  # pragma: no branch
-            scope.set_tag("request_id", "")
-            scope.set_tag("route", "")
-            scope.set_user(None)
+        scope = sentry_sdk.get_isolation_scope()
+        scope.set_tag("request_id", "")
+        scope.set_tag("route", "")
+        scope.set_user(None)

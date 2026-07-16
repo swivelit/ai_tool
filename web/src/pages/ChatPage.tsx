@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } 
 import { ChevronDown, X } from 'lucide-react'
 import type { Message, Bootstrap, Thread, Wallet, SSEEvent } from '../types'
 import { ApiError, SSEStreamError, apiJson, streamChat } from '../api/client'
+import { chatErrorMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
 import { useAuth } from '../auth/useAuth'
 import { Sidebar, SidebarTrigger } from '../components/Sidebar'
@@ -12,20 +13,6 @@ import { applyTheme, resolveTheme, type Theme } from '../theme'
 const BillingModal = lazy(() => import('../billing/BillingModal').then(module => ({ default: module.BillingModal })))
 
 type DialogState = { type: 'rename' | 'delete'; thread: Thread; value: string } | null
-
-function errorMessage(error: unknown, offline: boolean): string {
-  if (offline) return 'You’re offline. Reconnect and try again.'
-  if (error instanceof SSEStreamError) return error.message || 'The AI provider could not finish this response. Retry when you’re ready.'
-  if (error instanceof ApiError) {
-    if (error.status === 401) return 'Your session expired. Sign in again to continue.'
-    if (error.status === 402) return 'You need more AI credit to continue.'
-    if (error.status === 409) return 'That request is already being processed.'
-    if (error.status === 422) return 'Review your message and try again.'
-    if (error.status === 429) return 'You’re sending messages too quickly. Wait a moment and retry.'
-    if (error.status >= 500) return 'The AI provider is temporarily unavailable. Your unused reservation will be released.'
-  }
-  return 'Swico could not finish that response. You can retry.'
-}
 
 export function ChatPage() {
   const { user, signOut } = useAuth()
@@ -129,8 +116,8 @@ export function ChatPage() {
         dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial provider usage may already have been charged.')
       } else {
         if (caught instanceof ApiError && caught.status === 402) setBilling(true)
-        setError(errorMessage(caught, !navigator.onLine))
-        if (!(caught instanceof SSEStreamError)) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: errorMessage(caught, !navigator.onLine) } } })
+        setError(chatErrorMessage(caught, !navigator.onLine))
+        if (!(caught instanceof SSEStreamError)) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: chatErrorMessage(caught, !navigator.onLine) } } })
       }
     } finally { setStreaming(false); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`) }
   }
@@ -172,7 +159,7 @@ export function ChatPage() {
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
       select={select} newChat={newChat} addCredit={openBilling} mutate={mutate} signOut={() => void signOut()} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
-    <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><button className="product-selector">Swico <ChevronDown size={15} /></button><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
+    <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="product-selector">Swico <ChevronDown size={15} aria-hidden="true" /></span><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
       <Conversation messages={messages} phase={streamState.phase} retry={retry} suggest={text => { setDraft(text); setFocusKey(`suggest-${Date.now()}`) }} />

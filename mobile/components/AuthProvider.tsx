@@ -2,6 +2,7 @@ import React, {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -138,7 +139,10 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   assertE2eModeAllowed();
   const e2eMockAuth = isE2eMockAuthEnabled();
-  const e2eUser = e2eMockAuth ? (getE2eMockFirebaseUser() as User) : null;
+  const e2eUser = useMemo(
+    () => (e2eMockAuth ? (getE2eMockFirebaseUser() as User) : null),
+    [e2eMockAuth]
+  );
 
   const [firebaseUser, setFirebaseUser] = useState<User | null>(e2eUser);
   const [loading, setLoading] = useState(!e2eMockAuth);
@@ -186,7 +190,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return unsubscribe;
-  }, [e2eMockAuth]);
+  }, [e2eMockAuth, e2eUser]);
 
   async function reloadUser(authUser: User) {
     const configuredAuth = requireConfiguredAuth();

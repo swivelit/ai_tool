@@ -82,7 +82,20 @@ class AIProviderRouter:
                 metadata=intent_metadata,
             )
 
-        if language.prefer_provider == "sarvam" or intent.intent in {"translation", "tts", "stt", "contextual_translate", "contextual_explain"}:
+        web_routing_mode = (
+            str(os.getenv("AI_PROVIDER_ROUTING_MODE", "cost_optimized")).strip().lower()
+            if request.metadata.get("client_surface") == "web"
+            else ""
+        )
+        prefer_sarvam = language.prefer_provider == "sarvam" or intent.intent in {
+            "translation", "tts", "stt", "contextual_translate", "contextual_explain",
+        }
+        if web_routing_mode == "openai_only":
+            prefer_sarvam = False
+        elif web_routing_mode == "sarvam_only":
+            prefer_sarvam = True
+
+        if prefer_sarvam:
             model = chat_model_for_intent(intent.intent)
             return AIRoute(
                 provider="sarvam",

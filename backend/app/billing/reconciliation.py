@@ -34,17 +34,38 @@ def reconcile_razorpay_orders(
             payments = provider.get("items") if isinstance(provider, dict) else []
             captured = next((item for item in (payments or []) if item.get("status") == "captured"), None)
             if captured:
-                outcome["action"] = "credit_captured_payment"
-                if apply:
-                    order.provider_payment_id = str(captured.get("id") or order.provider_payment_id or "") or None
-                    order.status = "captured"
-                    credit_payment_once(session, order)
+                payment_id = str(captured.get("id") or "")
+                valid_capture = (
+                    bool(payment_id)
+                    and str(captured.get("order_id") or "") == str(order.provider_order_id)
+                    and int(captured.get("amount", -1)) == int(order.gross_amount_paise)
+                    and captured.get("currency") == "INR"
+                )
+                if not valid_capture:
+                    outcome["action"] = "review_provider_mismatch"
+                else:
+                    outcome["action"] = "credit_captured_payment"
+                    if apply:
+                        order.provider_payment_id = payment_id
+                        order.status = "captured"
+                        credit_payment_once(session, order)
             elif order.status == "attempted":
                 outcome["action"] = "review_long_lived_attempt"
         if order.provider_payment_id and order.status in {"credited", "partially_refunded", "refunded"}:
             provider_refunds = client.fetch_payment_refunds(order.provider_payment_id)
             items = provider_refunds.get("items") if isinstance(provider_refunds, dict) else []
-            total = sum(int(item.get("amount") or 0) for item in (items or []) if item.get("status") == "processed")
+            processed = [item for item in (items or []) if item.get("status") == "processed"]
+            valid_refunds = all(
+                int(item.get("amount") or 0) > 0
+                and item.get("currency") in {None, "INR"}
+                and str(item.get("payment_id") or order.provider_payment_id) == str(order.provider_payment_id)
+                for item in processed
+            )
+            total = sum(int(item.get("amount") or 0) for item in processed)
+            if not valid_refunds or total > order.gross_amount_paise:
+                outcome["action"] = "review_provider_mismatch"
+                results.append(outcome)
+                continue
             if total > order.refunded_amount_paise:
                 outcome["action"] = "reconcile_refund"
                 outcome["provider_refunded_amount_paise"] = total

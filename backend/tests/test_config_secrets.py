@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import importlib
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -21,6 +23,18 @@ def test_alembic_ini_does_not_contain_passworded_postgres_url() -> None:
     for line in alembic_ini.read_text(encoding="utf-8").splitlines():
         for match in POSTGRES_URL_RE.finditer(line):
             assert not _is_passworded_postgres_url(match.group(0))
+
+
+def test_git_tracked_files_pass_secret_scan() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, str(repository_root / "scripts" / "check-tracked-secrets.py")],
+        cwd=repository_root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout
 
 
 def test_production_observability_omits_chat_previews_by_default(monkeypatch) -> None:

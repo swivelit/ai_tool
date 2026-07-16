@@ -23,7 +23,7 @@ def main() -> None:
         if args.command == "stale-reservations":
             recovered = recover_stale_usage_reservations(session, age_seconds=args.age_seconds)
             session.commit()
-            print(json.dumps({"recovered_count": len(recovered), "request_ids": recovered}))
+            print(json.dumps({"recovered_count": len(recovered)}))
         else:
             results = reconcile_razorpay_orders(
                 session, client=RazorpayClient(), age_seconds=args.age_seconds, apply=args.apply,

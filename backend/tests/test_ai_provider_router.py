@@ -39,6 +39,20 @@ def test_tanglish_routes_to_sarvam_30b(monkeypatch):
     assert route.intent.startswith("contextual_")
 
 
+def test_web_openai_only_mode_never_routes_to_sarvam(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDER_ROUTING_MODE", "openai_only")
+    request = _request("தமிழில் விளக்குங்கள்", None)
+    request.metadata["client_surface"] = "web"
+    assert AIProviderRouter().select_route(request).provider == "openai"
+
+
+def test_web_sarvam_only_mode_never_routes_to_openai(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDER_ROUTING_MODE", "sarvam_only")
+    request = _request("Explain database indexes", "en")
+    request.metadata["client_surface"] = "web"
+    assert AIProviderRouter().select_route(request).provider == "sarvam"
+
+
 def test_contextual_shortening_routes_to_openai_cheap_ladder(monkeypatch):
     monkeypatch.delenv("OPENAI_MODEL_CHEAP", raising=False)
     route = AIProviderRouter().select_route(_request("make it shorter", "en"))

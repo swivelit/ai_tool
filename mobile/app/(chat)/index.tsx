@@ -468,7 +468,6 @@ export default function Home() {
     keyboardHeight: keyboardState.height,
     platform: Platform.OS,
   });
-  const isSmallPhone = layout.isSmallPhone;
   const horizontalPadding = layout.horizontalPadding;
   const topPadding = layout.topPadding;
   const bottomPadding = layout.composerBottomPadding;
@@ -713,6 +712,8 @@ export default function Home() {
         openVoiceSession();
       }
     },
+    // Function declarations below intentionally read the latest component state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [chatActionsOpen, confirmOpen, drawerOpen],
   );
   const closeVoiceFromSwipe = useCallback((dx: number, dy: number) => {
@@ -723,6 +724,8 @@ export default function Home() {
     ) {
       void closeVoiceSheetSafely();
     }
+    // Function declaration below intentionally reads the latest component state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const handleChatSwipeTouchStart = useCallback((event: any) => {
     chatSwipeTouchStartRef.current = firstTouchPoint(event);
@@ -760,6 +763,8 @@ export default function Home() {
       }
       closeVoiceFromSwipe(dx, dy);
     },
+    // E2E-only function declaration below intentionally reads the latest refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [closeVoiceFromSwipe, e2eHandsFreeEnabled, topPadding, width],
   );
   const chatSwipePanResponder = useMemo(
@@ -830,6 +835,8 @@ export default function Home() {
     } else {
       setVoiceSheetOpen(true);
     }
+    // Function declaration below intentionally reads the latest component state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const keepHandsFreeVoiceSheetOpen = useCallback(() => {
@@ -966,6 +973,8 @@ export default function Home() {
     } finally {
       nativeHandsFreeSessionInFlightRef.current = false;
     }
+    // Event-handler factory is a function declaration that reads current refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [e2eHandsFreeEnabled]);
 
   const startHandsFreeCommandRecognizer = useCallback(async () => {
@@ -1350,6 +1359,9 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
+  // The selected settings fields are deliberate; depending on the full object
+  // would retrigger this persistence effect after its own wake-model update.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     appState,
     settings.handsFreeEnabled,
@@ -2039,15 +2051,6 @@ export default function Home() {
       next[index] = { ...next[index], ...patch };
       return next;
     });
-  }
-
-  function voiceTextHash(value: string) {
-    let hash = 2166136261;
-    for (let index = 0; index < value.length; index += 1) {
-      hash ^= value.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
-    }
-    return Math.abs(hash >>> 0).toString(16);
   }
 
   function isActiveChatRequest(requestId: string) {

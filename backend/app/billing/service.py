@@ -350,7 +350,7 @@ def enforce_rate_limit(session: Session, *, user_id: int, action: str, limit: in
             constraint="uq_api_rate_limit_scope_window",
             set_={"request_count": ApiRateLimit.request_count + 1, "updated_at": now},
         ).returning(ApiRateLimit.request_count)
-        count = int(session.exec(statement).one())
+        count = int(session.exec(statement).scalar_one())
         if count > limit:
             raise RateLimitError("Rate limit exceeded. Please try again shortly.")
         return

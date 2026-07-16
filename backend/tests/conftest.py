@@ -10,7 +10,7 @@ TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 # Keep pytest isolated from developer/staging/production config values in .env.
 # app.database calls load_dotenv(), which does not override existing environment
 # variables, so these must be set before any app modules are imported.
-os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.as_posix()}"
+os.environ["DATABASE_URL"] = os.getenv("TEST_DATABASE_URL", f"sqlite:///{TEST_DB_PATH.as_posix()}")
 os.environ["APP_ENV"] = "test"
 os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["JOB_WORKER_ENABLED"] = "false"

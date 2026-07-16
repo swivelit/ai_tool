@@ -91,7 +91,7 @@ def sarvam_price(model: str, input_tokens: int, output_tokens: int, cached_input
     large = "105" in str(model).lower()
     prefix = "105B" if large else "30B"
     input_rate = env_decimal(f"SARVAM_PRICE_{prefix}_INPUT_INR_PER_1M", "4.0" if large else "2.5")
-    cached_rate = env_decimal(f"SARVAM_PRICE_{prefix}_CACHED_INPUT_INR_PER_1M", str(input_rate))
+    cached_rate = env_decimal(f"SARVAM_PRICE_{prefix}_CACHED_INPUT_INR_PER_1M", "2.5" if large else "1.5")
     output_rate = env_decimal(f"SARVAM_PRICE_{prefix}_OUTPUT_INR_PER_1M", "16.0" if large else "10.0")
     uncached = max(0, int(input_tokens) - int(cached_input_tokens))
     amount_inr = (

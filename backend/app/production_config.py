@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
+import os
+from urllib.parse import urlsplit
+
+
+class ProductionConfigurationError(RuntimeError):
+    """Raised with variable names only; configuration values are never included."""
+
+    def __init__(self, errors: list[str]):
+        self.errors = tuple(errors)
+        super().__init__("Invalid production configuration: " + "; ".join(errors))
+
+
+_TRUE = {"1", "true", "yes", "y", "on"}
+_FALSE = {"0", "false", "no", "n", "off"}
+
+
+def _value(env: Mapping[str, str], name: str, default: str = "") -> str:
+    return str(env.get(name, default) or "").strip()
+
+
+def _bool(env: Mapping[str, str], name: str, default: bool) -> bool | None:
+    raw = _value(env, name, "true" if default else "false").lower()
+    if raw in _TRUE:
+        return True
+    if raw in _FALSE:
+        return False
+    return None
+
+
+def _decimal(env: Mapping[str, str], name: str, default: str) -> Decimal | None:
+    try:
+        return Decimal(_value(env, name, default))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _integer(env: Mapping[str, str], name: str, default: str) -> int | None:
+    try:
+        return int(_value(env, name, default))
+    except ValueError:
+        return None
+
+
+def _exact_https_origin(origin: str) -> bool:
+    if not origin or origin.endswith("/") or "*" in origin:
+        return False
+    parsed = urlsplit(origin)
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and not parsed.username
+        and not parsed.password
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+        and origin == f"https://{parsed.netloc}"
+    )
+
+
+def production_configuration_errors(environ: Mapping[str, str] | None = None) -> list[str]:
+    env = os.environ if environ is None else environ
+    errors: list[str] = []
+
+    if _value(env, "APP_ENV").lower() not in {"prod", "production"}:
+        errors.append("APP_ENV must be production")
+
+    required_false = (
+        "LOG_CHAT_CONTENT",
+        "AUTH_ALLOW_DEV_TOKENS",
+        "AUTO_CREATE_TABLES",
+        "RUN_MIGRATIONS_ON_STARTUP",
+        "REQUIRE_MIGRATIONS_BEFORE_STARTUP",
+        "EMAIL_OTP_DEV_RETURN_CODE",
+    )
+    for name in required_false:
+        parsed = _bool(env, name, False)
+        if parsed is not False:
+            errors.append(f"{name} must be false")
+
+    if _bool(env, "WEB_APP_ENABLED", False) is not True:
+        errors.append("WEB_APP_ENABLED must be true")
+
+    database_url = _value(env, "DATABASE_URL")
+    if not database_url:
+        errors.append("DATABASE_URL must be configured")
+    elif not database_url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
+        errors.append("DATABASE_URL must use PostgreSQL in production")
+
+    if not (_value(env, "FIREBASE_CREDENTIALS_JSON") or _value(env, "GOOGLE_APPLICATION_CREDENTIALS")):
+        errors.append("Firebase Admin configuration must be configured")
+
+    routing_mode = _value(env, "AI_PROVIDER_ROUTING_MODE", "cost_optimized").lower()
+    if routing_mode not in {"cost_optimized", "language_optimized", "openai_only", "sarvam_only"}:
+        errors.append("AI_PROVIDER_ROUTING_MODE is unsupported")
+    if routing_mode != "sarvam_only" and not _value(env, "OPENAI_API_KEY"):
+        errors.append("OPENAI_API_KEY must be configured for the selected routing mode")
+    if routing_mode != "openai_only" and not _value(env, "SARVAM_API_KEY"):
+        errors.append("SARVAM_API_KEY must be configured for the selected routing mode")
+    if _bool(env, "OPENAI_ENABLE_GPT35_EMERGENCY_FALLBACK", False) is not False:
+        errors.append("OPENAI_ENABLE_GPT35_EMERGENCY_FALLBACK must be false because the configured snapshot is deprecated")
+
+    key_id = _value(env, "RAZORPAY_KEY_ID")
+    key_secret = _value(env, "RAZORPAY_KEY_SECRET")
+    webhook_secret = _value(env, "RAZORPAY_WEBHOOK_SECRET")
+    razorpay_mode = _value(env, "RAZORPAY_MODE", "test").lower()
+    if razorpay_mode not in {"test", "live"}:
+        errors.append("RAZORPAY_MODE must be test or live")
+    if not key_id:
+        errors.append("RAZORPAY_KEY_ID must be configured")
+    elif razorpay_mode == "test" and not key_id.startswith("rzp_test_"):
+        errors.append("RAZORPAY_KEY_ID must use rzp_test_ in Test Mode")
+    elif razorpay_mode == "live" and not key_id.startswith("rzp_live_"):
+        errors.append("RAZORPAY_KEY_ID must use rzp_live_ in Live Mode")
+    if not key_secret:
+        errors.append("RAZORPAY_KEY_SECRET must be configured")
+    if not webhook_secret:
+        errors.append("RAZORPAY_WEBHOOK_SECRET must be configured")
+    if key_secret and webhook_secret and key_secret == webhook_secret:
+        errors.append("RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET must be distinct")
+
+    if _decimal(env, "BILLING_CREDIT_PERCENT", "50") != Decimal("50"):
+        errors.append("BILLING_CREDIT_PERCENT must be 50")
+    minimum = _integer(env, "BILLING_MIN_TOPUP_PAISE", "1000")
+    maximum = _integer(env, "BILLING_MAX_TOPUP_PAISE", "50000")
+    if minimum is None or minimum <= 0:
+        errors.append("BILLING_MIN_TOPUP_PAISE must be a positive integer")
+    if maximum is None or maximum <= 0 or (minimum is not None and maximum < minimum):
+        errors.append("BILLING_MAX_TOPUP_PAISE must be valid")
+    if minimum is not None and maximum is not None and not (minimum <= 1000 <= maximum):
+        errors.append("BILLING_MIN_TOPUP_PAISE and BILLING_MAX_TOPUP_PAISE must allow ₹10")
+    enforce_packages = _bool(env, "BILLING_ENFORCE_TOPUP_PACKAGES", True)
+    packages: set[int] = set()
+    try:
+        packages = {int(item.strip()) for item in _value(env, "BILLING_TOPUP_PACKAGES_PAISE", "1000,5000,10000,50000").split(",") if item.strip()}
+    except ValueError:
+        errors.append("BILLING_TOPUP_PACKAGES_PAISE must contain integers")
+    if enforce_packages is None:
+        errors.append("BILLING_ENFORCE_TOPUP_PACKAGES must be a boolean")
+    elif enforce_packages and 1000 not in packages:
+        errors.append("BILLING_TOPUP_PACKAGES_PAISE must include ₹10")
+
+    origins = [item.strip() for item in _value(env, "CORS_ALLOW_ORIGINS").split(",") if item.strip()]
+    if not origins:
+        errors.append("CORS_ALLOW_ORIGINS must list approved HTTPS origins")
+    elif len(origins) != len(set(origins)) or any(not _exact_https_origin(item) for item in origins):
+        errors.append("CORS_ALLOW_ORIGINS must contain unique exact HTTPS origins without wildcards or trailing slashes")
+
+    real_embeddings = _bool(env, "GLOBAL_QA_REAL_EMBEDDINGS_ENABLED", False)
+    embedding_provider = _value(env, "GLOBAL_QA_EMBEDDING_PROVIDER", "token_hash").lower()
+    if real_embeddings is True and embedding_provider not in {"openai", "token_hash", "token_hash_v1"}:
+        errors.append("GLOBAL_QA_REAL_EMBEDDINGS_ENABLED cannot load a local embedding provider in the web service")
+
+    return errors
+
+
+def validate_production_configuration(environ: Mapping[str, str] | None = None) -> None:
+    errors = production_configuration_errors(environ)
+    if errors:
+        raise ProductionConfigurationError(errors)

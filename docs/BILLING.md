@@ -26,3 +26,23 @@ Webhook HMAC uses the raw body and `RAZORPAY_WEBHOOK_SECRET`. `x-razorpay-event-
 - Alert on long-lived `reserved` usage charges, failed webhook rates, negative wallets, and repeated provider mismatches.
 - Update provider pricing and FX rate deliberately; historical pricing snapshots remain unchanged.
 - Never edit or delete ledger history during routine support. Use an audited `manual_adjustment` compensating entry.
+
+## Pricing verification snapshot
+
+Verified on 2026-07-16 against official provider documentation only:
+
+- OpenAI configured defaults for GPT-5 nano, GPT-5 mini, GPT-4.1 nano,
+  GPT-4.1 mini, GPT-4o mini, and o4-mini match their official model/pricing
+  pages, including cached-input rates. The configured `gpt-3.5-turbo-0125`
+  snapshot is marked deprecated, remains disabled by default, and production
+  validation rejects enabling it. Sources: <https://developers.openai.com/api/docs/pricing>
+  and the linked official model pages under
+  <https://developers.openai.com/api/docs/models>.
+- Sarvam `sarvam-30b` is ₹2.5 input / ₹1.5 cached input / ₹10 output per one
+  million tokens; `sarvam-105b` is ₹4 / ₹2.5 / ₹16. Source:
+  <https://docs.sarvam.ai/api-reference-docs/pricing>.
+
+The previous Sarvam cached-input defaults were too high and are corrected in
+code and `backend/.env.example`. Before the next Test Mode deployment, update
+or remove the two corresponding Render overrides so runtime configuration does
+not retain the old values. Historical usage snapshots must not be rewritten.

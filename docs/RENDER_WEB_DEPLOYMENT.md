@@ -17,7 +17,9 @@ Do not create a Blueprint for the existing production resources. They were creat
 
 The root must remain blank. `backend/config.py` and `backend/app/agentic_service.py` still have repository-root runtime reads involving `mobile/data/`.
 
-Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `AUTO_CREATE_TABLES=false`, and `CORS_ALLOW_ORIGINS=https://<web-domain>`. Keep the existing database, Firebase Admin, OpenAI, Sarvam, email, and operational variables. Add all billing variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, and webhook size. Secrets must be Render secret environment variables.
+Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`, `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`, and `CORS_ALLOW_ORIGINS=https://<web-domain>`. The pre-deploy command is the only production migration owner. Keep the existing database, Firebase Admin, provider, email, and operational variables. Add all billing variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, and webhook size. Secrets must be Render secret environment variables.
+
+For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
 Run the pre-deploy migration before enabling website traffic. Verify `/api/web/health`, `/api/web/billing/public-config`, an authenticated bootstrap, Test Mode checkout, capture, duplicate webhook replay, and refund in staging.
 
@@ -29,7 +31,11 @@ Run the pre-deploy migration before enabling website traffic. Verify `/api/web/h
 - Publish Directory: `dist`
 - Rewrite: `/*` to `/index.html`
 
+Set the backend and static site to the same explicit Git branch and record the deployed commit SHA during each release. This repository cannot prove the private dashboard selection; verify it in **Settings → Build & Deploy → Branch** for both services.
+
 Set only the public `VITE_*` values in `web/.env.example`: API base URL and Firebase Web app configuration. Do not place Firebase Admin credentials or OpenAI, Sarvam, Razorpay secret, webhook secret, or database values in the static site.
+
+Render did not apply `web/public/_headers` to the audited static site automatically. Reproduce every header from that file in the static-site dashboard/edge configuration and verify them with `curl -I` after deployment. In particular, the response—not only an HTML meta tag—must include CSP (with `frame-ancestors 'none'`), Referrer-Policy, X-Content-Type-Options, X-Frame-Options, Permissions-Policy, and HSTS on HTTPS resources.
 
 Point the desired web custom domain at the Render static site and complete Render certificate validation. Add the final origin (scheme and hostname, without a trailing slash) to API `CORS_ALLOW_ORIGINS` and add the domain to Firebase Authentication authorized domains. Point the API custom domain at the existing API service and update `VITE_API_BASE_URL`; rebuild the static site because Vite variables are build-time values.
 
@@ -48,3 +54,7 @@ Create separate Test and Live webhooks targeting `https://<api-domain>/api/web/b
 ## Production launch checks
 
 Replace legal placeholders, verify provider prices/FX policy, configure alerts and reconciliation, validate refund/support runbooks, load-test PostgreSQL connections/rate limiting, and confirm CSP/security headers at the edge. Confirm production CORS contains no wildcard.
+
+## Controlled first Live payment plan (do not execute until every blocker is cleared)
+
+After reviewed legal content is published, backup/restore and monitoring evidence exists, Test Mode payment/webhook/replay/refund has passed, and the owner explicitly authorizes Live Mode: deploy all three matching Live Razorpay values together, use one authorized owner-controlled account, make one ₹10 payment with owner-controlled payment details, verify one 5,000,000-micro-INR ledger credit and one provider usage debit, monitor webhook/reconciliation, and stop the pilot immediately on any mismatch. Never use customer data for this pilot. This plan is documentation only and is not authorization to enable Live Mode or make a payment.

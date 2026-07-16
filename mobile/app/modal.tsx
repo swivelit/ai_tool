@@ -43,53 +43,8 @@ type NoticeState = {
   onPrimaryPress?: () => void;
 } | null;
 
-function formatClock(value?: string | null) {
-  const source = (value || "").trim();
-  if (!source || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(source)) return "Not set";
-
-  const [h, m] = source.split(":").map(Number);
-  const date = new Date();
-  date.setHours(h, m, 0, 0);
-
-  return date.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
 function validateHHMM(v: string) {
   return /^([01]\d|2[0-3]):([0-5]\d)$/.test((v || "").trim());
-}
-
-function countHabits(value?: string | null) {
-  return (value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean).length;
-}
-
-function computeSleepHours(wake?: string | null, sleep?: string | null) {
-  if (!wake || !sleep || !validateHHMM(wake) || !validateHHMM(sleep)) return null;
-
-  const [wakeH, wakeM] = wake.split(":").map(Number);
-  const [sleepH, sleepM] = sleep.split(":").map(Number);
-
-  const wakeMinutes = wakeH * 60 + wakeM;
-  const sleepMinutes = sleepH * 60 + sleepM;
-
-  let diff = wakeMinutes - sleepMinutes;
-  if (diff <= 0) diff += 24 * 60;
-
-  return (diff / 60).toFixed(1);
-}
-
-function getDayMode(wake?: string | null) {
-  if (!wake || !validateHHMM(wake)) return "Flexible";
-  const hour = Number(wake.split(":")[0]);
-  if (hour < 6) return "Early riser";
-  if (hour < 9) return "Morning start";
-  if (hour < 12) return "Late starter";
-  return "Custom rhythm";
 }
 
 
@@ -110,7 +65,6 @@ export default function SettingsModal() {
   const {
     userId,
     name,
-    settings,
     profile,
     refresh,
   } = useAssistant();
@@ -128,12 +82,6 @@ export default function SettingsModal() {
     daily_habits: "Gym, Water, Reading",
   });
 
-  const [assistantNameInput, setAssistantNameInput] = useState(name || "Elli");
-  const [languageMode, setLanguageMode] = useState<"en" | "ta">(
-    settings.languageMode
-  );
-  const [wakePhrase, setWakePhrase] = useState(settings.wakePhrase || `Hey ${name || "Elli"}`);
-
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
@@ -150,15 +98,6 @@ export default function SettingsModal() {
   const topPadding = insets.top + (isSmallPhone ? 6 : 10);
   const bottomPadding = Math.max(insets.bottom + 28, 28);
 
-  useEffect(() => {
-    setAssistantNameInput(name || "Elli");
-  }, [name]);
-
-  useEffect(() => {
-    setLanguageMode(settings.languageMode);
-    setWakePhrase(settings.wakePhrase || `Hey ${name || "Elli"}`);
-  }, [name, settings]);
-
   const accountName = useMemo(
     () => resolvedProfile?.name || profile?.name || "Not set",
     [resolvedProfile, profile?.name]
@@ -166,11 +105,6 @@ export default function SettingsModal() {
 
   const targetUserId =
     resolvedUserId || userId || profile?.userId || resolvedProfile?.userId || null;
-
-  const wakePrompt = useMemo(
-    () => wakePhrase.trim() || `Hey ${assistantNameInput.trim() || "Elli"}`,
-    [assistantNameInput, wakePhrase]
-  );
 
   function showNotice(
     title: string,
@@ -686,142 +620,6 @@ export default function SettingsModal() {
         </View>
       </Modal>
     </Screen>
-  );
-}
-
-function OverviewMetric({
-  icon,
-  label,
-  value,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  value: string;
-}) {
-  const { palette: t } = useAppTheme();
-  const styles = useMemo(() => createStyles(t), [t]);
-  return (
-    <View style={styles.metricCard}>
-      <View style={styles.metricIconWrap}>
-        <Ionicons name={icon} size={16} color={t.bronze} />
-      </View>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={styles.metricValue} numberOfLines={1}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
-function SectionPill({ label, danger = false }: { label: string; danger?: boolean }) {
-  const { palette: t } = useAppTheme();
-  const styles = useMemo(() => createStyles(t), [t]);
-  return (
-    <View style={[styles.sectionBadge, danger && styles.dangerBadge]}>
-      <Text style={[styles.sectionBadgeText, danger && styles.dangerBadgeText]}>{label}</Text>
-    </View>
-  );
-}
-
-function InfoCard({
-  label,
-  value,
-  icon,
-  fullWidth = false,
-}: {
-  label: string;
-  value: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  fullWidth?: boolean;
-}) {
-  const { palette: t } = useAppTheme();
-  const styles = useMemo(() => createStyles(t), [t]);
-  return (
-    <View style={[styles.infoCard, fullWidth && styles.infoCardFullWidth]}>
-      <View style={styles.infoCardIconWrap}>
-        <Ionicons name={icon} size={15} color={t.bronze} />
-      </View>
-      <Text style={styles.infoCardLabel}>{label}</Text>
-      <Text style={styles.infoCardValue} numberOfLines={fullWidth ? 3 : 2}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
-function StatusChip({
-  icon,
-  label,
-  positive,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  positive: boolean;
-}) {
-  const { palette: t } = useAppTheme();
-  const styles = useMemo(() => createStyles(t), [t]);
-  return (
-    <View
-      style={[
-        styles.statusChip,
-        positive ? styles.statusChipPositive : styles.statusChipNeutral,
-      ]}
-    >
-      <Ionicons name={icon} size={14} color={positive ? t.success : t.cocoa} />
-      <Text
-        style={[styles.statusChipText, { color: positive ? t.success : t.cocoa }]}
-      >
-        {label}
-      </Text>
-    </View>
-  );
-}
-
-function TimelinePoint({
-  icon,
-  label,
-  value,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  value: string;
-}) {
-  const { palette: t } = useAppTheme();
-  const styles = useMemo(() => createStyles(t), [t]);
-  return (
-    <View style={styles.timelinePoint}>
-      <View style={styles.timelinePointIconWrap}>
-        <Ionicons name={icon} size={15} color={t.bronze} />
-      </View>
-      <Text style={styles.timelinePointLabel}>{label}</Text>
-      <Text style={styles.timelinePointValue} numberOfLines={1}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
-function MiniStatCard({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: string;
-  icon: keyof typeof Ionicons.glyphMap;
-}) {
-  const { palette: t } = useAppTheme();
-  const styles = useMemo(() => createStyles(t), [t]);
-  return (
-    <View style={styles.miniStatCard}>
-      <View style={styles.miniStatIconWrap}>
-        <Ionicons name={icon} size={14} color={t.bronze} />
-      </View>
-      <Text style={styles.miniStatValue} numberOfLines={1}>
-        {value}
-      </Text>
-      <Text style={styles.miniStatLabel}>{label}</Text>
-    </View>
   );
 }
 

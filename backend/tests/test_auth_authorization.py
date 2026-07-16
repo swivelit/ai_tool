@@ -8,7 +8,7 @@ import sys
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 import app.main as main_module
 from app import auth as auth_module
@@ -461,5 +461,5 @@ def test_list_valued_personality_answers_are_accepted(client: TestClient) -> Non
 
     assert response.status_code == 200
     with SessionLocal() as session:
-        profile = session.query(UserProfile).filter(UserProfile.user_id == user.id).first()
+        profile = session.exec(select(UserProfile).where(UserProfile.user_id == user.id)).first()
         assert json.loads(profile.answers_json)["interests"] == ["music", "reading"]

@@ -299,6 +299,9 @@ export default function QuestionnaireScreen() {
     return () => {
       alive = false;
     };
+  // This boot effect is keyed to identity/profile values. Including provider
+  // callbacks or the completion flag would replay onboarding while it syncs.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assistantName, profile?.assistantName, profile?.name, profile?.place, profile?.timezone, profile?.userId, user, userId]);
 
   useEffect(() => {

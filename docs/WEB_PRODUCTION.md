@@ -8,6 +8,10 @@
   `CORS_ALLOW_ORIGINS` list (HTTPS origins only, no trailing slash), Firebase
   Admin credentials, OpenAI/Sarvam keys, SMTP/OTP values, database URL, and all
   backend-only Razorpay secrets on the backend service.
+- Set `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`,
+  `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, and
+  `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`. Keep `RAZORPAY_MODE=test` and a
+  `rzp_test_` key until every Live blocker is cleared.
 - Configure the static site to serve `web/dist`, rewrite application routes to
   `index.html`, and reproduce the headers in `web/public/_headers` if the Render
   static-site configuration does not ingest that file automatically.
@@ -15,12 +19,16 @@
 - Add a private scheduled job for stale reservations. The threshold must exceed
   the longest provider timeout:
 
-  `python -m scripts.billing_maintenance stale-reservations --age-seconds 1800`
+  `cd backend && python -m scripts.billing_maintenance stale-reservations --age-seconds 1800`
 
 - Run Razorpay reconciliation in dry-run first, alert on its output, then enable
   the idempotent apply form only after operational review:
 
-  `python -m scripts.billing_maintenance razorpay --age-seconds 900 [--apply]`
+  `cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 [--apply]`
+
+- Verify the API and static site use the same explicit Git branch. Verify the
+  static response headers in the dashboard because `_headers` was not applied
+  by the audited Render deployment.
 
 ## Firebase and Razorpay
 
@@ -49,3 +57,19 @@ slots only; they intentionally do not invent legal terms.
   failure state on real browsers.
 - Re-run backend, web, and mobile quality gates and verify the CSP against real
   Firebase email/password traffic and Razorpay Checkout before each release.
+
+The following fields intentionally have no invented values and block Live Mode
+until an owner records direct evidence:
+
+| Operational item | Required evidence |
+| --- | --- |
+| Published support contact | Reviewed address/channel visible on the deployed support page |
+| Refund owner | Named on-call role and escalation path in the private runbook |
+| Incident owner | Named primary/backup role and incident channel |
+| API/deployment alerts | Alert destination plus a forced test notification |
+| Payment reconciliation review | Schedule, reviewer, and retained review record |
+| Database backups | Paid/non-expiring database plan and successful backup timestamp |
+| Restore test | Disposable restore, migration/current check, and application smoke result |
+| Log retention | Documented retention and access policy |
+| Negative wallet procedure | Query, investigation owner, and compensating-entry approval path |
+| Provider outage procedure | Disable/routing decision, customer status update, and recovery owner |

@@ -1012,7 +1012,6 @@ def emit_observability_config_log() -> None:
     )
 
 
-@app.on_event("startup")
 def startup_runtime_services() -> None:
     emit_observability_config_log()
     RUNTIME_STATUS["status"] = "starting"
@@ -1118,6 +1117,9 @@ def startup_runtime_services() -> None:
 
     if required_errors and os.getenv("FAIL_STARTUP_ON_REQUIRED_SERVICE_ERROR", "false").lower() in {"1", "true", "yes", "on"}:
         raise RuntimeError(f"Required runtime services failed: {required_errors}")
+
+
+app.add_event_handler("startup", startup_runtime_services)
 
 
 @app.middleware("http")

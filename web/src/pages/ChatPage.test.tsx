@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { ApiError, apiJson, streamChat } from '../api/client'
+import { chatErrorMessage } from '../chatErrors'
 import { ChatPage } from './ChatPage'
 
 const user = { getIdToken: vi.fn().mockResolvedValue('token') }
@@ -12,6 +13,21 @@ vi.mock('../api/client', async importOriginal => {
 })
 
 const bootstrap = { user:{ id:1, name:'Hari', email:'h@example.com', reply_language:'en' }, wallet:{ balance_micros:5_000_000, reserved_micros:0, available_micros:5_000_000, version:1 }, billing:{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_key', min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500 }] }, features:{ web_chat:true, prepaid_billing:true, local_models:false } } as const
+
+it.each([
+  [401, 'session expired'],
+  [402, 'more AI credit'],
+  [409, 'already being processed'],
+  [422, 'Review your message'],
+  [429, 'too quickly'],
+  [500, 'temporarily unavailable'],
+])('maps HTTP %i to a distinct actionable message', (status, expected) => {
+  expect(chatErrorMessage(new ApiError(status, {}), false)).toContain(expected)
+})
+
+it('prioritises the offline state over an HTTP error', () => {
+  expect(chatErrorMessage(new ApiError(500, {}), true)).toContain('offline')
+})
 
 function mockApi() {
   vi.mocked(apiJson).mockImplementation(async (_user, path) => {
