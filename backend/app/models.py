@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 from .time_utils import utc_now
 from sqlmodel import SQLModel, Field
-from sqlalchemy import BigInteger, Column, Index, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Column, DateTime, Index, Numeric, String, Text, UniqueConstraint
 
 
 # --------------------
@@ -37,11 +37,22 @@ class EmailOtpCode(SQLModel, table=True):
     email: str = Field(index=True)
     purpose: str = Field(index=True)
     otp_hash: str
-    created_at: datetime = Field(default_factory=utc_now, index=True)
-    expires_at: datetime = Field(index=True)
-    consumed_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    consumed_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
+    )
     attempts: int = Field(default=0)
-    last_sent_at: datetime = Field(default_factory=utc_now, index=True)
+    last_sent_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )
 
 
 # --------------------

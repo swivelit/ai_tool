@@ -3364,7 +3364,14 @@ def _create_and_send_otp(
     purpose: str,
 ) -> Dict[str, Any]:
     try:
-        stored = create_otp_code(session, email=email, purpose=purpose)
+        # Keep the new code uncommitted until delivery succeeds. A failed send
+        # can then be rolled back without leaving a usable code in the database.
+        stored = create_otp_code(
+            session,
+            email=email,
+            purpose=purpose,
+            commit=False,
+        )
     except EmailOtpError as exc:
         raise otp_http_exception(exc) from exc
     except EmailOtpConfigurationError as exc:
@@ -3374,13 +3381,52 @@ def _create_and_send_otp(
             exc=exc,
         )
         raise _email_delivery_http_exception("email_delivery_unconfigured") from exc
+    except Exception as exc:
+        session.rollback()
+        logger.error(
+            "otp_request_failed",
+            extra={
+                "event": "otp_request_failed",
+                "purpose": purpose,
+                "request_id": get_request_id(),
+                "exception_class": exc.__class__.__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "otp_request_failed",
+                "message": "We could not send the code. Please try again.",
+            },
+        ) from exc
 
     try:
         _send_email_otp(email=email, code=stored.code, purpose=purpose)
     except HTTPException:
-        session.delete(stored.record)
-        session.commit()
+        session.rollback()
         raise
+
+    try:
+        session.commit()
+        session.refresh(stored.record)
+    except Exception as exc:
+        session.rollback()
+        logger.error(
+            "otp_request_persistence_failed",
+            extra={
+                "event": "otp_request_persistence_failed",
+                "purpose": purpose,
+                "request_id": get_request_id(),
+                "exception_class": exc.__class__.__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "otp_request_failed",
+                "message": "We could not send the code. Please try again.",
+            },
+        ) from exc
 
     response: Dict[str, Any] = {
         "ok": True,

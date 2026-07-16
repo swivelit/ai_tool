@@ -47,7 +47,18 @@ Run Alembic migrations before deployed startup. Runtime `create_all()` is only e
 
 ## Render production auth
 
-Set production auth explicitly on Render:
+Use exactly one Firebase Admin credential method in production. The recommended
+Render setup is a secret file named `firebase-admin.json`:
+
+```bash
+APP_ENV=production
+AUTH_ALLOW_DEV_TOKENS=false
+DOWNLOAD_TOKEN_SECRET=<long random secret>
+GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-admin.json
+```
+
+Remove `FIREBASE_CREDENTIALS_JSON` when using the secret-file method. As an
+alternative, configure only the JSON environment variable:
 
 ```bash
 APP_ENV=production
@@ -56,14 +67,9 @@ DOWNLOAD_TOKEN_SECRET=<long random secret>
 FIREBASE_CREDENTIALS_JSON=<Firebase Admin service account JSON>
 ```
 
-Or use a mounted secret file:
-
-```bash
-APP_ENV=production
-AUTH_ALLOW_DEV_TOKENS=false
-DOWNLOAD_TOKEN_SECRET=<long random secret>
-GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-admin.json
-```
+Production startup rejects both methods configured together and rejects neither
+method configured. Validation names variables only and never prints values or
+credential paths.
 
 Smoke test after deployment:
 
@@ -84,7 +90,10 @@ Set these on the Render backend service, not in mobile or Expo config:
 - `SMTP_PORT=587`
 - `SMTP_USE_TLS=true`
 - `EMAIL_OTP_SECRET=<long random secret>`
-- Confirm `FIREBASE_CREDENTIALS_JSON` exists, unless using `GOOGLE_APPLICATION_CREDENTIALS`.
+- Confirm exactly one Firebase Admin method is configured. For the recommended
+  Render secret file `firebase-admin.json`, set
+  `GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-admin.json` and remove
+  `FIREBASE_CREDENTIALS_JSON`.
 - Save and deploy/redeploy the backend after changing env values.
 
 Do not wrap Render env values in accidental quotes unless the value truly requires them. Do not commit `.env` files.

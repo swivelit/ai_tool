@@ -1,4 +1,5 @@
 import { FirebaseError } from 'firebase/app'
+import { ApiError, ApiNetworkError } from '../api/client'
 
 const INVALID_CREDENTIAL_CODES = new Set([
   'auth/invalid-credential',
@@ -34,4 +35,19 @@ export function friendlyAuthError(error: unknown): string {
   if (code === 'auth/user-disabled') return 'This account is unavailable. Contact support for help.'
   if (code === 'auth/invalid-email') return 'Enter a valid email address.'
   return 'We could not complete that request. Please try again.'
+}
+
+export function authApiErrorMessage(error: unknown, sendingCode: boolean): string {
+  if (error instanceof ApiNetworkError) return error.message
+  if (error instanceof ApiError) {
+    if (error.status >= 500) {
+      return sendingCode
+        ? 'We could not send the code. Please try again.'
+        : 'We could not complete that request. Please try again.'
+    }
+    if (!error.message.startsWith('Request failed (')) return error.message
+  }
+  return sendingCode
+    ? 'We could not send the code. Please try again.'
+    : 'We could not complete that request. Please try again.'
 }

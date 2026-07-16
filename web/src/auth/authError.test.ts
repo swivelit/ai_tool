@@ -1,5 +1,6 @@
 import { FirebaseError } from 'firebase/app'
-import { friendlyAuthError } from './authError'
+import { ApiError, ApiNetworkError } from '../api/client'
+import { authApiErrorMessage, friendlyAuthError } from './authError'
 
 let consoleError: ReturnType<typeof vi.spyOn>
 
@@ -49,4 +50,31 @@ it('uses a generic message for an unknown Firebase error', () => {
 it('preserves an ordinary backend error message without logging it', () => {
   expect(friendlyAuthError(new Error('The verification code has expired.'))).toBe('The verification code has expired.')
   expect(consoleError).not.toHaveBeenCalled()
+})
+
+it('preserves known OTP API messages including cooldowns', () => {
+  const error = new ApiError(429, {
+    detail: {
+      code: 'otp_cooldown',
+      message: 'Please wait 42 seconds before requesting another code.',
+    },
+  })
+
+  expect(authApiErrorMessage(error, true)).toBe(
+    'Please wait 42 seconds before requesting another code.',
+  )
+})
+
+it('hides unexpected backend details while requesting a code', () => {
+  const error = new ApiError(500, { detail: 'sensitive implementation detail' })
+
+  expect(authApiErrorMessage(error, true)).toBe(
+    'We could not send the code. Please try again.',
+  )
+})
+
+it('uses the safe server reachability message for network failures', () => {
+  expect(authApiErrorMessage(new ApiNetworkError(), true)).toBe(
+    'We could not reach the server. Please try again.',
+  )
 })

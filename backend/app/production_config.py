@@ -90,8 +90,18 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     elif not database_url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
         errors.append("DATABASE_URL must use PostgreSQL in production")
 
-    if not (_value(env, "FIREBASE_CREDENTIALS_JSON") or _value(env, "GOOGLE_APPLICATION_CREDENTIALS")):
-        errors.append("Firebase Admin configuration must be configured")
+    firebase_json_configured = bool(_value(env, "FIREBASE_CREDENTIALS_JSON"))
+    firebase_file_configured = bool(_value(env, "GOOGLE_APPLICATION_CREDENTIALS"))
+    if not (firebase_json_configured or firebase_file_configured):
+        errors.append(
+            "exactly one of FIREBASE_CREDENTIALS_JSON or "
+            "GOOGLE_APPLICATION_CREDENTIALS must be configured"
+        )
+    elif firebase_json_configured and firebase_file_configured:
+        errors.append(
+            "FIREBASE_CREDENTIALS_JSON and GOOGLE_APPLICATION_CREDENTIALS "
+            "cannot both be configured"
+        )
 
     routing_mode = _value(env, "AI_PROVIDER_ROUTING_MODE", "cost_optimized").lower()
     if routing_mode not in {"cost_optimized", "language_optimized", "openai_only", "sarvam_only"}:

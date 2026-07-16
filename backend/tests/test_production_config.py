@@ -82,3 +82,38 @@ def test_errors_never_include_secret_values() -> None:
     with pytest.raises(ProductionConfigurationError) as caught:
         validate_production_configuration(env)
     assert "same-sensitive-value" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "firebase_updates",
+    [
+        {"FIREBASE_CREDENTIALS_JSON": "", "GOOGLE_APPLICATION_CREDENTIALS": ""},
+        {
+            "FIREBASE_CREDENTIALS_JSON": "sensitive-inline-json",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/sensitive/credential/path.json",
+        },
+    ],
+)
+def test_production_requires_exactly_one_firebase_credential_method(
+    firebase_updates: dict[str, str],
+) -> None:
+    env = {**valid_environment(), **firebase_updates}
+
+    with pytest.raises(ProductionConfigurationError) as caught:
+        validate_production_configuration(env)
+
+    message = str(caught.value)
+    assert "FIREBASE_CREDENTIALS_JSON" in message
+    assert "GOOGLE_APPLICATION_CREDENTIALS" in message
+    assert "sensitive-inline-json" not in message
+    assert "/sensitive/credential/path.json" not in message
+
+
+def test_production_accepts_google_application_credentials_alone() -> None:
+    env = {
+        **valid_environment(),
+        "FIREBASE_CREDENTIALS_JSON": "",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/etc/secrets/firebase-admin.json",
+    }
+
+    validate_production_configuration(env)

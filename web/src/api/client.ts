@@ -5,14 +5,41 @@ import { consumeSSE } from './sse'
 
 export const API_BASE = publicConfig.apiBaseUrl.replace(/\/$/, '')
 
+function apiDetailMessage(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || !('detail' in body)) return null
+  const detail = (body as { detail: unknown }).detail
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    const message = (detail as { message: unknown }).message
+    return typeof message === 'string' && message.trim() ? message : null
+  }
+  return null
+}
+
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown) {
-    super(typeof body === 'object' && body && 'detail' in body ? String((body as { detail: unknown }).detail) : `Request failed (${status})`)
+    super(apiDetailMessage(body) ?? `Request failed (${status})`)
   }
+}
+
+export class ApiNetworkError extends Error {
+  constructor() { super('We could not reach the server. Please try again.') }
 }
 
 export class SSEStreamError extends Error {
   constructor(public code: string, message: string) { super(message) }
+}
+
+export async function publicApiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE}${path}`, init)
+  } catch {
+    throw new ApiNetworkError()
+  }
+  const body = await response.json().catch(() => ({})) as unknown
+  if (!response.ok) throw new ApiError(response.status, body)
+  return body as T
 }
 
 export async function authorizedFetch(user: User, path: string, init: RequestInit = {}, retry = true): Promise<Response> {

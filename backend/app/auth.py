@@ -30,6 +30,11 @@ PRODUCTION_FIREBASE_ADMIN_REQUIRED_MESSAGE = (
     "FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
 )
 
+PRODUCTION_FIREBASE_ADMIN_AMBIGUOUS_MESSAGE = (
+    "Configure exactly one of FIREBASE_CREDENTIALS_JSON or "
+    "GOOGLE_APPLICATION_CREDENTIALS in production, not both."
+)
+
 FIREBASE_ADMIN_NOT_CONFIGURED_MESSAGE = (
     "Firebase Admin credentials are not configured. Set "
     "FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS."
@@ -92,6 +97,9 @@ def validate_auth_configuration(app_env: str | None = None) -> None:
 
     credentials_json_configured = bool(os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip())
     credentials_path_configured = bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip())
+
+    if production and credentials_json_configured and credentials_path_configured:
+        raise AuthConfigurationError(PRODUCTION_FIREBASE_ADMIN_AMBIGUOUS_MESSAGE)
 
     if credentials_json_configured:
         _firebase_credentials_json_payload()

@@ -19,9 +19,21 @@ The root must remain blank. `backend/config.py` and `backend/app/agentic_service
 
 Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`, `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`, and `CORS_ALLOW_ORIGINS=https://<web-domain>`. The pre-deploy command is the only production migration owner. Keep the existing database, Firebase Admin, provider, email, and operational variables. Add all billing variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, and webhook size. Secrets must be Render secret environment variables.
 
+For Firebase Admin, configure exactly one credential method. The recommended
+Render setup is a secret file named `firebase-admin.json` plus
+`GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-admin.json`. Remove
+`FIREBASE_CREDENTIALS_JSON` when using that secret file. Production startup
+rejects both methods together and rejects neither method; it never logs their
+values or credential paths.
+
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
 Run the pre-deploy migration before enabling website traffic. Verify `/api/web/health`, `/api/web/billing/public-config`, an authenticated bootstrap, Test Mode checkout, capture, duplicate webhook replay, and refund in staging.
+
+After the OTP timestamp migration, verify PostgreSQL reports
+`timestamp with time zone` for `email_otp_code.created_at`, `expires_at`, `consumed_at`, and
+`last_sent_at` through `information_schema.columns`. Existing values are
+converted with `AT TIME ZONE 'UTC'`; no OTP rows are deleted or recreated.
 
 ## Static site — exact settings
 

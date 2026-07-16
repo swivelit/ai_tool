@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import math
 import os
 import re
 import secrets
@@ -13,7 +14,7 @@ from sqlmodel import Session, select
 
 from .auth import is_production_environment
 from .models import EmailOtpCode
-from .time_utils import utc_now
+from .time_utils import ensure_utc, utc_now
 
 OtpPurpose = Literal["signup", "password_reset"]
 
@@ -164,9 +165,9 @@ def verify_otp_hash(
 
 
 def expiry_from(now: datetime | None = None, ttl_seconds: int | None = None) -> datetime:
-    return (now or utc_now()) + timedelta(
-        seconds=ttl_seconds or get_otp_settings().ttl_seconds
-    )
+    current = ensure_utc(now or utc_now())
+    ttl = get_otp_settings().ttl_seconds if ttl_seconds is None else ttl_seconds
+    return current + timedelta(seconds=ttl)
 
 
 def seconds_until_resend_allowed(
@@ -178,11 +179,18 @@ def seconds_until_resend_allowed(
     if last_sent_at is None:
         return 0
 
-    current = now or utc_now()
-    cooldown = cooldown_seconds or get_otp_settings().cooldown_seconds
-    elapsed = (current - last_sent_at).total_seconds()
+    current = ensure_utc(now or utc_now())
+    sent_at = ensure_utc(last_sent_at)
+    cooldown = (
+        get_otp_settings().cooldown_seconds
+        if cooldown_seconds is None
+        else cooldown_seconds
+    )
+    # Treat a future send time as zero elapsed time. This tolerates minor clock
+    # skew without reducing the cooldown or allowing an early resend.
+    elapsed = max(0.0, (current - sent_at).total_seconds())
     remaining = cooldown - elapsed
-    return max(0, int(remaining + 0.999))
+    return max(0, math.ceil(remaining))
 
 
 def can_return_dev_code() -> bool:
@@ -197,14 +205,29 @@ def _latest_active_code(
     purpose: OtpPurpose,
     now: datetime,
 ) -> Optional[EmailOtpCode]:
-    return session.exec(
+    current = ensure_utc(now)
+    record = session.exec(
         select(EmailOtpCode)
         .where(EmailOtpCode.email == email)
         .where(EmailOtpCode.purpose == purpose)
         .where(EmailOtpCode.consumed_at.is_(None))
-        .where(EmailOtpCode.expires_at > now)
+        .where(EmailOtpCode.expires_at > current)
         .order_by(EmailOtpCode.created_at.desc(), EmailOtpCode.id.desc())
     ).first()
+    if record is None:
+        return None
+
+    # SQLite and legacy PostgreSQL schemas can return naive values. Normalize
+    # every loaded OTP timestamp at this application boundary before use.
+    record.created_at = ensure_utc(record.created_at)
+    record.expires_at = ensure_utc(record.expires_at)
+    record.last_sent_at = ensure_utc(record.last_sent_at)
+    if record.consumed_at is not None:
+        record.consumed_at = ensure_utc(record.consumed_at)
+
+    if record.expires_at <= current:
+        return None
+    return record
 
 
 def assert_resend_allowed(
@@ -215,7 +238,7 @@ def assert_resend_allowed(
     now: datetime | None = None,
     cooldown_seconds: int | None = None,
 ) -> None:
-    current = now or utc_now()
+    current = ensure_utc(now or utc_now())
     active = _latest_active_code(session, email=email, purpose=purpose, now=current)
     if not active:
         return
@@ -240,11 +263,12 @@ def create_otp_code(
     purpose: str,
     now: datetime | None = None,
     settings: OtpSettings | None = None,
+    commit: bool = True,
 ) -> StoredOtpResult:
     normalized_email = require_valid_email(email)
     normalized_purpose = normalize_purpose(purpose)
     resolved_settings = settings or get_otp_settings()
-    current = now or utc_now()
+    current = ensure_utc(now or utc_now())
 
     assert_resend_allowed(
         session,
@@ -265,13 +289,19 @@ def create_otp_code(
         attempts=0,
     )
     session.add(record)
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     session.refresh(record)
+    record.created_at = ensure_utc(record.created_at)
+    record.expires_at = ensure_utc(record.expires_at)
+    record.last_sent_at = ensure_utc(record.last_sent_at)
     return StoredOtpResult(
         record=record,
         code=code,
         cooldown_seconds=resolved_settings.cooldown_seconds,
-        expires_at=record.expires_at,
+        expires_at=ensure_utc(record.expires_at),
     )
 
 
@@ -287,7 +317,7 @@ def verify_and_consume_otp(
     normalized_email = require_valid_email(email)
     normalized_purpose = normalize_purpose(purpose)
     normalized_otp = validate_otp_format(otp)
-    current = now or utc_now()
+    current = ensure_utc(now or utc_now())
     attempts_limit = max_attempts or get_otp_settings().max_attempts
 
     record = _latest_active_code(
@@ -341,6 +371,11 @@ def verify_and_consume_otp(
     session.add(record)
     session.commit()
     session.refresh(record)
+    record.created_at = ensure_utc(record.created_at)
+    record.expires_at = ensure_utc(record.expires_at)
+    record.last_sent_at = ensure_utc(record.last_sent_at)
+    if record.consumed_at is not None:
+        record.consumed_at = ensure_utc(record.consumed_at)
     return record
 
 

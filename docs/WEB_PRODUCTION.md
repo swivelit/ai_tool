@@ -8,6 +8,10 @@
   `CORS_ALLOW_ORIGINS` list (HTTPS origins only, no trailing slash), Firebase
   Admin credentials, OpenAI/Sarvam keys, SMTP/OTP values, database URL, and all
   backend-only Razorpay secrets on the backend service.
+- Configure the Render secret file as `firebase-admin.json`, set
+  `GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-admin.json`, and remove
+  `FIREBASE_CREDENTIALS_JSON`. Production accepts exactly one Firebase Admin
+  credential method.
 - Set `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`,
   `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, and
   `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`. Keep `RAZORPAY_MODE=test` and a

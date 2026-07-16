@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { authorizedFetch, SSEStreamError, streamChat } from './client'
+import { ApiError, ApiNetworkError, authorizedFetch, publicApiJson, SSEStreamError, streamChat } from './client'
 
 describe('authorizedFetch', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -25,4 +25,23 @@ it('treats an event:error as a failed stream even when HTTP status is 200', asyn
   const seen = vi.fn()
   await expect(streamChat(user as never, { request_id:'r', message:'hello' }, seen, new AbortController().signal)).rejects.toBeInstanceOf(SSEStreamError)
   expect(seen).toHaveBeenCalledWith({ event:'error', data:{ code:'provider_failed', message:'Try again' } })
+})
+
+it('preserves a structured FastAPI error message', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+    detail: { code: 'otp_cooldown', message: 'Please wait 42 seconds before requesting another code.' },
+  }), { status: 429, headers: { 'Content-Type': 'application/json' } }))
+
+  await expect(publicApiJson('/auth/email-otp/signup/request')).rejects.toMatchObject({
+    status: 429,
+    message: 'Please wait 42 seconds before requesting another code.',
+  } satisfies Partial<ApiError>)
+})
+
+it('maps fetch failures to a frontend-safe network error', async () => {
+  vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
+
+  await expect(publicApiJson('/auth/email-otp/signup/request')).rejects.toEqual(
+    new ApiNetworkError(),
+  )
 })

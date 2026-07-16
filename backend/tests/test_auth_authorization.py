@@ -199,6 +199,27 @@ def test_production_requires_explicit_firebase_admin_credentials(
         auth_module.validate_auth_configuration()
 
 
+def test_production_rejects_both_firebase_admin_credential_methods_safely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inline_secret = "sensitive-inline-firebase-json"
+    secret_path = "/sensitive/firebase-admin.json"
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUTH_ALLOW_DEV_TOKENS", "false")
+    _clear_firebase_admin_env(monkeypatch)
+    monkeypatch.setenv("FIREBASE_CREDENTIALS_JSON", inline_secret)
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", secret_path)
+
+    with pytest.raises(auth_module.AuthConfigurationError) as caught:
+        auth_module.validate_auth_configuration()
+
+    message = str(caught.value)
+    assert "FIREBASE_CREDENTIALS_JSON" in message
+    assert "GOOGLE_APPLICATION_CREDENTIALS" in message
+    assert inline_secret not in message
+    assert secret_path not in message
+
+
 def test_production_does_not_accept_firebase_config_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

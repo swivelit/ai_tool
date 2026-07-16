@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import select
 
@@ -11,11 +12,14 @@ import app.main as main_module
 from app.database import SessionLocal
 from app.email_otp import (
     EmailOtpError,
+    OtpSettings,
     create_otp_code,
+    expiry_from,
     generate_otp,
     hash_otp,
     is_valid_email,
     normalize_email,
+    otp_http_exception,
     seconds_until_resend_allowed,
     verify_and_consume_otp,
     verify_otp_hash,
@@ -116,6 +120,28 @@ def test_email_otp_pure_functions_hash_without_raw_code(monkeypatch) -> None:
         otp="000000" if code != "000000" else "111111",
         expected_hash=digest,
     )
+
+
+@pytest.mark.parametrize(
+    ("code", "status_code"),
+    [
+        ("otp_cooldown", 429),
+        ("invalid_email", 400),
+        ("otp_invalid_or_expired", 400),
+        ("otp_incorrect", 400),
+        ("otp_too_many_attempts", 429),
+    ],
+)
+def test_known_otp_errors_map_to_structured_http_json(
+    code: str,
+    status_code: int,
+) -> None:
+    error = EmailOtpError("Safe OTP message.", code=code, status_code=status_code)
+
+    mapped = otp_http_exception(error)
+
+    assert mapped.status_code == status_code
+    assert mapped.detail == {"code": code, "message": "Safe OTP message."}
 
 
 def test_create_otp_stores_hash_not_raw_code(monkeypatch) -> None:
@@ -239,6 +265,204 @@ def test_cooldown_and_max_attempt_behavior(monkeypatch) -> None:
         assert record.consumed_at is not None
 
 
+@pytest.mark.parametrize(
+    ("current_is_aware", "last_sent_is_aware"),
+    [(True, True), (True, False), (False, True), (False, False)],
+)
+def test_cooldown_accepts_every_naive_and_aware_combination(
+    current_is_aware: bool,
+    last_sent_is_aware: bool,
+) -> None:
+    base = datetime(2026, 7, 16, 9, 30, tzinfo=timezone.utc)
+    current = base + timedelta(seconds=10)
+    last_sent = base
+    if not current_is_aware:
+        current = current.replace(tzinfo=None)
+    if not last_sent_is_aware:
+        last_sent = last_sent.replace(tzinfo=None)
+
+    assert seconds_until_resend_allowed(
+        last_sent,
+        now=current,
+        cooldown_seconds=60,
+    ) == 50
+
+
+def test_cooldown_boundaries_rounding_clock_skew_and_missing_timestamp() -> None:
+    now = datetime(2026, 7, 16, 9, 30, tzinfo=timezone.utc)
+
+    assert seconds_until_resend_allowed(None, now=now, cooldown_seconds=60) == 0
+    assert seconds_until_resend_allowed(
+        now - timedelta(seconds=60), now=now, cooldown_seconds=60
+    ) == 0
+    assert seconds_until_resend_allowed(
+        now - timedelta(seconds=10, milliseconds=200),
+        now=now,
+        cooldown_seconds=60,
+    ) == 50
+    assert seconds_until_resend_allowed(
+        now + timedelta(seconds=3), now=now, cooldown_seconds=60
+    ) == 60
+
+
+def test_expiry_from_normalizes_naive_input_to_aware_utc() -> None:
+    naive = datetime(2026, 7, 16, 9, 30)
+
+    expires_at = expiry_from(naive, ttl_seconds=90)
+
+    assert expires_at == datetime(2026, 7, 16, 9, 31, 30, tzinfo=timezone.utc)
+
+
+def test_otp_model_declares_timezone_aware_timestamp_columns() -> None:
+    for name in ("created_at", "expires_at", "consumed_at", "last_sent_at"):
+        assert EmailOtpCode.__table__.c[name].type.timezone is True
+
+
+def test_database_round_trip_enforces_cooldown_then_allows_and_consumes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    now = datetime(2026, 7, 16, 9, 30, tzinfo=timezone.utc)
+    settings = OtpSettings(
+        ttl_seconds=600,
+        cooldown_seconds=60,
+        max_attempts=5,
+        dev_return_code=False,
+    )
+
+    with SessionLocal() as session:
+        first = create_otp_code(
+            session,
+            email="roundtrip@example.com",
+            purpose="signup",
+            now=now,
+            settings=settings,
+        )
+        first_id = first.record.id
+
+    with SessionLocal() as session:
+        reloaded = session.get(EmailOtpCode, first_id)
+        assert reloaded is not None
+        # This reproduces the PostgreSQL production value shape explicitly,
+        # even on database drivers that preserve timezone information.
+        reloaded.last_sent_at = reloaded.last_sent_at.replace(tzinfo=None)
+        session.add(reloaded)
+        session.commit()
+
+    with SessionLocal() as session:
+        with pytest.raises(EmailOtpError) as cooldown:
+            create_otp_code(
+                session,
+                email="roundtrip@example.com",
+                purpose="signup",
+                now=now + timedelta(seconds=10),
+                settings=settings,
+            )
+        assert cooldown.value.code == "otp_cooldown"
+        assert cooldown.value.status_code == 429
+
+    with SessionLocal() as session:
+        second = create_otp_code(
+            session,
+            email="roundtrip@example.com",
+            purpose="signup",
+            now=now + timedelta(seconds=61),
+            settings=settings,
+        )
+        second_id = second.record.id
+        second_code = second.code
+
+    with SessionLocal() as session:
+        consumed = verify_and_consume_otp(
+            session,
+            email="roundtrip@example.com",
+            purpose="signup",
+            otp=second_code,
+            now=(now + timedelta(seconds=62)).replace(tzinfo=None),
+        )
+        assert consumed.id == second_id
+        assert consumed.consumed_at is not None
+
+    with SessionLocal() as session:
+        reloaded_consumed = session.get(EmailOtpCode, second_id)
+        assert reloaded_consumed is not None
+        assert reloaded_consumed.consumed_at is not None
+
+
+def test_database_round_trip_expiry_check_handles_naive_timestamp(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    now = datetime(2026, 7, 16, 9, 30, tzinfo=timezone.utc)
+    settings = OtpSettings(
+        ttl_seconds=30,
+        cooldown_seconds=10,
+        max_attempts=5,
+        dev_return_code=False,
+    )
+
+    with SessionLocal() as session:
+        stored = create_otp_code(
+            session,
+            email="expired-roundtrip@example.com",
+            purpose="password_reset",
+            now=now,
+            settings=settings,
+        )
+        code = stored.code
+
+    with SessionLocal() as session:
+        with pytest.raises(EmailOtpError) as expired:
+            verify_and_consume_otp(
+                session,
+                email="expired-roundtrip@example.com",
+                purpose="password_reset",
+                otp=code,
+                now=now + timedelta(seconds=31),
+            )
+        assert expired.value.code == "otp_invalid_or_expired"
+
+
+def test_database_round_trip_persists_attempt_tracking(monkeypatch) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    now = datetime(2026, 7, 16, 9, 30, tzinfo=timezone.utc)
+
+    with SessionLocal() as session:
+        stored = create_otp_code(
+            session,
+            email="attempt-roundtrip@example.com",
+            purpose="password_reset",
+            now=now,
+        )
+        record_id = stored.record.id
+        code = stored.code
+
+    wrong_code = "000000" if code != "000000" else "111111"
+    with SessionLocal() as session:
+        with pytest.raises(EmailOtpError) as incorrect:
+            verify_and_consume_otp(
+                session,
+                email="attempt-roundtrip@example.com",
+                purpose="password_reset",
+                otp=wrong_code,
+                now=(now + timedelta(seconds=1)).replace(tzinfo=None),
+            )
+        assert incorrect.value.code == "otp_incorrect"
+
+    with SessionLocal() as session:
+        reloaded = session.get(EmailOtpCode, record_id)
+        assert reloaded is not None
+        assert reloaded.attempts == 1
+        consumed = verify_and_consume_otp(
+            session,
+            email="attempt-roundtrip@example.com",
+            purpose="password_reset",
+            otp=code,
+            now=now + timedelta(seconds=2),
+        )
+        assert consumed.consumed_at is not None
+
+
 def test_signup_request_sends_email_with_fake_smtp(
     client: TestClient,
     monkeypatch,
@@ -264,6 +488,165 @@ def test_signup_request_sends_email_with_fake_smtp(
     with SessionLocal() as session:
         record = session.exec(select(EmailOtpCode)).one()
     assert payload["otp"] not in record.otp_hash
+
+
+def test_signup_request_with_naive_existing_timestamp_returns_cooldown_not_500(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    _patch_firebase_exists(monkeypatch, False)
+    sender = _patch_email_sender(monkeypatch)
+    now = utc_now().replace(microsecond=0)
+    naive_now = now.replace(tzinfo=None)
+
+    with SessionLocal() as session:
+        session.add(
+            EmailOtpCode(
+                email="mixed-signup@example.com",
+                purpose="signup",
+                otp_hash=hash_otp("mixed-signup@example.com", "signup", "123456"),
+                created_at=naive_now,
+                expires_at=naive_now + timedelta(minutes=10),
+                last_sent_at=naive_now,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/auth/email-otp/signup/request",
+        json={"email": "mixed-signup@example.com", "name": "Mixed Signup"},
+    )
+
+    assert response.status_code == 429
+    assert response.json()["detail"]["code"] == "otp_cooldown"
+    assert "wait" in response.json()["detail"]["message"].lower()
+    assert sender.sent == []
+
+
+def test_expired_naive_signup_record_allows_exactly_one_new_email(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    _patch_firebase_exists(monkeypatch, False)
+    sender = _patch_email_sender(monkeypatch)
+    now = utc_now().replace(microsecond=0)
+    old = (now - timedelta(minutes=20)).replace(tzinfo=None)
+
+    with SessionLocal() as session:
+        session.add(
+            EmailOtpCode(
+                email="expired-route@example.com",
+                purpose="signup",
+                otp_hash=hash_otp("expired-route@example.com", "signup", "123456"),
+                created_at=old,
+                expires_at=old + timedelta(minutes=10),
+                last_sent_at=old,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/auth/email-otp/signup/request",
+        json={"email": "expired-route@example.com", "name": "Expired Route"},
+    )
+
+    assert response.status_code == 200
+    assert len(sender.sent) == 1
+
+
+def test_password_reset_request_handles_naive_existing_timestamp(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    _patch_firebase_exists(monkeypatch, True)
+    sender = _patch_email_sender(monkeypatch)
+    now = utc_now().replace(microsecond=0).replace(tzinfo=None)
+
+    with SessionLocal() as session:
+        session.add(
+            EmailOtpCode(
+                email="mixed-reset@example.com",
+                purpose="password_reset",
+                otp_hash=hash_otp(
+                    "mixed-reset@example.com", "password_reset", "123456"
+                ),
+                created_at=now,
+                expires_at=now + timedelta(minutes=10),
+                last_sent_at=now,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/auth/email-otp/password-reset/request",
+        json={"email": "mixed-reset@example.com"},
+    )
+
+    assert response.status_code == 429
+    assert response.json()["detail"]["code"] == "otp_cooldown"
+    assert sender.sent == []
+
+
+def test_successful_otp_request_logs_neither_email_nor_code(
+    client: TestClient,
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    monkeypatch.setenv("EMAIL_OTP_DEV_RETURN_CODE", "true")
+    _patch_firebase_exists(monkeypatch, False)
+    sender = _patch_email_sender(monkeypatch)
+    caplog.set_level(logging.INFO)
+
+    response = client.post(
+        "/auth/email-otp/signup/request",
+        json={"email": "log-safe@example.com", "name": "Log Safe"},
+        headers={"x-request-id": "req-log-safe"},
+    )
+
+    assert response.status_code == 200
+    assert len(sender.sent) == 1
+    assert "log-safe@example.com" not in caplog.text
+    assert response.json()["otp"] not in caplog.text
+
+
+def test_unexpected_otp_error_returns_safe_json_500_with_request_id(
+    client: TestClient,
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setenv("EMAIL_OTP_SECRET", "otp-test-secret")
+    _patch_firebase_exists(monkeypatch, False)
+    _patch_email_sender(monkeypatch)
+    caplog.set_level(logging.ERROR)
+
+    def fail_create(*args, **kwargs):
+        raise TypeError("database detail that must stay server-side")
+
+    monkeypatch.setattr("app.main.create_otp_code", fail_create)
+    response = client.post(
+        "/auth/email-otp/signup/request",
+        json={"email": "safe-500@example.com", "name": "Safe Error"},
+        headers={"x-request-id": "req-safe-500"},
+    )
+
+    assert response.status_code == 500
+    assert response.headers["x-request-id"] == "req-safe-500"
+    assert response.json()["detail"] == {
+        "code": "otp_request_failed",
+        "message": "We could not send the code. Please try again.",
+    }
+    assert "database detail" not in response.text
+    assert "safe-500@example.com" not in caplog.text
+    failure_record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "otp_request_failed"
+    )
+    assert getattr(failure_record, "request_id") == "req-safe-500"
 
 
 def test_signup_request_duplicate_email_returns_409(

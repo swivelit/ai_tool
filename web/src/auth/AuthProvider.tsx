@@ -3,7 +3,8 @@ import {
   onIdTokenChanged, signInWithEmailAndPassword, signOut as firebaseSignOut, type User,
 } from 'firebase/auth'
 import { FirebaseError } from 'firebase/app'
-import { API_BASE } from '../api/client'
+import { publicApiJson } from '../api/client'
+import { authApiErrorMessage } from './authError'
 import { auth } from './firebase'
 import { AuthContext } from './context'
 
@@ -46,8 +47,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
     signUp: async (name: string, email: string, password: string, otp?: string) => {
       const path = otp ? '/auth/email-otp/signup/complete' : '/auth/email-otp/signup/request'
       const body = otp ? { name, email, password, otp } : { name, email }
-      const response = await fetch(`${API_BASE}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      if (!response.ok) throw new Error(String(((await response.json().catch(() => ({}))) as { detail?: string }).detail || 'Signup failed.'))
+      try {
+        await publicApiJson(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      } catch (error) {
+        throw new Error(authApiErrorMessage(error, !otp))
+      }
       if (!otp) return 'otp_sent' as const
       if (E2E_AUTH_ENABLED) completeE2eSignIn(email, name)
       else await signInWithEmailAndPassword(auth, email, password)
@@ -57,8 +61,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
       const complete = Boolean(newPassword && otp)
       const path = complete ? '/auth/email-otp/password-reset/confirm' : '/auth/email-otp/password-reset/request'
       const body = complete ? { email, new_password: newPassword, otp } : { email }
-      const response = await fetch(`${API_BASE}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      if (!response.ok) throw new Error(String(((await response.json().catch(() => ({}))) as { detail?: string }).detail || 'Password reset failed.'))
+      try {
+        await publicApiJson(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      } catch (error) {
+        throw new Error(authApiErrorMessage(error, !complete))
+      }
       return complete ? 'complete' as const : 'otp_sent' as const
     },
     signOut: async () => {
