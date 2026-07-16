@@ -1,16 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
+import { friendlyAuthError } from '../auth/authError'
 import { useAuth } from '../auth/useAuth'
-
-function friendlyAuthError(error: unknown): string {
-  const message = error instanceof Error ? error.message : ''
-  if (message.includes('auth/invalid-credential') || message.includes('auth/wrong-password')) return 'The email or password is incorrect.'
-  if (message.includes('auth/too-many-requests')) return 'Too many attempts. Wait a moment, then try again.'
-  if (message.includes('auth/network-request-failed')) return 'Check your connection and try again.'
-  if (message.includes('auth/user-disabled')) return 'This account is unavailable. Contact support for help.'
-  if (message.includes('auth/invalid-email')) return 'Enter a valid email address.'
-  return message && !message.includes('Firebase') ? message : 'We could not complete that request. Please try again.'
-}
 
 export function LoginPage() {
   const auth = useAuth()

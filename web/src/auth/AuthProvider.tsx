@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type PropsWithChildren } fro
 import {
   onIdTokenChanged, signInWithEmailAndPassword, signOut as firebaseSignOut, type User,
 } from 'firebase/auth'
+import { FirebaseError } from 'firebase/app'
 import { API_BASE } from '../api/client'
 import { auth } from './firebase'
 import { AuthContext } from './context'
@@ -36,7 +37,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     user, loading,
     signIn: async (email: string, password: string) => {
       if (E2E_AUTH_ENABLED) {
-        if (email !== E2E_EMAIL || password !== E2E_PASSWORD) throw new Error('auth/invalid-credential')
+        if (email !== E2E_EMAIL || password !== E2E_PASSWORD) throw new FirebaseError('auth/invalid-credential', 'Invalid E2E credentials')
         completeE2eSignIn(email)
         return
       }

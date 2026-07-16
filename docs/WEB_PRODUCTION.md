@@ -15,6 +15,11 @@
 - Configure the static site to serve `web/dist`, rewrite application routes to
   `index.html`, and reproduce the headers in `web/public/_headers` if the Render
   static-site configuration does not ingest that file automatically.
+- Set all required public `VITE_*` values on the Render static-site service.
+  Select **Save, rebuild, and deploy** after changing any of them because Vite
+  embeds their values in the browser bundle at build time. Production builds
+  reject missing, insecure, or malformed public configuration without printing
+  the supplied values.
 - Keep HSTS only on HTTPS production resources.
 - Add a private scheduled job for stale reservations. The threshold must exceed
   the longest provider timeout:
@@ -32,9 +37,19 @@
 
 ## Firebase and Razorpay
 
-- Add the deployed web domain to Firebase Authentication authorized domains and
-  verify email/password authentication and the backend Firebase Admin project
-  refer to the same project.
+- Copy the browser configuration from **Firebase Console → Project settings →
+  Your apps → Web app → SDK setup and configuration → Config**. Do not copy
+  Android `google-services.json` values into the website. The production Web
+  app ID must contain `:web:`.
+- Add `swico-web.onrender.com` to Firebase Authentication authorized domains.
+  For a website-restricted browser key, allow
+  `https://swico-web.onrender.com` and
+  `https://swico-web.onrender.com/*`. API restrictions on that key must permit
+  **Identity Toolkit API** and **Token Service API**.
+- Never put Firebase Admin service-account JSON or backend secrets in `VITE_*`
+  variables. Keep Admin credentials on the backend service, and verify those
+  credentials belong to the same Firebase project as the frontend Web
+  configuration.
 - Register the production webhook URL and events in Razorpay, set distinct
   checkout and webhook secrets, verify signature delivery, and complete an
   end-to-end Test Mode payment before requesting Live Mode.

@@ -1,8 +1,9 @@
 import type { User } from 'firebase/auth'
 import type { SSEEvent } from '../types'
+import { publicConfig } from '../config/publicConfig'
 import { consumeSSE } from './sse'
 
-export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+export const API_BASE = publicConfig.apiBaseUrl.replace(/\/$/, '')
 
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown) {

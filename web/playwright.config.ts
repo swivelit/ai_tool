@@ -27,7 +27,8 @@ export default defineConfig({
       VITE_FIREBASE_API_KEY: 'local-e2e-public-key',
       VITE_FIREBASE_AUTH_DOMAIN: 'localhost',
       VITE_FIREBASE_PROJECT_ID: 'local-e2e',
-      VITE_FIREBASE_APP_ID: 'local-e2e',
+      VITE_FIREBASE_APP_ID: '1:1234567890:web:local-e2e',
+      VITE_FIREBASE_MESSAGING_SENDER_ID: '1234567890',
     },
   },
 })

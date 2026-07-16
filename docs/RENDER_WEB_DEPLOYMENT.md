@@ -35,9 +35,19 @@ Set the backend and static site to the same explicit Git branch and record the d
 
 Set only the public `VITE_*` values in `web/.env.example`: API base URL and Firebase Web app configuration. Do not place Firebase Admin credentials or OpenAI, Sarvam, Razorpay secret, webhook secret, or database values in the static site.
 
+Copy the Firebase browser configuration from **Firebase Console → Project settings → Your apps → Web app → SDK setup and configuration → Config**. Do not copy values from the Android `google-services.json`; the production Firebase app ID for this website must contain `:web:`. Set every required `VITE_*` value on the Render **static-site service**, then select **Save, rebuild, and deploy**. Vite embeds these variables at build time, so changing them without rebuilding does not update the deployed site. The production build validates the public configuration and stops with variable names—but never values—when required settings are missing or malformed.
+
+Never put Firebase Admin service-account JSON or backend secrets in `VITE_*` variables. The Firebase Admin credentials on the backend service must belong to the same Firebase project as the frontend Web configuration.
+
+For `https://swico-web.onrender.com`, complete these Firebase Console settings:
+
+- Add `swico-web.onrender.com` to **Firebase Authentication → Settings → Authorized domains**.
+- If the browser API key uses website restrictions, allow both `https://swico-web.onrender.com` and `https://swico-web.onrender.com/*`.
+- If the browser API key uses API restrictions, permit **Identity Toolkit API** and **Token Service API**.
+
 Render did not apply `web/public/_headers` to the audited static site automatically. Reproduce every header from that file in the static-site dashboard/edge configuration and verify them with `curl -I` after deployment. In particular, the response—not only an HTML meta tag—must include CSP (with `frame-ancestors 'none'`), Referrer-Policy, X-Content-Type-Options, X-Frame-Options, Permissions-Policy, and HSTS on HTTPS resources.
 
-Point the desired web custom domain at the Render static site and complete Render certificate validation. Add the final origin (scheme and hostname, without a trailing slash) to API `CORS_ALLOW_ORIGINS` and add the domain to Firebase Authentication authorized domains. Point the API custom domain at the existing API service and update `VITE_API_BASE_URL`; rebuild the static site because Vite variables are build-time values.
+Point the desired web custom domain at the Render static site and complete Render certificate validation. Add the final origin (scheme and hostname, without a trailing slash) to API `CORS_ALLOW_ORIGINS` and add the hostname to Firebase Authentication authorized domains. Point the API custom domain at the existing API service and update `VITE_API_BASE_URL`; select **Save, rebuild, and deploy** because Vite variables are build-time values.
 
 ## Razorpay Test and Live setup
 
