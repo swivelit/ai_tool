@@ -32,6 +32,12 @@ Run the pre-deploy migration before enabling website traffic. Verify `/api/web/h
 
 ## Financial Cron Jobs
 
+Both Cron Jobs use branch `main`, region **Virginia**, and a blank Root
+Directory. Render evaluates Cron schedules in UTC. Configure these schedules:
+
+- `billing-stale-reservations`: `*/10 * * * *`
+- `razorpay-reconciliation`: `*/15 * * * *`
+
 Configure `billing-stale-reservations` with this command:
 
 ```bash
@@ -49,23 +55,43 @@ REQUIRE_MIGRATIONS_BEFORE_STARTUP=false
 ```
 
 Razorpay reconciliation additionally requires `RAZORPAY_MODE`,
-`RAZORPAY_KEY_ID`, and `RAZORPAY_KEY_SECRET` and uses this dry-run command:
+`RAZORPAY_KEY_ID`, and `RAZORPAY_KEY_SECRET` in Test Mode:
+
+```bash
+RAZORPAY_MODE=test
+RAZORPAY_KEY_ID=<matching rzp_test_ key>
+RAZORPAY_KEY_SECRET=<matching Test Mode secret>
+```
+
+Its initial dry-run command is:
 
 ```bash
 cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900
 ```
 
-Add `--apply` only to an intentionally reviewed mutating job; dry-run is the
-default. Never enable Live Mode as part of Cron setup. Maintenance configuration
-errors exit with status `78` before database-engine or Razorpay-client creation
-and never print supplied values.
+The only explicit mutating form is:
+
+```bash
+cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --apply
+```
+
+Dry-run is the default. Create the Cron Job without `--apply`, retain its Test
+Mode output as review evidence, and add `--apply` only after explicit operational
+approval. Never enable Live Mode as part of Cron setup. Maintenance
+configuration errors exit with status `78` before database-engine or
+Razorpay-client creation and never print supplied values.
 
 Financial Cron Jobs must use PostgreSQL and must not create tables or run
 migrations. The backend service pre-deploy command remains the sole production
-Alembic owner. Render service-level variables override environment-group
-values, so remove duplicate `DATABASE_URL` entries and verify that the Cron Job
-inherits the intended internal database URL without logging it. Do not add a
-production Blueprint for these manually managed resources.
+Alembic owner; Cron Jobs have no migration or pre-deploy command. Render
+service-level variables override environment-group values, including a
+service-level `DATABASE_URL`, so verify that each Cron Job uses the intended
+internal database URL without logging it. Do not add a production Blueprint for
+these manually managed resources.
+
+The PostgreSQL credential exposed in the earlier screenshot must be rotated
+manually in Render, then updated on the affected services. Never place real
+credentials in screenshots, test output, Git history, or documentation.
 
 After the OTP timestamp migration, verify PostgreSQL reports
 `timestamp with time zone` for `email_otp_code.created_at`, `expires_at`, `consumed_at`, and

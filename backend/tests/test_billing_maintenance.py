@@ -26,6 +26,35 @@ from tests.conftest import create_test_user
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_render_cron_operator_instructions_are_complete() -> None:
+    instructions = " ".join(
+        (BACKEND_ROOT.parent / "docs" / "RENDER_WEB_DEPLOYMENT.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    required = (
+        "branch `main`",
+        "region **Virginia**",
+        "blank Root Directory",
+        "Render evaluates Cron schedules in UTC",
+        "`billing-stale-reservations`: `*/10 * * * *`",
+        "`razorpay-reconciliation`: `*/15 * * * *`",
+        "RAZORPAY_MODE=test",
+        "RAZORPAY_KEY_ID=<matching rzp_test_ key>",
+        "RAZORPAY_KEY_SECRET=<matching Test Mode secret>",
+        "cd backend && python -m scripts.billing_maintenance stale-reservations --age-seconds 1800",
+        "cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900",
+        "cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --apply",
+        "Cron Jobs have no migration or pre-deploy command",
+        "service-level `DATABASE_URL`",
+        "must be rotated manually in Render",
+        "add `--apply` only after explicit operational approval",
+    )
+
+    missing = [item for item in required if item not in instructions]
+    assert missing == []
+
+
 def _subprocess_environment(**updates: str) -> dict[str, str]:
     env = {
         "PYTHONPATH": str(BACKEND_ROOT),
