@@ -35,6 +35,22 @@
 
   `cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 [--apply]`
 
+- Configure every financial Cron Job with `APP_ENV=production`, the Render
+  PostgreSQL internal `DATABASE_URL`, `AUTO_CREATE_TABLES=false`,
+  `RUN_MIGRATIONS_ON_STARTUP=false`, and
+  `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`. Razorpay reconciliation also needs
+  `RAZORPAY_MODE`, `RAZORPAY_KEY_ID`, and `RAZORPAY_KEY_SECRET`; it does not need
+  unrelated Firebase, OpenAI, Sarvam, SMTP, webhook, or frontend credentials.
+- Financial Cron Jobs must never use SQLite, create tables, or run Alembic. The
+  backend service pre-deploy command is the sole production migration owner.
+  Missing or unsafe database configuration exits before engine creation with
+  configuration status `78`.
+- Render service-level environment variables override environment-group
+  values. Avoid duplicate `DATABASE_URL` entries and verify the Cron Job sees
+  the intended internal PostgreSQL URL without printing it.
+- Razorpay reconciliation is non-mutating unless `--apply` is explicitly
+  present. Do not add `--apply` or switch to Live Mode automatically.
+
 - Verify the API and static site use the same explicit Git branch. Verify the
   static response headers in the dashboard because `_headers` was not applied
   by the audited Render deployment.

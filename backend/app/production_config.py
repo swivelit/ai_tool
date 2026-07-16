@@ -5,6 +5,8 @@ from decimal import Decimal, InvalidOperation
 import os
 from urllib.parse import urlsplit
 
+from .database_url import is_postgres_database_url
+
 
 class ProductionConfigurationError(RuntimeError):
     """Raised with variable names only; configuration values are never included."""
@@ -87,7 +89,7 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     database_url = _value(env, "DATABASE_URL")
     if not database_url:
         errors.append("DATABASE_URL must be configured")
-    elif not database_url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
+    elif not is_postgres_database_url(database_url):
         errors.append("DATABASE_URL must use PostgreSQL in production")
 
     firebase_json_configured = bool(_value(env, "FIREBASE_CREDENTIALS_JSON"))

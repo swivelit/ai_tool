@@ -30,6 +30,43 @@ For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KE
 
 Run the pre-deploy migration before enabling website traffic. Verify `/api/web/health`, `/api/web/billing/public-config`, an authenticated bootstrap, Test Mode checkout, capture, duplicate webhook replay, and refund in staging.
 
+## Financial Cron Jobs
+
+Configure `billing-stale-reservations` with this command:
+
+```bash
+cd backend && python -m scripts.billing_maintenance stale-reservations --age-seconds 1800
+```
+
+Every financial Cron Job requires:
+
+```bash
+APP_ENV=production
+DATABASE_URL=<Render PostgreSQL internal URL>
+AUTO_CREATE_TABLES=false
+RUN_MIGRATIONS_ON_STARTUP=false
+REQUIRE_MIGRATIONS_BEFORE_STARTUP=false
+```
+
+Razorpay reconciliation additionally requires `RAZORPAY_MODE`,
+`RAZORPAY_KEY_ID`, and `RAZORPAY_KEY_SECRET` and uses this dry-run command:
+
+```bash
+cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900
+```
+
+Add `--apply` only to an intentionally reviewed mutating job; dry-run is the
+default. Never enable Live Mode as part of Cron setup. Maintenance configuration
+errors exit with status `78` before database-engine or Razorpay-client creation
+and never print supplied values.
+
+Financial Cron Jobs must use PostgreSQL and must not create tables or run
+migrations. The backend service pre-deploy command remains the sole production
+Alembic owner. Render service-level variables override environment-group
+values, so remove duplicate `DATABASE_URL` entries and verify that the Cron Job
+inherits the intended internal database URL without logging it. Do not add a
+production Blueprint for these manually managed resources.
+
 After the OTP timestamp migration, verify PostgreSQL reports
 `timestamp with time zone` for `email_otp_code.created_at`, `expires_at`, `consumed_at`, and
 `last_sent_at` through `information_schema.columns`. Existing values are

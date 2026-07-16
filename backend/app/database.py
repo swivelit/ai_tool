@@ -9,6 +9,8 @@ from sqlmodel import Session, create_engine
 from dotenv import load_dotenv
 from fastapi import HTTPException
 
+from .database_url import normalize_database_url
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -19,25 +21,9 @@ DEFAULT_SQLITE_PATH = (
 DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _normalize_database_url(raw_url: str) -> str:
-    url = (raw_url or "").strip()
-
-    if not url:
-        return f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}"
-
-    if url.startswith("postgresql+psycopg2://"):
-        return url.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
-
-    if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql+psycopg://", 1)
-
-    if url.startswith("postgresql://") and "+psycopg" not in url:
-        return url.replace("postgresql://", "postgresql+psycopg://", 1)
-
-    return url
-
-
-DATABASE_URL = _normalize_database_url(os.getenv("DATABASE_URL", ""))
+DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", ""))
+if not DATABASE_URL:
+    DATABASE_URL = f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}"
 
 IS_SQLITE = DATABASE_URL.startswith("sqlite")
 IS_POSTGRES = DATABASE_URL.startswith("postgresql")

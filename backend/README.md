@@ -114,17 +114,46 @@ The status response only returns safe metadata: booleans for whether each SMTP/O
 
 ## Render billing maintenance
 
-Run these as private Render cron jobs against the same database. The stale age
-must remain longer than the longest configured provider timeout so an active
-generation is never released:
+Run these as private Render Cron Jobs against the same PostgreSQL database. Each
+financial Cron Job requires this explicit environment:
 
 ```bash
-python -m scripts.billing_maintenance stale-reservations --age-seconds 1800
-python -m scripts.billing_maintenance razorpay --age-seconds 900
-python -m scripts.billing_maintenance razorpay --age-seconds 900 --apply
+APP_ENV=production
+DATABASE_URL=<Render PostgreSQL internal URL>
+AUTO_CREATE_TABLES=false
+RUN_MIGRATIONS_ON_STARTUP=false
+REQUIRE_MIGRATIONS_BEFORE_STARTUP=false
 ```
 
-The Razorpay command is dry-run unless `--apply` is supplied. It reports
+The Razorpay reconciliation job additionally requires `RAZORPAY_MODE`,
+`RAZORPAY_KEY_ID`, and `RAZORPAY_KEY_SECRET`. It does not require Firebase,
+OpenAI, Sarvam, SMTP, or the Razorpay webhook secret. Keep these variables in a
+shared Render environment group where practical, and remove duplicate
+service-level `DATABASE_URL` entries: Render service-level values override
+environment-group values.
+
+Use the repository-root commands below. The stale age must remain longer than
+the longest configured provider timeout so an active generation is never
+released:
+
+```bash
+cd backend && python -m scripts.billing_maintenance stale-reservations --age-seconds 1800
+cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900
+cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --apply
+```
+
+Billing maintenance exits with configuration-error status `78` before creating
+a database engine when `DATABASE_URL` is absent, blank, unsupported, or unsafe.
+PostgreSQL is the normal requirement. SQLite is available only for explicit
+local automation with `APP_ENV=test` or `APP_ENV=development` together with
+`BILLING_MAINTENANCE_ALLOW_SQLITE=true`; production always rejects SQLite. The
+safe startup record contains only the command, apply state where relevant,
+database backend, `APP_ENV`, and Razorpay mode.
+
+A financial Cron Job must never use SQLite, create tables, or run migrations.
+The backend service's pre-deploy Alembic command is the sole production
+migration owner. The Razorpay command is dry-run unless `--apply` is supplied;
+never add `--apply` until the dry-run output has been reviewed. It reports
 long-lived attempted orders and idempotently repairs captured-but-not-credited
 orders and processed refunds. Duplicate webhook deliveries remain protected by
 the processed-event and wallet-ledger idempotency keys. Review dry-run output
