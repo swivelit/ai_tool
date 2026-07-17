@@ -99,6 +99,18 @@ required before accepting Razorpay Live Mode payments. The structured module at
 `web/src/content/legalContent.json` intentionally has unreviewed empty slots;
 it does not invent legal terms.
 
+The current legal-team handoff is stored only under the ignored
+`private/legal-source/` directory. It contains all material received so far,
+but it is structurally incomplete: full exact policy bodies, complete approval
+metadata, valid public support/privacy contacts, and decisions covering
+jurisdiction, retention/deletion, provider handling, refunds, delivery timing,
+taxes, invoices, and grievance/support operations remain missing or unresolved.
+The exact sanitized list is maintained in
+`docs/LEGAL_PUBLICATION_STATUS.md`. Raw PDFs, DOCX files, correspondence,
+signatures, approval evidence, and private identity material must remain in
+`private/legal-source/`; only final approved public wording will eventually go
+into `web/src/content/legalContent.json`.
+
 Razorpay Live Mode and `BILLING_CHECKOUT_ENABLED=true` must remain disabled
 until all seven content areas are published and reviewed, in addition to the
 operational evidence below.
@@ -160,9 +172,18 @@ expected to fail until approved publication data exists:
 
 ```bash
 python scripts/check-legal-publication.py
+python scripts/check-legal-source-readiness.py \
+  --source-dir private/legal-source
 python scripts/check-web-product-language.py
 python scripts/check-tracked-secrets.py
 ```
+
+Both legal commands are expected to fail for the current handoff. The source
+readiness command evaluates structure only; even a future pass is not a claim
+of legal approval. No Render setting changes are required yet. Razorpay remains
+in Test Mode and checkout remains disabled. After exact approved content and all
+metadata arrive, only the `swico-web` static site needs deployment for the legal
+content change unless an independently reviewed backend change is also required.
 
 Run deployed staging tests only with a real non-local HTTPS domain and dedicated
 Firebase test account:

@@ -14,6 +14,7 @@ export function App() {
     <Route path="/terms" element={<Navigate to="/legal/terms" replace />} />
     <Route path="/privacy" element={<Navigate to="/legal/privacy" replace />} />
     <Route path="/refunds" element={<Navigate to="/legal/refunds" replace />} />
+    <Route path="/pricing" element={<Navigate to="/legal/pricing" replace />} />
     <Route path="/" element={user ? <ChatPage /> : <LoginPage />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>
