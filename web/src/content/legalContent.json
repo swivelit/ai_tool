@@ -1,0 +1,98 @@
+{
+  "publication": {
+    "businessIdentity": "",
+    "supportContact": "",
+    "publicationStatus": "unreviewed"
+  },
+  "pages": {
+    "terms": {
+      "title": "Terms and Conditions",
+      "summary": "Rules for using Swico",
+      "effectiveDate": "",
+      "version": "draft",
+      "sections": [
+        { "heading": "Eligibility and accounts", "body": "" },
+        { "heading": "Acceptable use", "body": "" },
+        { "heading": "Token credits and billing", "body": "" },
+        { "heading": "Service availability", "body": "" },
+        { "heading": "Liability and disputes", "body": "" }
+      ]
+    },
+    "privacy": {
+      "title": "Privacy Policy",
+      "summary": "How information is handled",
+      "effectiveDate": "",
+      "version": "draft",
+      "sections": [
+        { "heading": "Information collected", "body": "" },
+        { "heading": "How information is used", "body": "" },
+        { "heading": "Service providers", "body": "" },
+        { "heading": "Retention and deletion", "body": "" },
+        { "heading": "Your choices and contact", "body": "" }
+      ]
+    },
+    "refunds": {
+      "title": "Cancellation and Refund Policy",
+      "summary": "Payment, cancellation, and refund information",
+      "effectiveDate": "",
+      "version": "draft",
+      "sections": [
+        { "heading": "Token-credit allocation", "body": "" },
+        { "heading": "Eligibility for refunds", "body": "" },
+        { "heading": "Partial usage and cancellations", "body": "" },
+        { "heading": "Processing times", "body": "" },
+        { "heading": "How to request support", "body": "" }
+      ]
+    },
+    "contact": {
+      "title": "Contact and Support",
+      "summary": "Ways to reach the Swico team",
+      "effectiveDate": "",
+      "version": "draft",
+      "sections": [
+        { "heading": "Support channel", "body": "" },
+        { "heading": "Billing support", "body": "" },
+        { "heading": "Privacy requests", "body": "" },
+        { "heading": "Response expectations", "body": "" },
+        { "heading": "Business details", "body": "" }
+      ]
+    },
+    "ai": {
+      "title": "AI Limitations",
+      "summary": "Important guidance for AI-generated responses",
+      "effectiveDate": "",
+      "version": "draft",
+      "sections": [
+        { "heading": "Accuracy and verification", "body": "" },
+        { "heading": "Professional advice", "body": "" },
+        { "heading": "Provider processing", "body": "" },
+        { "heading": "Cancellation and partial usage", "body": "" },
+        { "heading": "Reporting a concern", "body": "" }
+      ]
+    },
+    "delivery": {
+      "title": "Digital Service Delivery / Shipping Policy",
+      "summary": "How digital token credits and AI services are delivered",
+      "effectiveDate": "",
+      "version": "draft",
+      "sections": [
+        { "heading": "Digital delivery", "body": "" },
+        { "heading": "Delivery timing", "body": "" },
+        { "heading": "Confirmation and access", "body": "" },
+        { "heading": "Delivery problems", "body": "" }
+      ]
+    },
+    "pricing": {
+      "title": "Pricing and Top-up Information",
+      "summary": "Token-credit estimates and payment allocation",
+      "effectiveDate": "",
+      "version": "draft",
+      "sections": [
+        { "heading": "Gross top-up price", "body": "" },
+        { "heading": "50/50 allocation", "body": "" },
+        { "heading": "Model-dependent token estimates", "body": "" },
+        { "heading": "Refund display", "body": "" }
+      ]
+    }
+  }
+}

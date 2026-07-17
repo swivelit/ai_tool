@@ -18,6 +18,7 @@ from .usage_limits import (
     acquire_sqlite_usage_transaction_lock, enforce_usage_limit,
     settlement_limit_available,
 )
+from .token_estimates import token_estimate
 
 
 LEDGER_TYPES = {
@@ -59,16 +60,18 @@ def get_or_create_wallet(session: Session, user_id: int) -> WalletAccount:
     return _locked_wallet(session, user_id)
 
 
-def wallet_dict(wallet: WalletAccount) -> dict[str, int]:
+def wallet_dict(wallet: WalletAccount) -> dict[str, Any]:
+    available = int(wallet.balance_micros - wallet.reserved_micros)
     return {
         "balance_micros": int(wallet.balance_micros),
         "reserved_micros": int(wallet.reserved_micros),
-        "available_micros": int(wallet.balance_micros - wallet.reserved_micros),
+        "available_micros": available,
         "version": int(wallet.version),
+        "token_estimate": token_estimate(available),
     }
 
 
-def get_wallet_summary(session: Session, user_id: int) -> dict[str, int]:
+def get_wallet_summary(session: Session, user_id: int) -> dict[str, Any]:
     return wallet_dict(get_or_create_wallet(session, user_id))
 
 

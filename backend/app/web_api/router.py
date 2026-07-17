@@ -25,6 +25,7 @@ from ..billing.service import (
     credit_payment_once, enforce_rate_limit, get_wallet_summary, list_wallet_ledger,
     reverse_credit_for_refund,
 )
+from ..billing.token_estimates import micros_for_blended_tokens, token_estimate
 from ..billing.usage_limits import validated_timezone
 from ..ai.providers.base import GenerationCancellation, GenerationCancelled
 from ..database import SessionLocal, get_session
@@ -97,6 +98,7 @@ def public_billing_config() -> dict[str, Any]:
             "gross_amount_paise": gross,
             "credited_amount_micros": credit_micros,
             "platform_share_paise": platform_paise,
+            "token_estimate": token_estimate(credit_micros),
         })
     return {
         "currency": "INR", "credit_percent": str(credit_percent()),
@@ -214,12 +216,27 @@ def patch_usage_settings(
     if row is None:
         row = WebUsagePreferences(user_id=int(user.id))
     fields = payload.model_fields_set
+    if "hard_limit_micros" in fields and "hard_limit_estimated_tokens" in fields:
+        raise HTTPException(422, {"code": "invalid_usage_preferences", "message": "Set only one monthly-limit representation."})
     for required in ("period", "warning_threshold_percent", "notify_at_threshold"):
         if required in fields and getattr(payload, required) is None:
             raise HTTPException(422, {"code": "invalid_usage_preferences", "message": f"{required} cannot be null."})
     for field in ("period", "hard_limit_micros", "warning_threshold_percent", "notify_at_threshold"):
         if field in fields:
             setattr(row, field, getattr(payload, field))
+    if "hard_limit_estimated_tokens" in fields:
+        estimated_tokens = payload.hard_limit_estimated_tokens
+        try:
+            row.hard_limit_micros = (
+                None if estimated_tokens is None else micros_for_blended_tokens(estimated_tokens)
+            )
+            if estimated_tokens is not None and row.hard_limit_micros <= 0:
+                raise ValueError("reference pricing is not chargeable")
+        except Exception as exc:
+            raise HTTPException(422, {
+                "code": "token_estimate_unavailable",
+                "message": "The reference pricing needed for an estimated token limit is unavailable.",
+            }) from exc
     row.updated_at = utc_now()
     session.add(row)
     session.flush()
@@ -474,6 +491,11 @@ def payments(
             row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
             if row.gross_amount_paise else 0
         ),
+        "token_estimate": token_estimate(row.credited_amount_micros),
+        "reversal_token_estimate": token_estimate(
+            row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
+            if row.gross_amount_paise else 0
+        ),
         "status": row.status, "created_at": row.created_at,
     } for row in rows]}
 
@@ -514,7 +536,7 @@ def create_order(payload: CreateOrderRequest, session: Session = Depends(get_ses
     if not _checkout_enabled():
         raise HTTPException(503, {
             "code": "checkout_disabled",
-            "message": "Adding AI credits is temporarily unavailable. Existing AI credits still work.",
+            "message": "Adding token credits is temporarily unavailable. Existing token credits can still be used.",
         })
     _razorpay_mode()
     _rate_limit(session, user_id=int(user.id), action="payment_order", limit=6)

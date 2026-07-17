@@ -16,6 +16,7 @@ from app.time_utils import utc_now
 from scripts import billing_maintenance
 from scripts.billing_maintenance import (
     CONFIGURATION_ERROR_EXIT_CODE,
+    FINDINGS_EXIT_CODE,
     MaintenanceConfigurationError,
     validate_maintenance_database,
     validate_razorpay_configuration,
@@ -39,12 +40,14 @@ def test_render_cron_operator_instructions_are_complete() -> None:
         "Render evaluates Cron schedules in UTC",
         "`billing-stale-reservations`: `*/10 * * * *`",
         "`razorpay-reconciliation`: `*/15 * * * *`",
+        "`billing-financial-audit`: `*/5 * * * *`",
         "RAZORPAY_MODE=test",
         "RAZORPAY_KEY_ID=<matching rzp_test_ key>",
         "RAZORPAY_KEY_SECRET=<matching Test Mode secret>",
         "cd backend && python -m scripts.billing_maintenance stale-reservations --age-seconds 1800",
-        "cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900",
+        "cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --fail-on-findings",
         "cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --apply",
+        "cd backend && python -m scripts.billing_maintenance audit --captured-uncredited-age-seconds 900 --fail-on-findings",
         "Cron Jobs have no migration or pre-deploy command",
         "service-level `DATABASE_URL`",
         "must be rotated manually in Render",
@@ -364,6 +367,15 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
         "razorpay_mode": "test",
     }
 
+    with SessionLocal() as session:
+        assert session.get(PaymentOrder, order_id).status == "attempted"
+        assert get_wallet_summary(session, user_id)["balance_micros"] == 0
+        assert session.exec(select(WalletLedger)).all() == []
+
+    assert billing_maintenance.main([
+        "razorpay", "--age-seconds", "900", "--fail-on-findings",
+    ]) == FINDINGS_EXIT_CODE
+    capsys.readouterr()
     with SessionLocal() as session:
         assert session.get(PaymentOrder, order_id).status == "attempted"
         assert get_wallet_summary(session, user_id)["balance_micros"] == 0

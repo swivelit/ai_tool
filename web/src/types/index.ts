@@ -1,4 +1,4 @@
-export type Wallet = { balance_micros: number; reserved_micros: number; available_micros: number; version: number }
+export type Wallet = { balance_micros: number; reserved_micros: number; available_micros: number; version: number; token_estimate?: TokenEstimate }
 export type Thread = { id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }
 export type Message = {
   id: string; thread_id: string; role: 'user' | 'assistant' | 'system'; content: string;
@@ -6,7 +6,7 @@ export type Message = {
   input_tokens: number; output_tokens: number; usage_source: 'actual' | 'estimated' | null;
   charge_micros: number; status: string; created_at: string;
 }
-export type BillingPackage = { gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number }
+export type BillingPackage = { gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; token_estimate?: TokenEstimate }
 export type BillingConfig = {
   currency: 'INR'; credit_percent: string; razorpay_key_id: string; min_topup_paise: number;
   razorpay_mode: 'test' | 'live'; checkout_enabled: boolean;
@@ -35,6 +35,7 @@ export type UsagePreferences = {
   warning_threshold_percent: number; notify_at_threshold: boolean;
   current_usage_micros: number; current_usage_ai_credits: string;
   remaining_micros: number | null; warning_reached: boolean;
+  hard_limit_token_estimate: TokenEstimate | null; remaining_token_estimate: TokenEstimate | null;
   next_reset_at: string; timezone: string; updated_at: string | null;
 }
 export type UsageBreakdown = {
@@ -64,4 +65,5 @@ export type PaymentHistory = {
   id: string; gross_amount_paise: number; credited_amount_micros: number;
   platform_share_paise: number; refunded_amount_paise: number;
   credit_reversal_micros: number; status: string; created_at: string;
+  token_estimate?: TokenEstimate; reversal_token_estimate?: TokenEstimate;
 }

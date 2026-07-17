@@ -15,6 +15,18 @@ services:
         value: "true"
       - key: AUTO_CREATE_TABLES
         value: "false"
+      - key: BILLING_CHECKOUT_ENABLED
+        value: "false"
+      - key: BILLING_CREDIT_PERCENT
+        value: "50"
+      - key: USAGE_ESTIMATE_REFERENCE_PROVIDER
+        value: openai
+      - key: USAGE_ESTIMATE_REFERENCE_MODEL
+        value: gpt-5-nano
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.05"
+      - key: SENTRY_PROFILES_SAMPLE_RATE
+        value: "0"
       - key: DATABASE_URL
         fromDatabase:
           name: swico-postgres-staging

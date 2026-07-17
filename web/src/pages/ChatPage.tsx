@@ -47,6 +47,18 @@ export function ChatPage() {
   }, [user])
   useEffect(() => {
     if (!user) return
+    const refreshVisibleWallet = () => {
+      if (document.visibilityState === 'visible') void refreshWallet().catch(() => undefined)
+    }
+    window.addEventListener('focus', refreshVisibleWallet)
+    document.addEventListener('visibilitychange', refreshVisibleWallet)
+    return () => {
+      window.removeEventListener('focus', refreshVisibleWallet)
+      document.removeEventListener('visibilitychange', refreshVisibleWallet)
+    }
+  }, [refreshWallet, user])
+  useEffect(() => {
+    if (!user) return
     void apiJson<Bootstrap>(user, '/api/web/bootstrap').then(setBootstrap).catch(() => setError('Could not load your Swico workspace.'))
   }, [user])
   useEffect(() => {

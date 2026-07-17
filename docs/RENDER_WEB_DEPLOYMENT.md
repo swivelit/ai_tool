@@ -24,6 +24,8 @@ Exact environment delta for this release:
 - Add API variable `BILLING_CHECKOUT_ENABLED=false` (backend-only, explicit in production).
 - Add or accept defaults for `USAGE_ESTIMATE_REFERENCE_PROVIDER=openai` and `USAGE_ESTIMATE_REFERENCE_MODEL=gpt-5-nano` (backend-only, non-secret display reference).
 - Keep `BILLING_CREDIT_PERCENT=50`; do not change it.
+- Add `SENTRY_DSN` only as a backend/Cron secret when an alert project is ready;
+  set `SENTRY_TRACES_SAMPLE_RATE=0.05` and `SENTRY_PROFILES_SAMPLE_RATE=0`.
 - Keep `RAZORPAY_MODE=test` plus matching `rzp_test_` ID/secret/webhook secret. Do not add Live credentials.
 - Remove no `VITE_*` variables. Do not add Razorpay secrets or checkout flags to the static-site environment.
 
@@ -45,11 +47,18 @@ Directory. Render evaluates Cron schedules in UTC. Configure these schedules:
 
 - `billing-stale-reservations`: `*/10 * * * *`
 - `razorpay-reconciliation`: `*/15 * * * *`
+- `billing-financial-audit`: `*/5 * * * *`
 
 Configure `billing-stale-reservations` with this command:
 
 ```bash
 cd backend && python -m scripts.billing_maintenance stale-reservations --age-seconds 1800
+```
+
+Configure `billing-financial-audit` with this read-only command:
+
+```bash
+cd backend && python -m scripts.billing_maintenance audit --captured-uncredited-age-seconds 900 --fail-on-findings
 ```
 
 Every financial Cron Job requires:
@@ -74,7 +83,7 @@ RAZORPAY_KEY_SECRET=<matching Test Mode secret>
 Its initial dry-run command is:
 
 ```bash
-cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900
+cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --fail-on-findings
 ```
 
 The only explicit mutating form is:
@@ -88,6 +97,14 @@ Mode output as review evidence, and add `--apply` only after explicit operationa
 approval. Never enable Live Mode as part of Cron setup. Maintenance
 configuration errors exit with status `78` before database-engine or
 Razorpay-client creation and never print supplied values.
+
+Audit or reconciliation findings exit with status `3`. In the Render workspace,
+open **Integrations → Notifications**, configure Email, Slack, or both, and set
+**Default Service Notifications** to **Only failure notifications** (or **All
+notifications**). On each Cron Job’s **Settings** page, scroll to
+**Notifications** and retain the workspace default or explicitly select **Only
+failure notifications**. Use **Trigger Run** on staging and retain evidence that
+a deliberate non-zero run reaches the configured destination.
 
 Financial Cron Jobs must use PostgreSQL and must not create tables or run
 migrations. The backend service pre-deploy command remains the sole production
@@ -128,7 +145,22 @@ For `https://swico-web.onrender.com`, complete these Firebase Console settings:
 - If the browser API key uses website restrictions, allow both `https://swico-web.onrender.com` and `https://swico-web.onrender.com/*`.
 - If the browser API key uses API restrictions, permit **Identity Toolkit API** and **Token Service API**.
 
-Render did not apply `web/public/_headers` to the audited static site automatically. Reproduce every header from that file in the static-site dashboard/edge configuration and verify them with `curl -I` after deployment. In particular, the response—not only an HTML meta tag—must include CSP (with `frame-ancestors 'none'`), Referrer-Policy, X-Content-Type-Options, X-Frame-Options, Permissions-Policy, and HSTS on HTTPS resources.
+Render did not apply `web/public/_headers` to the audited static site automatically. Reproduce these exact name/value pairs from that file in the static-site dashboard/edge configuration:
+
+- `Content-Security-Policy`: `default-src 'self'; script-src 'self' https://checkout.razorpay.com https://*.razorpay.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: wss:; frame-src https://*.firebaseapp.com https://*.razorpay.com https://api.razorpay.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests`
+- `Referrer-Policy`: `strict-origin-when-cross-origin`
+- `X-Content-Type-Options`: `nosniff`
+- `X-Frame-Options`: `DENY`
+- `Permissions-Policy`: `camera=(), geolocation=(), microphone=()`
+- `Strict-Transport-Security`: `max-age=31536000; includeSubDomains`
+
+The response—not an HTML meta tag—must contain them. Run the network check only
+when the deployed URL is explicitly configured:
+
+```bash
+DEPLOYED_WEB_URL=https://<web-domain>
+python scripts/check-web-security-headers.py --url "$DEPLOYED_WEB_URL"
+```
 
 Point the desired web custom domain at the Render static site and complete Render certificate validation. Add the final origin (scheme and hostname, without a trailing slash) to API `CORS_ALLOW_ORIGINS` and add the hostname to Firebase Authentication authorized domains. Point the API custom domain at the existing API service and update `VITE_API_BASE_URL`; select **Save, rebuild, and deploy** because Vite variables are build-time values.
 
@@ -146,9 +178,61 @@ The API returns an explicit `razorpay_mode` enum and validates its public-key pr
 4. For an application rollback, first disable checkout, then deploy the previous API/static versions. Leave additive billing/chat/settings tables intact so ledger/payment and user-setting history is preserved.
 5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` also removes user preferences and serialization rows. In production, preserve additive tables and fix forward.
 
+## Disposable recovery drill
+
+On the original paid Postgres service open **Recovery**, scroll to
+**Point-in-Time Recovery**, select **Restore Database**, supply a disposable
+name and a time at least ten minutes in the past, choose whether to copy
+settings, and select **Start Recovery** (or **Customize Recovery**, then start).
+Wait for **Recovery In Progress → Creating → Available**. On the new database’s
+**Info** page copy its connection URL only into the temporary verification
+environment; do not update any API, Cron Job, or environment group.
+
+```bash
+cd backend
+APP_ENV=staging RESTORE_DRILL_CONFIRMATION=disposable \
+DATABASE_URL=<restored-database-url> python -m scripts.verify_restore
+```
+
+The verifier starts a PostgreSQL read-only transaction, compares the one current
+Alembic head, checks required tables/row counts, wallet/uniqueness/foreign-key
+invariants, and rolls back. Retain its safe JSON plus restore point, commit,
+operator, and timestamp. Cleanup: confirm the recovery URL is not referenced by
+services or environment groups, remove temporary shell/CI values, then delete
+the disposable database from its **Settings** page. Never delete, suspend, or
+repoint the primary during a drill.
+
+## Deployed Playwright
+
+Local mode keeps the Vite server, mock authentication, and intercepted backend.
+Deployed modes start no local server, set no mock-auth variable, and use real
+Firebase/API traffic.
+
+```bash
+cd web
+PLAYWRIGHT_MODE=staging PLAYWRIGHT_BASE_URL=https://<staging-web-domain> \
+E2E_TEST_EMAIL=<dedicated-test-account> E2E_TEST_PASSWORD=<secret> \
+npx playwright test e2e/deployed-smoke.spec.ts
+
+PLAYWRIGHT_MODE=production-readonly PLAYWRIGHT_BASE_URL=https://<production-web-domain> \
+E2E_TEST_EMAIL=<dedicated-readonly-account> E2E_TEST_PASSWORD=<secret> \
+npx playwright test e2e/deployed-readonly.spec.ts
+```
+
+The manual `deployed-smoke.yml` workflow reads the same values from a GitHub
+Environment and retains HTML/traces only on failure. Do not claim a deployed
+pass without a non-local HTTPS run. The normal suites never complete payment.
+
 ## Production launch checks
 
-Publish owner-provided and reviewed Terms, Privacy, Refund/Cancellation, Contact/support, and AI-limitations content; verify provider prices/FX policy; configure alerts and reconciliation; validate refund/support runbooks; load-test PostgreSQL connections/rate limiting; and confirm CSP/security headers at the edge. Confirm production CORS contains no wildcard. Razorpay Live Mode and Live checkout remain blocked until every item is complete.
+Run `python scripts/check-legal-publication.py`; it intentionally fails until
+owner-provided, counsel-approved Terms, Privacy, Refund/Cancellation,
+Contact/support, AI-limitations, Digital-delivery, and Pricing/top-up content,
+identity/contact metadata, effective dates, and versions are published. Verify
+provider prices/FX policy; configure alerts/reconciliation; validate the
+refund/incident ownership template; load-test PostgreSQL connections/rate
+limiting; and confirm edge headers/CORS. Razorpay Live Mode and Live checkout
+remain blocked until every item is complete.
 
 ## Controlled first Live payment plan (do not execute until every blocker is cleared)
 

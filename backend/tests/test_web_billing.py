@@ -34,6 +34,7 @@ def make_order(user_id: int, gross: int = 1000) -> PaymentOrder:
 
 def test_ten_rupees_credit_split_is_exact():
     assert calculate_topup(1000) == (5_000_000, 500)
+    assert calculate_topup(10_000) == (50_000_000, 5_000)
     assert calculate_topup(1001) == (5_000_000, 501)  # fractional credit paise goes to platform
 
 
@@ -44,6 +45,8 @@ def test_public_config_exposes_explicit_mode_and_checkout_boolean(client):
     assert body["razorpay_mode"] == "test"
     assert body["checkout_enabled"] is True
     assert body["packages"][0]["credited_amount_micros"] == 5_000_000
+    assert body["packages"][0]["token_estimate"]["estimated_blended_tokens"] > 0
+    assert body["packages"][0]["token_estimate"]["reference_model"]
     assert "RAZORPAY_KEY_SECRET" not in json.dumps(body)
 
 
@@ -98,6 +101,7 @@ def test_credit_and_duplicate_are_idempotent():
         order = make_order(int(user.id)); session.add(order); session.flush()
         credit_payment_once(session, order); credit_payment_once(session, order); session.commit()
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id))["token_estimate"]["estimated_blended_tokens"] > 0
         assert len(session.exec(select(WalletLedger).where(WalletLedger.entry_type == "payment_credit")).all()) == 1
 
 
@@ -159,6 +163,23 @@ def test_full_and_partial_refund_reclaim_credit_and_can_go_negative():
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == -1_500_000
         with pytest.raises(InsufficientCreditError):
             create_usage_reservation(session, request_id="d" * 36, user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=1, pricing_snapshot_json="{}")
+
+
+def test_payment_history_adds_grant_and_reversal_estimates_without_removing_legacy_fields(client):
+    user = create_test_user(uid="history-owner", email="history@example.com")
+    with SessionLocal() as session:
+        order = make_order(int(user.id))
+        order.refunded_amount_paise = 500
+        order.status = "partially_refunded"
+        session.add(order); session.commit()
+    response = client.get("/api/web/billing/payments", headers=auth_headers("history-owner", "history@example.com"))
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["credited_amount_micros"] == 5_000_000
+    assert item["platform_share_paise"] == 500
+    assert item["credit_reversal_micros"] == 2_500_000
+    assert item["token_estimate"]["estimated_blended_tokens"] > 0
+    assert item["reversal_token_estimate"]["estimated_blended_tokens"] > 0
 
 
 @pytest.mark.parametrize("bad_field,bad_value", [("amount", 999), ("currency", "USD"), ("status", "authorized")])

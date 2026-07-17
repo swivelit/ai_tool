@@ -16,6 +16,7 @@ from app.database_url import (
 
 
 CONFIGURATION_ERROR_EXIT_CODE = 78
+FINDINGS_EXIT_CODE = 3
 _LOCAL_SQLITE_ENVIRONMENTS = {"test", "development"}
 
 
@@ -128,6 +129,15 @@ def _parser() -> argparse.ArgumentParser:
     razorpay = sub.add_parser("razorpay")
     razorpay.add_argument("--age-seconds", type=int, default=900)
     razorpay.add_argument("--apply", action="store_true")
+    razorpay.add_argument("--fail-on-findings", action="store_true")
+    audit = sub.add_parser("audit")
+    audit.add_argument("--captured-uncredited-age-seconds", type=int, default=900)
+    audit.add_argument(
+        "--stale-reservation-age-seconds",
+        type=int,
+        default=int(os.getenv("BILLING_STALE_RESERVATION_AGE_SECONDS", "1800")),
+    )
+    audit.add_argument("--fail-on-findings", action="store_true")
     return parser
 
 
@@ -144,13 +154,17 @@ def _startup_record(
     if args.command == "razorpay":
         record["apply"] = bool(args.apply)
         record["razorpay_mode"] = razorpay.mode if razorpay is not None else "unavailable"
+        if args.fail_on_findings:
+            record["fail_on_findings"] = True
+    if args.command == "audit":
+        record["fail_on_findings"] = bool(args.fail_on_findings)
     print(json.dumps(record, sort_keys=True), file=sys.stderr)
 
 
 def _run_command(
     args: argparse.Namespace,
     razorpay: RazorpayConfiguration | None,
-) -> None:
+) -> bool:
     # This import is intentionally after maintenance-specific validation. It is
     # the boundary that may construct an SQLAlchemy engine.
     from app.database import SessionLocal
@@ -165,7 +179,27 @@ def _run_command(
             )
             session.commit()
             print(json.dumps({"recovered_count": len(recovered)}))
-            return
+            return False
+
+        if args.command == "audit":
+            from app.billing.audit import financial_audit
+            from app.observability import add_sentry_context, bootstrap_observability, capture_exception
+
+            report = financial_audit(
+                session,
+                captured_uncredited_age_seconds=args.captured_uncredited_age_seconds,
+                stale_reservation_age_seconds=args.stale_reservation_age_seconds,
+            )
+            session.rollback()
+            print(json.dumps(report, default=str, sort_keys=True))
+            if int(report["high_severity_count"]) and os.getenv("SENTRY_DSN", "").strip():
+                bootstrap_observability()
+                safe_counts = {item["category"]: item["count"] for item in report["findings"]}
+                add_sentry_context("financial_audit", {"counts": safe_counts})
+                capture_exception(RuntimeError(
+                    f"financial audit found {report['high_severity_count']} high-severity item(s)"
+                ))
+            return bool(report["high_severity_count"])
 
         from app.billing.razorpay_client import RazorpayClient
         from app.billing.reconciliation import reconcile_razorpay_orders
@@ -184,6 +218,9 @@ def _run_command(
             apply=args.apply,
         )
         print(json.dumps({"apply": args.apply, "results": results}, default=str))
+        if not args.apply:
+            session.rollback()
+        return any(item.get("action") != "none" for item in results)
     except Exception:
         session.rollback()
         raise
@@ -205,7 +242,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Keep app.database consistent if a PostgreSQL alias was normalized.
     os.environ["DATABASE_URL"] = database.url
     _startup_record(args, database, razorpay)
-    _run_command(args, razorpay)
+    has_findings = _run_command(args, razorpay)
+    if bool(getattr(args, "fail_on_findings", False)) and has_findings:
+        return FINDINGS_EXIT_CODE
     return 0
 
 

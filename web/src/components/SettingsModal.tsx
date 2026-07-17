@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Archive, CreditCard, Database, Settings2, UserRound, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import { ApiError, ApiNetworkError, apiJson } from '../api/client'
-import { compactTokens, formatAiCredits, formatRupeesFromPaise, parseAiCreditsToMicros } from '../credits'
+import { estimatedTokenLabel, formatRupeesFromPaise, fullTokenRangeLabel, tokenRangeLabel } from '../credits'
 import type { PaymentHistory, ProfileSettings, UsagePreferences, UsageSummary } from '../types'
 import type { Theme } from '../theme'
 
@@ -12,7 +12,7 @@ type Loaded = { profile: ProfileSettings; usage: UsageSummary; preferences: Usag
 const sections: Array<{ id: Section; label: string; icon: typeof Settings2 }> = [
   { id: 'general', label: 'General', icon: Settings2 },
   { id: 'profile', label: 'Profile', icon: UserRound },
-  { id: 'usage', label: 'Usage & billing', icon: CreditCard },
+  { id: 'usage', label: 'Token credits', icon: CreditCard },
   { id: 'data', label: 'Data controls', icon: Database },
 ]
 
@@ -51,7 +51,7 @@ export function SettingsModal({ user, theme, setTheme, close, addCredits, openAr
       setLoaded({ profile: nextProfile, usage, preferences, payments: payments.items })
       setProfile(nextProfile)
       setUnlimited(preferences.hard_limit_micros === null)
-      setCap(preferences.hard_limit_micros === null ? '' : formatAiCredits(preferences.hard_limit_micros, 6).replace(/0+$/, '').replace(/\.$/, ''))
+      setCap(preferences.hard_limit_token_estimate?.estimated_blended_tokens?.toString() ?? '')
       setWarning(String(preferences.warning_threshold_percent)); setNotify(preferences.notify_at_threshold)
     } catch (error) { setLoadError(safeError(error)) }
   }
@@ -77,7 +77,7 @@ export function SettingsModal({ user, theme, setTheme, close, addCredits, openAr
   }, [close, saving])
 
   const estimate = loaded?.usage.estimated_tokens_remaining
-  const tokenRange = useMemo(() => estimate ? `${compactTokens(estimate.range_min_tokens)}–${compactTokens(estimate.range_max_tokens)}` : '', [estimate])
+  const tokenRange = useMemo(() => estimate ? fullTokenRangeLabel(estimate.range_min_tokens, estimate.range_max_tokens) : 'Estimate unavailable', [estimate])
   const saveProfile = async () => {
     if (!profile) return
     if (!profile.name.trim() || !profile.assistant_name.trim() || !profile.timezone.trim()) { setNotice('Name, timezone, and assistant name are required.'); return }
@@ -91,14 +91,14 @@ export function SettingsModal({ user, theme, setTheme, close, addCredits, openAr
     } catch (error) { setNotice(safeError(error)) } finally { setSaving(false) }
   }
   const saveUsage = async () => {
-    const limit = unlimited ? null : parseAiCreditsToMicros(cap)
+    const limit = unlimited ? null : Number(cap)
     const threshold = Number(warning)
-    if (!unlimited && limit === null) { setNotice('Enter a positive monthly cap with up to 6 decimal places.'); return }
+    if (!unlimited && (!Number.isSafeInteger(limit) || Number(limit) <= 0)) { setNotice('Enter a positive whole-number estimated token limit.'); return }
     if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) { setNotice('Warning threshold must be from 1 to 100%.'); return }
     setSaving(true); setNotice('')
     try {
       const preferences = await apiJson<UsagePreferences>(user, '/api/web/settings/usage', { method: 'PATCH', body: JSON.stringify({
-        period: 'monthly', hard_limit_micros: limit, warning_threshold_percent: threshold,
+        period: 'monthly', hard_limit_estimated_tokens: limit, warning_threshold_percent: threshold,
         notify_at_threshold: notify,
       }) })
       setLoaded(value => value ? { ...value, preferences } : value); setNotice('Monthly usage limit saved.')
@@ -107,7 +107,7 @@ export function SettingsModal({ user, theme, setTheme, close, addCredits, openAr
 
   return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !saving) close() }}>
     <section ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-describedby="settings-description">
-      <header className="settings-heading"><div><h2 id="settings-title">Settings</h2><p id="settings-description">Manage your profile, AI usage, and Swico preferences.</p></div><button ref={closeRef} className="icon-button" aria-label="Close settings" onClick={close} disabled={saving}><X size={20} /></button></header>
+      <header className="settings-heading"><div><h2 id="settings-title">Settings</h2><p id="settings-description">Manage your profile, token usage, and Swico preferences.</p></div><button ref={closeRef} className="icon-button" aria-label="Close settings" onClick={close} disabled={saving}><X size={20} /></button></header>
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings sections">{sections.map(item => { const Icon = item.icon; return <button key={item.id} className={section === item.id ? 'active' : ''} aria-current={section === item.id ? 'page' : undefined} onClick={() => { setSection(item.id); setNotice('') }}><Icon size={17} /><span>{item.label}</span></button> })}</nav>
         <div className="settings-content">
@@ -122,14 +122,14 @@ export function SettingsModal({ user, theme, setTheme, close, addCredits, openAr
             <label htmlFor="profile-reply-language">Reply language<select id="profile-reply-language" value={profile.reply_language} onChange={event => setProfile({ ...profile, reply_language: event.target.value as 'en' | 'ta' })}><option value="en">English</option><option value="ta">தமிழ் (Tamil)</option></select></label>
             <label>Email<input value={profile.email ?? ''} readOnly aria-describedby="email-readonly" /><small id="email-readonly">Email is managed by your sign-in account and cannot be changed here.</small></label>
           </div><button className="primary" disabled={saving} onClick={() => void saveProfile()}>{saving ? 'Saving…' : 'Save profile'}</button></section>}
-          {loaded && section === 'usage' && <section aria-labelledby="usage-settings"><h3 id="usage-settings">Usage & billing</h3>
-            <div className="usage-cards"><article><span>Available</span><strong>{formatAiCredits(loaded.usage.available_micros)} AI credits</strong><small title="AI credits are non-transferable, non-withdrawable, and can only be used for AI usage on Swico.">Equivalent to ₹{formatAiCredits(loaded.usage.available_micros)} of consumable AI usage</small></article><article><span>Estimated tokens remaining</span><strong>{tokenRange} tokens</strong><small>On {estimate?.reference_model}; model-dependent estimate, not a guaranteed quota.</small></article></div>
-            <div className="actual-usage" aria-label="Current-month actual token usage"><h4>Current-month tokens</h4><dl><div><dt>Input tokens</dt><dd>{loaded.usage.input_tokens.toLocaleString()}</dd></div><div><dt>Cached input tokens</dt><dd>{loaded.usage.cached_input_tokens.toLocaleString()}</dd></div><div><dt>Output tokens</dt><dd>{loaded.usage.output_tokens.toLocaleString()}</dd></div></dl><p>{loaded.usage.actual_usage_count} actual · {loaded.usage.estimated_usage_count} estimated requests</p><p>Usage value consumed: ₹{formatAiCredits(loaded.usage.debited_micros)}</p>{estimate && <p className="estimate-note">Range calculated from {estimate.reference_provider}/{estimate.reference_model} pricing as of {new Date(estimate.pricing_as_of).toLocaleString()}. {estimate.explanation}</p>}</div>
-            <fieldset className="usage-limit"><legend>Monthly cap</legend><label className="check-row"><input type="checkbox" checked={unlimited} onChange={event => setUnlimited(event.target.checked)} />No monthly cap beyond prepaid AI credits</label>{!unlimited && <label>Monthly cap (AI credits)<input inputMode="decimal" value={cap} onChange={event => setCap(event.target.value)} aria-describedby="cap-help" /><small id="cap-help">A server-enforced hard limit. Automatic recharge is not enabled.</small></label>}<label>Warning threshold (%)<input type="number" min="1" max="100" value={warning} onChange={event => setWarning(event.target.value)} /></label><label className="check-row"><input type="checkbox" checked={notify} onChange={event => setNotify(event.target.checked)} />Show a warning at the threshold</label>{loaded.preferences.warning_reached && <p className="usage-warning" role="status">You have reached your configured warning threshold.</p>}<button className="primary" disabled={saving} onClick={() => void saveUsage()}>{saving ? 'Saving…' : 'Save usage limit'}</button><small>Resets {new Date(loaded.preferences.next_reset_at).toLocaleString()} ({loaded.preferences.timezone}).</small></fieldset>
-            <button className="secondary-button" onClick={addCredits}>Add AI credits</button>
-            <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => <article key={payment.id}><strong>{formatRupeesFromPaise(payment.gross_amount_paise)} paid</strong><span>{formatAiCredits(payment.credited_amount_micros)} AI credits granted</span><span>{formatRupeesFromPaise(payment.platform_share_paise)} platform allocation</span><span>{formatRupeesFromPaise(payment.refunded_amount_paise)} refunded</span><span>{formatAiCredits(payment.credit_reversal_micros)} AI credits reversed</span></article>)}</div>
+          {loaded && section === 'usage' && <section aria-labelledby="usage-settings"><h3 id="usage-settings">Token credits</h3>
+            <div className="usage-cards"><article><span>Compact estimated balance</span><strong>{estimatedTokenLabel(estimate?.estimated_blended_tokens)}</strong><small>{estimate?.blended_assumption ?? 'A blended estimate is unavailable.'}</small></article><article><span>Current estimated range</span><strong>{tokenRange}</strong><small>Reference: {estimate?.reference_provider}/{estimate?.reference_model}; not a guaranteed quota.</small></article></div>
+            <div className="actual-usage" aria-label="Current-month actual token usage"><h4>Current-month tokens</h4><dl><div><dt>Input tokens</dt><dd>{loaded.usage.input_tokens.toLocaleString()}</dd></div><div><dt>Cached input tokens</dt><dd>{loaded.usage.cached_input_tokens.toLocaleString()}</dd></div><div><dt>Output tokens</dt><dd>{loaded.usage.output_tokens.toLocaleString()}</dd></div><div><dt>Total actual tokens</dt><dd>{loaded.usage.total_tokens.toLocaleString()}</dd></div></dl><p>Provider-reported requests: {loaded.usage.actual_usage_count} · Estimated requests: {loaded.usage.estimated_usage_count}</p>{estimate && <p className="estimate-note">Pricing timestamp: {new Date(estimate.pricing_as_of).toLocaleString()}. {estimate.explanation}</p>}</div>
+            <fieldset className="usage-limit"><legend>Estimated monthly token limit</legend><label className="check-row"><input type="checkbox" checked={unlimited} onChange={event => setUnlimited(event.target.checked)} />No monthly limit beyond prepaid token credits</label>{!unlimited && <label>Estimated monthly tokens<input inputMode="numeric" pattern="[0-9]*" value={cap} onChange={event => setCap(event.target.value)} aria-describedby="cap-help" /><small id="cap-help">Converted by the server to the existing hard limit using the named reference model. Actual token usage varies; automatic recharge is not enabled.</small></label>}<label>Warning threshold (%)<input type="number" min="1" max="100" value={warning} onChange={event => setWarning(event.target.value)} /></label><label className="check-row"><input type="checkbox" checked={notify} onChange={event => setNotify(event.target.checked)} />Show a warning at the threshold</label>{loaded.preferences.warning_reached && <p className="usage-warning" role="status">You have reached your configured warning threshold.</p>}<button className="primary" disabled={saving} onClick={() => void saveUsage()}>{saving ? 'Saving…' : 'Save usage limit'}</button><small>Resets {new Date(loaded.preferences.next_reset_at).toLocaleString()} ({loaded.preferences.timezone}).</small></fieldset>
+            <button className="secondary-button" onClick={addCredits}>Add tokens</button>
+            <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => <article key={payment.id}><strong>{formatRupeesFromPaise(payment.gross_amount_paise)} paid</strong><span>Estimated {payment.token_estimate ? tokenRangeLabel(payment.token_estimate.range_min_tokens, payment.token_estimate.range_max_tokens) : 'tokens unavailable'} added</span><span>50% service allocation</span><span>{formatRupeesFromPaise(payment.refunded_amount_paise)} refunded</span><span>Estimated {payment.reversal_token_estimate ? tokenRangeLabel(payment.reversal_token_estimate.range_min_tokens, payment.reversal_token_estimate.range_max_tokens) : 'tokens unavailable'} reversed</span></article>)}</div>
           </section>}
-          {loaded && section === 'data' && <section aria-labelledby="data-settings"><h3 id="data-settings">Data controls</h3><button className="data-control" onClick={openArchived}><Archive size={18} /><span><strong>Archived chats</strong><small>Review or restore conversations you archived.</small></span></button><div className="settings-legal"><a href="/legal/terms">Terms</a><a href="/legal/privacy">Privacy</a><a href="/legal/refunds">Refund and cancellation</a><a href="/legal/contact">Contact and support</a><a href="/legal/ai">AI limitations</a></div><p className="data-note">Account deletion is not offered here because secure reauthentication and server-side deletion are not implemented.</p></section>}
+          {loaded && section === 'data' && <section aria-labelledby="data-settings"><h3 id="data-settings">Data controls</h3><button className="data-control" onClick={openArchived}><Archive size={18} /><span><strong>Archived chats</strong><small>Review or restore conversations you archived.</small></span></button><div className="settings-legal"><a href="/legal/terms">Terms</a><a href="/legal/privacy">Privacy</a><a href="/legal/refunds">Refund and cancellation</a><a href="/legal/contact">Contact and support</a><a href="/legal/ai">AI limitations</a><a href="/legal/delivery">Digital delivery</a><a href="/legal/pricing">Pricing and top-ups</a></div><p className="data-note">Account deletion is not offered here because secure reauthentication and server-side deletion are not implemented.</p></section>}
           <div className="sr-status" role="status" aria-live="polite">{notice}</div>{notice && <p className="settings-notice" aria-hidden="true">{notice}</p>}
         </div>
       </div>

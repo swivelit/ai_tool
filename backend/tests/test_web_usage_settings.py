@@ -97,7 +97,7 @@ def test_usage_summary_aggregates_authoritative_settled_rows_and_ownership(clien
     assert estimate["reference_provider"] == "openai"
     assert estimate["reference_model"] == "gpt-5-nano"
     assert estimate["range_min_tokens"] <= estimate["range_max_tokens"]
-    assert "Estimate only" in estimate["explanation"]
+    assert "Estimated using openai/gpt-5-nano pricing" in estimate["explanation"]
 
 
 def test_profile_settings_are_owner_scoped_and_validated(client):
@@ -135,6 +135,16 @@ def test_usage_preference_validation_and_null_unlimited(client):
     })
     assert saved.status_code == 200
     assert saved.json()["hard_limit_ai_credits"] == "2.500000"
+    assert saved.json()["hard_limit_token_estimate"]["estimated_blended_tokens"] > 0
+    estimated = client.patch("/api/web/settings/usage", headers=headers, json={
+        "hard_limit_estimated_tokens": 100_000,
+    })
+    assert estimated.status_code == 200
+    assert estimated.json()["hard_limit_micros"] > 0
+    assert estimated.json()["hard_limit_token_estimate"]["estimated_blended_tokens"] >= 100_000
+    assert client.patch("/api/web/settings/usage", headers=headers, json={
+        "hard_limit_micros": 1, "hard_limit_estimated_tokens": 1,
+    }).status_code == 422
     cleared = client.patch("/api/web/settings/usage", headers=headers, json={"hard_limit_micros": None})
     assert cleared.status_code == 200 and cleared.json()["hard_limit_micros"] is None
     for payload in (

@@ -10,7 +10,7 @@ vi.mock('../api/client', async importOriginal => {
 })
 
 const profile = { name:'Hari', place:'Chennai', timezone:'Asia/Kolkata', assistant_name:'Elli', reply_language:'en' as const, email:'h@example.com', email_editable:false as const }
-const preferences = { period:'monthly' as const, hard_limit_micros:null, hard_limit_ai_credits:null, warning_threshold_percent:80, notify_at_threshold:true, current_usage_micros:250_000, current_usage_ai_credits:'0.250000', remaining_micros:null, warning_reached:false, next_reset_at:'2026-08-31T18:30:00Z', timezone:'Asia/Kolkata', updated_at:null }
+const preferences = { period:'monthly' as const, hard_limit_micros:null, hard_limit_ai_credits:null, hard_limit_token_estimate:null, remaining_token_estimate:null, warning_threshold_percent:80, notify_at_threshold:true, current_usage_micros:250_000, current_usage_ai_credits:'0.250000', remaining_micros:null, warning_reached:false, next_reset_at:'2026-08-31T18:30:00Z', timezone:'Asia/Kolkata', updated_at:null }
 const usage = { period:'current_month' as const, timezone:'Asia/Kolkata', period_start:'2026-07-31T18:30:00Z', period_end:'2026-08-31T18:30:00Z', next_reset_at:'2026-08-31T18:30:00Z', request_count:2, input_tokens:1200, cached_input_tokens:300, output_tokens:400, total_tokens:1600, actual_usage_count:1, estimated_usage_count:1, debited_micros:250_000, debited_ai_credits:'0.250000', available_micros:5_000_000, available_ai_credits:'5.000000', daily:[], provider_breakdown:[], model_breakdown:[], estimated_tokens_remaining:{ reference_provider:'openai', reference_model:'gpt-5-nano', pricing_as_of:'2026-07-17T00:00:00Z', pricing_snapshot:{}, estimated_input_only_tokens:180_000, estimated_output_only_tokens:25_000, estimated_blended_tokens:60_000, blended_assumption:'70/30', range_min_tokens:25_000, range_max_tokens:180_000, explanation:'Estimate only. Actual tokens vary by model and input/output mix.' } }
 
 function mockSettingsApi() {
@@ -28,14 +28,15 @@ function mockSettingsApi() {
 it('shows labelled model-dependent estimates and separate actual token categories', async () => {
   mockSettingsApi()
   render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
-  await userEvent.click(await screen.findByRole('button', { name:'Usage & billing' }))
-  expect(screen.getByText('25k–180k tokens')).toBeInTheDocument()
-  expect(screen.getByText(/On gpt-5-nano; model-dependent estimate, not a guaranteed quota/)).toBeInTheDocument()
+  await userEvent.click(await screen.findByRole('button', { name:'Token credits' }))
+  expect(screen.getByText('25,000–180,000 tokens')).toBeInTheDocument()
+  expect(screen.getByText(/Reference: openai\/gpt-5-nano; not a guaranteed quota/)).toBeInTheDocument()
   expect(screen.getByText('Input tokens')).toBeInTheDocument()
   expect(screen.getByText('Cached input tokens')).toBeInTheDocument()
   expect(screen.getByText('Output tokens')).toBeInTheDocument()
-  expect(screen.getByText('5.00 AI credits')).toBeInTheDocument()
-  expect(screen.queryByText('₹5.00 AI credits')).not.toBeInTheDocument()
+  expect(screen.getByText('≈ 60K tokens')).toBeInTheDocument()
+  expect(screen.queryByText(/₹5|5\.00/)).not.toBeInTheDocument()
+  expect(screen.getByText('Total actual tokens')).toBeInTheDocument()
 })
 
 it('edits profile, validates required fields, and saves owner fields only', async () => {
@@ -51,15 +52,15 @@ it('edits profile, validates required fields, and saves owner fields only', asyn
   expect(screen.getByDisplayValue('h@example.com')).toHaveAttribute('readonly')
 })
 
-it('configures an exact integer-micro monthly cap and warning threshold', async () => {
+it('configures an estimated monthly token limit and warning threshold', async () => {
   mockSettingsApi()
   render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
-  await userEvent.click(await screen.findByRole('button', { name:'Usage & billing' }))
-  await userEvent.click(screen.getByLabelText('No monthly cap beyond prepaid AI credits'))
-  await userEvent.type(screen.getByLabelText(/Monthly cap \(AI credits\)/), '2.5')
+  await userEvent.click(await screen.findByRole('button', { name:'Token credits' }))
+  await userEvent.click(screen.getByLabelText('No monthly limit beyond prepaid token credits'))
+  await userEvent.type(screen.getByRole('textbox', { name:/Estimated monthly tokens/ }), '250000')
   await userEvent.clear(screen.getByLabelText('Warning threshold (%)')); await userEvent.type(screen.getByLabelText('Warning threshold (%)'), '75')
   await userEvent.click(screen.getByRole('button', { name:'Save usage limit' }))
-  await waitFor(() => expect(vi.mocked(apiJson)).toHaveBeenCalledWith(expect.anything(), '/api/web/settings/usage', expect.objectContaining({ body: expect.stringContaining('2500000') })))
+  await waitFor(() => expect(vi.mocked(apiJson)).toHaveBeenCalledWith(expect.anything(), '/api/web/settings/usage', expect.objectContaining({ body: expect.stringContaining('250000') })))
 })
 
 it('traps focus, closes on escape, and exposes archived/legal controls', async () => {
