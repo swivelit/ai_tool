@@ -31,7 +31,7 @@ from ..ai.providers.base import GenerationCancellation, GenerationCancelled
 from ..database import SessionLocal, get_session
 from ..models import (
     PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage, WebChatThread,
-    WebUsagePreferences,
+    WalletLedger, WebUsagePreferences,
 )
 from ..time_utils import utc_now
 from .chat_service import DuplicateRequestInProgress, execute_web_turn, prepare_web_turn
@@ -483,6 +483,17 @@ def payments(
     user = get_owned_user(session, auth)
     rows = session.exec(select(PaymentOrder).where(PaymentOrder.user_id == user.id)
         .order_by(PaymentOrder.created_at.desc()).offset(offset).limit(limit)).all()
+    order_ids = [str(row.id) for row in rows]
+    payment_credit_refs: set[str] = set()
+    if order_ids:
+        credit_rows = session.exec(select(WalletLedger).where(
+            WalletLedger.user_id == user.id,
+            WalletLedger.entry_type == "payment_credit",
+            WalletLedger.reference_type == "payment_order",
+            WalletLedger.reference_id.in_(order_ids),
+        )).all()
+        payment_credit_refs = {str(row.reference_id) for row in credit_rows}
+    payment_received_statuses = {"captured", "credited", "partially_refunded", "refunded"}
     return {"items": [{
         "id": row.id, "gross_amount_paise": row.gross_amount_paise,
         "credited_amount_micros": row.credited_amount_micros,
@@ -496,7 +507,13 @@ def payments(
             row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
             if row.gross_amount_paise else 0
         ),
-        "status": row.status, "created_at": row.created_at,
+        "status": row.status,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "paid_at": row.paid_at,
+        "refunded_at": row.refunded_at,
+        "payment_received": row.paid_at is not None or row.status in payment_received_statuses,
+        "credit_applied": str(row.id) in payment_credit_refs,
     } for row in rows]}
 
 

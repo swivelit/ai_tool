@@ -45,13 +45,15 @@ def test_render_cron_operator_instructions_are_complete() -> None:
         "RAZORPAY_KEY_ID=<matching rzp_test_ key>",
         "RAZORPAY_KEY_SECRET=<matching Test Mode secret>",
         "cd backend && python -m scripts.billing_maintenance stale-reservations --age-seconds 1800",
-        "cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --fail-on-findings",
-        "cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --apply",
-        "cd backend && python -m scripts.billing_maintenance audit --captured-uncredited-age-seconds 900 --fail-on-findings",
+        "python -m scripts.billing_maintenance razorpay",
+        "--internal-order-id <uuid>",
+        "python -m scripts.billing_maintenance audit",
+        "--captured-uncredited-age-seconds 900",
         "Cron Jobs have no migration or pre-deploy command",
         "service-level `DATABASE_URL`",
         "must be rotated manually in Render",
-        "add `--apply` only after explicit operational approval",
+        "Never schedule `--apply`",
+        "only high-severity actionable results exit `3`",
     )
 
     missing = [item for item in required if item not in instructions]
@@ -345,6 +347,7 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
     monkeypatch.setattr(
         "app.billing.razorpay_client.RazorpayClient.fetch_order_payments",
         lambda self, order_id: {
+            "status": "cli-provider-secret",
             "items": [
                 {
                     "id": "pay_maintenance_reconcile",
@@ -357,7 +360,9 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
         },
     )
 
-    assert billing_maintenance.main(["razorpay", "--age-seconds", "900"]) == 0
+    assert billing_maintenance.main([
+        "razorpay", "--internal-order-id", order_id, "--age-seconds", "900",
+    ]) == 0
     captured = capsys.readouterr()
     assert json.loads(captured.err) == {
         "APP_ENV": "test",
@@ -366,6 +371,11 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
         "database_backend": "sqlite",
         "razorpay_mode": "test",
     }
+    safe_output = captured.out
+    assert "test@example.com" not in safe_output
+    assert "cli-provider-secret" not in safe_output
+    assert "pay_maintenance_reconcile" not in safe_output
+    assert json.loads(safe_output)["results"][0]["provider_order_status"] == "unknown"
 
     with SessionLocal() as session:
         assert session.get(PaymentOrder, order_id).status == "attempted"
@@ -380,6 +390,49 @@ def test_razorpay_cli_dry_run_does_not_mutate_order_wallet_or_ledger(
         assert session.get(PaymentOrder, order_id).status == "attempted"
         assert get_wallet_summary(session, user_id)["balance_micros"] == 0
         assert session.exec(select(WalletLedger)).all() == []
+
+
+def test_razorpay_info_and_warning_results_do_not_fail(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _user_id, order_id, _provider_order_id = _create_reconciliation_order()
+    _configure_local_cli(monkeypatch)
+    monkeypatch.setattr(
+        "app.billing.razorpay_client.RazorpayClient.fetch_order_payments",
+        lambda self, internal_order_id: {"items": []},
+    )
+
+    assert billing_maintenance.main([
+        "razorpay", "--internal-order-id", order_id, "--fail-on-findings",
+    ]) == 0
+    warning = json.loads(capsys.readouterr().out)["results"][0]
+    assert warning["severity"] == "warning" and warning["actionable"] is False
+
+    with SessionLocal() as session:
+        order = session.get(PaymentOrder, order_id)
+        order.status = "created"
+        session.add(order)
+        session.commit()
+    assert billing_maintenance.main([
+        "razorpay", "--internal-order-id", order_id, "--fail-on-findings",
+    ]) == 0
+    info = json.loads(capsys.readouterr().out)["results"][0]
+    assert info["severity"] == "info" and info["actionable"] is False
+
+
+def test_invalid_targeted_internal_order_uuid_is_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    supplied = "not-a-valid-private-order-value"
+    _configure_local_cli(monkeypatch)
+    assert billing_maintenance.main([
+        "razorpay", "--internal-order-id", supplied,
+    ]) == CONFIGURATION_ERROR_EXIT_CODE
+    output = capsys.readouterr()
+    assert "--internal-order-id" in output.err
+    assert supplied not in output.err
 
 
 def test_razorpay_cli_apply_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:

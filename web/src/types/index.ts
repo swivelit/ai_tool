@@ -65,5 +65,7 @@ export type PaymentHistory = {
   id: string; gross_amount_paise: number; credited_amount_micros: number;
   platform_share_paise: number; refunded_amount_paise: number;
   credit_reversal_micros: number; status: string; created_at: string;
+  updated_at: string; paid_at: string | null; refunded_at: string | null;
+  payment_received: boolean; credit_applied: boolean;
   token_estimate?: TokenEstimate; reversal_token_estimate?: TokenEstimate;
 }

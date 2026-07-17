@@ -46,7 +46,20 @@ test('production authentication and public/account surfaces remain read-only', a
     await page.goto('/')
     await page.getByLabel('Email address').fill(email)
     await page.getByLabel('Password', { exact:true }).fill(password)
+    const bootstrapResponse = page.waitForResponse(response => {
+      try { return new URL(response.url()).pathname === '/api/web/bootstrap' }
+      catch { return false }
+    })
     await page.getByRole('button', { name:'Sign in' }).click()
+    const bootstrap = await bootstrapResponse
+    const publicConfigUrl = new URL('/api/web/billing/public-config', bootstrap.url()).toString()
+    const publicBilling = await page.evaluate(async url => {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`public billing config failed (${response.status})`)
+      return response.json() as Promise<{ razorpay_mode: string; checkout_enabled: boolean }>
+    }, publicConfigUrl)
+    expect(publicBilling.razorpay_mode).toBe('test')
+    expect(publicBilling.checkout_enabled).toBe(false)
     await expect(page.getByRole('button', { name:'Send message' })).toBeVisible()
     await openSidebarOnMobile(page)
     const tokenCard = page.getByRole('button', { name:/Token credits.*tokens|Token credits.*Estimate unavailable/i })
@@ -58,6 +71,8 @@ test('production authentication and public/account surfaces remain read-only', a
     await settings.getByRole('button', { name:'Token credits', exact:true }).click()
     await expect(settings.getByText('Current-month tokens')).toBeVisible()
     await expect(settings.getByText(/Provider-reported requests:/)).toBeVisible()
+    await expect(settings.locator('.settings-history article > strong').filter({ hasText:/₹.*\bpaid\b/i })).toHaveCount(0)
+    await expect(settings).not.toContainText(/cash balance|credited balance/i)
     await page.getByRole('button', { name:'Close settings' }).click()
     for (const route of ['terms', 'privacy', 'refunds', 'contact', 'ai', 'delivery', 'pricing']) {
       await page.goto(`/legal/${route}`)

@@ -6,6 +6,7 @@ import { formatRupeesFromPaise, tokenRangeLabel } from '../credits'
 import type { BillingConfig, BillingPackage, PaymentHistory } from '../types'
 import { loadRazorpay } from './razorpay'
 import { pollPaymentStatus } from './paymentPolling'
+import { paymentPresentation } from './paymentPresentation'
 
 type Order = { key_id: string; provider_order_id: string; amount: number; currency: string; internal_order_id: string; credited_amount_micros: number; platform_share_paise: number }
 
@@ -104,13 +105,13 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
         {historyState === 'loading' && <p>Loading payment history…</p>}
         {historyState === 'error' && <p role="alert">Payment history could not be loaded.</p>}
         {historyState === 'ready' && !history.length && <p>No payments or refunds yet.</p>}
-        {history.map(item => <article key={item.id}><header><strong>{formatRupeesFromPaise(item.gross_amount_paise)} paid</strong><span>{item.status.replaceAll('_', ' ')}</span></header><dl>
-          <div><dt>Gross amount paid</dt><dd>{formatRupeesFromPaise(item.gross_amount_paise)}</dd></div>
-          <div><dt>Estimated tokens added</dt><dd>{estimateRange(item.token_estimate)}</dd></div>
-          <div><dt>Service allocation</dt><dd>{config.credit_percent}%</dd></div>
-          <div><dt>Refund amount</dt><dd>{formatRupeesFromPaise(item.refunded_amount_paise)}</dd></div>
-          <div><dt>Estimated tokens reversed</dt><dd>{estimateRange(item.reversal_token_estimate)}</dd></div>
-        </dl><time dateTime={item.created_at}>{new Date(item.created_at).toLocaleDateString()}</time></article>)}
+        {history.map(item => { const presentation = paymentPresentation(item); return <article key={item.id}><header><strong>{presentation.heading}</strong>{presentation.detail && <span>{presentation.detail}</span>}</header><dl>
+          {presentation.amountLabel && <div><dt>{presentation.amountLabel}</dt><dd>{formatRupeesFromPaise(item.gross_amount_paise)}</dd></div>}
+          {presentation.showTokensAdded && <div><dt>Estimated tokens added</dt><dd>{estimateRange(item.token_estimate)}</dd></div>}
+          {presentation.showServiceAllocation && <div><dt>Service allocation</dt><dd>{config.credit_percent}%</dd></div>}
+          {presentation.showRefundAmount && <div><dt>Refund amount</dt><dd>{formatRupeesFromPaise(item.refunded_amount_paise)}</dd></div>}
+          {presentation.showReversalEstimate && <div><dt>Estimated tokens reversed</dt><dd>{estimateRange(item.reversal_token_estimate)}</dd></div>}
+        </dl><span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}
       </div> : <>
       <p id="billing-description">Token estimates are model-dependent and do not guarantee a fixed provider-token quota.</p>
       <div className="packages">{config.packages.map(item => <button key={item.gross_amount_paise} className={selected === item ? 'selected' : ''} aria-pressed={selected === item} onClick={() => setSelected(item)}><strong>Pay {packageRupees(item.gross_amount_paise)}</strong><span>{config.credit_percent}% converted to token credits</span><span>{estimateRange(item.token_estimate)}</span></button>)}</div>

@@ -20,7 +20,7 @@ type MockState = {
   hardLimit: number | null
   warningThreshold: number
   profile: { name: string; place: string | null; timezone: string; assistant_name: string; reply_language: 'en' | 'ta'; email: string; email_editable: false }
-  payments: Array<{ id: string; gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; refunded_amount_paise: number; credit_reversal_micros: number; status: string; created_at: string; token_estimate: ReturnType<typeof tokenEstimate>; reversal_token_estimate: ReturnType<typeof tokenEstimate> }>
+  payments: Array<{ id: string; gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; refunded_amount_paise: number; credit_reversal_micros: number; status: string; created_at: string; updated_at: string; paid_at: string | null; refunded_at: string | null; payment_received: boolean; credit_applied: boolean; token_estimate: ReturnType<typeof tokenEstimate>; reversal_token_estimate: ReturnType<typeof tokenEstimate> }>
   threads: Array<{ id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }>
 }
 
@@ -89,7 +89,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     }
     if (path === '/api/web/billing/verify') {
       state.wallet = 5_000_000
-      state.payments = [{ id:'internal-order', gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, refunded_amount_paise:0, credit_reversal_micros:0, status:'credited', created_at:now, token_estimate:tokenEstimate(), reversal_token_estimate:tokenEstimate(0) }]
+      state.payments = [{ id:'internal-order', gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, refunded_amount_paise:0, credit_reversal_micros:0, status:'credited', created_at:now, updated_at:now, paid_at:now, refunded_at:null, payment_received:true, credit_applied:true, token_estimate:tokenEstimate(), reversal_token_estimate:tokenEstimate(0) }]
       return json(route, { status: 'credited', credited: true })
     }
     if (path === '/api/web/threads' && request.method() === 'GET') {

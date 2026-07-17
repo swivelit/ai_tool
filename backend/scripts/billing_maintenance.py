@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 import sys
+from uuid import UUID
 
 from app.database_url import (
     database_url_scheme,
@@ -128,6 +129,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     razorpay = sub.add_parser("razorpay")
     razorpay.add_argument("--age-seconds", type=int, default=900)
+    razorpay.add_argument("--internal-order-id")
     razorpay.add_argument("--apply", action="store_true")
     razorpay.add_argument("--fail-on-findings", action="store_true")
     audit = sub.add_parser("audit")
@@ -192,14 +194,14 @@ def _run_command(
             )
             session.rollback()
             print(json.dumps(report, default=str, sort_keys=True))
-            if int(report["high_severity_count"]) and os.getenv("SENTRY_DSN", "").strip():
+            if int(report["actionable_finding_count"]) and os.getenv("SENTRY_DSN", "").strip():
                 bootstrap_observability()
                 safe_counts = {item["category"]: item["count"] for item in report["findings"]}
                 add_sentry_context("financial_audit", {"counts": safe_counts})
                 capture_exception(RuntimeError(
-                    f"financial audit found {report['high_severity_count']} high-severity item(s)"
+                    f"financial audit found {report['actionable_finding_count']} actionable high-severity item(s)"
                 ))
-            return bool(report["high_severity_count"])
+            return bool(report["actionable_finding_count"])
 
         from app.billing.razorpay_client import RazorpayClient
         from app.billing.reconciliation import reconcile_razorpay_orders
@@ -216,11 +218,15 @@ def _run_command(
             ),
             age_seconds=args.age_seconds,
             apply=args.apply,
+            internal_order_id=args.internal_order_id,
         )
         print(json.dumps({"apply": args.apply, "results": results}, default=str))
         if not args.apply:
             session.rollback()
-        return any(item.get("action") != "none" for item in results)
+        return any(
+            item.get("severity") == "high" and item.get("actionable") is True
+            for item in results
+        )
     except Exception:
         session.rollback()
         raise
@@ -231,6 +237,13 @@ def _run_command(
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "razorpay" and args.internal_order_id:
+            try:
+                args.internal_order_id = str(UUID(args.internal_order_id))
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise MaintenanceConfigurationError(
+                    "--internal-order-id must be a valid UUID"
+                ) from exc
         database = validate_maintenance_database()
         razorpay = (
             validate_razorpay_configuration() if args.command == "razorpay" else None
