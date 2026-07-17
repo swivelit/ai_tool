@@ -69,7 +69,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
     </nav>
     <div className="sidebar-bottom">
       <button className="credit-card" onClick={addCredit} aria-describedby="token-credit-description"><span><small>Token credits</small><strong>{wallet ? estimatedTokenLabel(wallet.token_estimate?.estimated_blended_tokens) : 'Calculating…'}</strong></span><b><Plus size={14} /> Add tokens</b></button>
-      <span id="token-credit-description" className="sr-only">{wallet?.token_estimate?.explanation ?? 'Token balance is a model-dependent estimate.'}</span>
+      <span id="token-credit-description" className="sr-only">{wallet?.token_estimate?.explanation ?? 'Token balance is estimated for your selected Swico mode.'}</span>
       <div className="account-wrap"><button ref={accountButtonRef} className="account-button" aria-expanded={account} onClick={() => setAccount(!account)}><span className="avatar">{userName.slice(0, 1).toUpperCase()}</span><span>{userName}</span><MoreHorizontal size={17} /></button>
         {account && <div className="account-menu" role="menu">
           <button role="menuitem" onClick={() => { accountButtonRef.current?.focus(); openSettings(); setAccount(false) }}><Settings size={16} />Settings</button>

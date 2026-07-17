@@ -46,7 +46,11 @@ def test_public_config_exposes_explicit_mode_and_checkout_boolean(client):
     assert body["checkout_enabled"] is True
     assert body["packages"][0]["credited_amount_micros"] == 5_000_000
     assert body["packages"][0]["token_estimate"]["estimated_blended_tokens"] > 0
-    assert body["packages"][0]["token_estimate"]["reference_model"]
+    estimate = body["packages"][0]["token_estimate"]
+    assert estimate["tier"] == "lite"
+    assert "reference_model" not in estimate
+    assert "reference_provider" not in estimate
+    assert "pricing_snapshot" not in estimate
     assert "RAZORPAY_KEY_SECRET" not in json.dumps(body)
 
 

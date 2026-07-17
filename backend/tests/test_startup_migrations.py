@@ -44,6 +44,39 @@ def test_repair_migration_runs_on_empty_db_and_creates_required_tables(tmp_path)
     assert REQUIRED_GLOBAL_QA_TABLES.issubset(set(inspector.get_table_names()))
 
 
+def test_swico_tier_migration_upgrades_from_preceding_revision(tmp_path):
+    db_path = tmp_path / "swico-tier-upgrade.sqlite3"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    env["APP_ENV"] = "test"
+    env["AUTO_CREATE_TABLES"] = "false"
+    preceding = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "8c1f4e7b2a90"],
+        cwd=BACKEND_ROOT, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert preceding.returncode == 0, preceding.stderr
+    before = inspect(create_engine(env["DATABASE_URL"]))
+    assert "assistant_tier" not in {
+        column["name"] for column in before.get_columns("web_usage_preferences")
+    }
+
+    upgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=BACKEND_ROOT, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    after = inspect(create_engine(env["DATABASE_URL"]))
+    assert "assistant_tier" in {
+        column["name"] for column in after.get_columns("web_usage_preferences")
+    }
+    assert "swico_tier" in {
+        column["name"] for column in after.get_columns("web_chat_message")
+    }
+    assert "swico_tier" in {
+        column["name"] for column in after.get_columns("usage_charge")
+    }
+
+
 class _FailingMigrationProcess:
     def __init__(self, return_code: int):
         self.return_code = return_code

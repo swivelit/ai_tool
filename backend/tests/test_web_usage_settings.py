@@ -90,14 +90,17 @@ def test_usage_summary_aggregates_authoritative_settled_rows_and_ownership(clien
     assert body["total_tokens"] == 420
     assert body["actual_usage_count"] == body["estimated_usage_count"] == 1
     assert body["debited_micros"] == 30_000
-    assert {item["provider"] for item in body["provider_breakdown"]} == {"openai", "sarvam"}
-    assert {item["model"] for item in body["model_breakdown"]} == {"gpt-5-nano", "sarvam-30b"}
+    assert "provider_breakdown" not in body
+    assert "model_breakdown" not in body
     assert len(body["daily"]) >= 1
     estimate = body["estimated_tokens_remaining"]
-    assert estimate["reference_provider"] == "openai"
-    assert estimate["reference_model"] == "gpt-5-nano"
+    assert estimate["tier"] == "lite"
+    assert estimate["tier_label"] == "Swico Lite"
+    assert "reference_provider" not in estimate
+    assert "reference_model" not in estimate
+    assert "pricing_snapshot" not in estimate
     assert estimate["range_min_tokens"] <= estimate["range_max_tokens"]
-    assert "Estimated using openai/gpt-5-nano pricing" in estimate["explanation"]
+    assert "Estimated for Swico Lite" in estimate["explanation"]
 
 
 def test_profile_settings_are_owner_scoped_and_validated(client):
@@ -122,6 +125,75 @@ def test_profile_settings_are_owner_scoped_and_validated(client):
     assert other.json()["name"] == "Test User"
     with SessionLocal() as session:
         assert session.get(type(owner), int(owner.id)).name == "Hari S"
+
+
+def test_assistant_tier_defaults_persists_and_does_not_change_value_limits(
+    client, monkeypatch,
+):
+    monkeypatch.setenv("SWICO_DEFAULT_TIER", "lite")
+    monkeypatch.setenv("SWICO_TIER_SELECTION_ENABLED", "true")
+    monkeypatch.setenv("SWICO_PRO_ENABLED", "false")
+    user = create_test_user("tier-owner", "tier-owner@example.com")
+    _fund(int(user.id))
+    _preferences(int(user.id), 2_500_000)
+    headers = auth_headers("tier-owner", "tier-owner@example.com")
+
+    initial = client.get("/api/web/settings/assistant", headers=headers)
+    assert initial.status_code == 200
+    assert initial.json()["tier"] == "lite"
+    assert {item["label"] for item in initial.json()["tiers"]} == {
+        "Swico Lite", "Swico", "Swico Pro",
+    }
+    with SessionLocal() as session:
+        before_wallet = get_wallet_summary(session, int(user.id))["balance_micros"]
+
+    saved = client.patch(
+        "/api/web/settings/assistant", headers=headers, json={"tier": "standard"}
+    )
+    assert saved.status_code == 200 and saved.json()["tier"] == "standard"
+    assert client.get("/api/web/settings/assistant", headers=headers).json()["tier"] == "standard"
+    bootstrap = client.get("/api/web/bootstrap", headers=headers).json()
+    assert bootstrap["assistant"]["tier"] == "standard"
+    assert bootstrap["wallet"]["token_estimate"]["tier"] == "standard"
+    with SessionLocal() as session:
+        row = session.exec(select(WebUsagePreferences).where(
+            WebUsagePreferences.user_id == int(user.id)
+        )).one()
+        assert row.assistant_tier == "standard"
+        assert row.hard_limit_micros == 2_500_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == before_wallet
+
+
+def test_assistant_tier_rejects_invalid_unknown_and_disabled_pro(client, monkeypatch):
+    create_test_user("tier-validation", "tier-validation@example.com")
+    headers = auth_headers("tier-validation", "tier-validation@example.com")
+    monkeypatch.setenv("SWICO_TIER_SELECTION_ENABLED", "true")
+    monkeypatch.setenv("SWICO_PRO_ENABLED", "false")
+    assert client.patch(
+        "/api/web/settings/assistant", headers=headers, json={"tier": "ultra"}
+    ).status_code == 422
+    assert client.patch(
+        "/api/web/settings/assistant", headers=headers,
+        json={"tier": "lite", "model": "arbitrary"},
+    ).status_code == 422
+    rejected = client.patch(
+        "/api/web/settings/assistant", headers=headers, json={"tier": "pro"}
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"]["code"] == "tier_unavailable"
+
+
+def test_invalid_persisted_assistant_tier_falls_back_to_lite(client):
+    user = create_test_user("tier-corrupt", "tier-corrupt@example.com")
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), assistant_tier="corrupt"))
+        session.commit()
+    response = client.get(
+        "/api/web/settings/assistant",
+        headers=auth_headers("tier-corrupt", "tier-corrupt@example.com"),
+    )
+    assert response.status_code == 200
+    assert response.json()["tier"] == "lite"
 
 
 def test_usage_preference_validation_and_null_unlimited(client):

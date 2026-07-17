@@ -31,6 +31,8 @@ class ThreadPatch(BaseModel):
 
 
 class WebChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     request_id: UUID
     message: str = Field(min_length=1, max_length=16_000)
     thread_id: UUID | None = None
@@ -116,3 +118,9 @@ class UsagePreferencesPatch(BaseModel):
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError("Estimated token limit must be a positive integer or null.")
         return value
+
+
+class AssistantSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tier: Literal["lite", "standard", "pro"]

@@ -20,6 +20,7 @@ from ..billing.service import (
 from ..database import SessionLocal
 from ..models import UsageCharge, WebChatMessage, WebChatThread
 from ..time_utils import utc_now
+from .usage_service import selected_swico_tier
 
 
 class DuplicateRequestInProgress(RuntimeError):
@@ -34,6 +35,7 @@ class PreparedWebTurn:
     ai_request: AIRequest
     route: AIRoute
     reserved_micros: int
+    swico_tier: str
     existing_response: WebChatMessage | None = None
 
 
@@ -72,6 +74,7 @@ def _context(session: Session, thread_id: str, user_id: int, limit: int = 20) ->
 
 def prepare_web_turn(*, user_id: int, message: str, request_id: str, thread_id: str | None, reply_language: str | None) -> PreparedWebTurn:
     with SessionLocal() as session:
+        swico_tier = selected_swico_tier(session, user_id)
         existing_assistant = session.exec(select(WebChatMessage).where(
             WebChatMessage.user_id == user_id,
             WebChatMessage.request_id == request_id,
@@ -81,7 +84,9 @@ def prepare_web_turn(*, user_id: int, message: str, request_id: str, thread_id: 
             thread = _owned_thread(session, existing_assistant.thread_id, user_id)
             dummy = AIRequest(user_id, message, reply_language, "text", request_id, {})
             route = AIRoute("blocked", None, "idempotent_replay", "already_complete", "en", "replay", 0)
-            return PreparedWebTurn(request_id, user_id, thread.id, dummy, route, 0, existing_assistant)
+            return PreparedWebTurn(
+                request_id, user_id, thread.id, dummy, route, 0, swico_tier, existing_assistant
+            )
 
         existing_user_message = session.exec(select(WebChatMessage).where(
             WebChatMessage.user_id == user_id,
@@ -107,6 +112,7 @@ def prepare_web_turn(*, user_id: int, message: str, request_id: str, thread_id: 
                 "client_surface": "web", "billing_required": True, "cloud_only": True,
                 "allow_local_rag": False, "allow_local_model": False, "skip_free_text_quota": True,
                 "user_tier": "paid",
+                "swico_tier": swico_tier,
             },
             context_turns=context_turns,
         )
@@ -123,7 +129,7 @@ def prepare_web_turn(*, user_id: int, message: str, request_id: str, thread_id: 
         if route.provider not in {"openai", "sarvam"}:
             # Deterministic safety blocks do not consume wallet credit.
             session.commit()
-            return PreparedWebTurn(request_id, user_id, thread.id, ai_request, route, 0)
+            return PreparedWebTurn(request_id, user_id, thread.id, ai_request, route, 0, swico_tier)
 
         provider_messages = build_provider_messages(ai_request, route, provider=route.provider)
         input_tokens = sum(estimate_tokens(item.get("content", "")) for item in provider_messages)
@@ -132,16 +138,19 @@ def prepare_web_turn(*, user_id: int, message: str, request_id: str, thread_id: 
             session, request_id=request_id, user_id=user_id, thread_id=thread.id,
             provider=route.provider, model=route.model or "", reserved_micros=reserve.micros,
             pricing_snapshot_json=snapshot_json(reserve.snapshot),
+            swico_tier=swico_tier,
         )
         session.commit()
-        return PreparedWebTurn(request_id, user_id, thread.id, ai_request, route, reserve.micros)
+        return PreparedWebTurn(
+            request_id, user_id, thread.id, ai_request, route, reserve.micros, swico_tier
+        )
 
 
 def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderResponse:
     text = (
         "I can’t help with that request, but I can help with a safer alternative."
         if route.provider == "blocked" else
-        "This request requires a cloud AI provider and cannot be completed by this web route."
+        "Swico cannot complete this request through the current web route."
     )
     return AIProviderResponse(
         text=text, provider="blocked", model=None, route=route.route, reason=route.reason,
@@ -162,7 +171,12 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             )
             if on_delta:
                 on_delta(message.content)
-            return CompletedWebTurn(prepared.thread_id, message, get_wallet_summary(session, prepared.user_id), response)
+            return CompletedWebTurn(
+                prepared.thread_id,
+                message,
+                get_wallet_summary(session, prepared.user_id, swico_tier=prepared.swico_tier),
+                response,
+            )
 
     cancelled = False
     try:
@@ -229,7 +243,8 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         assistant = WebChatMessage(
             thread_id=prepared.thread_id, user_id=prepared.user_id, role="assistant",
             content=response.text or "Generation stopped.", request_id=prepared.request_id, provider=response.provider,
-            model=response.model, input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+            model=response.model, swico_tier=prepared.swico_tier,
+            input_tokens=response.input_tokens, output_tokens=response.output_tokens,
             usage_source=usage_source, charge_micros=price.micros, status="cancelled" if cancelled else "complete",
         )
         session.add(assistant)
@@ -247,6 +262,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 pricing_snapshot_json=snapshot_json(price.snapshot),
                 usd_to_inr_rate=env_decimal("USD_TO_INR_BILLING_RATE", "90") if response.provider == "openai" else None,
                 assistant_message_id=assistant.id,
+                provider=response.provider, model=response.model or "",
             )
         thread = _owned_thread(session, prepared.thread_id, prepared.user_id)
         if thread.title == "New chat":
@@ -255,5 +271,5 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         session.add(thread)
         session.commit()
         session.refresh(assistant)
-        wallet = get_wallet_summary(session, prepared.user_id)
+        wallet = get_wallet_summary(session, prepared.user_id, swico_tier=prepared.swico_tier)
         return CompletedWebTurn(prepared.thread_id, assistant, wallet, response)

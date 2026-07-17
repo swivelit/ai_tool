@@ -49,10 +49,10 @@ function MessageView({ message, retry }: { message: Message; retry: (message: Me
     {message.status !== 'streaming' && <div className="answer-actions">
       <button aria-label="Copy answer" title="Copy answer" onClick={() => void navigator.clipboard.writeText(message.content).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1200) })}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
       {message.status === 'retryable' && <button aria-label="Retry answer" title="Retry answer" onClick={() => retry(message)}><RefreshCw size={16} /></button>}
-      {message.provider && <details className="message-details"><summary>Details</summary><div>
-        <span>{[message.provider, message.model].filter(Boolean).join(' · ') || 'Swico'}</span>
+      {(message.usage_source || message.input_tokens || message.output_tokens) && <details className="message-details"><summary>Details</summary><div>
+        <span>{message.tier_label || 'Swico'}</span>
         <span>Input {message.input_tokens.toLocaleString()} · Output {message.output_tokens.toLocaleString()} · Total {(message.input_tokens + message.output_tokens).toLocaleString()} tokens</span>
-        <span>{message.usage_source === 'actual' ? 'Provider-reported usage' : 'Estimated usage'}</span>
+        <span>{message.usage_source === 'actual' ? 'Measured usage' : 'Estimated usage'}</span>
       </div></details>}
     </div>}
   </div></article>

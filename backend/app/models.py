@@ -347,6 +347,7 @@ class WebChatMessage(SQLModel, table=True):
     request_id: Optional[str] = Field(default=None, max_length=64, index=True)
     provider: Optional[str] = Field(default=None, max_length=24)
     model: Optional[str] = Field(default=None, max_length=100)
+    swico_tier: Optional[str] = Field(default=None, max_length=16, index=True)
     input_tokens: int = Field(default=0)
     output_tokens: int = Field(default=0)
     usage_source: Optional[str] = Field(default=None, max_length=16)
@@ -370,6 +371,7 @@ class UsageCharge(SQLModel, table=True):
     assistant_message_id: Optional[str] = Field(default=None, foreign_key="web_chat_message.id", ondelete="SET NULL", max_length=36)
     provider: str = Field(max_length=24)
     model: str = Field(max_length=100)
+    swico_tier: Optional[str] = Field(default=None, max_length=16, index=True)
     input_tokens: int = Field(default=0)
     cached_input_tokens: int = Field(default=0)
     output_tokens: int = Field(default=0)
@@ -393,6 +395,7 @@ class WebUsagePreferences(SQLModel, table=True):
     id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
     user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
     period: str = Field(default="monthly", max_length=16)
+    assistant_tier: str = Field(default="lite", max_length=16)
     hard_limit_micros: Optional[int] = Field(
         default=None, sa_column=Column(BigInteger, nullable=True)
     )

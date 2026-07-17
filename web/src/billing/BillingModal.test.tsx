@@ -6,7 +6,7 @@ import { BillingModal } from './BillingModal'
 
 vi.mock('../api/client', () => ({ apiJson: vi.fn() }))
 
-const estimate = { reference_provider:'openai', reference_model:'gpt-5-nano', pricing_as_of:'2026-07-17T00:00:00Z', pricing_snapshot:{}, estimated_input_only_tokens:180_000, estimated_output_only_tokens:25_000, estimated_blended_tokens:60_000, blended_assumption:'70/30', range_min_tokens:25_000, range_max_tokens:180_000, explanation:'Estimated using openai/gpt-5-nano pricing. Actual token usage varies by model, provider, cached input and input/output mix.' }
+const estimate = { tier:'lite' as const, tier_label:'Swico Lite', pricing_as_of:'2026-07-17T00:00:00Z', estimated_blended_tokens:60_000, blended_assumption:'70/30', range_min_tokens:25_000, range_max_tokens:180_000, explanation:'Estimated for Swico Lite. Actual usage depends on message size, response length, and task complexity.' }
 const historyItem = (status: string, changes = {}) => ({ id:`order-${status}`, gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, refunded_amount_paise:0, credit_reversal_micros:0, status, created_at:'2026-07-17T00:00:00Z', updated_at:'2026-07-17T00:00:00Z', paid_at:null, refunded_at:null, payment_received:false, credit_applied:false, token_estimate:estimate, reversal_token_estimate:estimate, ...changes })
 const config = { currency:'INR' as const, credit_percent:'50', razorpay_key_id:'rzp_test_example', razorpay_mode:'test' as const, checkout_enabled:true, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, token_estimate:estimate }] }
 
@@ -19,7 +19,8 @@ it('shows gross payment, credited value, and does not load checkout when order c
   expect(screen.getAllByText('50% converted to token credits').length).toBeGreaterThan(0)
   expect(screen.getAllByText('25K–180K tokens').length).toBeGreaterThan(0)
   expect(screen.queryByText(/5\.00/)).not.toBeInTheDocument()
-  expect(screen.getByText(/Estimated using openai\/gpt-5-nano pricing/)).toBeInTheDocument()
+  expect(screen.getByText(/Estimated for Swico Lite/)).toBeInTheDocument()
+  expect(document.body.textContent).not.toMatch(/openai|gpt-|claude|anthropic|gemini|llama|mistral|deepseek|sarvam/i)
   await userEvent.click(screen.getByRole('button', { name: 'Pay ₹10 securely' }))
   expect(await screen.findByText('order failed')).toBeInTheDocument()
   expect(append).not.toHaveBeenCalled()

@@ -4,20 +4,20 @@ import type { SSEEvent } from './types'
 
 describe('chatStreamReducer', () => {
   it('handles the complete typed SSE lifecycle in one assistant message', () => {
-    let state = chatStreamReducer(emptyStreamState, { type: 'start', requestId: 'r1', threadId: '' })
+    let state = chatStreamReducer(emptyStreamState, { type: 'start', requestId: 'r1', threadId: '', tier:'lite', tierLabel:'Swico Lite' })
     const events: SSEEvent[] = [
       { event: 'thread', data: { thread_id: 't1' } }, { event: 'status', data: { phase: 'routing' } },
       { event: 'delta', data: { text: 'Hello ' } }, { event: 'delta', data: { text: 'world' } },
-      { event: 'usage', data: { provider: 'openai', model: 'gpt', input_tokens: 4, output_tokens: 2, usage_source: 'actual', charged_micros: 12 } },
+      { event: 'usage', data: { tier:'lite', tier_label:'Swico Lite', input_tokens: 4, output_tokens: 2, usage_source: 'actual', charged_micros: 12 } },
       { event: 'wallet', data: { balance_micros: 100, reserved_micros: 0, available_micros: 100, version: 2 } },
       { event: 'done', data: { message_id: 'm1', thread_id: 't1' } },
     ]
     for (const event of events) state = chatStreamReducer(state, { type: 'event', event })
-    expect(state.assistant).toMatchObject({ id: 'm1', thread_id: 't1', content: 'Hello world', provider: 'openai', status: 'complete' })
+    expect(state.assistant).toMatchObject({ id: 'm1', thread_id: 't1', content: 'Hello world', tier:'lite', tier_label:'Swico Lite', status: 'complete' })
     expect(state.wallet?.available_micros).toBe(100); expect(state.done).toBe(true)
   })
   it('makes an SSE error visible and retryable without creating another assistant', () => {
-    let state = chatStreamReducer(emptyStreamState, { type: 'start', requestId: 'r1', threadId: 't1' })
+    let state = chatStreamReducer(emptyStreamState, { type: 'start', requestId: 'r1', threadId: 't1', tier:'standard', tierLabel:'Swico' })
     const id = state.assistant?.id
     state = chatStreamReducer(state, { type: 'event', event: { event: 'error', data: { code: 'provider_failed', message: 'Try again' } } })
     expect(state.error).toEqual({ code: 'provider_failed', message: 'Try again' })

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { ChevronDown, X } from 'lucide-react'
-import type { Message, Bootstrap, ProfileSettings, Thread, Wallet, SSEEvent } from '../types'
+import { X } from 'lucide-react'
+import type { AssistantSettings, Message, Bootstrap, ProfileSettings, SwicoTier, Thread, Wallet, SSEEvent } from '../types'
 import { ApiError, SSEStreamError, apiJson, streamChat } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
@@ -8,6 +8,7 @@ import { useAuth } from '../auth/useAuth'
 import { Sidebar, SidebarTrigger } from '../components/Sidebar'
 import { Conversation } from '../components/Conversation'
 import { Composer } from '../components/Composer'
+import { SwicoTierSelector } from '../components/SwicoTierSelector'
 import { applyTheme, resolveTheme, type Theme } from '../theme'
 
 const BillingModal = lazy(() => import('../billing/BillingModal').then(module => ({ default: module.BillingModal })))
@@ -28,6 +29,7 @@ export function ChatPage() {
   const [theme, setTheme] = useState<Theme>(resolveTheme)
   const [controller, setController] = useState<AbortController | null>(null); const [requestId, setRequestId] = useState<string | null>(null)
   const [focusKey, setFocusKey] = useState('initial'); const [streamState, dispatchStream] = useReducer(chatStreamReducer, emptyStreamState)
+  const [tierSaving, setTierSaving] = useState(false)
   const billingButtonRef = useRef<HTMLElement | null>(null)
   const threadCountRef = useRef(0)
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
@@ -45,6 +47,36 @@ export function ChatPage() {
     const wallet = await apiJson<Wallet>(user, '/api/web/billing/wallet')
     setBootstrap(value => value ? { ...value, wallet } : value)
   }, [user])
+  const saveTier = useCallback(async (tier: SwicoTier) => {
+    if (!user || !bootstrap || streaming || tierSaving || tier === bootstrap.assistant.tier) return
+    const previous = bootstrap.assistant
+    const option = previous.tiers.find(item => item.id === tier)
+    if (!option?.available) return
+    const optimistic: AssistantSettings = {
+      ...previous, tier, tier_label: option.label, tier_description: option.description,
+      tiers: previous.tiers.map(item => ({ ...item, selected: item.id === tier })),
+    }
+    setTierSaving(true); setError('')
+    setBootstrap(value => value ? { ...value, assistant: optimistic } : value)
+    let saved: AssistantSettings
+    try {
+      saved = await apiJson<AssistantSettings>(user, '/api/web/settings/assistant', {
+        method: 'PATCH', body: JSON.stringify({ tier }),
+      })
+      setBootstrap(value => value ? { ...value, assistant: saved } : value)
+    } catch {
+      setBootstrap(value => value ? { ...value, assistant: previous } : value)
+      setError('Swico mode could not be changed. Your previous mode is still active.')
+      setTierSaving(false)
+      throw new Error('Swico mode could not be changed.')
+    }
+    try {
+      const refreshed = await apiJson<Bootstrap>(user, '/api/web/bootstrap')
+      setBootstrap(refreshed)
+    } catch {
+      setError('Your Swico mode was saved, but token estimates could not be refreshed yet.')
+    } finally { setTierSaving(false) }
+  }, [bootstrap, streaming, tierSaving, user])
   useEffect(() => {
     if (!user) return
     const refreshVisibleWallet = () => {
@@ -111,22 +143,22 @@ export function ChatPage() {
   }
 
   const send = async (text = draft, threadId = active, retryRequestId?: string) => {
-    if (!user || streaming || !text.trim() || offline) return
+    if (!user || !bootstrap || streaming || !text.trim() || offline) return
     const nextRequestId = retryRequestId || crypto.randomUUID()
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
     if (!existingUser) {
-      const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content: text.trim(), request_id: nextRequestId, provider: null, model: null, input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString() }
+      const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content: text.trim(), request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString() }
       setMessages(value => [...value, optimistic])
     }
     setDraft(''); setStreaming(true); setError(''); setRequestId(nextRequestId)
-    dispatchStream({ type: 'start', requestId: nextRequestId, threadId: threadId ?? '' })
+    dispatchStream({ type: 'start', requestId: nextRequestId, threadId: threadId ?? '', tier: bootstrap.assistant.tier, tierLabel: bootstrap.assistant.tier_label })
     const abort = new AbortController(); setController(abort)
     try {
       await streamChat(user, { request_id: nextRequestId, message: text.trim(), ...(threadId ? { thread_id: threadId } : {}) }, handleEvent, abort.signal)
       await loadThreads(true)
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
-        dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial provider usage may already have been charged.')
+        dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial measured usage may already have been charged.')
       } else {
         const code = caught instanceof ApiError && caught.body && typeof caught.body === 'object' && 'error' in caught.body
           ? String((caught.body as { error?: { code?: string } }).error?.code ?? '') : ''
@@ -143,10 +175,10 @@ export function ChatPage() {
     void apiJson<{ status: string }>(user, `/api/web/chat/requests/${requestId}/cancel`, { method: 'POST' })
       .then(async result => {
         if (result.status === 'stopped') { await refreshWallet().catch(() => undefined); controller.abort() }
-        else if (result.status === 'cancelling') setError('Cancellation was requested. Swico is waiting for the provider to close safely.')
-        else setError('The provider had already completed this response.')
+        else if (result.status === 'cancelling') setError('Cancellation was requested. Swico is finishing the usage record safely.')
+        else setError('Swico had already completed this response.')
       })
-      .catch(() => setError('Cancellation could not be confirmed. The stream will remain open until provider settlement finishes.'))
+      .catch(() => setError('Cancellation could not be confirmed. The stream will remain open until usage settlement finishes.'))
   }
   const retry = (message: Message) => {
     const original = message.role === 'user' ? message : messages.find(item => item.role === 'user' && item.request_id === message.request_id)
@@ -176,14 +208,14 @@ export function ChatPage() {
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
       select={select} newChat={newChat} addCredit={openBilling} openSettings={openSettings} mutate={mutate} signOut={() => void signOut()} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
-    <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="product-selector">Swico <ChevronDown size={15} aria-hidden="true" /></span><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
+    <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><SwicoTierSelector assistant={bootstrap.assistant} disabled={streaming} saving={tierSaving} onSelect={saveTier} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
       <Conversation messages={messages} phase={streamState.phase} retry={retry} suggest={text => { setDraft(text); setFocusKey(`suggest-${Date.now()}`) }} />
       <Composer value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey} />
     </section>
     {billing && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
-    {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}
+    {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}
     {dialog && <ThreadDialog state={dialog} setState={setDialog} confirm={() => { const current = dialog; setDialog(null); void runMutation(current.thread, current.type, current.value.trim()) }} />}
   </main>
 }

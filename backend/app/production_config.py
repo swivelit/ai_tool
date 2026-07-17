@@ -6,6 +6,7 @@ import os
 from urllib.parse import urlsplit
 
 from .database_url import is_postgres_database_url
+from .ai.swico_tiers import SWICO_TIER_IDS, SWICO_TIER_MODEL_ALLOWLIST
 
 
 class ProductionConfigurationError(RuntimeError):
@@ -85,6 +86,31 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
 
     if _bool(env, "WEB_APP_ENABLED", False) is not True:
         errors.append("WEB_APP_ENABLED must be true")
+
+    default_tier = _value(env, "SWICO_DEFAULT_TIER", "lite").lower()
+    if default_tier not in SWICO_TIER_IDS:
+        errors.append("SWICO_DEFAULT_TIER is unsupported")
+    selection_enabled = _bool(env, "SWICO_TIER_SELECTION_ENABLED", True)
+    pro_is_enabled = _bool(env, "SWICO_PRO_ENABLED", False)
+    if selection_enabled is None:
+        errors.append("SWICO_TIER_SELECTION_ENABLED must be a boolean")
+    if pro_is_enabled is None:
+        errors.append("SWICO_PRO_ENABLED must be a boolean")
+    if default_tier == "pro" and pro_is_enabled is not True:
+        errors.append("SWICO_DEFAULT_TIER cannot be pro while SWICO_PRO_ENABLED is false")
+    for tier_name in ("LITE", "STANDARD", "PRO"):
+        primary_name = f"SWICO_{tier_name}_MODEL_PRIMARY"
+        fallbacks_name = f"SWICO_{tier_name}_MODEL_FALLBACKS"
+        primary = _value(env, primary_name)
+        fallbacks = [item.strip() for item in _value(env, fallbacks_name).split(",") if item.strip()]
+        if not primary:
+            errors.append(f"{primary_name} must be configured")
+        elif primary not in SWICO_TIER_MODEL_ALLOWLIST:
+            errors.append(f"{primary_name} must use an allowlisted model")
+        if not fallbacks:
+            errors.append(f"{fallbacks_name} must configure at least one fallback")
+        elif any(model not in SWICO_TIER_MODEL_ALLOWLIST for model in fallbacks):
+            errors.append(f"{fallbacks_name} must use only allowlisted models")
 
     if "BILLING_CHECKOUT_ENABLED" not in env or not _value(env, "BILLING_CHECKOUT_ENABLED"):
         errors.append("BILLING_CHECKOUT_ENABLED must be set explicitly")

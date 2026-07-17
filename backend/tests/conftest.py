@@ -33,6 +33,15 @@ os.environ["RAZORPAY_KEY_SECRET"] = "test_checkout_secret"
 os.environ["RAZORPAY_WEBHOOK_SECRET"] = "test_webhook_secret"
 os.environ["RAZORPAY_MODE"] = "test"
 os.environ["BILLING_CHECKOUT_ENABLED"] = "true"
+os.environ["SWICO_DEFAULT_TIER"] = "lite"
+os.environ["SWICO_TIER_SELECTION_ENABLED"] = "true"
+os.environ["SWICO_PRO_ENABLED"] = "false"
+os.environ["SWICO_LITE_MODEL_PRIMARY"] = "gpt-5.4-mini"
+os.environ["SWICO_LITE_MODEL_FALLBACKS"] = "gpt-5.4-nano"
+os.environ["SWICO_STANDARD_MODEL_PRIMARY"] = "gpt-5.6-terra"
+os.environ["SWICO_STANDARD_MODEL_FALLBACKS"] = "gpt-5.5"
+os.environ["SWICO_PRO_MODEL_PRIMARY"] = "gpt-5.6-sol"
+os.environ["SWICO_PRO_MODEL_FALLBACKS"] = "gpt-5.6-terra"
 for name in (
     "FIREBASE_CREDENTIALS_JSON",
     "GOOGLE_APPLICATION_CREDENTIALS",

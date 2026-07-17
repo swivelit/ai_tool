@@ -1,4 +1,8 @@
+import pytest
+
+from app.ai.model_health import clear_model_health, mark_model_unavailable
 from app.ai.router import AIProviderRouter
+from app.ai.swico_tiers import SwicoTierUnavailableError
 from app.ai.types import AIRequest
 from app.openai_model_router import OpenAIModelRouter
 
@@ -118,3 +122,53 @@ def test_ai_provider_router_sets_openai_candidate_ladder(monkeypatch):
     assert route.model == "gpt-5-nano"
     assert route.model_candidates[:3] == ["gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"]
     assert route.provider_endpoint_candidates[0] == "responses"
+
+
+@pytest.mark.parametrize(
+    ("tier", "expected"),
+    [
+        ("lite", ["gpt-5.4-mini", "gpt-5.4-nano"]),
+        ("standard", ["gpt-5.6-terra", "gpt-5.5"]),
+        ("pro", ["gpt-5.6-sol", "gpt-5.6-terra"]),
+    ],
+)
+def test_swico_tiers_use_only_their_configured_ladder(monkeypatch, tier, expected):
+    monkeypatch.setenv("SWICO_PRO_ENABLED", "true")
+    monkeypatch.setenv(f"SWICO_{tier.upper()}_MODEL_PRIMARY", expected[0])
+    monkeypatch.setenv(f"SWICO_{tier.upper()}_MODEL_FALLBACKS", expected[1])
+    monkeypatch.setenv("OPENAI_DISABLED_MODELS", "")
+    clear_model_health()
+    selections = OpenAIModelRouter().select_swico_candidates(
+        tier, "The same task must not change public ladders", user_tier="paid"
+    )
+    assert _models(selections) == expected
+    assert all(selection.endpoint == "responses" for selection in selections)
+
+
+def test_swico_tier_never_crosses_to_another_ladder_when_unavailable(monkeypatch):
+    monkeypatch.setenv("SWICO_STANDARD_MODEL_PRIMARY", "gpt-5.6-terra")
+    monkeypatch.setenv("SWICO_STANDARD_MODEL_FALLBACKS", "gpt-5.5")
+    monkeypatch.setenv("SWICO_LITE_MODEL_PRIMARY", "gpt-5.4-mini")
+    monkeypatch.setenv("SWICO_LITE_MODEL_FALLBACKS", "gpt-5.4-nano")
+    clear_model_health()
+    mark_model_unavailable("openai", "gpt-5.6-terra", "responses", "test")
+    mark_model_unavailable("openai", "gpt-5.5", "responses", "test")
+    with pytest.raises(SwicoTierUnavailableError):
+        OpenAIModelRouter().select_swico_candidates(
+            "standard", "Do not downgrade this request", user_tier="paid"
+        )
+    clear_model_health()
+
+
+def test_web_router_uses_product_tier_separately_from_permission_tier(monkeypatch):
+    monkeypatch.setenv("SWICO_STANDARD_MODEL_PRIMARY", "gpt-5.6-terra")
+    monkeypatch.setenv("SWICO_STANDARD_MODEL_FALLBACKS", "gpt-5.5")
+    clear_model_health()
+    route = AIProviderRouter().select_route(AIRequest(
+        user_id=1, message="Write code", reply_language="en", channel="text",
+        request_id="swico-route", metadata={
+            "client_surface": "web", "swico_tier": "standard", "user_tier": "paid",
+        },
+    ))
+    assert route.model_candidates == ["gpt-5.6-terra", "gpt-5.5"]
+    assert route.metadata["swico_tier"] == "standard"

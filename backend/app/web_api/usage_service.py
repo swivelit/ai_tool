@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
 
+from ..ai.swico_tiers import SWICO_TIER_LABELS, default_swico_tier, normalize_swico_tier
 from ..billing.pricing import MILLION
 from ..billing.service import get_wallet_summary
 from ..billing.token_estimates import token_estimate
@@ -18,6 +19,13 @@ from ..time_utils import ensure_utc, utc_now
 
 def ai_credits(micros: int) -> str:
     return format(Decimal(int(micros)) / MILLION, ".6f")
+
+
+def selected_swico_tier(session: Session, user_id: int) -> str:
+    row = session.exec(
+        select(WebUsagePreferences).where(WebUsagePreferences.user_id == int(user_id))
+    ).first()
+    return normalize_swico_tier(row.assistant_tier if row else default_swico_tier())
 
 
 def _period_bounds(
@@ -43,6 +51,7 @@ def usage_summary(
     session: Session, *, user: User, period: str, now: datetime | None = None,
 ) -> dict[str, Any]:
     current = ensure_utc(now or utc_now())
+    swico_tier = selected_swico_tier(session, int(user.id))
     zone: ZoneInfo = validated_timezone(user.timezone)
     start, end, next_reset = _period_bounds(
         session, user=user, period=period, now=current
@@ -72,8 +81,6 @@ def usage_summary(
             "output_tokens": 0, "total_tokens": 0, "debited_micros": 0,
         }
     )
-    providers: dict[str, dict[str, int | str]] = {}
-    models: dict[tuple[str, str], dict[str, int | str]] = {}
     for row in rows:
         total_tokens = int(row.input_tokens) + int(row.output_tokens)
         totals["request_count"] += 1
@@ -92,32 +99,13 @@ def usage_summary(
             ("debited_micros", int(row.debited_micros)),
         ):
             day[key] += value
-        provider = providers.setdefault(row.provider, {
-            "provider": row.provider, "request_count": 0, "input_tokens": 0,
-            "cached_input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
-            "debited_micros": 0,
-        })
-        model_key = (row.provider, row.model)
-        model = models.setdefault(model_key, {
-            "provider": row.provider, "model": row.model, "request_count": 0,
-            "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
-            "total_tokens": 0, "debited_micros": 0,
-        })
-        for bucket in (provider, model):
-            for key, value in (
-                ("request_count", 1), ("input_tokens", int(row.input_tokens)),
-                ("cached_input_tokens", int(row.cached_input_tokens)),
-                ("output_tokens", int(row.output_tokens)), ("total_tokens", total_tokens),
-                ("debited_micros", int(row.debited_micros)),
-            ):
-                bucket[key] = int(bucket[key]) + value
-    wallet = get_wallet_summary(session, int(user.id))
+    wallet = get_wallet_summary(session, int(user.id), swico_tier=swico_tier)
     for day, values in daily.items():
         values["debited_ai_credits"] = ai_credits(values["debited_micros"])
-    for bucket in [*providers.values(), *models.values()]:
-        bucket["debited_ai_credits"] = ai_credits(int(bucket["debited_micros"]))
     return {
         "period": period,
+        "tier": swico_tier,
+        "tier_label": SWICO_TIER_LABELS[swico_tier],
         "timezone": user.timezone,
         "period_start": start,
         "period_end": end,
@@ -127,8 +115,6 @@ def usage_summary(
         "available_micros": int(wallet["available_micros"]),
         "available_ai_credits": ai_credits(int(wallet["available_micros"])),
         "daily": [{"date": day, **values} for day, values in sorted(daily.items())],
-        "provider_breakdown": sorted(providers.values(), key=lambda item: str(item["provider"])),
-        "model_breakdown": sorted(models.values(), key=lambda item: (str(item["provider"]), str(item["model"]))),
         "estimated_tokens_remaining": wallet["token_estimate"],
         "token_estimate": wallet["token_estimate"],
     }
@@ -142,6 +128,7 @@ def usage_preferences_dict(
             WebUsagePreferences.user_id == int(user.id)
         )).first()
     summary = usage_summary(session, user=user, period="current_month")
+    swico_tier = selected_swico_tier(session, int(user.id))
     hard_limit = int(row.hard_limit_micros) if row and row.hard_limit_micros is not None else None
     threshold = int(row.warning_threshold_percent) if row else 80
     used = int(summary["debited_micros"])
@@ -149,13 +136,15 @@ def usage_preferences_dict(
         "period": row.period if row else "monthly",
         "hard_limit_micros": hard_limit,
         "hard_limit_ai_credits": ai_credits(hard_limit) if hard_limit is not None else None,
-        "hard_limit_token_estimate": token_estimate(hard_limit) if hard_limit is not None else None,
+        "tier": swico_tier,
+        "tier_label": SWICO_TIER_LABELS[swico_tier],
+        "hard_limit_token_estimate": token_estimate(hard_limit, tier=swico_tier) if hard_limit is not None else None,
         "warning_threshold_percent": threshold,
         "notify_at_threshold": bool(row.notify_at_threshold) if row else True,
         "current_usage_micros": used,
         "current_usage_ai_credits": ai_credits(used),
         "remaining_micros": None if hard_limit is None else max(0, hard_limit - used),
-        "remaining_token_estimate": token_estimate(max(0, hard_limit - used)) if hard_limit is not None else None,
+        "remaining_token_estimate": token_estimate(max(0, hard_limit - used), tier=swico_tier) if hard_limit is not None else None,
         "warning_reached": bool(hard_limit and used * 100 >= hard_limit * threshold),
         "next_reset_at": summary["next_reset_at"],
         "timezone": user.timezone,

@@ -1,8 +1,16 @@
 export type Wallet = { balance_micros: number; reserved_micros: number; available_micros: number; version: number; token_estimate?: TokenEstimate }
+export type SwicoTier = 'lite' | 'standard' | 'pro'
+export type SwicoTierOption = {
+  id: SwicoTier; label: string; description: string; available: boolean; selected: boolean;
+}
+export type AssistantSettings = {
+  tier: SwicoTier; tier_label: string; tier_description: string;
+  tier_selection_enabled: boolean; tiers: SwicoTierOption[];
+}
 export type Thread = { id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }
 export type Message = {
   id: string; thread_id: string; role: 'user' | 'assistant' | 'system'; content: string;
-  request_id: string | null; provider: string | null; model: string | null;
+  request_id: string | null; tier: SwicoTier | null; tier_label: string;
   input_tokens: number; output_tokens: number; usage_source: 'actual' | 'estimated' | null;
   charge_micros: number; status: string; created_at: string;
 }
@@ -14,8 +22,8 @@ export type BillingConfig = {
 }
 export type Bootstrap = {
   user: { id: number; name: string; email: string | null; reply_language: string };
-  wallet: Wallet; billing: BillingConfig;
-  features: { web_chat: boolean; prepaid_billing: boolean; local_models: false };
+  wallet: Wallet; billing: BillingConfig; assistant: AssistantSettings;
+  features: { web_chat: boolean; prepaid_billing: boolean };
 }
 export type StreamEventName = 'thread' | 'status' | 'delta' | 'usage' | 'wallet' | 'done' | 'error'
 export type SSEEvent = { event: StreamEventName | (string & {}); data: unknown }
@@ -37,28 +45,28 @@ export type UsagePreferences = {
   remaining_micros: number | null; warning_reached: boolean;
   hard_limit_token_estimate: TokenEstimate | null; remaining_token_estimate: TokenEstimate | null;
   next_reset_at: string; timezone: string; updated_at: string | null;
+  tier: SwicoTier; tier_label: string;
 }
 export type UsageBreakdown = {
-  provider: string; model?: string; request_count: number; input_tokens: number;
+  request_count: number; input_tokens: number;
   cached_input_tokens: number; output_tokens: number; total_tokens: number;
   debited_micros: number; debited_ai_credits: string;
 }
 export type TokenEstimate = {
-  reference_provider: string; reference_model: string; pricing_as_of: string;
-  pricing_snapshot: Record<string, unknown>; estimated_input_only_tokens: number;
-  estimated_output_only_tokens: number; estimated_blended_tokens: number | null;
+  tier: SwicoTier; tier_label: string; pricing_as_of: string;
+  estimated_blended_tokens: number | null;
   blended_assumption?: string; range_min_tokens: number; range_max_tokens: number;
   explanation: string;
 }
 export type UsageSummary = {
   period: 'current_month' | '30d' | 'all'; timezone: string;
+  tier: SwicoTier; tier_label: string;
   period_start: string; period_end: string; next_reset_at: string | null;
   request_count: number; input_tokens: number; cached_input_tokens: number;
   output_tokens: number; total_tokens: number; actual_usage_count: number;
   estimated_usage_count: number; debited_micros: number; debited_ai_credits: string;
   available_micros: number; available_ai_credits: string;
-  daily: Array<{ date: string } & Omit<UsageBreakdown, 'provider' | 'model'>>;
-  provider_breakdown: UsageBreakdown[]; model_breakdown: UsageBreakdown[];
+  daily: Array<{ date: string } & UsageBreakdown>;
   estimated_tokens_remaining: TokenEstimate;
 }
 export type PaymentHistory = {

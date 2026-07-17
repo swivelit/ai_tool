@@ -15,6 +15,12 @@ from sqlmodel import Session, select
 from .models import OpenAIUsageLog
 from .time_utils import utc_now
 from .ai.openai_catalog import estimate_model_cost, get_model_spec, get_openai_model_catalog
+from .ai.model_health import is_model_temporarily_unavailable
+from .ai.swico_tiers import (
+    SwicoTierUnavailableError,
+    configured_model_ladder,
+    normalize_swico_tier,
+)
 
 try:
     from config import OPENAI_MODEL as CONFIG_OPENAI_MODEL_DEFAULT
@@ -337,6 +343,65 @@ class OpenAIModelRouter:
                     "tiers": [selection.tier for selection in selections],
                 },
             )
+        return selections
+
+    def select_swico_candidates(
+        self, tier: str, message: str, *, user_tier: Optional[str] = None
+    ) -> list[ModelSelection]:
+        """Select only candidates configured for one branded web tier."""
+        swico_tier = normalize_swico_tier(tier)
+        input_tokens = self.estimate_tokens(message)
+        output_tokens = min(self.max_output_default, self.max_output_hard)
+        selections: list[ModelSelection] = []
+        skipped_models: list[dict[str, str]] = []
+        names = configured_model_ladder(swico_tier)
+        for model in names:
+            spec = get_model_spec(model)
+            reason = ""
+            if model in self.disabled_models or not spec.enabled_by_default:
+                reason = "model_disabled"
+            elif str(user_tier or "free").strip().lower() not in {"admin", "internal"} and (
+                spec.admin_only or not spec.free_user_allowed
+            ):
+                reason = "model_not_allowed"
+            elif is_model_temporarily_unavailable("openai", model, spec.endpoint):
+                reason = "model_health_cache"
+            if reason:
+                skipped_models.append({"model": model, "reason": reason})
+                continue
+            selections.append(
+                ModelSelection(
+                    model=model,
+                    tier=f"swico_{swico_tier}",
+                    reason=f"swico_{swico_tier}_configured_ladder",
+                    max_output_tokens=output_tokens,
+                    endpoint=spec.endpoint,
+                    estimated_input_tokens=input_tokens,
+                    estimated_output_tokens=output_tokens,
+                    estimated_cost_usd=self.estimate_cost(model, input_tokens, output_tokens),
+                )
+            )
+        self.last_selection_metadata = {
+            "primary_model_candidate": names[0] if names else "",
+            "selected_model_reason": "configured_swico_tier",
+            "skipped_models": skipped_models,
+            "model_health_skip_reason": next(
+                (item["reason"] for item in skipped_models if item["reason"] == "model_health_cache"),
+                "",
+            ),
+        }
+        if not selections:
+            raise SwicoTierUnavailableError(
+                "The selected Swico mode is temporarily unavailable. Please try again shortly."
+            )
+        logger.info(
+            "swico_model_ladder_selected",
+            extra={
+                "event": "swico_model_ladder_selected",
+                "swico_tier": swico_tier,
+                "models": [selection.model for selection in selections],
+            },
+        )
         return selections
 
     def _daily_budget_available(self) -> bool:

@@ -115,6 +115,25 @@ def _check_budget_or_raise(
         raise OpenAIBudgetExceededError("OpenAI daily budget exceeded; cache-only response unavailable.")
 
 
+def enforce_openai_budget(
+    session: Optional[Session], *, route: str, model: str, model_tier: str,
+    estimated_cost_usd: float,
+) -> None:
+    """Apply the same daily budget guard to streaming and non-streaming calls."""
+    owned_session, usage_session = _session_context(session)
+    try:
+        _check_budget_or_raise(
+            usage_session,
+            route=route,
+            model_used=model,
+            model_tier=model_tier,
+            estimated_cost=estimated_cost_usd,
+        )
+    finally:
+        if owned_session is not None:
+            owned_session.close()
+
+
 def _usage_int(usage: Any, *names: str) -> Optional[int]:
     for name in names:
         if isinstance(usage, dict):

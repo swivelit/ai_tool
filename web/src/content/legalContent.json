@@ -90,7 +90,7 @@
       "sections": [
         { "heading": "Gross top-up price", "body": "" },
         { "heading": "50/50 allocation", "body": "" },
-        { "heading": "Model-dependent token estimates", "body": "" },
+        { "heading": "Swico mode token estimates", "body": "" },
         { "heading": "Refund display", "body": "" }
       ]
     }

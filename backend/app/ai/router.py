@@ -82,6 +82,36 @@ class AIProviderRouter:
                 metadata=intent_metadata,
             )
 
+        swico_tier = str(request.metadata.get("swico_tier") or "").strip().lower()
+        if request.metadata.get("client_surface") == "web" and swico_tier:
+            permission_tier = str(request.metadata.get("user_tier") or "paid")
+            model_router = OpenAIModelRouter()
+            selections = model_router.select_swico_candidates(
+                swico_tier, request.message, user_tier=permission_tier
+            )
+            selection = selections[0]
+            selection_meta = model_router.last_selection_metadata
+            return AIRoute(
+                provider="openai",
+                model=selection.model,
+                route=f"openai_{intent.intent}",
+                reason=f"{intent.reason}:{selection.reason}",
+                language=language.language,
+                intent=intent.intent,
+                max_output_tokens=max_output_tokens,
+                model_candidates=[candidate.model for candidate in selections],
+                provider_endpoint_candidates=[candidate.endpoint for candidate in selections],
+                metadata={
+                    **intent_metadata,
+                    "swico_tier": swico_tier,
+                    "model_tier": selection.tier,
+                    "primary_model_candidate": selection_meta.get("primary_model_candidate") or selection.model,
+                    "selected_model_reason": selection_meta.get("selected_model_reason") or "configured_swico_tier",
+                    "skipped_models": selection_meta.get("skipped_models") or [],
+                    "model_health_skip_reason": selection_meta.get("model_health_skip_reason") or "",
+                },
+            )
+
         web_routing_mode = (
             str(os.getenv("AI_PROVIDER_ROUTING_MODE", "cost_optimized")).strip().lower()
             if request.metadata.get("client_surface") == "web"

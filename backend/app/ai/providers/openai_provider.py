@@ -5,8 +5,13 @@ from typing import Any, Callable, Optional
 
 from fastapi import HTTPException
 
-from ...openai_model_router import OpenAIModelRouter
-from ...openai_tracked import get_tracked_chat_completion_metadata, tracked_openai_generation
+from ...database import SessionLocal
+from ...openai_model_router import OpenAIModelRouter, record_openai_usage
+from ...openai_tracked import (
+    enforce_openai_budget, get_tracked_chat_completion_metadata,
+    tracked_openai_generation,
+)
+from ..model_health import is_model_temporarily_unavailable, mark_model_unavailable
 from ..prompts import build_provider_messages, build_system_instructions
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import AIProvider, GenerationCancellation, GenerationCancelled
@@ -112,95 +117,175 @@ class OpenAIProvider(AIProvider):
     def stream_complete(
         self, request: AIRequest, route: AIRoute, on_delta: Callable[[str], None]
     ) -> AIProviderResponse:
-        """Stream upstream OpenAI deltas and retain final provider usage for billing."""
+        """Stream one tier-contained candidate ladder and retain billing usage."""
         client = self._client_or_create()
-        model = (route.model_candidates or [route.model])[0] or route.model or "gpt-4o-mini"
         messages = build_provider_messages(request, route, provider="openai")
-        text_parts: list[str] = []
-        input_tokens = output_tokens = cached_tokens = 0
-        provider_usage_received = False
-        endpoint = str((route.provider_endpoint_candidates or [""])[0] or "chat_completions")
+        candidates = [item for item in (route.model_candidates or [route.model]) if item]
+        endpoints = route.provider_endpoint_candidates or []
         cancellation = request.metadata.get("cancellation_signal")
         if not isinstance(cancellation, GenerationCancellation):
             cancellation = None
-
-        def partial_response() -> AIProviderResponse | None:
-            text = "".join(text_parts).strip()
-            if not text and not provider_usage_received:
-                return None
-            router = OpenAIModelRouter()
-            billed_input = input_tokens or router.estimate_tokens(request.message)
-            billed_output = output_tokens or router.estimate_tokens(text)
-            return AIProviderResponse(
-                text=text, provider="openai", model=model, route=route.route, reason=route.reason,
-                language=route.language, intent=route.intent, input_tokens=billed_input,
-                output_tokens=billed_output, characters=len(text),
-                estimated_cost_amount=router.estimate_cost(model, billed_input, billed_output),
-                estimated_cost_currency="USD",
-                raw={"usage_actual": provider_usage_received, "cached_input_tokens": cached_tokens, "endpoint": endpoint, "cancelled": True},
+        last_error: Exception | None = None
+        for index, model in enumerate(candidates):
+            endpoint = str(
+                (endpoints[index] if index < len(endpoints) else "")
+                or "responses"
+            )
+            if is_model_temporarily_unavailable("openai", model, endpoint):
+                continue
+            text_parts: list[str] = []
+            input_tokens = output_tokens = cached_tokens = 0
+            provider_usage_received = False
+            budget_router = OpenAIModelRouter()
+            budget_input = budget_router.estimate_tokens(request.message)
+            budget_output = min(route.max_output_tokens, budget_router.max_output_hard)
+            estimated_budget_cost = budget_router.estimate_cost(
+                model, budget_input, budget_output
+            )
+            enforce_openai_budget(
+                request.metadata.get("session"), route=route.route, model=model,
+                model_tier=str(route.metadata.get("model_tier") or "web"),
+                estimated_cost_usd=estimated_budget_cost,
             )
 
-        def check_cancelled() -> None:
-            if cancellation and cancellation.cancelled:
-                raise GenerationCancelled(partial_response())
+            def partial_response() -> AIProviderResponse | None:
+                text = "".join(text_parts).strip()
+                if not text and not provider_usage_received:
+                    return None
+                router = OpenAIModelRouter()
+                billed_input = input_tokens or router.estimate_tokens(request.message)
+                billed_output = output_tokens or router.estimate_tokens(text)
+                return AIProviderResponse(
+                    text=text, provider="openai", model=model, route=route.route,
+                    reason=route.reason, language=route.language, intent=route.intent,
+                    input_tokens=billed_input, output_tokens=billed_output,
+                    characters=len(text),
+                    estimated_cost_amount=router.estimate_cost(model, billed_input, billed_output),
+                    estimated_cost_currency="USD",
+                    raw={
+                        "usage_actual": provider_usage_received,
+                        "cached_input_tokens": cached_tokens,
+                        "endpoint": endpoint,
+                        "cancelled": True,
+                    },
+                )
 
-        check_cancelled()
-        if endpoint == "responses" and hasattr(client, "responses"):
-            stream = client.responses.create(
-                model=model, input=messages, max_output_tokens=route.max_output_tokens, stream=True
-            )
-            if cancellation:
-                cancellation.bind_stream(stream)
-            for event in stream:
+            def check_cancelled() -> None:
+                if cancellation and cancellation.cancelled:
+                    raise GenerationCancelled(partial_response())
+
+            try:
                 check_cancelled()
-                event_type = str(getattr(event, "type", "") or "")
-                if event_type in {"response.output_text.delta", "response.refusal.delta"}:
-                    delta = str(getattr(event, "delta", "") or "")
-                    if delta:
-                        text_parts.append(delta); on_delta(delta)
-                response = getattr(event, "response", None)
-                usage = getattr(response, "usage", None)
-                if usage is not None:
-                    provider_usage_received = True
-                    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-                    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-                    details = getattr(usage, "input_tokens_details", None)
-                    cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
-        else:
-            stream = client.chat.completions.create(
-                model=model, messages=messages, max_tokens=route.max_output_tokens,
-                temperature=0.2, stream=True, stream_options={"include_usage": True},
-            )
-            if cancellation:
-                cancellation.bind_stream(stream)
-            for chunk in stream:
-                check_cancelled()
-                choices = getattr(chunk, "choices", None) or []
-                if choices:
-                    delta = str(getattr(getattr(choices[0], "delta", None), "content", "") or "")
-                    if delta:
-                        text_parts.append(delta); on_delta(delta)
-                usage = getattr(chunk, "usage", None)
-                if usage is not None:
-                    provider_usage_received = True
-                    input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-                    output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-                    details = getattr(usage, "prompt_tokens_details", None)
-                    cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
-        text = "".join(text_parts).strip()
-        if not text:
-            raise HTTPException(status_code=502, detail="OpenAI returned an empty streamed response.")
-        router = OpenAIModelRouter()
-        input_tokens = input_tokens or router.estimate_tokens(request.message)
-        output_tokens = output_tokens or router.estimate_tokens(text)
-        return AIProviderResponse(
-            text=text, provider="openai", model=model, route=route.route, reason=route.reason,
-            language=route.language, intent=route.intent, input_tokens=input_tokens,
-            output_tokens=output_tokens, characters=len(text),
-            estimated_cost_amount=router.estimate_cost(model, input_tokens, output_tokens),
-            estimated_cost_currency="USD",
-            raw={"usage_actual": provider_usage_received, "cached_input_tokens": cached_tokens, "endpoint": endpoint},
-        )
+                if endpoint == "responses":
+                    if not hasattr(client, "responses"):
+                        raise RuntimeError("Responses API is unavailable in the configured client")
+                    stream = client.responses.create(
+                        model=model,
+                        input=messages,
+                        max_output_tokens=route.max_output_tokens,
+                        stream=True,
+                    )
+                    if cancellation:
+                        cancellation.bind_stream(stream)
+                    for event in stream:
+                        check_cancelled()
+                        event_type = str(getattr(event, "type", "") or "")
+                        if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+                            delta = str(getattr(event, "delta", "") or "")
+                            if delta:
+                                text_parts.append(delta)
+                                on_delta(delta)
+                        response = getattr(event, "response", None)
+                        usage = getattr(response, "usage", None)
+                        if usage is not None:
+                            provider_usage_received = True
+                            input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+                            output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                            details = getattr(usage, "input_tokens_details", None)
+                            cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+                else:
+                    stream = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        max_tokens=route.max_output_tokens,
+                        temperature=0.2,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                    )
+                    if cancellation:
+                        cancellation.bind_stream(stream)
+                    for chunk in stream:
+                        check_cancelled()
+                        choices = getattr(chunk, "choices", None) or []
+                        if choices:
+                            delta = str(
+                                getattr(getattr(choices[0], "delta", None), "content", "") or ""
+                            )
+                            if delta:
+                                text_parts.append(delta)
+                                on_delta(delta)
+                        usage = getattr(chunk, "usage", None)
+                        if usage is not None:
+                            provider_usage_received = True
+                            input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+                            output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+                            details = getattr(usage, "prompt_tokens_details", None)
+                            cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+                text = "".join(text_parts).strip()
+                if not text:
+                    raise RuntimeError("Empty streamed response")
+                router = OpenAIModelRouter()
+                input_tokens = input_tokens or router.estimate_tokens(request.message)
+                output_tokens = output_tokens or router.estimate_tokens(text)
+                actual_cost = router.estimate_cost(model, input_tokens, output_tokens)
+                usage_session = request.metadata.get("session")
+                record_kwargs = {
+                    "user_id": request.user_id,
+                    "request_id": request.request_id,
+                    "route": route.route,
+                    "model_used": model,
+                    "model_tier": str(route.metadata.get("model_tier") or "web"),
+                    "reason": route.reason,
+                    "estimated_input_tokens": budget_input,
+                    "estimated_output_tokens": budget_output,
+                    "estimated_cost_usd": estimated_budget_cost,
+                    "actual_input_tokens": input_tokens if provider_usage_received else None,
+                    "actual_output_tokens": output_tokens if provider_usage_received else None,
+                    "actual_cost_usd": actual_cost if provider_usage_received else None,
+                }
+                if usage_session is not None:
+                    record_openai_usage(usage_session, **record_kwargs)
+                else:
+                    with SessionLocal() as created_usage_session:
+                        record_openai_usage(created_usage_session, **record_kwargs)
+                return AIProviderResponse(
+                    text=text, provider="openai", model=model, route=route.route,
+                    reason=route.reason, language=route.language, intent=route.intent,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                    characters=len(text),
+                    estimated_cost_amount=actual_cost,
+                    estimated_cost_currency="USD",
+                    raw={
+                        "usage_actual": provider_usage_received,
+                        "cached_input_tokens": cached_tokens,
+                        "endpoint": endpoint,
+                        "fallback_attempted": index > 0,
+                    },
+                )
+            except GenerationCancelled:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if text_parts or provider_usage_received:
+                    raise
+                mark_model_unavailable(
+                    "openai", model, endpoint, exc.__class__.__name__, ttl_seconds=60
+                )
+                continue
+        raise HTTPException(
+            status_code=503,
+            detail="The selected Swico mode is temporarily unavailable.",
+        ) from last_error
 
 
 def _extract_response_text(response: Any) -> str:

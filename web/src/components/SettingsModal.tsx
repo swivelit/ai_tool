@@ -3,9 +3,10 @@ import { Archive, CreditCard, Database, Settings2, UserRound, X } from 'lucide-r
 import type { User } from 'firebase/auth'
 import { ApiError, ApiNetworkError, apiJson } from '../api/client'
 import { estimatedTokenLabel, formatRupeesFromPaise, fullTokenRangeLabel, tokenRangeLabel } from '../credits'
-import type { PaymentHistory, ProfileSettings, UsagePreferences, UsageSummary } from '../types'
+import type { AssistantSettings, PaymentHistory, ProfileSettings, SwicoTier, UsagePreferences, UsageSummary } from '../types'
 import type { Theme } from '../theme'
 import { paymentPresentation } from '../billing/paymentPresentation'
+import { SwicoTierSelector } from './SwicoTierSelector'
 
 type Section = 'general' | 'profile' | 'usage' | 'data'
 type Loaded = { profile: ProfileSettings; usage: UsageSummary; preferences: UsagePreferences; payments: PaymentHistory[] }
@@ -23,8 +24,9 @@ function safeError(error: unknown) {
   return 'Settings could not be saved. Please try again.'
 }
 
-export function SettingsModal({ user, theme, setTheme, close, addCredits, openArchived, savedProfile }: {
+export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, saveTier, close, addCredits, openArchived, savedProfile }: {
   user: User; theme: Theme; setTheme: (theme: Theme) => void; close: () => void;
+  assistant: AssistantSettings; tierSaving: boolean; saveTier: (tier: SwicoTier) => Promise<void>;
   addCredits: () => void; openArchived: () => void; savedProfile: (profile: ProfileSettings) => void;
 }) {
   const [section, setSection] = useState<Section>('general')
@@ -105,6 +107,16 @@ export function SettingsModal({ user, theme, setTheme, close, addCredits, openAr
       setLoaded(value => value ? { ...value, preferences } : value); setNotice('Monthly usage limit saved.')
     } catch (error) { setNotice(safeError(error)) } finally { setSaving(false) }
   }
+  const changeTier = async (tier: SwicoTier) => {
+    setNotice('')
+    try {
+      await saveTier(tier)
+      await load()
+      setNotice('Swico mode saved. New messages will use this mode.')
+    } catch {
+      setNotice('Swico mode could not be changed. Your previous mode is still active.')
+    }
+  }
 
   return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !saving) close() }}>
     <section ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-describedby="settings-description">
@@ -114,7 +126,7 @@ export function SettingsModal({ user, theme, setTheme, close, addCredits, openAr
         <div className="settings-content">
           {loadError && <div className="settings-state" role="alert"><p>{loadError}</p><button onClick={() => void load()}>Retry</button></div>}
           {!loadError && !loaded && <div className="settings-state" role="status">Loading settings…</div>}
-          {loaded && section === 'general' && <section aria-labelledby="general-settings"><h3 id="general-settings">General</h3><label>Theme<select value={theme} onChange={event => setTheme(event.target.value as Theme)}><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Interface language<select value="en" disabled aria-describedby="interface-language-help"><option value="en">English</option></select><small id="interface-language-help">Tamil replies are available in Profile. The settings interface currently supports English.</small></label></section>}
+          {loaded && section === 'general' && <section aria-labelledby="general-settings"><h3 id="general-settings">General</h3><div className="general-tier-setting"><h4>Swico mode</h4><SwicoTierSelector assistant={assistant} saving={tierSaving} disabled={tierSaving} onSelect={changeTier} context="settings" /><small>Mode changes apply to your next message.</small></div><label>Theme<select value={theme} onChange={event => setTheme(event.target.value as Theme)}><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Interface language<select value="en" disabled aria-describedby="interface-language-help"><option value="en">English</option></select><small id="interface-language-help">Tamil replies are available in Profile. The settings interface currently supports English.</small></label></section>}
           {loaded && section === 'profile' && profile && <section aria-labelledby="profile-settings"><h3 id="profile-settings">Profile</h3><div className="settings-form-grid">
             <label>Name<input value={profile.name} maxLength={80} onChange={event => setProfile({ ...profile, name: event.target.value })} /></label>
             <label>Place<input value={profile.place ?? ''} maxLength={120} onChange={event => setProfile({ ...profile, place: event.target.value || null })} /></label>
@@ -124,9 +136,9 @@ export function SettingsModal({ user, theme, setTheme, close, addCredits, openAr
             <label>Email<input value={profile.email ?? ''} readOnly aria-describedby="email-readonly" /><small id="email-readonly">Email is managed by your sign-in account and cannot be changed here.</small></label>
           </div><button className="primary" disabled={saving} onClick={() => void saveProfile()}>{saving ? 'Saving…' : 'Save profile'}</button></section>}
           {loaded && section === 'usage' && <section aria-labelledby="usage-settings"><h3 id="usage-settings">Token credits</h3>
-            <div className="usage-cards"><article><span>Compact estimated balance</span><strong>{estimatedTokenLabel(estimate?.estimated_blended_tokens)}</strong><small>{estimate?.blended_assumption ?? 'A blended estimate is unavailable.'}</small></article><article><span>Current estimated range</span><strong>{tokenRange}</strong><small>Reference: {estimate?.reference_provider}/{estimate?.reference_model}; not a guaranteed quota.</small></article></div>
-            <div className="actual-usage" aria-label="Current-month actual token usage"><h4>Current-month tokens</h4><dl><div><dt>Input tokens</dt><dd>{loaded.usage.input_tokens.toLocaleString()}</dd></div><div><dt>Cached input tokens</dt><dd>{loaded.usage.cached_input_tokens.toLocaleString()}</dd></div><div><dt>Output tokens</dt><dd>{loaded.usage.output_tokens.toLocaleString()}</dd></div><div><dt>Total actual tokens</dt><dd>{loaded.usage.total_tokens.toLocaleString()}</dd></div></dl><p>Provider-reported requests: {loaded.usage.actual_usage_count} · Estimated requests: {loaded.usage.estimated_usage_count}</p>{estimate && <p className="estimate-note">Pricing timestamp: {new Date(estimate.pricing_as_of).toLocaleString()}. {estimate.explanation}</p>}</div>
-            <fieldset className="usage-limit"><legend>Estimated monthly token limit</legend><label className="check-row"><input type="checkbox" checked={unlimited} onChange={event => setUnlimited(event.target.checked)} />No monthly limit beyond prepaid token credits</label>{!unlimited && <label>Estimated monthly tokens<input inputMode="numeric" pattern="[0-9]*" value={cap} onChange={event => setCap(event.target.value)} aria-describedby="cap-help" /><small id="cap-help">Converted by the server to the existing hard limit using the named reference model. Actual token usage varies; automatic recharge is not enabled.</small></label>}<label>Warning threshold (%)<input type="number" min="1" max="100" value={warning} onChange={event => setWarning(event.target.value)} /></label><label className="check-row"><input type="checkbox" checked={notify} onChange={event => setNotify(event.target.checked)} />Show a warning at the threshold</label>{loaded.preferences.warning_reached && <p className="usage-warning" role="status">You have reached your configured warning threshold.</p>}<button className="primary" disabled={saving} onClick={() => void saveUsage()}>{saving ? 'Saving…' : 'Save usage limit'}</button><small>Resets {new Date(loaded.preferences.next_reset_at).toLocaleString()} ({loaded.preferences.timezone}).</small></fieldset>
+            <div className="usage-cards"><article><span>{loaded.usage.tier_label} estimated balance</span><strong>{estimatedTokenLabel(estimate?.estimated_blended_tokens)}</strong><small>{estimate?.blended_assumption ?? 'A blended estimate is unavailable.'}</small></article><article><span>Current estimated range</span><strong>{tokenRange}</strong><small>Estimated for {loaded.usage.tier_label}; not a guaranteed quota.</small></article></div>
+            <div className="actual-usage" aria-label="Current-month token usage"><h4>Current-month tokens</h4><dl><div><dt>Input tokens</dt><dd>{loaded.usage.input_tokens.toLocaleString()}</dd></div><div><dt>Cached input tokens</dt><dd>{loaded.usage.cached_input_tokens.toLocaleString()}</dd></div><div><dt>Output tokens</dt><dd>{loaded.usage.output_tokens.toLocaleString()}</dd></div><div><dt>Total tokens</dt><dd>{loaded.usage.total_tokens.toLocaleString()}</dd></div></dl><p>Measured requests: {loaded.usage.actual_usage_count} · Estimated requests: {loaded.usage.estimated_usage_count}</p>{estimate && <p className="estimate-note">Pricing timestamp: {new Date(estimate.pricing_as_of).toLocaleString()}. {estimate.explanation}</p>}</div>
+            <fieldset className="usage-limit"><legend>Estimated monthly token limit</legend><label className="check-row"><input type="checkbox" checked={unlimited} onChange={event => setUnlimited(event.target.checked)} />No monthly limit beyond prepaid token credits</label>{!unlimited && <label>Estimated monthly tokens<input inputMode="numeric" pattern="[0-9]*" value={cap} onChange={event => setCap(event.target.value)} aria-describedby="cap-help" /><small id="cap-help">Converted by the server to the existing monetary hard limit using your selected Swico mode. Actual usage varies; automatic recharge is not enabled.</small></label>}<label>Warning threshold (%)<input type="number" min="1" max="100" value={warning} onChange={event => setWarning(event.target.value)} /></label><label className="check-row"><input type="checkbox" checked={notify} onChange={event => setNotify(event.target.checked)} />Show a warning at the threshold</label>{loaded.preferences.warning_reached && <p className="usage-warning" role="status">You have reached your configured warning threshold.</p>}<button className="primary" disabled={saving} onClick={() => void saveUsage()}>{saving ? 'Saving…' : 'Save usage limit'}</button><small>Resets {new Date(loaded.preferences.next_reset_at).toLocaleString()} ({loaded.preferences.timezone}).</small></fieldset>
             <button className="secondary-button" onClick={addCredits}>Add tokens</button>
             <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => { const presentation = paymentPresentation(payment); return <article key={payment.id}><strong>{presentation.heading}</strong>{presentation.detail && <span>{presentation.detail}</span>}{presentation.amountLabel && <span>{presentation.amountLabel}: {formatRupeesFromPaise(payment.gross_amount_paise)}</span>}{presentation.showTokensAdded && <span>Estimated {payment.token_estimate ? tokenRangeLabel(payment.token_estimate.range_min_tokens, payment.token_estimate.range_max_tokens) : 'tokens unavailable'} added</span>}{presentation.showServiceAllocation && <span>50% service allocation</span>}{presentation.showRefundAmount && <span>{formatRupeesFromPaise(payment.refunded_amount_paise)} refunded</span>}{presentation.showReversalEstimate && <span>Estimated {payment.reversal_token_estimate ? tokenRangeLabel(payment.reversal_token_estimate.range_min_tokens, payment.reversal_token_estimate.range_max_tokens) : 'tokens unavailable'} reversed</span>}<span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}</div>
           </section>}

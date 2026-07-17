@@ -37,6 +37,15 @@ def valid_environment() -> dict[str, str]:
         "EMAIL_OTP_DEV_RETURN_CODE": "false",
         "GLOBAL_QA_REAL_EMBEDDINGS_ENABLED": "false",
         "OPENAI_ENABLE_GPT35_EMERGENCY_FALLBACK": "false",
+        "SWICO_DEFAULT_TIER": "lite",
+        "SWICO_TIER_SELECTION_ENABLED": "true",
+        "SWICO_PRO_ENABLED": "false",
+        "SWICO_LITE_MODEL_PRIMARY": "gpt-5.4-mini",
+        "SWICO_LITE_MODEL_FALLBACKS": "gpt-5.4-nano",
+        "SWICO_STANDARD_MODEL_PRIMARY": "gpt-5.6-terra",
+        "SWICO_STANDARD_MODEL_FALLBACKS": "gpt-5.5",
+        "SWICO_PRO_MODEL_PRIMARY": "gpt-5.6-sol",
+        "SWICO_PRO_MODEL_FALLBACKS": "gpt-5.6-terra",
     }
 
 
@@ -62,6 +71,9 @@ def test_production_requires_checkout_switch_to_be_explicit() -> None:
         ({"AUTO_CREATE_TABLES": "true"}, "AUTO_CREATE_TABLES"),
         ({"RUN_MIGRATIONS_ON_STARTUP": "true"}, "RUN_MIGRATIONS_ON_STARTUP"),
         ({"OPENAI_ENABLE_GPT35_EMERGENCY_FALLBACK": "true"}, "deprecated"),
+        ({"SWICO_DEFAULT_TIER": "enterprise"}, "SWICO_DEFAULT_TIER"),
+        ({"SWICO_TIER_SELECTION_ENABLED": "sometimes"}, "SWICO_TIER_SELECTION_ENABLED"),
+        ({"SWICO_PRO_ENABLED": "true", "SWICO_PRO_MODEL_PRIMARY": "custom"}, "SWICO_PRO_MODEL_PRIMARY"),
         ({"RAZORPAY_KEY_ID": "rzp_live_not_allowed"}, "rzp_test_"),
         ({"RAZORPAY_WEBHOOK_SECRET": "checkout-configured"}, "must be distinct"),
         ({"BILLING_CREDIT_PERCENT": "49"}, "BILLING_CREDIT_PERCENT"),

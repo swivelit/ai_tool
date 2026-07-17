@@ -60,19 +60,21 @@ def get_or_create_wallet(session: Session, user_id: int) -> WalletAccount:
     return _locked_wallet(session, user_id)
 
 
-def wallet_dict(wallet: WalletAccount) -> dict[str, Any]:
+def wallet_dict(wallet: WalletAccount, *, swico_tier: str = "lite") -> dict[str, Any]:
     available = int(wallet.balance_micros - wallet.reserved_micros)
     return {
         "balance_micros": int(wallet.balance_micros),
         "reserved_micros": int(wallet.reserved_micros),
         "available_micros": available,
         "version": int(wallet.version),
-        "token_estimate": token_estimate(available),
+        "token_estimate": token_estimate(available, tier=swico_tier),
     }
 
 
-def get_wallet_summary(session: Session, user_id: int) -> dict[str, Any]:
-    return wallet_dict(get_or_create_wallet(session, user_id))
+def get_wallet_summary(
+    session: Session, user_id: int, *, swico_tier: str = "lite"
+) -> dict[str, Any]:
+    return wallet_dict(get_or_create_wallet(session, user_id), swico_tier=swico_tier)
 
 
 def _ledger(
@@ -124,6 +126,7 @@ def credit_payment_once(session: Session, order: PaymentOrder) -> WalletLedger:
 def create_usage_reservation(
     session: Session, *, request_id: str, user_id: int, thread_id: str | None,
     provider: str, model: str, reserved_micros: int, pricing_snapshot_json: str,
+    swico_tier: str | None = None,
 ) -> UsageCharge:
     acquire_sqlite_usage_transaction_lock(session, user_id)
     existing = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
@@ -145,6 +148,7 @@ def create_usage_reservation(
             attempt = 2
         charge.provider = provider
         charge.model = model
+        charge.swico_tier = swico_tier
         charge.reserved_micros = required
         charge.status = "reserved"
         charge.settled_at = None
@@ -152,7 +156,7 @@ def create_usage_reservation(
     else:
         charge = UsageCharge(
             request_id=request_id, user_id=user_id, thread_id=thread_id, provider=provider,
-            model=model, reserved_micros=required, status="reserved",
+            model=model, swico_tier=swico_tier, reserved_micros=required, status="reserved",
             pricing_snapshot_json=pricing_snapshot_json,
         )
     try:
@@ -182,6 +186,7 @@ def settle_usage_reservation(
     cached_input_tokens: int, output_tokens: int, usage_source: str,
     pricing_snapshot_json: str, usd_to_inr_rate: Decimal | None = None,
     assistant_message_id: str | None = None,
+    provider: str | None = None, model: str | None = None,
 ) -> UsageCharge:
     charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()).first()
     if charge is None:
@@ -191,6 +196,16 @@ def settle_usage_reservation(
     if charge.status != "reserved":
         raise PaymentValidationError("Usage reservation is not active.")
     wallet = _locked_wallet(session, charge.user_id)
+    reserved_provider = charge.provider
+    reserved_model = charge.model
+    try:
+        reservation_pricing_snapshot = json.loads(charge.pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        reservation_pricing_snapshot = {}
+    if provider:
+        charge.provider = provider
+    if model:
+        charge.model = model
     provider_debit = max(0, int(provider_cost_micros))
     reserved = int(charge.reserved_micros)
     reservation_attempt = _reservation_attempt(charge)
@@ -224,6 +239,12 @@ def settle_usage_reservation(
         pricing_snapshot = json.loads(pricing_snapshot_json or "{}")
     except (TypeError, ValueError):
         pricing_snapshot = {}
+    pricing_snapshot["reservation"] = {
+        "provider": reserved_provider,
+        "model": reserved_model,
+        "reserved_micros": reserved,
+        "pricing_snapshot": reservation_pricing_snapshot,
+    }
     if absorbed_overage:
         pricing_snapshot["reconciliation"] = {
             "state": "platform_absorbed_overage",

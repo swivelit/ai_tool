@@ -1,4 +1,4 @@
-import type { Message, SSEEvent, Wallet } from './types'
+import type { Message, SSEEvent, SwicoTier, Wallet } from './types'
 
 export type StreamState = {
   assistant: Message | null
@@ -9,7 +9,7 @@ export type StreamState = {
 }
 
 export type StreamAction =
-  | { type: 'start'; requestId: string; threadId: string }
+  | { type: 'start'; requestId: string; threadId: string; tier: SwicoTier; tierLabel: string }
   | { type: 'event'; event: SSEEvent }
   | { type: 'reset' }
 
@@ -26,7 +26,8 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
     phase: 'connecting',
     assistant: {
       id: `stream-${action.requestId}`, thread_id: action.threadId, role: 'assistant', content: '',
-      request_id: action.requestId, provider: null, model: null, input_tokens: 0, output_tokens: 0,
+      request_id: action.requestId, tier: action.tier, tier_label: action.tierLabel,
+      input_tokens: 0, output_tokens: 0,
       usage_source: null, charge_micros: 0, status: 'streaming', created_at: new Date().toISOString(),
     },
   }
@@ -45,8 +46,9 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
       return {
         ...state,
         assistant: state.assistant ? {
-          ...state.assistant, provider: data.provider ? String(data.provider) : null,
-          model: data.model ? String(data.model) : null,
+          ...state.assistant,
+          tier: ['lite', 'standard', 'pro'].includes(String(data.tier)) ? String(data.tier) as SwicoTier : state.assistant.tier,
+          tier_label: data.tier_label ? String(data.tier_label) : state.assistant.tier_label,
           input_tokens: Number(data.input_tokens ?? 0), output_tokens: Number(data.output_tokens ?? 0),
           usage_source: data.usage_source === 'actual' ? 'actual' : 'estimated',
           charge_micros: Number(data.charged_micros ?? 0),

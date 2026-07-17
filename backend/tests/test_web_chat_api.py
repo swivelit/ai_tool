@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+
 from app.ai.types import AIProviderResponse, AIRequest
 from app.ai.providers.base import GenerationCancelled
-from app.billing.pricing import calculate_topup
+from app.billing.pricing import calculate_topup, price_usage
 from app.billing.service import credit_payment_once, get_wallet_summary
 from app.database import SessionLocal
-from app.models import PaymentOrder, UsageCharge, WebChatThread
+from app.models import (
+    PaymentOrder, UsageCharge, WebChatMessage, WebChatThread, WebUsagePreferences,
+)
 from sqlmodel import select
 from app.ai import orchestrator
 from tests.conftest import auth_headers, create_test_user
@@ -52,6 +56,41 @@ def test_browser_user_id_is_not_accepted(client):
     assert "user_id" not in response.json()
 
 
+def test_web_chat_rejects_client_routing_fields(client):
+    create_test_user()
+    for field in ("model", "provider", "tier"):
+        response = client.post(
+            "/api/web/chat/stream",
+            headers=auth_headers("test-uid"),
+            json={
+                "request_id": "4df3a124-4db7-4765-8110-35d969756589",
+                "message": "Hello",
+                field: "arbitrary",
+            },
+        )
+        assert response.status_code == 422
+
+
+def test_historical_message_without_public_tier_serializes_as_swico(client):
+    user = create_test_user("history-tier", "history-tier@example.com")
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="History")
+        session.add(thread); session.flush()
+        session.add(WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant",
+            content="Historical response", provider="openai", model="gpt-5-nano",
+            swico_tier=None, input_tokens=4, output_tokens=2, usage_source="actual",
+        ))
+        session.commit(); thread_id = thread.id
+    response = client.get(
+        f"/api/web/threads/{thread_id}/messages",
+        headers=auth_headers("history-tier", "history-tier@example.com"),
+    )
+    message = response.json()["items"][0]
+    assert message["tier"] is None and message["tier_label"] == "Swico"
+    assert "provider" not in message and "model" not in message
+
+
 def _fund(user_id: int):
     credit, platform = calculate_topup(1000)
     with SessionLocal() as session:
@@ -76,6 +115,80 @@ def test_success_settles_and_duplicate_request_does_not_reinvoke_provider(client
         charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == body["request_id"])).one()
         assert charge.status == "settled" and charge.debited_micros > 0
         assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
+
+
+def test_server_selected_tier_controls_chat_and_public_contracts_stay_private(
+    client, monkeypatch,
+):
+    user = create_test_user("tier-chat", "tier-chat@example.com")
+    _fund(int(user.id))
+    monkeypatch.setenv("SWICO_STANDARD_MODEL_PRIMARY", "gpt-5.6-terra")
+    monkeypatch.setenv("SWICO_STANDARD_MODEL_FALLBACKS", "gpt-5.5")
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), assistant_tier="standard"))
+        session.commit()
+    captured = {}
+
+    def fake_stream(self, request, route, on_delta):
+        captured["metadata"] = dict(request.metadata)
+        captured["candidates"] = list(route.model_candidates)
+        on_delta("Private routing stayed private.")
+        return AIProviderResponse(
+            text="Private routing stayed private.", provider="openai",
+            model=route.model_candidates[1], route=route.route, reason=route.reason,
+            language="en", intent=route.intent, input_tokens=120, output_tokens=40,
+            raw={"usage_actual": True},
+        )
+
+    monkeypatch.setattr(
+        "app.ai.providers.openai_provider.OpenAIProvider.stream_complete", fake_stream
+    )
+    request_id = "89bcd13b-edfd-49cb-af08-e576ef5af170"
+    headers = auth_headers("tier-chat", "tier-chat@example.com")
+    streamed = client.post(
+        "/api/web/chat/stream", headers=headers,
+        json={"request_id": request_id, "message": "Plan a migration safely"},
+    )
+    assert streamed.status_code == 200
+    assert captured["metadata"]["swico_tier"] == "standard"
+    assert captured["metadata"]["user_tier"] == "paid"
+    assert captured["candidates"] == ["gpt-5.6-terra", "gpt-5.5"]
+    usage_frame = next(
+        line.removeprefix("data: ") for line in streamed.text.splitlines()
+        if line.startswith("data: ") and '"tier_label"' in line
+    )
+    usage_payload = json.loads(usage_frame)
+    assert usage_payload["tier"] == "standard"
+    assert "provider" not in usage_payload and "model" not in usage_payload
+
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == request_id
+        )).one()
+        assistant = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id,
+            WebChatMessage.role == "assistant",
+        )).one()
+        expected = price_usage("openai", "gpt-5.5", 120, 40)
+        assert charge.swico_tier == assistant.swico_tier == "standard"
+        assert charge.provider == "openai" and charge.model == "gpt-5.5"
+        assert assistant.provider == "openai" and assistant.model == "gpt-5.5"
+        assert charge.provider_cost_micros == expected.micros
+        audit_snapshot = json.loads(charge.pricing_snapshot_json)
+        assert audit_snapshot["model"] == "gpt-5.5"
+        assert audit_snapshot["reservation"]["model"] == "gpt-5.6-terra"
+
+    thread_id = json.loads(next(
+        line.removeprefix("data: ") for line in streamed.text.splitlines()
+        if line.startswith("data: ") and '"thread_id"' in line
+    ))["thread_id"]
+    messages = client.get(
+        f"/api/web/threads/{thread_id}/messages", headers=headers
+    ).json()["items"]
+    public_assistant = next(item for item in messages if item["role"] == "assistant")
+    assert public_assistant["tier"] == "standard"
+    assert public_assistant["tier_label"] == "Swico"
+    assert "provider" not in public_assistant and "model" not in public_assistant
 
 
 def test_provider_failure_releases_complete_reservation(client, monkeypatch):

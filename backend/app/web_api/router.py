@@ -28,6 +28,16 @@ from ..billing.service import (
 from ..billing.token_estimates import micros_for_blended_tokens, token_estimate
 from ..billing.usage_limits import validated_timezone
 from ..ai.providers.base import GenerationCancellation, GenerationCancelled
+from ..ai.swico_tiers import (
+    SWICO_TIER_IDS,
+    SWICO_TIER_LABELS,
+    SwicoTierConfigurationError,
+    SwicoTierUnavailableError,
+    default_swico_tier,
+    pro_enabled,
+    public_tier_settings,
+    tier_selection_enabled,
+)
 from ..database import SessionLocal, get_session
 from ..models import (
     PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage, WebChatThread,
@@ -35,8 +45,11 @@ from ..models import (
 )
 from ..time_utils import utc_now
 from .chat_service import DuplicateRequestInProgress, execute_web_turn, prepare_web_turn
-from .schemas import ProfilePatch, ThreadCreate, ThreadPatch, UsagePreferencesPatch, WebChatRequest
-from .usage_service import usage_preferences_dict, usage_summary
+from .schemas import (
+    AssistantSettingsPatch, ProfilePatch, ThreadCreate, ThreadPatch,
+    UsagePreferencesPatch, WebChatRequest,
+)
+from .usage_service import selected_swico_tier, usage_preferences_dict, usage_summary
 
 router = APIRouter(prefix="/api/web", tags=["web"])
 logger = logging.getLogger(__name__)
@@ -89,7 +102,7 @@ def _razorpay_mode() -> str:
     return mode
 
 
-def public_billing_config() -> dict[str, Any]:
+def public_billing_config(swico_tier: str = "lite") -> dict[str, Any]:
     mode = _razorpay_mode()
     packages = []
     for gross in _packages():
@@ -98,7 +111,7 @@ def public_billing_config() -> dict[str, Any]:
             "gross_amount_paise": gross,
             "credited_amount_micros": credit_micros,
             "platform_share_paise": platform_paise,
-            "token_estimate": token_estimate(credit_micros),
+            "token_estimate": token_estimate(credit_micros, tier=swico_tier),
         })
     return {
         "currency": "INR", "credit_percent": str(credit_percent()),
@@ -118,9 +131,11 @@ def _serialize_thread(row: WebChatThread) -> dict[str, Any]:
 
 
 def _serialize_message(row: WebChatMessage) -> dict[str, Any]:
+    tier = row.swico_tier if row.swico_tier in SWICO_TIER_IDS else None
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
-        "request_id": row.request_id, "provider": row.provider, "model": row.model,
+        "request_id": row.request_id, "tier": tier,
+        "tier_label": SWICO_TIER_LABELS[tier] if tier else "Swico",
         "input_tokens": row.input_tokens, "output_tokens": row.output_tokens,
         "usage_source": row.usage_source, "charge_micros": row.charge_micros,
         "status": row.status, "created_at": row.created_at,
@@ -144,17 +159,19 @@ def web_health(session: Session = Depends(get_session)):
 
 @router.get("/billing/public-config")
 def billing_public_config():
-    return public_billing_config()
+    return public_billing_config(default_swico_tier())
 
 
 @router.get("/bootstrap")
 def bootstrap(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = get_owned_user(session, auth)
+    swico_tier = selected_swico_tier(session, int(user.id))
     return {
         "user": {"id": user.id, "name": user.name, "email": user.email, "reply_language": user.reply_language},
-        "wallet": get_wallet_summary(session, int(user.id)),
-        "billing": public_billing_config(),
-        "features": {"web_chat": True, "prepaid_billing": True, "local_models": False},
+        "wallet": get_wallet_summary(session, int(user.id), swico_tier=swico_tier),
+        "billing": public_billing_config(swico_tier),
+        "assistant": public_tier_settings(swico_tier),
+        "features": {"web_chat": True, "prepaid_billing": True},
     }
 
 
@@ -196,6 +213,43 @@ def patch_profile_settings(
     return _profile_response(user)
 
 
+@router.get("/settings/assistant")
+def get_assistant_settings(
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    return public_tier_settings(selected_swico_tier(session, int(user.id)))
+
+
+@router.patch("/settings/assistant")
+def patch_assistant_settings(
+    payload: AssistantSettingsPatch, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not tier_selection_enabled():
+        raise HTTPException(403, {
+            "code": "tier_selection_disabled",
+            "message": "Swico mode selection is temporarily unavailable.",
+        })
+    if payload.tier == "pro" and not pro_enabled():
+        raise HTTPException(422, {
+            "code": "tier_unavailable",
+            "message": "Swico Pro is not available yet.",
+        })
+    row = session.exec(select(WebUsagePreferences).where(
+        WebUsagePreferences.user_id == int(user.id)
+    ).with_for_update()).first()
+    if row is None:
+        row = WebUsagePreferences(user_id=int(user.id), assistant_tier=payload.tier)
+    else:
+        row.assistant_tier = payload.tier
+    row.updated_at = utc_now()
+    session.add(row)
+    session.flush()
+    return public_tier_settings(row.assistant_tier)
+
+
 @router.get("/settings/usage")
 def get_usage_settings(
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
@@ -228,7 +282,9 @@ def patch_usage_settings(
         estimated_tokens = payload.hard_limit_estimated_tokens
         try:
             row.hard_limit_micros = (
-                None if estimated_tokens is None else micros_for_blended_tokens(estimated_tokens)
+                None if estimated_tokens is None else micros_for_blended_tokens(
+                    estimated_tokens, tier=selected_swico_tier(session, int(user.id))
+                )
             )
             if estimated_tokens is not None and row.hard_limit_micros <= 0:
                 raise ValueError("reference pricing is not chargeable")
@@ -360,6 +416,11 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
         raise HTTPException(404, "Thread not found")
     except DuplicateRequestInProgress as exc:
         raise HTTPException(409, str(exc))
+    except (SwicoTierUnavailableError, SwicoTierConfigurationError):
+        return JSONResponse(status_code=503, content={"error": {
+            "code": "swico_tier_unavailable",
+            "message": "The selected Swico mode is temporarily unavailable. Please try again shortly.",
+        }})
 
     cancellation = GenerationCancellation()
     prepared.ai_request.metadata["cancellation_signal"] = cancellation
@@ -396,7 +457,11 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             completed = await task
             response = completed.response
             yield _sse("usage", {
-                "provider": response.provider, "model": response.model,
+                "tier": completed.message.swico_tier,
+                "tier_label": (
+                    SWICO_TIER_LABELS[completed.message.swico_tier]
+                    if completed.message.swico_tier in SWICO_TIER_IDS else "Swico"
+                ),
                 "input_tokens": response.input_tokens, "output_tokens": response.output_tokens,
                 "usage_source": completed.message.usage_source,
                 "charged_micros": completed.message.charge_micros,
@@ -413,12 +478,15 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             raise
         except GenerationCancelled:
             with SessionLocal() as session:
-                yield _sse("wallet", get_wallet_summary(session, user_id))
+                yield _sse(
+                    "wallet",
+                    get_wallet_summary(session, user_id, swico_tier=prepared.swico_tier),
+                )
             yield _sse("status", {"phase": "stopped"})
             yield _sse("done", {"thread_id": prepared.thread_id, "cancelled": True})
         except Exception:
             logger.exception("web_chat_generation_failed", extra={"request_id": prepared.request_id})
-            yield _sse("error", {"code": "generation_failed", "message": "The AI provider could not complete this request. Please retry."})
+            yield _sse("error", {"code": "generation_failed", "message": "Swico could not complete this request. Please retry."})
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -458,7 +526,9 @@ async def cancel_chat_request(
 @router.get("/billing/wallet")
 def wallet(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = get_owned_user(session, auth)
-    return get_wallet_summary(session, int(user.id))
+    return get_wallet_summary(
+        session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id))
+    )
 
 
 @router.get("/billing/ledger")
@@ -481,6 +551,7 @@ def payments(
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
+    swico_tier = selected_swico_tier(session, int(user.id))
     rows = session.exec(select(PaymentOrder).where(PaymentOrder.user_id == user.id)
         .order_by(PaymentOrder.created_at.desc()).offset(offset).limit(limit)).all()
     order_ids = [str(row.id) for row in rows]
@@ -502,10 +573,10 @@ def payments(
             row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
             if row.gross_amount_paise else 0
         ),
-        "token_estimate": token_estimate(row.credited_amount_micros),
+        "token_estimate": token_estimate(row.credited_amount_micros, tier=swico_tier),
         "reversal_token_estimate": token_estimate(
             row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
-            if row.gross_amount_paise else 0
+            if row.gross_amount_paise else 0, tier=swico_tier
         ),
         "status": row.status,
         "created_at": row.created_at,
@@ -643,7 +714,14 @@ def verify_payment(payload: VerifyPaymentRequest, session: Session = Depends(get
     order.provider_payment_id = payload.razorpay_payment_id
     order.status = "captured"
     credit_payment_once(session, order)
-    return {"status": "credited", "credited": True, "wallet": get_wallet_summary(session, int(user.id))}
+    return {
+        "status": "credited",
+        "credited": True,
+        "wallet": get_wallet_summary(
+            session, int(user.id),
+            swico_tier=selected_swico_tier(session, int(user.id)),
+        ),
+    }
 
 
 def _entity(payload: dict[str, Any], name: str) -> dict[str, Any]:

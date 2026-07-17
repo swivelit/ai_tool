@@ -69,17 +69,19 @@ created the Blueprint.
 
 The root must remain blank. `backend/config.py` and `backend/app/agentic_service.py` still have repository-root runtime reads involving `mobile/data/`.
 
-Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`, `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`, `BILLING_CHECKOUT_ENABLED=false`, and `CORS_ALLOW_ORIGINS=https://<web-domain>`. Production requires the checkout switch to be explicit. The pre-deploy command is the only production migration owner. Keep the existing database, Firebase Admin, provider, email, and operational variables. Add all billing variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, webhook size, and the non-secret token-estimate reference provider/model. Secrets must be Render secret environment variables.
+Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`, `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`, `BILLING_CHECKOUT_ENABLED=false`, and `CORS_ALLOW_ORIGINS=https://<web-domain>`. Production requires the checkout switch to be explicit. The pre-deploy command is the only production migration owner. Keep the existing database, Firebase Admin, provider, email, and operational variables. Add all billing and Swico tier variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, and webhook size. Secrets must be Render secret environment variables.
 
 Exact environment delta for this release:
 
 - Add API variable `BILLING_CHECKOUT_ENABLED=false` (backend-only, explicit in production).
-- Add or accept defaults for `USAGE_ESTIMATE_REFERENCE_PROVIDER=openai` and `USAGE_ESTIMATE_REFERENCE_MODEL=gpt-5-nano` (backend-only, non-secret display reference).
+- Add backend-only `SWICO_DEFAULT_TIER=lite`, `SWICO_TIER_SELECTION_ENABLED=true`, and `SWICO_PRO_ENABLED=false`.
+- Add backend-only `SWICO_LITE_MODEL_PRIMARY`, `SWICO_LITE_MODEL_FALLBACKS`, `SWICO_STANDARD_MODEL_PRIMARY`, `SWICO_STANDARD_MODEL_FALLBACKS`, `SWICO_PRO_MODEL_PRIMARY`, and `SWICO_PRO_MODEL_FALLBACKS`. Production validation requires explicit allowlisted values; use the reviewed production mappings and pricing overrides.
+- Keep Pro disabled until account access, reservation pricing, fallback, cancellation settlement, and reconciliation have passed in staging.
 - Keep `BILLING_CREDIT_PERCENT=50`; do not change it.
 - Add `SENTRY_DSN` only as a backend/Cron secret when an alert project is ready;
   set `SENTRY_TRACES_SAMPLE_RATE=0.05` and `SENTRY_PROFILES_SAMPLE_RATE=0`.
 - Keep `RAZORPAY_MODE=test` plus matching `rzp_test_` ID/secret/webhook secret. Do not add Live credentials.
-- Remove no `VITE_*` variables. Do not add Razorpay secrets or checkout flags to the static-site environment.
+- Remove no `VITE_*` variables. Do not add model IDs, provider routing, Swico tier mappings, Razorpay secrets, or checkout flags to the static-site environment.
 
 For Firebase Admin, configure exactly one credential method. The recommended
 Render setup is a secret file named `firebase-admin.json` plus
@@ -90,7 +92,7 @@ values or credential paths.
 
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
-Run the pre-deploy migration before enabling website traffic. Revision `8c1f4e7b2a90` creates `web_usage_preferences` and `web_usage_period_lock` additively. Verify `/api/web/health`, `/api/web/billing/public-config`, authenticated bootstrap/profile/usage contracts, existing-credit chat while checkout is disabled, then Test Mode checkout, capture, duplicate webhook replay, and refund in staging after intentionally enabling the switch there.
+Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores the selected web tier and nullable per-message/per-charge tier audit fields. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode checkout, capture, duplicate webhook replay, and refund in staging after intentionally enabling the switch there.
 
 ## Financial Cron Jobs
 
@@ -208,7 +210,7 @@ converted with `AT TIME ZONE 'UTC'`; no OTP rows are deleted or recreated.
 
 Set the backend and static site to the same explicit Git branch and record the deployed commit SHA during each release. This repository cannot prove the private dashboard selection; verify it in **Settings → Build & Deploy → Branch** for both services.
 
-Set only the public `VITE_*` values in `web/.env.example`: API base URL and Firebase Web app configuration. Do not place Firebase Admin credentials or OpenAI, Sarvam, Razorpay secret, webhook secret, or database values in the static site.
+Set only the public `VITE_*` values in `web/.env.example`: API base URL and Firebase Web app configuration. Do not place Firebase Admin credentials, model IDs, AI provider names, tier ladders, Razorpay secrets, webhook secrets, or database values in the static site. Customer-facing copy must use only Swico Lite, Swico, and Swico Pro.
 
 Copy the Firebase browser configuration from **Firebase Console → Project settings → Your apps → Web app → SDK setup and configuration → Config**. Do not copy values from the Android `google-services.json`; the production Firebase app ID for this website must contain `:web:`. Set every required `VITE_*` value on the Render **static-site service**, then select **Save, rebuild, and deploy**. Vite embeds these variables at build time, so changing them without rebuilding does not update the deployed site. The production build validates the public configuration and stops with variable names—but never values—when required settings are missing or malformed.
 
@@ -248,10 +250,10 @@ The API returns an explicit `razorpay_mode` enum and validates its public-key pr
 ## Migration and rollback
 
 1. Back up PostgreSQL and note the currently deployed image and Alembic revision.
-2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `8c1f4e7b2a90`.
-3. Deploy the API first with `BILLING_CHECKOUT_ENABLED=false`, smoke existing mobile endpoints and new web contracts, then deploy the static site.
+2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `9d2f6a1c4b7e`.
+3. Deploy the API first with `BILLING_CHECKOUT_ENABLED=false` and `SWICO_PRO_ENABLED=false`, smoke existing mobile endpoints and new web contracts, then deploy the static site. Never deploy the tier-aware static site before its API and migration.
 4. For an application rollback, first disable checkout, then deploy the previous API/static versions. Leave additive billing/chat/settings tables intact so ledger/payment and user-setting history is preserved.
-5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` also removes user preferences and serialization rows. In production, preserve additive tables and fix forward.
+5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields. In production, preserve additive tables and fix forward.
 
 ## Disposable recovery drill
 
