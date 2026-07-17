@@ -342,6 +342,30 @@ refund/incident ownership template; load-test PostgreSQL connections/rate
 limiting; and confirm edge headers/CORS. Razorpay Live Mode and Live checkout
 remain blocked until every item is complete.
 
+The complete current legal-team handoff is stored locally under the ignored
+`private/legal-source/` directory. It remains structurally incomplete. Full
+exact policy bodies, sign-off metadata, valid support/privacy contact fields,
+and the jurisdiction, retention/deletion, provider, refund, delivery, tax,
+invoice, grievance, and support decisions listed in
+`docs/LEGAL_PUBLICATION_STATUS.md` are still blockers. Never upload raw source
+documents to Render or copy them into `web/public`, `web/src`, tracked docs,
+static assets, or build output. Final approved public text will eventually be
+placed only in `web/src/content/legalContent.json`.
+
+Run the local-only structural check from the repository root:
+
+```bash
+python scripts/check-legal-source-readiness.py \
+  --source-dir private/legal-source
+```
+
+This command and the publication checker correctly fail for the current
+handoff. A future structural pass is not legal approval. Render requires no
+change yet; keep `RAZORPAY_MODE=test`, `BILLING_CHECKOUT_ENABLED=false`, and
+`BILLING_CREDIT_PERCENT=50`. When final content is available, only `swico-web`
+needs deployment for the content-only change. No claim of approval is currently
+being made.
+
 Legal publication remains a separate expected blocker. Razorpay Live Mode is
 deferred, and production `BILLING_CHECKOUT_ENABLED` remains `false`.
 

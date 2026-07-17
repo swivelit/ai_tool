@@ -53,6 +53,8 @@ release-signing.properties
 *.jks
 *.keystore
 private/
+*.legal-source.pdf
+*.legal-source.docx
 keystores/
 mobile/android/key.properties
 mobile/android/app/*.jks
