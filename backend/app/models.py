@@ -386,6 +386,45 @@ class UsageCharge(SQLModel, table=True):
     settled_at: Optional[datetime] = None
 
 
+class WebUsagePreferences(SQLModel, table=True):
+    __tablename__ = "web_usage_preferences"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_web_usage_preferences_user_id"),)
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    period: str = Field(default="monthly", max_length=16)
+    hard_limit_micros: Optional[int] = Field(
+        default=None, sa_column=Column(BigInteger, nullable=True)
+    )
+    warning_threshold_percent: int = Field(default=80)
+    notify_at_threshold: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebUsagePeriodLock(SQLModel, table=True):
+    """Serialization row for a user's local-calendar monthly usage window.
+
+    This row contains no financial totals. UsageCharge remains authoritative;
+    locking this stable key makes the aggregate-and-reserve decision atomic.
+    """
+
+    __tablename__ = "web_usage_period_lock"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "period_start_utc", name="uq_web_usage_period_lock_user_start"
+        ),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    period_start_utc: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class ApiRateLimit(SQLModel, table=True):
     __tablename__ = "api_rate_limit"
     __table_args__ = (UniqueConstraint("scope_key", "window_started_at", name="uq_api_rate_limit_scope_window"),)

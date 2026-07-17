@@ -15,6 +15,7 @@ def valid_environment() -> dict[str, str]:
         "LOG_CHAT_CONTENT": "false",
         "AUTH_ALLOW_DEV_TOKENS": "false",
         "WEB_APP_ENABLED": "true",
+        "BILLING_CHECKOUT_ENABLED": "false",
         "DATABASE_URL": "postgresql+psycopg://configured",
         "FIREBASE_CREDENTIALS_JSON": "configured",
         "OPENAI_API_KEY": "configured",
@@ -42,6 +43,15 @@ def valid_environment() -> dict[str, str]:
 def test_valid_test_mode_production_configuration_passes() -> None:
     assert production_configuration_errors(valid_environment()) == []
     validate_production_configuration(valid_environment())
+
+
+def test_production_requires_checkout_switch_to_be_explicit() -> None:
+    env = valid_environment()
+    env.pop("BILLING_CHECKOUT_ENABLED")
+    with pytest.raises(ProductionConfigurationError, match="BILLING_CHECKOUT_ENABLED"):
+        validate_production_configuration(env)
+    validate_production_configuration({**valid_environment(), "BILLING_CHECKOUT_ENABLED": "true"})
+    validate_production_configuration({**valid_environment(), "BILLING_CHECKOUT_ENABLED": "false"})
 
 
 @pytest.mark.parametrize(

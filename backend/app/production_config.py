@@ -86,6 +86,11 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     if _bool(env, "WEB_APP_ENABLED", False) is not True:
         errors.append("WEB_APP_ENABLED must be true")
 
+    if "BILLING_CHECKOUT_ENABLED" not in env or not _value(env, "BILLING_CHECKOUT_ENABLED"):
+        errors.append("BILLING_CHECKOUT_ENABLED must be set explicitly")
+    elif _bool(env, "BILLING_CHECKOUT_ENABLED", False) is None:
+        errors.append("BILLING_CHECKOUT_ENABLED must be a boolean")
+
     database_url = _value(env, "DATABASE_URL")
     if not database_url:
         errors.append("DATABASE_URL must be configured")

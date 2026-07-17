@@ -10,7 +10,7 @@ The existing FastAPI process conditionally mounts `backend/app/web_api/router.py
 
 1. Firebase verifies the user in the browser; the API verifies the bearer token with Firebase Admin and resolves the existing `User` row.
 2. The browser submits a UUID `request_id`. The API persists the user message and selects a cloud route.
-3. The API estimates the complete prompt and maximum output, locks the wallet row, and commits a conservative reservation before provider I/O.
+3. The API estimates the complete prompt and maximum output, locks the wallet row and the user's local-calendar monthly period row, checks settled usage plus active reservations against an optional user cap, and commits a conservative reservation before provider I/O.
 4. OpenAI or Sarvam streams output. A final actual usage record is preferred; an estimate is labelled when Sarvam does not report usage.
 5. A short database transaction settles the debit, releases the reservation, persists the assistant response and emits final SSE usage/wallet events.
 6. Provider failure releases the reservation and leaves a retryable message. Request and ledger uniqueness keys prevent duplicate provider billing after completion.
@@ -19,7 +19,57 @@ OpenAI streaming uses provider deltas and the final usage event. Sarvam streamin
 
 ## Storage
 
-The Alembic revision `6d4f2a9c8b71` adds wallet accounts, append-only ledger entries, payment orders, webhook deduplication, usage charges, web threads/messages, and database-backed rate-limit windows. Money is never stored as float: Razorpay values use integer paise, wallet values use integer micro-INR, and provider cost/rates use `Numeric`/`Decimal`.
+The Alembic revision `6d4f2a9c8b71` adds wallet accounts, append-only ledger entries, payment orders, webhook deduplication, usage charges, web threads/messages, and database-backed rate-limit windows. Additive revision `8c1f4e7b2a90` adds owner-scoped web usage preferences and per-user/month serialization rows. The serialization table stores no financial total: `UsageCharge` remains authoritative. Money is never stored as float: Razorpay values use integer paise, wallet values use integer micro-INR, and provider cost/rates use `Numeric`/`Decimal`.
+
+## Settings and usage contracts
+
+- `GET /api/web/usage/summary?period=current_month|30d|all` aggregates only settled, debited `UsageCharge` rows owned by the authenticated user. Daily buckets use the user's validated IANA timezone; comparisons and stored boundaries remain UTC.
+- `GET|PATCH /api/web/settings/profile` reads and updates name, place, timezone, assistant name, and reply language. Email is read-only.
+- `GET|PATCH /api/web/settings/usage` manages the optional monthly integer-micro-INR hard limit, warning threshold, and notification preference.
+- Remaining tokens are an explicitly model-dependent estimate derived from the available prepaid value and the named reference provider/model. Input-only, output-only, and documented 70/30 blended values are estimates, never quotas.
+
+The web Settings dialog is responsive, keyboard trapped, escape-closeable, and restores focus. It exposes reviewed legal-content routes without adding invented legal terms or an unsafe account-deletion control.
+
+### Request and response shapes
+
+`PATCH /api/web/settings/profile` accepts any subset of `name`, `place`,
+`timezone`, `assistant_name`, and `reply_language` (`en` or `ta`). Its response
+adds read-only `email` and `email_editable: false`. Unknown fields, including
+`user_id` and `email`, are rejected.
+
+`PATCH /api/web/settings/usage` accepts:
+
+```json
+{
+  "period": "monthly",
+  "hard_limit_micros": 2500000,
+  "warning_threshold_percent": 80,
+  "notify_at_threshold": true
+}
+```
+
+`hard_limit_micros` may be `null` for unlimited; non-integer JSON numbers and
+non-positive integers are rejected. The response includes current use,
+remaining amount, warning state, timezone, and `next_reset_at`. A rejected chat
+reservation returns:
+
+```json
+{
+  "error": {
+    "code": "usage_limit_reached",
+    "current_usage_micros": 2500000,
+    "configured_limit_micros": 2500000,
+    "remaining_micros": 0,
+    "reset_at": "<UTC timestamp>"
+  }
+}
+```
+
+The usage-summary response includes period metadata; request, input, cached
+input, output, and total token counts; actual/estimated counts; micro-INR and
+AI-credit presentations; daily/provider/model series; and
+`estimated_tokens_remaining` with its reference provider/model, pricing
+timestamp/snapshot, input-only/output-only/blended estimates, range, and caveat.
 
 ## Security and privacy
 

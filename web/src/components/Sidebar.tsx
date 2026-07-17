@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, SunMoon, Trash2, X } from 'lucide-react'
+import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, SunMoon, Trash2, X } from 'lucide-react'
 import type { Thread, Wallet } from '../types'
+import { formatAiCredits } from '../credits'
 
 type Group = { label: string; threads: Thread[] }
 
@@ -18,10 +19,10 @@ function groupThreads(threads: Thread[]): Group[] {
 }
 
 export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, archived, hasMore, query,
-  setQuery, select, newChat, addCredit, mutate, signOut, close, toggleCollapsed, toggleArchived, loadMore, toggleTheme }: {
+  setQuery, select, newChat, addCredit, openSettings, mutate, signOut, close, toggleCollapsed, toggleArchived, loadMore, toggleTheme }: {
   threads: Thread[]; activeId: string | null; wallet: Wallet | null; userName: string; open: boolean; collapsed: boolean;
   archived: boolean; hasMore: boolean; query: string; setQuery: (value: string) => void;
-  select: (id: string) => void; newChat: () => void; addCredit: () => void;
+  select: (id: string) => void; newChat: () => void; addCredit: () => void; openSettings: () => void;
   mutate: (thread: Thread, action: 'rename' | 'archive' | 'delete') => void;
   signOut: () => void; close: () => void; toggleCollapsed: () => void; toggleArchived: () => void;
   loadMore: () => void; toggleTheme: () => void;
@@ -30,6 +31,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
   const [account, setAccount] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
+  const accountButtonRef = useRef<HTMLButtonElement>(null)
   const groups = useMemo(() => groupThreads(threads), [threads])
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
@@ -66,9 +68,10 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
       {hasMore && <button className="load-more" onClick={loadMore}>Load more</button>}
     </nav>
     <div className="sidebar-bottom">
-      <button className="credit-card" onClick={addCredit}><span><small>AI credits</small><strong>₹{((wallet?.available_micros ?? 0) / 1_000_000).toFixed(2)}</strong></span><b><Plus size={14} /> Add credit</b></button>
-      <div className="account-wrap"><button className="account-button" aria-expanded={account} onClick={() => setAccount(!account)}><span className="avatar">{userName.slice(0, 1).toUpperCase()}</span><span>{userName}</span><MoreHorizontal size={17} /></button>
+      <button className="credit-card" onClick={addCredit} title="AI credits are non-transferable, non-withdrawable, and can only be used for AI usage on Swico."><span><small>AI credits</small><strong>{formatAiCredits(wallet?.available_micros ?? 0)} AI credits</strong></span><b><Plus size={14} /> Add credit</b></button>
+      <div className="account-wrap"><button ref={accountButtonRef} className="account-button" aria-expanded={account} onClick={() => setAccount(!account)}><span className="avatar">{userName.slice(0, 1).toUpperCase()}</span><span>{userName}</span><MoreHorizontal size={17} /></button>
         {account && <div className="account-menu" role="menu">
+          <button role="menuitem" onClick={() => { accountButtonRef.current?.focus(); openSettings(); setAccount(false) }}><Settings size={16} />Settings</button>
           <button role="menuitem" onClick={() => { toggleTheme(); setAccount(false) }}><SunMoon size={16} />Toggle theme</button>
           <button role="menuitem" onClick={signOut}><LogOut size={16} />Sign out</button>
         </div>}

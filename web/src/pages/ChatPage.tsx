@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { ChevronDown, X } from 'lucide-react'
-import type { Message, Bootstrap, Thread, Wallet, SSEEvent } from '../types'
+import type { Message, Bootstrap, ProfileSettings, Thread, Wallet, SSEEvent } from '../types'
 import { ApiError, SSEStreamError, apiJson, streamChat } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
@@ -11,6 +11,7 @@ import { Composer } from '../components/Composer'
 import { applyTheme, resolveTheme, type Theme } from '../theme'
 
 const BillingModal = lazy(() => import('../billing/BillingModal').then(module => ({ default: module.BillingModal })))
+const SettingsModal = lazy(() => import('../components/SettingsModal').then(module => ({ default: module.SettingsModal })))
 
 type DialogState = { type: 'rename' | 'delete'; thread: Thread; value: string } | null
 
@@ -22,7 +23,7 @@ export function ChatPage() {
   const [draft, setDraft] = useState(''); const [streaming, setStreaming] = useState(false)
   const [drawer, setDrawer] = useState(false); const [collapsed, setCollapsed] = useState(localStorage.getItem('swico-sidebar-collapsed') === 'true')
   const [archived, setArchived] = useState(false); const [query, setQuery] = useState('')
-  const [billing, setBilling] = useState(false); const [dialog, setDialog] = useState<DialogState>(null)
+  const [billing, setBilling] = useState(false); const [settings, setSettings] = useState(false); const [dialog, setDialog] = useState<DialogState>(null)
   const [error, setError] = useState(''); const [offline, setOffline] = useState(!navigator.onLine)
   const [theme, setTheme] = useState<Theme>(resolveTheme)
   const [controller, setController] = useState<AbortController | null>(null); const [requestId, setRequestId] = useState<string | null>(null)
@@ -115,7 +116,9 @@ export function ChatPage() {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
         dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial provider usage may already have been charged.')
       } else {
-        if (caught instanceof ApiError && caught.status === 402) setBilling(true)
+        const code = caught instanceof ApiError && caught.body && typeof caught.body === 'object' && 'error' in caught.body
+          ? String((caught.body as { error?: { code?: string } }).error?.code ?? '') : ''
+        if (caught instanceof ApiError && caught.status === 402 && code !== 'usage_limit_reached') setBilling(true)
         setError(chatErrorMessage(caught, !navigator.onLine))
         if (!(caught instanceof SSEStreamError)) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: chatErrorMessage(caught, !navigator.onLine) } } })
       }
@@ -154,11 +157,13 @@ export function ChatPage() {
   }
   const openBilling = () => { billingButtonRef.current = document.activeElement as HTMLElement; setBilling(true) }
   const closeBilling = () => { setBilling(false); window.setTimeout(() => billingButtonRef.current?.focus(), 0) }
+  const openSettings = () => { billingButtonRef.current = document.activeElement as HTMLElement; setSettings(true) }
+  const closeSettings = () => { setSettings(false); window.setTimeout(() => billingButtonRef.current?.focus(), 0) }
 
   if (!user || !bootstrap) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
-      select={select} newChat={newChat} addCredit={openBilling} mutate={mutate} signOut={() => void signOut()} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
+      select={select} newChat={newChat} addCredit={openBilling} openSettings={openSettings} mutate={mutate} signOut={() => void signOut()} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
     <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="product-selector">Swico <ChevronDown size={15} aria-hidden="true" /></span><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
@@ -166,6 +171,7 @@ export function ChatPage() {
       <Composer value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey} />
     </section>
     {billing && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
+    {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}
     {dialog && <ThreadDialog state={dialog} setState={setDialog} confirm={() => { const current = dialog; setDialog(null); void runMutation(current.thread, current.type, current.value.trim()) }} />}
   </main>
 }

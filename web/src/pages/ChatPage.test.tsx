@@ -12,7 +12,7 @@ vi.mock('../api/client', async importOriginal => {
   return { ...actual, apiJson:vi.fn(), streamChat:vi.fn() }
 })
 
-const bootstrap = { user:{ id:1, name:'Hari', email:'h@example.com', reply_language:'en' }, wallet:{ balance_micros:5_000_000, reserved_micros:0, available_micros:5_000_000, version:1 }, billing:{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_key', min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500 }] }, features:{ web_chat:true, prepaid_billing:true, local_models:false } } as const
+const bootstrap = { user:{ id:1, name:'Hari', email:'h@example.com', reply_language:'en' }, wallet:{ balance_micros:5_000_000, reserved_micros:0, available_micros:5_000_000, version:1 }, billing:{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_key', razorpay_mode:'test', checkout_enabled:true, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500 }] }, features:{ web_chat:true, prepaid_billing:true, local_models:false } } as const
 
 it.each([
   [401, 'session expired'],
@@ -43,7 +43,7 @@ it('opens billing when the API reports insufficient credit', async () => {
   render(<ChatPage />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'hello'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
-  expect(await screen.findByRole('dialog', { name:'Add AI credit' })).toBeInTheDocument()
+  expect(await screen.findByRole('dialog', { name:'Add AI credits' })).toBeInTheDocument()
 })
 
 it('shows stop generation and sends a cooperative cancellation request', async () => {
@@ -52,4 +52,13 @@ it('shows stop generation and sends a cooperative cancellation request', async (
   await userEvent.type(composer, 'long answer'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await userEvent.click(await screen.findByRole('button', { name:'Stop generation' }))
   await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => String(call[1]).includes('/cancel'))).toBe(true))
+})
+
+it('shows usage-limit reset metadata without opening add-credit checkout', async () => {
+  mockApi(); vi.mocked(streamChat).mockRejectedValueOnce(new ApiError(402, { error:{ code:'usage_limit_reached', reset_at:'2026-08-01T00:00:00Z' } }))
+  render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'hello'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(/monthly AI usage limit has been reached.*resets/i)
+  expect(screen.queryByRole('dialog', { name:'Add AI credits' })).not.toBeInTheDocument()
 })

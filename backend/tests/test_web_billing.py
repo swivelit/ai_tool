@@ -37,6 +37,61 @@ def test_ten_rupees_credit_split_is_exact():
     assert calculate_topup(1001) == (5_000_000, 501)  # fractional credit paise goes to platform
 
 
+def test_public_config_exposes_explicit_mode_and_checkout_boolean(client):
+    response = client.get("/api/web/billing/public-config")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["razorpay_mode"] == "test"
+    assert body["checkout_enabled"] is True
+    assert body["packages"][0]["credited_amount_micros"] == 5_000_000
+    assert "RAZORPAY_KEY_SECRET" not in json.dumps(body)
+
+
+def test_public_config_rejects_mixed_razorpay_mode_and_key(client, monkeypatch):
+    monkeypatch.setenv("RAZORPAY_MODE", "live")
+    monkeypatch.setenv("RAZORPAY_KEY_ID", "rzp_test_mixed")
+    response = client.get("/api/web/billing/public-config")
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "billing_configuration_invalid"
+
+
+def test_checkout_kill_switch_rejects_before_order_or_provider_call(client, monkeypatch):
+    create_test_user()
+    called = {"provider": False}
+    monkeypatch.setenv("BILLING_CHECKOUT_ENABLED", "false")
+    monkeypatch.setattr(
+        "app.web_api.router.RazorpayClient.create_order",
+        lambda *args, **kwargs: called.update(provider=True),
+    )
+    response = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
+        "gross_amount_paise": 1000, "idempotency_key": "disabled-checkout",
+    })
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "checkout_disabled"
+    assert called["provider"] is False
+    with SessionLocal() as session:
+        assert session.exec(select(PaymentOrder)).all() == []
+
+
+def test_checkout_enabled_creates_server_order_before_provider_order(client, monkeypatch):
+    user = create_test_user()
+
+    def create_provider_order(_self, amount, receipt):
+        with SessionLocal() as session:
+            internal = session.exec(select(PaymentOrder).where(PaymentOrder.receipt == receipt)).one()
+            assert internal.status == "creating"
+            assert internal.user_id == int(user.id)
+        return {"id": "order_enabled", "amount": amount, "currency": "INR"}
+
+    monkeypatch.setenv("BILLING_CHECKOUT_ENABLED", "true")
+    monkeypatch.setattr("app.web_api.router.RazorpayClient.create_order", create_provider_order)
+    response = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
+        "gross_amount_paise": 1000, "idempotency_key": "enabled-checkout",
+    })
+    assert response.status_code == 201
+    assert response.json()["credited_amount_micros"] == 5_000_000
+
+
 def test_credit_and_duplicate_are_idempotent():
     user = create_test_user()
     with SessionLocal() as session:

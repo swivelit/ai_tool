@@ -14,7 +14,9 @@
   credential method.
 - Set `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`,
   `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, and
-  `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`. Keep `RAZORPAY_MODE=test` and a
+  `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`. Set
+  `BILLING_CHECKOUT_ENABLED=false` explicitly for the initial deployment. Keep
+  `RAZORPAY_MODE=test` and a
   `rzp_test_` key until every Live blocker is cleared.
 - Configure the static site to serve `web/dist`, rewrite application routes to
   `index.html`, and reproduce the headers in `web/public/_headers` if the Render
@@ -75,13 +77,30 @@
   end-to-end Test Mode payment before requesting Live Mode.
 - Confirm captured-but-not-credited, duplicate webhook, delayed webhook, partial
   refund, full refund, and reconciliation alerts in the Render environment.
+- Confirm `/api/web/billing/public-config` returns the explicit expected
+  `razorpay_mode` and `checkout_enabled`; never derive mode in the browser from
+  the public-key prefix.
 
 ## Legal blocker
 
-TODO(LEGAL-BLOCKER): reviewed Terms, Privacy, Refund policy, AI limitations, and
-Contact/support publication copy is required before accepting Razorpay Live
+TODO(LEGAL-BLOCKER): owner-provided and reviewed Terms, Privacy,
+Refund/Cancellation, Contact/support, and AI-limitations publication content is
+required before accepting Razorpay Live
 Mode payments. The pages currently provide complete layout and explicit content
 slots only; they intentionally do not invent legal terms.
+
+Razorpay Live Mode and `BILLING_CHECKOUT_ENABLED=true` must remain disabled
+until all five content areas are published and reviewed, in addition to the
+operational evidence below.
+
+## Release order and rollback
+
+1. Back up PostgreSQL and record the deployed commit and Alembic revision.
+2. Deploy the API first and run additive revision `8c1f4e7b2a90`; keep checkout disabled.
+3. Smoke `bootstrap`, profile, usage settings/summary, existing-credit chat, and billing public config.
+4. Deploy the static site only after the API contract is live. Re-test desktop/mobile Settings and Test Mode checkout in staging.
+5. Fix forward for application issues. The new tables contain settings/lock rows only, but a database downgrade is still not the routine rollback path. Roll the API/static images back while leaving additive tables and financial history intact.
+6. If payment risk is detected, set `BILLING_CHECKOUT_ENABLED=false` on the API and redeploy. This stops new orders without disabling existing-credit usage; reconcile existing orders before any further change.
 
 ## Release operations
 

@@ -14,6 +14,10 @@ from ..models import ApiRateLimit, PaymentOrder, UsageCharge, WalletAccount, Wal
 from ..database import IS_POSTGRES
 from ..time_utils import utc_now
 from .errors import InsufficientCreditError, PaymentValidationError, RateLimitError
+from .usage_limits import (
+    acquire_sqlite_usage_transaction_lock, enforce_usage_limit,
+    settlement_limit_available,
+)
 
 
 LEDGER_TYPES = {
@@ -118,6 +122,7 @@ def create_usage_reservation(
     session: Session, *, request_id: str, user_id: int, thread_id: str | None,
     provider: str, model: str, reserved_micros: int, pricing_snapshot_json: str,
 ) -> UsageCharge:
+    acquire_sqlite_usage_transaction_lock(session, user_id)
     existing = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
     if existing and existing.status != "released":
         return existing
@@ -126,6 +131,7 @@ def create_usage_reservation(
     available = int(wallet.balance_micros - wallet.reserved_micros)
     if available < required or wallet.balance_micros <= 0:
         raise InsufficientCreditError(available, required)
+    enforce_usage_limit(session, user_id=user_id, required_micros=required)
     attempt = 1
     if existing:
         charge = existing
@@ -190,7 +196,14 @@ def settle_usage_reservation(
     # remaining wallet balance under the same lock, but normal usage must never
     # create a negative balance. The unmatched provider cost remains explicit on
     # the charge as a platform-absorbed overage for reconciliation.
-    debit = min(provider_debit, max(0, int(wallet.balance_micros)))
+    usage_limit_available = settlement_limit_available(
+        session, user_id=charge.user_id, request_id=request_id
+    )
+    debit = min(
+        provider_debit,
+        max(0, int(wallet.balance_micros)),
+        usage_limit_available if usage_limit_available is not None else provider_debit,
+    )
     absorbed_overage = max(0, provider_debit - debit)
     wallet.balance_micros -= debit
     wallet.version += 1
@@ -213,6 +226,8 @@ def settle_usage_reservation(
             "state": "platform_absorbed_overage",
             "amount_micros": absorbed_overage,
         }
+        if usage_limit_available is not None and provider_debit > usage_limit_available:
+            pricing_snapshot["reconciliation"]["reason"] = "user_usage_limit"
     charge.pricing_snapshot_json = json.dumps(pricing_snapshot, sort_keys=True, separators=(",", ":"))
     charge.usd_to_inr_rate = usd_to_inr_rate
     charge.assistant_message_id = assistant_message_id

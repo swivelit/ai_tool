@@ -1,0 +1,138 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Archive, CreditCard, Database, Settings2, UserRound, X } from 'lucide-react'
+import type { User } from 'firebase/auth'
+import { ApiError, ApiNetworkError, apiJson } from '../api/client'
+import { compactTokens, formatAiCredits, formatRupeesFromPaise, parseAiCreditsToMicros } from '../credits'
+import type { PaymentHistory, ProfileSettings, UsagePreferences, UsageSummary } from '../types'
+import type { Theme } from '../theme'
+
+type Section = 'general' | 'profile' | 'usage' | 'data'
+type Loaded = { profile: ProfileSettings; usage: UsageSummary; preferences: UsagePreferences; payments: PaymentHistory[] }
+
+const sections: Array<{ id: Section; label: string; icon: typeof Settings2 }> = [
+  { id: 'general', label: 'General', icon: Settings2 },
+  { id: 'profile', label: 'Profile', icon: UserRound },
+  { id: 'usage', label: 'Usage & billing', icon: CreditCard },
+  { id: 'data', label: 'Data controls', icon: Database },
+]
+
+function safeError(error: unknown) {
+  if (error instanceof ApiNetworkError) return 'You appear to be offline. Reconnect and try again.'
+  if (error instanceof ApiError) return error.message
+  return 'Settings could not be saved. Please try again.'
+}
+
+export function SettingsModal({ user, theme, setTheme, close, addCredits, openArchived, savedProfile }: {
+  user: User; theme: Theme; setTheme: (theme: Theme) => void; close: () => void;
+  addCredits: () => void; openArchived: () => void; savedProfile: (profile: ProfileSettings) => void;
+}) {
+  const [section, setSection] = useState<Section>('general')
+  const [loaded, setLoaded] = useState<Loaded | null>(null)
+  const [loadError, setLoadError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [profile, setProfile] = useState<ProfileSettings | null>(null)
+  const [cap, setCap] = useState('')
+  const [unlimited, setUnlimited] = useState(true)
+  const [warning, setWarning] = useState('80')
+  const [notify, setNotify] = useState(true)
+  const dialogRef = useRef<HTMLElement>(null); const closeRef = useRef<HTMLButtonElement>(null)
+
+  const load = async () => {
+    if (!navigator.onLine) { setLoadError('You’re offline. Reconnect to load settings.'); return }
+    setLoadError('')
+    try {
+      const [nextProfile, usage, preferences, payments] = await Promise.all([
+        apiJson<ProfileSettings>(user, '/api/web/settings/profile'),
+        apiJson<UsageSummary>(user, '/api/web/usage/summary?period=current_month'),
+        apiJson<UsagePreferences>(user, '/api/web/settings/usage'),
+        apiJson<{ items: PaymentHistory[] }>(user, '/api/web/billing/payments'),
+      ])
+      setLoaded({ profile: nextProfile, usage, preferences, payments: payments.items })
+      setProfile(nextProfile)
+      setUnlimited(preferences.hard_limit_micros === null)
+      setCap(preferences.hard_limit_micros === null ? '' : formatAiCredits(preferences.hard_limit_micros, 6).replace(/0+$/, '').replace(/\.$/, ''))
+      setWarning(String(preferences.warning_threshold_percent)); setNotify(preferences.notify_at_threshold)
+    } catch (error) { setLoadError(safeError(error)) }
+  }
+  useEffect(() => { void load() }, [user]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    closeRef.current?.focus()
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !saving) {
+        event.preventDefault()
+        event.stopPropagation()
+        close()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled)') ?? [])]
+      if (!focusable.length) return
+      const first = focusable[0]; const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    window.addEventListener('keydown', keyboard, true)
+    return () => window.removeEventListener('keydown', keyboard, true)
+  }, [close, saving])
+
+  const estimate = loaded?.usage.estimated_tokens_remaining
+  const tokenRange = useMemo(() => estimate ? `${compactTokens(estimate.range_min_tokens)}–${compactTokens(estimate.range_max_tokens)}` : '', [estimate])
+  const saveProfile = async () => {
+    if (!profile) return
+    if (!profile.name.trim() || !profile.assistant_name.trim() || !profile.timezone.trim()) { setNotice('Name, timezone, and assistant name are required.'); return }
+    setSaving(true); setNotice('')
+    try {
+      const next = await apiJson<ProfileSettings>(user, '/api/web/settings/profile', { method: 'PATCH', body: JSON.stringify({
+        name: profile.name, place: profile.place, timezone: profile.timezone,
+        assistant_name: profile.assistant_name, reply_language: profile.reply_language,
+      }) })
+      setProfile(next); savedProfile(next); setNotice('Profile saved.')
+    } catch (error) { setNotice(safeError(error)) } finally { setSaving(false) }
+  }
+  const saveUsage = async () => {
+    const limit = unlimited ? null : parseAiCreditsToMicros(cap)
+    const threshold = Number(warning)
+    if (!unlimited && limit === null) { setNotice('Enter a positive monthly cap with up to 6 decimal places.'); return }
+    if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) { setNotice('Warning threshold must be from 1 to 100%.'); return }
+    setSaving(true); setNotice('')
+    try {
+      const preferences = await apiJson<UsagePreferences>(user, '/api/web/settings/usage', { method: 'PATCH', body: JSON.stringify({
+        period: 'monthly', hard_limit_micros: limit, warning_threshold_percent: threshold,
+        notify_at_threshold: notify,
+      }) })
+      setLoaded(value => value ? { ...value, preferences } : value); setNotice('Monthly usage limit saved.')
+    } catch (error) { setNotice(safeError(error)) } finally { setSaving(false) }
+  }
+
+  return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !saving) close() }}>
+    <section ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-describedby="settings-description">
+      <header className="settings-heading"><div><h2 id="settings-title">Settings</h2><p id="settings-description">Manage your profile, AI usage, and Swico preferences.</p></div><button ref={closeRef} className="icon-button" aria-label="Close settings" onClick={close} disabled={saving}><X size={20} /></button></header>
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label="Settings sections">{sections.map(item => { const Icon = item.icon; return <button key={item.id} className={section === item.id ? 'active' : ''} aria-current={section === item.id ? 'page' : undefined} onClick={() => { setSection(item.id); setNotice('') }}><Icon size={17} /><span>{item.label}</span></button> })}</nav>
+        <div className="settings-content">
+          {loadError && <div className="settings-state" role="alert"><p>{loadError}</p><button onClick={() => void load()}>Retry</button></div>}
+          {!loadError && !loaded && <div className="settings-state" role="status">Loading settings…</div>}
+          {loaded && section === 'general' && <section aria-labelledby="general-settings"><h3 id="general-settings">General</h3><label>Theme<select value={theme} onChange={event => setTheme(event.target.value as Theme)}><option value="light">Light</option><option value="dark">Dark</option></select></label><label>Interface language<select value="en" disabled aria-describedby="interface-language-help"><option value="en">English</option></select><small id="interface-language-help">Tamil replies are available in Profile. The settings interface currently supports English.</small></label></section>}
+          {loaded && section === 'profile' && profile && <section aria-labelledby="profile-settings"><h3 id="profile-settings">Profile</h3><div className="settings-form-grid">
+            <label>Name<input value={profile.name} maxLength={80} onChange={event => setProfile({ ...profile, name: event.target.value })} /></label>
+            <label>Place<input value={profile.place ?? ''} maxLength={120} onChange={event => setProfile({ ...profile, place: event.target.value || null })} /></label>
+            <label>Timezone<input list="timezone-options" value={profile.timezone} maxLength={64} onChange={event => setProfile({ ...profile, timezone: event.target.value })} /><datalist id="timezone-options"><option value="Asia/Kolkata" /><option value="Europe/London" /><option value="America/New_York" /></datalist></label>
+            <label>Assistant name<input value={profile.assistant_name} maxLength={40} onChange={event => setProfile({ ...profile, assistant_name: event.target.value })} /></label>
+            <label htmlFor="profile-reply-language">Reply language<select id="profile-reply-language" value={profile.reply_language} onChange={event => setProfile({ ...profile, reply_language: event.target.value as 'en' | 'ta' })}><option value="en">English</option><option value="ta">தமிழ் (Tamil)</option></select></label>
+            <label>Email<input value={profile.email ?? ''} readOnly aria-describedby="email-readonly" /><small id="email-readonly">Email is managed by your sign-in account and cannot be changed here.</small></label>
+          </div><button className="primary" disabled={saving} onClick={() => void saveProfile()}>{saving ? 'Saving…' : 'Save profile'}</button></section>}
+          {loaded && section === 'usage' && <section aria-labelledby="usage-settings"><h3 id="usage-settings">Usage & billing</h3>
+            <div className="usage-cards"><article><span>Available</span><strong>{formatAiCredits(loaded.usage.available_micros)} AI credits</strong><small title="AI credits are non-transferable, non-withdrawable, and can only be used for AI usage on Swico.">Equivalent to ₹{formatAiCredits(loaded.usage.available_micros)} of consumable AI usage</small></article><article><span>Estimated tokens remaining</span><strong>{tokenRange} tokens</strong><small>On {estimate?.reference_model}; model-dependent estimate, not a guaranteed quota.</small></article></div>
+            <div className="actual-usage" aria-label="Current-month actual token usage"><h4>Current-month tokens</h4><dl><div><dt>Input tokens</dt><dd>{loaded.usage.input_tokens.toLocaleString()}</dd></div><div><dt>Cached input tokens</dt><dd>{loaded.usage.cached_input_tokens.toLocaleString()}</dd></div><div><dt>Output tokens</dt><dd>{loaded.usage.output_tokens.toLocaleString()}</dd></div></dl><p>{loaded.usage.actual_usage_count} actual · {loaded.usage.estimated_usage_count} estimated requests</p><p>Usage value consumed: ₹{formatAiCredits(loaded.usage.debited_micros)}</p>{estimate && <p className="estimate-note">Range calculated from {estimate.reference_provider}/{estimate.reference_model} pricing as of {new Date(estimate.pricing_as_of).toLocaleString()}. {estimate.explanation}</p>}</div>
+            <fieldset className="usage-limit"><legend>Monthly cap</legend><label className="check-row"><input type="checkbox" checked={unlimited} onChange={event => setUnlimited(event.target.checked)} />No monthly cap beyond prepaid AI credits</label>{!unlimited && <label>Monthly cap (AI credits)<input inputMode="decimal" value={cap} onChange={event => setCap(event.target.value)} aria-describedby="cap-help" /><small id="cap-help">A server-enforced hard limit. Automatic recharge is not enabled.</small></label>}<label>Warning threshold (%)<input type="number" min="1" max="100" value={warning} onChange={event => setWarning(event.target.value)} /></label><label className="check-row"><input type="checkbox" checked={notify} onChange={event => setNotify(event.target.checked)} />Show a warning at the threshold</label>{loaded.preferences.warning_reached && <p className="usage-warning" role="status">You have reached your configured warning threshold.</p>}<button className="primary" disabled={saving} onClick={() => void saveUsage()}>{saving ? 'Saving…' : 'Save usage limit'}</button><small>Resets {new Date(loaded.preferences.next_reset_at).toLocaleString()} ({loaded.preferences.timezone}).</small></fieldset>
+            <button className="secondary-button" onClick={addCredits}>Add AI credits</button>
+            <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => <article key={payment.id}><strong>{formatRupeesFromPaise(payment.gross_amount_paise)} paid</strong><span>{formatAiCredits(payment.credited_amount_micros)} AI credits granted</span><span>{formatRupeesFromPaise(payment.platform_share_paise)} platform allocation</span><span>{formatRupeesFromPaise(payment.refunded_amount_paise)} refunded</span><span>{formatAiCredits(payment.credit_reversal_micros)} AI credits reversed</span></article>)}</div>
+          </section>}
+          {loaded && section === 'data' && <section aria-labelledby="data-settings"><h3 id="data-settings">Data controls</h3><button className="data-control" onClick={openArchived}><Archive size={18} /><span><strong>Archived chats</strong><small>Review or restore conversations you archived.</small></span></button><div className="settings-legal"><a href="/legal/terms">Terms</a><a href="/legal/privacy">Privacy</a><a href="/legal/refunds">Refund and cancellation</a><a href="/legal/contact">Contact and support</a><a href="/legal/ai">AI limitations</a></div><p className="data-note">Account deletion is not offered here because secure reauthentication and server-side deletion are not implemented.</p></section>}
+          <div className="sr-status" role="status" aria-live="polite">{notice}</div>{notice && <p className="settings-notice" aria-hidden="true">{notice}</p>}
+        </div>
+      </div>
+    </section>
+  </div>
+}

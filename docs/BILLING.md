@@ -2,9 +2,13 @@
 
 ## Units and allocation
 
-Razorpay orders and refunds are stored in paise. Consumable AI credit is stored in micro-INR (`1 INR = 1,000,000 micro-INR`). `BILLING_CREDIT_PERCENT` defaults to 50. The user-credit paise are floored deterministically; an odd-paise remainder belongs to the platform.
+Razorpay orders and refunds are stored in paise. Consumable value is stored in micro-INR (`1 INR = 1,000,000 micro-INR`). The product-facing unit is **AI credits**: 1.00 AI credit represents ₹1 of consumable AI usage value. That conversion is presentation-only; no floating-point financial ledger was added. AI credits are non-transferable, non-withdrawable, and usable only for AI usage on Swico.
 
-Example: ₹10 is 1,000 paise. At 50%, the account receives 500 paise, or 5,000,000 micro-INR. The platform allocation is 500 paise. `USAGE_MARKUP_MULTIPLIER` defaults to 1.0 because the allocation already supplies margin.
+`BILLING_CREDIT_PERCENT` remains exactly 50. The user-credit paise are floored deterministically; an odd-paise remainder belongs to the platform.
+
+Example: ₹10 is 1,000 paise. At 50%, the account receives 500 paise, or 5,000,000 micro-INR, displayed as **5.00 AI credits** and described as equivalent to ₹5 of consumable AI usage. The platform allocation is ₹5. `USAGE_MARKUP_MULTIPLIER` defaults to 1.0 because the allocation already supplies margin.
+
+Payment history keeps gross amount paid, AI credits granted, platform allocation, refund amount, and credit reversal as separate fields. The ₹ symbol remains on payments, refunds, allocations, invoices, and usage-value equivalents, but never prefixes the AI-credit balance.
 
 ## Charging
 
@@ -14,11 +18,21 @@ OpenAI USD costs use `USD_TO_INR_BILLING_RATE` and `OPENAI_FX_BUFFER_PERCENT`. S
 
 The ledger is append-only. Corrections and refunds add compensating entries. Partial refund reversal is proportional to cumulative refunded paise. A refund can make a wallet negative after credit was consumed; new AI requests remain blocked until available balance becomes positive.
 
+## Usage visibility and monthly limits
+
+`GET /api/web/usage/summary` supports `current_month`, `30d`, and `all`. It counts only settled chargeable `UsageCharge` rows and returns request/token totals, actual versus estimated counts, debited/available micro-INR and AI-credit presentations, daily series, and provider/model breakdowns. Released, failed, free cache, safety, and deterministic responses are excluded; reservations are not double counted.
+
+Current-month boundaries are calculated in the authenticated user's validated IANA timezone and converted to UTC for querying. The response names a reference provider/model and shows input-only/output-only token estimates plus an optional documented blend. Pricing and workload mix differ, so this is always labelled as an estimate and never a guaranteed token quota.
+
+The prepaid wallet remains the global hard cap. `WebUsagePreferences` adds an optional monthly cap. Before provider I/O the service locks the wallet and a per-user/period serialization row, then checks settled debits plus every active reservation. Released/failed reservations stop counting. Settlement preserves room for concurrent reservations and records any provider overage absorbed by the platform. The stable limit response is HTTP 402 with `code=usage_limit_reached`, current usage, configured limit, remaining amount, and reset timestamp. Automatic recharge is not implemented.
+
 ## Razorpay state and idempotency
 
 The server creates its `PaymentOrder` before calling Razorpay. Checkout verification signs the server-stored provider order ID, fetches payment state, and requires the exact amount, INR, and capture. Both verification and `payment.captured`/`order.paid` webhooks call the same idempotent payment-credit function.
 
 Webhook HMAC uses the raw body and `RAZORPAY_WEBHOOK_SECRET`. `x-razorpay-event-id` and ledger idempotency keys stop replay. `refund.processed` reverses credit; `refund.failed` is recorded without reversal. Events can arrive out of order without double credit.
+
+The public/authenticated billing config returns explicit `razorpay_mode: test|live` and `checkout_enabled`. Server-side key-prefix validation remains authoritative; the browser does not infer mode from the key. `BILLING_CHECKOUT_ENABLED=false` blocks only new order creation with `code=checkout_disabled`; existing AI credits and normal usage continue. Production requires this variable to be explicitly set.
 
 ## Operations
 

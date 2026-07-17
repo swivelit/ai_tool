@@ -31,6 +31,8 @@ os.environ["WEB_APP_ENABLED"] = "true"
 os.environ["RAZORPAY_KEY_ID"] = "rzp_test_public"
 os.environ["RAZORPAY_KEY_SECRET"] = "test_checkout_secret"
 os.environ["RAZORPAY_WEBHOOK_SECRET"] = "test_webhook_secret"
+os.environ["RAZORPAY_MODE"] = "test"
+os.environ["BILLING_CHECKOUT_ENABLED"] = "true"
 for name in (
     "FIREBASE_CREDENTIALS_JSON",
     "GOOGLE_APPLICATION_CREDENTIALS",
@@ -48,9 +50,9 @@ from sqlmodel import SQLModel, delete
 
 from app.database import SessionLocal, engine
 from app.main import app, _get_job_queue
-from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, PaymentOrder, ProcessedWebhook, QACache, RagEmbedding, UsageCharge, User, UserProfile, WalletAccount, WalletLedger, WebChatMessage, WebChatThread
+from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, PaymentOrder, ProcessedWebhook, QACache, RagEmbedding, UsageCharge, User, UserProfile, WalletAccount, WalletLedger, WebChatMessage, WebChatThread, WebUsagePeriodLock, WebUsagePreferences
 
-WEB_MODELS = [ProcessedWebhook, WalletLedger, UsageCharge, WebChatMessage, WebChatThread, PaymentOrder, WalletAccount, ApiRateLimit]
+WEB_MODELS = [ProcessedWebhook, WalletLedger, UsageCharge, WebChatMessage, WebChatThread, PaymentOrder, WalletAccount, ApiRateLimit, WebUsagePeriodLock, WebUsagePreferences]
 
 
 def auth_headers(uid: str, email: str | None = None) -> dict[str, str]:

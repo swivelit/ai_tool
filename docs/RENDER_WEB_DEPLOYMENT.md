@@ -17,7 +17,15 @@ Do not create a Blueprint for the existing production resources. They were creat
 
 The root must remain blank. `backend/config.py` and `backend/app/agentic_service.py` still have repository-root runtime reads involving `mobile/data/`.
 
-Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`, `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`, and `CORS_ALLOW_ORIGINS=https://<web-domain>`. The pre-deploy command is the only production migration owner. Keep the existing database, Firebase Admin, provider, email, and operational variables. Add all billing variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, and webhook size. Secrets must be Render secret environment variables.
+Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUTH_ALLOW_DEV_TOKENS=false`, `AUTO_CREATE_TABLES=false`, `RUN_MIGRATIONS_ON_STARTUP=false`, `REQUIRE_MIGRATIONS_BEFORE_STARTUP=false`, `BILLING_CHECKOUT_ENABLED=false`, and `CORS_ALLOW_ORIGINS=https://<web-domain>`. Production requires the checkout switch to be explicit. The pre-deploy command is the only production migration owner. Keep the existing database, Firebase Admin, provider, email, and operational variables. Add all billing variables documented in `backend/.env.example`, including Razorpay key ID/secret/webhook secret, limits/packages, credit/reserve/markup configuration, provider pricing, FX rate/buffer, webhook size, and the non-secret token-estimate reference provider/model. Secrets must be Render secret environment variables.
+
+Exact environment delta for this release:
+
+- Add API variable `BILLING_CHECKOUT_ENABLED=false` (backend-only, explicit in production).
+- Add or accept defaults for `USAGE_ESTIMATE_REFERENCE_PROVIDER=openai` and `USAGE_ESTIMATE_REFERENCE_MODEL=gpt-5-nano` (backend-only, non-secret display reference).
+- Keep `BILLING_CREDIT_PERCENT=50`; do not change it.
+- Keep `RAZORPAY_MODE=test` plus matching `rzp_test_` ID/secret/webhook secret. Do not add Live credentials.
+- Remove no `VITE_*` variables. Do not add Razorpay secrets or checkout flags to the static-site environment.
 
 For Firebase Admin, configure exactly one credential method. The recommended
 Render setup is a secret file named `firebase-admin.json` plus
@@ -28,7 +36,7 @@ values or credential paths.
 
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
-Run the pre-deploy migration before enabling website traffic. Verify `/api/web/health`, `/api/web/billing/public-config`, an authenticated bootstrap, Test Mode checkout, capture, duplicate webhook replay, and refund in staging.
+Run the pre-deploy migration before enabling website traffic. Revision `8c1f4e7b2a90` creates `web_usage_preferences` and `web_usage_period_lock` additively. Verify `/api/web/health`, `/api/web/billing/public-config`, authenticated bootstrap/profile/usage contracts, existing-credit chat while checkout is disabled, then Test Mode checkout, capture, duplicate webhook replay, and refund in staging after intentionally enabling the switch there.
 
 ## Financial Cron Jobs
 
@@ -128,17 +136,19 @@ Point the desired web custom domain at the Render static site and complete Rende
 
 Create separate Test and Live webhooks targeting `https://<api-domain>/api/web/billing/razorpay/webhook`. Subscribe to `payment.captured`, `order.paid`, `refund.processed`, and `refund.failed`. Use a distinct webhook secret per mode. Test end-to-end in Test Mode, then replace all three API-side Razorpay values together for Live Mode. Never expose the key secret or webhook secret to the static site.
 
+The API returns an explicit `razorpay_mode` enum and validates its public-key prefix. For a future cutover, keep checkout disabled, replace `RAZORPAY_MODE`, key ID, key secret, and webhook secret as one reviewed change, deploy/verify the API public config, then enable checkout as a separate reviewed change. Never mix Test and Live values.
+
 ## Migration and rollback
 
 1. Back up PostgreSQL and note the currently deployed image and Alembic revision.
-2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step.
-3. Deploy the API with `WEB_APP_ENABLED=false`, check existing mobile endpoints, then enable it and deploy the static site.
-4. For an application rollback, disable `WEB_APP_ENABLED` and deploy the previous API/static versions. Leave the additive billing/chat tables intact so ledger/payment history is preserved.
-5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Use it only before real transactions, after a verified backup and explicit approval. In production, fix forward.
+2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `8c1f4e7b2a90`.
+3. Deploy the API first with `BILLING_CHECKOUT_ENABLED=false`, smoke existing mobile endpoints and new web contracts, then deploy the static site.
+4. For an application rollback, first disable checkout, then deploy the previous API/static versions. Leave additive billing/chat/settings tables intact so ledger/payment and user-setting history is preserved.
+5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` also removes user preferences and serialization rows. In production, preserve additive tables and fix forward.
 
 ## Production launch checks
 
-Replace legal placeholders, verify provider prices/FX policy, configure alerts and reconciliation, validate refund/support runbooks, load-test PostgreSQL connections/rate limiting, and confirm CSP/security headers at the edge. Confirm production CORS contains no wildcard.
+Publish owner-provided and reviewed Terms, Privacy, Refund/Cancellation, Contact/support, and AI-limitations content; verify provider prices/FX policy; configure alerts and reconciliation; validate refund/support runbooks; load-test PostgreSQL connections/rate limiting; and confirm CSP/security headers at the edge. Confirm production CORS contains no wildcard. Razorpay Live Mode and Live checkout remain blocked until every item is complete.
 
 ## Controlled first Live payment plan (do not execute until every blocker is cleared)
 

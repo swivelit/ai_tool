@@ -14,7 +14,10 @@ from sqlalchemy import delete as sa_delete, text, update as sa_update
 from sqlmodel import Session, select
 
 from ..auth import AuthUser, get_current_user, get_owned_user
-from ..billing.errors import InsufficientCreditError, PaymentValidationError, RateLimitError
+from ..billing.errors import (
+    InsufficientCreditError, PaymentValidationError, RateLimitError,
+    UsageLimitReachedError,
+)
 from ..billing.pricing import calculate_topup, credit_percent
 from ..billing.razorpay_client import RazorpayClient, verify_checkout_signature, verify_webhook_signature
 from ..billing.schemas import CreateOrderRequest, VerifyPaymentRequest
@@ -22,12 +25,17 @@ from ..billing.service import (
     credit_payment_once, enforce_rate_limit, get_wallet_summary, list_wallet_ledger,
     reverse_credit_for_refund,
 )
+from ..billing.usage_limits import validated_timezone
 from ..ai.providers.base import GenerationCancellation, GenerationCancelled
 from ..database import SessionLocal, get_session
-from ..models import PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage, WebChatThread
+from ..models import (
+    PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage, WebChatThread,
+    WebUsagePreferences,
+)
 from ..time_utils import utc_now
 from .chat_service import DuplicateRequestInProgress, execute_web_turn, prepare_web_turn
-from .schemas import ThreadCreate, ThreadPatch, WebChatRequest
+from .schemas import ProfilePatch, ThreadCreate, ThreadPatch, UsagePreferencesPatch, WebChatRequest
+from .usage_service import usage_preferences_dict, usage_summary
 
 router = APIRouter(prefix="/api/web", tags=["web"])
 logger = logging.getLogger(__name__)
@@ -59,7 +67,29 @@ def _packages() -> list[int]:
     return packages
 
 
+def _checkout_enabled() -> bool:
+    return os.getenv("BILLING_CHECKOUT_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _razorpay_mode() -> str:
+    mode = os.getenv("RAZORPAY_MODE", "test").strip().lower()
+    key_id = os.getenv("RAZORPAY_KEY_ID", "").strip()
+    valid = mode in {"test", "live"} and (
+        (mode == "test" and key_id.startswith("rzp_test_"))
+        or (mode == "live" and key_id.startswith("rzp_live_"))
+    )
+    if not valid:
+        raise HTTPException(503, {
+            "code": "billing_configuration_invalid",
+            "message": "Payment checkout configuration is unavailable.",
+        })
+    return mode
+
+
 def public_billing_config() -> dict[str, Any]:
+    mode = _razorpay_mode()
     packages = []
     for gross in _packages():
         credit_micros, platform_paise = calculate_topup(gross)
@@ -70,6 +100,7 @@ def public_billing_config() -> dict[str, Any]:
         })
     return {
         "currency": "INR", "credit_percent": str(credit_percent()),
+        "razorpay_mode": mode, "checkout_enabled": _checkout_enabled(),
         "razorpay_key_id": os.getenv("RAZORPAY_KEY_ID", "").strip(),
         "min_topup_paise": int(os.getenv("BILLING_MIN_TOPUP_PAISE", "1000")),
         "max_topup_paise": int(os.getenv("BILLING_MAX_TOPUP_PAISE", "50000")),
@@ -123,6 +154,85 @@ def bootstrap(session: Session = Depends(get_session), auth: AuthUser = Depends(
         "billing": public_billing_config(),
         "features": {"web_chat": True, "prepaid_billing": True, "local_models": False},
     }
+
+
+def _profile_response(user) -> dict[str, Any]:
+    return {
+        "name": user.name, "place": user.place, "timezone": user.timezone,
+        "assistant_name": user.assistant_name, "reply_language": user.reply_language,
+        "email": user.email, "email_editable": False,
+    }
+
+
+@router.get("/settings/profile")
+def get_profile_settings(
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    return _profile_response(get_owned_user(session, auth))
+
+
+@router.patch("/settings/profile")
+def patch_profile_settings(
+    payload: ProfilePatch, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    fields = payload.model_fields_set
+    for required in ("name", "timezone", "assistant_name", "reply_language"):
+        if required in fields and getattr(payload, required) is None:
+            raise HTTPException(422, {"code": "invalid_profile", "message": f"{required} cannot be null."})
+    if "timezone" in fields:
+        try:
+            validated_timezone(str(payload.timezone))
+        except ValueError as exc:
+            raise HTTPException(422, {"code": "invalid_timezone", "message": str(exc)}) from exc
+    for field in ("name", "place", "timezone", "assistant_name", "reply_language"):
+        if field in fields:
+            setattr(user, field, getattr(payload, field))
+    session.add(user)
+    session.flush()
+    return _profile_response(user)
+
+
+@router.get("/settings/usage")
+def get_usage_settings(
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    return usage_preferences_dict(session, user=user)
+
+
+@router.patch("/settings/usage")
+def patch_usage_settings(
+    payload: UsagePreferencesPatch, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    row = session.exec(select(WebUsagePreferences).where(
+        WebUsagePreferences.user_id == int(user.id)
+    ).with_for_update()).first()
+    if row is None:
+        row = WebUsagePreferences(user_id=int(user.id))
+    fields = payload.model_fields_set
+    for required in ("period", "warning_threshold_percent", "notify_at_threshold"):
+        if required in fields and getattr(payload, required) is None:
+            raise HTTPException(422, {"code": "invalid_usage_preferences", "message": f"{required} cannot be null."})
+    for field in ("period", "hard_limit_micros", "warning_threshold_percent", "notify_at_threshold"):
+        if field in fields:
+            setattr(row, field, getattr(payload, field))
+    row.updated_at = utc_now()
+    session.add(row)
+    session.flush()
+    return usage_preferences_dict(session, user=user, row=row)
+
+
+@router.get("/usage/summary")
+def get_usage_summary(
+    period: str = Query("current_month", pattern="^(current_month|30d|all)$"),
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    return usage_summary(session, user=user, period=period)
 
 
 @router.get("/threads")
@@ -219,6 +329,15 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             "code": "insufficient_credit", "message": "Add AI credit to continue.",
             "available_micros": exc.available_micros,
             "estimated_required_micros": exc.estimated_required_micros,
+        }})
+    except UsageLimitReachedError as exc:
+        return JSONResponse(status_code=402, content={"error": {
+            "code": "usage_limit_reached",
+            "message": str(exc),
+            "current_usage_micros": exc.current_usage_micros,
+            "configured_limit_micros": exc.configured_limit_micros,
+            "remaining_micros": exc.remaining_micros,
+            "reset_at": exc.reset_at,
         }})
     except LookupError:
         raise HTTPException(404, "Thread not found")
@@ -351,6 +470,10 @@ def payments(
         "id": row.id, "gross_amount_paise": row.gross_amount_paise,
         "credited_amount_micros": row.credited_amount_micros,
         "platform_share_paise": row.platform_share_paise, "refunded_amount_paise": row.refunded_amount_paise,
+        "credit_reversal_micros": (
+            row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
+            if row.gross_amount_paise else 0
+        ),
         "status": row.status, "created_at": row.created_at,
     } for row in rows]}
 
@@ -388,6 +511,12 @@ def payment_status(
 @router.post("/billing/orders", status_code=201)
 def create_order(payload: CreateOrderRequest, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = get_owned_user(session, auth)
+    if not _checkout_enabled():
+        raise HTTPException(503, {
+            "code": "checkout_disabled",
+            "message": "Adding AI credits is temporarily unavailable. Existing AI credits still work.",
+        })
+    _razorpay_mode()
     _rate_limit(session, user_id=int(user.id), action="payment_order", limit=6)
     minimum = int(os.getenv("BILLING_MIN_TOPUP_PAISE", "1000"))
     maximum = int(os.getenv("BILLING_MAX_TOPUP_PAISE", "50000"))
