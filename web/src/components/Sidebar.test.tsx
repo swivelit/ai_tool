@@ -16,9 +16,23 @@ it('supports collapse, grouped history, menus, and search shortcut', () => {
   fireEvent.keyDown(window, { key:'k', metaKey:true }); expect(screen.getByRole('textbox', { name:'Search chats' })).toHaveFocus()
   expect(screen.getByText('Token credits')).toBeInTheDocument()
   expect(screen.getByText('≈ 60K tokens')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Add token credits. Estimated balance 60 thousand tokens.' })).toBeInTheDocument()
+  expect(screen.queryByText(props.wallet.token_estimate.explanation)).not.toBeInTheDocument()
   expect(screen.queryByText(/5\.00/)).not.toBeInTheDocument()
   expect(screen.queryByText('₹5.00')).not.toBeInTheDocument()
   expect(document.body.textContent).not.toMatch(/openai|gpt-|claude|anthropic|gemini|llama|mistral|deepseek|sarvam/i)
+})
+
+it.each([
+  ['lite', 'Swico Lite'],
+  ['standard', 'Swico'],
+  ['pro', 'Swico Pro'],
+] as const)('does not render the %s estimate explanation', (tier, tierLabel) => {
+  const explanation = `Estimated for ${tierLabel}. Actual usage depends on message size, response length, and task complexity.`
+  render(<Sidebar {...props} wallet={{ ...props.wallet, token_estimate:{ ...props.wallet.token_estimate, tier, tier_label:tierLabel, explanation } }} />)
+  expect(screen.queryByText(explanation)).not.toBeInTheDocument()
+  expect(screen.getByText('≈ 60K tokens')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Add token credits. Estimated balance 60 thousand tokens.' })).toBeInTheDocument()
 })
 
 it('shows loading, zero, and unavailable estimate states', () => {

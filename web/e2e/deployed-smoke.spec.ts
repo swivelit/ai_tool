@@ -137,9 +137,8 @@ test('real staging authentication, reversible mutations, token usage, Test Mode,
     expect(changedProfile.data?.name).toBe(runMarker.slice(0, 80))
 
     await settings.getByRole('button', { name:'Token credits', exact:true }).click()
-    await expect(settings.getByText('Current-month tokens')).toBeVisible()
-    await expect(settings.getByText(/Provider-reported requests:/)).toBeVisible()
-    await expect(settings.getByText(/Pricing timestamp:/)).toBeVisible()
+    await expect(settings.getByText('This month')).toBeVisible()
+    await expect(settings).not.toContainText(/Measured requests|Estimated requests|Pricing timestamp|Estimated for Swico/i)
     await page.getByLabel('No monthly limit beyond prepaid token credits').check()
     const changedThreshold = originalUsage.warning_threshold_percent === 99 ? 98 : 99
     await page.getByLabel('Warning threshold (%)').fill(String(changedThreshold))

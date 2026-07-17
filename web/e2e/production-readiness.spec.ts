@@ -5,6 +5,7 @@ test.skip((process.env.PLAYWRIGHT_MODE ?? 'local') !== 'local', 'Local mocked su
 
 const now = '2026-07-15T12:00:00Z'
 const tokenEstimate = (blended = 60_000) => ({
+  tier:'lite', tier_label:'Swico Lite',
   reference_provider:'openai', reference_model:'gpt-5-nano', pricing_as_of:now,
   pricing_snapshot:{}, estimated_input_only_tokens:180_000,
   estimated_output_only_tokens:25_000, estimated_blended_tokens:blended,
@@ -52,6 +53,11 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
       user: { id: 1, name: state.profile.name, email: state.profile.email, reply_language: state.profile.reply_language },
       wallet: { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 1, token_estimate:tokenEstimate(state.wallet ? 60_000 : 0) },
       billing: { currency: 'INR', credit_percent: '50', razorpay_key_id: 'rzp_test_local', razorpay_mode: 'test', checkout_enabled: true, min_topup_paise: 1000, max_topup_paise: 50000, packages: [{ gross_amount_paise: 1000, credited_amount_micros: 5_000_000, platform_share_paise: 500, token_estimate:tokenEstimate() }] },
+      assistant: { tier:'lite', tier_label:'Swico Lite', tier_description:'Fast and efficient for everyday questions.', tier_selection_enabled:true, tiers:[
+        { id:'lite', label:'Swico Lite', description:'Fast and efficient for everyday questions.', available:true, selected:true },
+        { id:'standard', label:'Swico', description:'Balanced quality and speed for most tasks.', available:true, selected:false },
+        { id:'pro', label:'Swico Pro', description:'Best for complex reasoning, planning, and coding.', available:true, selected:false },
+      ] },
       features: { web_chat: true, prepaid_billing: true, local_models: false },
     })
     if (path === '/api/web/billing/wallet') return json(route, { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 2, token_estimate:tokenEstimate(state.wallet ? 60_000 : 0) })
@@ -70,15 +76,15 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
       current_usage_micros: state.monthlyUsed, current_usage_ai_credits: String(state.monthlyUsed / 1_000_000),
       remaining_micros: state.hardLimit === null ? null : Math.max(0, state.hardLimit - state.monthlyUsed),
       warning_reached: state.hardLimit !== null && state.monthlyUsed * 100 >= state.hardLimit * state.warningThreshold,
-      next_reset_at: '2026-08-01T00:00:00Z', timezone: state.profile.timezone, updated_at: now,
+      next_reset_at: '2026-08-01T00:00:00Z', timezone: state.profile.timezone, updated_at: now, tier:'lite', tier_label:'Swico Lite',
     })
     if (path === '/api/web/settings/usage' && request.method() === 'PATCH') {
       const update = request.postDataJSON() as { hard_limit_estimated_tokens: number | null; warning_threshold_percent: number }
       state.hardLimit = update.hard_limit_estimated_tokens; state.warningThreshold = update.warning_threshold_percent
-      return json(route, { period:'monthly', hard_limit_micros:state.hardLimit, hard_limit_ai_credits:null, hard_limit_token_estimate:state.hardLimit === null ? null : tokenEstimate(state.hardLimit), remaining_token_estimate:null, warning_threshold_percent:state.warningThreshold, notify_at_threshold:true, current_usage_micros:state.monthlyUsed, current_usage_ai_credits:String(state.monthlyUsed / 1_000_000), remaining_micros:state.hardLimit === null ? null : Math.max(0, state.hardLimit - state.monthlyUsed), warning_reached:state.hardLimit !== null && state.monthlyUsed * 100 >= state.hardLimit * state.warningThreshold, next_reset_at:'2026-08-01T00:00:00Z', timezone:state.profile.timezone, updated_at:now })
+      return json(route, { period:'monthly', hard_limit_micros:state.hardLimit, hard_limit_ai_credits:null, hard_limit_token_estimate:state.hardLimit === null ? null : tokenEstimate(state.hardLimit), remaining_token_estimate:null, warning_threshold_percent:state.warningThreshold, notify_at_threshold:true, current_usage_micros:state.monthlyUsed, current_usage_ai_credits:String(state.monthlyUsed / 1_000_000), remaining_micros:state.hardLimit === null ? null : Math.max(0, state.hardLimit - state.monthlyUsed), warning_reached:state.hardLimit !== null && state.monthlyUsed * 100 >= state.hardLimit * state.warningThreshold, next_reset_at:'2026-08-01T00:00:00Z', timezone:state.profile.timezone, updated_at:now, tier:'lite', tier_label:'Swico Lite' })
     }
     if (path === '/api/web/usage/summary') return json(route, {
-      period:'current_month', timezone:state.profile.timezone, period_start:'2026-07-01T00:00:00Z', period_end:'2026-08-01T00:00:00Z', next_reset_at:'2026-08-01T00:00:00Z', request_count:state.monthlyUsed ? 1 : 0,
+      period:'current_month', tier:'lite', tier_label:'Swico Lite', timezone:state.profile.timezone, period_start:'2026-07-01T00:00:00Z', period_end:'2026-08-01T00:00:00Z', next_reset_at:'2026-08-01T00:00:00Z', request_count:state.monthlyUsed ? 1 : 0,
       input_tokens:10, cached_input_tokens:2, output_tokens:4, total_tokens:14, actual_usage_count:state.monthlyUsed ? 1 : 0, estimated_usage_count:0,
       debited_micros:state.monthlyUsed, debited_ai_credits:String(state.monthlyUsed / 1_000_000), available_micros:state.wallet, available_ai_credits:String(state.wallet / 1_000_000), daily:[], provider_breakdown:[], model_breakdown:[],
       estimated_tokens_remaining:tokenEstimate(), token_estimate:tokenEstimate(),
@@ -180,7 +186,7 @@ test('zero-credit block, exact allocation, Test Mode payment, streaming, search,
   await page.getByLabel('Message Swico').fill('தமிழில் பதில்')
   await page.getByRole('button', { name: 'Send message' }).click()
   await expect(page.getByText('வணக்கம் —')).toBeVisible()
-  await expect(page.getByText(/sarvam · sarvam-30b/)).toBeAttached()
+  await expect(page.getByText(/sarvam|sarvam-30b/)).toHaveCount(0)
 
   if (testInfo.project.name === 'mobile-chromium') {
     await page.getByRole('button', { name: 'Open sidebar' }).click()
@@ -207,7 +213,7 @@ test('order failure is safe and primary views have no critical accessibility vio
   if (testInfo.project.name === 'mobile-chromium') {
     await page.getByRole('button', { name: 'Open sidebar' }).click()
   }
-  await page.getByRole('button', { name: /Add tokens/ }).click()
+  await page.getByRole('button', { name: /Add token credits/ }).click()
   state.orderFails = true
   await page.getByRole('button', { name: 'Pay ₹10 securely' }).click()
   await expect(page.getByRole('status')).toContainText('Order creation failed safely')
@@ -216,7 +222,7 @@ test('order failure is safe and primary views have no critical accessibility vio
   expect(results.violations.filter(item => item.impact === 'critical')).toEqual([])
 })
 
-test('settings persist profile, disclose usage estimates, enforce a monthly cap, and expose legal controls', async ({ page }, testInfo) => {
+test('settings persist profile, show usage estimates, enforce a monthly cap, and expose legal controls', async ({ page }, testInfo) => {
   const state = await installBackend(page, { wallet: 5_000_000 })
   await signIn(page)
   if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name:'Open sidebar' }).click()
@@ -238,8 +244,10 @@ test('settings persist profile, disclose usage estimates, enforce a monthly cap,
   await page.getByRole('button', { name:/E2E தமிழர்/ }).click()
   await page.getByRole('menuitem', { name:'Settings' }).click()
   await settings.getByRole('button', { name:'Token credits', exact:true }).click()
+  await expect(settings.getByText('Swico Lite balance')).toBeVisible()
+  await expect(settings.getByText('Estimated range')).toBeVisible()
   await expect(settings.getByText('25,000–180,000 tokens')).toBeVisible()
-  await expect(page.getByText(/openai\/gpt-5-nano; not a guaranteed quota/)).toBeVisible()
+  await expect(settings).not.toContainText(/not a guaranteed quota|Pricing timestamp|Measured requests|Estimated requests|Estimated for Swico/i)
   await expect(page.getByText('Cached input tokens')).toBeVisible()
   await page.getByLabel('No monthly limit beyond prepaid token credits').uncheck()
   await page.getByLabel('Estimated monthly tokens').fill('1200')

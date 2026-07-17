@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, SunMoon, Trash2, X } from 'lucide-react'
 import type { Thread, Wallet } from '../types'
-import { estimatedTokenLabel } from '../credits'
+import { compactTokens, estimatedTokenLabel } from '../credits'
 
 type Group = { label: string; threads: Thread[] }
 
@@ -44,6 +44,10 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
   }, [close, open])
   useEffect(() => { if (open) closeRef.current?.focus() }, [open])
   const iconButton = (label: string, icon: ReactNode, action: () => void) => <button className="rail-action" aria-label={label} title={label} onClick={action}>{icon}<span>{label}</span></button>
+  const estimatedTokens = wallet?.token_estimate?.estimated_blended_tokens
+  const estimatedBalanceName = !wallet || estimatedTokens === null || estimatedTokens === undefined
+    ? 'Estimated balance unavailable'
+    : `Estimated balance ${compactTokens(estimatedTokens).replace(/K$/, ' thousand').replace(/M$/, ' million')} tokens`
   return <><aside className={`sidebar ${open ? 'open' : ''} ${collapsed ? 'collapsed' : ''}`} aria-label="Chat history">
     <div className="sidebar-brand"><span className="brand-mark" aria-hidden="true">S</span><strong>Swico</strong>
       <button ref={closeRef} className="mobile-close icon-button" aria-label="Close sidebar" title="Close sidebar" onClick={close}><X size={20} /></button>
@@ -68,8 +72,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
       {hasMore && <button className="load-more" onClick={loadMore}>Load more</button>}
     </nav>
     <div className="sidebar-bottom">
-      <button className="credit-card" onClick={addCredit} aria-describedby="token-credit-description"><span><small>Token credits</small><strong>{wallet ? estimatedTokenLabel(wallet.token_estimate?.estimated_blended_tokens) : 'Calculating…'}</strong></span><b><Plus size={14} /> Add tokens</b></button>
-      <span id="token-credit-description" className="sr-only">{wallet?.token_estimate?.explanation ?? 'Token balance is estimated for your selected Swico mode.'}</span>
+      <button className="credit-card" onClick={addCredit} aria-label={`Add token credits. ${estimatedBalanceName}.`}><span><small>Token credits</small><strong>{wallet ? estimatedTokenLabel(estimatedTokens) : 'Calculating…'}</strong></span><b><Plus size={14} /> Add tokens</b></button>
       <div className="account-wrap"><button ref={accountButtonRef} className="account-button" aria-expanded={account} onClick={() => setAccount(!account)}><span className="avatar">{userName.slice(0, 1).toUpperCase()}</span><span>{userName}</span><MoreHorizontal size={17} /></button>
         {account && <div className="account-menu" role="menu">
           <button role="menuitem" onClick={() => { accountButtonRef.current?.focus(); openSettings(); setAccount(false) }}><Settings size={16} />Settings</button>

@@ -150,9 +150,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .modal-heading { display: flex; align-items: center; gap: 12px; padding-right: 36px }
 .modal-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 11px; background: var(--surface) }
 .modal-heading h2 { margin: 0; font-size: 20px; letter-spacing: -.025em }
-.modal-heading p { margin: 3px 0 0; color: var(--muted); font-size: 12px }
 .test-mode { margin-left: auto; padding: 4px 7px; border-radius: 6px; background: #fff3cd; color: #745c00; font-size: 10px }
-.billing-modal > p { color: var(--muted); font-size: 13px; line-height: 1.5 }
 .billing-tabs { display: flex; gap: 4px; margin: 22px 0 18px; padding: 4px; border-radius: 10px; background: var(--surface) }
 .billing-tabs button { flex: 1; padding: 8px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer }
 .billing-tabs button.active { background: var(--bg); color: var(--text); box-shadow: 0 1px 4px rgb(0 0 0 / 10%) }
@@ -178,7 +176,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .billing-history dt { color: var(--muted) }
 .billing-history dd { margin: 0; text-align: right }
 .package-summary { padding-bottom: 4px; font-size: 14px }
-.allocation small { color: var(--muted); line-height: 1.4 }
 .checkout-disabled, .usage-warning { padding: 10px 12px; border: 1px solid #d9bd66; border-radius: 9px; background: #fff8da; color: #5f4c0e; font-size: 12px }
 :root[data-theme='dark'] .checkout-disabled, :root[data-theme='dark'] .usage-warning { background: #3a321c; color: #ffe9a7 }
 .thread-dialog { width: min(440px, 100%) }
@@ -192,7 +189,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .settings-modal { width: min(900px, 100%); height: min(720px, calc(100dvh - 36px)); overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: var(--bg); box-shadow: 0 24px 80px rgb(0 0 0 / 34%) }
 .settings-heading { display: flex; min-height: 76px; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 19px 14px 24px; border-bottom: 1px solid var(--line) }
 .settings-heading h2 { margin: 0; font-size: 21px; letter-spacing: -.025em }
-.settings-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px }
 .settings-heading button { width: 36px; height: 36px; border-radius: 9px }
 .settings-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); height: calc(100% - 76px) }
 .settings-nav { display: flex; flex-direction: column; gap: 3px; padding: 14px 10px; border-right: 1px solid var(--line); background: var(--sidebar) }
@@ -217,14 +213,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .settings-state button, .secondary-button { padding: 9px 13px; border: 1px solid var(--line); border-radius: 9px; background: transparent; cursor: pointer }
 .usage-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px }
 .usage-cards article { display: grid; min-width: 0; gap: 5px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface) }
-.usage-cards span, .usage-cards small { color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere }
+.usage-cards span { color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere }
 .usage-cards strong { font-size: 16px; overflow-wrap: anywhere }
 .actual-usage { padding-bottom: 8px; border-bottom: 1px solid var(--line) }
 .actual-usage dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 }
 .actual-usage dl div { display: grid; gap: 4px; padding: 11px; border: 1px solid var(--line); border-radius: 9px }
-.actual-usage dt, .actual-usage p { color: var(--muted); font-size: 11px }
+.actual-usage dt { color: var(--muted); font-size: 11px }
 .actual-usage dd { margin: 0; font-size: 15px; font-weight: 650 }
-.estimate-note { line-height: 1.5 }
 .usage-limit { display: grid; gap: 12px; margin: 24px 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px }
 .usage-limit legend { padding: 0 6px; font-size: 14px; font-weight: 650 }
 .usage-limit label { margin: 0 }
@@ -309,7 +304,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .settings-backdrop { padding: 0 }
   .settings-modal { width: 100%; height: 100dvh; border: 0; border-radius: 0 }
   .settings-heading { min-height: 68px; padding: 12px 14px }
-  .settings-heading p { display: none }
   .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: calc(100% - 68px) }
   .settings-nav { flex-direction: row; overflow-x: auto; padding: 8px; border-right: 0; border-bottom: 1px solid var(--line); scrollbar-width: thin }
   .settings-nav button { flex: none; width: auto; padding: 9px }

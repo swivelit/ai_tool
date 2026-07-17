@@ -97,9 +97,9 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
     }
   }
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) close() }}>
-    <section ref={dialogRef} className="billing-modal" role="dialog" aria-modal="true" aria-labelledby="billing-title" aria-describedby="billing-description">
+    <section ref={dialogRef} className="billing-modal" role="dialog" aria-modal="true" aria-labelledby="billing-title">
       <button ref={closeRef} className="modal-close icon-button" aria-label="Close add token credits" title="Close" disabled={busy} onClick={close}><X size={20} /></button>
-      <div className="modal-heading"><span className="modal-icon"><ShieldCheck size={21} /></span><div><h2 id="billing-title">Add token credits</h2><p>Secure prepaid usage for Swico</p></div>{testMode && <strong className="test-mode">Test Mode</strong>}</div>
+      <div className="modal-heading"><span className="modal-icon"><ShieldCheck size={21} /></span><h2 id="billing-title">Add token credits</h2>{testMode && <strong className="test-mode">Test Mode</strong>}</div>
       <div className="billing-tabs" role="tablist" aria-label="Billing"><button role="tab" aria-selected={tab === 'topup'} className={tab === 'topup' ? 'active' : ''} onClick={() => setTab('topup')}>Add tokens</button><button role="tab" aria-selected={tab === 'history'} className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>Payment history</button></div>
       {tab === 'history' ? <div className="billing-history" aria-live="polite">
         {historyState === 'loading' && <p>Loading payment history…</p>}
@@ -113,9 +113,8 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
           {presentation.showReversalEstimate && <div><dt>Estimated tokens reversed</dt><dd>{estimateRange(item.reversal_token_estimate)}</dd></div>}
         </dl><span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}
       </div> : <>
-      <p id="billing-description">Token estimates are approximate for your selected Swico mode and do not guarantee a fixed amount.</p>
       <div className="packages">{config.packages.map(item => <button key={item.gross_amount_paise} className={selected === item ? 'selected' : ''} aria-pressed={selected === item} onClick={() => setSelected(item)}><strong>Pay {packageRupees(item.gross_amount_paise)}</strong><span>{config.credit_percent}% converted to token credits</span><span>{estimateRange(item.token_estimate)}</span></button>)}</div>
-      {selected && <div className="allocation"><strong className="package-summary">Pay {packageRupees(selected.gross_amount_paise)}</strong><span>Converted to token credits <strong>{config.credit_percent}%</strong></span><span>Estimated token range <strong>{estimateRange(selected.token_estimate)}</strong></span><span>Service and platform allocation <strong>{100 - Number(config.credit_percent)}%</strong></span><small>{selected.token_estimate ? <>{selected.token_estimate.explanation} Pricing as of {new Date(selected.token_estimate.pricing_as_of).toLocaleString()}.</> : 'Token estimation is temporarily unavailable.'}</small></div>}
+      {selected && <div className="allocation"><strong className="package-summary">Pay {packageRupees(selected.gross_amount_paise)}</strong><span>Converted to token credits <strong>{config.credit_percent}%</strong></span><span>Estimated token range <strong>{estimateRange(selected.token_estimate)}</strong></span><span>Service and platform allocation <strong>{100 - Number(config.credit_percent)}%</strong></span></div>}
       {!config.checkout_enabled && <p className="checkout-disabled" role="status">Checkout is currently disabled. Existing token credits can still be used.</p>}
       <button className="primary wide" disabled={busy || !selected || !config.checkout_enabled} onClick={() => void checkout()}>{busy ? 'Please wait…' : selected ? `Pay ${packageRupees(selected.gross_amount_paise)} securely` : 'Choose a package'}</button>
       {status && <p className="payment-status" role="status" aria-live="polite">{status}</p>}</>}
