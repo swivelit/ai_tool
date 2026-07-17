@@ -7,7 +7,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from app.billing.errors import InsufficientCreditError
 from app.billing.pricing import calculate_topup, openai_price, sarvam_price, snapshot_json
@@ -180,6 +180,65 @@ def test_payment_history_adds_grant_and_reversal_estimates_without_removing_lega
     assert item["credit_reversal_micros"] == 2_500_000
     assert item["token_estimate"]["estimated_blended_tokens"] > 0
     assert item["reversal_token_estimate"]["estimated_blended_tokens"] > 0
+    assert item["payment_received"] is True
+    assert item["credit_applied"] is False
+    assert {"created_at", "updated_at", "paid_at", "refunded_at"} <= item.keys()
+
+
+def test_payment_history_uses_authoritative_payment_and_ledger_semantics(client):
+    user = create_test_user(uid="history-truth", email="history-truth@example.test")
+    with SessionLocal() as session:
+        created = make_order(int(user.id)); created.status = "created"
+        created.receipt += "-created"; created.provider_order_id += "-created"
+        captured = make_order(int(user.id)); captured.status = "captured"
+        captured.receipt += "-captured"; captured.provider_order_id += "-captured"
+        credited = make_order(int(user.id)); credited.receipt += "-credited"; credited.provider_order_id += "-credited"
+        session.add(created); session.add(captured); session.add(credited); session.flush()
+        credit_payment_once(session, credited)
+        session.commit()
+        ids = {"created": created.id, "captured": captured.id, "credited": credited.id}
+
+    response = client.get(
+        "/api/web/billing/payments",
+        headers=auth_headers("history-truth", "history-truth@example.test"),
+    )
+    items = {item["id"]: item for item in response.json()["items"]}
+    assert items[ids["created"]]["payment_received"] is False
+    assert items[ids["created"]]["credit_applied"] is False
+    assert items[ids["captured"]]["payment_received"] is True
+    assert items[ids["captured"]]["credit_applied"] is False
+    assert items[ids["credited"]]["payment_received"] is True
+    assert items[ids["credited"]]["credit_applied"] is True
+
+
+def test_payment_history_batches_payment_credit_ledger_lookup(client, monkeypatch):
+    user = create_test_user(uid="history-batch", email="history-batch@example.test")
+    with SessionLocal() as session:
+        for suffix in ("first", "second"):
+            order = make_order(int(user.id))
+            order.status = "created"
+            order.receipt += f"-{suffix}"
+            order.provider_order_id += f"-{suffix}"
+            session.add(order)
+        session.commit()
+
+    original_exec = Session.exec
+    ledger_queries = 0
+
+    def counted_exec(self, statement, *args, **kwargs):
+        nonlocal ledger_queries
+        if "wallet_ledger" in str(statement).lower():
+            ledger_queries += 1
+        return original_exec(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "exec", counted_exec)
+    response = client.get(
+        "/api/web/billing/payments",
+        headers=auth_headers("history-batch", "history-batch@example.test"),
+    )
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 2
+    assert ledger_queries == 1
 
 
 @pytest.mark.parametrize("bad_field,bad_value", [("amount", 999), ("currency", "USD"), ("status", "authorized")])
@@ -384,12 +443,14 @@ def test_payment_status_requires_auth_and_enforces_ownership(client):
 
 
 class _ReconciliationClient:
-    def __init__(self, payment: dict, refunds: list[dict] | None = None):
+    def __init__(self, payment: dict | None, refunds: list[dict] | None = None):
         self.payment = payment
         self.refunds = refunds or []
+        self.requested_orders: list[str] = []
 
     def fetch_order_payments(self, order_id: str) -> dict:
-        return {"items": [self.payment]}
+        self.requested_orders.append(order_id)
+        return {"status": "paid" if self.payment and self.payment.get("status") == "captured" else "attempted", "items": [self.payment] if self.payment else []}
 
     def fetch_payment_refunds(self, payment_id: str) -> dict:
         return {"items": self.refunds}
@@ -401,7 +462,11 @@ def test_reconciliation_dry_run_is_non_mutating_and_apply_is_idempotent():
         order = make_order(int(user.id)); order.status = "attempted"; order.created_at = utc_now() - timedelta(hours=1); session.add(order); session.commit(); order_id = order.id
         payment = {"id":"pay_reconcile", "order_id":order.provider_order_id, "amount":1000, "currency":"INR", "status":"captured"}
         client = _ReconciliationClient(payment)
-        assert reconcile_razorpay_orders(session, client=client, apply=False)[0]["action"] == "credit_captured_payment"
+        dry_run = reconcile_razorpay_orders(session, client=client, apply=False)[0]
+        assert dry_run["action"] == "credit_captured_payment"
+        assert dry_run["severity"] == "high" and dry_run["actionable"] is True
+        assert dry_run["provider_payment_count"] == 1
+        assert dry_run["captured_payment_present"] is True
         session.refresh(order)
         assert order.status == "attempted"
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
@@ -421,4 +486,92 @@ def test_reconciliation_never_credits_mismatched_capture(field, value):
         payment[field] = value
         result = reconcile_razorpay_orders(session, client=_ReconciliationClient(payment), apply=True)
         assert result[0]["action"] == "review_provider_mismatch"
+        assert result[0]["severity"] == "high" and result[0]["actionable"] is True
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
+
+
+def test_created_order_without_provider_payment_is_informational():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); order.status = "created"; order.created_at = utc_now() - timedelta(hours=1)
+        session.add(order); session.commit()
+        result = reconcile_razorpay_orders(session, client=_ReconciliationClient(None))[0]
+    assert result["action"] == "no_action_unattempted_checkout"
+    assert result["severity"] == "info" and result["actionable"] is False
+    assert result["provider_payment_count"] == 0
+    assert result["captured_payment_present"] is False
+
+
+def test_attempted_order_without_captured_payment_is_warning():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); order.status = "attempted"; order.created_at = utc_now() - timedelta(hours=1)
+        session.add(order); session.commit()
+        authorized = {"id":"pay_pending", "order_id":order.provider_order_id, "amount":1000, "currency":"INR", "status":"authorized"}
+        result = reconcile_razorpay_orders(session, client=_ReconciliationClient(authorized))[0]
+    assert result["action"] == "review_long_lived_attempt"
+    assert result["severity"] == "warning" and result["actionable"] is False
+    assert result["provider_payment_count"] == 1
+    assert result["captured_payment_present"] is False
+
+
+def test_created_order_with_valid_captured_provider_payment_is_actionable():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); order.status = "created"; order.created_at = utc_now() - timedelta(hours=1)
+        session.add(order); session.commit()
+        payment = {"id":"pay_created_capture", "order_id":order.provider_order_id, "amount":1000, "currency":"INR", "status":"captured"}
+        result = reconcile_razorpay_orders(session, client=_ReconciliationClient(payment), apply=False)[0]
+        session.refresh(order)
+    assert result["action"] == "credit_captured_payment"
+    assert result["severity"] == "high" and result["actionable"] is True
+    assert order.status == "created"
+
+
+def test_targeted_reconciliation_inspects_only_requested_internal_order():
+    first_user = create_test_user(uid="target-first", email="first@example.test")
+    second_user = create_test_user(uid="target-second", email="second@example.test")
+    with SessionLocal() as session:
+        first = make_order(int(first_user.id)); first.status = "created"
+        second = make_order(int(second_user.id)); second.status = "created"
+        session.add(first); session.add(second); session.commit()
+        client = _ReconciliationClient(None)
+        results = reconcile_razorpay_orders(
+            session, client=client, internal_order_id=second.id,
+        )
+    assert [item["internal_order_id"] for item in results] == [second.id]
+    assert client.requested_orders == [second.provider_order_id]
+
+
+def test_already_credited_reconciliation_is_informational():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); session.add(order); session.flush()
+        order.provider_payment_id = "pay_already_credited"
+        credit_payment_once(session, order)
+        order.created_at = utc_now() - timedelta(hours=1)
+        session.commit()
+        result = reconcile_razorpay_orders(session, client=_ReconciliationClient(None))[0]
+    assert result["action"] == "already_credited"
+    assert result["severity"] == "info" and result["actionable"] is False
+
+
+def test_refund_requiring_reconciliation_is_high_and_actionable():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id)); session.add(order); session.flush()
+        order.provider_payment_id = "pay_refund_reconcile"
+        credit_payment_once(session, order)
+        order.created_at = utc_now() - timedelta(hours=1)
+        session.commit()
+        refund = {
+            "id":"rfnd_reconcile", "payment_id":order.provider_payment_id,
+            "amount":500, "currency":"INR", "status":"processed",
+        }
+        result = reconcile_razorpay_orders(
+            session, client=_ReconciliationClient(None, [refund]), apply=False,
+        )[0]
+        session.refresh(order)
+    assert result["action"] == "reconcile_refund"
+    assert result["severity"] == "high" and result["actionable"] is True
+    assert order.refunded_amount_paise == 0

@@ -22,11 +22,23 @@ def _item(row: Any, now: datetime, *, timestamp: str = "created_at") -> dict[str
     }
 
 
-def _finding(category: str, rows: Iterable[dict[str, Any]], severity: str = "high") -> dict[str, Any] | None:
+def _finding(
+    category: str,
+    rows: Iterable[dict[str, Any]],
+    *,
+    severity: str = "high",
+    actionable: bool = True,
+) -> dict[str, Any] | None:
     items = list(rows)
     if not items:
         return None
-    return {"category": category, "severity": severity, "count": len(items), "items": items[:50]}
+    return {
+        "category": category,
+        "severity": severity,
+        "actionable": actionable,
+        "count": len(items),
+        "items": items[:50],
+    }
 
 
 def financial_audit(
@@ -101,32 +113,70 @@ def financial_audit(
     if finding:
         findings.append(finding)
 
+    credited_without_ledger = [
+        row for row in orders
+        if row.status in {"credited", "partially_refunded", "refunded"}
+        and str(row.id) not in payment_credit_refs
+    ]
+    finding = _finding(
+        "credited_order_missing_ledger",
+        (_item(row, current, timestamp="updated_at") for row in credited_without_ledger),
+    )
+    if finding:
+        findings.append(finding)
+
     inconsistent = [
         row for row in orders
-        if (row.status == "credited" and str(row.id) not in payment_credit_refs)
-        or int(row.refunded_amount_paise) < 0
+        if int(row.refunded_amount_paise) < 0
         or int(row.refunded_amount_paise) > int(row.gross_amount_paise)
         or (row.status == "refunded" and int(row.refunded_amount_paise) != int(row.gross_amount_paise))
         or (row.status == "partially_refunded" and not (0 < int(row.refunded_amount_paise) < int(row.gross_amount_paise)))
+        or (row.status == "captured" and str(row.id) in payment_credit_refs)
+        or (row.status in {"creating", "created", "attempted", "failed"} and row.paid_at is not None)
     ]
     finding = _finding("payment_state_inconsistency", (_item(row, current, timestamp="updated_at") for row in inconsistent))
     if finding:
         findings.append(finding)
 
-    reconciliation = [
+    abandoned = [
         row for row in orders
-        if row.status in {"created", "attempted", "captured"}
+        if row.status == "created"
         and ensure_utc(row.updated_at) < payment_cutoff
     ]
-    finding = _finding("reconciliation_worthy_order", (_item(row, current, timestamp="updated_at") for row in reconciliation))
+    finding = _finding(
+        "abandoned_checkout_order",
+        (_item(row, current, timestamp="updated_at") for row in abandoned),
+        severity="info",
+        actionable=False,
+    )
     if finding:
         findings.append(finding)
 
+    attempts = [
+        row for row in orders
+        if row.status == "attempted"
+        and ensure_utc(row.updated_at) < payment_cutoff
+    ]
+    finding = _finding(
+        "long_lived_payment_attempt",
+        (_item(row, current, timestamp="updated_at") for row in attempts),
+        severity="warning",
+        actionable=False,
+    )
+    if finding:
+        findings.append(finding)
+
+    info_count = sum(int(item["count"]) for item in findings if item["severity"] == "info")
+    warning_count = sum(int(item["count"]) for item in findings if item["severity"] == "warning")
     high_count = sum(int(item["count"]) for item in findings if item["severity"] == "high")
+    actionable_count = sum(int(item["count"]) for item in findings if item["actionable"])
     return {
         "audit": "financial_integrity",
         "generated_at": current.isoformat(),
         "finding_count": sum(int(item["count"]) for item in findings),
+        "informational_finding_count": info_count,
+        "warning_finding_count": warning_count,
         "high_severity_count": high_count,
+        "actionable_finding_count": actionable_count,
         "findings": findings,
     }

@@ -110,7 +110,9 @@ cd backend && python -m scripts.billing_maintenance stale-reservations --age-sec
 Configure `billing-financial-audit` with this read-only command:
 
 ```bash
-cd backend && python -m scripts.billing_maintenance audit --captured-uncredited-age-seconds 900 --fail-on-findings
+cd backend && python -m scripts.billing_maintenance audit \
+  --captured-uncredited-age-seconds 900 \
+  --fail-on-findings
 ```
 
 Every financial Cron Job requires:
@@ -135,28 +137,49 @@ RAZORPAY_KEY_SECRET=<matching Test Mode secret>
 Its initial dry-run command is:
 
 ```bash
-cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --fail-on-findings
+cd backend && python -m scripts.billing_maintenance razorpay \
+  --age-seconds 900 \
+  --fail-on-findings
 ```
 
-The only explicit mutating form is:
+For a one-order dry-run investigation, obtain the internal UUID from approved
+operational evidence and run:
 
 ```bash
-cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --apply
+cd backend && python -m scripts.billing_maintenance razorpay \
+  --internal-order-id <uuid> \
+  --age-seconds 900 \
+  --fail-on-findings
 ```
 
-Dry-run is the default. Create the Cron Job without `--apply`, retain its Test
-Mode output as review evidence, and add `--apply` only after explicit operational
-approval. Never enable Live Mode as part of Cron setup. Maintenance
+Dry-run is the default. Create and retain the Cron Job without `--apply`.
+Never schedule `--apply`; any mutating reconciliation is a separately reviewed,
+one-off operator action. Never enable Live Mode as part of Cron setup. Maintenance
 configuration errors exit with status `78` before database-engine or
 Razorpay-client creation and never print supplied values.
 
-Audit or reconciliation findings exit with status `3`. In the Render workspace,
+Clean, informational-only, and warning-only audit/reconciliation reports exit
+`0`. With `--fail-on-findings`, only high-severity actionable results exit `3`.
+Expected old abandoned checkouts appear as `abandoned_checkout_order`, severity
+`info`, actionable `false`, while the command exits `0`. Captured-uncredited or
+provider-mismatch results remain high/actionable and exit `3`. In the Render workspace,
 open **Integrations → Notifications**, configure Email, Slack, or both, and set
 **Default Service Notifications** to **Only failure notifications** (or **All
 notifications**). On each Cron Job’s **Settings** page, scroll to
 **Notifications** and retain the workspace default or explicitly select **Only
 failure notifications**. Use **Trigger Run** on staging and retain evidence that
 a deliberate non-zero run reaches the configured destination.
+
+A clean audit has all five counts at zero and an empty list:
+
+```json
+{"audit":"financial_integrity","generated_at":"<ISO-8601 timestamp>","finding_count":0,"informational_finding_count":0,"warning_finding_count":0,"high_severity_count":0,"actionable_finding_count":0,"findings":[]}
+```
+
+An abandoned-checkout-only audit includes a safe internal ID/age/status item,
+reports `informational_finding_count: 1`, keeps both high/actionable counts at
+zero, and exits `0`. Timestamps and internal IDs vary; neither output includes
+customer or provider payload data.
 
 Financial Cron Jobs must use PostgreSQL and must not create tables or run
 migrations. The backend service pre-deploy command remains the sole production
@@ -272,6 +295,12 @@ E2E_TEST_EMAIL=<dedicated-readonly-account> E2E_TEST_PASSWORD=<secret> \
 npx playwright test e2e/deployed-readonly.spec.ts \
   --project=chromium --project=mobile-chromium
 ```
+
+For the current production verification, use `https://swico.in` as the base URL.
+The production-readonly suite verifies Test Mode, disabled checkout, truthful
+payment-history headings, legal routes, token-credit terminology, and logout
+while rejecting all Swico API mutations and checkout/chat endpoints. Staging
+deployment and staging Playwright are intentionally deferred for this release.
 
 Create GitHub Environments named exactly **staging** and
 **production-readonly** under **Repository Settings → Environments**. In each,

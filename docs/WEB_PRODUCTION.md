@@ -32,10 +32,10 @@
 
   `cd backend && python -m scripts.billing_maintenance stale-reservations --age-seconds 1800`
 
-- Run Razorpay reconciliation in dry-run first, alert on its output, then enable
-  the idempotent apply form only after operational review:
+- Schedule Razorpay reconciliation only in dry-run form and alert only on its
+  high/actionable exit status:
 
-  `cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 [--apply]`
+  `cd backend && python -m scripts.billing_maintenance razorpay --age-seconds 900 --fail-on-findings`
 
 - Configure every financial Cron Job with `APP_ENV=production`, the Render
   PostgreSQL internal `DATABASE_URL`, `AUTO_CREATE_TABLES=false`,
@@ -51,7 +51,7 @@
   values. Avoid duplicate `DATABASE_URL` entries and verify the Cron Job sees
   the intended internal PostgreSQL URL without printing it.
 - Razorpay reconciliation is non-mutating unless `--apply` is explicitly
-  present. Do not add `--apply` or switch to Live Mode automatically.
+  present. Never schedule `--apply`; do not switch to Live Mode automatically.
 
 - Verify the API and static site use the same explicit Git branch. Verify the
   static response headers in the dashboard because `_headers` was not applied
@@ -111,6 +111,21 @@ operational evidence below.
 4. Deploy the static site only after the API contract is live. Re-test desktop/mobile Settings and Test Mode checkout in staging.
 5. Fix forward for application issues. The new tables contain settings/lock rows only, but a database downgrade is still not the routine rollback path. Roll the API/static images back while leaving additive tables and financial history intact.
 6. If payment risk is detected, set `BILLING_CHECKOUT_ENABLED=false` on the API and redeploy. This stops new orders without disabling existing-credit usage; reconcile existing orders before any further change.
+
+This billing-audit/payment-history release needs no schema migration. Deploy the API first, confirm its health and additive payment-history response, then deploy the static site and run the production-readonly workflow. Staging deployment and staging Playwright are intentionally deferred for this release.
+
+An old local `created` order means checkout was opened but payment was not established, so the audit reports it as informational/non-actionable. `attempted` is warning/non-actionable until Razorpay reconciliation checks provider state. Verified captured-but-uncredited and credited-without-ledger states are high/actionable. Clean, informational-only, and warning-only reports exit `0`; `--fail-on-findings` exits `3` only for high/actionable results. The database audit never calls Razorpay, so the separate dry-run reconciliation remains required.
+
+Payment history now labels unfinished checkouts truthfully: **Checkout not completed** for `created`, confirmation pending for `attempted`, token confirmation pending for captured/uncredited, and **Payment completed** only when the append-only payment-credit ledger entry exists. Refund labels show actual rupee amounts; no cash-like token-credit balance is introduced.
+
+For a targeted dry-run investigation use:
+
+```bash
+cd backend && python -m scripts.billing_maintenance razorpay \
+  --internal-order-id <uuid> \
+  --age-seconds 900 \
+  --fail-on-findings
+```
 
 ## Release operations
 
