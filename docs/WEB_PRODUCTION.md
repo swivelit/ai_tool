@@ -83,14 +83,14 @@
 
 ## Legal blocker
 
-TODO(LEGAL-BLOCKER): owner-provided and reviewed Terms, Privacy,
-Refund/Cancellation, Contact/support, and AI-limitations publication content is
-required before accepting Razorpay Live
-Mode payments. The pages currently provide complete layout and explicit content
-slots only; they intentionally do not invent legal terms.
+Owner-provided, counsel-approved Terms, Privacy, Refund/Cancellation,
+Contact/support, AI-limitations, Digital-delivery, and Pricing/top-up content is
+required before accepting Razorpay Live Mode payments. The structured module at
+`web/src/content/legalContent.json` intentionally has unreviewed empty slots;
+it does not invent legal terms.
 
 Razorpay Live Mode and `BILLING_CHECKOUT_ENABLED=true` must remain disabled
-until all five content areas are published and reviewed, in addition to the
+until all seven content areas are published and reviewed, in addition to the
 operational evidence below.
 
 ## Release order and rollback
@@ -127,3 +127,59 @@ until an owner records direct evidence:
 | Log retention | Documented retention and access policy |
 | Negative wallet procedure | Query, investigation owner, and compensating-entry approval path |
 | Provider outage procedure | Disable/routing decision, customer status update, and recovery owner |
+
+## Live launch commands
+
+These gates are separate from the normal local build. The legal checker is
+expected to fail until approved publication data exists:
+
+```bash
+python scripts/check-legal-publication.py
+python scripts/check-web-product-language.py
+python scripts/check-tracked-secrets.py
+```
+
+Run deployed staging tests only with a real non-local HTTPS domain and dedicated
+Firebase test account:
+
+```bash
+cd web
+PLAYWRIGHT_MODE=staging PLAYWRIGHT_BASE_URL=https://<staging-web-domain> \
+E2E_TEST_EMAIL=<dedicated-test-account> E2E_TEST_PASSWORD=<secret> \
+npx playwright test e2e/deployed-smoke.spec.ts
+```
+
+Production verification is read-only:
+
+```bash
+cd web
+PLAYWRIGHT_MODE=production-readonly PLAYWRIGHT_BASE_URL=https://<production-web-domain> \
+E2E_TEST_EMAIL=<dedicated-readonly-account> E2E_TEST_PASSWORD=<secret> \
+npx playwright test e2e/deployed-readonly.spec.ts
+```
+
+Do not report deployed tests as passed unless a command actually ran against
+the named HTTPS domain. Neither deployed suite completes a Razorpay payment.
+
+## Disposable restore verification
+
+Use a Render point-in-time recovery instance, never the primary database. On
+the original paid Postgres service open **Recovery**, scroll to **Point-in-Time
+Recovery**, choose **Restore Database**, name the disposable instance, select a
+time at least ten minutes in the past, choose whether to copy settings, and
+select **Start Recovery** (or **Customize Recovery**, then start). Wait for the
+new service to move from **Recovery In Progress** to **Creating** to
+**Available**. Copy its URL from the restored instance’s **Info** page into a
+temporary shell variable; do not save it or replace a service `DATABASE_URL`.
+
+```bash
+cd backend
+APP_ENV=staging RESTORE_DRILL_CONFIRMATION=disposable \
+DATABASE_URL=<restored-database-url> python -m scripts.verify_restore
+```
+
+Retain the safe row-count/invariant result, restore point, Git SHA, and operator
+timestamp. Cleanup: confirm no API/Cron/environment group references the
+recovery URL, remove temporary shell/CI values, then delete the disposable
+recovery database from its Render **Settings** page. Never delete or suspend the
+primary as part of a drill.

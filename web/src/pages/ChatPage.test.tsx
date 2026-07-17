@@ -43,7 +43,7 @@ it('opens billing when the API reports insufficient credit', async () => {
   render(<ChatPage />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'hello'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
-  expect(await screen.findByRole('dialog', { name:'Add AI credits' })).toBeInTheDocument()
+  expect(await screen.findByRole('dialog', { name:'Add token credits' })).toBeInTheDocument()
 })
 
 it('shows stop generation and sends a cooperative cancellation request', async () => {
@@ -61,4 +61,12 @@ it('shows usage-limit reset metadata without opening add-credit checkout', async
   await userEvent.type(composer, 'hello'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   expect(await screen.findByRole('alert')).toHaveTextContent(/monthly AI usage limit has been reached.*resets/i)
   expect(screen.queryByRole('dialog', { name:'Add AI credits' })).not.toBeInTheDocument()
+})
+
+it('refreshes the wallet estimate when the tab regains focus without polling', async () => {
+  mockApi()
+  render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  window.dispatchEvent(new Event('focus'))
+  await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => call[1] === '/api/web/billing/wallet')).toBe(true))
 })

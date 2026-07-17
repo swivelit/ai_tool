@@ -1,7 +1,17 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page, type Route } from '@playwright/test'
 
+test.skip((process.env.PLAYWRIGHT_MODE ?? 'local') !== 'local', 'Local mocked suite only')
+
 const now = '2026-07-15T12:00:00Z'
+const tokenEstimate = (blended = 60_000) => ({
+  reference_provider:'openai', reference_model:'gpt-5-nano', pricing_as_of:now,
+  pricing_snapshot:{}, estimated_input_only_tokens:180_000,
+  estimated_output_only_tokens:25_000, estimated_blended_tokens:blended,
+  blended_assumption:'70% input tokens and 30% output tokens; cached input excluded',
+  range_min_tokens:25_000, range_max_tokens:180_000,
+  explanation:'Estimated using openai/gpt-5-nano pricing. Actual token usage varies by model, provider, cached input and input/output mix.',
+})
 
 type MockState = {
   wallet: number
@@ -10,7 +20,7 @@ type MockState = {
   hardLimit: number | null
   warningThreshold: number
   profile: { name: string; place: string | null; timezone: string; assistant_name: string; reply_language: 'en' | 'ta'; email: string; email_editable: false }
-  payments: Array<{ id: string; gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; refunded_amount_paise: number; credit_reversal_micros: number; status: string; created_at: string }>
+  payments: Array<{ id: string; gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; refunded_amount_paise: number; credit_reversal_micros: number; status: string; created_at: string; token_estimate: ReturnType<typeof tokenEstimate>; reversal_token_estimate: ReturnType<typeof tokenEstimate> }>
   threads: Array<{ id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }>
 }
 
@@ -40,11 +50,11 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     const path = url.pathname
     if (path === '/api/web/bootstrap') return json(route, {
       user: { id: 1, name: state.profile.name, email: state.profile.email, reply_language: state.profile.reply_language },
-      wallet: { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 1 },
-      billing: { currency: 'INR', credit_percent: '50', razorpay_key_id: 'rzp_test_local', razorpay_mode: 'test', checkout_enabled: true, min_topup_paise: 1000, max_topup_paise: 50000, packages: [{ gross_amount_paise: 1000, credited_amount_micros: 5_000_000, platform_share_paise: 500 }] },
+      wallet: { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 1, token_estimate:tokenEstimate(state.wallet ? 60_000 : 0) },
+      billing: { currency: 'INR', credit_percent: '50', razorpay_key_id: 'rzp_test_local', razorpay_mode: 'test', checkout_enabled: true, min_topup_paise: 1000, max_topup_paise: 50000, packages: [{ gross_amount_paise: 1000, credited_amount_micros: 5_000_000, platform_share_paise: 500, token_estimate:tokenEstimate() }] },
       features: { web_chat: true, prepaid_billing: true, local_models: false },
     })
-    if (path === '/api/web/billing/wallet') return json(route, { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 2 })
+    if (path === '/api/web/billing/wallet') return json(route, { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 2, token_estimate:tokenEstimate(state.wallet ? 60_000 : 0) })
     if (path === '/api/web/billing/ledger') return json(route, { items: [] })
     if (path === '/api/web/billing/payments') return json(route, { items: state.payments })
     if (path === '/api/web/settings/profile' && request.method() === 'GET') return json(route, state.profile)
@@ -55,6 +65,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     if (path === '/api/web/settings/usage' && request.method() === 'GET') return json(route, {
       period: 'monthly', hard_limit_micros: state.hardLimit,
       hard_limit_ai_credits: state.hardLimit === null ? null : String(state.hardLimit / 1_000_000),
+      hard_limit_token_estimate: state.hardLimit === null ? null : tokenEstimate(state.hardLimit), remaining_token_estimate:null,
       warning_threshold_percent: state.warningThreshold, notify_at_threshold: true,
       current_usage_micros: state.monthlyUsed, current_usage_ai_credits: String(state.monthlyUsed / 1_000_000),
       remaining_micros: state.hardLimit === null ? null : Math.max(0, state.hardLimit - state.monthlyUsed),
@@ -62,15 +73,15 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
       next_reset_at: '2026-08-01T00:00:00Z', timezone: state.profile.timezone, updated_at: now,
     })
     if (path === '/api/web/settings/usage' && request.method() === 'PATCH') {
-      const update = request.postDataJSON() as { hard_limit_micros: number | null; warning_threshold_percent: number }
-      state.hardLimit = update.hard_limit_micros; state.warningThreshold = update.warning_threshold_percent
-      return json(route, { period:'monthly', hard_limit_micros:state.hardLimit, hard_limit_ai_credits:null, warning_threshold_percent:state.warningThreshold, notify_at_threshold:true, current_usage_micros:state.monthlyUsed, current_usage_ai_credits:String(state.monthlyUsed / 1_000_000), remaining_micros:state.hardLimit === null ? null : Math.max(0, state.hardLimit - state.monthlyUsed), warning_reached:state.hardLimit !== null && state.monthlyUsed * 100 >= state.hardLimit * state.warningThreshold, next_reset_at:'2026-08-01T00:00:00Z', timezone:state.profile.timezone, updated_at:now })
+      const update = request.postDataJSON() as { hard_limit_estimated_tokens: number | null; warning_threshold_percent: number }
+      state.hardLimit = update.hard_limit_estimated_tokens; state.warningThreshold = update.warning_threshold_percent
+      return json(route, { period:'monthly', hard_limit_micros:state.hardLimit, hard_limit_ai_credits:null, hard_limit_token_estimate:state.hardLimit === null ? null : tokenEstimate(state.hardLimit), remaining_token_estimate:null, warning_threshold_percent:state.warningThreshold, notify_at_threshold:true, current_usage_micros:state.monthlyUsed, current_usage_ai_credits:String(state.monthlyUsed / 1_000_000), remaining_micros:state.hardLimit === null ? null : Math.max(0, state.hardLimit - state.monthlyUsed), warning_reached:state.hardLimit !== null && state.monthlyUsed * 100 >= state.hardLimit * state.warningThreshold, next_reset_at:'2026-08-01T00:00:00Z', timezone:state.profile.timezone, updated_at:now })
     }
     if (path === '/api/web/usage/summary') return json(route, {
       period:'current_month', timezone:state.profile.timezone, period_start:'2026-07-01T00:00:00Z', period_end:'2026-08-01T00:00:00Z', next_reset_at:'2026-08-01T00:00:00Z', request_count:state.monthlyUsed ? 1 : 0,
       input_tokens:10, cached_input_tokens:2, output_tokens:4, total_tokens:14, actual_usage_count:state.monthlyUsed ? 1 : 0, estimated_usage_count:0,
       debited_micros:state.monthlyUsed, debited_ai_credits:String(state.monthlyUsed / 1_000_000), available_micros:state.wallet, available_ai_credits:String(state.wallet / 1_000_000), daily:[], provider_breakdown:[], model_breakdown:[],
-      estimated_tokens_remaining:{ reference_provider:'openai', reference_model:'gpt-5-nano', pricing_as_of:now, pricing_snapshot:{}, estimated_input_only_tokens:180000, estimated_output_only_tokens:25000, estimated_blended_tokens:60000, range_min_tokens:25000, range_max_tokens:180000, explanation:'Estimate only. Actual tokens vary by model and input/output mix.' },
+      estimated_tokens_remaining:tokenEstimate(), token_estimate:tokenEstimate(),
     })
     if (path === '/api/web/billing/orders') {
       if (state.orderFails) return json(route, { detail: 'Order creation failed safely.' }, 502)
@@ -78,7 +89,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     }
     if (path === '/api/web/billing/verify') {
       state.wallet = 5_000_000
-      state.payments = [{ id:'internal-order', gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, refunded_amount_paise:0, credit_reversal_micros:0, status:'credited', created_at:now }]
+      state.payments = [{ id:'internal-order', gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, refunded_amount_paise:0, credit_reversal_micros:0, status:'credited', created_at:now, token_estimate:tokenEstimate(), reversal_token_estimate:tokenEstimate(0) }]
       return json(route, { status: 'credited', credited: true })
     }
     if (path === '/api/web/threads' && request.method() === 'GET') {
@@ -97,7 +108,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
       return route.fulfill({ status: 204, body: '' })
     }
     if (path === '/api/web/chat/stream') {
-      if (state.wallet <= 0) return json(route, { error: { code: 'insufficient_credit', message: 'Add AI credit to continue.' } }, 402)
+      if (state.wallet <= 0) return json(route, { error: { code: 'insufficient_credit', message: 'Add tokens to continue.' } }, 402)
       if (state.hardLimit !== null && state.monthlyUsed + 1200 > state.hardLimit) return json(route, { error: { code:'usage_limit_reached', message:'Your monthly AI usage limit has been reached.', current_usage_micros:state.monthlyUsed, configured_limit_micros:state.hardLimit, remaining_micros:Math.max(0, state.hardLimit - state.monthlyUsed), reset_at:'2026-08-01T00:00:00Z' } }, 402)
       state.monthlyUsed += 1200
       state.wallet -= 1200
@@ -107,7 +118,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
         `event: status\ndata: {"phase":"responding"}\n\n`,
         `event: delta\ndata: {"text":"வணக்கம் — **ready**"}\n\n`,
         `event: usage\ndata: {"provider":"sarvam","model":"sarvam-30b","input_tokens":10,"output_tokens":4,"usage_source":"actual","charged_micros":1200}\n\n`,
-        `event: wallet\ndata: {"balance_micros":${state.wallet},"reserved_micros":0,"available_micros":${state.wallet},"version":3}\n\n`,
+        `event: wallet\ndata: ${JSON.stringify({balance_micros:state.wallet,reserved_micros:0,available_micros:state.wallet,version:3,token_estimate:tokenEstimate()})}\n\n`,
         `event: done\ndata: {"message_id":"assistant-${requestId}","thread_id":"thread-1","cancelled":false}\n\n`,
       ].join('')
       return route.fulfill({ status: 200, contentType: 'text/event-stream', body })
@@ -142,10 +153,10 @@ test('authentication, OTP state, password visibility, and direct legal routes', 
   await page.getByRole('button', { name: 'Continue' }).click()
   await expect(page.getByLabel('Verification code')).toBeVisible()
 
-  for (const [path, title] of [['/terms', 'Terms'], ['/privacy', 'Privacy'], ['/refunds', 'Refund policy']] as const) {
+  for (const [path, title] of [['/terms', 'Terms and Conditions'], ['/privacy', 'Privacy Policy'], ['/refunds', 'Cancellation and Refund Policy']] as const) {
     await page.goto(path)
     await expect(page.getByRole('heading', { level: 1, name: title })).toBeVisible()
-    await expect(page.getByText('Publication content pending legal review')).toBeVisible()
+    await expect(page.getByText('Policy text is not published')).toBeVisible()
   }
 })
 
@@ -154,17 +165,17 @@ test('zero-credit block, exact allocation, Test Mode payment, streaming, search,
   await signIn(page)
   await page.getByLabel('Message Swico').fill('hello')
   await page.getByRole('button', { name: 'Send message' }).click()
-  const billingDialog = page.getByRole('dialog', { name: 'Add AI credits' })
+  const billingDialog = page.getByRole('dialog', { name: 'Add token credits' })
   await expect(billingDialog).toBeVisible()
   await expect(page.getByText('Test Mode')).toBeVisible()
-  await expect(billingDialog.locator('.allocation')).toContainText('Pay ₹10 → receive 5.00 AI credits')
-  await expect(billingDialog.locator('.allocation')).toContainText('Platform allocation ₹5.00')
-  await expect(billingDialog).toContainText('Equivalent to ₹5 of consumable AI usage')
-  await expect(page.getByText(/non-transferable, non-withdrawable/)).toBeVisible()
+  await expect(billingDialog.locator('.allocation')).toContainText('Pay ₹10')
+  await expect(billingDialog.locator('.allocation')).toContainText('50%')
+  await expect(billingDialog.locator('.allocation')).toContainText('25K–180K tokens')
+  await expect(billingDialog).not.toContainText(/5\.00|Equivalent to ₹/)
   await page.getByRole('button', { name: 'Pay ₹10 securely' }).click()
   await expect.poll(() => state.wallet).toBe(5_000_000)
-  await expect(page.getByRole('dialog', { name: 'Add AI credits' })).toBeHidden()
-  await expect(page.getByText('5.00 AI credits')).toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'Add token credits' })).toBeHidden()
+  await expect(page.getByText('≈ 60K tokens')).toBeVisible()
 
   await page.getByLabel('Message Swico').fill('தமிழில் பதில்')
   await page.getByRole('button', { name: 'Send message' }).click()
@@ -196,7 +207,7 @@ test('order failure is safe and primary views have no critical accessibility vio
   if (testInfo.project.name === 'mobile-chromium') {
     await page.getByRole('button', { name: 'Open sidebar' }).click()
   }
-  await page.getByRole('button', { name: /Add credit/ }).click()
+  await page.getByRole('button', { name: /Add tokens/ }).click()
   state.orderFails = true
   await page.getByRole('button', { name: 'Pay ₹10 securely' }).click()
   await expect(page.getByRole('status')).toContainText('Order creation failed safely')
@@ -226,12 +237,12 @@ test('settings persist profile, disclose usage estimates, enforce a monthly cap,
   await expect(page.getByRole('button', { name:/E2E தமிழர்/ })).toBeVisible()
   await page.getByRole('button', { name:/E2E தமிழர்/ }).click()
   await page.getByRole('menuitem', { name:'Settings' }).click()
-  await page.getByRole('button', { name:'Usage & billing' }).click()
-  await expect(page.getByText('25k–180k tokens')).toBeVisible()
-  await expect(page.getByText(/gpt-5-nano; model-dependent estimate, not a guaranteed quota/)).toBeVisible()
+  await settings.getByRole('button', { name:'Token credits', exact:true }).click()
+  await expect(settings.getByText('25,000–180,000 tokens')).toBeVisible()
+  await expect(page.getByText(/openai\/gpt-5-nano; not a guaranteed quota/)).toBeVisible()
   await expect(page.getByText('Cached input tokens')).toBeVisible()
-  await page.getByLabel('No monthly cap beyond prepaid AI credits').uncheck()
-  await page.getByLabel(/Monthly cap \(AI credits\)/).fill('0.0012')
+  await page.getByLabel('No monthly limit beyond prepaid token credits').uncheck()
+  await page.getByLabel('Estimated monthly tokens').fill('1200')
   await page.getByLabel('Warning threshold (%)').fill('80')
   await page.getByRole('button', { name:'Save usage limit' }).click()
   await expect.poll(() => state.hardLimit).toBe(1200)
@@ -248,7 +259,7 @@ test('settings persist profile, disclose usage estimates, enforce a monthly cap,
   if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name:'Open sidebar' }).click()
   await page.getByRole('button', { name:/E2E தமிழர்/ }).click()
   await page.getByRole('menuitem', { name:'Settings' }).click()
-  await page.getByRole('button', { name:'Usage & billing' }).click()
+  await settings.getByRole('button', { name:'Token credits', exact:true }).click()
   await expect(page.getByText(/reached your configured warning threshold/)).toBeVisible()
   await expect(page.getByText(/Resets .*Asia\/Kolkata/)).toBeVisible()
   await page.getByRole('button', { name:'Data controls' }).click()

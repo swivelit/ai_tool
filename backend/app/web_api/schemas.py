@@ -93,6 +93,7 @@ class UsagePreferencesPatch(BaseModel):
 
     period: Literal["monthly"] | None = None
     hard_limit_micros: int | None = None
+    hard_limit_estimated_tokens: int | None = None
     warning_threshold_percent: int | None = Field(default=None, ge=1, le=100)
     notify_at_threshold: bool | None = None
 
@@ -105,4 +106,13 @@ class UsagePreferencesPatch(BaseModel):
             raise ValueError("Hard limit must be an integer micro-INR amount.")
         if value <= 0:
             raise ValueError("Hard limit must be positive or null.")
+        return value
+
+    @field_validator("hard_limit_estimated_tokens", mode="before")
+    @classmethod
+    def integer_tokens_only(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError("Estimated token limit must be a positive integer or null.")
         return value

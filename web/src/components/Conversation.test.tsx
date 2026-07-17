@@ -15,3 +15,11 @@ it('auto-scrolls only while near the bottom and offers a return button', () => {
   expect(scrollTo).toHaveBeenCalledTimes(calls)
   fireEvent.click(screen.getByRole('button', { name:'Scroll to bottom' })); expect(scrollTo.mock.calls.length).toBe(calls + 1)
 })
+
+it('shows token provenance and categories without monetary message cost', () => {
+  render(<Conversation messages={[message('cost-hidden')]} retry={vi.fn()} suggest={vi.fn()} />)
+  fireEvent.click(screen.getByText('Details'))
+  expect(screen.getByText(/Input 1 · Output 1 · Total 2 tokens/)).toBeInTheDocument()
+  expect(screen.getByText('Provider-reported usage')).toBeInTheDocument()
+  expect(screen.queryByText(/₹/)).not.toBeInTheDocument()
+})

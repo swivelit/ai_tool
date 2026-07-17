@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from datetime import datetime, timedelta
-from decimal import Decimal, ROUND_FLOOR
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
 
-from ..billing.pricing import MILLION, price_usage
+from ..billing.pricing import MILLION
 from ..billing.service import get_wallet_summary
+from ..billing.token_estimates import token_estimate
 from ..billing.usage_limits import monthly_period_bounds, validated_timezone
 from ..models import UsageCharge, User, WebUsagePreferences
 from ..time_utils import ensure_utc, utc_now
@@ -37,47 +37,6 @@ def _period_bounds(
         start = ensure_utc(first.settled_at) if first and first.settled_at else ensure_utc(user.created_at)
         return start, now, None
     raise ValueError("Unsupported usage period.")
-
-
-def _token_estimate(available_micros: int, now: datetime) -> dict[str, Any]:
-    provider = os.getenv("USAGE_ESTIMATE_REFERENCE_PROVIDER", "openai").strip().lower()
-    model = os.getenv("USAGE_ESTIMATE_REFERENCE_MODEL", "gpt-5-nano").strip()
-    input_price = price_usage(provider, model, 1_000_000, 0)
-    output_price = price_usage(provider, model, 0, 1_000_000)
-    if input_price.micros <= 0 or output_price.micros <= 0:
-        return {
-            "reference_provider": provider,
-            "reference_model": model,
-            "pricing_as_of": now,
-            "pricing_snapshot": input_price.snapshot,
-            "estimated_input_only_tokens": 0,
-            "estimated_output_only_tokens": 0,
-            "estimated_blended_tokens": None,
-            "range_min_tokens": 0,
-            "range_max_tokens": 0,
-            "explanation": "This model does not have a chargeable token estimate configured.",
-        }
-    available = Decimal(max(0, int(available_micros)))
-    input_tokens = int((available * MILLION / Decimal(input_price.micros)).to_integral_value(rounding=ROUND_FLOOR))
-    output_tokens = int((available * MILLION / Decimal(output_price.micros)).to_integral_value(rounding=ROUND_FLOOR))
-    blended_micros = (
-        Decimal(input_price.micros) * Decimal("0.7")
-        + Decimal(output_price.micros) * Decimal("0.3")
-    )
-    blended = int((available * MILLION / blended_micros).to_integral_value(rounding=ROUND_FLOOR))
-    return {
-        "reference_provider": provider,
-        "reference_model": model,
-        "pricing_as_of": now,
-        "pricing_snapshot": input_price.snapshot,
-        "estimated_input_only_tokens": input_tokens,
-        "estimated_output_only_tokens": output_tokens,
-        "estimated_blended_tokens": blended,
-        "blended_assumption": "70% input tokens and 30% output tokens; cached input excluded",
-        "range_min_tokens": min(input_tokens, output_tokens),
-        "range_max_tokens": max(input_tokens, output_tokens),
-        "explanation": "Estimate only. Actual tokens vary by provider, model, cached-input pricing, and input/output mix.",
-    }
 
 
 def usage_summary(
@@ -170,7 +129,8 @@ def usage_summary(
         "daily": [{"date": day, **values} for day, values in sorted(daily.items())],
         "provider_breakdown": sorted(providers.values(), key=lambda item: str(item["provider"])),
         "model_breakdown": sorted(models.values(), key=lambda item: (str(item["provider"]), str(item["model"]))),
-        "estimated_tokens_remaining": _token_estimate(int(wallet["available_micros"]), current),
+        "estimated_tokens_remaining": wallet["token_estimate"],
+        "token_estimate": wallet["token_estimate"],
     }
 
 
@@ -189,11 +149,13 @@ def usage_preferences_dict(
         "period": row.period if row else "monthly",
         "hard_limit_micros": hard_limit,
         "hard_limit_ai_credits": ai_credits(hard_limit) if hard_limit is not None else None,
+        "hard_limit_token_estimate": token_estimate(hard_limit) if hard_limit is not None else None,
         "warning_threshold_percent": threshold,
         "notify_at_threshold": bool(row.notify_at_threshold) if row else True,
         "current_usage_micros": used,
         "current_usage_ai_credits": ai_credits(used),
         "remaining_micros": None if hard_limit is None else max(0, hard_limit - used),
+        "remaining_token_estimate": token_estimate(max(0, hard_limit - used)) if hard_limit is not None else None,
         "warning_reached": bool(hard_limit and used * 100 >= hard_limit * threshold),
         "next_reset_at": summary["next_reset_at"],
         "timezone": user.timezone,

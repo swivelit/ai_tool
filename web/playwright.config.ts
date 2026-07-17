@@ -1,22 +1,27 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const deployedBaseUrl = process.env.PLAYWRIGHT_BASE_URL?.replace(/\/$/, '')
+const mode = process.env.PLAYWRIGHT_MODE ?? (deployedBaseUrl ? 'staging' : 'local')
+if (!['local', 'staging', 'production-readonly'].includes(mode)) throw new Error('PLAYWRIGHT_MODE must be local, staging, or production-readonly')
+if (mode !== 'local' && (!deployedBaseUrl || !deployedBaseUrl.startsWith('https://'))) throw new Error('Deployed Playwright modes require an HTTPS PLAYWRIGHT_BASE_URL')
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
   forbidOnly: true,
   retries: 0,
-  reporter: 'line',
+  reporter: process.env.CI ? [['line'], ['html', { open: 'never' }]] : 'line',
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: deployedBaseUrl ?? 'http://127.0.0.1:4173',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'off',
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    { name: 'mobile-chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 } } },
+    { name: 'mobile-chromium', use: { ...devices['Pixel 7'], viewport: { width: 390, height: 844 } } },
   ],
-  webServer: {
+  webServer: deployedBaseUrl ? undefined : {
     command: 'npm run dev -- --host 127.0.0.1 --port 4173',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: false,

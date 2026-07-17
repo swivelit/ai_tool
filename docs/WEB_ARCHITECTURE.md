@@ -12,7 +12,7 @@ The existing FastAPI process conditionally mounts `backend/app/web_api/router.py
 2. The browser submits a UUID `request_id`. The API persists the user message and selects a cloud route.
 3. The API estimates the complete prompt and maximum output, locks the wallet row and the user's local-calendar monthly period row, checks settled usage plus active reservations against an optional user cap, and commits a conservative reservation before provider I/O.
 4. OpenAI or Sarvam streams output. A final actual usage record is preferred; an estimate is labelled when Sarvam does not report usage.
-5. A short database transaction settles the debit, releases the reservation, persists the assistant response and emits final SSE usage/wallet events.
+5. A short database transaction settles the debit, releases the reservation, persists the assistant response and emits final SSE usage/wallet events. Each wallet event includes a fresh token estimate, so bootstrap, settlement, payment credit, and explicit refresh need no polling.
 6. Provider failure releases the reservation and leaves a retryable message. Request and ledger uniqueness keys prevent duplicate provider billing after completion.
 
 OpenAI streaming uses provider deltas and the final usage event. Sarvam streaming is used when supported by the installed SDK; otherwise the service emits the completed response as one `delta` and marks estimated usage where needed.
@@ -26,7 +26,7 @@ The Alembic revision `6d4f2a9c8b71` adds wallet accounts, append-only ledger ent
 - `GET /api/web/usage/summary?period=current_month|30d|all` aggregates only settled, debited `UsageCharge` rows owned by the authenticated user. Daily buckets use the user's validated IANA timezone; comparisons and stored boundaries remain UTC.
 - `GET|PATCH /api/web/settings/profile` reads and updates name, place, timezone, assistant name, and reply language. Email is read-only.
 - `GET|PATCH /api/web/settings/usage` manages the optional monthly integer-micro-INR hard limit, warning threshold, and notification preference.
-- Remaining tokens are an explicitly model-dependent estimate derived from the available prepaid value and the named reference provider/model. Input-only, output-only, and documented 70/30 blended values are estimates, never quotas.
+- `app/billing/token_estimates.py` derives input-only, output-only, and documented 70/30 blended values from the named reference provider/model with integer arithmetic. Wallets, packages, payment/refund history, and monthly limits reuse it. These are estimates, never quotas.
 
 The web Settings dialog is responsive, keyboard trapped, escape-closeable, and restores focus. It exposes reviewed legal-content routes without adding invented legal terms or an unsafe account-deletion control.
 
@@ -66,9 +66,9 @@ reservation returns:
 ```
 
 The usage-summary response includes period metadata; request, input, cached
-input, output, and total token counts; actual/estimated counts; micro-INR and
-AI-credit presentations; daily/provider/model series; and
-`estimated_tokens_remaining` with its reference provider/model, pricing
+input, output, and total token counts; actual/estimated counts; legacy internal
+compatibility fields; daily/provider/model series; and both `token_estimate` and
+the legacy `estimated_tokens_remaining` alias with its reference provider/model, pricing
 timestamp/snapshot, input-only/output-only/blended estimates, range, and caveat.
 
 ## Security and privacy
@@ -80,4 +80,4 @@ timestamp/snapshot, input-only/output-only/blended estimates, range, and caveat.
 - Chat content, raw webhook bodies, Firebase tokens, signatures, API keys, and payment contact data are not logged by the web modules.
 - Fixed-window rate-limit counters are stored in PostgreSQL so limits work across API instances.
 
-The legal routes in the client are explicitly marked placeholders and must be replaced by reviewed content before launch.
+The legal routes load a structured publication module, including digital-delivery and pricing/top-up pages. `python scripts/check-legal-publication.py` blocks Live launch until reviewed copy, identity/contact metadata, effective dates, and versions are supplied.

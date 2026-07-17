@@ -6,16 +6,18 @@ import { BillingModal } from './BillingModal'
 
 vi.mock('../api/client', () => ({ apiJson: vi.fn() }))
 
+const estimate = { reference_provider:'openai', reference_model:'gpt-5-nano', pricing_as_of:'2026-07-17T00:00:00Z', pricing_snapshot:{}, estimated_input_only_tokens:180_000, estimated_output_only_tokens:25_000, estimated_blended_tokens:60_000, blended_assumption:'70/30', range_min_tokens:25_000, range_max_tokens:180_000, explanation:'Estimated using openai/gpt-5-nano pricing. Actual token usage varies by model, provider, cached input and input/output mix.' }
+
 it('shows gross payment, credited value, and does not load checkout when order creation fails', async () => {
   vi.mocked(apiJson).mockReset().mockResolvedValueOnce({ items:[] }).mockRejectedValueOnce(new Error('order failed'))
   const append = vi.spyOn(document.head, 'appendChild')
-  render(<BillingModal user={{} as never} config={{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_example', razorpay_mode:'test', checkout_enabled:true, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500 }] }} close={vi.fn()} refreshed={vi.fn()} />)
+  render(<BillingModal user={{} as never} config={{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_example', razorpay_mode:'test', checkout_enabled:true, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, token_estimate:estimate }] }} close={vi.fn()} refreshed={vi.fn()} />)
   expect(screen.getByText('Test Mode')).toBeInTheDocument()
-  expect(screen.getByText('Amount paid')).toBeInTheDocument()
-  expect(screen.getAllByText(/5\.00 AI credits/).length).toBeGreaterThan(0)
-  expect(screen.queryByText('₹5.00 AI credits')).not.toBeInTheDocument()
-  expect(screen.getByText('Pay ₹10 → receive 5.00 AI credits')).toBeInTheDocument()
-  expect(screen.getByText('Equivalent to ₹5 of consumable AI usage')).toBeInTheDocument()
+  expect(screen.getAllByText('Pay ₹10').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('50% converted to token credits').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('25K–180K tokens').length).toBeGreaterThan(0)
+  expect(screen.queryByText(/5\.00/)).not.toBeInTheDocument()
+  expect(screen.getByText(/Estimated using openai\/gpt-5-nano pricing/)).toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: 'Pay ₹10 securely' }))
   expect(await screen.findByText('order failed')).toBeInTheDocument()
   expect(append).not.toHaveBeenCalled()
@@ -23,11 +25,11 @@ it('shows gross payment, credited value, and does not load checkout when order c
 
 it('uses explicit live mode and checkout status instead of inferring from the key', async () => {
   vi.mocked(apiJson).mockReset().mockResolvedValueOnce({ items:[] })
-  render(<BillingModal user={{} as never} config={{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_misleading', razorpay_mode:'live', checkout_enabled:false, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500 }] }} close={vi.fn()} refreshed={vi.fn()} />)
-  expect(screen.getByRole('button', { name:'Close add credit' })).toHaveFocus()
+  render(<BillingModal user={{} as never} config={{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_misleading', razorpay_mode:'live', checkout_enabled:false, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, token_estimate:estimate }] }} close={vi.fn()} refreshed={vi.fn()} />)
+  expect(screen.getByRole('button', { name:'Close add token credits' })).toHaveFocus()
   await userEvent.click(screen.getByRole('tab', { name:'Payment history' }))
   expect(await screen.findByText('No payments or refunds yet.')).toBeInTheDocument()
-  await userEvent.click(screen.getByRole('tab', { name:'Add credits' }))
+  await userEvent.click(screen.getByRole('tab', { name:'Add tokens' }))
   expect(screen.queryByText('Test Mode')).not.toBeInTheDocument()
   expect(screen.getByText(/Checkout is currently disabled/)).toBeInTheDocument()
   expect(screen.getByRole('button', { name:'Pay ₹10 securely' })).toBeDisabled()

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Archive, ChevronLeft, ChevronRight, LogOut, Menu, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings, SunMoon, Trash2, X } from 'lucide-react'
 import type { Thread, Wallet } from '../types'
-import { formatAiCredits } from '../credits'
+import { estimatedTokenLabel } from '../credits'
 
 type Group = { label: string; threads: Thread[] }
 
@@ -68,7 +68,8 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
       {hasMore && <button className="load-more" onClick={loadMore}>Load more</button>}
     </nav>
     <div className="sidebar-bottom">
-      <button className="credit-card" onClick={addCredit} title="AI credits are non-transferable, non-withdrawable, and can only be used for AI usage on Swico."><span><small>AI credits</small><strong>{formatAiCredits(wallet?.available_micros ?? 0)} AI credits</strong></span><b><Plus size={14} /> Add credit</b></button>
+      <button className="credit-card" onClick={addCredit} aria-describedby="token-credit-description"><span><small>Token credits</small><strong>{wallet ? estimatedTokenLabel(wallet.token_estimate?.estimated_blended_tokens) : 'Calculating…'}</strong></span><b><Plus size={14} /> Add tokens</b></button>
+      <span id="token-credit-description" className="sr-only">{wallet?.token_estimate?.explanation ?? 'Token balance is a model-dependent estimate.'}</span>
       <div className="account-wrap"><button ref={accountButtonRef} className="account-button" aria-expanded={account} onClick={() => setAccount(!account)}><span className="avatar">{userName.slice(0, 1).toUpperCase()}</span><span>{userName}</span><MoreHorizontal size={17} /></button>
         {account && <div className="account-menu" role="menu">
           <button role="menuitem" onClick={() => { accountButtonRef.current?.focus(); openSettings(); setAccount(false) }}><Settings size={16} />Settings</button>
@@ -76,7 +77,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
           <button role="menuitem" onClick={signOut}><LogOut size={16} />Sign out</button>
         </div>}
       </div>
-      <div className="legal"><a href="/legal/terms">Terms</a><a href="/legal/privacy">Privacy</a><a href="/legal/refunds">Refunds</a><a href="/legal/ai">AI limits</a><a href="/legal/contact">Support</a></div>
+      <div className="legal"><a href="/legal/terms">Terms</a><a href="/legal/privacy">Privacy</a><a href="/legal/refunds">Refunds</a><a href="/legal/ai">AI limits</a><a href="/legal/delivery">Digital delivery</a><a href="/legal/pricing">Pricing</a><a href="/legal/contact">Support</a></div>
     </div>
   </aside>{open && <button className="drawer-scrim" aria-label="Close sidebar" onClick={close} />}</>
 }

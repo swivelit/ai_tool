@@ -1,0 +1,13 @@
+name: Live release gates
+
+on:
+  workflow_dispatch:
+
+jobs:
+  legal-publication:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python scripts/check-legal-publication.py
+      - run: python scripts/check-web-product-language.py
+      - run: python scripts/check-tracked-secrets.py
