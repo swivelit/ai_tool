@@ -10,10 +10,19 @@ on:
         type: choice
         options: [staging, production-readonly]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: deployed-smoke-${{ inputs.mode }}
+  cancel-in-progress: false
+
 jobs:
   playwright:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.mode }}
+    environment:
+      name: ${{ inputs.mode }}
+      deployment: false
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -22,19 +31,54 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci
+      - name: Validate required environment secrets
+        shell: bash
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
+          E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+          E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+        run: |
+          missing=()
+          for name in PLAYWRIGHT_BASE_URL E2E_TEST_EMAIL E2E_TEST_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then missing+=("$name"); fi
+          done
+          if (( ${#missing[@]} )); then
+            printf 'Missing required environment secret: %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+      - name: Install web dependencies
+        run: npm ci
         working-directory: web
-      - run: npx playwright install --with-deps chromium
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
         working-directory: web
-      - name: Run deployed Playwright suite
-        run: npx playwright test
+      - name: Check deployed security headers
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
+        run: python scripts/check-web-security-headers.py --url "$PLAYWRIGHT_BASE_URL"
+      - name: Run selected deployed Playwright suite
+        id: playwright
+        shell: bash
         working-directory: web
         env:
           PLAYWRIGHT_MODE: ${{ inputs.mode }}
           PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
           E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
-      - name: Upload failure diagnostics
+        run: |
+          case "$PLAYWRIGHT_MODE" in
+            staging) test_file='e2e/deployed-smoke.spec.ts' ;;
+            production-readonly) test_file='e2e/deployed-readonly.spec.ts' ;;
+            *) echo 'Unsupported deployed test mode' >&2; exit 2 ;;
+          esac
+          set +e
+          npx playwright test "$test_file" --project=chromium --project=mobile-chromium
+          status=$?
+          set -e
+          if [[ $status -eq 0 ]]; then result=passed; else result=failed; fi
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Upload private failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -44,3 +88,21 @@ jobs:
             web/test-results
           if-no-files-found: ignore
           retention-days: 7
+      - name: Write safe test summary
+        if: always()
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
+          TEST_RESULT: ${{ steps.playwright.outputs.result }}
+        run: |
+          hostname=$(node -e "try { process.stdout.write(new URL(process.env.BASE_URL).hostname) } catch { process.stdout.write('unavailable') }")
+          timestamp=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          result=${TEST_RESULT:-not-run}
+          {
+            echo "- mode: $MODE"
+            echo "- base hostname: $hostname"
+            echo "- commit SHA: $GITHUB_SHA"
+            echo "- desktop/mobile result: $result"
+            echo "- timestamp: $timestamp"
+          } >> "$GITHUB_STEP_SUMMARY"

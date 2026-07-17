@@ -1,26 +1,73 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
+import { productionRequestViolation } from '../src/testing/deployedSafety'
 
 test.skip(process.env.PLAYWRIGHT_MODE !== 'production-readonly', 'Production read-only deployment only')
 
-test('production authentication and public/account read-only surfaces', async ({ page }) => {
-  const email = process.env.E2E_TEST_EMAIL ?? ''
-  const password = process.env.E2E_TEST_PASSWORD ?? ''
-  expect(email, 'E2E_TEST_EMAIL must be configured').not.toBe('')
-  expect(password, 'E2E_TEST_PASSWORD must be configured').not.toBe('')
+const email = process.env.E2E_TEST_EMAIL ?? ''
+const password = process.env.E2E_TEST_PASSWORD ?? ''
+
+async function openSidebarOnMobile(page: Page) {
+  const trigger = page.getByRole('button', { name:'Open sidebar' })
+  if (await trigger.isVisible()) await trigger.click()
+}
+
+async function logout(page: Page) {
   await page.goto('/')
-  await page.getByLabel('Email address').fill(email)
-  await page.getByLabel('Password', { exact: true }).fill(password)
-  await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible()
-  if (await page.getByRole('button', { name: 'Open sidebar' }).isVisible()) await page.getByRole('button', { name: 'Open sidebar' }).click()
-  await expect(page.getByText('Token credits')).toBeVisible()
+  await openSidebarOnMobile(page)
   await page.locator('.account-button').click()
-  await page.getByRole('menuitem', { name: 'Settings' }).click()
-  await page.getByRole('dialog', { name:'Settings' }).getByRole('button', { name: 'Token credits', exact:true }).click()
-  await expect(page.getByText('Current-month tokens')).toBeVisible()
-  await page.getByRole('button', { name: 'Close settings' }).click()
-  for (const route of ['terms', 'privacy', 'refunds', 'contact', 'ai', 'delivery', 'pricing']) {
-    await page.goto(`/legal/${route}`)
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  await page.getByRole('menuitem', { name:'Sign out' }).click()
+  await expect(page.getByRole('heading', { name:'Welcome back' })).toBeVisible()
+}
+
+test('production authentication and public/account surfaces remain read-only', async ({ page }) => {
+  if (!email) throw new Error('E2E_TEST_EMAIL must be configured')
+  if (!password) throw new Error('E2E_TEST_PASSWORD must be configured')
+  const requestViolations: string[] = []
+  const browserFailures: string[] = []
+
+  page.on('request', request => {
+    const violation = productionRequestViolation(request.url(), request.method())
+    if (violation) requestViolations.push(violation)
+  })
+  page.on('console', message => {
+    const content = message.text()
+    if (/content security policy|\bcsp\b|\bcors\b|mixed content/i.test(content)) {
+      browserFailures.push(`browser security error: ${content}`)
+      return
+    }
+    if (message.type() !== 'error') return
+    // Chromium can emit this harmless layout diagnostic without application failure.
+    if (/^ResizeObserver loop (?:limit exceeded|completed with undelivered notifications)/.test(content)) return
+    browserFailures.push(`console error: ${content}`)
+  })
+  page.on('pageerror', error => browserFailures.push(`page error: ${error.name}: ${error.message}`))
+
+  try {
+    await page.goto('/')
+    await page.getByLabel('Email address').fill(email)
+    await page.getByLabel('Password', { exact:true }).fill(password)
+    await page.getByRole('button', { name:'Sign in' }).click()
+    await expect(page.getByRole('button', { name:'Send message' })).toBeVisible()
+    await openSidebarOnMobile(page)
+    const tokenCard = page.getByRole('button', { name:/Token credits.*tokens|Token credits.*Estimate unavailable/i })
+    await expect(tokenCard).toBeVisible()
+    await expect(tokenCard).not.toContainText(/₹|\bAI credits?\b|\b\d+\.\d{2}\s+(?:token\s+)?credits/i)
+    await page.locator('.account-button').click()
+    await page.getByRole('menuitem', { name:'Settings' }).click()
+    const settings = page.getByRole('dialog', { name:'Settings' })
+    await settings.getByRole('button', { name:'Token credits', exact:true }).click()
+    await expect(settings.getByText('Current-month tokens')).toBeVisible()
+    await expect(settings.getByText(/Provider-reported requests:/)).toBeVisible()
+    await page.getByRole('button', { name:'Close settings' }).click()
+    for (const route of ['terms', 'privacy', 'refunds', 'contact', 'ai', 'delivery', 'pricing']) {
+      await page.goto(`/legal/${route}`)
+      await expect(page.getByRole('heading', { level:1 })).toBeVisible()
+    }
+  } finally {
+    let logoutFailed = false
+    try { await logout(page) } catch { logoutFailed = true }
+    expect(requestViolations, 'Production-readonly must never mutate Swico or reach checkout/chat endpoints').toEqual([])
+    expect(browserFailures, 'Production-readonly must have no unapproved browser errors').toEqual([])
+    expect(logoutFailed, 'Production-readonly cleanup must log out while the application is reachable').toBe(false)
   }
 })

@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+from pathlib import Path
+import re
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[2]
+BLUEPRINT = ROOT / "render.staging.yaml"
+WORKFLOW = ROOT / ".github" / "workflows" / "deployed-smoke.yml"
+
+
+def load_blueprint() -> dict:
+    return yaml.safe_load(BLUEPRINT.read_text(encoding="utf-8"))
+
+
+def staging_environment(data: dict) -> dict:
+    projects = data["projects"]
+    assert [project["name"] for project in projects] == ["Swico Staging"]
+    environments = projects[0]["environments"]
+    assert [environment["name"] for environment in environments] == ["Staging"]
+    return environments[0]
+
+
+def services_by_name(data: dict) -> dict[str, dict]:
+    return {service["name"]: service for service in staging_environment(data)["services"]}
+
+
+def env_vars(service: dict) -> dict[str, dict]:
+    return {item["key"]: item for item in service["envVars"]}
+
+
+def test_staging_blueprint_contains_required_safe_values():
+    services = services_by_name(load_blueprint())
+    assert set(services) == {"swico-api-staging", "swico-web-staging"}
+    api = services["swico-api-staging"]
+    values = {key: item.get("value") for key, item in env_vars(api).items() if "value" in item}
+    assert values == {
+        "APP_ENV": "staging",
+        "WEB_APP_ENABLED": "true",
+        "LOG_CHAT_CONTENT": "false",
+        "AUTH_ALLOW_DEV_TOKENS": "false",
+        "EMAIL_OTP_DEV_RETURN_CODE": "false",
+        "AUTO_CREATE_TABLES": "false",
+        "RUN_MIGRATIONS_ON_STARTUP": "false",
+        "REQUIRE_MIGRATIONS_BEFORE_STARTUP": "false",
+        "BILLING_CHECKOUT_ENABLED": "false",
+        "BILLING_CREDIT_PERCENT": "50",
+        "RAZORPAY_MODE": "test",
+        "AI_PROVIDER_ROUTING_MODE": "openai_only",
+        "USAGE_ESTIMATE_REFERENCE_PROVIDER": "openai",
+        "USAGE_ESTIMATE_REFERENCE_MODEL": "gpt-5-nano",
+        "SENTRY_TRACES_SAMPLE_RATE": "0.05",
+        "SENTRY_PROFILES_SAMPLE_RATE": "0",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/etc/secrets/firebase-admin-staging.json",
+    }
+    assert api["healthCheckPath"] == "/api/web/health"
+
+
+def test_staging_blueprint_has_all_sync_false_placeholders():
+    services = services_by_name(load_blueprint())
+    api_vars = env_vars(services["swico-api-staging"])
+    for key in (
+        "CORS_ALLOW_ORIGINS", "OPENAI_API_KEY", "RAZORPAY_KEY_ID",
+        "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "SENTRY_DSN",
+    ):
+        assert api_vars[key] == {"key": key, "sync": False}
+    web_vars = env_vars(services["swico-web-staging"])
+    for key in (
+        "VITE_API_BASE_URL", "VITE_FIREBASE_API_KEY", "VITE_FIREBASE_AUTH_DOMAIN",
+        "VITE_FIREBASE_PROJECT_ID", "VITE_FIREBASE_APP_ID",
+        "VITE_FIREBASE_MESSAGING_SENDER_ID",
+    ):
+        assert web_vars[key] == {"key": key, "sync": False}
+
+
+def test_staging_blueprint_cannot_reference_production_resources_or_groups():
+    data = load_blueprint()
+    environment = staging_environment(data)
+    databases = environment["databases"]
+    assert [database["name"] for database in databases] == ["swico-postgres-staging"]
+    assert databases[0]["ipAllowList"] == []
+    services = services_by_name(data)
+    api = services["swico-api-staging"]
+    assert api["region"] == databases[0]["region"]
+    assert env_vars(api)["DATABASE_URL"] == {
+        "key": "DATABASE_URL",
+        "fromDatabase": {"name": "swico-postgres-staging", "property": "connectionString"},
+    }
+    serialized = BLUEPRINT.read_text(encoding="utf-8").lower()
+    assert "tamil_voice_ai_db" not in serialized
+    assert "fromgroup" not in serialized
+    assert "envVarGroups" not in data
+    assert "envVarGroups" not in environment
+    assert not any("prod" in resource["name"].lower() for resource in [*environment["services"], *databases])
+
+
+def test_staging_static_site_includes_exact_security_headers():
+    web = services_by_name(load_blueprint())["swico-web-staging"]
+    actual = {header["name"]: header["value"] for header in web["headers"]}
+    expected: dict[str, str] = {}
+    for line in (ROOT / "web" / "public" / "_headers").read_text(encoding="utf-8").splitlines()[1:]:
+        if line.strip():
+            name, value = line.strip().split(":", 1)
+            expected[name] = value.strip()
+    assert actual == expected
+    assert actual["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
+    assert "preload" not in actual["Strict-Transport-Security"].lower()
+    assert web["routes"] == [{"type": "rewrite", "source": "/*", "destination": "/index.html"}]
+
+
+def test_workflow_selects_exact_test_file_for_each_mode():
+    source = WORKFLOW.read_text(encoding="utf-8")
+    assert "staging) test_file='e2e/deployed-smoke.spec.ts'" in source
+    assert "production-readonly) test_file='e2e/deployed-readonly.spec.ts'" in source
+    assert 'npx playwright test "$test_file" --project=chromium --project=mobile-chromium' in source
+    assert source.index("python scripts/check-web-security-headers.py") < source.index('npx playwright test "$test_file"')
+    for name in ("PLAYWRIGHT_BASE_URL", "E2E_TEST_EMAIL", "E2E_TEST_PASSWORD"):
+        assert f"{name}: ${{{{ secrets.{name} }}}}" in source
+
+
+def test_workflow_has_read_only_permissions_and_concurrency_protection():
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    assert data["permissions"] == {"contents": "read"}
+    assert data["concurrency"] == {
+        "group": "deployed-smoke-${{ inputs.mode }}",
+        "cancel-in-progress": False,
+    }
+    environment = data["jobs"]["playwright"]["environment"]
+    assert environment == {"name": "${{ inputs.mode }}", "deployment": False}
+
+
+def test_workflow_does_not_print_secret_values():
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    run_blocks = "\n".join(
+        str(step.get("run", "")) for step in data["jobs"]["playwright"]["steps"]
+    )
+    forbidden_print = re.compile(
+        r"(?:echo|printf).*\$(?:\{)?(?:E2E_TEST_EMAIL|E2E_TEST_PASSWORD|PLAYWRIGHT_BASE_URL)(?:\})?"
+    )
+    assert not forbidden_print.search(run_blocks)
+    assert "Authorization" not in run_blocks
+    assert "firebase token" not in run_blocks.lower()
+    assert "if: failure()" in WORKFLOW.read_text(encoding="utf-8")

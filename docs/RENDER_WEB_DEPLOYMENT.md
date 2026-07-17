@@ -2,6 +2,58 @@
 
 Do not create a Blueprint for the existing production resources. They were created manually; update them in the Render dashboard.
 
+## New isolated staging project — beginner setup
+
+`render.staging.yaml` is only for three new resources:
+`swico-api-staging`, `swico-web-staging`, and `swico-postgres-staging`. It puts
+the API and database in the same region, wires `DATABASE_URL` only through the
+staging `fromDatabase` reference, and defines no environment group. Never
+attach a production environment group or copy a production credential.
+
+1. In Render, create or select a project named **Swico Staging** and an
+   environment named **Staging**. Do not place existing production resources in
+   it.
+2. Open **Blueprints → New Blueprint Instance**, connect this repository and
+   branch, select **Use a custom Blueprint path**, and enter
+   `render.staging.yaml`. Review that the plan contains only the three staging
+   resource names before applying it.
+3. In the initial Blueprint form, provide every `sync:false` value. On the API,
+   set `CORS_ALLOW_ORIGINS` to the exact staging web HTTPS origin; provide a
+   staging OpenAI key, matching Razorpay Test Mode key ID/secret/webhook secret,
+   and optional staging Sentry DSN. Never enter a Live key or production value.
+4. On the static site, provide `VITE_API_BASE_URL` with the staging API HTTPS
+   origin and all five Firebase Web app values:
+   `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`,
+   `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID`, and
+   `VITE_FIREBASE_MESSAGING_SENDER_ID`. These are public build values, not Admin
+   credentials. Rebuild after any change.
+5. In `swico-api-staging` open **Environment → Secret Files**, upload the
+   staging Firebase Admin service-account JSON with the exact filename
+   `firebase-admin-staging.json`. The Blueprint already sets
+   `GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-admin-staging.json`.
+   Do not add `FIREBASE_CREDENTIALS_JSON` or reuse the production file.
+6. In Firebase Authentication open **Settings → Authorized domains** and add
+   the staging static-site hostname without scheme or path. If the browser key
+   is website-restricted, allow both the staging origin and its `/*` form.
+7. In the staging Firebase project create one dedicated email/password account
+   used only by deployed staging E2E. Store its credentials only in the GitHub
+   staging Environment described below.
+8. Keep `BILLING_CHECKOUT_ENABLED=false` initially. After a second operator
+   verifies `RAZORPAY_MODE=test`, matching `rzp_test_` credentials, webhook,
+   staging domain, and visible **Test Mode** badge, temporarily enable checkout
+   in staging and fund the dedicated account with one supervised Razorpay Test
+   Mode transaction. Disable checkout again unless a specifically approved
+   staging exercise needs it. Another staging-only funding mechanism requires
+   explicit operational approval. Never automate payment in Playwright.
+9. Confirm `GET /api/web/health` returns success. This endpoint performs a
+   database query, so the Render health check also proves the isolated staging
+   database is reachable.
+
+The file has been checked by repository tests and parsed as YAML. A Render CLI
+or API validation must be run by the operator when authenticated tooling is
+available; a repository YAML parse is not a claim that Render accepted or
+created the Blueprint.
+
 ## Existing API service — exact settings
 
 - Root Directory: **blank**
@@ -212,16 +264,43 @@ Firebase/API traffic.
 cd web
 PLAYWRIGHT_MODE=staging PLAYWRIGHT_BASE_URL=https://<staging-web-domain> \
 E2E_TEST_EMAIL=<dedicated-test-account> E2E_TEST_PASSWORD=<secret> \
-npx playwright test e2e/deployed-smoke.spec.ts
+npx playwright test e2e/deployed-smoke.spec.ts \
+  --project=chromium --project=mobile-chromium
 
 PLAYWRIGHT_MODE=production-readonly PLAYWRIGHT_BASE_URL=https://<production-web-domain> \
 E2E_TEST_EMAIL=<dedicated-readonly-account> E2E_TEST_PASSWORD=<secret> \
-npx playwright test e2e/deployed-readonly.spec.ts
+npx playwright test e2e/deployed-readonly.spec.ts \
+  --project=chromium --project=mobile-chromium
 ```
 
-The manual `deployed-smoke.yml` workflow reads the same values from a GitHub
-Environment and retains HTML/traces only on failure. Do not claim a deployed
-pass without a non-local HTTPS run. The normal suites never complete payment.
+Create GitHub Environments named exactly **staging** and
+**production-readonly** under **Repository Settings → Environments**. In each,
+add Environment secrets named exactly `PLAYWRIGHT_BASE_URL`, `E2E_TEST_EMAIL`,
+and `E2E_TEST_PASSWORD`; use a dedicated account and the matching
+credential-free HTTPS origin. Restrict branches and reviewers as appropriate.
+The workflow uses these as test-only environments and does not create
+deployment records.
+
+Open **Actions → Deployed web smoke → Run workflow**, select `staging` or
+`production-readonly`, and run the intended commit. Runs for one environment
+are serialized. Retain the run URL and safe Step Summary fields: mode, base
+hostname, commit SHA, desktop/mobile result, and timestamp. Reports and traces
+are private failure-only artifacts. Never copy the test account, Firebase token,
+or API authorization header into logs or the summary.
+
+Local mode continues to start Vite with mocked authentication. Deployed mode
+starts no local server, enables no mock authentication, requires HTTPS, uses
+real Firebase/API traffic, and runs desktop/mobile sequentially. The staging
+test fails before mutations when token credits are unusable and instructs the
+operator to perform the one supervised Test Mode funding transaction; it never
+submits payment details. Do not claim a deployed pass without a real non-local
+HTTPS run with real credentials.
+
+A successful Render build is not proof that a Cron Job executed successfully.
+For each financial staging job, open it in Render, select **Trigger Run**, inspect
+the exit status and safe output, verify the intended database and Test Mode,
+and retain evidence. Do this separately for stale reservations, Razorpay
+reconciliation dry-run, and financial audit.
 
 ## Production launch checks
 
@@ -233,6 +312,9 @@ provider prices/FX policy; configure alerts/reconciliation; validate the
 refund/incident ownership template; load-test PostgreSQL connections/rate
 limiting; and confirm edge headers/CORS. Razorpay Live Mode and Live checkout
 remain blocked until every item is complete.
+
+Legal publication remains a separate expected blocker. Razorpay Live Mode is
+deferred, and production `BILLING_CHECKOUT_ENABLED` remains `false`.
 
 ## Controlled first Live payment plan (do not execute until every blocker is cleared)
 

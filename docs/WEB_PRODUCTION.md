@@ -56,6 +56,16 @@
 - Verify the API and static site use the same explicit Git branch. Verify the
   static response headers in the dashboard because `_headers` was not applied
   by the audited Render deployment.
+- Use `render.staging.yaml` only for the isolated **Swico Staging / Staging**
+  project environment. Confirm it creates exactly `swico-api-staging`,
+  `swico-web-staging`, and `swico-postgres-staging`, and never attach a
+  production environment group. Provide all `sync:false` values in the initial
+  Blueprint form and upload `firebase-admin-staging.json` only to the staging
+  API secret files.
+- A successful Render build does not prove a scheduled financial job ran.
+  Manually select **Trigger Run** for each staging financial job, inspect its
+  safe output and exit status, and retain evidence for stale reservations,
+  reconciliation dry-run, and financial audit.
 
 ## Firebase and Razorpay
 
@@ -146,7 +156,8 @@ Firebase test account:
 cd web
 PLAYWRIGHT_MODE=staging PLAYWRIGHT_BASE_URL=https://<staging-web-domain> \
 E2E_TEST_EMAIL=<dedicated-test-account> E2E_TEST_PASSWORD=<secret> \
-npx playwright test e2e/deployed-smoke.spec.ts
+npx playwright test e2e/deployed-smoke.spec.ts \
+  --project=chromium --project=mobile-chromium
 ```
 
 Production verification is read-only:
@@ -155,11 +166,36 @@ Production verification is read-only:
 cd web
 PLAYWRIGHT_MODE=production-readonly PLAYWRIGHT_BASE_URL=https://<production-web-domain> \
 E2E_TEST_EMAIL=<dedicated-readonly-account> E2E_TEST_PASSWORD=<secret> \
-npx playwright test e2e/deployed-readonly.spec.ts
+npx playwright test e2e/deployed-readonly.spec.ts \
+  --project=chromium --project=mobile-chromium
 ```
 
 Do not report deployed tests as passed unless a command actually ran against
 the named HTTPS domain. Neither deployed suite completes a Razorpay payment.
+
+For the manual workflow, create GitHub Environments named exactly `staging` and
+`production-readonly`. Add only `PLAYWRIGHT_BASE_URL`, `E2E_TEST_EMAIL`, and
+`E2E_TEST_PASSWORD` as Environment secrets in each. Add the staging hostname to
+Firebase Authentication Authorized Domains, create a dedicated staging Firebase
+email/password account, and fund it once through a supervised Razorpay Test Mode
+transaction after staging Test Mode is verified. Playwright must never automate
+that payment.
+
+Open **Actions → Deployed web smoke → Run workflow**, choose the matching mode,
+and retain the run URL, commit SHA, timestamp, and desktop/mobile result. The
+workflow serializes runs that share an environment account, checks headers first,
+and keeps reports/traces as private failure-only artifacts. Local mocked results
+are not deployed results.
+
+Operational ownership is complete only when the private record passes locally:
+
+```bash
+python scripts/check-ops-readiness.py --file private/ops-ownership.json
+```
+
+The completed file stays private and is never uploaded to CI. Owner-provided
+legal publication remains a separate expected blocker, Razorpay Live Mode is
+deferred, and production `BILLING_CHECKOUT_ENABLED=false` remains mandatory.
 
 ## Disposable restore verification
 
