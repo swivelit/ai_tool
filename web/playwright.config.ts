@@ -1,15 +1,14 @@
 import { defineConfig, devices } from '@playwright/test'
+import { resolvePlaywrightRuntime } from './src/config/playwrightMode'
 
-const deployedBaseUrl = process.env.PLAYWRIGHT_BASE_URL?.replace(/\/$/, '')
-const mode = process.env.PLAYWRIGHT_MODE ?? (deployedBaseUrl ? 'staging' : 'local')
-if (!['local', 'staging', 'production-readonly'].includes(mode)) throw new Error('PLAYWRIGHT_MODE must be local, staging, or production-readonly')
-if (mode !== 'local' && (!deployedBaseUrl || !deployedBaseUrl.startsWith('https://'))) throw new Error('Deployed Playwright modes require an HTTPS PLAYWRIGHT_BASE_URL')
+const { deployedBaseUrl, workers } = resolvePlaywrightRuntime(process.env)
 
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
   forbidOnly: true,
   retries: 0,
+  workers,
   reporter: process.env.CI ? [['line'], ['html', { open: 'never' }]] : 'line',
   use: {
     baseURL: deployedBaseUrl ?? 'http://127.0.0.1:4173',
