@@ -162,7 +162,8 @@ test('authentication, OTP state, password visibility, and direct legal routes', 
   for (const [path, title] of [['/terms', 'Terms and Conditions'], ['/privacy', 'Privacy Policy'], ['/refunds', 'Cancellation and Refund Policy']] as const) {
     await page.goto(path)
     await expect(page.getByRole('heading', { level: 1, name: title })).toBeVisible()
-    await expect(page.getByText('Policy text is not published')).toBeVisible()
+    await expect(page.getByText('Version 1.0 · Effective date: 2026-07-17')).toBeVisible()
+    await expect(page.getByText('Policy text is not published')).toHaveCount(0)
   }
 })
 

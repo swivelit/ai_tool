@@ -29,6 +29,29 @@ def _descriptions(findings: list[tuple[str, str]]) -> list[str]:
     return [description for _category, description in findings]
 
 
+def _publication_data() -> dict:
+    return json.loads((ROOT / "web" / "src" / "content" / "legalContent.json").read_text(encoding="utf-8"))
+
+
+def _publication_findings(
+    tmp_path: Path,
+    monkeypatch,
+    data: dict,
+    *,
+    attestation: str | None = None,
+) -> list[str]:
+    content_path = tmp_path / "legalContent.json"
+    content_path.write_text(json.dumps(data), encoding="utf-8")
+    attestation_path = tmp_path / "OWNER_LEGAL_PUBLICATION_ATTESTATION.md"
+    if attestation is None:
+        attestation = (ROOT / "docs" / "OWNER_LEGAL_PUBLICATION_ATTESTATION.md").read_text(encoding="utf-8")
+    if attestation:
+        attestation_path.write_text(attestation, encoding="utf-8")
+    monkeypatch.setattr(PUBLICATION_CHECKER, "CONTENT", content_path)
+    monkeypatch.setattr(PUBLICATION_CHECKER, "OWNER_ATTESTATION", attestation_path)
+    return PUBLICATION_CHECKER.findings()
+
+
 def test_private_legal_source_and_filename_backstops_are_ignored():
     for candidate in (
         "private/legal-source/synthetic.pdf",
@@ -114,13 +137,125 @@ Refund window: TBD
     assert ("Refunds", "the refund window is unresolved") in findings
 
 
-def test_publication_checker_remains_blocked_and_status_is_unreviewed():
-    data = json.loads((ROOT / "web" / "src" / "content" / "legalContent.json").read_text(encoding="utf-8"))
-    assert data["publication"]["publicationStatus"] == "unreviewed"
-    blockers = PUBLICATION_CHECKER.findings()
-    assert "publicationStatus is not approved" in blockers
-    for slug in PUBLICATION_CHECKER.REQUIRED_PAGES:
-        assert f"{slug}: missing policy body" in blockers
+def test_actual_owner_attested_publication_passes(capsys):
+    data = _publication_data()
+    assert data["publication"]["publicationStatus"] == "owner_approved"
+    assert PUBLICATION_CHECKER.findings() == []
+    assert PUBLICATION_CHECKER.main() == 0
+    assert capsys.readouterr().out.strip() == (
+        "legal publication check passed (owner-attested publication; "
+        "no counsel approval or legal advice inferred)"
+    )
+
+
+def test_owner_status_without_approver_fails(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["approval"].pop("approvedByNameOrRole")
+    assert "owner-attested publication is missing a valid approvedByNameOrRole" in _publication_findings(
+        tmp_path, monkeypatch, data
+    )
+
+
+def test_owner_status_without_attestation_reference_fails(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["approval"].pop("writtenAttestationReference")
+    assert "owner-attested publication is missing a valid writtenAttestationReference" in _publication_findings(
+        tmp_path, monkeypatch, data
+    )
+
+
+def test_owner_status_without_approval_date_fails(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["approval"].pop("approvalDate")
+    assert "owner-attested publication is missing approvalDate" in _publication_findings(
+        tmp_path, monkeypatch, data
+    )
+
+
+def test_owner_status_without_explicit_no_counsel_review_fails(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["approval"].pop("legalReviewStatus")
+    assert (
+        "owner-attested publication requires legalReviewStatus=not_reviewed_by_counsel"
+        in _publication_findings(tmp_path, monkeypatch, data)
+    )
+
+
+def test_missing_owner_attestation_document_fails(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    blockers = _publication_findings(tmp_path, monkeypatch, data, attestation="")
+    assert "owner-attested publication requires docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md" in blockers
+
+
+def test_mismatched_owner_attestation_reference_fails(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["approval"]["writtenAttestationReference"] = "SWICO-OWNER-PUBLICATION-MISMATCH"
+    blockers = _publication_findings(tmp_path, monkeypatch, data)
+    assert "owner-attestation document reference does not match publication metadata" in blockers
+
+
+def test_mismatched_owner_attestation_date_fails(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["approval"]["approvalDate"] = "2026-07-19"
+    blockers = _publication_findings(tmp_path, monkeypatch, data)
+    assert "owner-attestation document date does not match publication metadata" in blockers
+
+
+def test_owner_approval_date_must_be_a_valid_iso_date(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["approval"]["approvalDate"] = "2026-02-30"
+    blockers = _publication_findings(tmp_path, monkeypatch, data)
+    assert "owner-attested publication approvalDate must use valid YYYY-MM-DD format" in blockers
+
+
+def test_plain_approved_status_is_rejected_as_ambiguous(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["publicationStatus"] = "approved"
+    blockers = _publication_findings(tmp_path, monkeypatch, data)
+    assert "publicationStatus=approved is ambiguous; use owner_approved or approved_by_counsel" in blockers
+
+
+def test_publication_status_and_approval_type_must_match(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["approval"]["approvalType"] = "counsel_approval"
+    blockers = _publication_findings(tmp_path, monkeypatch, data)
+    assert "owner-approved publication requires approvalType=owner_attestation" in blockers
+
+    data = _publication_data()
+    data["publication"]["publicationStatus"] = "approved_by_counsel"
+    blockers = _publication_findings(tmp_path, monkeypatch, data)
+    assert "counsel-approved publication requires approvalType=counsel_approval" in blockers
+
+
+def test_synthetic_counsel_status_requires_nonempty_counsel_fields(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    data["publication"]["publicationStatus"] = "approved_by_counsel"
+    data["publication"]["approval"] = {
+        "approvalType": "counsel_approval",
+        "counselNameOrFirm": "",
+        "writtenApprovalReference": "",
+        "approvalDate": "",
+    }
+    blockers = _publication_findings(tmp_path, monkeypatch, data)
+    assert "counsel-approved publication is missing a valid counselNameOrFirm" in blockers
+    assert "counsel-approved publication is missing a valid writtenApprovalReference" in blockers
+    assert "counsel-approved publication is missing approvalDate" in blockers
+
+
+def test_empty_policies_placeholders_and_invalid_emails_remain_rejected(tmp_path: Path, monkeypatch):
+    data = _publication_data()
+    publication = data["publication"]
+    publication["supportEmail"] = "swiveltechnologies.in"
+    publication["billingSupportEmail"] = "Nil"
+    publication["privacyEmail"] = "not-an-email"
+    data["pages"]["terms"]["sections"][0]["body"] = ""
+    data["pages"]["privacy"]["sections"][0]["body"] = "TODO"
+    blockers = _publication_findings(tmp_path, monkeypatch, data)
+    assert "support email contains only a domain" in blockers
+    assert "billing-support email must not be Nil" in blockers
+    assert "privacy email is not a valid email address" in blockers
+    assert "terms: empty section: Eligibility and accounts" in blockers
+    assert "privacy: contains TODO marker" in blockers
 
 
 def test_no_raw_pdf_docx_or_private_material_is_tracked():

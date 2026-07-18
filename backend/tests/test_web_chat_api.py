@@ -8,7 +8,8 @@ from app.billing.pricing import calculate_topup, price_usage
 from app.billing.service import credit_payment_once, get_wallet_summary
 from app.database import SessionLocal
 from app.models import (
-    PaymentOrder, UsageCharge, WebChatMessage, WebChatThread, WebUsagePreferences,
+    PaymentOrder, UsageCharge, WalletLedger, WebChatMessage, WebChatThread,
+    WebUsagePreferences,
 )
 from sqlmodel import select
 from app.ai import orchestrator
@@ -96,6 +97,69 @@ def _fund(user_id: int):
     with SessionLocal() as session:
         order = PaymentOrder(user_id=user_id, receipt=f"fund-{user_id}", provider_order_id=f"fund-order-{user_id}", gross_amount_paise=1000, credited_amount_micros=credit, platform_share_paise=platform, status="captured")
         session.add(order); session.flush(); credit_payment_once(session, order); session.commit()
+
+
+def _stream_text(response) -> str:
+    return "\n".join(
+        json.loads(line.removeprefix("data: ")).get("text", "")
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and '"text"' in line
+    )
+
+
+def test_deterministic_web_intents_are_saved_zero_charge_and_replay_safely(client):
+    user = create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    cases = [
+        ("hello", "Hi! How can I help you today?"),
+        ("thanks", "You’re welcome."),
+        ("what can you do?", "I can help with questions, explanations, writing, planning, and coding."),
+    ]
+    for index, (message, expected) in enumerate(cases, start=1):
+        request_id = f"00000000-0000-4000-8000-{index:012d}"
+        body = {"request_id": request_id, "message": message}
+        first = client.post("/api/web/chat/stream", headers=headers, json=body)
+        second = client.post("/api/web/chat/stream", headers=headers, json=body)
+        assert first.status_code == second.status_code == 200
+        assert expected in _stream_text(first)
+        assert expected in _stream_text(second)
+        assert "Swico cannot complete this request through the current web route." not in first.text
+        with SessionLocal() as session:
+            assistant = session.exec(select(WebChatMessage).where(
+                WebChatMessage.request_id == request_id,
+                WebChatMessage.role == "assistant",
+            )).one()
+            assert assistant.content == expected
+            assert assistant.charge_micros == 0
+            assert assistant.input_tokens == assistant.output_tokens == 0
+            assert assistant.usage_source is None
+            assert session.exec(select(UsageCharge).where(
+                UsageCharge.request_id == request_id
+            )).first() is None
+    with SessionLocal() as session:
+        assert session.exec(select(WalletLedger).where(
+            WalletLedger.user_id == int(user.id)
+        )).all() == []
+
+
+def test_unsupported_web_tool_is_truthful_and_safety_stays_distinct(client):
+    create_test_user()
+    headers = auth_headers("test-uid", "test@example.com")
+    unsupported = client.post("/api/web/chat/stream", headers=headers, json={
+        "request_id": "10000000-0000-4000-8000-000000000001",
+        "message": "remind me tomorrow",
+    })
+    assert unsupported.status_code == 200
+    assert "That capability is not available on the web yet." in _stream_text(unsupported)
+    assert "Swico cannot complete this request through the current web route." not in unsupported.text
+
+    safety = client.post("/api/web/chat/stream", headers=headers, json={
+        "request_id": "10000000-0000-4000-8000-000000000002",
+        "message": "I want to hurt myself",
+    })
+    assert safety.status_code == 200
+    assert "safer alternative" in _stream_text(safety)
+    assert "not available on the web" not in safety.text
 
 
 def test_success_settles_and_duplicate_request_does_not_reinvoke_provider(client, monkeypatch):

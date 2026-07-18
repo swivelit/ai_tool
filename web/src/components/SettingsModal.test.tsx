@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { apiJson } from '../api/client'
+import type { UsageSummary } from '../types'
 import { SettingsModal } from './SettingsModal'
 
 vi.mock('../api/client', async importOriginal => {
@@ -18,13 +19,13 @@ const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_descript
   { id:'pro' as const, label:'Swico Pro', description:'Best for complex reasoning, planning, and coding.', available:false, selected:false },
 ] }
 
-function mockSettingsApi(payments: unknown[] = []) {
+function mockSettingsApi(payments: unknown[] = [], usageValue: UsageSummary = usage) {
   vi.mocked(apiJson).mockImplementation(async (_user, path, init) => {
     if (path === '/api/web/settings/profile' && init?.method === 'PATCH') return { ...profile, ...(JSON.parse(String(init.body)) as object) } as never
     if (path === '/api/web/settings/profile') return profile as never
     if (path === '/api/web/settings/usage' && init?.method === 'PATCH') return { ...preferences, ...(JSON.parse(String(init.body)) as object) } as never
     if (path === '/api/web/settings/usage') return preferences as never
-    if (path.includes('/usage/summary')) return usage as never
+    if (path.includes('/usage/summary')) return usageValue as never
     if (path === '/api/web/billing/payments') return { items:payments } as never
     throw new Error(`Unhandled ${path}`)
   })
@@ -78,6 +79,19 @@ it('shows concise tier estimates and this-month token categories', async () => {
   expect(screen.queryByText(/Pricing timestamp|Pricing as of/i)).not.toBeInTheDocument()
   expect(screen.queryByText(/Measured requests|Estimated requests/i)).not.toBeInTheDocument()
   expect(document.body.textContent).not.toMatch(/openai|gpt-|claude|anthropic|gemini|llama|mistral|deepseek|sarvam/i)
+})
+
+it('shows Unlimited without a fictitious range or top-up controls', async () => {
+  mockSettingsApi([], {
+    ...usage, billing_exempt:true, balance_display:'Unlimited',
+    estimated_tokens_remaining:null,
+  })
+  render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
+  await userEvent.click(await screen.findByRole('button', { name:'Token credits' }))
+  expect(screen.getByText('Unlimited')).toBeInTheDocument()
+  expect(screen.queryByText('Estimated range')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name:'Add tokens' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('group', { name:'Estimated monthly token limit' })).not.toBeInTheDocument()
 })
 
 it('edits profile, validates required fields, and saves owner fields only', async () => {

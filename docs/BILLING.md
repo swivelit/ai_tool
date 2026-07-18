@@ -19,7 +19,9 @@ Rupees remain visible only for actual money: gross payments, refunds, receipts/i
 
 Wallet/bootstrap/settlement events, package previews, payment/refund history, explicit wallet refresh, and monthly-limit responses reuse this service. `GET /api/web/usage/summary` retains legacy internal aliases and adds `token_estimate`; `estimated_tokens_remaining` remains as an alias. `PATCH /api/web/settings/usage` retains `hard_limit_micros` and also accepts the additive `hard_limit_estimated_tokens` representation.
 
-Usage summaries count settled chargeable rows and expose actual input, cached-input, output, and total tokens plus provider-reported versus estimated request counts. Released, failed, free cache, safety, and deterministic responses are excluded.
+Usage summaries count terminal provider-backed rows, including billing-exempt audit rows, and expose actual input, cached-input, output, and total tokens plus provider-reported versus estimated request counts. Debit totals still include only wallet charges. Released, failed, free cache, safety, and deterministic responses are excluded.
+
+Allowlisted internal capability-test accounts are exempt only from prepaid-wallet billing. They create no wallet reservation, debit, credit, payment, or ledger entry. Provider-backed turns still create a terminal `billing_exempt` `UsageCharge` with the public Swico tier, internal provider/model, actual or estimated tokens, provider cost, zero reserved/debited micros, and the exemption reason. Provider budgets, authentication, rate limits, model health, tier availability, and safety controls remain active.
 
 ## Charging and invariants
 
@@ -94,4 +96,4 @@ Configure Render failure notifications on both non-zero Cron Jobs. Never edit le
 
 ## Pricing verification snapshot
 
-The 2026-07-16 snapshot used official OpenAI model/pricing pages and Sarvam pricing documentation. GPT-5 nano/mini, GPT-4.1 nano/mini, GPT-4o mini, and o4-mini defaults include cached-input rates. Deprecated `gpt-3.5-turbo-0125` remains disabled. Sarvam defaults are ₹2.5/₹1.5/₹10 per million for 30B input/cached/output and ₹4/₹2.5/₹16 for 105B. Update Render overrides deliberately; never rewrite historical usage snapshots.
+The Swico web-tier pricing snapshot is dated 2026-07-17. Production requires explicit input, cached-input, and output environment rates for every model referenced by each enabled tier ladder; built-in defaults are development/test safety values only. GPT-5.5 and GPT-5.6 requests over 272,000 input tokens apply 2x input and cached-input pricing plus 1.5x output pricing to the full request. The applied rule is retained in each internal pricing snapshot. Never rewrite historical usage snapshots.

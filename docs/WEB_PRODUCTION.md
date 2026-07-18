@@ -91,40 +91,41 @@
   `razorpay_mode` and `checkout_enabled`; never derive mode in the browser from
   the public-key prefix.
 
-## Legal blocker
+## Razorpay Live two-phase cutover
 
-Owner-provided, counsel-approved Terms, Privacy, Refund/Cancellation,
-Contact/support, AI-limitations, Digital-delivery, and Pricing/top-up content is
-required before accepting Razorpay Live Mode payments. The structured module at
-`web/src/content/legalContent.json` intentionally has unreviewed empty slots;
-it does not invent legal terms.
+Before either phase, run `python scripts/check-razorpay-live-readiness.py`; the legal publication and all other repository checks must pass. An authorized operator can run `python scripts/check-razorpay-live-readiness.py --validate-environment` without printing secrets.
 
-The current legal-team handoff is stored only under the ignored
-`private/legal-source/` directory. It contains all material received so far,
-but it is structurally incomplete: full exact policy bodies, complete approval
-metadata, valid public support/privacy contacts, and decisions covering
-jurisdiction, retention/deletion, provider handling, refunds, delivery timing,
-taxes, invoices, and grievance/support operations remain missing or unresolved.
-The exact sanitized list is maintained in
-`docs/LEGAL_PUBLICATION_STATUS.md`. Raw PDFs, DOCX files, correspondence,
-signatures, approval evidence, and private identity material must remain in
-`private/legal-source/`; only final approved public wording will eventually go
-into `web/src/content/legalContent.json`.
+Phase one: use the Live key ID, Live key secret, and a separate Live webhook secret; set `RAZORPAY_MODE=live` and keep `BILLING_CHECKOUT_ENABLED=false`; deploy and verify; run Razorpay reconciliation and the financial audit. Test and Live credentials and webhooks are separate.
 
-Razorpay Live Mode and `BILLING_CHECKOUT_ENABLED=true` must remain disabled
-until all seven content areas are published and reviewed, in addition to the
-operational evidence below.
+Phase two: set `BILLING_CHECKOUT_ENABLED=true` and deploy separately; make one controlled ₹10 payment; verify exactly-once credit and webhook replay idempotency; run reconciliation and audit. Disable checkout immediately on any mismatch.
+
+## Legal publication
+
+The seven policy bodies in `web/src/content/legalContent.json` are published
+through the owner attestation in
+`docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md`. They have not been reviewed or
+approved by legal counsel. The repository checker verifies complete policy and
+contact content plus the matching accountable publication record; it does not
+provide legal advice or certify legal compliance. Future professional review
+remains recommended.
+
+Raw PDFs, DOCX files, counsel correspondence, signatures, private identity
+material and any future private review evidence must remain under the ignored
+`private/legal-source/` directory. Razorpay Live Mode and
+`BILLING_CHECKOUT_ENABLED=true` remain separate operational decisions and must
+stay disabled until the Live-readiness and operational evidence below are
+complete.
 
 ## Release order and rollback
 
 1. Back up PostgreSQL and record the deployed commit and Alembic revision.
-2. Deploy the API first and run additive revision `8c1f4e7b2a90`; keep checkout disabled.
+2. Deploy the API first and run through additive revision `a7c4e9d2f1b6`; keep checkout disabled.
 3. Smoke `bootstrap`, profile, usage settings/summary, existing-credit chat, and billing public config.
 4. Deploy the static site only after the API contract is live. Re-test desktop/mobile Settings and Test Mode checkout in staging.
 5. Fix forward for application issues. The new tables contain settings/lock rows only, but a database downgrade is still not the routine rollback path. Roll the API/static images back while leaving additive tables and financial history intact.
 6. If payment risk is detected, set `BILLING_CHECKOUT_ENABLED=false` on the API and redeploy. This stops new orders without disabling existing-credit usage; reconcile existing orders before any further change.
 
-This billing-audit/payment-history release needs no schema migration. Deploy the API first, confirm its health and additive payment-history response, then deploy the static site and run the production-readonly workflow. Staging deployment and staging Playwright are intentionally deferred for this release.
+This release adds only the nullable `UsageCharge.billing_exemption_reason` audit column. Deploy and migrate the API first, confirm its health and additive contracts, then deploy the static site and run the production-readonly workflow.
 
 An old local `created` order means checkout was opened but payment was not established, so the audit reports it as informational/non-actionable. `attempted` is warning/non-actionable until Razorpay reconciliation checks provider state. Verified captured-but-uncredited and credited-without-ledger states are high/actionable. Clean, informational-only, and warning-only reports exit `0`; `--fail-on-findings` exits `3` only for high/actionable results. The database audit never calls Razorpay, so the separate dry-run reconciliation remains required.
 
@@ -229,9 +230,9 @@ Operational ownership is complete only when the private record passes locally:
 python scripts/check-ops-readiness.py --file private/ops-ownership.json
 ```
 
-The completed file stays private and is never uploaded to CI. Owner-provided
-legal publication remains a separate expected blocker, Razorpay Live Mode is
-deferred, and production `BILLING_CHECKOUT_ENABLED=false` remains mandatory.
+The completed file stays private and is never uploaded to CI. Owner-attested
+legal publication does not authorize Razorpay Live Mode; production
+`BILLING_CHECKOUT_ENABLED=false` remains mandatory until the separate cutover.
 
 ## Disposable restore verification
 

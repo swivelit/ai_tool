@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 class AuthUser(BaseModel):
     firebase_uid: str
     email: Optional[str] = None
+    email_verified: bool = False
 
 
 class AuthConfigurationError(RuntimeError):
@@ -43,6 +44,35 @@ FIREBASE_ADMIN_NOT_CONFIGURED_MESSAGE = (
 
 def _env_enabled(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalized_email(value: str | None) -> str:
+    return str(value or "").strip().casefold()
+
+
+def is_internal_test_email(email: str | None) -> bool:
+    """Return whether an exact normalized email is on the backend-only allowlist."""
+    normalized = _normalized_email(email)
+    if not normalized:
+        return False
+    allowed = {
+        _normalized_email(item)
+        for item in os.getenv("SWICO_INTERNAL_TEST_EMAILS", "").split(",")
+        if _normalized_email(item)
+    }
+    return normalized in allowed
+
+
+def is_internal_test_user(auth_user: AuthUser, user: User) -> bool:
+    """Require a verified token email to exactly match the owned database user."""
+    token_email = _normalized_email(auth_user.email)
+    owned_email = _normalized_email(user.email)
+    return bool(
+        auth_user.email_verified
+        and token_email
+        and token_email == owned_email
+        and is_internal_test_email(token_email)
+    )
 
 
 def normalize_app_env(value: str | None = None) -> str:
@@ -211,7 +241,9 @@ def verify_firebase_id_token(token: str) -> dict[str, Any]:
         if not uid:
             raise ValueError("empty dev uid")
         email = rest[0].strip() if rest else None
-        return {"uid": uid, "email": email or None}
+        # Development tokens exist only outside production. Treat their optional
+        # email as verified so tests can exercise the same authorization path.
+        return {"uid": uid, "email": email or None, "email_verified": bool(email)}
 
     firebase_auth = _firebase_auth_module()
     try:
@@ -332,6 +364,7 @@ async def get_current_user(
     return AuthUser(
         firebase_uid=firebase_uid,
         email=str(email).strip().lower() if email else None,
+        email_verified=bool(decoded.get("email_verified")),
     )
 
 

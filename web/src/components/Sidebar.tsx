@@ -45,6 +45,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
   useEffect(() => { if (open) closeRef.current?.focus() }, [open])
   const iconButton = (label: string, icon: ReactNode, action: () => void) => <button className="rail-action" aria-label={label} title={label} onClick={action}>{icon}<span>{label}</span></button>
   const estimatedTokens = wallet?.token_estimate?.estimated_blended_tokens
+  const billingExempt = wallet?.billing_exempt === true
   const estimatedBalanceName = !wallet || estimatedTokens === null || estimatedTokens === undefined
     ? 'Estimated balance unavailable'
     : `Estimated balance ${compactTokens(estimatedTokens).replace(/K$/, ' thousand').replace(/M$/, ' million')} tokens`
@@ -72,7 +73,7 @@ export function Sidebar({ threads, activeId, wallet, userName, open, collapsed, 
       {hasMore && <button className="load-more" onClick={loadMore}>Load more</button>}
     </nav>
     <div className="sidebar-bottom">
-      <button className="credit-card" onClick={addCredit} aria-label={`Add token credits. ${estimatedBalanceName}.`}><span><small>Token credits</small><strong>{wallet ? estimatedTokenLabel(estimatedTokens) : 'Calculating…'}</strong></span><b><Plus size={14} /> Add tokens</b></button>
+      <button className="credit-card" disabled={billingExempt} onClick={addCredit} aria-label={billingExempt ? 'Token credits. Unlimited.' : `Add token credits. ${estimatedBalanceName}.`}><span><small>Token credits</small><strong>{billingExempt ? 'Unlimited' : wallet ? estimatedTokenLabel(estimatedTokens) : 'Calculating…'}</strong></span>{!billingExempt && <b><Plus size={14} /> Add tokens</b>}</button>
       <div className="account-wrap"><button ref={accountButtonRef} className="account-button" aria-expanded={account} onClick={() => setAccount(!account)}><span className="avatar">{userName.slice(0, 1).toUpperCase()}</span><span>{userName}</span><MoreHorizontal size={17} /></button>
         {account && <div className="account-menu" role="menu">
           <button role="menuitem" onClick={() => { accountButtonRef.current?.focus(); openSettings(); setAccount(false) }}><Settings size={16} />Settings</button>

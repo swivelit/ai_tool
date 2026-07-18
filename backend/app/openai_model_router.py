@@ -505,8 +505,13 @@ class OpenAIModelRouter:
         )
         return selected
 
-    def estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        return estimate_model_cost(model, input_tokens, output_tokens)
+    def estimate_cost(
+        self, model: str, input_tokens: int, output_tokens: int,
+        cached_input_tokens: int = 0,
+    ) -> float:
+        return estimate_model_cost(
+            model, input_tokens, output_tokens, cached_input_tokens,
+        )
 
     def _cheap_ladder(self) -> list[str]:
         primary = _env_str("OPENAI_MODEL_CHEAP_PRIMARY", "") or _env_str("OPENAI_MODEL_CHEAP", "") or "gpt-5-nano"

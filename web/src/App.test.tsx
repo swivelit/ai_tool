@@ -11,15 +11,15 @@ const legalRoutes = [
   ['/legal/privacy', 'Privacy Policy'],
   ['/legal/refunds', 'Cancellation and Refund Policy'],
   ['/legal/contact', 'Contact and Support'],
-  ['/legal/ai', 'AI Limitations'],
+  ['/legal/ai', 'AI Use and Limitations Policy'],
   ['/legal/delivery', 'Digital Service Delivery / Shipping Policy'],
-  ['/legal/pricing', 'Pricing and Top-up Information'],
-  ['/pricing', 'Pricing and Top-up Information'],
+  ['/legal/pricing', 'Pricing and Token Credits'],
+  ['/pricing', 'Pricing and Token Credits'],
 ] as const
 
-it.each(legalRoutes)('keeps %s accessible and visibly unpublished', async (route, heading) => {
+it.each(legalRoutes)('renders the owner-attested policy at %s', async (route, heading) => {
   render(<MemoryRouter initialEntries={[route]}><App /></MemoryRouter>)
   expect(await screen.findByRole('heading', { level:1, name:heading })).toBeInTheDocument()
-  expect(screen.getByText('Policy text is not published')).toBeInTheDocument()
-  expect(screen.getByText(/Razorpay Live Mode remains blocked/)).toBeInTheDocument()
+  expect(screen.getByText('Version 1.0 · Effective date: 2026-07-17')).toBeInTheDocument()
+  expect(screen.queryByText('Policy text is not published')).not.toBeInTheDocument()
 })

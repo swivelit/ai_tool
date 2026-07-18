@@ -1,20 +1,26 @@
 # Legal publication status
 
-This is a sanitized repository status record, not legal advice, legal approval,
-or a copy of private counsel material.
+This is a sanitized repository publication record. It is not legal advice,
+legal approval, or certification that the policies comply with every applicable
+law.
 
-## Source-material status
+## Current publication basis
 
-- A legal-copy handoff has been received.
-- A business-information and counsel workbook has been received.
-- Raw source files are stored only under the ignored
-  `private/legal-source/` directory and are not tracked by Git.
-- These files are the complete current handoff, but they do not contain the full
-  exact publication text for all required policies.
-- Route headings, placeholders, partial business information, and unresolved
-  workbook answers do not constitute approved policy bodies.
+The seven Swico policy bodies are published under a business-owner attestation:
 
-## Required public policies and routes
+- publication status: `owner_approved`;
+- approval type: `owner_attestation`;
+- attestation reference: `SWICO-OWNER-PUBLICATION-2026-07-18`;
+- attestation date: `2026-07-18`;
+- legal-review status: `not_reviewed_by_counsel`.
+
+The tracked owner record is
+`docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md`. It permits repository publication
+of the exact policy text adopted by the authorised business representative. The
+policies have not been reviewed or approved by legal counsel. Future
+professional legal review remains recommended.
+
+## Published policies and routes
 
 | Public policy | Publication route |
 | --- | --- |
@@ -26,66 +32,31 @@ or a copy of private counsel material.
 | Digital Service Delivery / Shipping Policy | `/legal/delivery` |
 | Pricing and Token Credits | `/pricing` |
 
-`/legal/pricing` remains the compatibility route for the same unpublished
-pricing framework. Both pricing routes must retain the unpublished warning
-until final publication is authorized.
+`/legal/pricing` remains a compatibility route for the same pricing policy.
+Each policy is version 1.0 with an effective date of 2026-07-17.
 
-## Publication blockers
+## Repository safeguards
 
-### Approval
+`python scripts/check-legal-publication.py` validates the business identity;
+support, billing-support and privacy email addresses; all seven policy bodies;
+effective dates and published versions; empty sections; placeholders and
+drafting markers; the canonical `/pricing` route; explicit publication status;
+and the matching owner-attestation reference and date.
 
-- Complete exact policy bodies are missing.
-- Approval status is not complete.
-- Counsel name or firm is missing.
-- Written approval reference is missing.
-- Approval date is missing.
+The checker also retains a separate `approved_by_counsel` path for a future
+genuine professional review. That path cannot pass without explicit counsel
+approval metadata. Plain `approved`, status/type mismatches, and incomplete or
+mismatched owner attestations are rejected.
 
-### Business and contact
+Passing repository checks means only that the content and accountable
+publication record are structurally complete. It does not constitute legal
+advice or legal-compliance certification.
 
-- The support email is not a valid email address.
-- The billing-support email is missing.
-- The privacy email is not a valid email address.
-- Support hours are unresolved.
-- The grievance contact and grievance decision are unresolved.
+## Payment release remains separate
 
-### Terms
-
-- Applicable law and court jurisdiction are not specific.
-- Liability and warranty terms have not been supplied.
-- Generated-output rights terms have not been supplied.
-
-### Privacy
-
-- Retention periods are unresolved.
-- The deletion process is unresolved.
-- The email provider is unresolved.
-- Provider-side retention and training details are unresolved.
-- The privacy response period is unresolved.
-
-### Refunds
-
-- The refund window is unresolved.
-- Refund eligibility and exclusions are unresolved.
-- Consumed-credit treatment is unresolved.
-- Refund treatment for the 50% allocation is unresolved.
-- Tax and payment-fee treatment is unresolved.
-- The bank posting timeline is unresolved.
-
-### Delivery
-
-- The normal delivery timeframe is unresolved.
-- Escalation and resolution times are unresolved.
-
-### Pricing
-
-- Package confirmation is incomplete.
-- Tax-inclusive or tax-exclusive treatment is unresolved.
-- Invoice treatment is unresolved.
-
-## Required safe state
-
-The repository must not set `publicationStatus=approved` or enable Razorpay
-Live checkout until all blockers are resolved and exact policy bodies are
-received. `publicationStatus` therefore remains `unreviewed`, the public pages
-remain visibly unpublished, Razorpay remains in Test Mode, and checkout remains
-disabled. No claim of legal approval is being made.
+Owner attestation permits repository publication; it does not approve Razorpay
+Live Mode. Test and Live credentials, environment validation, webhook setup,
+financial reconciliation, operational review and the two-phase checkout
+cutover remain separate release decisions. The repository defaults remain
+`RAZORPAY_MODE=test`, `BILLING_CHECKOUT_ENABLED=false`, and
+`BILLING_CREDIT_PERCENT=50`.

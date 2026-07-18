@@ -1,6 +1,9 @@
-# Legal publication review intake
+# Legal publication and future review intake
 
-This is an intake checklist, not legal advice and not a representation that review is complete. Counsel or an authorized business owner must provide the approved text and publication metadata.
+This is an intake checklist, not legal advice or legal-compliance certification.
+The current policies are published through an authorised business-owner
+attestation and have not been reviewed or approved by legal counsel. A future
+professional review remains recommended.
 
 ## Keep raw source material private
 
@@ -9,7 +12,8 @@ This is an intake checklist, not legal advice and not a representation that revi
    only in that directory.
 3. Never place raw legal source files in `web/public`, `web/src`, tracked
    documentation, static assets, build output, or Git LFS.
-4. Only final, exact, approved public wording belongs in
+4. Only exact public wording adopted through an owner attestation or genuine
+   counsel approval belongs in
    `web/src/content/legalContent.json`.
 5. The repository ignores the entire `private/` directory. The additional
    `*.legal-source.pdf` and `*.legal-source.docx` rules provide a filename-based
@@ -35,7 +39,11 @@ This is an intake checklist, not legal advice and not a representation that revi
 - Billing/refund contact:
 - Effective date for each policy:
 - Version for each policy:
-- Approver, approval date, and evidence location:
+- Publication path (`owner_attestation` or `counsel_approval`):
+- Approver name or accountable business role:
+- Approval/attestation date and reference:
+- Legal-review status:
+- Evidence location:
 
 ## Required public structures
 
@@ -47,7 +55,12 @@ This is an intake checklist, not legal advice and not a representation that revi
 - Digital Service Delivery / Shipping Policy
 - Pricing/top-up disclosure
 
-For every section, counsel should supply final body text, required statutory disclosures, audience/age restrictions, dispute language, retention/deletion rules, subprocessors, delivery timing, refund eligibility/timing, and support/escalation details appropriate to the operating jurisdictions.
+For a future professional review, counsel should assess the final body text,
+required statutory disclosures, audience/age restrictions, dispute language,
+retention/deletion rules, subprocessors, delivery timing, refund
+eligibility/timing, and support/escalation details appropriate to the operating
+jurisdictions. That future review must not be inferred from an owner
+attestation.
 
 ## Product facts for review
 
@@ -60,9 +73,10 @@ For every section, counsel should supply final body text, required statutory dis
 
 ## Publication handoff
 
-The current handoff is structurally incomplete. Route headings and a partially
-completed business workbook are not substitutes for the seven exact policy
-bodies. See `docs/LEGAL_PUBLICATION_STATUS.md` for the current blocker list.
+The current seven policy bodies are version 1.0, effective 2026-07-17, and are
+published under the owner attestation recorded in
+`docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md`. See
+`docs/LEGAL_PUBLICATION_STATUS.md` for the sanitized current status.
 
 1. Check a private source package without uploading or changing it:
 
@@ -73,14 +87,20 @@ bodies. See `docs/LEGAL_PUBLICATION_STATUS.md` for the current blocker list.
 
    A pass means only that the package appears structurally complete. It is not
    legal approval.
-2. After every blocker is resolved, copy only final approved public wording and
-   publication metadata into `web/src/content/legalContent.json` without
-   changing the page/component structure.
+2. Copy only exact adopted public wording and accountable publication metadata
+   into `web/src/content/legalContent.json` without changing the page/component
+   structure.
 3. Set a non-draft version and ISO effective date for each page.
-4. Set `publicationStatus` to `approved` only when complete exact policy bodies
-   and retained written approval evidence have been supplied.
+4. Use `publicationStatus=owner_approved` only with a matching tracked owner
+   attestation that explicitly says counsel did not review or approve the
+   policies. Use `publicationStatus=approved_by_counsel` only after a genuine
+   counsel review with the required approval metadata. Plain `approved` is
+   intentionally invalid because it is ambiguous.
 5. Run `python scripts/check-legal-publication.py`.
 6. Review every route on desktop/mobile and confirm footer/Settings links.
 7. Record the deployed commit and screenshots in private release evidence.
 
-Razorpay Live Mode and checkout must remain disabled while this checker reports blockers.
+Passing the publication checker authorises repository publication only. It does
+not approve Razorpay Live Mode, which remains a separate operational and
+financial release decision. Checkout must remain disabled until the distinct
+Live-readiness process is completed.

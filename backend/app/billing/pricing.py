@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
-from ..ai.openai_catalog import get_model_spec
+from ..ai.openai_catalog import get_model_spec, pricing_multipliers
 
 MICROS_PER_INR = Decimal("1000000")
 PAISE_PER_INR = Decimal("100")
@@ -51,12 +51,18 @@ def _ceil_micros(value_inr: Decimal) -> int:
 
 def openai_price(model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0) -> PriceResult:
     spec = get_model_spec(model)
-    uncached = max(0, int(input_tokens) - int(cached_input_tokens))
-    cached = max(0, int(cached_input_tokens))
+    total_input = max(0, int(input_tokens))
+    cached = min(max(0, int(cached_input_tokens)), total_input)
+    uncached = total_input - cached
+    input_multiplier, output_multiplier, pricing_rule = pricing_multipliers(
+        model, input_tokens
+    )
+    input_factor = Decimal(str(input_multiplier))
+    output_factor = Decimal(str(output_multiplier))
     amount_usd = (
-        Decimal(uncached) * Decimal(str(spec.input_price_per_1m))
-        + Decimal(cached) * Decimal(str(spec.cached_input_price_per_1m or spec.input_price_per_1m))
-        + Decimal(max(0, int(output_tokens))) * Decimal(str(spec.output_price_per_1m))
+        Decimal(uncached) * Decimal(str(spec.input_price_per_1m)) * input_factor
+        + Decimal(cached) * Decimal(str(spec.cached_input_price_per_1m or spec.input_price_per_1m)) * input_factor
+        + Decimal(max(0, int(output_tokens))) * Decimal(str(spec.output_price_per_1m)) * output_factor
     ) / MILLION
     fx = env_decimal("USD_TO_INR_BILLING_RATE", "90")
     buffer_percent = env_decimal("OPENAI_FX_BUFFER_PERCENT", "3")
@@ -66,6 +72,9 @@ def openai_price(model: str, input_tokens: int, output_tokens: int, cached_input
         "input_usd_per_1m": str(spec.input_price_per_1m),
         "cached_input_usd_per_1m": str(spec.cached_input_price_per_1m or spec.input_price_per_1m),
         "output_usd_per_1m": str(spec.output_price_per_1m),
+        "pricing_rule": pricing_rule,
+        "input_price_multiplier": str(input_factor),
+        "output_price_multiplier": str(output_factor),
         "usd_to_inr_rate": str(fx), "fx_buffer_percent": str(buffer_percent),
         "usage_markup_multiplier": str(env_decimal("USAGE_MARKUP_MULTIPLIER", "1.0")),
     }

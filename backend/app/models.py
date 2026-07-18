@@ -382,6 +382,7 @@ class UsageCharge(SQLModel, table=True):
     provider_cost_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
     reserved_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
     debited_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    billing_exemption_reason: Optional[str] = Field(default=None, max_length=64)
     status: str = Field(default="reserving", max_length=16, index=True)
     pricing_snapshot_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
     created_at: datetime = Field(default_factory=utc_now, index=True)

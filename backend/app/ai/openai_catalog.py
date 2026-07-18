@@ -6,6 +6,19 @@ from typing import Literal, Optional
 
 
 OpenAIEndpoint = Literal["responses", "chat_completions"]
+LONG_CONTEXT_THRESHOLD_TOKENS = 272_000
+LONG_CONTEXT_MODELS = frozenset({"gpt-5.5", "gpt-5.6-terra", "gpt-5.6-sol"})
+CURRENT_SWICO_STANDARD_RATES: dict[str, tuple[str, str, str]] = {
+    "gpt-5.4-mini": ("0.75", "0.075", "4.50"),
+    "gpt-5.4-nano": ("0.20", "0.02", "1.25"),
+    "gpt-5.5": ("5.00", "0.50", "30.00"),
+    "gpt-5.6-terra": ("2.50", "0.25", "15.00"),
+    "gpt-5.6-sol": ("5.00", "0.50", "30.00"),
+}
+
+
+class OpenAIPricingConfigurationError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -58,14 +71,67 @@ def _price_key(model: str) -> str:
     return model.upper().replace("-", "_").replace(".", "_")
 
 
-def _rates(model: str, default_input: float, default_cached: Optional[float], default_output: float) -> tuple[float, Optional[float], float]:
+def price_environment_names(model: str) -> tuple[str, str, str]:
     key = _price_key(model)
-    cached_default = 0.0 if default_cached is None else default_cached
-    cached = _env_float(f"OPENAI_PRICE_{key}_CACHED_INPUT_PER_1M", cached_default)
     return (
-        _env_float(f"OPENAI_PRICE_{key}_INPUT_PER_1M", default_input),
+        f"OPENAI_PRICE_{key}_INPUT_PER_1M",
+        f"OPENAI_PRICE_{key}_CACHED_INPUT_PER_1M",
+        f"OPENAI_PRICE_{key}_OUTPUT_PER_1M",
+    )
+
+
+def pricing_multipliers(model: str, input_tokens: int) -> tuple[float, float, str]:
+    if str(model or "").strip() in LONG_CONTEXT_MODELS and int(input_tokens) > LONG_CONTEXT_THRESHOLD_TOKENS:
+        return 2.0, 1.5, "long_context_over_272000"
+    return 1.0, 1.0, "standard_context"
+
+
+def _production_tier_references_model(model: str) -> bool:
+    tier_names = ["LITE", "STANDARD"]
+    if _env_bool("SWICO_PRO_ENABLED", False):
+        tier_names.append("PRO")
+    for tier_name in tier_names:
+        primary = str(os.getenv(f"SWICO_{tier_name}_MODEL_PRIMARY", "") or "").strip()
+        fallbacks = {
+            item.strip()
+            for item in str(os.getenv(f"SWICO_{tier_name}_MODEL_FALLBACKS", "") or "").split(",")
+            if item.strip()
+        }
+        if model == primary or model in fallbacks:
+            return True
+    return False
+
+
+def _rates(model: str, default_input: float, default_cached: Optional[float], default_output: float) -> tuple[float, Optional[float], float]:
+    input_name, cached_name, output_name = price_environment_names(model)
+    cached_default = 0.0 if default_cached is None else default_cached
+    production = str(os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development"))).strip().lower() in {"prod", "production"}
+    if production and _production_tier_references_model(model):
+        required = (input_name, output_name) if default_cached is None else (input_name, cached_name, output_name)
+        expected = dict(zip(
+            (input_name, cached_name, output_name),
+            CURRENT_SWICO_STANDARD_RATES.get(model, (str(default_input), str(cached_default), str(default_output))),
+        ))
+        invalid = []
+        for name in required:
+            try:
+                if (
+                    name not in os.environ
+                    or float(str(os.environ[name]).strip()) <= 0
+                    or float(str(os.environ[name]).strip()) != float(expected[name])
+                ):
+                    invalid.append(name)
+            except (TypeError, ValueError):
+                invalid.append(name)
+        if invalid:
+            raise OpenAIPricingConfigurationError(
+                "Missing or invalid OpenAI pricing variables: " + ", ".join(invalid)
+            )
+    cached = _env_float(cached_name, cached_default)
+    return (
+        _env_float(input_name, default_input),
         cached if default_cached is not None else None,
-        _env_float(f"OPENAI_PRICE_{key}_OUTPUT_PER_1M", default_output),
+        _env_float(output_name, default_output),
     )
 
 
@@ -148,9 +214,9 @@ def get_openai_model_catalog() -> dict[str, OpenAIModelSpec]:
             family="gpt-5.4",
             tier="swico_lite",
             endpoint="responses",
-            default_input=0.25,
-            default_cached=0.025,
-            default_output=2.00,
+            default_input=0.75,
+            default_cached=0.075,
+            default_output=4.50,
             supports_temperature=False,
             supports_response_format=False,
             supports_reasoning_effort=True,
@@ -162,9 +228,9 @@ def get_openai_model_catalog() -> dict[str, OpenAIModelSpec]:
             family="gpt-5.4",
             tier="swico_lite",
             endpoint="responses",
-            default_input=0.05,
-            default_cached=0.005,
-            default_output=0.40,
+            default_input=0.20,
+            default_cached=0.02,
+            default_output=1.25,
             supports_temperature=False,
             supports_response_format=False,
             supports_reasoning_effort=True,
@@ -176,9 +242,9 @@ def get_openai_model_catalog() -> dict[str, OpenAIModelSpec]:
             family="gpt-5.5",
             tier="swico_standard",
             endpoint="responses",
-            default_input=1.25,
-            default_cached=0.125,
-            default_output=10.00,
+            default_input=5.00,
+            default_cached=0.50,
+            default_output=30.00,
             supports_temperature=False,
             supports_response_format=False,
             supports_reasoning_effort=True,
@@ -190,9 +256,9 @@ def get_openai_model_catalog() -> dict[str, OpenAIModelSpec]:
             family="gpt-5.6",
             tier="swico_standard",
             endpoint="responses",
-            default_input=2.00,
-            default_cached=0.20,
-            default_output=16.00,
+            default_input=2.50,
+            default_cached=0.25,
+            default_output=15.00,
             supports_temperature=False,
             supports_response_format=False,
             supports_reasoning_effort=True,
@@ -206,7 +272,7 @@ def get_openai_model_catalog() -> dict[str, OpenAIModelSpec]:
             endpoint="responses",
             default_input=5.00,
             default_cached=0.50,
-            default_output=40.00,
+            default_output=30.00,
             supports_temperature=False,
             supports_response_format=False,
             supports_reasoning_effort=True,
@@ -313,8 +379,23 @@ def get_model_spec(model: str) -> OpenAIModelSpec:
     )
 
 
-def estimate_model_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+def estimate_model_cost(
+    model: str, input_tokens: int, output_tokens: int,
+    cached_input_tokens: int = 0,
+) -> float:
     spec = get_model_spec(model)
-    return (max(0, input_tokens) / 1_000_000.0) * spec.input_price_per_1m + (
-        max(0, output_tokens) / 1_000_000.0
-    ) * spec.output_price_per_1m
+    input_multiplier, output_multiplier, _rule = pricing_multipliers(model, input_tokens)
+    cached = min(max(0, int(cached_input_tokens)), max(0, int(input_tokens)))
+    uncached = max(0, int(input_tokens) - cached)
+    cached_rate = spec.cached_input_price_per_1m or spec.input_price_per_1m
+    return (
+        (uncached / 1_000_000.0)
+        * spec.input_price_per_1m
+        * input_multiplier
+        + (cached / 1_000_000.0)
+        * cached_rate
+        * input_multiplier
+        + (max(0, output_tokens) / 1_000_000.0)
+        * spec.output_price_per_1m
+        * output_multiplier
+    )

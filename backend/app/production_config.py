@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from .database_url import is_postgres_database_url
 from .ai.swico_tiers import SWICO_TIER_IDS, SWICO_TIER_MODEL_ALLOWLIST
+from .ai.openai_catalog import CURRENT_SWICO_STANDARD_RATES, price_environment_names
 
 
 class ProductionConfigurationError(RuntimeError):
@@ -98,6 +99,7 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         errors.append("SWICO_PRO_ENABLED must be a boolean")
     if default_tier == "pro" and pro_is_enabled is not True:
         errors.append("SWICO_DEFAULT_TIER cannot be pro while SWICO_PRO_ENABLED is false")
+    configured_tier_models: dict[str, list[str]] = {}
     for tier_name in ("LITE", "STANDARD", "PRO"):
         primary_name = f"SWICO_{tier_name}_MODEL_PRIMARY"
         fallbacks_name = f"SWICO_{tier_name}_MODEL_FALLBACKS"
@@ -111,6 +113,25 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
             errors.append(f"{fallbacks_name} must configure at least one fallback")
         elif any(model not in SWICO_TIER_MODEL_ALLOWLIST for model in fallbacks):
             errors.append(f"{fallbacks_name} must use only allowlisted models")
+        configured_tier_models[tier_name] = [primary, *fallbacks]
+
+    if _value(env, "OPENAI_PRICING_AS_OF") != "2026-07-17":
+        errors.append("OPENAI_PRICING_AS_OF must be configured")
+    enabled_tiers = ["LITE", "STANDARD"]
+    if pro_is_enabled is True:
+        enabled_tiers.append("PRO")
+    enabled_models = {
+        model
+        for tier_name in enabled_tiers
+        for model in configured_tier_models.get(tier_name, [])
+        if model in SWICO_TIER_MODEL_ALLOWLIST
+    }
+    for model in sorted(enabled_models):
+        expected_rates = CURRENT_SWICO_STANDARD_RATES[model]
+        for name, expected in zip(price_environment_names(model), expected_rates):
+            rate = _decimal(env, name, "")
+            if rate is None or rate <= 0 or rate != Decimal(expected):
+                errors.append(f"{name} must be configured")
 
     if "BILLING_CHECKOUT_ENABLED" not in env or not _value(env, "BILLING_CHECKOUT_ENABLED"):
         errors.append("BILLING_CHECKOUT_ENABLED must be set explicitly")

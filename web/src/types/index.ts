@@ -1,4 +1,8 @@
-export type Wallet = { balance_micros: number; reserved_micros: number; available_micros: number; version: number; token_estimate?: TokenEstimate }
+export type Wallet = {
+  balance_micros: number; reserved_micros: number; available_micros: number;
+  version: number; token_estimate?: TokenEstimate | null;
+  billing_exempt?: boolean; balance_display?: 'Unlimited';
+}
 export type SwicoTier = 'lite' | 'standard' | 'pro'
 export type SwicoTierOption = {
   id: SwicoTier; label: string; description: string; available: boolean; selected: boolean;
@@ -46,6 +50,7 @@ export type UsagePreferences = {
   hard_limit_token_estimate: TokenEstimate | null; remaining_token_estimate: TokenEstimate | null;
   next_reset_at: string; timezone: string; updated_at: string | null;
   tier: SwicoTier; tier_label: string;
+  billing_exempt?: boolean;
 }
 export type UsageBreakdown = {
   request_count: number; input_tokens: number;
@@ -67,7 +72,8 @@ export type UsageSummary = {
   estimated_usage_count: number; debited_micros: number; debited_ai_credits: string;
   available_micros: number; available_ai_credits: string;
   daily: Array<{ date: string } & UsageBreakdown>;
-  estimated_tokens_remaining: TokenEstimate;
+  estimated_tokens_remaining: TokenEstimate | null;
+  billing_exempt?: boolean; balance_display?: 'Unlimited';
 }
 export type PaymentHistory = {
   id: string; gross_amount_paise: number; credited_amount_micros: number;

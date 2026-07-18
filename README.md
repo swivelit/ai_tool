@@ -190,6 +190,19 @@ Backend runtime state remains under `backend/data/`:
 - logs
 - backend agent mirror state
 
+## Internal capability-test account
+
+1. Create a dedicated Firebase email/password user manually.
+2. Generate the password with a password manager or `openssl rand -base64 32`.
+3. Store the password outside Git.
+4. Add the verified account email to `SWICO_INTERNAL_TEST_EMAILS=<dedicated-test-email>` on the backend.
+5. Deploy the backend.
+6. Sign in and confirm the UI displays **Unlimited**.
+7. Keep provider daily budgets and rate limits active.
+8. Remove the email from the allowlist to revoke billing exemption.
+
+Never put the account password in README, Git, Render logs, screenshots, or frontend variables.
+
 ## Running Locally
 
 ### Mobile

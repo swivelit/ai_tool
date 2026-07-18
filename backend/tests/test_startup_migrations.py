@@ -75,6 +75,9 @@ def test_swico_tier_migration_upgrades_from_preceding_revision(tmp_path):
     assert "swico_tier" in {
         column["name"] for column in after.get_columns("usage_charge")
     }
+    assert "billing_exemption_reason" in {
+        column["name"] for column in after.get_columns("usage_charge")
+    }
 
 
 class _FailingMigrationProcess:

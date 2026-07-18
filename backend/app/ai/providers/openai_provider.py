@@ -237,7 +237,9 @@ class OpenAIProvider(AIProvider):
                 router = OpenAIModelRouter()
                 input_tokens = input_tokens or router.estimate_tokens(request.message)
                 output_tokens = output_tokens or router.estimate_tokens(text)
-                actual_cost = router.estimate_cost(model, input_tokens, output_tokens)
+                actual_cost = router.estimate_cost(
+                    model, input_tokens, output_tokens, cached_tokens,
+                )
                 usage_session = request.metadata.get("session")
                 record_kwargs = {
                     "user_id": request.user_id,

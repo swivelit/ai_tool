@@ -42,9 +42,12 @@ os.environ["SWICO_STANDARD_MODEL_PRIMARY"] = "gpt-5.6-terra"
 os.environ["SWICO_STANDARD_MODEL_FALLBACKS"] = "gpt-5.5"
 os.environ["SWICO_PRO_MODEL_PRIMARY"] = "gpt-5.6-sol"
 os.environ["SWICO_PRO_MODEL_FALLBACKS"] = "gpt-5.6-terra"
+# Empty credential variables prevent load_dotenv() from importing a developer's
+# local Firebase Admin path into the disposable test process. Individual auth
+# tests still override these values with monkeypatch when exercising validation.
+os.environ["FIREBASE_CREDENTIALS_JSON"] = ""
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = ""
 for name in (
-    "FIREBASE_CREDENTIALS_JSON",
-    "GOOGLE_APPLICATION_CREDENTIALS",
     "GOOGLE_CLOUD_PROJECT",
     "GCP_PROJECT",
     "GCLOUD_PROJECT",

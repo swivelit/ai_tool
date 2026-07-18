@@ -39,7 +39,8 @@ def _period_bounds(
     if period == "all":
         first = session.exec(
             select(UsageCharge).where(
-                UsageCharge.user_id == int(user.id), UsageCharge.status == "settled"
+                UsageCharge.user_id == int(user.id),
+                UsageCharge.status.in_(["settled", "billing_exempt"]),
             ).order_by(UsageCharge.settled_at.asc())
         ).first()
         start = ensure_utc(first.settled_at) if first and first.settled_at else ensure_utc(user.created_at)
@@ -49,6 +50,7 @@ def _period_bounds(
 
 def usage_summary(
     session: Session, *, user: User, period: str, now: datetime | None = None,
+    billing_exempt: bool = False,
 ) -> dict[str, Any]:
     current = ensure_utc(now or utc_now())
     swico_tier = selected_swico_tier(session, int(user.id))
@@ -59,8 +61,7 @@ def usage_summary(
     rows = session.exec(
         select(UsageCharge).where(
             UsageCharge.user_id == int(user.id),
-            UsageCharge.status == "settled",
-            UsageCharge.debited_micros > 0,
+            UsageCharge.status.in_(["settled", "billing_exempt"]),
             UsageCharge.settled_at >= start,
             UsageCharge.settled_at < end,
         ).order_by(UsageCharge.settled_at.asc())
@@ -99,7 +100,10 @@ def usage_summary(
             ("debited_micros", int(row.debited_micros)),
         ):
             day[key] += value
-    wallet = get_wallet_summary(session, int(user.id), swico_tier=swico_tier)
+    wallet = get_wallet_summary(
+        session, int(user.id), swico_tier=swico_tier,
+        billing_exempt=billing_exempt,
+    )
     for day, values in daily.items():
         values["debited_ai_credits"] = ai_credits(values["debited_micros"])
     return {
@@ -117,17 +121,22 @@ def usage_summary(
         "daily": [{"date": day, **values} for day, values in sorted(daily.items())],
         "estimated_tokens_remaining": wallet["token_estimate"],
         "token_estimate": wallet["token_estimate"],
+        "billing_exempt": bool(billing_exempt),
+        **({"balance_display": "Unlimited"} if billing_exempt else {}),
     }
 
 
 def usage_preferences_dict(
     session: Session, *, user: User, row: WebUsagePreferences | None = None,
+    billing_exempt: bool = False,
 ) -> dict[str, Any]:
     if row is None:
         row = session.exec(select(WebUsagePreferences).where(
             WebUsagePreferences.user_id == int(user.id)
         )).first()
-    summary = usage_summary(session, user=user, period="current_month")
+    summary = usage_summary(
+        session, user=user, period="current_month", billing_exempt=billing_exempt,
+    )
     swico_tier = selected_swico_tier(session, int(user.id))
     hard_limit = int(row.hard_limit_micros) if row and row.hard_limit_micros is not None else None
     threshold = int(row.warning_threshold_percent) if row else 80
@@ -149,4 +158,5 @@ def usage_preferences_dict(
         "next_reset_at": summary["next_reset_at"],
         "timezone": user.timezone,
         "updated_at": row.updated_at if row else None,
+        "billing_exempt": bool(billing_exempt),
     }

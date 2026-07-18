@@ -76,6 +76,8 @@ Exact environment delta for this release:
 - Add API variable `BILLING_CHECKOUT_ENABLED=false` (backend-only, explicit in production).
 - Add backend-only `SWICO_DEFAULT_TIER=lite`, `SWICO_TIER_SELECTION_ENABLED=true`, and `SWICO_PRO_ENABLED=false`.
 - Add backend-only `SWICO_LITE_MODEL_PRIMARY`, `SWICO_LITE_MODEL_FALLBACKS`, `SWICO_STANDARD_MODEL_PRIMARY`, `SWICO_STANDARD_MODEL_FALLBACKS`, `SWICO_PRO_MODEL_PRIMARY`, and `SWICO_PRO_MODEL_FALLBACKS`. Production validation requires explicit allowlisted values; use the reviewed production mappings and pricing overrides.
+- Add `OPENAI_PRICING_AS_OF=2026-07-17` and every explicit input, cached-input, and output price variable used by the enabled Swico ladders.
+- Optionally add `SWICO_INTERNAL_TEST_EMAILS=<dedicated-test-email>` only on the backend for the verified internal capability-test account. Never put its password in Git, Render logs, screenshots, or frontend variables.
 - Keep Pro disabled until account access, reservation pricing, fallback, cancellation settlement, and reconciliation have passed in staging.
 - Keep `BILLING_CREDIT_PERCENT=50`; do not change it.
 - Add `SENTRY_DSN` only as a backend/Cron secret when an alert project is ready;
@@ -92,7 +94,7 @@ values or credential paths.
 
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
-Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores the selected web tier and nullable per-message/per-charge tier audit fields. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode checkout, capture, duplicate webhook replay, and refund in staging after intentionally enabling the switch there.
+Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores selected web-tier audit fields, and revision `a7c4e9d2f1b6` adds the nullable billing-exemption reason to usage audit rows. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode checkout, capture, duplicate webhook replay, and refund in staging after intentionally enabling the switch there.
 
 ## Financial Cron Jobs
 
@@ -247,13 +249,21 @@ Create separate Test and Live webhooks targeting `https://<api-domain>/api/web/b
 
 The API returns an explicit `razorpay_mode` enum and validates its public-key prefix. For a future cutover, keep checkout disabled, replace `RAZORPAY_MODE`, key ID, key secret, and webhook secret as one reviewed change, deploy/verify the API public config, then enable checkout as a separate reviewed change. Never mix Test and Live values.
 
+Run the non-charging repository check with `python scripts/check-razorpay-live-readiness.py`. It validates the owner-attested legal publication and the other repository prerequisites. An authorized operator may additionally validate the current environment with `python scripts/check-razorpay-live-readiness.py --validate-environment`; the command prints check names only, never credential values.
+
+### Two-phase Live cutover
+
+Phase one keeps checkout closed. Configure the Live key ID, Live key secret, and a separate Live webhook secret; set `RAZORPAY_MODE=live` and `BILLING_CHECKOUT_ENABLED=false`; deploy and verify the canonical webhook/public configuration; then run reconciliation and the financial audit. Test and Live credentials and webhooks are separate and must never be mixed.
+
+Phase two sets `BILLING_CHECKOUT_ENABLED=true` and deploys separately. Make one controlled ₹10 payment, verify exactly-once credit and webhook replay idempotency, then run reconciliation and the financial audit. Disable checkout immediately and investigate if any amount, credit, webhook, ledger, reconciliation, or audit result mismatches.
+
 ## Migration and rollback
 
 1. Back up PostgreSQL and note the currently deployed image and Alembic revision.
-2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `9d2f6a1c4b7e`.
+2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `a7c4e9d2f1b6`.
 3. Deploy the API first with `BILLING_CHECKOUT_ENABLED=false` and `SWICO_PRO_ENABLED=false`, smoke existing mobile endpoints and new web contracts, then deploy the static site. Never deploy the tier-aware static site before its API and migration.
 4. For an application rollback, first disable checkout, then deploy the previous API/static versions. Leave additive billing/chat/settings tables intact so ledger/payment and user-setting history is preserved.
-5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields. In production, preserve additive tables and fix forward.
+5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields; downgrading `a7c4e9d2f1b6` removes the billing-exemption reason. In production, preserve additive tables and fix forward.
 
 ## Disposable recovery drill
 
@@ -335,24 +345,20 @@ reconciliation dry-run, and financial audit.
 
 ## Production launch checks
 
-Run `python scripts/check-legal-publication.py`; it intentionally fails until
-owner-provided, counsel-approved Terms, Privacy, Refund/Cancellation,
-Contact/support, AI-limitations, Digital-delivery, and Pricing/top-up content,
-identity/contact metadata, effective dates, and versions are published. Verify
-provider prices/FX policy; configure alerts/reconciliation; validate the
-refund/incident ownership template; load-test PostgreSQL connections/rate
-limiting; and confirm edge headers/CORS. Razorpay Live Mode and Live checkout
-remain blocked until every item is complete.
+Run `python scripts/check-legal-publication.py`. The seven policy bodies are
+published through the tracked owner attestation and have not been reviewed or
+approved by counsel. The checker validates content and accountable publication
+metadata; it is not legal advice or legal-compliance certification. Future
+professional review remains recommended. Verify provider prices/FX policy;
+configure alerts/reconciliation; validate the refund/incident ownership
+template; load-test PostgreSQL connections/rate limiting; and confirm edge
+headers/CORS. Razorpay Live Mode and Live checkout remain blocked until every
+separate release item is complete.
 
-The complete current legal-team handoff is stored locally under the ignored
-`private/legal-source/` directory. It remains structurally incomplete. Full
-exact policy bodies, sign-off metadata, valid support/privacy contact fields,
-and the jurisdiction, retention/deletion, provider, refund, delivery, tax,
-invoice, grievance, and support decisions listed in
-`docs/LEGAL_PUBLICATION_STATUS.md` are still blockers. Never upload raw source
-documents to Render or copy them into `web/public`, `web/src`, tracked docs,
-static assets, or build output. Final approved public text will eventually be
-placed only in `web/src/content/legalContent.json`.
+Never upload raw legal source or future private review documents to Render or
+copy them into `web/public`, `web/src`, tracked docs, static assets, or build
+output. Keep such private material under the ignored `private/legal-source/`
+directory.
 
 Run the local-only structural check from the repository root:
 
@@ -361,16 +367,12 @@ python scripts/check-legal-source-readiness.py \
   --source-dir private/legal-source
 ```
 
-This command and the publication checker correctly fail for the current
-handoff. A future structural pass is not legal approval. Render requires no
-change yet; keep `RAZORPAY_MODE=test`, `BILLING_CHECKOUT_ENABLED=false`, and
-`BILLING_CREDIT_PERCENT=50`. When final content is available, only `swico-web`
-needs deployment for the content-only change. No claim of approval is currently
-being made.
-
-Legal publication remains a separate expected blocker. Razorpay Live Mode is
-deferred, and production `BILLING_CHECKOUT_ENABLED` remains `false`.
+The source-readiness command is useful for a future review package, but a
+structural pass is not legal approval. Keep `RAZORPAY_MODE=test`,
+`BILLING_CHECKOUT_ENABLED=false`, and `BILLING_CREDIT_PERCENT=50` until the
+separate authorized Live cutover. Owner attestation does not authorize Live
+Mode.
 
 ## Controlled first Live payment plan (do not execute until every blocker is cleared)
 
-After reviewed legal content is published, backup/restore and monitoring evidence exists, Test Mode payment/webhook/replay/refund has passed, and the owner explicitly authorizes Live Mode: deploy all three matching Live Razorpay values together, use one authorized owner-controlled account, make one ₹10 payment with owner-controlled payment details, verify one 5,000,000-micro-INR ledger credit and one provider usage debit, monitor webhook/reconciliation, and stop the pilot immediately on any mismatch. Never use customer data for this pilot. This plan is documentation only and is not authorization to enable Live Mode or make a payment.
+After the legal publication gate passes, backup/restore and monitoring evidence exists, Test Mode payment/webhook/replay/refund has passed, and the owner explicitly authorizes Live Mode: deploy all three matching Live Razorpay values together, use one authorized owner-controlled account, make one ₹10 payment with owner-controlled payment details, verify one 5,000,000-micro-INR ledger credit and one provider usage debit, monitor webhook/reconciliation, and stop the pilot immediately on any mismatch. Never use customer data for this pilot. This plan is documentation only and is not authorization to enable Live Mode or make a payment.

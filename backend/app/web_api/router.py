@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import delete as sa_delete, text, update as sa_update
 from sqlmodel import Session, select
 
-from ..auth import AuthUser, get_current_user, get_owned_user
+from ..auth import AuthUser, get_current_user, get_owned_user, is_internal_test_user
 from ..billing.errors import (
     InsufficientCreditError, PaymentValidationError, RateLimitError,
     UsageLimitReachedError,
@@ -165,10 +165,14 @@ def billing_public_config():
 @router.get("/bootstrap")
 def bootstrap(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = get_owned_user(session, auth)
+    billing_exempt = is_internal_test_user(auth, user)
     swico_tier = selected_swico_tier(session, int(user.id))
     return {
         "user": {"id": user.id, "name": user.name, "email": user.email, "reply_language": user.reply_language},
-        "wallet": get_wallet_summary(session, int(user.id), swico_tier=swico_tier),
+        "wallet": get_wallet_summary(
+            session, int(user.id), swico_tier=swico_tier,
+            billing_exempt=billing_exempt,
+        ),
         "billing": public_billing_config(swico_tier),
         "assistant": public_tier_settings(swico_tier),
         "features": {"web_chat": True, "prepaid_billing": True},
@@ -255,7 +259,9 @@ def get_usage_settings(
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    return usage_preferences_dict(session, user=user)
+    return usage_preferences_dict(
+        session, user=user, billing_exempt=is_internal_test_user(auth, user),
+    )
 
 
 @router.patch("/settings/usage")
@@ -296,7 +302,10 @@ def patch_usage_settings(
     row.updated_at = utc_now()
     session.add(row)
     session.flush()
-    return usage_preferences_dict(session, user=user, row=row)
+    return usage_preferences_dict(
+        session, user=user, row=row,
+        billing_exempt=is_internal_test_user(auth, user),
+    )
 
 
 @router.get("/usage/summary")
@@ -305,7 +314,10 @@ def get_usage_summary(
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
-    return usage_summary(session, user=user, period=period)
+    return usage_summary(
+        session, user=user, period=period,
+        billing_exempt=is_internal_test_user(auth, user),
+    )
 
 
 @router.get("/threads")
@@ -389,13 +401,14 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
     with SessionLocal() as rate_session:
         user = get_owned_user(rate_session, auth)
         user_id = int(user.id)
+        billing_exempt = is_internal_test_user(auth, user)
         _rate_limit(rate_session, user_id=user_id, action="web_chat", limit=int(os.getenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "12")))
         rate_session.commit()
     try:
         prepared = await asyncio.to_thread(
             prepare_web_turn, user_id=user_id, message=payload.message,
             request_id=str(payload.request_id), thread_id=str(payload.thread_id) if payload.thread_id else None,
-            reply_language=payload.reply_language,
+            reply_language=payload.reply_language, billing_exempt=billing_exempt,
         )
     except InsufficientCreditError as exc:
         return JSONResponse(status_code=402, content={"error": {
@@ -480,7 +493,10 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             with SessionLocal() as session:
                 yield _sse(
                     "wallet",
-                    get_wallet_summary(session, user_id, swico_tier=prepared.swico_tier),
+                    get_wallet_summary(
+                        session, user_id, swico_tier=prepared.swico_tier,
+                        billing_exempt=prepared.billing_exempt,
+                    ),
                 )
             yield _sse("status", {"phase": "stopped"})
             yield _sse("done", {"thread_id": prepared.thread_id, "cancelled": True})
@@ -511,7 +527,9 @@ async def cancel_chat_request(
             await asyncio.sleep(0.05)
             with SessionLocal() as check_session:
                 current = check_session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
-                if current and current.status in {"released", "settled", "failed"}:
+                if current and current.status in {
+                    "released", "settled", "billing_exempt", "failed",
+                }:
                     assistant = check_session.exec(select(WebChatMessage).where(
                         WebChatMessage.request_id == request_id,
                         WebChatMessage.user_id == user.id,
@@ -527,7 +545,8 @@ async def cancel_chat_request(
 def wallet(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = get_owned_user(session, auth)
     return get_wallet_summary(
-        session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id))
+        session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id)),
+        billing_exempt=is_internal_test_user(auth, user),
     )
 
 
@@ -621,6 +640,11 @@ def payment_status(
 @router.post("/billing/orders", status_code=201)
 def create_order(payload: CreateOrderRequest, session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = get_owned_user(session, auth)
+    if is_internal_test_user(auth, user):
+        raise HTTPException(403, {
+            "code": "payments_unavailable",
+            "message": "Payments are not available for this internal testing account.",
+        })
     if not _checkout_enabled():
         raise HTTPException(503, {
             "code": "checkout_disabled",

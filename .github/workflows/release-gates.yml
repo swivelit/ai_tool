@@ -9,5 +9,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python scripts/check-legal-publication.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.txt
+      - run: python scripts/check-razorpay-live-readiness.py
       - run: python scripts/check-web-product-language.py
       - run: python scripts/check-tracked-secrets.py

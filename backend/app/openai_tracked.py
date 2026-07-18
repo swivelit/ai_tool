@@ -156,6 +156,13 @@ def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any) -> dic
     input_tokens = _usage_int(usage, "prompt_tokens", "input_tokens")
     output_tokens = _usage_int(usage, "completion_tokens", "output_tokens")
     total_tokens = _usage_int(usage, "total_tokens")
+    details = (
+        getattr(usage, "prompt_tokens_details", None)
+        or getattr(usage, "input_tokens_details", None)
+    )
+    if details is None and isinstance(usage, dict):
+        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+    cached_input_tokens = _usage_int(details, "cached_tokens") if details is not None else None
     if output_tokens is None and input_tokens is not None and total_tokens is not None:
         output_tokens = max(0, total_tokens - input_tokens)
     metadata: dict[str, Any] = {}
@@ -163,8 +170,13 @@ def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any) -> dic
         metadata["actual_input_tokens"] = input_tokens
     if output_tokens is not None:
         metadata["actual_output_tokens"] = output_tokens
+    if cached_input_tokens is not None:
+        metadata["cached_input_tokens"] = cached_input_tokens
     if input_tokens is not None or output_tokens is not None:
-        metadata["actual_cost_usd"] = router.estimate_cost(model, input_tokens or 0, output_tokens or 0)
+        metadata["actual_cost_usd"] = router.estimate_cost(
+            model, input_tokens or 0, output_tokens or 0,
+            cached_input_tokens or 0,
+        )
     return metadata
 
 

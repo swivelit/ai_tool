@@ -44,6 +44,19 @@ it('shows loading, zero, and unavailable estimate states', () => {
   expect(screen.getByText('Estimate unavailable')).toBeInTheDocument()
 })
 
+it('shows Unlimited and disables top-up for a billing-exempt account', () => {
+  const addCredit = vi.fn()
+  render(<Sidebar {...props} addCredit={addCredit} wallet={{
+    ...props.wallet, billing_exempt:true, balance_display:'Unlimited', token_estimate:null,
+  }} />)
+  const credits = screen.getByRole('button', { name:'Token credits. Unlimited.' })
+  expect(credits).toBeDisabled()
+  expect(screen.getByText('Unlimited')).toBeInTheDocument()
+  expect(screen.queryByText('Add tokens')).not.toBeInTheDocument()
+  fireEvent.click(credits)
+  expect(addCredit).not.toHaveBeenCalled()
+})
+
 it('focuses and closes the mobile drawer accessibly', () => {
   const close = vi.fn(); render(<Sidebar {...props} open close={close} />)
   expect(screen.getAllByRole('button', { name:'Close sidebar' })[0]).toHaveFocus()

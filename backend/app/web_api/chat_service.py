@@ -14,8 +14,9 @@ from ..ai.router import AIProviderRouter
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import estimate_tokens, env_decimal, openai_reported_price, price_usage, reserve_price, snapshot_json
 from ..billing.service import (
-    create_usage_reservation, get_wallet_summary, release_usage_reservation,
-    settle_usage_reservation,
+    create_billing_exempt_usage, create_usage_reservation, get_wallet_summary,
+    release_billing_exempt_usage, release_usage_reservation,
+    settle_billing_exempt_usage, settle_usage_reservation,
 )
 from ..database import SessionLocal
 from ..models import UsageCharge, WebChatMessage, WebChatThread
@@ -36,6 +37,7 @@ class PreparedWebTurn:
     route: AIRoute
     reserved_micros: int
     swico_tier: str
+    billing_exempt: bool = False
     existing_response: WebChatMessage | None = None
 
 
@@ -72,7 +74,10 @@ def _context(session: Session, thread_id: str, user_id: int, limit: int = 20) ->
     return [{"role": row.role, "content": row.content} for row in reversed(rows)]
 
 
-def prepare_web_turn(*, user_id: int, message: str, request_id: str, thread_id: str | None, reply_language: str | None) -> PreparedWebTurn:
+def prepare_web_turn(
+    *, user_id: int, message: str, request_id: str, thread_id: str | None,
+    reply_language: str | None, billing_exempt: bool = False,
+) -> PreparedWebTurn:
     with SessionLocal() as session:
         swico_tier = selected_swico_tier(session, user_id)
         existing_assistant = session.exec(select(WebChatMessage).where(
@@ -85,7 +90,8 @@ def prepare_web_turn(*, user_id: int, message: str, request_id: str, thread_id: 
             dummy = AIRequest(user_id, message, reply_language, "text", request_id, {})
             route = AIRoute("blocked", None, "idempotent_replay", "already_complete", "en", "replay", 0)
             return PreparedWebTurn(
-                request_id, user_id, thread.id, dummy, route, 0, swico_tier, existing_assistant
+                request_id, user_id, thread.id, dummy, route, 0, swico_tier,
+                billing_exempt, existing_assistant,
             )
 
         existing_user_message = session.exec(select(WebChatMessage).where(
@@ -129,29 +135,53 @@ def prepare_web_turn(*, user_id: int, message: str, request_id: str, thread_id: 
         if route.provider not in {"openai", "sarvam"}:
             # Deterministic safety blocks do not consume wallet credit.
             session.commit()
-            return PreparedWebTurn(request_id, user_id, thread.id, ai_request, route, 0, swico_tier)
+            return PreparedWebTurn(
+                request_id, user_id, thread.id, ai_request, route, 0,
+                swico_tier, billing_exempt,
+            )
 
         provider_messages = build_provider_messages(ai_request, route, provider=route.provider)
         input_tokens = sum(estimate_tokens(item.get("content", "")) for item in provider_messages)
         reserve = reserve_price(route.provider, route.model or "", input_tokens, route.max_output_tokens)
-        create_usage_reservation(
-            session, request_id=request_id, user_id=user_id, thread_id=thread.id,
-            provider=route.provider, model=route.model or "", reserved_micros=reserve.micros,
-            pricing_snapshot_json=snapshot_json(reserve.snapshot),
-            swico_tier=swico_tier,
-        )
+        if billing_exempt:
+            create_billing_exempt_usage(
+                session, request_id=request_id, user_id=user_id, thread_id=thread.id,
+                provider=route.provider, model=route.model or "",
+                pricing_snapshot_json=snapshot_json(reserve.snapshot),
+                swico_tier=swico_tier,
+            )
+        else:
+            create_usage_reservation(
+                session, request_id=request_id, user_id=user_id, thread_id=thread.id,
+                provider=route.provider, model=route.model or "", reserved_micros=reserve.micros,
+                pricing_snapshot_json=snapshot_json(reserve.snapshot),
+                swico_tier=swico_tier,
+            )
         session.commit()
         return PreparedWebTurn(
-            request_id, user_id, thread.id, ai_request, route, reserve.micros, swico_tier
+            request_id, user_id, thread.id, ai_request, route,
+            0 if billing_exempt else reserve.micros, swico_tier, billing_exempt,
         )
 
 
 def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderResponse:
-    text = (
-        "I can’t help with that request, but I can help with a safer alternative."
-        if route.provider == "blocked" else
-        "Swico cannot complete this request through the current web route."
-    )
+    tamil = str(
+        request.reply_language or route.metadata.get("reply_language") or route.language
+    ).strip().lower() in {"ta", "tamil", "mixed", "tanglish"}
+    if route.provider == "blocked":
+        text = "I can’t help with that request, but I can help with a safer alternative."
+    elif route.intent == "greeting":
+        text = "வணக்கம்! இன்று நான் எப்படி உதவலாம்?" if tamil else "Hi! How can I help you today?"
+    elif route.intent == "thanks":
+        text = "வரவேற்கிறேன்." if tamil else "You’re welcome."
+    elif route.intent == "capabilities":
+        text = (
+            "கேள்விகள், விளக்கங்கள், எழுதுதல், திட்டமிடல் மற்றும் நிரலாக்கத்தில் நான் உதவ முடியும்."
+            if tamil else
+            "I can help with questions, explanations, writing, planning, and coding."
+        )
+    else:
+        text = "அந்த வசதி இன்னும் இணையத்தில் கிடைக்கவில்லை." if tamil else "That capability is not available on the web yet."
     return AIProviderResponse(
         text=text, provider="blocked", model=None, route=route.route, reason=route.reason,
         language=route.language, intent=route.intent, characters=len(text),
@@ -174,7 +204,10 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             return CompletedWebTurn(
                 prepared.thread_id,
                 message,
-                get_wallet_summary(session, prepared.user_id, swico_tier=prepared.swico_tier),
+                get_wallet_summary(
+                    session, prepared.user_id, swico_tier=prepared.swico_tier,
+                    billing_exempt=prepared.billing_exempt,
+                ),
                 response,
             )
 
@@ -199,7 +232,16 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             response = exc.response
         else:
             with SessionLocal() as session:
-                release_usage_reservation(session, prepared.request_id, reason="cancelled_before_provider_usage")
+                if prepared.billing_exempt:
+                    release_billing_exempt_usage(
+                        session, prepared.request_id,
+                        reason="cancelled_before_provider_usage",
+                    )
+                else:
+                    release_usage_reservation(
+                        session, prepared.request_id,
+                        reason="cancelled_before_provider_usage",
+                    )
                 user_message = session.exec(select(WebChatMessage).where(
                     WebChatMessage.user_id == prepared.user_id,
                     WebChatMessage.request_id == prepared.request_id,
@@ -212,7 +254,10 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             raise
     except BaseException:
         with SessionLocal() as session:
-            release_usage_reservation(session, prepared.request_id)
+            if prepared.billing_exempt:
+                release_billing_exempt_usage(session, prepared.request_id)
+            else:
+                release_usage_reservation(session, prepared.request_id)
             user_message = session.exec(select(WebChatMessage).where(
                 WebChatMessage.user_id == prepared.user_id,
                 WebChatMessage.request_id == prepared.request_id,
@@ -245,7 +290,12 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             content=response.text or "Generation stopped.", request_id=prepared.request_id, provider=response.provider,
             model=response.model, swico_tier=prepared.swico_tier,
             input_tokens=response.input_tokens, output_tokens=response.output_tokens,
-            usage_source=usage_source, charge_micros=price.micros, status="cancelled" if cancelled else "complete",
+            usage_source=(
+                usage_source
+                if prepared.route.provider in {"openai", "sarvam"} else None
+            ),
+            charge_micros=0 if prepared.billing_exempt else price.micros,
+            status="cancelled" if cancelled else "complete",
         )
         session.add(assistant)
         # UsageCharge references this message. An explicit flush guarantees the
@@ -253,7 +303,26 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         session.flush([assistant])
         user_message.status = "complete" if not cancelled else "cancelled"
         session.add(user_message)
-        if prepared.reserved_micros:
+        if prepared.billing_exempt and prepared.route.provider in {"openai", "sarvam"}:
+            settle_billing_exempt_usage(
+                session, request_id=prepared.request_id,
+                provider_cost_amount=price.amount,
+                provider_cost_currency=price.currency,
+                provider_cost_micros=price.micros,
+                input_tokens=response.input_tokens,
+                cached_input_tokens=cached_tokens,
+                output_tokens=response.output_tokens,
+                usage_source=usage_source,
+                pricing_snapshot_json=snapshot_json(price.snapshot),
+                usd_to_inr_rate=(
+                    env_decimal("USD_TO_INR_BILLING_RATE", "90")
+                    if response.provider == "openai" else None
+                ),
+                assistant_message_id=assistant.id,
+                provider=response.provider,
+                model=response.model or "",
+            )
+        elif prepared.reserved_micros:
             settle_usage_reservation(
                 session, request_id=prepared.request_id, provider_cost_amount=price.amount,
                 provider_cost_currency=price.currency, provider_cost_micros=price.micros,
@@ -271,5 +340,8 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         session.add(thread)
         session.commit()
         session.refresh(assistant)
-        wallet = get_wallet_summary(session, prepared.user_id, swico_tier=prepared.swico_tier)
+        wallet = get_wallet_summary(
+            session, prepared.user_id, swico_tier=prepared.swico_tier,
+            billing_exempt=prepared.billing_exempt,
+        )
         return CompletedWebTurn(prepared.thread_id, assistant, wallet, response)

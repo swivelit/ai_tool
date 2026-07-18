@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Block public legal launch until exact approved publication data is complete."""
+"""Validate complete legal publication content and explicit approval metadata."""
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -12,9 +13,12 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 CONTENT = ROOT / "web" / "src" / "content" / "legalContent.json"
 APP = ROOT / "web" / "src" / "App.tsx"
+OWNER_ATTESTATION = ROOT / "docs" / "OWNER_LEGAL_PUBLICATION_ATTESTATION.md"
 REQUIRED_PAGES = {"terms", "privacy", "refunds", "contact", "ai", "delivery", "pricing"}
 EMAIL_RE = re.compile(r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$", re.IGNORECASE)
 DOMAIN_ONLY_RE = re.compile(r"^(?:https?://)?(?:www\.)?[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+(?:/)?$", re.IGNORECASE)
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+APPROVAL_PLACEHOLDERS = {"fake", "nil", "none", "placeholder", "tbd", "todo", "unknown"}
 
 # Marker patterns are deliberately specific. Ordinary lowercase prose such as
 # "a draft was discussed" or "the owner can contact support" is not blocked.
@@ -63,6 +67,78 @@ def _email_findings(label: str, value: str) -> list[str]:
     return []
 
 
+def _is_meaningful_approval_value(value: str) -> bool:
+    return bool(value) and value.casefold() not in APPROVAL_PLACEHOLDERS
+
+
+def _is_iso_date(value: str) -> bool:
+    if not ISO_DATE_RE.fullmatch(value):
+        return False
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def _approval_findings(publication: dict[str, Any]) -> list[str]:
+    status = _value(publication, "publicationStatus")
+    approval = publication.get("approval") if isinstance(publication.get("approval"), dict) else {}
+    approval_type = _value(approval, "approvalType")
+    errors: list[str] = []
+
+    if status == "owner_approved":
+        if approval_type != "owner_attestation":
+            errors.append("owner-approved publication requires approvalType=owner_attestation")
+
+        approver = _value(approval, "approvedByNameOrRole")
+        reference = _value(approval, "writtenAttestationReference")
+        approval_date = _value(approval, "approvalDate")
+        if not _is_meaningful_approval_value(approver):
+            errors.append("owner-attested publication is missing a valid approvedByNameOrRole")
+        if not _is_meaningful_approval_value(reference):
+            errors.append("owner-attested publication is missing a valid writtenAttestationReference")
+        if not approval_date:
+            errors.append("owner-attested publication is missing approvalDate")
+        elif not _is_iso_date(approval_date):
+            errors.append("owner-attested publication approvalDate must use valid YYYY-MM-DD format")
+        if _value(approval, "legalReviewStatus") != "not_reviewed_by_counsel":
+            errors.append("owner-attested publication requires legalReviewStatus=not_reviewed_by_counsel")
+
+        try:
+            attestation = OWNER_ATTESTATION.read_text(encoding="utf-8")
+        except OSError:
+            errors.append("owner-attested publication requires docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md")
+        else:
+            if reference and f"Attestation reference: {reference}" not in attestation:
+                errors.append("owner-attestation document reference does not match publication metadata")
+            if approval_date and f"Attestation date: {approval_date}" not in attestation:
+                errors.append("owner-attestation document date does not match publication metadata")
+            if "Not reviewed or approved by legal counsel" not in attestation:
+                errors.append("owner-attestation document must state that counsel did not review or approve it")
+
+    elif status == "approved_by_counsel":
+        if approval_type != "counsel_approval":
+            errors.append("counsel-approved publication requires approvalType=counsel_approval")
+        if not _is_meaningful_approval_value(_value(approval, "counselNameOrFirm")):
+            errors.append("counsel-approved publication is missing a valid counselNameOrFirm")
+        if not _is_meaningful_approval_value(_value(approval, "writtenApprovalReference")):
+            errors.append("counsel-approved publication is missing a valid writtenApprovalReference")
+        approval_date = _value(approval, "approvalDate")
+        if not approval_date:
+            errors.append("counsel-approved publication is missing approvalDate")
+        elif not _is_iso_date(approval_date):
+            errors.append("counsel-approved publication approvalDate must use valid YYYY-MM-DD format")
+
+    elif status == "approved":
+        errors.append("publicationStatus=approved is ambiguous; use owner_approved or approved_by_counsel")
+    elif status == "unreviewed":
+        errors.append("publicationStatus=unreviewed is not publishable")
+    else:
+        errors.append("publicationStatus must be owner_approved or approved_by_counsel")
+
+    return errors
+
+
 def findings() -> list[str]:
     try:
         data = json.loads(CONTENT.read_text(encoding="utf-8"))
@@ -75,24 +151,11 @@ def findings() -> list[str]:
 
     if not _value(publication, "businessIdentity"):
         errors.append("missing business identity")
-    if publication.get("publicationStatus") != "approved":
-        errors.append("publicationStatus is not approved")
+    errors.extend(_approval_findings(publication))
 
     errors.extend(_email_findings("support email", _value(publication, "supportEmail", "supportContact")))
     errors.extend(_email_findings("billing-support email", _value(publication, "billingSupportEmail")))
     errors.extend(_email_findings("privacy email", _value(publication, "privacyEmail")))
-
-    approval = publication.get("approval") if isinstance(publication.get("approval"), dict) else {}
-    missing_approval: list[str] = []
-    if not _value(approval, "counselNameOrFirm", "counselName", "counselFirm"):
-        missing_approval.append("counsel name or firm")
-    if not _value(approval, "writtenApprovalReference", "approvalReference"):
-        missing_approval.append("written approval reference")
-    if not _value(approval, "approvalDate"):
-        missing_approval.append("approval date")
-    if missing_approval:
-        errors.append("incomplete approval metadata")
-        errors.extend(f"missing {field}" for field in missing_approval)
 
     for marker, pattern in MARKERS:
         if any(pattern.search(value) for value in _strings(publication)):
@@ -153,7 +216,11 @@ def main() -> int:
             print(f"legal publication blocker: {error}")
         print(f"legal publication check failed: {len(errors)} blocker(s)")
         return 1
-    print("legal publication check passed (repository structure only; retain approval evidence separately)")
+    data = json.loads(CONTENT.read_text(encoding="utf-8"))
+    if data["publication"]["publicationStatus"] == "owner_approved":
+        print("legal publication check passed (owner-attested publication; no counsel approval or legal advice inferred)")
+    else:
+        print("legal publication check passed (counsel approval metadata recorded; retain private evidence separately)")
     return 0
 
 

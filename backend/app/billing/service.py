@@ -60,21 +60,32 @@ def get_or_create_wallet(session: Session, user_id: int) -> WalletAccount:
     return _locked_wallet(session, user_id)
 
 
-def wallet_dict(wallet: WalletAccount, *, swico_tier: str = "lite") -> dict[str, Any]:
+def wallet_dict(
+    wallet: WalletAccount, *, swico_tier: str = "lite", billing_exempt: bool = False,
+) -> dict[str, Any]:
     available = int(wallet.balance_micros - wallet.reserved_micros)
-    return {
+    result = {
         "balance_micros": int(wallet.balance_micros),
         "reserved_micros": int(wallet.reserved_micros),
         "available_micros": available,
         "version": int(wallet.version),
-        "token_estimate": token_estimate(available, tier=swico_tier),
+        "token_estimate": None if billing_exempt else token_estimate(available, tier=swico_tier),
+        "billing_exempt": bool(billing_exempt),
     }
+    if billing_exempt:
+        result["balance_display"] = "Unlimited"
+    return result
 
 
 def get_wallet_summary(
-    session: Session, user_id: int, *, swico_tier: str = "lite"
+    session: Session, user_id: int, *, swico_tier: str = "lite",
+    billing_exempt: bool = False,
 ) -> dict[str, Any]:
-    return wallet_dict(get_or_create_wallet(session, user_id), swico_tier=swico_tier)
+    return wallet_dict(
+        get_or_create_wallet(session, user_id),
+        swico_tier=swico_tier,
+        billing_exempt=billing_exempt,
+    )
 
 
 def _ledger(
@@ -177,6 +188,119 @@ def create_usage_reservation(
         idempotency_key=f"usage-reserve:{request_id}:attempt:{attempt}",
         metadata={"request_id": request_id, "attempt": attempt},
     )
+    return charge
+
+
+def create_billing_exempt_usage(
+    session: Session, *, request_id: str, user_id: int, thread_id: str | None,
+    provider: str, model: str, pricing_snapshot_json: str,
+    swico_tier: str | None = None, reason: str = "internal_capability_test",
+) -> UsageCharge:
+    """Create an idempotency/audit row without touching wallet or limit state."""
+    existing = session.exec(
+        select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
+    ).first()
+    if existing is not None and existing.status != "released":
+        return existing
+    charge = existing or UsageCharge(
+        request_id=request_id,
+        user_id=user_id,
+        thread_id=thread_id,
+        provider=provider,
+        model=model,
+    )
+    charge.user_id = int(user_id)
+    charge.thread_id = thread_id
+    charge.provider = provider
+    charge.model = model
+    charge.swico_tier = swico_tier
+    charge.reserved_micros = 0
+    charge.debited_micros = 0
+    charge.billing_exemption_reason = reason
+    charge.status = "exempt_pending"
+    charge.settled_at = None
+    try:
+        snapshot = json.loads(pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    snapshot["billing_exemption_reason"] = reason
+    snapshot["reserved_micros"] = 0
+    snapshot["debited_micros"] = 0
+    charge.pricing_snapshot_json = json.dumps(
+        snapshot, sort_keys=True, separators=(",", ":")
+    )
+    session.add(charge)
+    session.flush()
+    return charge
+
+
+def settle_billing_exempt_usage(
+    session: Session, *, request_id: str, provider_cost_amount: Decimal,
+    provider_cost_currency: str, provider_cost_micros: int, input_tokens: int,
+    cached_input_tokens: int, output_tokens: int, usage_source: str,
+    pricing_snapshot_json: str, usd_to_inr_rate: Decimal | None = None,
+    assistant_message_id: str | None = None, provider: str | None = None,
+    model: str | None = None,
+) -> UsageCharge:
+    charge = session.exec(
+        select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
+    ).first()
+    if charge is None or charge.billing_exemption_reason is None:
+        raise PaymentValidationError("Billing-exempt usage record not found.")
+    if charge.status == "billing_exempt":
+        return charge
+    if charge.status != "exempt_pending":
+        raise PaymentValidationError("Billing-exempt usage record is not active.")
+    if provider:
+        charge.provider = provider
+    if model:
+        charge.model = model
+    charge.provider_cost_amount_decimal = provider_cost_amount
+    charge.provider_cost_currency = provider_cost_currency
+    charge.provider_cost_micros = max(0, int(provider_cost_micros))
+    charge.reserved_micros = 0
+    charge.debited_micros = 0
+    charge.input_tokens = max(0, int(input_tokens))
+    charge.cached_input_tokens = max(0, int(cached_input_tokens))
+    charge.output_tokens = max(0, int(output_tokens))
+    charge.usage_source = usage_source if usage_source in {"actual", "estimated"} else "estimated"
+    charge.usd_to_inr_rate = usd_to_inr_rate
+    charge.assistant_message_id = assistant_message_id
+    try:
+        snapshot = json.loads(pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    snapshot["billing_exemption_reason"] = charge.billing_exemption_reason
+    snapshot["reserved_micros"] = 0
+    snapshot["debited_micros"] = 0
+    charge.pricing_snapshot_json = json.dumps(
+        snapshot, sort_keys=True, separators=(",", ":")
+    )
+    charge.status = "billing_exempt"
+    charge.settled_at = utc_now()
+    session.add(charge)
+    return charge
+
+
+def release_billing_exempt_usage(
+    session: Session, request_id: str, *, reason: str = "provider_failed_or_cancelled",
+) -> UsageCharge | None:
+    charge = session.exec(
+        select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
+    ).first()
+    if charge is None or charge.status != "exempt_pending":
+        return charge
+    try:
+        snapshot = json.loads(charge.pricing_snapshot_json or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    snapshot["release_reason"] = reason
+    charge.pricing_snapshot_json = json.dumps(
+        snapshot, sort_keys=True, separators=(",", ":")
+    )
+    charge.status = "released"
+    charge.settled_at = utc_now()
+    session.add(charge)
     return charge
 
 
