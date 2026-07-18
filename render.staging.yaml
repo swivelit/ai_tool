@@ -23,6 +23,28 @@ projects:
                 value: staging
               - key: WEB_APP_ENABLED
                 value: "true"
+              - key: WEB_ATTACHMENTS_ENABLED
+                value: "true"
+              - key: WEB_VOICE_RECORDING_ENABLED
+                value: "true"
+              - key: WEB_UPLOAD_TTL_SECONDS
+                value: "600"
+              - key: WEB_UPLOAD_MAX_FILE_BYTES
+                value: "10485760"
+              - key: WEB_UPLOAD_MAX_FILES_PER_MESSAGE
+                value: "5"
+              - key: WEB_UPLOAD_MAX_TOTAL_BYTES
+                value: "26214400"
+              - key: WEB_UPLOAD_MAX_EXTRACTED_CHARS
+                value: "100000"
+              - key: WEB_ATTACHMENT_PROMPT_MAX_CHARS
+                value: "24000"
+              - key: WEB_AUDIO_MAX_SECONDS
+                value: "300"
+              - key: WEB_UPLOAD_RATE_LIMIT_PER_MINUTE
+                value: "10"
+              - key: WEB_UPLOAD_STORE_RAW
+                value: "false"
               - key: LOG_CHAT_CONTENT
                 value: "false"
               - key: AUTH_ALLOW_DEV_TOKENS
@@ -73,6 +95,18 @@ projects:
                 fromDatabase:
                   name: swico-postgres-staging
                   property: connectionString
+              - key: WEB_UPLOAD_CACHE_URL
+                fromService:
+                  type: keyvalue
+                  name: swico-upload-cache-staging
+                  property: connectionString
+          - type: keyvalue
+            name: swico-upload-cache-staging
+            region: singapore
+            plan: starter
+            ipAllowList: []
+            maxmemoryPolicy: allkeys-lru
+            persistenceMode: "off"
           - type: web
             name: swico-web-staging
             runtime: static
@@ -95,7 +129,7 @@ projects:
             headers:
               - path: /*
                 name: Content-Security-Policy
-                value: "default-src 'self'; script-src 'self' https://checkout.razorpay.com https://*.razorpay.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: wss:; frame-src https://*.firebaseapp.com https://*.razorpay.com https://api.razorpay.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+                value: "default-src 'self'; script-src 'self' https://checkout.razorpay.com https://*.razorpay.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self' https: wss:; frame-src https://*.firebaseapp.com https://*.razorpay.com https://api.razorpay.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
               - path: /*
                 name: Referrer-Policy
                 value: strict-origin-when-cross-origin
@@ -107,7 +141,7 @@ projects:
                 value: DENY
               - path: /*
                 name: Permissions-Policy
-                value: "camera=(), geolocation=(), microphone=()"
+                value: "camera=(), geolocation=(), microphone=(self)"
               - path: /*
                 name: Strict-Transport-Security
                 value: max-age=31536000; includeSubDomains

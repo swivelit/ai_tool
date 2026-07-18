@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, Copy, RefreshCw } from 'lucide-react'
-import type { Message } from '../types'
+import { Check, ChevronDown, Copy, FileText, RefreshCw } from 'lucide-react'
+import type { Message, MessageAttachment } from '../types'
 import { MarkdownMessage } from './MarkdownMessage'
 
 export function Conversation({ messages, phase, retry, suggest }: {
@@ -42,7 +42,11 @@ function EmptyState({ suggest }: { suggest: (text: string) => void }) {
 
 function MessageView({ message, retry }: { message: Message; retry: (message: Message) => void }) {
   const [copied, setCopied] = useState(false)
-  if (message.role === 'user') return <article className="message user"><div className="user-bubble">{message.content}</div>{message.status === 'retryable' && <button className="retry" onClick={() => retry(message)}><RefreshCw size={14} /> Retry</button>}</article>
+  if (message.role === 'user') return <article className="message user">
+    {!!message.attachments?.length && <div className="message-attachments">{message.attachments.map(attachment => <AttachmentCard attachment={attachment} key={attachment.id} />)}</div>}
+    {message.content && <div className="user-bubble">{message.content}</div>}
+    {message.status === 'retryable' && <button className="retry" onClick={() => retry(message)}><RefreshCw size={14} /> Retry</button>}
+  </article>
   return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''}`}><div className="message-body">
     {message.content ? <MarkdownMessage>{message.content}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
     {message.status === 'streaming' && message.content && <span className="cursor" />}
@@ -56,4 +60,22 @@ function MessageView({ message, retry }: { message: Message; retry: (message: Me
       </div></details>}
     </div>}
   </div></article>
+}
+
+function AttachmentCard({ attachment }: { attachment: MessageAttachment }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (attachment.status !== 'ready') return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [attachment.status])
+  const expired = attachment.status !== 'ready' || new Date(attachment.expires_at).getTime() <= now
+  const size = attachment.size_bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(attachment.size_bytes / 1024))} KiB`
+    : `${(attachment.size_bytes / (1024 * 1024)).toFixed(1)} MiB`
+  return <div className={`message-attachment-card ${expired ? 'expired' : 'ready'}`}>
+    <FileText size={18} aria-hidden="true" />
+    <span><strong>{attachment.name}</strong><small>{attachment.media_type} · {size}</small></span>
+    {expired ? <span className="attachment-badge">Expired</span> : <span className="attachment-badge">Active</span>}
+  </div>
 }

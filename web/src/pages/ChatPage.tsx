@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { AssistantSettings, Message, Bootstrap, ProfileSettings, SwicoTier, Thread, Wallet, SSEEvent } from '../types'
-import { ApiError, SSEStreamError, apiJson, streamChat } from '../api/client'
+import type { AssistantSettings, ComposerAttachment, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, SSEEvent } from '../types'
+import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, uploadDocument } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
 import { useAuth } from '../auth/useAuth'
@@ -22,6 +22,7 @@ export function ChatPage() {
   const [threads, setThreads] = useState<Thread[]>([]); const [hasMore, setHasMore] = useState(false)
   const [active, setActive] = useState<string | null>(null); const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState(''); const [streaming, setStreaming] = useState(false)
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [drawer, setDrawer] = useState(false); const [collapsed, setCollapsed] = useState(localStorage.getItem('swico-sidebar-collapsed') === 'true')
   const [archived, setArchived] = useState(false); const [query, setQuery] = useState('')
   const [billing, setBilling] = useState(false); const [settings, setSettings] = useState(false); const [dialog, setDialog] = useState<DialogState>(null)
@@ -31,6 +32,7 @@ export function ChatPage() {
   const [focusKey, setFocusKey] = useState('initial'); const [streamState, dispatchStream] = useReducer(chatStreamReducer, emptyStreamState)
   const [tierSaving, setTierSaving] = useState(false)
   const billingButtonRef = useRef<HTMLElement | null>(null)
+  const removedLocalUploads = useRef(new Set<string>())
   const threadCountRef = useRef(0)
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
 
@@ -105,10 +107,28 @@ export function ChatPage() {
     return () => { window.removeEventListener('online', online); window.removeEventListener('offline', off) }
   }, [])
   useEffect(() => {
-    if (!user || !active) { if (!streaming) setMessages([]); return }
+    if (!user || !active) { if (!streaming) { setMessages([]); setAttachments([]) }; return }
     if (streaming && streamState.assistant?.thread_id === active) return
-    void apiJson<{ items: Message[] }>(user, `/api/web/threads/${active}/messages`).then(data => setMessages(data.items)).catch(() => setError('Conversation could not be loaded.'))
+    void apiJson<{ items: Message[] }>(user, `/api/web/threads/${active}/messages`).then(data => {
+      setMessages(data.items)
+      const restored = new Map<string, MessageAttachment>()
+      for (const message of data.items) {
+        for (const attachment of message.attachments ?? []) {
+          if (attachment.status === 'ready' && new Date(attachment.expires_at).getTime() > Date.now()) restored.set(attachment.id, attachment)
+        }
+      }
+      setAttachments(Array.from(restored.values()).slice(-5))
+    }).catch(() => setError('Conversation could not be loaded.'))
   }, [user, active]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!attachments.some(item => item.status === 'ready')) return
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      setAttachments(value => value.map(item => item.status === 'ready' && new Date(item.expires_at).getTime() <= now
+        ? { ...item, status: 'expired' as const } : item))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [attachments])
   useEffect(() => {
     const assistant = streamState.assistant
     if (!assistant) return
@@ -142,19 +162,29 @@ export function ChatPage() {
     }
   }
 
-  const send = async (text = draft, threadId = active, retryRequestId?: string) => {
-    if (!user || !bootstrap || streaming || !text.trim() || offline) return
+  const send = async (
+    text = draft, threadId = active, retryRequestId?: string,
+    attachmentOverride?: MessageAttachment[],
+  ) => {
+    const selectedAttachments = (attachmentOverride ?? attachments).filter((item): item is ReadyAttachment => item.status === 'ready')
+    if (!user || !bootstrap || streaming || (!text.trim() && !selectedAttachments.length) || offline || attachments.some(item => item.status === 'uploading')) return
     const nextRequestId = retryRequestId || crypto.randomUUID()
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
     if (!existingUser) {
-      const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content: text.trim(), request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString() }
+      const content = text.trim() || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
+      const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments }
       setMessages(value => [...value, optimistic])
     }
     setDraft(''); setStreaming(true); setError(''); setRequestId(nextRequestId)
     dispatchStream({ type: 'start', requestId: nextRequestId, threadId: threadId ?? '', tier: bootstrap.assistant.tier, tierLabel: bootstrap.assistant.tier_label })
     const abort = new AbortController(); setController(abort)
     try {
-      await streamChat(user, { request_id: nextRequestId, message: text.trim(), ...(threadId ? { thread_id: threadId } : {}) }, handleEvent, abort.signal)
+      await streamChat(user, {
+        request_id: nextRequestId,
+        message: text.trim(),
+        attachment_ids: selectedAttachments.map(item => item.id),
+        ...(threadId ? { thread_id: threadId } : {}),
+      }, handleEvent, abort.signal)
       await loadThreads(true)
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
@@ -183,10 +213,53 @@ export function ChatPage() {
   const retry = (message: Message) => {
     const original = message.role === 'user' ? message : messages.find(item => item.role === 'user' && item.request_id === message.request_id)
     if (!original || !original.request_id || message.status !== 'retryable') return
-    void send(original.content, original.thread_id || active, original.request_id)
+    const summary = `Attached: ${(original.attachments ?? []).map(item => item.name).join(', ')}`
+    const retryText = original.attachments?.length && original.content === summary ? '' : original.content
+    void send(retryText, original.thread_id || active, original.request_id, original.attachments)
   }
-  const newChat = () => { setActive(null); setMessages([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
-  const select = (id: string) => { setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const newChat = () => { setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
+  const select = (id: string) => { setAttachments([]); setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const addFiles = (files: File[]) => {
+    if (!user || !bootstrap?.features.web_attachments || !bootstrap.uploads) return
+    const limits = bootstrap.uploads
+    const usable = attachments.filter(item => item.status !== 'expired' && item.status !== 'unavailable' && item.status !== 'error')
+    let count = usable.length
+    let total = usable.reduce((sum, item) => sum + item.size_bytes, 0)
+    for (const file of files) {
+      const extension = `.${file.name.split('.').pop()?.toLowerCase() ?? ''}`
+      if (!limits.supported_extensions.includes(extension)) {
+        setError(`“${file.name}” is not supported. Use ${limits.supported_extensions.join(', ')} files.`)
+        continue
+      }
+      if (file.size <= 0) { setError(`“${file.name}” is empty.`); continue }
+      if (file.size > limits.max_file_bytes) { setError(`“${file.name}” exceeds the 10 MiB file limit.`); continue }
+      if (count >= limits.max_files_per_message) { setError(`You can attach up to ${limits.max_files_per_message} files.`); break }
+      if (total + file.size > limits.max_total_bytes) { setError('Pending attachments exceed the 25 MiB total limit.'); break }
+      count += 1; total += file.size
+      const localId = crypto.randomUUID()
+      const pending: ComposerAttachment = {
+        local_id: localId, file, name: file.name, media_type: file.type,
+        size_bytes: file.size, status: 'uploading', progress: 0,
+      }
+      setAttachments(value => [...value, pending])
+      void uploadDocument(user, file, progress => setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId ? { ...item, progress } : item)))
+        .then(upload => {
+          if (removedLocalUploads.current.delete(localId)) {
+            void deleteUpload(user, upload.id).catch(() => undefined)
+            return
+          }
+          setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId ? upload : item))
+        })
+        .catch(caught => setAttachments(value => value.map(item => 'local_id' in item && item.local_id === localId
+          ? { ...item, status: 'error' as const, error: caught instanceof Error ? caught.message : 'Upload failed.' } : item)))
+    }
+  }
+  const removeAttachment = (attachment: ComposerAttachment) => {
+    const key = 'local_id' in attachment ? attachment.local_id : attachment.id
+    if ('local_id' in attachment && attachment.status === 'uploading') removedLocalUploads.current.add(attachment.local_id)
+    setAttachments(value => value.filter(item => ('local_id' in item ? item.local_id : item.id) !== key))
+    if (!('local_id' in attachment) && user) void deleteUpload(user, attachment.id).catch(() => setError('The attachment was removed locally, but the temporary cache could not be reached.'))
+  }
   const runMutation = async (thread: Thread, action: 'rename' | 'archive' | 'delete', title?: string) => {
     if (!user) return
     if (action === 'rename') await apiJson(user, `/api/web/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ title }) })
@@ -212,7 +285,9 @@ export function ChatPage() {
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
       <Conversation messages={messages} phase={streamState.phase} retry={retry} suggest={text => { setDraft(text); setFocusKey(`suggest-${Date.now()}`) }} />
-      <Composer value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey} />
+      <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey}
+        attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording)}
+        supportedExtensions={bootstrap.uploads?.supported_extensions ?? []} addFiles={addFiles} removeAttachment={removeAttachment} />
     </section>
     {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
     {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}

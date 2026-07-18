@@ -443,7 +443,12 @@ class SarvamProvider(AIProvider):
         if not text:
             _log_sarvam_event("sarvam_stt_failed", status_code=422, safe_provider_error="empty_transcript", started=started)
             raise HTTPException(422, SARVAM_STT_EMPTY_TRANSCRIPT_DETAIL)
-        _log_sarvam_event("sarvam_stt_completed", status_code=response.status_code, transcript=text, started=started)
+        _log_sarvam_event(
+            "sarvam_stt_completed",
+            status_code=response.status_code,
+            transcript_characters=len(text),
+            started=started,
+        )
         return text
 
     def tts(

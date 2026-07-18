@@ -12,11 +12,28 @@ export type AssistantSettings = {
   tier_selection_enabled: boolean; tiers: SwicoTierOption[];
 }
 export type Thread = { id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }
+export type AttachmentDisplay = {
+  id: string; name: string; media_type: string; size_bytes: number;
+  created_at: string; expires_at: string; warnings: string[];
+}
+export type PendingAttachment = {
+  local_id: string; file: File; name: string; media_type: string; size_bytes: number;
+  status: 'uploading' | 'error'; progress: number; error?: string;
+}
+export type ReadyAttachment = AttachmentDisplay & { status: 'ready' }
+export type ExpiredAttachment = AttachmentDisplay & { status: 'expired' | 'unavailable' }
+export type MessageAttachment = ReadyAttachment | ExpiredAttachment
+export type ComposerAttachment = PendingAttachment | ReadyAttachment | ExpiredAttachment
+export type AudioRecorderState = {
+  status: 'idle' | 'requesting' | 'recording' | 'stopping' | 'transcribing' | 'error';
+  elapsed_seconds: number; mime_type: string | null; error: string | null;
+}
 export type Message = {
   id: string; thread_id: string; role: 'user' | 'assistant' | 'system'; content: string;
   request_id: string | null; tier: SwicoTier | null; tier_label: string;
   input_tokens: number; output_tokens: number; usage_source: 'actual' | 'estimated' | null;
   charge_micros: number; status: string; created_at: string;
+  attachments?: MessageAttachment[];
 }
 export type BillingPackage = { gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; token_estimate?: TokenEstimate }
 export type BillingConfig = {
@@ -27,7 +44,14 @@ export type BillingConfig = {
 export type Bootstrap = {
   user: { id: number; name: string; email: string | null; reply_language: string };
   wallet: Wallet; billing: BillingConfig; assistant: AssistantSettings;
-  features: { web_chat: boolean; prepaid_billing: boolean };
+  features: {
+    web_chat: boolean; prepaid_billing: boolean;
+    web_attachments: boolean; web_voice_recording: boolean;
+  };
+  uploads: {
+    available: boolean; ttl_seconds: number; max_file_bytes: number;
+    max_files_per_message: number; max_total_bytes: number; supported_extensions: string[];
+  };
 }
 export type StreamEventName = 'thread' | 'status' | 'delta' | 'usage' | 'wallet' | 'done' | 'error'
 export type SSEEvent = { event: StreamEventName | (string & {}); data: unknown }

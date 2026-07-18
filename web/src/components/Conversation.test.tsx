@@ -31,3 +31,18 @@ it('labels historical messages without a tier simply as Swico', () => {
   fireEvent.click(screen.getByText('Details'))
   expect(screen.getByText('Swico')).toBeInTheDocument()
 })
+
+it('renders user attachment cards and marks expired metadata without an open action', () => {
+  const userMessage: Message = {
+    ...message('attachment'), role:'user', content:'Attached: report.pdf', attachments:[{
+      id:'upload-1', name:'report.pdf', media_type:'application/pdf', size_bytes:2048,
+      created_at:new Date(Date.now() - 700_000).toISOString(), expires_at:new Date(Date.now() - 100_000).toISOString(),
+      status:'expired', warnings:[],
+    }],
+  }
+  render(<Conversation messages={[userMessage]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(screen.getByText('report.pdf')).toBeInTheDocument()
+  expect(screen.getByText('Expired')).toBeInTheDocument()
+  expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name:/open|download/i })).not.toBeInTheDocument()
+})

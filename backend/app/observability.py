@@ -119,6 +119,7 @@ _SAFE_EXTRA_KEYS = {
     "transcript_hash",
     "transcript_length",
     "transcript_preview",
+    "transcript_characters",
     "target_language_code",
     "speaker",
     "text_length",

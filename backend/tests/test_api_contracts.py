@@ -1239,8 +1239,9 @@ def test_sarvam_stt_success_is_used_by_transcribe_and_analyze(client, monkeypatc
     assert getattr(upload_record, "size_bytes") > 0
     stt_record = [r for r in caplog.records if getattr(r, "event", "") == "sarvam_stt_completed"][-1]
     assert getattr(stt_record, "status_code") == 200
-    assert getattr(stt_record, "transcript_hash")
-    assert getattr(stt_record, "transcript_length") == len("voice hello")
+    assert getattr(stt_record, "transcript_characters") == len("voice hello")
+    assert not hasattr(stt_record, "transcript_hash")
+    assert not hasattr(stt_record, "transcript_preview")
     with SessionLocal() as session:
         stt_usage = session.exec(select(AIUsageEvent).where(AIUsageEvent.route == "sarvam_stt")).one()
     assert stt_usage.audio_seconds > 0

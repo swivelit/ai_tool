@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import json
+import os
 from typing import Any, Callable
 
 from sqlmodel import Session, select
@@ -20,12 +22,23 @@ from ..billing.service import (
 )
 from ..database import SessionLocal
 from ..models import UsageCharge, WebChatMessage, WebChatThread
+from ..profile_context import build_profile_prompt_context, profile_prompt_context_text
 from ..time_utils import utc_now
+from .attachment_context import select_attachment_context
+from .upload_store import UploadStoreUnavailable, get_upload_store
 from .usage_service import selected_swico_tier
 
 
 class DuplicateRequestInProgress(RuntimeError):
     pass
+
+
+class AttachmentRequestError(RuntimeError):
+    def __init__(self, code: str, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
 
 
 @dataclass
@@ -71,12 +84,66 @@ def _context(session: Session, thread_id: str, user_id: int, limit: int = 20) ->
             WebChatMessage.status == "complete",
         ).order_by(WebChatMessage.created_at.desc()).limit(limit)
     ).all())
-    return [{"role": row.role, "content": row.content} for row in reversed(rows)]
+    turns: list[dict[str, str]] = []
+    pending: WebChatMessage | None = None
+    for row in reversed(rows):
+        if row.role == "user":
+            pending = row
+        elif row.role == "assistant" and pending is not None:
+            if pending.request_id and row.request_id and pending.request_id != row.request_id:
+                continue
+            turns.append({"user": pending.content, "assistant": row.content})
+            pending = None
+    return turns[-6:]
+
+
+def _load_attachments(user_id: int, attachment_ids: list[str]) -> list[Any]:
+    if not attachment_ids:
+        return []
+    try:
+        configured_files = int(os.getenv("WEB_UPLOAD_MAX_FILES_PER_MESSAGE", "5"))
+    except ValueError:
+        configured_files = 5
+    if len(attachment_ids) > min(5, max(1, configured_files)):
+        raise AttachmentRequestError(
+            "too_many_attachments", "Too many attachments were included in this message.", 422
+        )
+    try:
+        store = get_upload_store()
+        uploads = []
+        for upload_id in attachment_ids:
+            upload = store.get(upload_id)
+            if upload is None:
+                raise AttachmentRequestError(
+                    "attachment_expired",
+                    "An attachment has expired or is no longer available. Remove it and upload it again.",
+                    410,
+                )
+            if upload.owner_user_id != user_id:
+                raise AttachmentRequestError("attachment_not_found", "Attachment not found.", 404)
+            uploads.append(upload)
+    except UploadStoreUnavailable as exc:
+        raise AttachmentRequestError(
+            "attachment_cache_unavailable",
+            "Temporary attachments are unavailable. Please try again later.",
+            503,
+        ) from exc
+    try:
+        configured_total = int(os.getenv("WEB_UPLOAD_MAX_TOTAL_BYTES", str(25 * 1024 * 1024)))
+    except ValueError:
+        configured_total = 25 * 1024 * 1024
+    max_total = min(25 * 1024 * 1024, max(1, configured_total))
+    if sum(upload.size_bytes for upload in uploads) > max_total:
+        raise AttachmentRequestError(
+            "attachment_total_too_large", "Attachments exceed the 25 MiB total limit.", 413
+        )
+    return uploads
 
 
 def prepare_web_turn(
     *, user_id: int, message: str, request_id: str, thread_id: str | None,
-    reply_language: str | None, billing_exempt: bool = False,
+    reply_language: str | None, attachment_ids: list[str] | None = None,
+    billing_exempt: bool = False,
 ) -> PreparedWebTurn:
     with SessionLocal() as session:
         swico_tier = selected_swico_tier(session, user_id)
@@ -103,6 +170,8 @@ def prepare_web_turn(
         if existing_user_message is not None and existing_charge is not None and existing_charge.status != "released":
             raise DuplicateRequestInProgress("This request is already being processed.")
 
+        uploads = _load_attachments(user_id, attachment_ids or [])
+
         if thread_id:
             thread = _owned_thread(session, thread_id, user_id)
         else:
@@ -111,14 +180,28 @@ def prepare_web_turn(
             session.flush()
 
         context_turns = _context(session, thread.id, user_id)
+        visible_message = message.strip()
+        model_message = visible_message or "Review and summarize the attached document."
+        display_attachments = [upload.display_metadata() for upload in uploads]
+        visible_content = visible_message or (
+            "Attached: " + ", ".join(upload.name for upload in uploads)
+        )
+        profile_context = build_profile_prompt_context(session, user_id)
+        attachment_context = select_attachment_context(uploads, visible_message)
         ai_request = AIRequest(
-            user_id=user_id, message=message, reply_language=reply_language, channel="text",
+            user_id=user_id, message=model_message, reply_language=reply_language, channel="text",
             request_id=request_id,
             metadata={
                 "client_surface": "web", "billing_required": True, "cloud_only": True,
                 "allow_local_rag": False, "allow_local_model": False, "skip_free_text_quota": True,
                 "user_tier": "paid",
                 "swico_tier": swico_tier,
+                "profile_context": profile_context,
+                "profile_prompt_context": profile_prompt_context_text(profile_context),
+                "age_group": profile_context.get("age_group", ""),
+                "attachment_prompt_context": attachment_context,
+                "attachment_count": len(uploads),
+                "thread_title_seed": visible_message or (uploads[0].name if uploads else "New chat"),
             },
             context_turns=context_turns,
         )
@@ -126,8 +209,9 @@ def prepare_web_turn(
 
         if existing_user_message is None:
             session.add(WebChatMessage(
-                thread_id=thread.id, user_id=user_id, role="user", content=message,
+                thread_id=thread.id, user_id=user_id, role="user", content=visible_content,
                 request_id=request_id, status="pending",
+                metadata_json=json.dumps({"attachments": display_attachments}, ensure_ascii=False),
             ))
         thread.updated_at = utc_now()
         session.add(thread)
@@ -335,7 +419,9 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             )
         thread = _owned_thread(session, prepared.thread_id, prepared.user_id)
         if thread.title == "New chat":
-            thread.title = deterministic_title(prepared.ai_request.message)
+            thread.title = deterministic_title(
+                str(prepared.ai_request.metadata.get("thread_title_seed") or prepared.ai_request.message)
+            )
         thread.updated_at = utc_now()
         session.add(thread)
         session.commit()

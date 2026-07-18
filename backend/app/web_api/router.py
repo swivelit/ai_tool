@@ -5,11 +5,14 @@ import hashlib
 import json
 import logging
 import os
+from pathlib import Path
+import tempfile
 import threading
+from uuid import uuid4
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import delete as sa_delete, text, update as sa_update
 from sqlmodel import Session, select
 
@@ -31,6 +34,14 @@ from ..billing.topups import (
 )
 from ..billing.usage_limits import validated_timezone
 from ..ai.providers.base import GenerationCancellation, GenerationCancelled
+from ..ai.budget import enforce_free_voice_quota, enforce_provider_budget
+from ..ai.providers.sarvam_provider import (
+    SarvamProvider, estimate_audio_duration_details, estimate_stt_cost,
+    normalize_audio_language, normalize_stt_upload_mime_type,
+)
+from ..ai.types import AIProviderResponse
+from ..ai.usage import record_ai_usage_event
+from ..audio_transcription import transcribe_audio_file
 from ..ai.swico_tiers import (
     SWICO_TIER_IDS,
     SWICO_TIER_LABELS,
@@ -47,17 +58,68 @@ from ..models import (
     WalletLedger, WebUsagePreferences,
 )
 from ..time_utils import utc_now
-from .chat_service import DuplicateRequestInProgress, execute_web_turn, prepare_web_turn
+from .chat_service import (
+    AttachmentRequestError, DuplicateRequestInProgress, execute_web_turn, prepare_web_turn,
+)
+from .document_extraction import (
+    DocumentValidationError, SUPPORTED_EXTENSIONS, extract_document, max_file_bytes,
+    sanitize_filename, validate_extension_and_mime,
+)
 from .schemas import (
     AssistantSettingsPatch, ProfilePatch, ThreadCreate, ThreadPatch,
     UsagePreferencesPatch, WebChatRequest,
 )
 from .usage_service import selected_swico_tier, usage_preferences_dict, usage_summary
+from .upload_store import (
+    EphemeralUpload, UploadStoreUnavailable, expiration_iso, get_upload_store,
+    upload_ttl_seconds, utc_iso,
+)
 
 router = APIRouter(prefix="/api/web", tags=["web"])
 logger = logging.getLogger(__name__)
 _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
 _active_generations_lock = threading.Lock()
+
+
+def _env_enabled(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _temporary_error(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": {"code": code, "message": message}},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _uploads_public_config() -> dict[str, Any]:
+    enabled = _env_enabled("WEB_ATTACHMENTS_ENABLED")
+    available = False
+    if enabled:
+        try:
+            available = get_upload_store().available()
+        except UploadStoreUnavailable:
+            available = False
+    try:
+        configured_files = int(os.getenv("WEB_UPLOAD_MAX_FILES_PER_MESSAGE", "5"))
+    except ValueError:
+        configured_files = 5
+    try:
+        configured_total = int(os.getenv("WEB_UPLOAD_MAX_TOTAL_BYTES", str(25 * 1024 * 1024)))
+    except ValueError:
+        configured_total = 25 * 1024 * 1024
+    return {
+        "available": available,
+        "ttl_seconds": upload_ttl_seconds(),
+        "max_file_bytes": max_file_bytes(),
+        "max_files_per_message": min(5, max(1, configured_files)),
+        "max_total_bytes": min(25 * 1024 * 1024, max(1, configured_total)),
+        "supported_extensions": list(SUPPORTED_EXTENSIONS),
+    }
 
 
 def _rate_limit(session: Session, *, user_id: int, action: str, limit: int) -> None:
@@ -121,15 +183,58 @@ def _serialize_thread(row: WebChatThread) -> dict[str, Any]:
     }
 
 
-def _serialize_message(row: WebChatMessage) -> dict[str, Any]:
+def _serialize_message(
+    row: WebChatMessage, attachment_cache: dict[str, tuple[str, int | None]] | None = None,
+) -> dict[str, Any]:
     tier = row.swico_tier if row.swico_tier in SWICO_TIER_IDS else None
+    attachments: list[dict[str, Any]] = []
+    try:
+        metadata = json.loads(row.metadata_json or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    raw_attachments = metadata.get("attachments") if isinstance(metadata, dict) else []
+    status_cache = attachment_cache if attachment_cache is not None else {}
+    for value in raw_attachments if isinstance(raw_attachments, list) else []:
+        if not isinstance(value, dict):
+            continue
+        upload_id = str(value.get("id") or "")
+        if not upload_id:
+            continue
+        cached = status_cache.get(upload_id)
+        if cached is None:
+            try:
+                upload = get_upload_store().get(upload_id)
+                if upload is None:
+                    status = "expired"
+                    owner_id = None
+                else:
+                    status = "ready" if upload.owner_user_id == int(row.user_id) else "unavailable"
+                    owner_id = upload.owner_user_id
+            except UploadStoreUnavailable:
+                status, owner_id = "unavailable", None
+            status_cache[upload_id] = (status, owner_id)
+        else:
+            status, owner_id = cached
+        if owner_id is not None and owner_id != int(row.user_id):
+            status = "unavailable"
+        attachments.append({
+            "id": upload_id,
+            "name": sanitize_filename(str(value.get("name") or "document")),
+            "media_type": str(value.get("media_type") or "application/octet-stream")[:160],
+            "size_bytes": max(0, int(value.get("size_bytes") or 0)),
+            "created_at": str(value.get("created_at") or ""),
+            "expires_at": str(value.get("expires_at") or ""),
+            "status": status,
+            "warnings": [str(item)[:240] for item in value.get("warnings", [])[:5]]
+            if isinstance(value.get("warnings"), list) else [],
+        })
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
         "request_id": row.request_id, "tier": tier,
         "tier_label": SWICO_TIER_LABELS[tier] if tier else "Swico",
         "input_tokens": row.input_tokens, "output_tokens": row.output_tokens,
         "usage_source": row.usage_source, "charge_micros": row.charge_micros,
-        "status": row.status, "created_at": row.created_at,
+        "status": row.status, "created_at": row.created_at, "attachments": attachments,
     }
 
 
@@ -154,10 +259,15 @@ def billing_public_config():
 
 
 @router.get("/bootstrap")
-def bootstrap(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
+def bootstrap(
+    response: Response, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    response.headers["Cache-Control"] = "no-store"
     user = get_owned_user(session, auth)
     billing_exempt = is_internal_test_user(auth, user)
     swico_tier = selected_swico_tier(session, int(user.id))
+    uploads = _uploads_public_config()
     return {
         "user": {"id": user.id, "name": user.name, "email": user.email, "reply_language": user.reply_language},
         "wallet": get_wallet_summary(
@@ -166,7 +276,13 @@ def bootstrap(session: Session = Depends(get_session), auth: AuthUser = Depends(
         ),
         "billing": public_billing_config(swico_tier),
         "assistant": public_tier_settings(swico_tier),
-        "features": {"web_chat": True, "prepaid_billing": True},
+        "features": {
+            "web_chat": True,
+            "prepaid_billing": True,
+            "web_attachments": _env_enabled("WEB_ATTACHMENTS_ENABLED") and bool(uploads["available"]),
+            "web_voice_recording": _env_enabled("WEB_VOICE_RECORDING_ENABLED"),
+        },
+        "uploads": uploads,
     }
 
 
@@ -372,15 +488,223 @@ def delete_thread(thread_id: str, session: Session = Depends(get_session), auth:
 
 @router.get("/threads/{thread_id}/messages")
 def list_messages(
-    thread_id: str, limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0),
-    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+    thread_id: str, response: Response,
+    limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0),
+    session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
 ):
+    response.headers["Cache-Control"] = "no-store"
     user = get_owned_user(session, auth)
     _owned_thread(session, int(user.id), thread_id)
     rows = session.exec(select(WebChatMessage).where(
         WebChatMessage.thread_id == thread_id, WebChatMessage.user_id == user.id
     ).order_by(WebChatMessage.created_at.asc()).offset(offset).limit(limit)).all()
-    return {"items": [_serialize_message(row) for row in rows], "limit": limit, "offset": offset}
+    attachment_cache: dict[str, tuple[str, int | None]] = {}
+    return {
+        "items": [_serialize_message(row, attachment_cache) for row in rows],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+async def _save_temporary_upload(file: UploadFile, *, limit: int, suffix: str) -> tuple[str, int]:
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    path = handle.name
+    size = 0
+    try:
+        while True:
+            chunk = await file.read(64 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > limit:
+                raise DocumentValidationError(
+                    "file_too_large", "The uploaded file exceeds the configured size limit.", status_code=413
+                )
+            handle.write(chunk)
+        handle.flush()
+        handle.close()
+        return path, size
+    except BaseException:
+        handle.close()
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+    finally:
+        await file.close()
+
+
+@router.post("/uploads", status_code=201)
+async def upload_document(
+    file: UploadFile = File(...), session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not _env_enabled("WEB_ATTACHMENTS_ENABLED"):
+        return _temporary_error(503, "web_attachments_disabled", "Temporary document attachments are unavailable.")
+    _rate_limit(
+        session,
+        user_id=int(user.id),
+        action="web_upload",
+        limit=int(os.getenv("WEB_UPLOAD_RATE_LIMIT_PER_MINUTE", "10")),
+    )
+    session.commit()
+    safe_name = sanitize_filename(file.filename)
+    try:
+        extension, media_type = validate_extension_and_mime(safe_name, file.content_type)
+    except DocumentValidationError as exc:
+        await file.close()
+        return _temporary_error(exc.status_code, exc.code, exc.message)
+    temp_path = ""
+    try:
+        temp_path, size = await _save_temporary_upload(
+            file, limit=max_file_bytes(), suffix=extension,
+        )
+        if size <= 0:
+            return _temporary_error(400, "empty_file", "The uploaded file is empty.")
+        extraction = await asyncio.to_thread(extract_document, temp_path, extension)
+    except DocumentValidationError as exc:
+        return _temporary_error(exc.status_code, exc.code, exc.message)
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+    ttl = upload_ttl_seconds()
+    upload = EphemeralUpload(
+        id=str(uuid4()),
+        owner_user_id=int(user.id),
+        name=safe_name,
+        extension=extension,
+        media_type=media_type,
+        size_bytes=size,
+        created_at=utc_iso(),
+        expires_at=expiration_iso(ttl),
+        chunks=extraction.chunks,
+        source_locators=extraction.source_locators,
+        warnings=extraction.warnings,
+    )
+    try:
+        get_upload_store().put(upload)
+    except UploadStoreUnavailable:
+        return _temporary_error(
+            503, "attachment_cache_unavailable", "Temporary attachments are unavailable. Please try again later."
+        )
+    return JSONResponse(
+        status_code=201,
+        content=upload.display_metadata(),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.delete("/uploads/{upload_id}", status_code=204)
+def delete_upload(
+    upload_id: str, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    try:
+        store = get_upload_store()
+        upload = store.get(upload_id)
+        if upload is not None and upload.owner_user_id != int(user.id):
+            return _temporary_error(404, "attachment_not_found", "Attachment not found.")
+        if upload is not None:
+            store.delete(upload_id)
+    except UploadStoreUnavailable:
+        return _temporary_error(
+            503, "attachment_cache_unavailable", "Temporary attachments are unavailable. Please try again later."
+        )
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/audio/transcribe")
+async def transcribe_web_audio(
+    file: UploadFile = File(...), language: str | None = None,
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not _env_enabled("WEB_VOICE_RECORDING_ENABLED"):
+        return _temporary_error(503, "web_voice_recording_disabled", "Voice dictation is unavailable.")
+    content_type = str(file.content_type or "").split(";", 1)[0].strip().lower()
+    extension = Path(sanitize_filename(file.filename or "recording.webm")).suffix.lower()
+    allowed = {
+        ".webm": {"audio/webm"},
+        ".mp4": {"audio/mp4"},
+        ".m4a": {"audio/mp4", "audio/m4a", "audio/x-m4a"},
+    }
+    if extension not in allowed or content_type not in allowed[extension]:
+        await file.close()
+        return _temporary_error(422, "unsupported_audio_type", "Recordings must be WebM/Opus, WebM, or MP4 audio.")
+    temp_path = ""
+    try:
+        temp_path, size = await _save_temporary_upload(
+            file, limit=max_file_bytes(), suffix=extension,
+        )
+        if size <= 0:
+            return _temporary_error(400, "empty_audio", "The recording is empty. Please record for a moment and try again.")
+        duration, duration_method = estimate_audio_duration_details(temp_path, content_type, size)
+        max_seconds = min(300, max(1, int(os.getenv("WEB_AUDIO_MAX_SECONDS", "300"))))
+        if duration > max_seconds:
+            return _temporary_error(413, "audio_too_long", "Recordings are limited to 300 seconds.")
+        enforce_free_voice_quota(
+            session, int(user.id), additional_seconds=duration, admin_email=auth.email,
+        )
+        enforce_provider_budget(session, "sarvam", currency="INR")
+        transcript = await asyncio.to_thread(
+            transcribe_audio_file,
+            SarvamProvider(),
+            temp_path,
+            language,
+            content_type=content_type,
+            filename=f"recording{extension}",
+        )
+    except DocumentValidationError as exc:
+        return _temporary_error(exc.status_code, exc.code, exc.message)
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+    request_id = f"web-stt:{uuid4()}"
+    record_ai_usage_event(
+        session,
+        AIProviderResponse(
+            text="",
+            provider="sarvam",
+            model=os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
+            route="sarvam_stt",
+            reason="web_voice_dictation",
+            language=normalize_audio_language(language) or "auto",
+            intent="stt",
+            audio_seconds=duration,
+            characters=len(transcript),
+            estimated_cost_amount=estimate_stt_cost(duration),
+            estimated_cost_currency="INR",
+        ),
+        user_id=int(user.id),
+        request_id=request_id,
+        metadata={
+            "file_size": size,
+            "content_type": content_type,
+            "provider_content_type": normalize_stt_upload_mime_type(f"recording{extension}", content_type),
+            "duration_estimation_method": duration_method,
+            "client_source": "web_dictation",
+        },
+    )
+    return JSONResponse(
+        content={
+            "transcript": transcript,
+            "detected_language": normalize_audio_language(language) or "auto",
+            "duration_seconds": duration,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -399,7 +723,9 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
         prepared = await asyncio.to_thread(
             prepare_web_turn, user_id=user_id, message=payload.message,
             request_id=str(payload.request_id), thread_id=str(payload.thread_id) if payload.thread_id else None,
-            reply_language=payload.reply_language, billing_exempt=billing_exempt,
+            reply_language=payload.reply_language,
+            attachment_ids=[str(value) for value in payload.attachment_ids],
+            billing_exempt=billing_exempt,
         )
     except InsufficientCreditError as exc:
         return JSONResponse(status_code=402, content={"error": {
@@ -420,6 +746,8 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
         raise HTTPException(404, "Thread not found")
     except DuplicateRequestInProgress as exc:
         raise HTTPException(409, str(exc))
+    except AttachmentRequestError as exc:
+        return _temporary_error(exc.status_code, exc.code, exc.message)
     except (SwicoTierUnavailableError, SwicoTierConfigurationError):
         return JSONResponse(status_code=503, content={"error": {
             "code": "swico_tier_unavailable",

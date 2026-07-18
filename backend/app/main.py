@@ -99,6 +99,11 @@ from .vector_store import VectorStore
 from .local_rag_service import LocalRAGService
 from .agentic_service import AgenticService
 from .age_utils import normalize_age_group
+from .profile_context import (
+    add_effective_age_to_profile_context as _add_effective_age_to_profile_context,
+    build_profile_prompt_context,
+    profile_prompt_context_text as _profile_prompt_context_text,
+)
 from .orchestrator_task import run_orchestrator, run_rule_orchestrator
 from .global_qa_cache import (
     build_global_knowledge_sync_payload,
@@ -128,6 +133,7 @@ from .ai.providers.sarvam_provider import (
 )
 from .ai.agent_runtime import agentic_mode_enabled, fetch_agent_run_for_user
 from .ai.response_adapter import ai_response_to_pipeline
+from .audio_transcription import transcribe_audio_file
 from .ai.types import AIProviderResponse, AIRequest
 from .ai.usage import record_ai_usage_event
 
@@ -2031,84 +2037,6 @@ def _is_life_context_question(text: Any) -> bool:
     )
 
 
-def build_profile_prompt_context(session: Session, user_id: Optional[int]) -> Dict[str, Any]:
-    if not user_id:
-        return {}
-
-    user = session.get(User, int(user_id))
-    profile = session.exec(select(UserProfile).where(UserProfile.user_id == int(user_id))).first()
-    onboarding = load_onboarding_profile(session, int(user_id))
-    answers = onboarding.get("answers") if isinstance(onboarding, dict) else {}
-    answers = answers if isinstance(answers, dict) else {}
-
-    profile_summary = ""
-    if profile and profile.profile_summary:
-        profile_summary = str(profile.profile_summary).strip()
-    elif isinstance(onboarding, dict):
-        profile_summary = str(onboarding.get("profile_summary") or "").strip()
-
-    context = {
-        "user": {
-            "name": user.name if user else "",
-            "place": user.place if user else "",
-            "timezone": user.timezone if user else "Asia/Kolkata",
-            "assistant_name": user.assistant_name if user else "Elli",
-            "reply_language": _normalize_reply_language(user.reply_language if user else DEFAULT_REPLY_LANGUAGE),
-        },
-        "questionnaire_completed": bool(onboarding.get("questionnaire_completed")) if isinstance(onboarding, dict) else False,
-        "profile_summary": _compact_profile_value(profile_summary, 1200),
-        "communication_tone": _compact_profile_value(answers.get("communication_tone") or _infer_tone(profile_summary), 120),
-        "answer_length": _compact_profile_value(answers.get("answer_length") or "medium", 80),
-        "tamil_style": _compact_profile_value(answers.get("tamil_style") or "chennai_conversational", 120),
-        "onboarding_answers": _compact_profile_value(answers, 240),
-    }
-    age_group = normalize_age_group(answers.get("age_group"))
-    if age_group and age_group != "prefer_not_to_say":
-        context["age_group"] = _compact_profile_value(age_group, 40)
-        if age_group in {"under_13", "13_17"}:
-            context["age_safety_note"] = (
-                "User is a minor age group. Keep explanations age-appropriate and avoid adult-style advice."
-            )
-    return context
-
-
-def _profile_prompt_context_text(profile_context: Dict[str, Any]) -> str:
-    if not profile_context:
-        return ""
-    return json.dumps(profile_context, ensure_ascii=False, sort_keys=True)
-
-
-def _profile_answer_age_group(profile_context: Dict[str, Any]) -> str:
-    answers = profile_context.get("onboarding_answers")
-    if isinstance(answers, dict):
-        return normalize_age_group(answers.get("age_group"))
-    return ""
-
-
-def _add_effective_age_to_profile_context(
-    profile_context: Dict[str, Any],
-    life_context: Optional[Dict[str, Any]],
-) -> str:
-    profile_answer_age = _profile_answer_age_group(profile_context)
-    if profile_answer_age == "prefer_not_to_say":
-        profile_context.pop("age_group", None)
-        profile_context.pop("age_safety_note", None)
-        return ""
-    profile_age = normalize_age_group(profile_context.get("age_group"))
-    life_age = normalize_age_group(life_context.get("ageGroup")) if isinstance(life_context, dict) else ""
-    effective_age_group = profile_age or life_age
-    if not effective_age_group or effective_age_group == "prefer_not_to_say":
-        profile_context.pop("age_group", None)
-        profile_context.pop("age_safety_note", None)
-        return ""
-    profile_context["age_group"] = effective_age_group
-    if effective_age_group in {"under_13", "13_17"}:
-        profile_context["age_safety_note"] = (
-            "User is a minor age group. Keep explanations age-appropriate and avoid adult-style advice."
-        )
-    return effective_age_group
-
-
 def build_user_context(session: Session, user_id: int) -> dict:
     user = session.get(User, user_id)
     if not user:
@@ -3045,7 +2973,8 @@ def _transcribe_audio_file(
     content_type: Optional[str] = None,
     filename: Optional[str] = None,
 ) -> str:
-    return _get_sarvam_provider().stt_file(
+    return transcribe_audio_file(
+        _get_sarvam_provider(),
         file_path,
         language,
         content_type=content_type,

@@ -12,11 +12,11 @@ SPEC.loader.exec_module(MODULE)
 
 def _safe_headers() -> Message:
     headers = Message()
-    headers["Content-Security-Policy"] = "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    headers["Content-Security-Policy"] = "default-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     headers["X-Content-Type-Options"] = "nosniff"
     headers["X-Frame-Options"] = "DENY"
-    headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=()"
+    headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=(self)"
     headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return headers
 

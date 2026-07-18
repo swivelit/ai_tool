@@ -7,6 +7,7 @@ from typing import Any
 from app.age_utils import normalize_age_group
 
 from .types import AIRequest, AIRoute
+from app.web_api.attachment_context import UNTRUSTED_ATTACHMENT_INSTRUCTION
 
 
 APP_CONTEXT_PROMPT = (
@@ -58,6 +59,19 @@ def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str
                 ),
             }
         )
+    attachment_context = str((request.metadata or {}).get("attachment_prompt_context") or "").strip()
+    if attachment_context:
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    f"{UNTRUSTED_ATTACHMENT_INSTRUCTION}\n"
+                    "BEGIN UNTRUSTED ATTACHMENT EXCERPTS\n"
+                    f"{attachment_context}\n"
+                    "END UNTRUSTED ATTACHMENT EXCERPTS"
+                ),
+            }
+        )
     messages.append({"role": "user", "content": request.message})
     return messages
 
@@ -78,6 +92,8 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
         "Use life context only when provided. If the user asks about walking, movement, screen time, or app usage, answer from the provided context and mention confidence or permission gaps. Do not claim exact gaze or screen-looking time. Never invent missing life data.",
         _style_policy(request.message),
     ]
+    if (request.metadata or {}).get("attachment_prompt_context"):
+        parts.append(UNTRUSTED_ATTACHMENT_INSTRUCTION)
     if _looks_unclear_medical_like(request.message):
         parts.append(UNCLEAR_MEDICAL_TERM_INSTRUCTION)
     if provider == "sarvam":

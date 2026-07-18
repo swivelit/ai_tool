@@ -16,6 +16,14 @@ describe('authorizedFetch', () => {
     const response = await authorizedFetch(user as never, '/x')
     expect(response.ok).toBe(true); expect(user.getIdToken).toHaveBeenCalledWith(true)
   })
+  it('does not set application/json Content-Type for FormData', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'))
+    const user = { getIdToken: vi.fn().mockResolvedValue('firebase-token') }
+    const body = new FormData(); body.append('file', new Blob(['hello'], { type:'text/plain' }), 'notes.txt')
+    await authorizedFetch(user as never, '/api/web/uploads', { method:'POST', body })
+    const headers = new Headers(fetchMock.mock.calls[0][1]?.headers)
+    expect(headers.has('Content-Type')).toBe(false)
+  })
 })
 
 it('treats an event:error as a failed stream even when HTTP status is 200', async () => {

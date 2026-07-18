@@ -18,7 +18,7 @@ REQUIRED = (
 def unsafe_headers(headers) -> list[str]:
     failures = [name for name in REQUIRED if not headers.get(name)]
     csp = str(headers.get("Content-Security-Policy") or "").lower()
-    for directive in ("default-src", "object-src 'none'", "frame-ancestors 'none'", "base-uri 'self'"):
+    for directive in ("default-src", "object-src 'none'", "frame-ancestors 'none'", "base-uri 'self'", "media-src 'self' blob:"):
         if directive not in csp:
             failures.append(f"Content-Security-Policy missing safe directive: {directive}")
     if str(headers.get("X-Content-Type-Options") or "").lower() != "nosniff":
@@ -29,7 +29,7 @@ def unsafe_headers(headers) -> list[str]:
     if referrer in {"", "unsafe-url", "no-referrer-when-downgrade"}:
         failures.append("Referrer-Policy is absent or unsafe")
     permissions = str(headers.get("Permissions-Policy") or "").replace(" ", "").lower()
-    for feature in ("camera=()", "geolocation=()", "microphone=()"):
+    for feature in ("camera=()", "geolocation=()", "microphone=(self)"):
         if feature not in permissions:
             failures.append(f"Permissions-Policy missing {feature}")
     hsts = str(headers.get("Strict-Transport-Security") or "").lower()

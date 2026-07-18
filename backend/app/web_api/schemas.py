@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ThreadCreate(BaseModel):
@@ -34,17 +34,23 @@ class WebChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: UUID
-    message: str = Field(min_length=1, max_length=16_000)
+    message: str = Field(default="", max_length=16_000)
     thread_id: UUID | None = None
     reply_language: str | None = Field(default=None, max_length=16)
+    attachment_ids: list[UUID] = Field(default_factory=list, max_length=5)
 
     @field_validator("message")
     @classmethod
     def clean_message(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("message cannot be empty")
-        return cleaned
+        return value.strip()
+
+    @model_validator(mode="after")
+    def require_message_or_attachment(self):
+        if not self.message and not self.attachment_ids:
+            raise ValueError("message or at least one attachment is required")
+        if len(set(self.attachment_ids)) != len(self.attachment_ids):
+            raise ValueError("attachment_ids must be unique")
+        return self
 
 
 class ProfilePatch(BaseModel):

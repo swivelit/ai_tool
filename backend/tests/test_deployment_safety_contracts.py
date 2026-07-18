@@ -33,12 +33,23 @@ def env_vars(service: dict) -> dict[str, dict]:
 
 def test_staging_blueprint_contains_required_safe_values():
     services = services_by_name(load_blueprint())
-    assert set(services) == {"swico-api-staging", "swico-web-staging"}
+    assert set(services) == {"swico-api-staging", "swico-web-staging", "swico-upload-cache-staging"}
     api = services["swico-api-staging"]
     values = {key: item.get("value") for key, item in env_vars(api).items() if "value" in item}
     assert values == {
         "APP_ENV": "staging",
         "WEB_APP_ENABLED": "true",
+        "WEB_ATTACHMENTS_ENABLED": "true",
+        "WEB_VOICE_RECORDING_ENABLED": "true",
+        "WEB_UPLOAD_TTL_SECONDS": "600",
+        "WEB_UPLOAD_MAX_FILE_BYTES": "10485760",
+        "WEB_UPLOAD_MAX_FILES_PER_MESSAGE": "5",
+        "WEB_UPLOAD_MAX_TOTAL_BYTES": "26214400",
+        "WEB_UPLOAD_MAX_EXTRACTED_CHARS": "100000",
+        "WEB_ATTACHMENT_PROMPT_MAX_CHARS": "24000",
+        "WEB_AUDIO_MAX_SECONDS": "300",
+        "WEB_UPLOAD_RATE_LIMIT_PER_MINUTE": "10",
+        "WEB_UPLOAD_STORE_RAW": "false",
         "LOG_CHAT_CONTENT": "false",
         "AUTH_ALLOW_DEV_TOKENS": "false",
         "EMAIL_OTP_DEV_RETURN_CODE": "false",
@@ -87,6 +98,19 @@ def test_staging_blueprint_cannot_reference_production_resources_or_groups():
     assert env_vars(api)["DATABASE_URL"] == {
         "key": "DATABASE_URL",
         "fromDatabase": {"name": "swico-postgres-staging", "property": "connectionString"},
+    }
+    assert env_vars(api)["WEB_UPLOAD_CACHE_URL"] == {
+        "key": "WEB_UPLOAD_CACHE_URL",
+        "fromService": {
+            "type": "keyvalue", "name": "swico-upload-cache-staging",
+            "property": "connectionString",
+        },
+    }
+    cache = services["swico-upload-cache-staging"]
+    assert cache == {
+        "type": "keyvalue", "name": "swico-upload-cache-staging",
+        "region": "singapore", "plan": "starter", "ipAllowList": [],
+        "maxmemoryPolicy": "allkeys-lru", "persistenceMode": "off",
     }
     serialized = BLUEPRINT.read_text(encoding="utf-8").lower()
     assert "tamil_voice_ai_db" not in serialized

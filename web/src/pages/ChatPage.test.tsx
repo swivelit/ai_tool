@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
-import { ApiError, apiJson, streamChat } from '../api/client'
+import { ApiError, apiJson, deleteUpload, streamChat, uploadDocument } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { ChatPage } from './ChatPage'
 
@@ -9,7 +9,7 @@ const user = { getIdToken: vi.fn().mockResolvedValue('token') }
 vi.mock('../auth/useAuth', () => ({ useAuth: () => ({ user, signOut:vi.fn() }) }))
 vi.mock('../api/client', async importOriginal => {
   const actual = await importOriginal<typeof import('../api/client')>()
-  return { ...actual, apiJson:vi.fn(), streamChat:vi.fn() }
+  return { ...actual, apiJson:vi.fn(), streamChat:vi.fn(), uploadDocument:vi.fn(), deleteUpload:vi.fn() }
 })
 
 const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_description:'Fast and efficient for everyday questions.', tier_selection_enabled:true, tiers:[
@@ -17,7 +17,7 @@ const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_descript
   { id:'standard' as const, label:'Swico', description:'Balanced quality and speed for most tasks.', available:true, selected:false },
   { id:'pro' as const, label:'Swico Pro', description:'Best for complex reasoning, planning, and coding.', available:false, selected:false },
 ] }
-const bootstrap = { user:{ id:1, name:'Hari', email:'h@example.com', reply_language:'en' }, wallet:{ balance_micros:5_000_000, reserved_micros:0, available_micros:5_000_000, version:1 }, billing:{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_key', razorpay_mode:'test', checkout_enabled:true, custom_topup_enabled:true, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500 }, { gross_amount_paise:29900, credited_amount_micros:149_500_000, platform_share_paise:14950 }] }, assistant, features:{ web_chat:true, prepaid_billing:true } } as const
+const bootstrap = { user:{ id:1, name:'Hari', email:'h@example.com', reply_language:'en' }, wallet:{ balance_micros:5_000_000, reserved_micros:0, available_micros:5_000_000, version:1 }, billing:{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_key', razorpay_mode:'test', checkout_enabled:true, custom_topup_enabled:true, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500 }, { gross_amount_paise:29900, credited_amount_micros:149_500_000, platform_share_paise:14950 }] }, assistant, features:{ web_chat:true, prepaid_billing:true, web_attachments:true, web_voice_recording:false }, uploads:{ available:true, ttl_seconds:600, max_file_bytes:10485760, max_files_per_message:5, max_total_bytes:26214400, supported_extensions:['.txt','.pdf'] } } as const
 
 it.each([
   [401, 'session expired'],
@@ -36,12 +36,21 @@ it('prioritises the offline state over an HTTP error', () => {
 
 function mockApi() {
   vi.mocked(apiJson).mockReset()
+  vi.mocked(streamChat).mockReset().mockResolvedValue(undefined)
+  vi.mocked(uploadDocument).mockReset()
+  vi.mocked(deleteUpload).mockReset().mockResolvedValue(undefined)
   vi.mocked(apiJson).mockImplementation(async (_user, path) => {
     if (path === '/api/web/bootstrap') return bootstrap as never
     if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
     if (path.includes('/billing/ledger') || path === '/api/web/billing/payments') return { items:[] } as never
     return {} as never
   })
+}
+
+const uploaded = {
+  id:'upload-1', name:'notes.txt', media_type:'text/plain', size_bytes:5,
+  created_at:new Date().toISOString(), expires_at:new Date(Date.now() + 600_000).toISOString(),
+  status:'ready' as const, warnings:[],
 }
 
 it('opens an accessible header mode selector with all public names and closes on Escape', async () => {
@@ -130,4 +139,38 @@ it('refreshes the wallet estimate when the tab regains focus without polling', a
   await screen.findByRole('textbox', { name:'Message Swico' })
   window.dispatchEvent(new Event('focus'))
   await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => call[1] === '/api/web/billing/wallet')).toBe(true))
+})
+
+it('selects and uploads a supported document, then sends its attachment id without text', async () => {
+  mockApi(); vi.mocked(uploadDocument).mockResolvedValue(uploaded)
+  const { container } = render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  const input = container.querySelector('input[type="file"]') as HTMLInputElement
+  await userEvent.upload(input, new File(['hello'], 'notes.txt', { type:'text/plain' }))
+  expect(await screen.findByText(/remaining/)).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalled())
+  expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({ message:'', attachment_ids:['upload-1'] })
+  expect(screen.getByText(/stay active for this chat/i)).toBeInTheDocument()
+})
+
+it('rejects unsupported documents before upload', async () => {
+  mockApi(); render(<ChatPage />)
+  await screen.findByRole('textbox', { name:'Message Swico' })
+  const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+  await userEvent.upload(fileInput, new File(['bad'], 'script.exe', { type:'application/octet-stream' }), { applyAccept:false })
+  expect(await screen.findByRole('alert')).toHaveTextContent('not supported')
+  expect(uploadDocument).not.toHaveBeenCalled()
+})
+
+it('supports drag-and-drop and prevents send while an upload is pending', async () => {
+  mockApi(); vi.mocked(uploadDocument).mockImplementation(() => new Promise(() => undefined))
+  render(<ChatPage />)
+  const textbox = await screen.findByRole('textbox', { name:'Message Swico' })
+  const dropTarget = screen.getByTestId('composer').parentElement!
+  fireEvent.drop(dropTarget, { dataTransfer:{ files:[new File(['hello'], 'notes.txt', { type:'text/plain' })] } })
+  expect(await screen.findByText('Uploading… 0%')).toBeInTheDocument()
+  await userEvent.type(textbox, 'question')
+  expect(screen.getByRole('button', { name:'Send message' })).toBeDisabled()
+  expect(streamChat).not.toHaveBeenCalled()
 })

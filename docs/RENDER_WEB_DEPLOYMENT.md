@@ -4,8 +4,9 @@ Do not create a Blueprint for the existing production resources. They were creat
 
 ## New isolated staging project — beginner setup
 
-`render.staging.yaml` is only for three new resources:
-`swico-api-staging`, `swico-web-staging`, and `swico-postgres-staging`. It puts
+`render.staging.yaml` is only for four new resources:
+`swico-api-staging`, `swico-web-staging`, `swico-postgres-staging`, and
+`swico-upload-cache-staging`. It puts
 the API and database in the same region, wires `DATABASE_URL` only through the
 staging `fromDatabase` reference, and defines no environment group. Never
 attach a production environment group or copy a production credential.
@@ -15,7 +16,7 @@ attach a production environment group or copy a production credential.
    it.
 2. Open **Blueprints → New Blueprint Instance**, connect this repository and
    branch, select **Use a custom Blueprint path**, and enter
-   `render.staging.yaml`. Review that the plan contains only the three staging
+   `render.staging.yaml`. Review that the plan contains only the four staging
    resource names before applying it.
 3. In the initial Blueprint form, provide every `sync:false` value. On the API,
    set `CORS_ALLOW_ORIGINS` to the exact staging web HTTPS origin; provide a
@@ -48,6 +49,10 @@ attach a production environment group or copy a production credential.
 9. Confirm `GET /api/web/health` returns success. This endpoint performs a
    database query, so the Render health check also proves the isolated staging
    database is reachable.
+10. Open `swico-upload-cache-staging` and confirm region **Singapore**,
+    Persistence **Off**, eviction policy **allkeys-lru**, and no public IP allow
+    list. Confirm `swico-api-staging` receives its internal connection string as
+    `WEB_UPLOAD_CACHE_URL`; never copy it into the static site.
 
 The file has been checked by repository tests and parsed as YAML. A Render CLI
 or API validation must be run by the operator when authenticated tooling is
@@ -88,6 +93,9 @@ Exact environment delta for this release:
   set `SENTRY_TRACES_SAMPLE_RATE=0.05` and `SENTRY_PROFILES_SAMPLE_RATE=0`.
 - Keep `RAZORPAY_MODE=test` plus matching `rzp_test_` ID/secret/webhook secret. Do not add Live credentials.
 - Remove no `VITE_*` variables. Do not add model IDs, provider routing, Swico tier mappings, Razorpay secrets, or checkout flags to the static-site environment.
+- Add the temporary attachment/voice variables shown in `backend/.env.example`
+  directly to the API service. `WEB_UPLOAD_CACHE_URL` must be the dedicated Key
+  Value internal connection string and must not reuse `REDIS_URL`.
 
 For Firebase Admin, configure exactly one credential method. The recommended
 Render setup is a secret file named `firebase-admin.json` plus
@@ -101,6 +109,51 @@ All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
 Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores selected web-tier audit fields, and revision `a7c4e9d2f1b6` adds the nullable billing-exemption reason to usage audit rows. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode checkout, capture, duplicate webhook replay, and refund in staging after intentionally enabling the switch there.
+
+## Production temporary uploads and voice — exact dashboard steps
+
+1. In the Render dashboard select **New + → Key Value**. Create
+   **swico-upload-cache** in **Virginia**, in the same Render workspace as the
+   production API. Set **Persistence** to **Off**, **Maxmemory Policy** to
+   **allkeys-lru**, and keep external/public access disabled (no public IP allow
+   list). Do not add a persistent disk.
+2. Open the Key Value service **Connect** page and copy its private/internal
+   connection string. Open the production API service **ai_tool → Environment**
+   and add that value directly as the secret `WEB_UPLOAD_CACHE_URL`. Do not use
+   `REDIS_URL`, and do not put the value in the static site or an environment
+   group shared with unrelated services.
+3. On **ai_tool → Environment**, add these API-only values exactly:
+
+   ```dotenv
+   WEB_ATTACHMENTS_ENABLED=true
+   WEB_VOICE_RECORDING_ENABLED=true
+   WEB_UPLOAD_TTL_SECONDS=600
+   WEB_UPLOAD_MAX_FILE_BYTES=10485760
+   WEB_UPLOAD_MAX_FILES_PER_MESSAGE=5
+   WEB_UPLOAD_MAX_TOTAL_BYTES=26214400
+   WEB_UPLOAD_MAX_EXTRACTED_CHARS=100000
+   WEB_ATTACHMENT_PROMPT_MAX_CHARS=24000
+   WEB_AUDIO_MAX_SECONDS=300
+   WEB_UPLOAD_RATE_LIMIT_PER_MINUTE=10
+   WEB_UPLOAD_STORE_RAW=false
+   ```
+
+4. Do **not** add `WEB_UPLOAD_CACHE_URL` or any `WEB_UPLOAD_*`, attachment, or
+   voice variable to **swico-backend-production**, billing Cron Jobs, the static
+   site, or a shared billing environment group. Do not create an upload cleanup
+   Cron Job, object-storage bucket, or upload disk; Redis expiry and immediate
+   parser cleanup are authoritative.
+5. Open **swico-web → Settings → Headers**. Replace the existing
+   `Permissions-Policy` value with
+   `camera=(), geolocation=(), microphone=(self)`. Replace the existing CSP with
+   the exact value in `web/public/_headers`, including
+   `media-src 'self' blob:`. Save the header changes.
+6. Deploy **ai_tool** first. Verify authenticated `/api/web/bootstrap` reports
+   `web_attachments: true`, `web_voice_recording: true`, and
+   `uploads.available: true`; smoke one document upload and one transcription.
+   Only then select **Save, rebuild, and deploy** on **swico-web**. This order
+   prevents the browser from exposing controls before the authoritative API is
+   ready.
 
 ## Financial Cron Jobs
 
@@ -232,11 +285,11 @@ For `https://swico-web.onrender.com`, complete these Firebase Console settings:
 
 Render did not apply `web/public/_headers` to the audited static site automatically. Reproduce these exact name/value pairs from that file in the static-site dashboard/edge configuration:
 
-- `Content-Security-Policy`: `default-src 'self'; script-src 'self' https://checkout.razorpay.com https://*.razorpay.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: wss:; frame-src https://*.firebaseapp.com https://*.razorpay.com https://api.razorpay.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests`
+- `Content-Security-Policy`: `default-src 'self'; script-src 'self' https://checkout.razorpay.com https://*.razorpay.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self' https: wss:; frame-src https://*.firebaseapp.com https://*.razorpay.com https://api.razorpay.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests`
 - `Referrer-Policy`: `strict-origin-when-cross-origin`
 - `X-Content-Type-Options`: `nosniff`
 - `X-Frame-Options`: `DENY`
-- `Permissions-Policy`: `camera=(), geolocation=(), microphone=()`
+- `Permissions-Policy`: `camera=(), geolocation=(), microphone=(self)`
 - `Strict-Transport-Security`: `max-age=31536000; includeSubDomains`
 
 The response—not an HTML meta tag—must contain them. Run the network check only
@@ -266,6 +319,10 @@ Phase one keeps checkout closed. Configure the Live key ID, Live key secret, and
 Phase two sets `BILLING_CHECKOUT_ENABLED=true` and deploys separately. Make one controlled ₹10 payment, verify exactly-once credit and webhook replay idempotency, then run reconciliation and the financial audit. Disable checkout immediately and investigate if any amount, credit, webhook, ledger, reconciliation, or audit result mismatches.
 
 ## Migration and rollback
+
+This attachment/voice release needs no database migration. Temporary extracted
+text lives only in the dedicated Key Value service, while existing
+`WebChatMessage.metadata_json` stores display metadata only.
 
 1. Back up PostgreSQL and note the currently deployed image and Alembic revision.
 2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `a7c4e9d2f1b6`.

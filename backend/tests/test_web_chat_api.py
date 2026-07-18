@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from app.ai.types import AIProviderResponse, AIRequest
 from app.ai.providers.base import GenerationCancelled
@@ -10,10 +11,12 @@ from app.database import SessionLocal
 from app.models import (
     PaymentOrder, UsageCharge, WalletLedger, WebChatMessage, WebChatThread,
     WebUsagePreferences,
+    UserProfile,
 )
 from sqlmodel import select
 from app.ai import orchestrator
 from tests.conftest import auth_headers, create_test_user
+from app.web_api.upload_store import EphemeralUpload, ExtractedChunk, get_upload_store, utc_iso
 
 
 def test_thread_ownership_for_read_rename_delete(client):
@@ -292,3 +295,157 @@ def test_cancellation_after_partial_output_settles_usage(client, monkeypatch):
         charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).one()
         assert charge.status == "settled" and charge.debited_micros > 0 and charge.usage_source == "estimated"
         assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
+
+
+def _temporary_upload(user_id: int, *, name: str = "report.pdf", text: str = "Secret quarterly revenue was 42.") -> EphemeralUpload:
+    upload = EphemeralUpload(
+        id="70000000-0000-4000-8000-000000000001",
+        owner_user_id=user_id,
+        name=name,
+        extension=".pdf",
+        media_type="application/pdf",
+        size_bytes=1234,
+        created_at=utc_iso(),
+        expires_at=utc_iso(datetime.now(timezone.utc) + timedelta(minutes=10)),
+        chunks=[ExtractedChunk(text=text, source="page 3")],
+        source_locators=["page 3"],
+        warnings=[],
+    )
+    get_upload_store().put(upload)
+    return upload
+
+
+def test_web_followup_context_is_paired_and_profile_context_is_private(client, monkeypatch):
+    user = create_test_user("context-user", "context-user@example.com")
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        thread = WebChatThread(user_id=int(user.id), title="Context")
+        session.add(thread); session.flush()
+        session.add(WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="user", content="What is an index?",
+            request_id="71000000-0000-4000-8000-000000000001", status="complete",
+        ))
+        session.add(WebChatMessage(
+            thread_id=thread.id, user_id=int(user.id), role="assistant", content="It speeds database lookups.",
+            request_id="71000000-0000-4000-8000-000000000001", status="complete",
+        ))
+        session.add(UserProfile(
+            user_id=int(user.id),
+            answers_json=json.dumps({
+                "age_group": "13_17", "communication_tone": "friendly", "answer_length": "short",
+                "preferred_language": "en", "occupation": "student", "assistant_persona": "coach",
+                "main_goal": "learn", "dislikes": "jargon",
+            }),
+            profile_summary="A student who prefers concise explanations.",
+        ))
+        session.commit(); thread_id = thread.id
+    captured = {}
+
+    def fake_stream(self, request, route, on_delta):
+        captured["context"] = request.context_turns
+        captured["metadata"] = request.metadata
+        on_delta("Follow-up answer")
+        return AIProviderResponse(
+            text="Follow-up answer", provider="openai", model=route.model, route=route.route,
+            reason=route.reason, language="en", intent=route.intent, input_tokens=80,
+            output_tokens=10, raw={"usage_actual": True},
+        )
+
+    monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", fake_stream)
+    response = client.post("/api/web/chat/stream", headers=auth_headers("context-user", "context-user@example.com"), json={
+        "request_id": "71000000-0000-4000-8000-000000000002",
+        "thread_id": thread_id,
+        "message": "Explain that more simply",
+    })
+    assert response.status_code == 200
+    assert captured["context"] == [{
+        "user": "What is an index?", "assistant": "It speeds database lookups.",
+    }]
+    assert captured["metadata"]["age_group"] == "13_17"
+    assert "student" in captured["metadata"]["profile_prompt_context"]
+    assert "profile_prompt_context" not in response.text
+
+
+def test_attachment_context_affects_reservation_but_only_metadata_is_persisted(client, monkeypatch):
+    user = create_test_user("attachment-chat", "attachment-chat@example.com")
+    _fund(int(user.id))
+    upload = _temporary_upload(int(user.id))
+    captured = {}
+    import app.web_api.chat_service as chat_service
+    original_reserve = chat_service.reserve_price
+
+    def capture_reserve(provider, model, input_tokens, output_tokens):
+        captured["reservation_input_tokens"] = input_tokens
+        return original_reserve(provider, model, input_tokens, output_tokens)
+
+    def fake_stream(self, request, route, on_delta):
+        captured["request"] = request
+        on_delta("Revenue was 42 [report.pdf, page 3].")
+        return AIProviderResponse(
+            text="Revenue was 42 [report.pdf, page 3].", provider="openai", model=route.model,
+            route=route.route, reason=route.reason, language="en", intent=route.intent,
+            input_tokens=100, output_tokens=20, raw={"usage_actual": True},
+        )
+
+    monkeypatch.setattr(chat_service, "reserve_price", capture_reserve)
+    monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", fake_stream)
+    request_id = "72000000-0000-4000-8000-000000000001"
+    response = client.post("/api/web/chat/stream", headers=auth_headers("attachment-chat", "attachment-chat@example.com"), json={
+        "request_id": request_id, "message": "What was revenue?", "attachment_ids": [upload.id],
+    })
+    assert response.status_code == 200
+    assert "Secret quarterly revenue was 42." in captured["request"].metadata["attachment_prompt_context"]
+    assert captured["reservation_input_tokens"] > 5
+    with SessionLocal() as session:
+        user_message = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == request_id, WebChatMessage.role == "user",
+        )).one()
+        metadata = json.loads(user_message.metadata_json)
+        assert metadata["attachments"][0]["name"] == "report.pdf"
+        assert "chunks" not in user_message.metadata_json
+        assert "Secret quarterly" not in user_message.metadata_json
+        thread_id = user_message.thread_id
+    public = client.get(
+        f"/api/web/threads/{thread_id}/messages",
+        headers=auth_headers("attachment-chat", "attachment-chat@example.com"),
+    ).json()["items"]
+    public_user = next(item for item in public if item["role"] == "user")
+    assert public_user["attachments"][0]["status"] == "ready"
+    assert "chunks" not in json.dumps(public_user)
+    assert "Secret quarterly" not in json.dumps(public_user)
+
+
+def test_attachment_only_message_and_idempotent_replay_do_not_double_charge(client, monkeypatch):
+    user = create_test_user("attachment-replay", "attachment-replay@example.com")
+    _fund(int(user.id))
+    upload = _temporary_upload(int(user.id), name="budget.pdf")
+    calls = {"count": 0}
+
+    def fake_stream(self, request, route, on_delta):
+        calls["count"] += 1
+        assert request.message == "Review and summarize the attached document."
+        on_delta("Summary")
+        return AIProviderResponse(
+            text="Summary", provider="openai", model=route.model, route=route.route,
+            reason=route.reason, language="en", intent=route.intent,
+            input_tokens=80, output_tokens=10, raw={"usage_actual": True},
+        )
+
+    monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", fake_stream)
+    body = {
+        "request_id": "73000000-0000-4000-8000-000000000001",
+        "message": "", "attachment_ids": [upload.id],
+    }
+    headers = auth_headers("attachment-replay", "attachment-replay@example.com")
+    first = client.post("/api/web/chat/stream", headers=headers, json=body)
+    second = client.post("/api/web/chat/stream", headers=headers, json=body)
+    assert first.status_code == second.status_code == 200 and calls["count"] == 1
+    with SessionLocal() as session:
+        charges = session.exec(select(UsageCharge).where(UsageCharge.request_id == body["request_id"])).all()
+        user_message = session.exec(select(WebChatMessage).where(
+            WebChatMessage.request_id == body["request_id"], WebChatMessage.role == "user",
+        )).one()
+        thread = session.get(WebChatThread, user_message.thread_id)
+        assert len(charges) == 1
+        assert user_message.content == "Attached: budget.pdf"
+        assert thread is not None and thread.title == "budget.pdf"

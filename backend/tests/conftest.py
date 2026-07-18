@@ -28,6 +28,16 @@ os.environ["SARVAM_API_KEY"] = ""
 os.environ["SENTRY_DSN"] = ""
 os.environ["AUTH_ALLOW_DEV_TOKENS"] = "true"
 os.environ["WEB_APP_ENABLED"] = "true"
+os.environ["WEB_ATTACHMENTS_ENABLED"] = "true"
+os.environ["WEB_VOICE_RECORDING_ENABLED"] = "true"
+os.environ["WEB_UPLOAD_TTL_SECONDS"] = "600"
+os.environ["WEB_UPLOAD_MAX_FILE_BYTES"] = "10485760"
+os.environ["WEB_UPLOAD_MAX_FILES_PER_MESSAGE"] = "5"
+os.environ["WEB_UPLOAD_MAX_TOTAL_BYTES"] = "26214400"
+os.environ["WEB_UPLOAD_MAX_EXTRACTED_CHARS"] = "100000"
+os.environ["WEB_ATTACHMENT_PROMPT_MAX_CHARS"] = "24000"
+os.environ["WEB_AUDIO_MAX_SECONDS"] = "300"
+os.environ["WEB_UPLOAD_RATE_LIMIT_PER_MINUTE"] = "1000"
 os.environ["RAZORPAY_KEY_ID"] = "rzp_test_public"
 os.environ["RAZORPAY_KEY_SECRET"] = "test_checkout_secret"
 os.environ["RAZORPAY_WEBHOOK_SECRET"] = "test_webhook_secret"
@@ -94,6 +104,9 @@ def create_test_user(uid: str = "test-uid", email: str = "test@example.com", nam
 
 @pytest.fixture(autouse=True)
 def clean_db():
+    from app.web_api.upload_store import reset_upload_store_for_tests
+
+    reset_upload_store_for_tests()
     SQLModel.metadata.create_all(engine)
     queue = _get_job_queue()
     queue.stop()
@@ -102,6 +115,7 @@ def clean_db():
             session.exec(delete(model))
         session.commit()
     yield
+    reset_upload_store_for_tests()
     queue.stop()
     with SessionLocal() as session:
         for model in [*WEB_MODELS, AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User, EmailOtpCode]:
