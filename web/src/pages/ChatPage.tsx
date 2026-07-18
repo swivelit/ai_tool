@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { AssistantSettings, ComposerAttachment, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, SSEEvent } from '../types'
+import type { AssistantSettings, ComposerAttachment, InputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, SSEEvent } from '../types'
 import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, uploadDocument } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
@@ -10,6 +10,7 @@ import { Conversation } from '../components/Conversation'
 import { Composer } from '../components/Composer'
 import { SwicoTierSelector } from '../components/SwicoTierSelector'
 import { applyTheme, resolveTheme, type Theme } from '../theme'
+import { useVoiceReply } from '../hooks/useVoiceReply'
 
 const BillingModal = lazy(() => import('../billing/BillingModal').then(module => ({ default: module.BillingModal })))
 const SettingsModal = lazy(() => import('../components/SettingsModal').then(module => ({ default: module.SettingsModal })))
@@ -22,6 +23,7 @@ export function ChatPage() {
   const [threads, setThreads] = useState<Thread[]>([]); const [hasMore, setHasMore] = useState(false)
   const [active, setActive] = useState<string | null>(null); const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState(''); const [streaming, setStreaming] = useState(false)
+  const [draftVoiceTurnId, setDraftVoiceTurnId] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [drawer, setDrawer] = useState(false); const [collapsed, setCollapsed] = useState(localStorage.getItem('swico-sidebar-collapsed') === 'true')
   const [archived, setArchived] = useState(false); const [query, setQuery] = useState('')
@@ -49,6 +51,14 @@ export function ChatPage() {
     const wallet = await apiJson<Wallet>(user, '/api/web/billing/wallet')
     setBootstrap(value => value ? { ...value, wallet } : value)
   }, [user])
+  const applyWallet = useCallback((wallet: Wallet) => {
+    setBootstrap(value => value ? { ...value, wallet } : value)
+  }, [])
+  const voiceReply = useVoiceReply({
+    user, scopeKey: active ?? 'new-chat',
+    enabled: Boolean(bootstrap?.features.web_voice_reply && bootstrap?.features.web_voice_billing),
+    onWallet: applyWallet,
+  })
   const saveTier = useCallback(async (tier: SwicoTier) => {
     if (!user || !bootstrap || streaming || tierSaving || tier === bootstrap.assistant.tier) return
     const previous = bootstrap.assistant
@@ -100,6 +110,7 @@ export function ChatPage() {
     return () => window.clearTimeout(timer)
   }, [archived, query, user]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { applyTheme(theme) }, [theme])
+  useEffect(() => { setDraftVoiceTurnId(null) }, [active])
   useEffect(() => { localStorage.setItem('swico-sidebar-collapsed', String(collapsed)) }, [collapsed])
   useEffect(() => {
     const online = () => setOffline(false); const off = () => setOffline(true)
@@ -160,19 +171,31 @@ export function ChatPage() {
         setMessages(value => value.map(item => item.thread_id ? item : { ...item, thread_id: id }))
       }
     }
+    if (event.event === 'done' && typeof event.data === 'object' && event.data) {
+      const data = event.data as Record<string, unknown>
+      const messageId = String(data.message_id ?? '')
+      const voiceTurnId = String(data.voice_turn_id ?? '')
+      if (!data.cancelled && data.input_mode === 'voice' && messageId && voiceTurnId) {
+        void voiceReply.generate(messageId, voiceTurnId, true)
+      }
+    }
   }
 
   const send = async (
     text = draft, threadId = active, retryRequestId?: string,
-    attachmentOverride?: MessageAttachment[],
+    attachmentOverride?: MessageAttachment[], originOverride?: { inputMode: InputMode; voiceTurnId: string | null },
   ) => {
     const selectedAttachments = (attachmentOverride ?? attachments).filter((item): item is ReadyAttachment => item.status === 'ready')
     if (!user || !bootstrap || streaming || (!text.trim() && !selectedAttachments.length) || offline || attachments.some(item => item.status === 'uploading')) return
     const nextRequestId = retryRequestId || crypto.randomUUID()
+    const origin = originOverride ?? {
+      inputMode: draftVoiceTurnId ? 'voice' as const : 'text' as const,
+      voiceTurnId: draftVoiceTurnId,
+    }
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
     if (!existingUser) {
       const content = text.trim() || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
-      const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments }
+      const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments, input_mode: origin.inputMode, voice_turn_id: origin.voiceTurnId, reply_language: bootstrap.user.reply_language === 'ta' ? 'ta' : 'en' }
       setMessages(value => [...value, optimistic])
     }
     setDraft(''); setStreaming(true); setError(''); setRequestId(nextRequestId)
@@ -183,13 +206,17 @@ export function ChatPage() {
         request_id: nextRequestId,
         message: text.trim(),
         attachment_ids: selectedAttachments.map(item => item.id),
+        input_mode: origin.inputMode,
+        ...(origin.inputMode === 'voice' && origin.voiceTurnId ? { voice_turn_id: origin.voiceTurnId } : {}),
         ...(threadId ? { thread_id: threadId } : {}),
       }, handleEvent, abort.signal)
+      setDraftVoiceTurnId(null)
       await loadThreads(true)
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
         dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial measured usage may already have been charged.')
       } else {
+        if (origin.inputMode === 'voice') { setDraft(text); setDraftVoiceTurnId(origin.voiceTurnId) }
         const code = caught instanceof ApiError && caught.body && typeof caught.body === 'object' && 'error' in caught.body
           ? String((caught.body as { error?: { code?: string } }).error?.code ?? '') : ''
         if (caught instanceof ApiError && caught.status === 402 && code !== 'usage_limit_reached') setBilling(true)
@@ -215,10 +242,12 @@ export function ChatPage() {
     if (!original || !original.request_id || message.status !== 'retryable') return
     const summary = `Attached: ${(original.attachments ?? []).map(item => item.name).join(', ')}`
     const retryText = original.attachments?.length && original.content === summary ? '' : original.content
-    void send(retryText, original.thread_id || active, original.request_id, original.attachments)
+    void send(retryText, original.thread_id || active, original.request_id, original.attachments, {
+      inputMode: original.input_mode, voiceTurnId: original.voice_turn_id,
+    })
   }
-  const newChat = () => { setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
-  const select = (id: string) => { setAttachments([]); setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
+  const select = (id: string) => { if (draftVoiceTurnId) setDraft(''); setDraftVoiceTurnId(null); setAttachments([]); setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
   const addFiles = (files: File[]) => {
     if (!user || !bootstrap?.features.web_attachments || !bootstrap.uploads) return
     const limits = bootstrap.uploads
@@ -284,9 +313,13 @@ export function ChatPage() {
     <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><SwicoTierSelector assistant={bootstrap.assistant} disabled={streaming} saving={tierSaving} onSelect={saveTier} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
-      <Conversation messages={messages} phase={streamState.phase} retry={retry} suggest={text => { setDraft(text); setFocusKey(`suggest-${Date.now()}`) }} />
+      <Conversation messages={messages} phase={streamState.phase} retry={retry} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
+        voiceStates={voiceReply.states} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
+        retryVoice={voiceReply.retry} addCredits={openBilling} />
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey}
-        attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording)}
+        attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
+        voiceResetKey={`${active ?? 'new-chat'}:${focusKey}`}
+        onVoiceDraft={setDraftVoiceTurnId} onVoiceCancel={() => setDraftVoiceTurnId(null)} onComposerClear={() => setDraftVoiceTurnId(null)} onVoiceWallet={applyWallet}
         supportedExtensions={bootstrap.uploads?.supported_extensions ?? []} addFiles={addFiles} removeAttachment={removeAttachment} />
     </section>
     {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}

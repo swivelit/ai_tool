@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -8,12 +9,16 @@ import os
 from pathlib import Path
 import tempfile
 import threading
-from uuid import uuid4
+import time
+from decimal import Decimal, ROUND_CEILING
+from uuid import UUID, uuid4
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import delete as sa_delete, text, update as sa_update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ..auth import AuthUser, get_current_user, get_owned_user, is_internal_test_user
@@ -21,12 +26,16 @@ from ..billing.errors import (
     InsufficientCreditError, PaymentValidationError, RateLimitError,
     UsageLimitReachedError,
 )
-from ..billing.pricing import calculate_topup, credit_percent
+from ..billing.pricing import (
+    calculate_topup, credit_percent, snapshot_json, stt_price, tts_price,
+)
 from ..billing.razorpay_client import RazorpayClient, verify_checkout_signature, verify_webhook_signature
 from ..billing.schemas import CreateOrderRequest, TopupEstimateResponse, VerifyPaymentRequest
 from ..billing.service import (
-    credit_payment_once, enforce_rate_limit, get_wallet_summary, list_wallet_ledger,
-    reverse_credit_for_refund,
+    create_billing_exempt_usage, create_usage_reservation, credit_payment_once,
+    enforce_rate_limit, get_wallet_summary, list_wallet_ledger,
+    release_billing_exempt_usage, release_usage_reservation, reverse_credit_for_refund,
+    settle_billing_exempt_usage, settle_usage_reservation,
 )
 from ..billing.token_estimates import micros_for_blended_tokens, token_estimate
 from ..billing.topups import (
@@ -34,10 +43,12 @@ from ..billing.topups import (
 )
 from ..billing.usage_limits import validated_timezone
 from ..ai.providers.base import GenerationCancellation, GenerationCancelled
-from ..ai.budget import enforce_free_voice_quota, enforce_provider_budget
+from ..ai.budget import enforce_provider_budget
 from ..ai.providers.sarvam_provider import (
-    SarvamProvider, estimate_audio_duration_details, estimate_stt_cost,
-    normalize_audio_language, normalize_stt_upload_mime_type,
+    SarvamProvider, estimate_audio_duration_details,
+    normalize_audio_language, normalize_sarvam_tts_model,
+    normalize_sarvam_tts_language_code, normalize_stt_upload_mime_type,
+    resolve_sarvam_tts_voice,
 )
 from ..ai.types import AIProviderResponse
 from ..ai.usage import record_ai_usage_event
@@ -67,9 +78,9 @@ from .document_extraction import (
 )
 from .schemas import (
     AssistantSettingsPatch, ProfilePatch, ThreadCreate, ThreadPatch,
-    UsagePreferencesPatch, WebChatRequest,
+    UsagePreferencesPatch, WebChatRequest, WebTTSRequest,
 )
-from .usage_service import selected_swico_tier, usage_preferences_dict, usage_summary
+from .usage_service import ai_credits, selected_swico_tier, usage_preferences_dict, usage_summary
 from .upload_store import (
     EphemeralUpload, UploadStoreUnavailable, expiration_iso, get_upload_store,
     upload_ttl_seconds, utc_iso,
@@ -192,6 +203,11 @@ def _serialize_message(
         metadata = json.loads(row.metadata_json or "{}")
     except (TypeError, ValueError):
         metadata = {}
+    input_mode = metadata.get("input_mode") if isinstance(metadata, dict) else None
+    input_mode = input_mode if input_mode in {"text", "voice"} else "text"
+    voice_turn_id = metadata.get("voice_turn_id") if input_mode == "voice" else None
+    reply_language = metadata.get("reply_language") if isinstance(metadata, dict) else None
+    reply_language = reply_language if reply_language in {"en", "ta"} else None
     raw_attachments = metadata.get("attachments") if isinstance(metadata, dict) else []
     status_cache = attachment_cache if attachment_cache is not None else {}
     for value in raw_attachments if isinstance(raw_attachments, list) else []:
@@ -235,7 +251,19 @@ def _serialize_message(
         "input_tokens": row.input_tokens, "output_tokens": row.output_tokens,
         "usage_source": row.usage_source, "charge_micros": row.charge_micros,
         "status": row.status, "created_at": row.created_at, "attachments": attachments,
+        "input_mode": input_mode, "voice_turn_id": voice_turn_id,
+        "reply_language": reply_language,
     }
+
+
+def _resolved_reply_language(user) -> str:
+    value = str(user.reply_language or "").strip().lower()
+    if value not in {"en", "ta"}:
+        raise HTTPException(422, {
+            "code": "invalid_profile_language",
+            "message": "Saved reply language must be English or Tamil.",
+        })
+    return value
 
 
 def _owned_thread(session: Session, user_id: int, thread_id: str) -> WebChatThread:
@@ -281,6 +309,8 @@ def bootstrap(
             "prepaid_billing": True,
             "web_attachments": _env_enabled("WEB_ATTACHMENTS_ENABLED") and bool(uploads["available"]),
             "web_voice_recording": _env_enabled("WEB_VOICE_RECORDING_ENABLED"),
+            "web_voice_reply": _env_enabled("WEB_VOICE_REPLY_ENABLED"),
+            "web_voice_billing": _env_enabled("WEB_VOICE_BILLING_ENABLED"),
         },
         "uploads": uploads,
     }
@@ -623,12 +653,37 @@ def delete_upload(
 
 @router.post("/audio/transcribe")
 async def transcribe_web_audio(
-    file: UploadFile = File(...), language: str | None = None,
+    request: Request, file: UploadFile = File(...), operation_id: UUID = Form(...),
+    voice_turn_id: UUID = Form(...), language: str | None = Form(default=None),
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
+    language = language or request.query_params.get("language")
     if not _env_enabled("WEB_VOICE_RECORDING_ENABLED"):
         return _temporary_error(503, "web_voice_recording_disabled", "Voice dictation is unavailable.")
+    if not _env_enabled("WEB_VOICE_BILLING_ENABLED"):
+        return _temporary_error(503, "web_voice_billing_disabled", "Paid web voice is unavailable.")
+    _rate_limit(
+        session, user_id=int(user.id), action="web_stt",
+        limit=int(os.getenv("WEB_STT_RATE_LIMIT_PER_MINUTE", "10")),
+    )
+    # Count every authenticated attempt, including requests rejected during
+    # validation, without holding the rate-limit transaction during upload or
+    # provider work.
+    session.commit()
+    billing_request_id = f"web-stt:{operation_id}"
+    duplicate = session.exec(
+        select(UsageCharge).where(
+            UsageCharge.request_id == billing_request_id,
+            UsageCharge.user_id == int(user.id),
+        )
+    ).first()
+    if duplicate is not None:
+        await file.close()
+        return _temporary_error(
+            409, "duplicate_voice_operation",
+            "This transcription operation is already running or has already completed.",
+        )
     content_type = str(file.content_type or "").split(";", 1)[0].strip().lower()
     extension = Path(sanitize_filename(file.filename or "recording.webm")).suffix.lower()
     allowed = {
@@ -640,6 +695,9 @@ async def transcribe_web_audio(
         await file.close()
         return _temporary_error(422, "unsupported_audio_type", "Recordings must be WebM/Opus, WebM, or MP4 audio.")
     temp_path = ""
+    reserved = False
+    billing_exempt = is_internal_test_user(auth, user)
+    model = os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3"
     try:
         temp_path, size = await _save_temporary_upload(
             file, limit=max_file_bytes(), suffix=extension,
@@ -650,20 +708,121 @@ async def transcribe_web_audio(
         max_seconds = min(300, max(1, int(os.getenv("WEB_AUDIO_MAX_SECONDS", "300"))))
         if duration > max_seconds:
             return _temporary_error(413, "audio_too_long", "Recordings are limited to 300 seconds.")
-        enforce_free_voice_quota(
-            session, int(user.id), additional_seconds=duration, admin_email=auth.email,
+        audio_milliseconds = int(
+            (Decimal(str(duration)) * Decimal("1000")).to_integral_value(rounding=ROUND_CEILING)
         )
+        price = stt_price(audio_milliseconds)
+        if billing_exempt:
+            create_billing_exempt_usage(
+                session, request_id=billing_request_id, user_id=int(user.id),
+                thread_id=None, provider="sarvam", model=model,
+                pricing_snapshot_json=snapshot_json(price.snapshot), usage_kind="stt",
+                voice_turn_id=str(voice_turn_id), audio_milliseconds=audio_milliseconds,
+            )
+        else:
+            create_usage_reservation(
+                session, request_id=billing_request_id, user_id=int(user.id),
+                thread_id=None, provider="sarvam", model=model,
+                reserved_micros=price.micros,
+                pricing_snapshot_json=snapshot_json(price.snapshot), usage_kind="stt",
+                voice_turn_id=str(voice_turn_id), audio_milliseconds=audio_milliseconds,
+            )
+        session.commit()
+        reserved = True
         enforce_provider_budget(session, "sarvam", currency="INR")
+        started = time.perf_counter()
+        stt_provider = SarvamProvider()
         transcript = await asyncio.to_thread(
             transcribe_audio_file,
-            SarvamProvider(),
+            stt_provider,
             temp_path,
             language,
             content_type=content_type,
             filename=f"recording{extension}",
         )
+        if billing_exempt:
+            charge = settle_billing_exempt_usage(
+                session, request_id=billing_request_id,
+                provider_cost_amount=price.amount, provider_cost_currency=price.currency,
+                provider_cost_micros=price.micros, input_tokens=0,
+                cached_input_tokens=0, output_tokens=0, usage_source="actual",
+                pricing_snapshot_json=snapshot_json(price.snapshot), usage_kind="stt",
+                voice_turn_id=str(voice_turn_id), audio_milliseconds=audio_milliseconds,
+                provider="sarvam", model=model,
+            )
+        else:
+            charge = settle_usage_reservation(
+                session, request_id=billing_request_id,
+                provider_cost_amount=price.amount, provider_cost_currency=price.currency,
+                provider_cost_micros=price.micros, input_tokens=0,
+                cached_input_tokens=0, output_tokens=0, usage_source="actual",
+                pricing_snapshot_json=snapshot_json(price.snapshot), usage_kind="stt",
+                voice_turn_id=str(voice_turn_id), audio_milliseconds=audio_milliseconds,
+                provider="sarvam", model=model,
+            )
+        record_ai_usage_event(
+            session,
+            AIProviderResponse(
+                text="", provider="sarvam", model=model, route="sarvam_stt",
+                reason="web_voice_dictation", language=normalize_audio_language(language) or "auto",
+                intent="stt", audio_seconds=float(Decimal(audio_milliseconds) / Decimal("1000")),
+                characters=len(transcript), estimated_cost_amount=price.amount,
+                estimated_cost_currency="INR",
+            ),
+            user_id=int(user.id), request_id=billing_request_id,
+            latency_ms=int(round((time.perf_counter() - started) * 1000)),
+            metadata={
+                "file_size": size,
+                "content_type": content_type,
+                "provider_content_type": normalize_stt_upload_mime_type(f"recording{extension}", content_type),
+                "duration_estimation_method": duration_method,
+                "client_source": "web_dictation",
+                "voice_turn_id": str(voice_turn_id),
+            },
+        )
+        session.commit()
     except DocumentValidationError as exc:
         return _temporary_error(exc.status_code, exc.code, exc.message)
+    except InsufficientCreditError as exc:
+        session.rollback()
+        return JSONResponse(status_code=402, content={"error": {
+            "code": "insufficient_voice_credit",
+            "message": "Not enough Voice credits to transcribe this recording.",
+            "available_micros": exc.available_micros,
+            "estimated_required_micros": exc.estimated_required_micros,
+        }}, headers={"Cache-Control": "no-store"})
+    except UsageLimitReachedError as exc:
+        session.rollback()
+        return JSONResponse(status_code=402, content={"error": {
+            "code": "usage_limit_reached", "message": str(exc),
+            "current_usage_micros": exc.current_usage_micros,
+            "configured_limit_micros": exc.configured_limit_micros,
+            "remaining_micros": exc.remaining_micros, "reset_at": exc.reset_at,
+        }}, headers={"Cache-Control": "no-store"})
+    except IntegrityError:
+        session.rollback()
+        return _temporary_error(
+            409, "duplicate_voice_operation",
+            "This transcription operation is already running or has already completed.",
+        )
+    except BaseException as exc:
+        session.rollback()
+        if reserved:
+            try:
+                if billing_exempt:
+                    release_billing_exempt_usage(session, billing_request_id)
+                else:
+                    release_usage_reservation(session, billing_request_id)
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.exception("web_stt_reservation_release_failed", extra={"request_id": billing_request_id})
+        if isinstance(exc, HTTPException):
+            return _temporary_error(exc.status_code, "stt_provider_failed", "The recording could not be transcribed.")
+        if isinstance(exc, Exception):
+            logger.exception("web_stt_failed", extra={"request_id": billing_request_id})
+            return _temporary_error(500, "stt_failed", "The recording could not be transcribed.")
+        raise
     finally:
         if temp_path:
             try:
@@ -671,40 +830,215 @@ async def transcribe_web_audio(
             except OSError:
                 pass
 
-    request_id = f"web-stt:{uuid4()}"
-    record_ai_usage_event(
-        session,
-        AIProviderResponse(
-            text="",
-            provider="sarvam",
-            model=os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
-            route="sarvam_stt",
-            reason="web_voice_dictation",
-            language=normalize_audio_language(language) or "auto",
-            intent="stt",
-            audio_seconds=duration,
-            characters=len(transcript),
-            estimated_cost_amount=estimate_stt_cost(duration),
-            estimated_cost_currency="INR",
-        ),
-        user_id=int(user.id),
-        request_id=request_id,
-        metadata={
-            "file_size": size,
-            "content_type": content_type,
-            "provider_content_type": normalize_stt_upload_mime_type(f"recording{extension}", content_type),
-            "duration_estimation_method": duration_method,
-            "client_source": "web_dictation",
-        },
+    wallet = get_wallet_summary(
+        session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id)),
+        billing_exempt=billing_exempt,
     )
     return JSONResponse(
-        content={
+        content=jsonable_encoder({
             "transcript": transcript,
-            "detected_language": normalize_audio_language(language) or "auto",
-            "duration_seconds": duration,
-        },
+            "detected_language": (
+                stt_provider.last_stt_detected_language
+                or normalize_audio_language(language)
+                or "auto"
+            ),
+            "duration_seconds": float(Decimal(audio_milliseconds) / Decimal("1000")),
+            "duration_milliseconds": audio_milliseconds,
+            "voice_turn_id": str(voice_turn_id),
+            "stt_charge": {
+                "charged_micros": int(charge.debited_micros),
+                "voice_credits": ai_credits(int(charge.debited_micros)),
+            },
+            "wallet": wallet,
+        }),
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/audio/synthesize")
+async def synthesize_web_audio(
+    payload: WebTTSRequest, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not _env_enabled("WEB_VOICE_REPLY_ENABLED"):
+        return _temporary_error(503, "web_voice_reply_disabled", "Voice replies are unavailable.")
+    if not _env_enabled("WEB_VOICE_BILLING_ENABLED"):
+        return _temporary_error(503, "web_voice_billing_disabled", "Paid web voice is unavailable.")
+    _rate_limit(
+        session, user_id=int(user.id), action="web_tts",
+        limit=int(os.getenv("WEB_TTS_RATE_LIMIT_PER_MINUTE", "10")),
+    )
+    session.commit()
+    billing_request_id = f"web-tts:{payload.operation_id}"
+    if session.exec(select(UsageCharge).where(
+        UsageCharge.request_id == billing_request_id,
+        UsageCharge.user_id == int(user.id),
+    )).first() is not None:
+        return _temporary_error(
+            409, "duplicate_voice_operation",
+            "This voice reply operation is already running or has already completed; its audio is not stored.",
+        )
+    message = session.exec(select(WebChatMessage).where(
+        WebChatMessage.id == payload.message_id,
+        WebChatMessage.user_id == int(user.id),
+        WebChatMessage.role == "assistant",
+        WebChatMessage.status == "complete",
+    )).first()
+    if message is None:
+        return _temporary_error(404, "assistant_message_not_found", "Assistant message not found.")
+    try:
+        metadata = json.loads(message.metadata_json or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    if not isinstance(metadata, dict) or str(metadata.get("voice_turn_id") or "") != str(payload.voice_turn_id):
+        return _temporary_error(404, "assistant_message_not_found", "Assistant message not found.")
+    text_content = str(message.content or "")
+    try:
+        max_characters = max(1, int(os.getenv("WEB_TTS_MAX_CHARACTERS", "5000")))
+    except ValueError:
+        max_characters = 5000
+    if len(text_content) > max_characters:
+        return _temporary_error(
+            422, "voice_reply_too_long",
+            f"This reply is too long to play as voice (maximum {max_characters} characters).",
+        )
+    reply_language = metadata.get("reply_language")
+    if reply_language not in {"en", "ta"}:
+        reply_language = _resolved_reply_language(user)
+    target_language_code = normalize_sarvam_tts_language_code(reply_language)
+    model = normalize_sarvam_tts_model(os.getenv("SARVAM_TTS_MODEL"), premium=False)
+    voice = resolve_sarvam_tts_voice(target_language_code)
+    speaker = str(voice["speaker"])
+    price = tts_price(len(text_content), model)
+    billing_exempt = is_internal_test_user(auth, user)
+    reserved = False
+    try:
+        if billing_exempt:
+            create_billing_exempt_usage(
+                session, request_id=billing_request_id, user_id=int(user.id),
+                thread_id=message.thread_id, provider="sarvam", model=model,
+                pricing_snapshot_json=snapshot_json(price.snapshot), usage_kind="tts",
+                voice_turn_id=str(payload.voice_turn_id), characters=len(text_content),
+                assistant_message_id=message.id,
+            )
+        else:
+            create_usage_reservation(
+                session, request_id=billing_request_id, user_id=int(user.id),
+                thread_id=message.thread_id, provider="sarvam", model=model,
+                reserved_micros=price.micros,
+                pricing_snapshot_json=snapshot_json(price.snapshot), usage_kind="tts",
+                voice_turn_id=str(payload.voice_turn_id), characters=len(text_content),
+                assistant_message_id=message.id,
+            )
+        session.commit()
+        reserved = True
+        enforce_provider_budget(session, "sarvam", currency="INR")
+        started = time.perf_counter()
+        audio_base64 = await asyncio.to_thread(
+            SarvamProvider().tts, text_content,
+            target_language_code=target_language_code, speaker=speaker, premium=False,
+        )
+        try:
+            decoded = base64.b64decode(audio_base64, validate=True)
+        except Exception as exc:
+            raise HTTPException(502, "TTS provider returned invalid audio.") from exc
+        if not decoded:
+            raise HTTPException(502, "TTS provider returned empty audio.")
+        mime_type = (
+            "audio/mpeg" if decoded.startswith((b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"))
+            else "audio/ogg" if decoded.startswith(b"OggS")
+            else "audio/wav"
+        )
+        if billing_exempt:
+            charge = settle_billing_exempt_usage(
+                session, request_id=billing_request_id,
+                provider_cost_amount=price.amount, provider_cost_currency=price.currency,
+                provider_cost_micros=price.micros, input_tokens=0,
+                cached_input_tokens=0, output_tokens=0, usage_source="actual",
+                pricing_snapshot_json=snapshot_json(price.snapshot), usage_kind="tts",
+                voice_turn_id=str(payload.voice_turn_id), characters=len(text_content),
+                assistant_message_id=message.id, provider="sarvam", model=model,
+            )
+        else:
+            charge = settle_usage_reservation(
+                session, request_id=billing_request_id,
+                provider_cost_amount=price.amount, provider_cost_currency=price.currency,
+                provider_cost_micros=price.micros, input_tokens=0,
+                cached_input_tokens=0, output_tokens=0, usage_source="actual",
+                pricing_snapshot_json=snapshot_json(price.snapshot), usage_kind="tts",
+                voice_turn_id=str(payload.voice_turn_id), characters=len(text_content),
+                assistant_message_id=message.id, provider="sarvam", model=model,
+            )
+        record_ai_usage_event(
+            session,
+            AIProviderResponse(
+                text="", provider="sarvam", model=model, route="sarvam_tts",
+                reason="web_voice_reply", language=target_language_code, intent="tts",
+                characters=len(text_content), estimated_cost_amount=price.amount,
+                estimated_cost_currency="INR",
+            ),
+            user_id=int(user.id), request_id=billing_request_id,
+            latency_ms=int(round((time.perf_counter() - started) * 1000)),
+            metadata={
+                "character_count": len(text_content), "speaker": speaker,
+                "target_language_code": target_language_code, "model": model,
+                "voice_turn_id": str(payload.voice_turn_id),
+            },
+        )
+        session.commit()
+    except InsufficientCreditError as exc:
+        session.rollback()
+        return JSONResponse(status_code=402, content={"error": {
+            "code": "insufficient_voice_credit",
+            "message": "Not enough Voice credits to play this reply.",
+            "available_micros": exc.available_micros,
+            "estimated_required_micros": exc.estimated_required_micros,
+        }}, headers={"Cache-Control": "no-store"})
+    except UsageLimitReachedError as exc:
+        session.rollback()
+        return JSONResponse(status_code=402, content={"error": {
+            "code": "usage_limit_reached", "message": str(exc),
+            "current_usage_micros": exc.current_usage_micros,
+            "configured_limit_micros": exc.configured_limit_micros,
+            "remaining_micros": exc.remaining_micros, "reset_at": exc.reset_at,
+        }}, headers={"Cache-Control": "no-store"})
+    except IntegrityError:
+        session.rollback()
+        return _temporary_error(
+            409, "duplicate_voice_operation",
+            "This voice reply operation is already running or has already completed; its audio is not stored.",
+        )
+    except BaseException as exc:
+        session.rollback()
+        if reserved:
+            try:
+                if billing_exempt:
+                    release_billing_exempt_usage(session, billing_request_id)
+                else:
+                    release_usage_reservation(session, billing_request_id)
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.exception("web_tts_reservation_release_failed", extra={"request_id": billing_request_id})
+        if isinstance(exc, HTTPException):
+            return _temporary_error(exc.status_code, "tts_provider_failed", "This voice reply could not be generated.")
+        if isinstance(exc, Exception):
+            logger.exception("web_tts_failed", extra={"request_id": billing_request_id})
+            return _temporary_error(500, "tts_failed", "This voice reply could not be generated.")
+        raise
+    wallet = get_wallet_summary(
+        session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id)),
+        billing_exempt=billing_exempt,
+    )
+    return JSONResponse(content=jsonable_encoder({
+        "audio_base64": audio_base64, "mime_type": mime_type,
+        "speaker": speaker, "target_language_code": target_language_code,
+        "model": model, "character_count": len(text_content),
+        "charged_micros": int(charge.debited_micros),
+        "voice_credits": ai_credits(int(charge.debited_micros)),
+        "wallet": wallet,
+    }), headers={"Cache-Control": "no-store"})
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -716,6 +1050,7 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
     with SessionLocal() as rate_session:
         user = get_owned_user(rate_session, auth)
         user_id = int(user.id)
+        resolved_reply_language = _resolved_reply_language(user)
         billing_exempt = is_internal_test_user(auth, user)
         _rate_limit(rate_session, user_id=user_id, action="web_chat", limit=int(os.getenv("WEB_CHAT_RATE_LIMIT_PER_MINUTE", "12")))
         rate_session.commit()
@@ -723,9 +1058,11 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
         prepared = await asyncio.to_thread(
             prepare_web_turn, user_id=user_id, message=payload.message,
             request_id=str(payload.request_id), thread_id=str(payload.thread_id) if payload.thread_id else None,
-            reply_language=payload.reply_language,
+            reply_language=resolved_reply_language,
             attachment_ids=[str(value) for value in payload.attachment_ids],
             billing_exempt=billing_exempt,
+            input_mode=payload.input_mode,
+            voice_turn_id=str(payload.voice_turn_id) if payload.voice_turn_id else None,
         )
     except InsufficientCreditError as exc:
         return JSONResponse(status_code=402, content={"error": {
@@ -802,6 +1139,9 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             yield _sse("done", {
                 "message_id": completed.message.id, "thread_id": completed.thread_id,
                 "cancelled": completed.message.status == "cancelled",
+                "input_mode": prepared.input_mode,
+                "voice_turn_id": prepared.voice_turn_id,
+                "reply_language": prepared.reply_language,
             })
         except asyncio.CancelledError:
             cancellation.cancel()
@@ -818,7 +1158,12 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                     ),
                 )
             yield _sse("status", {"phase": "stopped"})
-            yield _sse("done", {"thread_id": prepared.thread_id, "cancelled": True})
+            yield _sse("done", {
+                "message_id": None, "thread_id": prepared.thread_id, "cancelled": True,
+                "input_mode": prepared.input_mode,
+                "voice_turn_id": prepared.voice_turn_id,
+                "reply_language": prepared.reply_language,
+            })
         except Exception:
             logger.exception("web_chat_generation_failed", extra={"request_id": prepared.request_id})
             yield _sse("error", {"code": "generation_failed", "message": "Swico could not complete this request. Please retry."})

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
-import { ApiError, apiJson, deleteUpload, streamChat, uploadDocument } from '../api/client'
+import { ApiError, apiJson, deleteUpload, streamChat, synthesizeAudio, transcribeAudio, uploadDocument } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { ChatPage } from './ChatPage'
 
@@ -9,7 +9,7 @@ const user = { getIdToken: vi.fn().mockResolvedValue('token') }
 vi.mock('../auth/useAuth', () => ({ useAuth: () => ({ user, signOut:vi.fn() }) }))
 vi.mock('../api/client', async importOriginal => {
   const actual = await importOriginal<typeof import('../api/client')>()
-  return { ...actual, apiJson:vi.fn(), streamChat:vi.fn(), uploadDocument:vi.fn(), deleteUpload:vi.fn() }
+  return { ...actual, apiJson:vi.fn(), streamChat:vi.fn(), uploadDocument:vi.fn(), deleteUpload:vi.fn(), transcribeAudio:vi.fn(), synthesizeAudio:vi.fn() }
 })
 
 const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_description:'Fast and efficient for everyday questions.', tier_selection_enabled:true, tiers:[
@@ -17,7 +17,7 @@ const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_descript
   { id:'standard' as const, label:'Swico', description:'Balanced quality and speed for most tasks.', available:true, selected:false },
   { id:'pro' as const, label:'Swico Pro', description:'Best for complex reasoning, planning, and coding.', available:false, selected:false },
 ] }
-const bootstrap = { user:{ id:1, name:'Hari', email:'h@example.com', reply_language:'en' }, wallet:{ balance_micros:5_000_000, reserved_micros:0, available_micros:5_000_000, version:1 }, billing:{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_key', razorpay_mode:'test', checkout_enabled:true, custom_topup_enabled:true, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500 }, { gross_amount_paise:29900, credited_amount_micros:149_500_000, platform_share_paise:14950 }] }, assistant, features:{ web_chat:true, prepaid_billing:true, web_attachments:true, web_voice_recording:false }, uploads:{ available:true, ttl_seconds:600, max_file_bytes:10485760, max_files_per_message:5, max_total_bytes:26214400, supported_extensions:['.txt','.pdf'] } } as const
+const bootstrap = { user:{ id:1, name:'Hari', email:'h@example.com', reply_language:'en' }, wallet:{ balance_micros:5_000_000, reserved_micros:0, available_micros:5_000_000, version:1 }, billing:{ currency:'INR', credit_percent:'50', razorpay_key_id:'rzp_test_key', razorpay_mode:'test', checkout_enabled:true, custom_topup_enabled:true, min_topup_paise:1000, max_topup_paise:50000, packages:[{ gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500 }, { gross_amount_paise:29900, credited_amount_micros:149_500_000, platform_share_paise:14950 }] }, assistant, features:{ web_chat:true, prepaid_billing:true, web_attachments:true, web_voice_recording:true, web_voice_reply:true, web_voice_billing:true }, uploads:{ available:true, ttl_seconds:600, max_file_bytes:10485760, max_files_per_message:5, max_total_bytes:26214400, supported_extensions:['.txt','.pdf'] } } as const
 
 it.each([
   [401, 'session expired'],
@@ -39,6 +39,8 @@ function mockApi() {
   vi.mocked(streamChat).mockReset().mockResolvedValue(undefined)
   vi.mocked(uploadDocument).mockReset()
   vi.mocked(deleteUpload).mockReset().mockResolvedValue(undefined)
+  vi.mocked(transcribeAudio).mockReset()
+  vi.mocked(synthesizeAudio).mockReset()
   vi.mocked(apiJson).mockImplementation(async (_user, path) => {
     if (path === '/api/web/bootstrap') return bootstrap as never
     if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
@@ -151,6 +153,7 @@ it('selects and uploads a supported document, then sends its attachment id witho
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalled())
   expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({ message:'', attachment_ids:['upload-1'] })
+  expect(vi.mocked(streamChat).mock.calls[0][1]).toMatchObject({ input_mode:'text' })
   expect(screen.getByText(/stay active for this chat/i)).toBeInTheDocument()
 })
 
@@ -173,4 +176,70 @@ it('supports drag-and-drop and prevents send while an upload is pending', async 
   await userEvent.type(textbox, 'question')
   expect(screen.getByRole('button', { name:'Send message' })).toBeDisabled()
   expect(streamChat).not.toHaveBeenCalled()
+})
+
+it('sends an edited transcript as one voice turn, synthesizes only its matching completion, then resets to text', async () => {
+  mockApi()
+  class VoiceMediaRecorder {
+    static isTypeSupported = () => true
+    state: RecordingState = 'inactive'
+    mimeType = 'audio/webm'
+    ondataavailable: ((event: BlobEvent) => void) | null = null
+    onstop: (() => void) | null = null
+    onerror: ((event: Event) => void) | null = null
+    start() { this.state = 'recording' }
+    stop() {
+      this.state = 'inactive'
+      this.ondataavailable?.({ data:new Blob(['voice'], { type:'audio/webm' }) } as BlobEvent)
+      this.onstop?.()
+    }
+  }
+  const trackStop = vi.fn()
+  Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{ getUserMedia:vi.fn().mockResolvedValue({ getTracks:() => [{ stop:trackStop }] }) } })
+  vi.stubGlobal('MediaRecorder', VoiceMediaRecorder)
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:reply')
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) { this.dispatchEvent(new Event('play')); return Promise.resolve() })
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined)
+  vi.mocked(transcribeAudio).mockImplementation(async (_user, _blob, _operationId, voiceTurnId) => ({
+    transcript:'editable transcript', detected_language:'en', duration_seconds:1,
+    duration_milliseconds:1000, voice_turn_id:voiceTurnId,
+    stt_charge:{ charged_micros:10, voice_credits:'0.000010' }, wallet:bootstrap.wallet,
+  }))
+  vi.mocked(synthesizeAudio).mockResolvedValue({
+    audio_base64:window.btoa(`RIFF${'\0'.repeat(8)}`), mime_type:'audio/wav', speaker:'anushka',
+    target_language_code:'en-IN', model:'bulbul:v2', character_count:12,
+    charged_micros:10, voice_credits:'0.000010', wallet:bootstrap.wallet,
+  })
+  vi.mocked(streamChat).mockImplementation(async (_user, payload, onEvent) => {
+    onEvent({ event:'thread', data:{ thread_id:'thread-voice' } })
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    onEvent({ event:'delta', data:{ text:'Visible answer' } })
+    onEvent({ event:'done', data:{
+      message_id:`answer-${payload.request_id}`, thread_id:'thread-voice', cancelled:false,
+      input_mode:payload.input_mode, voice_turn_id:payload.voice_turn_id ?? null, reply_language:'en',
+    } })
+  })
+
+  const view = render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', { name:'Start voice dictation' }))
+  await userEvent.click(await screen.findByRole('button', { name:'Stop recording' }))
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await waitFor(() => expect(composer).toHaveValue('editable transcript'))
+  await userEvent.type(composer, ' changed')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(synthesizeAudio).toHaveBeenCalledOnce())
+  const voicePayload = vi.mocked(streamChat).mock.calls[0][1]
+  expect(voicePayload).toMatchObject({ message:'editable transcript changed', input_mode:'voice' })
+  expect(voicePayload.voice_turn_id).toMatch(/^[0-9a-f-]{36}$/)
+  expect(vi.mocked(transcribeAudio).mock.calls[0][2]).not.toBe(voicePayload.voice_turn_id)
+  expect(screen.getByText('Visible answer')).toBeInTheDocument()
+
+  await userEvent.type(composer, 'normal typed message')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(streamChat).mock.calls[1][1]).toMatchObject({ input_mode:'text' })
+  expect(vi.mocked(streamChat).mock.calls[1][1]).not.toHaveProperty('voice_turn_id')
+  expect(synthesizeAudio).toHaveBeenCalledOnce()
+  view.unmount()
 })

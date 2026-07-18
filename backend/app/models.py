@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 from .time_utils import utc_now
 from sqlmodel import SQLModel, Field
-from sqlalchemy import BigInteger, Column, DateTime, Index, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Column, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint
 
 
 # --------------------
@@ -361,6 +361,7 @@ class UsageCharge(SQLModel, table=True):
     __tablename__ = "usage_charge"
     __table_args__ = (
         Index("ix_usage_charge_user_created", "user_id", "created_at"),
+        Index("ix_usage_charge_user_kind_settled", "user_id", "usage_kind", "settled_at"),
         UniqueConstraint("request_id", name="uq_usage_charge_request_id"),
     )
 
@@ -369,6 +370,10 @@ class UsageCharge(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
     thread_id: Optional[str] = Field(default=None, foreign_key="web_chat_thread.id", ondelete="SET NULL", index=True, max_length=36)
     assistant_message_id: Optional[str] = Field(default=None, foreign_key="web_chat_message.id", ondelete="SET NULL", max_length=36)
+    usage_kind: str = Field(default="chat", max_length=16, sa_column=Column(String(16), nullable=False, server_default="chat"))
+    voice_turn_id: Optional[str] = Field(default=None, index=True, max_length=36)
+    audio_milliseconds: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
+    characters: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
     provider: str = Field(max_length=24)
     model: str = Field(max_length=100)
     swico_tier: Optional[str] = Field(default=None, max_length=16, index=True)

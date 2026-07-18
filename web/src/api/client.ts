@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth'
-import type { ReadyAttachment, SSEEvent } from '../types'
+import type { InputMode, ReadyAttachment, SSEEvent, SynthesisResponse, TranscriptionResponse } from '../types'
 import { publicConfig } from '../config/publicConfig'
 import { consumeSSE } from './sse'
 
@@ -72,7 +72,7 @@ export async function apiJson<T>(user: User, path: string, init: RequestInit = {
 }
 
 export async function streamChat(
-  user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[] },
+  user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[]; input_mode: InputMode; voice_turn_id?: string },
   onEvent: (event: SSEEvent) => void, signal: AbortSignal,
 ) {
   const response = await authorizedFetch(user, '/api/web/chat/stream', { method: 'POST', body: JSON.stringify(payload), signal })
@@ -129,13 +129,25 @@ export async function deleteUpload(user: User, uploadId: string): Promise<void> 
 }
 
 export async function transcribeAudio(
-  user: User, blob: Blob,
-): Promise<{ transcript: string; detected_language: string; duration_seconds: number }> {
+  user: User, blob: Blob, operationId: string, voiceTurnId: string, language?: string,
+): Promise<TranscriptionResponse> {
   const extension = blob.type.includes('mp4') ? 'mp4' : 'webm'
   const form = new FormData()
   form.append('file', blob, `recording.${extension}`)
+  form.append('operation_id', operationId)
+  form.append('voice_turn_id', voiceTurnId)
+  if (language) form.append('language', language)
   const response = await authorizedFetch(user, '/api/web/audio/transcribe', { method: 'POST', body: form })
   const body = await response.json().catch(() => ({})) as unknown
   if (!response.ok) throw new ApiError(response.status, body)
-  return body as { transcript: string; detected_language: string; duration_seconds: number }
+  return body as TranscriptionResponse
+}
+
+export async function synthesizeAudio(
+  user: User, payload: { operation_id: string; message_id: string; voice_turn_id: string },
+  signal?: AbortSignal,
+): Promise<SynthesisResponse> {
+  return apiJson<SynthesisResponse>(user, '/api/web/audio/synthesize', {
+    method: 'POST', body: JSON.stringify(payload), signal,
+  })
 }

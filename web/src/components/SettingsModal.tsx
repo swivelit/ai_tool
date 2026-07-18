@@ -24,6 +24,38 @@ function safeError(error: unknown) {
   return 'Settings could not be saved. Please try again.'
 }
 
+function UsageBars({ usage }: { usage: UsageSummary }) {
+  const hardLimit = usage.monthly_hard_limit_micros
+  const tiers = (['lite', 'standard', 'pro'] as const).map(id => {
+    const item = usage.by_tier[id]
+    return {
+      id, label: item.label, credits: item.debited_token_credits,
+      percent: hardLimit !== null ? item.monthly_limit_percentage : item.period_debit_percentage,
+      detail: `${item.total_tokens.toLocaleString()} tokens`, creditLabel: 'Token credits',
+    }
+  })
+  const voice = usage.voice
+  const items = [...tiers, {
+    id: 'voice', label: voice.label, credits: voice.debited_voice_credits,
+    percent: hardLimit !== null ? voice.monthly_limit_percentage : voice.period_debit_percentage,
+    detail: `${voice.total_audio_seconds.toLocaleString()} STT seconds · ${voice.total_tts_characters.toLocaleString()} TTS characters`,
+    creditLabel: 'Voice credits',
+  }]
+  return <div className="usage-breakdowns" aria-label="Usage by category">
+    {items.map(item => {
+      const value = Math.min(100, Math.max(0, item.percent))
+      return <article key={item.id} className="usage-breakdown">
+        <div><strong>{item.label}</strong><span>{item.credits} {item.creditLabel}</span></div>
+        <div className="usage-progress" role="progressbar" aria-label={`${item.label} usage`}
+          aria-valuemin={0} aria-valuemax={100} aria-valuenow={value} aria-valuetext={`${item.credits} ${item.creditLabel} used`}>
+          <span style={{ width: `${value}%` }} />
+        </div>
+        <small>{item.detail}</small>
+      </article>
+    })}
+  </div>
+}
+
 export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, saveTier, close, addCredits, openArchived, savedProfile }: {
   user: User; theme: Theme; setTheme: (theme: Theme) => void; close: () => void;
   assistant: AssistantSettings; tierSaving: boolean; saveTier: (tier: SwicoTier) => Promise<void>;
@@ -138,7 +170,9 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
           </div><button className="primary" disabled={saving} onClick={() => void saveProfile()}>{saving ? 'Saving…' : 'Save profile'}</button></section>}
           {loaded && section === 'usage' && <section aria-labelledby="usage-settings"><h3 id="usage-settings">Token credits</h3>
             <div className="usage-cards"><article><span>{loaded.usage.tier_label} balance</span><strong>{billingExempt ? 'Unlimited' : estimatedTokenLabel(estimate?.estimated_blended_tokens)}</strong></article>{!billingExempt && <article><span>Estimated range</span><strong>{tokenRange}</strong></article>}</div>
+            <UsageBars usage={loaded.usage} />
             <div className="actual-usage" aria-label="This month token usage"><h4>This month</h4><dl><div><dt>Input tokens</dt><dd>{loaded.usage.input_tokens.toLocaleString()}</dd></div><div><dt>Cached input tokens</dt><dd>{loaded.usage.cached_input_tokens.toLocaleString()}</dd></div><div><dt>Output tokens</dt><dd>{loaded.usage.output_tokens.toLocaleString()}</dd></div><div><dt>Total tokens</dt><dd>{loaded.usage.total_tokens.toLocaleString()}</dd></div></dl></div>
+            <p className="usage-note">Remaining chat token estimates do not represent voice minutes. Voice uses STT seconds and TTS characters from the same prepaid Token Credit wallet.</p>
             {!billingExempt && <fieldset className="usage-limit"><legend>Estimated monthly token limit</legend><label className="check-row"><input type="checkbox" checked={unlimited} onChange={event => setUnlimited(event.target.checked)} />No monthly limit beyond prepaid token credits</label>{!unlimited && <label>Estimated monthly tokens<input inputMode="numeric" pattern="[0-9]*" value={cap} onChange={event => setCap(event.target.value)} aria-describedby="cap-help" /><small id="cap-help">Converted by the server to the existing monetary hard limit using your selected Swico mode. Actual usage varies; automatic recharge is not enabled.</small></label>}<label>Warning threshold (%)<input type="number" min="1" max="100" value={warning} onChange={event => setWarning(event.target.value)} /></label><label className="check-row"><input type="checkbox" checked={notify} onChange={event => setNotify(event.target.checked)} />Show a warning at the threshold</label>{loaded.preferences.warning_reached && <p className="usage-warning" role="status">You have reached your configured warning threshold.</p>}<button className="primary" disabled={saving} onClick={() => void saveUsage()}>{saving ? 'Saving…' : 'Save usage limit'}</button><small>Resets {new Date(loaded.preferences.next_reset_at).toLocaleString()} ({loaded.preferences.timezone}).</small></fieldset>}
             {!billingExempt && <button className="secondary-button" onClick={addCredits}>Add tokens</button>}
             <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => { const presentation = paymentPresentation(payment); return <article key={payment.id}><strong>{presentation.heading}</strong>{presentation.detail && <span>{presentation.detail}</span>}{presentation.amountLabel && <span>{presentation.amountLabel}: {formatRupeesFromPaise(payment.gross_amount_paise)}</span>}{presentation.showTokensAdded && <span>Estimated {payment.token_estimate ? tokenRangeLabel(payment.token_estimate.range_min_tokens, payment.token_estimate.range_max_tokens) : 'tokens unavailable'} added</span>}{presentation.showRefundAmount && <span>{formatRupeesFromPaise(payment.refunded_amount_paise)} refunded</span>}{presentation.showReversalEstimate && <span>Estimated {payment.reversal_token_estimate ? tokenRangeLabel(payment.reversal_token_estimate.range_min_tokens, payment.reversal_token_estimate.range_max_tokens) : 'tokens unavailable'} reversed</span>}<span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}</div>

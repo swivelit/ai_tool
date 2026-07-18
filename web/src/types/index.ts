@@ -28,12 +28,14 @@ export type AudioRecorderState = {
   status: 'idle' | 'requesting' | 'recording' | 'stopping' | 'transcribing' | 'error';
   elapsed_seconds: number; mime_type: string | null; error: string | null;
 }
+export type InputMode = 'text' | 'voice'
 export type Message = {
   id: string; thread_id: string; role: 'user' | 'assistant' | 'system'; content: string;
   request_id: string | null; tier: SwicoTier | null; tier_label: string;
   input_tokens: number; output_tokens: number; usage_source: 'actual' | 'estimated' | null;
   charge_micros: number; status: string; created_at: string;
   attachments?: MessageAttachment[];
+  input_mode: InputMode; voice_turn_id: string | null; reply_language: 'en' | 'ta' | null;
 }
 export type BillingPackage = { gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; token_estimate?: TokenEstimate }
 export type BillingConfig = {
@@ -47,6 +49,7 @@ export type Bootstrap = {
   features: {
     web_chat: boolean; prepaid_billing: boolean;
     web_attachments: boolean; web_voice_recording: boolean;
+    web_voice_reply: boolean; web_voice_billing: boolean;
   };
   uploads: {
     available: boolean; ttl_seconds: number; max_file_bytes: number;
@@ -81,6 +84,16 @@ export type UsageBreakdown = {
   cached_input_tokens: number; output_tokens: number; total_tokens: number;
   debited_micros: number; debited_ai_credits: string;
 }
+export type TierUsageBreakdown = UsageBreakdown & {
+  label: string; debited_token_credits: string;
+  period_debit_percentage: number; monthly_limit_percentage: number;
+}
+export type VoiceUsageBreakdown = {
+  label: 'Voice'; stt_request_count: number; tts_request_count: number;
+  total_audio_seconds: number; total_tts_characters: number; request_count: number;
+  debited_micros: number; debited_voice_credits: string;
+  period_debit_percentage: number; monthly_limit_percentage: number;
+}
 export type TokenEstimate = {
   tier: SwicoTier; tier_label: string; pricing_as_of: string;
   estimated_blended_tokens: number | null;
@@ -104,7 +117,24 @@ export type UsageSummary = {
   available_micros: number; available_ai_credits: string;
   daily: Array<{ date: string } & UsageBreakdown>;
   estimated_tokens_remaining: TokenEstimate | null;
+  monthly_hard_limit_micros: number | null;
+  by_tier: Record<SwicoTier, TierUsageBreakdown>;
+  voice: VoiceUsageBreakdown;
   billing_exempt?: boolean; balance_display?: 'Unlimited';
+}
+export type TranscriptionResponse = {
+  transcript: string; detected_language: string; duration_seconds: number;
+  duration_milliseconds: number; voice_turn_id: string;
+  stt_charge: { charged_micros: number; voice_credits: string }; wallet: Wallet;
+}
+export type SynthesisResponse = {
+  audio_base64: string; mime_type: string; speaker: string;
+  target_language_code: 'en-IN' | 'ta-IN'; model: string; character_count: number;
+  charged_micros: number; voice_credits: string; wallet: Wallet;
+}
+export type VoiceReplyStatus = 'generating' | 'ready' | 'playing' | 'paused' | 'ended' | 'error'
+export type VoiceReplyState = {
+  status: VoiceReplyStatus; error: string | null; insufficientCredits: boolean; canRetry?: boolean;
 }
 export type PaymentHistory = {
   id: string; gross_amount_paise: number; credited_amount_micros: number;

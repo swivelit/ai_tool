@@ -45,10 +45,14 @@ def _settled_charge(
     user_id: int, request_id: str, *, settled_at: datetime, provider: str = "openai",
     model: str = "gpt-5-nano", source: str = "actual", debit: int = 10_000,
     input_tokens: int = 100, cached_tokens: int = 25, output_tokens: int = 40,
+    usage_kind: str = "chat", swico_tier: str | None = None,
+    audio_milliseconds: int = 0, characters: int = 0,
 ) -> None:
     with SessionLocal() as session:
         session.add(UsageCharge(
             request_id=request_id, user_id=user_id, provider=provider, model=model,
+            usage_kind=usage_kind, swico_tier=swico_tier,
+            audio_milliseconds=audio_milliseconds, characters=characters,
             input_tokens=input_tokens, cached_input_tokens=cached_tokens,
             output_tokens=output_tokens, usage_source=source,
             provider_cost_amount_decimal=Decimal("0.01"), provider_cost_currency="INR",
@@ -56,6 +60,45 @@ def _settled_charge(
             settled_at=settled_at, created_at=settled_at,
         ))
         session.commit()
+
+
+def test_usage_summary_has_zero_filled_tiers_and_authoritative_voice_breakdown(client):
+    user = create_test_user("usage-breakdown", "usage-breakdown@example.com")
+    now = datetime.now(timezone.utc)
+    _settled_charge(
+        int(user.id), "tier-lite", settled_at=now, debit=20_000,
+        swico_tier="lite", input_tokens=100, cached_tokens=20, output_tokens=40,
+    )
+    _settled_charge(
+        int(user.id), "voice-stt", settled_at=now, debit=5_000,
+        provider="sarvam", model="saaras:v3", usage_kind="stt",
+        input_tokens=0, cached_tokens=0, output_tokens=0,
+        audio_milliseconds=1500,
+    )
+    _settled_charge(
+        int(user.id), "voice-tts", settled_at=now, debit=10_000,
+        provider="sarvam", model="bulbul:v2", usage_kind="tts",
+        input_tokens=0, cached_tokens=0, output_tokens=0, characters=25,
+    )
+    response = client.get(
+        "/api/web/usage/summary?period=current_month",
+        headers=auth_headers("usage-breakdown", "usage-breakdown@example.com"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["by_tier"]) == {"lite", "standard", "pro"}
+    assert body["by_tier"]["lite"]["request_count"] == 1
+    assert body["by_tier"]["lite"]["total_tokens"] == 140
+    assert body["by_tier"]["standard"]["request_count"] == 0
+    assert body["by_tier"]["pro"]["debited_micros"] == 0
+    assert body["voice"] == {
+        "label": "Voice", "stt_request_count": 1, "tts_request_count": 1,
+        "total_tts_characters": 25, "request_count": 2,
+        "debited_micros": 15_000, "total_audio_seconds": 1.5,
+        "debited_voice_credits": "0.015000",
+        "period_debit_percentage": 42.86, "monthly_limit_percentage": 0.0,
+    }
+    assert body["debited_micros"] == 35_000
 
 
 def test_usage_summary_aggregates_authoritative_settled_rows_and_ownership(client):

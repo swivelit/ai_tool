@@ -50,6 +50,9 @@ class PreparedWebTurn:
     route: AIRoute
     reserved_micros: int
     swico_tier: str
+    input_mode: str = "text"
+    voice_turn_id: str | None = None
+    reply_language: str = "en"
     billing_exempt: bool = False
     existing_response: WebChatMessage | None = None
 
@@ -143,7 +146,8 @@ def _load_attachments(user_id: int, attachment_ids: list[str]) -> list[Any]:
 def prepare_web_turn(
     *, user_id: int, message: str, request_id: str, thread_id: str | None,
     reply_language: str | None, attachment_ids: list[str] | None = None,
-    billing_exempt: bool = False,
+    billing_exempt: bool = False, input_mode: str = "text",
+    voice_turn_id: str | None = None,
 ) -> PreparedWebTurn:
     with SessionLocal() as session:
         swico_tier = selected_swico_tier(session, user_id)
@@ -158,6 +162,7 @@ def prepare_web_turn(
             route = AIRoute("blocked", None, "idempotent_replay", "already_complete", "en", "replay", 0)
             return PreparedWebTurn(
                 request_id, user_id, thread.id, dummy, route, 0, swico_tier,
+                input_mode, voice_turn_id, str(reply_language or "en"),
                 billing_exempt, existing_assistant,
             )
 
@@ -208,10 +213,16 @@ def prepare_web_turn(
         route = AIProviderRouter().select_route(ai_request)
 
         if existing_user_message is None:
+            message_metadata = {
+                "attachments": display_attachments,
+                "input_mode": input_mode,
+                "voice_turn_id": voice_turn_id,
+                "reply_language": reply_language,
+            }
             session.add(WebChatMessage(
                 thread_id=thread.id, user_id=user_id, role="user", content=visible_content,
                 request_id=request_id, status="pending",
-                metadata_json=json.dumps({"attachments": display_attachments}, ensure_ascii=False),
+                metadata_json=json.dumps(message_metadata, ensure_ascii=False),
             ))
         thread.updated_at = utc_now()
         session.add(thread)
@@ -221,7 +232,8 @@ def prepare_web_turn(
             session.commit()
             return PreparedWebTurn(
                 request_id, user_id, thread.id, ai_request, route, 0,
-                swico_tier, billing_exempt,
+                swico_tier, input_mode, voice_turn_id, str(reply_language or "en"),
+                billing_exempt,
             )
 
         provider_messages = build_provider_messages(ai_request, route, provider=route.provider)
@@ -233,6 +245,7 @@ def prepare_web_turn(
                 provider=route.provider, model=route.model or "",
                 pricing_snapshot_json=snapshot_json(reserve.snapshot),
                 swico_tier=swico_tier,
+                usage_kind="chat", voice_turn_id=voice_turn_id,
             )
         else:
             create_usage_reservation(
@@ -240,11 +253,13 @@ def prepare_web_turn(
                 provider=route.provider, model=route.model or "", reserved_micros=reserve.micros,
                 pricing_snapshot_json=snapshot_json(reserve.snapshot),
                 swico_tier=swico_tier,
+                usage_kind="chat", voice_turn_id=voice_turn_id,
             )
         session.commit()
         return PreparedWebTurn(
             request_id, user_id, thread.id, ai_request, route,
-            0 if billing_exempt else reserve.micros, swico_tier, billing_exempt,
+            0 if billing_exempt else reserve.micros, swico_tier,
+            input_mode, voice_turn_id, str(reply_language or "en"), billing_exempt,
         )
 
 
@@ -380,6 +395,11 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             ),
             charge_micros=0 if prepared.billing_exempt else price.micros,
             status="cancelled" if cancelled else "complete",
+            metadata_json=json.dumps({
+                "input_mode": prepared.input_mode,
+                "voice_turn_id": prepared.voice_turn_id,
+                "reply_language": prepared.reply_language,
+            }, sort_keys=True, separators=(",", ":")),
         )
         session.add(assistant)
         # UsageCharge references this message. An explicit flush guarantees the
@@ -405,6 +425,8 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 assistant_message_id=assistant.id,
                 provider=response.provider,
                 model=response.model or "",
+                usage_kind="chat", voice_turn_id=prepared.voice_turn_id,
+                swico_tier=prepared.swico_tier,
             )
         elif prepared.reserved_micros:
             settle_usage_reservation(
@@ -416,6 +438,8 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 usd_to_inr_rate=env_decimal("USD_TO_INR_BILLING_RATE", "90") if response.provider == "openai" else None,
                 assistant_message_id=assistant.id,
                 provider=response.provider, model=response.model or "",
+                usage_kind="chat", voice_turn_id=prepared.voice_turn_id,
+                swico_tier=prepared.swico_tier,
             )
         thread = _owned_thread(session, prepared.thread_id, prepared.user_id)
         if thread.title == "New chat":

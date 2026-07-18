@@ -25,6 +25,14 @@ LEDGER_TYPES = {
     "payment_credit", "usage_debit", "reservation", "reservation_release",
     "refund_debit", "manual_adjustment",
 }
+USAGE_KINDS = {"chat", "stt", "tts"}
+
+
+def _usage_kind(value: str) -> str:
+    normalized = str(value or "chat").strip().lower()
+    if normalized not in USAGE_KINDS:
+        raise ValueError("Unsupported usage kind")
+    return normalized
 
 
 def _locked_wallet(session: Session, user_id: int) -> WalletAccount:
@@ -137,8 +145,11 @@ def credit_payment_once(session: Session, order: PaymentOrder) -> WalletLedger:
 def create_usage_reservation(
     session: Session, *, request_id: str, user_id: int, thread_id: str | None,
     provider: str, model: str, reserved_micros: int, pricing_snapshot_json: str,
-    swico_tier: str | None = None,
+    swico_tier: str | None = None, usage_kind: str = "chat",
+    voice_turn_id: str | None = None, audio_milliseconds: int = 0,
+    characters: int = 0, assistant_message_id: str | None = None,
 ) -> UsageCharge:
+    usage_kind = _usage_kind(usage_kind)
     acquire_sqlite_usage_transaction_lock(session, user_id)
     existing = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
     if existing and existing.status != "released":
@@ -160,6 +171,11 @@ def create_usage_reservation(
         charge.provider = provider
         charge.model = model
         charge.swico_tier = swico_tier
+        charge.usage_kind = usage_kind
+        charge.voice_turn_id = voice_turn_id
+        charge.audio_milliseconds = max(0, int(audio_milliseconds))
+        charge.characters = max(0, int(characters))
+        charge.assistant_message_id = assistant_message_id
         charge.reserved_micros = required
         charge.status = "reserved"
         charge.settled_at = None
@@ -168,7 +184,9 @@ def create_usage_reservation(
         charge = UsageCharge(
             request_id=request_id, user_id=user_id, thread_id=thread_id, provider=provider,
             model=model, swico_tier=swico_tier, reserved_micros=required, status="reserved",
-            pricing_snapshot_json=pricing_snapshot_json,
+            pricing_snapshot_json=pricing_snapshot_json, usage_kind=usage_kind,
+            voice_turn_id=voice_turn_id, audio_milliseconds=max(0, int(audio_milliseconds)),
+            characters=max(0, int(characters)), assistant_message_id=assistant_message_id,
         )
     try:
         reservation_snapshot = json.loads(pricing_snapshot_json or "{}")
@@ -195,8 +213,12 @@ def create_billing_exempt_usage(
     session: Session, *, request_id: str, user_id: int, thread_id: str | None,
     provider: str, model: str, pricing_snapshot_json: str,
     swico_tier: str | None = None, reason: str = "internal_capability_test",
+    usage_kind: str = "chat", voice_turn_id: str | None = None,
+    audio_milliseconds: int = 0, characters: int = 0,
+    assistant_message_id: str | None = None,
 ) -> UsageCharge:
     """Create an idempotency/audit row without touching wallet or limit state."""
+    usage_kind = _usage_kind(usage_kind)
     existing = session.exec(
         select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
     ).first()
@@ -214,6 +236,11 @@ def create_billing_exempt_usage(
     charge.provider = provider
     charge.model = model
     charge.swico_tier = swico_tier
+    charge.usage_kind = usage_kind
+    charge.voice_turn_id = voice_turn_id
+    charge.audio_milliseconds = max(0, int(audio_milliseconds))
+    charge.characters = max(0, int(characters))
+    charge.assistant_message_id = assistant_message_id
     charge.reserved_micros = 0
     charge.debited_micros = 0
     charge.billing_exemption_reason = reason
@@ -240,7 +267,9 @@ def settle_billing_exempt_usage(
     cached_input_tokens: int, output_tokens: int, usage_source: str,
     pricing_snapshot_json: str, usd_to_inr_rate: Decimal | None = None,
     assistant_message_id: str | None = None, provider: str | None = None,
-    model: str | None = None,
+    model: str | None = None, usage_kind: str | None = None,
+    voice_turn_id: str | None = None, audio_milliseconds: int | None = None,
+    characters: int | None = None, swico_tier: str | None = None,
 ) -> UsageCharge:
     charge = session.exec(
         select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
@@ -255,6 +284,16 @@ def settle_billing_exempt_usage(
         charge.provider = provider
     if model:
         charge.model = model
+    if usage_kind is not None:
+        charge.usage_kind = _usage_kind(usage_kind)
+    if voice_turn_id is not None:
+        charge.voice_turn_id = voice_turn_id
+    if audio_milliseconds is not None:
+        charge.audio_milliseconds = max(0, int(audio_milliseconds))
+    if characters is not None:
+        charge.characters = max(0, int(characters))
+    if swico_tier is not None:
+        charge.swico_tier = swico_tier
     charge.provider_cost_amount_decimal = provider_cost_amount
     charge.provider_cost_currency = provider_cost_currency
     charge.provider_cost_micros = max(0, int(provider_cost_micros))
@@ -311,6 +350,9 @@ def settle_usage_reservation(
     pricing_snapshot_json: str, usd_to_inr_rate: Decimal | None = None,
     assistant_message_id: str | None = None,
     provider: str | None = None, model: str | None = None,
+    usage_kind: str | None = None, voice_turn_id: str | None = None,
+    audio_milliseconds: int | None = None, characters: int | None = None,
+    swico_tier: str | None = None,
 ) -> UsageCharge:
     charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()).first()
     if charge is None:
@@ -330,6 +372,16 @@ def settle_usage_reservation(
         charge.provider = provider
     if model:
         charge.model = model
+    if usage_kind is not None:
+        charge.usage_kind = _usage_kind(usage_kind)
+    if voice_turn_id is not None:
+        charge.voice_turn_id = voice_turn_id
+    if audio_milliseconds is not None:
+        charge.audio_milliseconds = max(0, int(audio_milliseconds))
+    if characters is not None:
+        charge.characters = max(0, int(characters))
+    if swico_tier is not None:
+        charge.swico_tier = swico_tier
     provider_debit = max(0, int(provider_cost_micros))
     reserved = int(charge.reserved_micros)
     reservation_attempt = _reservation_attempt(charge)

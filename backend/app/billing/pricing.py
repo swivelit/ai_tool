@@ -11,6 +11,8 @@ from ..ai.openai_catalog import get_model_spec, pricing_multipliers
 MICROS_PER_INR = Decimal("1000000")
 PAISE_PER_INR = Decimal("100")
 MILLION = Decimal("1000000")
+MILLISECONDS_PER_HOUR = Decimal("3600000")
+TEN_THOUSAND = Decimal("10000")
 
 
 def env_decimal(name: str, default: str) -> Decimal:
@@ -115,6 +117,53 @@ def sarvam_price(model: str, input_tokens: int, output_tokens: int, cached_input
         "usage_markup_multiplier": str(env_decimal("USAGE_MARKUP_MULTIPLIER", "1.0")),
     }
     return PriceResult(amount=amount_inr, currency="INR", micros=_ceil_micros(amount_inr), snapshot=snapshot)
+
+
+def stt_price(audio_milliseconds: int) -> PriceResult:
+    """Price Sarvam speech-to-text from an integer duration without floats."""
+    duration = max(0, int(audio_milliseconds))
+    rate = env_decimal("SARVAM_PRICE_STT_INR_PER_HOUR", "30")
+    amount_inr = Decimal(duration) * rate / MILLISECONDS_PER_HOUR
+    markup = env_decimal("USAGE_MARKUP_MULTIPLIER", "1.0")
+    return PriceResult(
+        amount=amount_inr,
+        currency="INR",
+        micros=_ceil_micros(amount_inr),
+        snapshot={
+            "provider": "sarvam",
+            "usage_kind": "stt",
+            "rate_inr_per_hour": str(rate),
+            "audio_milliseconds": duration,
+            "formula": "audio_milliseconds * rate_inr_per_hour / 3600000",
+            "usage_markup_multiplier": str(markup),
+        },
+    )
+
+
+def tts_price(characters: int, model: str) -> PriceResult:
+    """Price Sarvam text-to-speech from an integer character count."""
+    count = max(0, int(characters))
+    normalized_model = str(model or "").strip() or "bulbul:v2"
+    version = "V3" if "v3" in normalized_model.lower() else "V2"
+    variable = f"SARVAM_PRICE_TTS_{version}_INR_PER_10K_CHARS"
+    rate = env_decimal(variable, "30" if version == "V3" else "15")
+    amount_inr = Decimal(count) * rate / TEN_THOUSAND
+    markup = env_decimal("USAGE_MARKUP_MULTIPLIER", "1.0")
+    return PriceResult(
+        amount=amount_inr,
+        currency="INR",
+        micros=_ceil_micros(amount_inr),
+        snapshot={
+            "provider": "sarvam",
+            "usage_kind": "tts",
+            "model": normalized_model,
+            "rate_variable": variable,
+            "rate_inr_per_10k_characters": str(rate),
+            "characters": count,
+            "formula": "characters * rate_inr_per_10k_characters / 10000",
+            "usage_markup_multiplier": str(markup),
+        },
+    )
 
 
 def price_usage(provider: str, model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0) -> PriceResult:

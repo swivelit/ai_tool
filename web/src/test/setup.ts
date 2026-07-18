@@ -10,3 +10,5 @@ vi.stubEnv('VITE_FIREBASE_MESSAGING_SENDER_ID', '1234567890')
 
 if (!Element.prototype.scrollTo) Element.prototype.scrollTo = () => undefined
 if (!window.matchMedia) window.matchMedia = (() => ({ matches:false, media:'', onchange:null, addListener:() => undefined, removeListener:() => undefined, addEventListener:() => undefined, removeEventListener:() => undefined, dispatchEvent:() => false })) as typeof window.matchMedia
+if (!URL.createObjectURL) URL.createObjectURL = vi.fn(() => 'blob:test-audio')
+if (!URL.revokeObjectURL) URL.revokeObjectURL = vi.fn()

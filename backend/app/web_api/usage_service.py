@@ -66,6 +66,13 @@ def usage_summary(
             UsageCharge.settled_at < end,
         ).order_by(UsageCharge.settled_at.asc())
     ).all()
+    preferences = session.exec(select(WebUsagePreferences).where(
+        WebUsagePreferences.user_id == int(user.id)
+    )).first()
+    monthly_limit = (
+        int(preferences.hard_limit_micros)
+        if preferences and preferences.hard_limit_micros is not None else None
+    )
     totals = {
         "request_count": 0,
         "input_tokens": 0,
@@ -82,6 +89,19 @@ def usage_summary(
             "output_tokens": 0, "total_tokens": 0, "debited_micros": 0,
         }
     )
+    by_tier: dict[str, dict[str, Any]] = {
+        tier: {
+            "label": SWICO_TIER_LABELS[tier], "request_count": 0,
+            "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
+            "total_tokens": 0, "debited_micros": 0,
+        }
+        for tier in ("lite", "standard", "pro")
+    }
+    voice: dict[str, Any] = {
+        "label": "Voice", "stt_request_count": 0, "tts_request_count": 0,
+        "total_audio_milliseconds": 0, "total_tts_characters": 0,
+        "request_count": 0, "debited_micros": 0,
+    }
     for row in rows:
         total_tokens = int(row.input_tokens) + int(row.output_tokens)
         totals["request_count"] += 1
@@ -91,6 +111,23 @@ def usage_summary(
         totals["total_tokens"] += total_tokens
         totals["debited_micros"] += int(row.debited_micros)
         totals[f"{row.usage_source}_usage_count"] += 1
+        usage_kind = getattr(row, "usage_kind", "chat") or "chat"
+        if usage_kind == "chat" and row.swico_tier in by_tier:
+            tier_values = by_tier[str(row.swico_tier)]
+            tier_values["request_count"] += 1
+            tier_values["input_tokens"] += int(row.input_tokens)
+            tier_values["cached_input_tokens"] += int(row.cached_input_tokens)
+            tier_values["output_tokens"] += int(row.output_tokens)
+            tier_values["total_tokens"] += total_tokens
+            tier_values["debited_micros"] += int(row.debited_micros)
+        elif usage_kind in {"stt", "tts"}:
+            voice[f"{usage_kind}_request_count"] += 1
+            voice["request_count"] += 1
+            voice["debited_micros"] += int(row.debited_micros)
+            if usage_kind == "stt":
+                voice["total_audio_milliseconds"] += int(row.audio_milliseconds)
+            else:
+                voice["total_tts_characters"] += int(row.characters)
         local_day = ensure_utc(row.settled_at or row.created_at).astimezone(zone).date().isoformat()
         day = daily[local_day]
         for key, value in (
@@ -106,6 +143,25 @@ def usage_summary(
     )
     for day, values in daily.items():
         values["debited_ai_credits"] = ai_credits(values["debited_micros"])
+
+    def percent(numerator: int, denominator: int | None) -> float:
+        if not denominator or denominator <= 0:
+            return 0.0
+        return float((Decimal(numerator) * Decimal("100") / Decimal(denominator)).quantize(Decimal("0.01")))
+
+    period_debit = int(totals["debited_micros"])
+    for values in by_tier.values():
+        debit = int(values["debited_micros"])
+        values["debited_token_credits"] = ai_credits(debit)
+        values["period_debit_percentage"] = percent(debit, period_debit)
+        values["monthly_limit_percentage"] = percent(debit, monthly_limit)
+    voice_debit = int(voice["debited_micros"])
+    voice["total_audio_seconds"] = float(
+        Decimal(int(voice.pop("total_audio_milliseconds"))) / Decimal("1000")
+    )
+    voice["debited_voice_credits"] = ai_credits(voice_debit)
+    voice["period_debit_percentage"] = percent(voice_debit, period_debit)
+    voice["monthly_limit_percentage"] = percent(voice_debit, monthly_limit)
     return {
         "period": period,
         "tier": swico_tier,
@@ -119,6 +175,9 @@ def usage_summary(
         "available_micros": int(wallet["available_micros"]),
         "available_ai_credits": ai_credits(int(wallet["available_micros"])),
         "daily": [{"date": day, **values} for day, values in sorted(daily.items())],
+        "by_tier": by_tier,
+        "voice": voice,
+        "monthly_hard_limit_micros": monthly_limit,
         "estimated_tokens_remaining": wallet["token_estimate"],
         "token_estimate": wallet["token_estimate"],
         "billing_exempt": bool(billing_exempt),

@@ -108,25 +108,26 @@ All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is
 
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
-Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores selected web-tier audit fields, and revision `a7c4e9d2f1b6` adds the nullable billing-exemption reason to usage audit rows. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode checkout, capture, duplicate webhook replay, and refund in staging after intentionally enabling the switch there.
+Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores selected web-tier audit fields, revision `a7c4e9d2f1b6` adds the nullable billing-exemption reason, and revision `c5d8a2e9f4b1` additively classifies authoritative chat/STT/TTS charges and their voice units. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode checkout, capture, duplicate webhook replay, and refund in staging after intentionally enabling the switch there.
 
 ## Production temporary uploads and voice — exact dashboard steps
 
-1. In the Render dashboard select **New + → Key Value**. Create
-   **swico-upload-cache** in **Virginia**, in the same Render workspace as the
-   production API. Set **Persistence** to **Off**, **Maxmemory Policy** to
-   **allkeys-lru**, and keep external/public access disabled (no public IP allow
-   list). Do not add a persistent disk.
-2. Open the Key Value service **Connect** page and copy its private/internal
-   connection string. Open the production API service **ai_tool → Environment**
-   and add that value directly as the secret `WEB_UPLOAD_CACHE_URL`. Do not use
-   `REDIS_URL`, and do not put the value in the static site or an environment
-   group shared with unrelated services.
+1. Reuse the existing private Key Value service used for temporary web uploads;
+   this release does not require a new Render service. Keep persistence off,
+   `allkeys-lru` configured, and external/public access disabled. Do not add a
+   persistent disk.
+2. Open that existing Key Value service's **Connect** page and use its current
+   private/internal connection string. On **ai_tool → Environment**, keep that
+   value directly in the secret `WEB_UPLOAD_CACHE_URL`. Do not use `REDIS_URL`,
+   rotate the working internal URL merely for this release, put it in the static
+   site, or put it in an environment group shared with unrelated services.
 3. On **ai_tool → Environment**, add these API-only values exactly:
 
    ```dotenv
    WEB_ATTACHMENTS_ENABLED=true
    WEB_VOICE_RECORDING_ENABLED=true
+   WEB_VOICE_BILLING_ENABLED=true
+   WEB_VOICE_REPLY_ENABLED=true
    WEB_UPLOAD_TTL_SECONDS=600
    WEB_UPLOAD_MAX_FILE_BYTES=10485760
    WEB_UPLOAD_MAX_FILES_PER_MESSAGE=5
@@ -134,23 +135,30 @@ Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c
    WEB_UPLOAD_MAX_EXTRACTED_CHARS=100000
    WEB_ATTACHMENT_PROMPT_MAX_CHARS=24000
    WEB_AUDIO_MAX_SECONDS=300
+   WEB_TTS_MAX_CHARACTERS=5000
    WEB_UPLOAD_RATE_LIMIT_PER_MINUTE=10
+   WEB_STT_RATE_LIMIT_PER_MINUTE=10
+   WEB_TTS_RATE_LIMIT_PER_MINUTE=10
    WEB_UPLOAD_STORE_RAW=false
    ```
 
-4. Do **not** add `WEB_UPLOAD_CACHE_URL` or any `WEB_UPLOAD_*`, attachment, or
-   voice variable to **swico-backend-production**, billing Cron Jobs, the static
-   site, or a shared billing environment group. Do not create an upload cleanup
-   Cron Job, object-storage bucket, or upload disk; Redis expiry and immediate
-   parser cleanup are authoritative.
+4. Add the voice flags and limits directly to the existing **ai_tool** API
+   service. Do **not** add `WEB_UPLOAD_CACHE_URL`, provider secrets, or any
+   `WEB_*` voice/billing flag to **swico-backend-production**, billing Cron Jobs,
+   the static site, or a shared billing environment group. Do not create public
+   `VITE_*` voice flags. Bootstrap is authoritative. No new Render service,
+   disk, object-storage bucket, upload-cleanup Cron Job, or voice Cron Job is
+   required; keep using the existing Key Value internal URL.
 5. Open **swico-web → Settings → Headers**. Replace the existing
    `Permissions-Policy` value with
    `camera=(), geolocation=(), microphone=(self)`. Replace the existing CSP with
    the exact value in `web/public/_headers`, including
    `media-src 'self' blob:`. Save the header changes.
-6. Deploy **ai_tool** first. Verify authenticated `/api/web/bootstrap` reports
+6. Run the API pre-deploy migration, then deploy **ai_tool** first. Verify authenticated `/api/web/bootstrap` reports
    `web_attachments: true`, `web_voice_recording: true`, and
-   `uploads.available: true`; smoke one document upload and one transcription.
+   `web_voice_billing: true`, `web_voice_reply: true`, and `uploads.available:
+   true`; smoke one document upload, one paid transcription, one voice-originated
+   text answer, and its paid voice reply. Provider secrets stay API-only.
    Only then select **Save, rebuild, and deploy** on **swico-web**. This order
    prevents the browser from exposing controls before the authoritative API is
    ready.
@@ -320,15 +328,17 @@ Phase two sets `BILLING_CHECKOUT_ENABLED=true` and deploys separately. Make one 
 
 ## Migration and rollback
 
-This attachment/voice release needs no database migration. Temporary extracted
-text lives only in the dedicated Key Value service, while existing
-`WebChatMessage.metadata_json` stores display metadata only.
+This turn-based voice reply release requires additive revision `c5d8a2e9f4b1`.
+It preserves existing charges and backfills them as `usage_kind=chat`, then adds
+nullable voice-turn linkage plus integer STT milliseconds and TTS characters.
+It does not modify wallet or payment balances. Recordings, transcripts, and
+generated audio are not stored in the database or Key Value service.
 
 1. Back up PostgreSQL and note the currently deployed image and Alembic revision.
-2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `a7c4e9d2f1b6`.
+2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `c5d8a2e9f4b1`.
 3. Deploy the API first with `BILLING_CHECKOUT_ENABLED=false` and `SWICO_PRO_ENABLED=false`, smoke existing mobile endpoints and new web contracts, then deploy the static site. Never deploy the tier-aware static site before its API and migration.
 4. For an application rollback, first disable checkout, then deploy the previous API/static versions. Leave additive billing/chat/settings tables intact so ledger/payment and user-setting history is preserved.
-5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields; downgrading `a7c4e9d2f1b6` removes the billing-exemption reason. In production, preserve additive tables and fix forward.
+5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields; downgrading `a7c4e9d2f1b6` removes the billing-exemption reason; downgrading `c5d8a2e9f4b1` removes voice classification fields but preserves the pre-existing charge rows. In production, preserve additive tables and fix forward.
 
 ## Disposable recovery drill
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { User } from 'firebase/auth'
 import { transcribeAudio } from '../api/client'
-import type { AudioRecorderState } from '../types'
+import type { AudioRecorderState, Wallet } from '../types'
 
 const MAX_RECORDING_SECONDS = 300
 const MIME_CANDIDATES = [
@@ -39,11 +39,17 @@ export function useAudioRecorder({
   user,
   enabled,
   onTranscript,
+  onRecordingStarted,
+  onCancel,
+  resetKey = '',
   transcribe = transcribeAudio,
 }: {
   user: User | null;
   enabled: boolean;
-  onTranscript: (text: string) => void;
+  onTranscript: (text: string, voiceTurnId: string, wallet: Wallet) => void;
+  onRecordingStarted?: (voiceTurnId: string) => void;
+  onCancel?: () => void;
+  resetKey?: string;
   transcribe?: typeof transcribeAudio;
 }) {
   const [state, setState] = useState<AudioRecorderState>(initialState)
@@ -57,6 +63,8 @@ export function useAudioRecorder({
   const startedAtRef = useRef(0)
   const operationRef = useRef(0)
   const mountedRef = useRef(true)
+  const voiceTurnIdRef = useRef<string | null>(null)
+  const sttOperationIdRef = useRef<string | null>(null)
 
   useEffect(() => { stateRef.current = state }, [state])
 
@@ -93,7 +101,10 @@ export function useAudioRecorder({
     chunksRef.current = []
     stateRef.current = initialState
     if (mountedRef.current) setState(initialState)
-  }, [clearTimers, stopTracks])
+    voiceTurnIdRef.current = null
+    sttOperationIdRef.current = null
+    onCancel?.()
+  }, [clearTimers, onCancel, stopTracks])
 
   const start = useCallback(async () => {
     if (!enabled || !user) return
@@ -127,6 +138,7 @@ export function useAudioRecorder({
         cancelledRef.current = true
         operationRef.current += 1
         clearTimers(); stopTracks(); recorderRef.current = null; chunksRef.current = []
+        voiceTurnIdRef.current = null; sttOperationIdRef.current = null; onCancel?.()
         if (mountedRef.current) setState({ ...initialState, status: 'error', error: 'The recording failed. Please try again.' })
       }
       recorder.onstop = () => {
@@ -136,21 +148,32 @@ export function useAudioRecorder({
         if (cancelledRef.current || !mountedRef.current) return
         const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' })
         if (!blob.size) {
+          voiceTurnIdRef.current = null; sttOperationIdRef.current = null; onCancel?.()
           setState({ ...initialState, status: 'error', error: 'No audio was recorded. Please try again.' })
           return
         }
         setState(value => ({ ...value, status: 'transcribing', error: null }))
-        void transcribe(user, blob).then(result => {
+        const voiceTurnId = voiceTurnIdRef.current
+        const sttOperationId = sttOperationIdRef.current
+        if (!voiceTurnId || !sttOperationId) return
+        void transcribe(user, blob, sttOperationId, voiceTurnId).then(result => {
           if (!mountedRef.current || operationRef.current !== operation) return
-          onTranscript(result.transcript)
+          onTranscript(result.transcript, result.voice_turn_id, result.wallet)
+          voiceTurnIdRef.current = null
+          sttOperationIdRef.current = null
           setState(initialState)
         }).catch(() => {
           if (mountedRef.current && operationRef.current === operation) {
+            voiceTurnIdRef.current = null; sttOperationIdRef.current = null; onCancel?.()
             setState({ ...initialState, status: 'error', error: 'The recording could not be transcribed. Please try again.' })
           }
         })
       }
       recorder.start(250)
+      const voiceTurnId = crypto.randomUUID()
+      voiceTurnIdRef.current = voiceTurnId
+      sttOperationIdRef.current = crypto.randomUUID()
+      onRecordingStarted?.(voiceTurnId)
       startedAtRef.current = Date.now()
       setState({ status: 'recording', elapsed_seconds: 0, mime_type: recorder.mimeType || mimeType || null, error: null })
       intervalRef.current = window.setInterval(() => {
@@ -165,20 +188,30 @@ export function useAudioRecorder({
         setState({ ...initialState, status: 'error', error: recorderError(error) })
       }
     }
-  }, [clearTimers, enabled, onTranscript, stop, stopTracks, transcribe, user])
+  }, [clearTimers, enabled, onCancel, onRecordingStarted, onTranscript, stop, stopTracks, transcribe, user])
 
   const resetError = useCallback(() => setState(initialState), [])
 
-  useEffect(() => () => {
-    mountedRef.current = false
-    operationRef.current += 1
-    cancelledRef.current = true
-    clearTimers()
-    stopTracks()
-    const recorder = recorderRef.current
-    if (recorder && recorder.state !== 'inactive') recorder.stop()
-    recorderRef.current = null
-    chunksRef.current = []
+  const resetKeyRef = useRef(resetKey)
+  useEffect(() => {
+    if (resetKeyRef.current === resetKey) return
+    resetKeyRef.current = resetKey
+    cancel()
+  }, [cancel, resetKey])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      operationRef.current += 1
+      cancelledRef.current = true
+      clearTimers()
+      stopTracks()
+      const recorder = recorderRef.current
+      if (recorder && recorder.state !== 'inactive') recorder.stop()
+      recorderRef.current = null
+      chunksRef.current = []
+    }
   }, [clearTimers, stopTracks])
 
   return { state, start, stop, cancel, resetError }

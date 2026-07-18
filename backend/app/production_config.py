@@ -88,6 +88,37 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     if _bool(env, "WEB_APP_ENABLED", False) is not True:
         errors.append("WEB_APP_ENABLED must be true")
 
+    voice_recording = _bool(env, "WEB_VOICE_RECORDING_ENABLED", False)
+    voice_reply = _bool(env, "WEB_VOICE_REPLY_ENABLED", False)
+    voice_billing = _bool(env, "WEB_VOICE_BILLING_ENABLED", False)
+    for name, parsed in (
+        ("WEB_VOICE_RECORDING_ENABLED", voice_recording),
+        ("WEB_VOICE_REPLY_ENABLED", voice_reply),
+        ("WEB_VOICE_BILLING_ENABLED", voice_billing),
+    ):
+        if parsed is None:
+            errors.append(f"{name} must be a boolean")
+    if voice_reply is True and voice_billing is not True:
+        errors.append("WEB_VOICE_REPLY_ENABLED requires WEB_VOICE_BILLING_ENABLED")
+    if voice_billing is True and voice_recording is not True:
+        errors.append("WEB_VOICE_BILLING_ENABLED requires WEB_VOICE_RECORDING_ENABLED")
+    for name, default in (
+        ("WEB_TTS_MAX_CHARACTERS", "5000"),
+        ("WEB_STT_RATE_LIMIT_PER_MINUTE", "10"),
+        ("WEB_TTS_RATE_LIMIT_PER_MINUTE", "10"),
+    ):
+        configured = _integer(env, name, default)
+        if configured is None or configured <= 0:
+            errors.append(f"{name} must be a positive integer")
+    for name, default in (
+        ("SARVAM_PRICE_STT_INR_PER_HOUR", "30"),
+        ("SARVAM_PRICE_TTS_V2_INR_PER_10K_CHARS", "15"),
+        ("SARVAM_PRICE_TTS_V3_INR_PER_10K_CHARS", "30"),
+    ):
+        configured = _decimal(env, name, default)
+        if configured is None or configured <= 0:
+            errors.append(f"{name} must be a positive decimal")
+
     default_tier = _value(env, "SWICO_DEFAULT_TIER", "lite").lower()
     if default_tier not in SWICO_TIER_IDS:
         errors.append("SWICO_DEFAULT_TIER is unsupported")

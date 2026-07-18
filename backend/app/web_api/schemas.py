@@ -37,6 +37,8 @@ class WebChatRequest(BaseModel):
     message: str = Field(default="", max_length=16_000)
     thread_id: UUID | None = None
     reply_language: str | None = Field(default=None, max_length=16)
+    input_mode: Literal["text", "voice"] = "text"
+    voice_turn_id: UUID | None = None
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=5)
 
     @field_validator("message")
@@ -50,7 +52,19 @@ class WebChatRequest(BaseModel):
             raise ValueError("message or at least one attachment is required")
         if len(set(self.attachment_ids)) != len(self.attachment_ids):
             raise ValueError("attachment_ids must be unique")
+        if self.input_mode == "voice" and self.voice_turn_id is None:
+            raise ValueError("voice_turn_id is required for voice input")
+        if self.input_mode == "text" and self.voice_turn_id is not None:
+            raise ValueError("voice_turn_id is only valid for voice input")
         return self
+
+
+class WebTTSRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: UUID
+    message_id: str = Field(min_length=1, max_length=64)
+    voice_turn_id: UUID
 
 
 class ProfilePatch(BaseModel):

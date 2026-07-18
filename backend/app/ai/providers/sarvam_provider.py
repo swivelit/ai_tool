@@ -220,6 +220,7 @@ class SarvamProvider(AIProvider):
         self._http_post = http_post or requests.post
         self._api_key_getter = api_key_getter
         self._cache_recorder = cache_recorder
+        self.last_stt_detected_language: Optional[str] = None
 
     def _api_key(self) -> str:
         if self._api_key_getter is not None:
@@ -397,6 +398,7 @@ class SarvamProvider(AIProvider):
         provider_content_type = normalize_stt_upload_mime_type(file_path, content_type)
         file_size = os.path.getsize(file_path)
         normalized_language = normalize_audio_language(language)
+        self.last_stt_detected_language = None
         model = os.getenv("SARVAM_STT_MODEL", "saaras:v3").strip() or "saaras:v3"
         mode = os.getenv("SARVAM_STT_MODE", "transcribe").strip() or "transcribe"
         form_data: dict[str, str] = {"model": model, "mode": mode}
@@ -439,6 +441,9 @@ class SarvamProvider(AIProvider):
         except ValueError as exc:
             _log_sarvam_event("sarvam_stt_failed", status_code=502, safe_provider_error="invalid_json", started=started)
             raise HTTPException(502, "STT provider returned invalid JSON.") from exc
+        self.last_stt_detected_language = (
+            extract_sarvam_detected_language(payload) or normalized_language
+        )
         text = extract_sarvam_transcript(payload)
         if not text:
             _log_sarvam_event("sarvam_stt_failed", status_code=422, safe_provider_error="empty_transcript", started=started)
@@ -821,6 +826,28 @@ def extract_sarvam_transcript(payload: Any) -> str:
         if parts:
             return " ".join(parts).strip()
     return ""
+
+
+def extract_sarvam_detected_language(payload: Any) -> Optional[str]:
+    """Read provider detection metadata without changing the legacy STT return type."""
+    if not isinstance(payload, dict):
+        return None
+    for key in ("language_code", "detected_language", "language"):
+        normalized = normalize_audio_language(payload.get(key))
+        if normalized:
+            return normalized
+    for key in ("result", "metadata"):
+        nested = extract_sarvam_detected_language(payload.get(key))
+        if nested:
+            return nested
+    for key in ("results", "transcripts"):
+        values = payload.get(key)
+        if isinstance(values, list):
+            for value in values:
+                nested = extract_sarvam_detected_language(value)
+                if nested:
+                    return nested
+    return None
 
 
 def _extract_chat_text(response: Any) -> str:

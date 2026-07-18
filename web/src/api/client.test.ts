@@ -31,7 +31,7 @@ it('treats an event:error as a failed stream even when HTTP status is 200', asyn
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }))
   const user = { getIdToken: vi.fn().mockResolvedValue('token') }
   const seen = vi.fn()
-  await expect(streamChat(user as never, { request_id:'r', message:'hello' }, seen, new AbortController().signal)).rejects.toBeInstanceOf(SSEStreamError)
+  await expect(streamChat(user as never, { request_id:'r', message:'hello', input_mode:'text' }, seen, new AbortController().signal)).rejects.toBeInstanceOf(SSEStreamError)
   expect(seen).toHaveBeenCalledWith({ event:'error', data:{ code:'provider_failed', message:'Try again' } })
 })
 

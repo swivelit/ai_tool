@@ -343,13 +343,14 @@ def test_sarvam_stt_extracts_transcript(monkeypatch, tmp_path):
         text = ""
 
         def json(self):
-            return {"transcript": "voice hello"}
+            return {"transcript": "voice hello", "language_code": "en-IN"}
 
     def fake_post(*args, **kwargs):
         calls.append((args, kwargs))
         return Response()
 
-    transcript = SarvamProvider(http_post=fake_post).stt_file(
+    provider = SarvamProvider(http_post=fake_post)
+    transcript = provider.stt_file(
         str(audio_file),
         "ta",
         content_type="audio/m4a",
@@ -357,6 +358,7 @@ def test_sarvam_stt_extracts_transcript(monkeypatch, tmp_path):
     )
 
     assert transcript == "voice hello"
+    assert provider.last_stt_detected_language == "en-IN"
     assert calls[0][1]["data"]["model"] == "saaras:v3"
     assert calls[0][1]["data"]["mode"] == "transcribe"
     assert calls[0][1]["data"]["language_code"] == "ta-IN"

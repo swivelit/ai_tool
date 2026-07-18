@@ -27,6 +27,10 @@ projects:
                 value: "true"
               - key: WEB_VOICE_RECORDING_ENABLED
                 value: "true"
+              - key: WEB_VOICE_REPLY_ENABLED
+                value: "false"
+              - key: WEB_VOICE_BILLING_ENABLED
+                value: "false"
               - key: WEB_UPLOAD_TTL_SECONDS
                 value: "600"
               - key: WEB_UPLOAD_MAX_FILE_BYTES
@@ -41,7 +45,13 @@ projects:
                 value: "24000"
               - key: WEB_AUDIO_MAX_SECONDS
                 value: "300"
+              - key: WEB_TTS_MAX_CHARACTERS
+                value: "5000"
               - key: WEB_UPLOAD_RATE_LIMIT_PER_MINUTE
+                value: "10"
+              - key: WEB_STT_RATE_LIMIT_PER_MINUTE
+                value: "10"
+              - key: WEB_TTS_RATE_LIMIT_PER_MINUTE
                 value: "10"
               - key: WEB_UPLOAD_STORE_RAW
                 value: "false"

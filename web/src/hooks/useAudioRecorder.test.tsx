@@ -19,15 +19,17 @@ class MockMediaRecorder {
 }
 
 function Harness({
-  transcribe = vi.fn().mockResolvedValue({ transcript:'dictated text', detected_language:'en', duration_seconds:1 }),
+  transcribe = vi.fn().mockResolvedValue({ transcript:'dictated text', detected_language:'en', duration_seconds:1, duration_milliseconds:1000, voice_turn_id:'voice-turn', stt_charge:{ charged_micros:1, voice_credits:'0.000001' }, wallet:{} }),
   onTranscript = vi.fn(),
+  resetKey = 'thread-a',
 }: {
-  transcribe?: (user: never, blob: Blob) => Promise<{ transcript:string; detected_language:string; duration_seconds:number }>;
-  onTranscript?: (text: string) => void;
+  transcribe?: (user: never, blob: Blob, operationId: string, voiceTurnId: string) => Promise<unknown>;
+  onTranscript?: (text: string, voiceTurnId: string, wallet: unknown) => void;
+  resetKey?: string;
 }) {
   const recorder = useAudioRecorder({
     user:{ getIdToken:vi.fn() } as never, enabled:true, onTranscript,
-    transcribe:transcribe as never,
+    transcribe:transcribe as never, resetKey,
   })
   return <div>
     <span data-testid="status">{recorder.state.status}</span>
@@ -83,14 +85,15 @@ it('prevents two simultaneous microphone requests', () => {
 it('stops tracks, transcribes, and returns editable text without sending', async () => {
   const stopTrack = vi.fn()
   installMedia(() => Promise.resolve({ getTracks:() => [{ stop:stopTrack }] } as unknown as MediaStream))
-  const transcribe = vi.fn().mockResolvedValue({ transcript:'editable words', detected_language:'en', duration_seconds:1 })
+  const transcribe = vi.fn().mockResolvedValue({ transcript:'editable words', detected_language:'en', duration_seconds:1, duration_milliseconds:1000, voice_turn_id:'voice-turn', stt_charge:{ charged_micros:1, voice_credits:'0.000001' }, wallet:{} })
   const onTranscript = vi.fn(); const send = vi.fn()
   render(<Harness transcribe={transcribe} onTranscript={onTranscript} />)
   fireEvent.click(screen.getByText('start'))
   await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('recording'))
   fireEvent.click(screen.getByText('stop'))
-  await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('editable words'))
+  await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('editable words', 'voice-turn', expect.any(Object)))
   expect(transcribe).toHaveBeenCalledOnce()
+  expect(transcribe.mock.calls[0][2]).not.toBe(transcribe.mock.calls[0][3])
   expect(stopTrack).toHaveBeenCalledOnce()
   expect(send).not.toHaveBeenCalled()
 })
@@ -108,11 +111,30 @@ it('cancels without transcription and cleans tracks', async () => {
   expect(transcribe).not.toHaveBeenCalled()
 })
 
+it('ignores a pending transcription after its thread scope changes', async () => {
+  installMedia(() => Promise.resolve({ getTracks:() => [{ stop:vi.fn() }] } as unknown as MediaStream))
+  let resolveTranscription!: (value: unknown) => void
+  const transcribe = vi.fn(() => new Promise(resolve => { resolveTranscription = resolve }))
+  const onTranscript = vi.fn()
+  const view = render(<Harness transcribe={transcribe} onTranscript={onTranscript} resetKey="thread-a" />)
+  fireEvent.click(screen.getByText('start'))
+  await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('recording'))
+  fireEvent.click(screen.getByText('stop'))
+  await waitFor(() => expect(transcribe).toHaveBeenCalledOnce())
+  view.rerender(<Harness transcribe={transcribe} onTranscript={onTranscript} resetKey="thread-b" />)
+  await act(async () => {
+    resolveTranscription({ transcript:'stale', voice_turn_id:'voice-turn', wallet:{} })
+    await Promise.resolve()
+  })
+  expect(onTranscript).not.toHaveBeenCalled()
+  expect(screen.getByTestId('status')).toHaveTextContent('idle')
+})
+
 it('automatically stops at 300 seconds', async () => {
   vi.useFakeTimers()
   const stopTrack = vi.fn()
   installMedia(() => Promise.resolve({ getTracks:() => [{ stop:stopTrack }] } as unknown as MediaStream))
-  const transcribe = vi.fn().mockResolvedValue({ transcript:'max', detected_language:'en', duration_seconds:300 })
+  const transcribe = vi.fn().mockResolvedValue({ transcript:'max', detected_language:'en', duration_seconds:300, duration_milliseconds:300000, voice_turn_id:'voice-turn', stt_charge:{ charged_micros:1, voice_credits:'0.000001' }, wallet:{} })
   render(<Harness transcribe={transcribe} />)
   await act(async () => { fireEvent.click(screen.getByText('start')); await Promise.resolve() })
   expect(screen.getByTestId('status')).toHaveTextContent('recording')

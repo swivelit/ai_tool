@@ -110,6 +110,91 @@ def _stream_text(response) -> str:
     )
 
 
+def _sse_events(response, event_name: str) -> list[dict]:
+    lines = response.text.splitlines()
+    return [
+        json.loads(lines[index + 1].removeprefix("data: "))
+        for index, line in enumerate(lines[:-1])
+        if line == f"event: {event_name}" and lines[index + 1].startswith("data: ")
+    ]
+
+
+def test_saved_profile_language_is_authoritative_and_voice_metadata_is_serialized(client, monkeypatch):
+    english = create_test_user("language-en", "language-en@example.com")
+    tamil = create_test_user("language-ta", "language-ta@example.com")
+    with SessionLocal() as session:
+        tamil_row = session.get(type(tamil), int(tamil.id)); tamil_row.reply_language = "ta"
+        session.add(tamil_row); session.commit()
+    _fund(int(english.id)); _fund(int(tamil.id))
+
+    def localized(self, request, route, on_delta):
+        text = "தமிழ் பதில்" if request.reply_language == "ta" else "English answer"
+        on_delta(text)
+        provider = "sarvam" if self.__class__.__name__ == "SarvamProvider" else "openai"
+        return AIProviderResponse(
+            text=text, provider=provider, model=route.model, route=route.route,
+            reason=route.reason, language=request.reply_language or "en", intent=route.intent,
+            input_tokens=20, output_tokens=10, raw={"usage_actual": True},
+        )
+    monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", localized)
+    monkeypatch.setattr("app.ai.providers.sarvam_provider.SarvamProvider.stream_complete", localized)
+
+    english_voice_turn = "11111111-1111-4111-8111-111111111111"
+    english_response = client.post(
+        "/api/web/chat/stream", headers=auth_headers("language-en", "language-en@example.com"),
+        json={
+            "request_id": "11111111-1111-4111-8111-111111111112",
+            "message": "இதை விளக்குங்கள்", "reply_language": "ta", "input_mode": "voice",
+            "voice_turn_id": english_voice_turn,
+        },
+    )
+    tamil_response = client.post(
+        "/api/web/chat/stream", headers=auth_headers("language-ta", "language-ta@example.com"),
+        json={
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "message": "Explain this", "reply_language": "en", "input_mode": "text",
+        },
+    )
+    assert english_response.status_code == tamil_response.status_code == 200
+    assert "English answer" in _stream_text(english_response)
+    assert "தமிழ் பதில்" in _stream_text(tamil_response)
+    done = _sse_events(english_response, "done")[0]
+    assert done["input_mode"] == "voice"
+    assert done["voice_turn_id"] == english_voice_turn
+    assert done["reply_language"] == "en" and done["message_id"]
+    with SessionLocal() as session:
+        rows = session.exec(select(WebChatMessage).where(
+            WebChatMessage.user_id == int(english.id)
+        )).all()
+        assert {row.role for row in rows} == {"user", "assistant"}
+        for row in rows:
+            metadata = json.loads(row.metadata_json)
+            assert metadata["input_mode"] == "voice"
+            assert metadata["voice_turn_id"] == english_voice_turn
+            assert metadata["reply_language"] == "en"
+        thread_id = rows[0].thread_id
+    serialized = client.get(
+        f"/api/web/threads/{thread_id}/messages",
+        headers=auth_headers("language-en", "language-en@example.com"),
+    ).json()["items"]
+    assert all(item["input_mode"] == "voice" for item in serialized)
+    assert all(item["voice_turn_id"] == english_voice_turn for item in serialized)
+    assert all(item["reply_language"] == "en" for item in serialized)
+
+
+def test_web_chat_voice_input_requires_turn_id_and_text_rejects_it(client):
+    create_test_user("voice-schema", "voice-schema@example.com")
+    headers = auth_headers("voice-schema", "voice-schema@example.com")
+    base = {"request_id": "33333333-3333-4333-8333-333333333333", "message": "hello"}
+    assert client.post(
+        "/api/web/chat/stream", headers=headers, json={**base, "input_mode": "voice"}
+    ).status_code == 422
+    assert client.post(
+        "/api/web/chat/stream", headers=headers,
+        json={**base, "input_mode": "text", "voice_turn_id": str(__import__('uuid').uuid4())},
+    ).status_code == 422
+
+
 def test_deterministic_web_intents_are_saved_zero_charge_and_replay_safely(client):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")

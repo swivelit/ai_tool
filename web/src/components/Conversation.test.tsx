@@ -3,7 +3,7 @@ import { vi } from 'vitest'
 import { Conversation } from './Conversation'
 import type { Message } from '../types'
 
-const message = (id: string): Message => ({ id, thread_id:'t', role:'assistant', content:`Answer ${id}`, request_id:id, tier:'lite', tier_label:'Swico Lite', input_tokens:1, output_tokens:1, usage_source:'actual', charge_micros:1, status:'complete', created_at:new Date().toISOString() })
+const message = (id: string): Message => ({ id, thread_id:'t', role:'assistant', content:`Answer ${id}`, request_id:id, tier:'lite', tier_label:'Swico Lite', input_tokens:1, output_tokens:1, usage_source:'actual', charge_micros:1, status:'complete', created_at:new Date().toISOString(), input_mode:'text', voice_turn_id:null, reply_language:'en' })
 
 it('auto-scrolls only while near the bottom and offers a return button', () => {
   const scrollTo = vi.fn(); const { rerender } = render(<Conversation messages={[message('1')]} retry={vi.fn()} suggest={vi.fn()} />)
@@ -45,4 +45,24 @@ it('renders user attachment cards and marks expired metadata without an open act
   expect(screen.getByText('Expired')).toBeInTheDocument()
   expect(screen.queryByRole('link')).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name:/open|download/i })).not.toBeInTheDocument()
+})
+
+it('keeps assistant text visible with accessible voice controls and credit recovery', () => {
+  const voiceMessage = { ...message('voice'), input_mode:'voice' as const, voice_turn_id:'turn-1' }
+  const play = vi.fn(); const pause = vi.fn(); const retryVoice = vi.fn(); const addCredits = vi.fn()
+  const props = { messages:[voiceMessage], retry:vi.fn(), suggest:vi.fn(), playVoice:play, pauseVoice:pause, retryVoice, addCredits }
+  const { rerender } = render(<Conversation {...props} voiceStates={{ voice:{ status:'ready', error:null, insufficientCredits:false } }} />)
+  expect(screen.getByText('Answer voice')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name:'Play voice reply' }))
+  expect(play).toHaveBeenCalledWith('voice')
+  rerender(<Conversation {...props} voiceStates={{ voice:{ status:'playing', error:null, insufficientCredits:false } }} />)
+  fireEvent.click(screen.getByRole('button', { name:'Pause voice reply' }))
+  expect(pause).toHaveBeenCalledWith('voice')
+  rerender(<Conversation {...props} voiceStates={{ voice:{ status:'ended', error:null, insufficientCredits:false } }} />)
+  expect(screen.getByRole('button', { name:'Replay voice reply' })).toBeInTheDocument()
+  rerender(<Conversation {...props} voiceStates={{ voice:{ status:'error', error:'Not enough Voice credits to play this reply', insufficientCredits:true } }} />)
+  expect(screen.getByText('Not enough Voice credits to play this reply')).toBeInTheDocument()
+  expect(screen.getByText('Answer voice')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name:'Add credits' }))
+  expect(addCredits).toHaveBeenCalled()
 })

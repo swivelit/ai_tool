@@ -122,6 +122,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .answer-actions { display: flex; min-height: 30px; align-items: center; gap: 2px; margin-top: 8px; color: var(--muted) }
 .answer-actions > button { display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer }
 .answer-actions > button:hover { background: var(--surface) }
+.voice-reply-status { display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; font-size: 12px }
+.voice-reply-error { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--danger); font-size: 12px }
+.voice-reply-error button { min-height: 30px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); cursor: pointer }
 .message-details { position: relative; margin-left: 3px; font-size: 11px }
 .message-details summary { padding: 6px; border-radius: 6px; list-style: none; cursor: pointer }
 .message-details summary:hover { background: var(--surface) }
@@ -255,6 +258,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .usage-cards article { display: grid; min-width: 0; gap: 5px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface) }
 .usage-cards span { color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere }
 .usage-cards strong { font-size: 16px; overflow-wrap: anywhere }
+.usage-breakdowns { display: grid; gap: 12px }
+.usage-breakdown { display: grid; gap: 7px; padding: 12px; border: 1px solid var(--line); border-radius: 10px }
+.usage-breakdown > div:first-child { display: flex; justify-content: space-between; gap: 10px; font-size: 12px }
+.usage-breakdown > div:first-child span, .usage-breakdown small, .usage-note { color: var(--muted) }
+.usage-progress { height: 8px; overflow: hidden; border-radius: 999px; background: var(--surface-strong) }
+.usage-progress > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease }
+.usage-note { margin: 0; font-size: 12px; line-height: 1.5 }
 .actual-usage { padding-bottom: 8px; border-bottom: 1px solid var(--line) }
 .actual-usage dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 }
 .actual-usage dl div { display: grid; gap: 4px; padding: 11px; border: 1px solid var(--line); border-radius: 9px }

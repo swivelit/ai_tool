@@ -29,6 +29,7 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
       request_id: action.requestId, tier: action.tier, tier_label: action.tierLabel,
       input_tokens: 0, output_tokens: 0,
       usage_source: null, charge_micros: 0, status: 'streaming', created_at: new Date().toISOString(),
+      input_mode: 'text', voice_turn_id: null, reply_language: null,
     },
   }
   const data = record(action.event.data)
@@ -62,6 +63,9 @@ export function chatStreamReducer(state: StreamState, action: StreamAction): Str
         assistant: state.assistant ? {
           ...state.assistant, id: data.message_id ? String(data.message_id) : state.assistant.id,
           status: data.cancelled ? 'cancelled' : 'complete',
+          input_mode: data.input_mode === 'voice' ? 'voice' : 'text',
+          voice_turn_id: data.voice_turn_id ? String(data.voice_turn_id) : null,
+          reply_language: data.reply_language === 'ta' ? 'ta' : data.reply_language === 'en' ? 'en' : null,
         } : null,
       }
     case 'error':

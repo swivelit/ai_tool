@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 import start_render
 
@@ -78,6 +78,50 @@ def test_swico_tier_migration_upgrades_from_preceding_revision(tmp_path):
     assert "billing_exemption_reason" in {
         column["name"] for column in after.get_columns("usage_charge")
     }
+
+
+def test_voice_usage_migration_backfills_chat_and_downgrades_additively(tmp_path):
+    db_path = tmp_path / "voice-usage-upgrade.sqlite3"
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    env["APP_ENV"] = "test"
+    env["AUTO_CREATE_TABLES"] = "false"
+    preceding = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "a7c4e9d2f1b6"],
+        cwd=BACKEND_ROOT, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert preceding.returncode == 0, preceding.stderr
+    engine = create_engine(env["DATABASE_URL"])
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO usage_charge "
+            "(id, request_id, user_id, provider, model, status, created_at) "
+            "VALUES ('legacy-charge', 'legacy-request', 1, 'openai', 'legacy-model', "
+            "'settled', CURRENT_TIMESTAMP)"
+        ))
+    upgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=BACKEND_ROOT, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    columns = {column["name"] for column in inspect(engine).get_columns("usage_charge")}
+    assert {"usage_kind", "voice_turn_id", "audio_milliseconds", "characters"}.issubset(columns)
+    with engine.connect() as connection:
+        row = connection.execute(text(
+            "SELECT usage_kind, audio_milliseconds, characters, request_id "
+            "FROM usage_charge WHERE id = 'legacy-charge'"
+        )).mappings().one()
+    assert dict(row) == {
+        "usage_kind": "chat", "audio_milliseconds": 0,
+        "characters": 0, "request_id": "legacy-request",
+    }
+    downgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "a7c4e9d2f1b6"],
+        cwd=BACKEND_ROOT, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert downgraded.returncode == 0, downgraded.stderr
+    remaining = {column["name"] for column in inspect(engine).get_columns("usage_charge")}
+    assert not {"usage_kind", "voice_turn_id", "audio_milliseconds", "characters"} & remaining
 
 
 class _FailingMigrationProcess:

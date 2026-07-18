@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import type { User } from 'firebase/auth'
 import { ArrowUp, FileText, Mic, Paperclip, Square, X } from 'lucide-react'
-import type { ComposerAttachment } from '../types'
+import type { ComposerAttachment, Wallet } from '../types'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 
 function humanSize(bytes: number): string {
@@ -33,6 +33,11 @@ export function Composer({
   attachments = [],
   attachmentsEnabled = false,
   voiceEnabled = false,
+  voiceResetKey = '',
+  onVoiceDraft = () => undefined,
+  onVoiceCancel = () => undefined,
+  onComposerClear = () => undefined,
+  onVoiceWallet = () => undefined,
   supportedExtensions = [],
   addFiles = () => undefined,
   removeAttachment = () => undefined,
@@ -41,6 +46,10 @@ export function Composer({
   value: string; setValue: (value: string) => void; send: () => void; stop: () => void;
   streaming: boolean; disabled?: boolean; focusKey?: string;
   attachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
+  voiceResetKey?: string;
+  onVoiceDraft?: (voiceTurnId: string) => void; onVoiceCancel?: () => void;
+  onComposerClear?: () => void;
+  onVoiceWallet?: (wallet: Wallet) => void;
   supportedExtensions?: string[]; addFiles?: (files: File[]) => void;
   removeAttachment?: (attachment: ComposerAttachment) => void;
 }) {
@@ -57,14 +66,19 @@ export function Composer({
     return () => window.clearInterval(timer)
   }, [attachments])
 
-  const insertTranscript = useCallback((transcript: string) => {
+  const insertTranscript = useCallback((transcript: string, voiceTurnId: string, wallet: Wallet) => {
     const current = valueRef.current
     const next = current.trim() ? `${current.trimEnd()} ${transcript.trim()}` : transcript.trim()
     valueRef.current = next
     setValue(next)
+    onVoiceDraft(voiceTurnId)
+    onVoiceWallet(wallet)
     window.setTimeout(() => ref.current?.focus(), 0)
-  }, [setValue])
-  const recorder = useAudioRecorder({ user, enabled: voiceEnabled && !disabled, onTranscript: insertTranscript })
+  }, [onVoiceDraft, onVoiceWallet, setValue])
+  const recorder = useAudioRecorder({
+    user, enabled: voiceEnabled && !disabled, onTranscript: insertTranscript,
+    onRecordingStarted: onVoiceDraft, onCancel: onVoiceCancel, resetKey: voiceResetKey,
+  })
   const audioBusy = ['requesting', 'recording', 'stopping', 'transcribing'].includes(recorder.state.status)
   const uploadBusy = attachments.some(item => item.status === 'uploading')
   const readyAttachments = attachments.filter(item => item.status === 'ready')
@@ -132,7 +146,7 @@ export function Composer({
           {voiceEnabled && recorder.state.status !== 'recording' && recorder.state.status !== 'stopping' && <button className="composer-tool" type="button" aria-label="Start voice dictation" title="Start voice dictation" disabled={disabled || streaming || uploadBusy || recorder.state.status === 'transcribing'} onClick={() => void recorder.start()}><Mic size={19} /></button>}
         </div>
         <textarea ref={ref} aria-label="Message Swico" value={value} disabled={disabled}
-          onChange={event => setValue(event.target.value)} onKeyDown={keyDown}
+          onChange={event => { setValue(event.target.value); if (!event.target.value) onComposerClear() }} onKeyDown={keyDown}
           onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
           placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} maxLength={16000} />
         {streaming

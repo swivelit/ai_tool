@@ -12,7 +12,8 @@ vi.mock('../api/client', async importOriginal => {
 
 const profile = { name:'Hari', place:'Chennai', timezone:'Asia/Kolkata', assistant_name:'Elli', reply_language:'en' as const, email:'h@example.com', email_editable:false as const }
 const preferences = { period:'monthly' as const, tier:'lite' as const, tier_label:'Swico Lite', hard_limit_micros:null, hard_limit_ai_credits:null, hard_limit_token_estimate:null, remaining_token_estimate:null, warning_threshold_percent:80, notify_at_threshold:true, current_usage_micros:250_000, current_usage_ai_credits:'0.250000', remaining_micros:null, warning_reached:false, next_reset_at:'2026-08-31T18:30:00Z', timezone:'Asia/Kolkata', updated_at:null }
-const usage = { period:'current_month' as const, tier:'lite' as const, tier_label:'Swico Lite', timezone:'Asia/Kolkata', period_start:'2026-07-31T18:30:00Z', period_end:'2026-08-31T18:30:00Z', next_reset_at:'2026-08-31T18:30:00Z', request_count:2, input_tokens:1200, cached_input_tokens:300, output_tokens:400, total_tokens:1600, actual_usage_count:1, estimated_usage_count:1, debited_micros:250_000, debited_ai_credits:'0.250000', available_micros:5_000_000, available_ai_credits:'5.000000', daily:[], estimated_tokens_remaining:{ tier:'lite' as const, tier_label:'Swico Lite', pricing_as_of:'2026-07-17T00:00:00Z', estimated_blended_tokens:60_000, blended_assumption:'70/30', range_min_tokens:25_000, range_max_tokens:180_000, explanation:'Estimated for Swico Lite. Actual usage depends on message size, response length, and task complexity.' } }
+const emptyTier = (label: string) => ({ label, request_count:0, input_tokens:0, cached_input_tokens:0, output_tokens:0, total_tokens:0, debited_micros:0, debited_ai_credits:'0.000000', debited_token_credits:'0.000000', period_debit_percentage:0, monthly_limit_percentage:0 })
+const usage = { period:'current_month' as const, tier:'lite' as const, tier_label:'Swico Lite', timezone:'Asia/Kolkata', period_start:'2026-07-31T18:30:00Z', period_end:'2026-08-31T18:30:00Z', next_reset_at:'2026-08-31T18:30:00Z', request_count:2, input_tokens:1200, cached_input_tokens:300, output_tokens:400, total_tokens:1600, actual_usage_count:1, estimated_usage_count:1, debited_micros:250_000, debited_ai_credits:'0.250000', available_micros:5_000_000, available_ai_credits:'5.000000', daily:[], monthly_hard_limit_micros:null, by_tier:{ lite:{ ...emptyTier('Swico Lite'), request_count:2, input_tokens:1200, cached_input_tokens:300, output_tokens:400, total_tokens:1600, debited_micros:250_000, debited_token_credits:'0.250000', period_debit_percentage:100 }, standard:emptyTier('Swico'), pro:emptyTier('Swico Pro') }, voice:{ label:'Voice' as const, stt_request_count:0, tts_request_count:0, total_audio_seconds:0, total_tts_characters:0, request_count:0, debited_micros:0, debited_voice_credits:'0.000000', period_debit_percentage:0, monthly_limit_percentage:0 }, estimated_tokens_remaining:{ tier:'lite' as const, tier_label:'Swico Lite', pricing_as_of:'2026-07-17T00:00:00Z', estimated_blended_tokens:60_000, blended_assumption:'70/30', range_min_tokens:25_000, range_max_tokens:180_000, explanation:'Estimated for Swico Lite. Actual usage depends on message size, response length, and task complexity.' } }
 const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_description:'Fast and efficient for everyday questions.', tier_selection_enabled:true, tiers:[
   { id:'lite' as const, label:'Swico Lite', description:'Fast and efficient for everyday questions.', available:true, selected:true },
   { id:'standard' as const, label:'Swico', description:'Balanced quality and speed for most tasks.', available:true, selected:false },
@@ -81,6 +82,12 @@ it('shows concise tier estimates and this-month token categories', async () => {
   expect(screen.getByText('Estimated range')).toBeInTheDocument()
   expect(screen.getByText('25,000–180,000 tokens')).toBeInTheDocument()
   expect(screen.getByText('This month')).toBeInTheDocument()
+  expect(screen.getAllByRole('progressbar')).toHaveLength(4)
+  expect(screen.getByRole('progressbar', { name:'Swico Lite usage' })).toHaveAttribute('aria-valuenow', '100')
+  expect(screen.getByRole('progressbar', { name:'Swico usage' })).toHaveAttribute('aria-valuenow', '0')
+  expect(screen.getByRole('progressbar', { name:'Swico Pro usage' })).toHaveAttribute('aria-valuenow', '0')
+  expect(screen.getByRole('progressbar', { name:'Voice usage' })).toHaveAttribute('aria-valuenow', '0')
+  expect(screen.getByText(/do not represent voice minutes/i)).toBeInTheDocument()
   expect(screen.getByText('Input tokens')).toBeInTheDocument()
   expect(screen.getByText('1,200')).toBeInTheDocument()
   expect(screen.getByText('Cached input tokens')).toBeInTheDocument()
@@ -107,6 +114,7 @@ it('shows Unlimited without a fictitious range or top-up controls', async () => 
   render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
   await userEvent.click(await screen.findByRole('button', { name:'Token credits' }))
   expect(screen.getByText('Unlimited')).toBeInTheDocument()
+  expect(screen.getAllByRole('progressbar')).toHaveLength(4)
   expect(screen.queryByText('Estimated range')).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name:'Add tokens' })).not.toBeInTheDocument()
   expect(screen.queryByRole('group', { name:'Estimated monthly token limit' })).not.toBeInTheDocument()
