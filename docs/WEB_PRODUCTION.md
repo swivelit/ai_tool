@@ -18,6 +18,20 @@
   `BILLING_CHECKOUT_ENABLED=false` explicitly for the initial deployment. Keep
   `RAZORPAY_MODE=test` and a
   `rzp_test_` key until every Live blocker is cleared.
+- Set these backend-only Render values exactly for the reviewed package change:
+
+  ```dotenv
+  BILLING_TOPUP_PACKAGES_PAISE=1000,29900
+  BILLING_ENFORCE_TOPUP_PACKAGES=false
+  BILLING_MIN_TOPUP_PAISE=1000
+  BILLING_MAX_TOPUP_PAISE=50000
+  ```
+
+  Values are paise (`1000` is ₹10; `29900` is ₹299). Custom whole-rupee amounts
+  are accepted only inside the configured bounds and the backend remains
+  authoritative. The frontend reads the maximum from public configuration.
+  Changing the maximum requires deliberate operator review. Razorpay keys,
+  mode, webhook URL/events, and webhook secrets do not change for this release.
 - Configure the static site to serve `web/dist`, rewrite application routes to
   `index.html`, and reproduce the headers in `web/public/_headers` if the Render
   static-site configuration does not ingest that file automatically.
@@ -88,7 +102,8 @@
 - Confirm captured-but-not-credited, duplicate webhook, delayed webhook, partial
   refund, full refund, and reconciliation alerts in the Render environment.
 - Confirm `/api/web/billing/public-config` returns the explicit expected
-  `razorpay_mode` and `checkout_enabled`; never derive mode in the browser from
+  `razorpay_mode`, `checkout_enabled`, `custom_topup_enabled=true`, bounds, and
+  exactly the 1,000/29,900-paise presets; never derive mode in the browser from
   the public-key prefix.
 
 ## Razorpay Live two-phase cutover
@@ -101,13 +116,15 @@ Phase two: set `BILLING_CHECKOUT_ENABLED=true` and deploy separately; make one c
 
 ## Legal publication
 
-The seven policy bodies in `web/src/content/legalContent.json` are published
-through the owner attestation in
-`docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md`. They have not been reviewed or
-approved by legal counsel. The repository checker verifies complete policy and
-contact content plus the matching accountable publication record; it does not
-provide legal advice or certify legal compliance. Future professional review
-remains recommended.
+The seven policy bodies in `web/src/content/legalContent.json` retain their
+tracked owner approval and have not been reviewed or approved by legal counsel.
+The approved Terms package description, Pricing **Gross top-up price** section,
+and `docs/OWNER_LEGAL_PUBLICATION_ATTESTATION.md` still name the old
+₹10/₹50/₹100/₹500 package set. The repository checker therefore fails until
+exact owner/counsel-approved replacement wording and a matching approval record
+are supplied. Do not deploy this code or change approval metadata, versions, or
+effective dates speculatively. The checker does not provide legal advice or
+certify legal compliance.
 
 Raw PDFs, DOCX files, counsel correspondence, signatures, private identity
 material and any future private review evidence must remain under the ignored
@@ -168,8 +185,9 @@ until an owner records direct evidence:
 
 ## Live launch commands
 
-These gates are separate from the normal local build. The legal checker is
-expected to fail until approved publication data exists:
+These gates are separate from the normal local build. The legal publication
+checker is expected to fail specifically on the three stale approved pricing
+references until approved replacements exist:
 
 ```bash
 python scripts/check-legal-publication.py
@@ -179,12 +197,12 @@ python scripts/check-web-product-language.py
 python scripts/check-tracked-secrets.py
 ```
 
-Both legal commands are expected to fail for the current handoff. The source
-readiness command evaluates structure only; even a future pass is not a claim
-of legal approval. No Render setting changes are required yet. Razorpay remains
-in Test Mode and checkout remains disabled. After exact approved content and all
-metadata arrive, only the `swico-web` static site needs deployment for the legal
-content change unless an independently reviewed backend change is also required.
+The publication failure is an intentional release blocker. The source-readiness
+command evaluates structure only; even a future pass is not a claim of legal
+approval. Razorpay remains in Test Mode and checkout remains disabled. After
+exact approved content and matching approval metadata arrive, rerun every gate
+before applying the documented backend Render amount changes or deploying the
+static site.
 
 Run deployed staging tests only with a real non-local HTTPS domain and dedicated
 Firebase test account:

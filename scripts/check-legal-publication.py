@@ -139,6 +139,41 @@ def _approval_findings(publication: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _stale_pricing_findings(data: dict[str, Any]) -> list[str]:
+    pages = data.get("pages") if isinstance(data.get("pages"), dict) else {}
+    errors: list[str] = []
+    terms_text = "\n".join(_strings(pages.get("terms", {})))
+    if "Available top-up packages are ordinarily Rs.10, Rs.50, Rs.100 and Rs.500" in terms_text:
+        errors.append(
+            "terms: approved package description still lists Rs.10, Rs.50, Rs.100 and Rs.500; "
+            "exact owner/counsel-approved replacement wording is required"
+        )
+    pricing = pages.get("pricing") if isinstance(pages.get("pricing"), dict) else {}
+    gross_sections = [
+        section for section in pricing.get("sections", [])
+        if isinstance(section, dict) and _value(section, "heading") == "Gross top-up price"
+    ]
+    if any(
+        "Rs.10, Rs.50, Rs.100 and Rs.500" in _value(section, "body")
+        or "Rs.50 provides Rs.25" in _value(section, "body")
+        for section in gross_sections
+    ):
+        errors.append(
+            "pricing: approved Gross top-up price section still describes the removed Rs.50, "
+            "Rs.100 and Rs.500 package set; exact owner/counsel-approved replacement wording is required"
+        )
+    try:
+        attestation = OWNER_ATTESTATION.read_text(encoding="utf-8")
+    except OSError:
+        attestation = ""
+    if "the ₹10, ₹50, ₹100 and ₹500 packages match the actual product" in attestation:
+        errors.append(
+            "owner attestation: approved package statement still lists ₹10, ₹50, ₹100 and ₹500; "
+            "a new matching owner/counsel approval record is required"
+        )
+    return errors
+
+
 def findings() -> list[str]:
     try:
         data = json.loads(CONTENT.read_text(encoding="utf-8"))
@@ -152,6 +187,7 @@ def findings() -> list[str]:
     if not _value(publication, "businessIdentity"):
         errors.append("missing business identity")
     errors.extend(_approval_findings(publication))
+    errors.extend(_stale_pricing_findings(data))
 
     errors.extend(_email_findings("support email", _value(publication, "supportEmail", "supportContact")))
     errors.extend(_email_findings("billing-support email", _value(publication, "billingSupportEmail")))

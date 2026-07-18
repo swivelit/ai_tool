@@ -20,12 +20,15 @@ from ..billing.errors import (
 )
 from ..billing.pricing import calculate_topup, credit_percent
 from ..billing.razorpay_client import RazorpayClient, verify_checkout_signature, verify_webhook_signature
-from ..billing.schemas import CreateOrderRequest, VerifyPaymentRequest
+from ..billing.schemas import CreateOrderRequest, TopupEstimateResponse, VerifyPaymentRequest
 from ..billing.service import (
     credit_payment_once, enforce_rate_limit, get_wallet_summary, list_wallet_ledger,
     reverse_credit_for_refund,
 )
 from ..billing.token_estimates import micros_for_blended_tokens, token_estimate
+from ..billing.topups import (
+    custom_topup_enabled, topup_bounds, topup_packages, validate_topup_amount,
+)
 from ..billing.usage_limits import validated_timezone
 from ..ai.providers.base import GenerationCancellation, GenerationCancelled
 from ..ai.swico_tiers import (
@@ -68,19 +71,6 @@ def _pagination(limit: int, offset: int) -> tuple[int, int]:
     return min(max(1, limit), 100), max(0, offset)
 
 
-def _packages() -> list[int]:
-    raw = os.getenv("BILLING_TOPUP_PACKAGES_PAISE", "1000,5000,10000,50000")
-    packages: list[int] = []
-    for item in raw.split(","):
-        try:
-            value = int(item.strip())
-        except ValueError:
-            continue
-        if value > 0 and value not in packages:
-            packages.append(value)
-    return packages
-
-
 def _checkout_enabled() -> bool:
     return os.getenv("BILLING_CHECKOUT_ENABLED", "false").strip().lower() in {
         "1", "true", "yes", "on",
@@ -104,8 +94,9 @@ def _razorpay_mode() -> str:
 
 def public_billing_config(swico_tier: str = "lite") -> dict[str, Any]:
     mode = _razorpay_mode()
+    minimum, maximum = topup_bounds()
     packages = []
-    for gross in _packages():
+    for gross in topup_packages():
         credit_micros, platform_paise = calculate_topup(gross)
         packages.append({
             "gross_amount_paise": gross,
@@ -117,8 +108,8 @@ def public_billing_config(swico_tier: str = "lite") -> dict[str, Any]:
         "currency": "INR", "credit_percent": str(credit_percent()),
         "razorpay_mode": mode, "checkout_enabled": _checkout_enabled(),
         "razorpay_key_id": os.getenv("RAZORPAY_KEY_ID", "").strip(),
-        "min_topup_paise": int(os.getenv("BILLING_MIN_TOPUP_PAISE", "1000")),
-        "max_topup_paise": int(os.getenv("BILLING_MAX_TOPUP_PAISE", "50000")),
+        "min_topup_paise": minimum, "max_topup_paise": maximum,
+        "custom_topup_enabled": custom_topup_enabled(),
         "packages": packages,
     }
 
@@ -550,6 +541,39 @@ def wallet(session: Session = Depends(get_session), auth: AuthUser = Depends(get
     )
 
 
+@router.get("/billing/estimate", response_model=TopupEstimateResponse)
+def estimate_topup(
+    gross_amount_paise: int = Query(..., gt=0),
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if is_internal_test_user(auth, user):
+        raise HTTPException(403, {
+            "code": "payments_unavailable",
+            "message": "Payments are not available for this internal testing account.",
+        })
+    _rate_limit(session, user_id=int(user.id), action="payment_estimate", limit=30)
+    try:
+        amount = validate_topup_amount(gross_amount_paise)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    credited_amount_micros, _platform_share_paise = calculate_topup(amount)
+    estimate = token_estimate(
+        credited_amount_micros,
+        tier=selected_swico_tier(session, int(user.id)),
+    )
+    return {
+        "gross_amount_paise": amount,
+        "token_estimate": {
+            "tier": estimate["tier"],
+            "tier_label": estimate["tier_label"],
+            "estimated_blended_tokens": estimate["estimated_blended_tokens"],
+            "range_min_tokens": estimate["range_min_tokens"],
+            "range_max_tokens": estimate["range_max_tokens"],
+        },
+    }
+
+
 @router.get("/billing/ledger")
 def ledger(
     limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0),
@@ -652,24 +676,21 @@ def create_order(payload: CreateOrderRequest, session: Session = Depends(get_ses
         })
     _razorpay_mode()
     _rate_limit(session, user_id=int(user.id), action="payment_order", limit=6)
-    minimum = int(os.getenv("BILLING_MIN_TOPUP_PAISE", "1000"))
-    maximum = int(os.getenv("BILLING_MAX_TOPUP_PAISE", "50000"))
-    if payload.gross_amount_paise < minimum or payload.gross_amount_paise > maximum:
-        raise HTTPException(422, f"Top-up must be between {minimum} and {maximum} paise.")
-    allowed = _packages()
-    if os.getenv("BILLING_ENFORCE_TOPUP_PACKAGES", "true").lower() in {"1", "true", "yes", "on"} and payload.gross_amount_paise not in allowed:
-        raise HTTPException(422, "Select an available top-up package.")
+    try:
+        gross_amount_paise = validate_topup_amount(payload.gross_amount_paise)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     digest = hashlib.sha256(f"{user.id}:{payload.idempotency_key}".encode()).hexdigest()[:26]
     receipt = f"sw_{digest}"[:40]
     existing = session.exec(select(PaymentOrder).where(PaymentOrder.receipt == receipt, PaymentOrder.user_id == user.id)).first()
     if existing and existing.provider_order_id:
         return _order_checkout_response(existing)
-    credit_micros, platform_paise = calculate_topup(payload.gross_amount_paise)
+    credit_micros, platform_paise = calculate_topup(gross_amount_paise)
     order = existing or PaymentOrder(
-        user_id=int(user.id), receipt=receipt, gross_amount_paise=payload.gross_amount_paise,
+        user_id=int(user.id), receipt=receipt, gross_amount_paise=gross_amount_paise,
         credited_amount_micros=credit_micros, platform_share_paise=platform_paise,
     )
-    if existing and existing.gross_amount_paise != payload.gross_amount_paise:
+    if existing and existing.gross_amount_paise != gross_amount_paise:
         raise HTTPException(409, "Idempotency key was already used for another amount.")
     session.add(order)
     session.commit()  # The durable internal order exists before the external call.

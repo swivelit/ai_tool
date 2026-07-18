@@ -28,8 +28,8 @@ def valid_environment() -> dict[str, str]:
         "BILLING_CREDIT_PERCENT": "50",
         "BILLING_MIN_TOPUP_PAISE": "1000",
         "BILLING_MAX_TOPUP_PAISE": "50000",
-        "BILLING_TOPUP_PACKAGES_PAISE": "1000,5000",
-        "BILLING_ENFORCE_TOPUP_PACKAGES": "true",
+        "BILLING_TOPUP_PACKAGES_PAISE": "1000,29900",
+        "BILLING_ENFORCE_TOPUP_PACKAGES": "false",
         "CORS_ALLOW_ORIGINS": "https://swico-web.onrender.com",
         "AUTO_CREATE_TABLES": "false",
         "RUN_MIGRATIONS_ON_STARTUP": "false",
@@ -79,6 +79,34 @@ def test_production_requires_checkout_switch_to_be_explicit() -> None:
     validate_production_configuration({**valid_environment(), "BILLING_CHECKOUT_ENABLED": "false"})
 
 
+def test_production_requires_custom_topup_presets_and_bounds() -> None:
+    validate_production_configuration(valid_environment())
+    validate_production_configuration({
+        **valid_environment(),
+        "BILLING_TOPUP_PACKAGES_PAISE": "29900,1000",
+    })
+    with pytest.raises(ProductionConfigurationError, match="exactly ₹10 and ₹299"):
+        validate_production_configuration({
+            **valid_environment(),
+            "BILLING_TOPUP_PACKAGES_PAISE": "1000,5000,29900",
+        })
+    with pytest.raises(ProductionConfigurationError, match="whole-rupee bound allowing ₹299"):
+        validate_production_configuration({
+            **valid_environment(),
+            "BILLING_MAX_TOPUP_PAISE": "25000",
+        })
+    with pytest.raises(ProductionConfigurationError, match="exactly ₹10 and ₹299"):
+        validate_production_configuration({
+            **valid_environment(),
+            "BILLING_TOPUP_PACKAGES_PAISE": "1000,29900,1000",
+        })
+    with pytest.raises(ProductionConfigurationError, match="whole-rupee bound"):
+        validate_production_configuration({
+            **valid_environment(),
+            "BILLING_MAX_TOPUP_PAISE": "50001",
+        })
+
+
 @pytest.mark.parametrize(
     ("updates", "expected"),
     [
@@ -95,6 +123,7 @@ def test_production_requires_checkout_switch_to_be_explicit() -> None:
         ({"BILLING_CREDIT_PERCENT": "49"}, "BILLING_CREDIT_PERCENT"),
         ({"BILLING_MIN_TOPUP_PAISE": "1001"}, "must allow ₹10"),
         ({"BILLING_TOPUP_PACKAGES_PAISE": "5000"}, "must include ₹10"),
+        ({"BILLING_ENFORCE_TOPUP_PACKAGES": "true"}, "must be false"),
         ({"CORS_ALLOW_ORIGINS": "https://swico-web.onrender.com/"}, "CORS_ALLOW_ORIGINS"),
         ({"CORS_ALLOW_ORIGINS": "*"}, "CORS_ALLOW_ORIGINS"),
         ({"GLOBAL_QA_REAL_EMBEDDINGS_ENABLED": "true", "GLOBAL_QA_EMBEDDING_PROVIDER": "qwen"}, "local embedding"),

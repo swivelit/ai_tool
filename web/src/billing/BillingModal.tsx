@@ -3,18 +3,21 @@ import { ShieldCheck, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import { apiJson } from '../api/client'
 import { formatRupeesFromPaise, tokenRangeLabel } from '../credits'
-import type { BillingConfig, BillingPackage, PaymentHistory } from '../types'
+import type { BillingConfig, BillingPackage, PaymentHistory, TopupEstimateResponse, TopupTokenEstimate } from '../types'
 import { loadRazorpay } from './razorpay'
 import { pollPaymentStatus } from './paymentPolling'
 import { paymentPresentation } from './paymentPresentation'
 
 type Order = { key_id: string; provider_order_id: string; amount: number; currency: string; internal_order_id: string; credited_amount_micros: number; platform_share_paise: number }
+type SelectionKey = 'preset-1000' | 'preset-29900' | 'custom'
+type EstimateState = 'idle' | 'loading' | 'ready' | 'error'
+const PRESETS = [1000, 29900] as const
 
 function packageRupees(paise: number) {
   return paise % 100 === 0 ? `₹${paise / 100}` : formatRupeesFromPaise(paise)
 }
 
-function estimateRange(estimate: BillingPackage['token_estimate']) {
+function estimateRange(estimate: BillingPackage['token_estimate'] | TopupTokenEstimate | null) {
   return estimate ? tokenRangeLabel(estimate.range_min_tokens, estimate.range_max_tokens) : 'Estimate unavailable'
 }
 
@@ -24,15 +27,45 @@ function packageAccessibleName(item: BillingPackage) {
   return estimate === 'Estimate unavailable' ? `Pay ${amount}, estimate unavailable` : `Pay ${amount}, estimated ${estimate.replace('–', ' to ')}`
 }
 
+function customAmount(value: string, config: BillingConfig): { paise: number | null; error: string | null } {
+  if (!value) return { paise: null, error: null }
+  if (!/^[0-9]+$/.test(value)) {
+    return { paise: null, error: 'Enter a whole-rupee amount using numbers only.' }
+  }
+  const rupees = Number(value)
+  const paise = rupees * 100
+  if (!Number.isSafeInteger(rupees) || !Number.isSafeInteger(paise)) {
+    return { paise: null, error: 'Enter a valid whole-rupee amount.' }
+  }
+  if (paise < config.min_topup_paise || paise > config.max_topup_paise) {
+    return {
+      paise: null,
+      error: `Enter an amount from ${packageRupees(config.min_topup_paise)} to ${packageRupees(config.max_topup_paise)}.`,
+    }
+  }
+  return { paise, error: null }
+}
+
 export function BillingModal({ user, config, close, refreshed }: { user: User; config: BillingConfig; close: () => void; refreshed: () => void }) {
-  const [selected, setSelected] = useState<BillingPackage | null>(config.packages[0] ?? null)
+  const [selected, setSelected] = useState<SelectionKey>('preset-1000')
+  const [customInput, setCustomInput] = useState('')
+  const [customEstimate, setCustomEstimate] = useState<TopupTokenEstimate | null>(null)
+  const [estimateState, setEstimateState] = useState<EstimateState>('idle')
   const [status, setStatus] = useState(''); const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'topup' | 'history'>('topup')
   const [history, setHistory] = useState<PaymentHistory[]>([])
   const [historyState, setHistoryState] = useState<'loading' | 'ready' | 'error'>('loading')
   const dialogRef = useRef<HTMLElement>(null); const closeRef = useRef<HTMLButtonElement>(null)
   const closeTimer = useRef<number | null>(null); const polling = useRef<AbortController | null>(null)
+  const estimateRequest = useRef(0)
   const testMode = config.razorpay_mode === 'test'
+  const custom = customAmount(customInput, config)
+  const selectedPresetAmount = selected === 'preset-1000' ? 1000 : selected === 'preset-29900' ? 29900 : null
+  const selectedPreset = selectedPresetAmount === null ? null : config.packages.find(item => item.gross_amount_paise === selectedPresetAmount) ?? null
+  const selectedAmountPaise = selected === 'custom' ? custom.paise : selectedPresetAmount
+  const selectedEstimate = selected === 'custom' ? customEstimate : selectedPreset?.token_estimate ?? null
+  const customReady = selected !== 'custom' || (custom.paise !== null && estimateState === 'ready' && customEstimate !== null)
+  const checkoutReady = selectedAmountPaise !== null && selectedEstimate !== null && customReady
   useEffect(() => {
     closeRef.current?.focus()
     const keyboard = (event: KeyboardEvent) => {
@@ -62,6 +95,30 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
     polling.current?.abort()
   }, [])
+  useEffect(() => {
+    const requestId = ++estimateRequest.current
+    setCustomEstimate(null)
+    if (selected !== 'custom' || !config.custom_topup_enabled || custom.paise === null || custom.error) {
+      setEstimateState('idle')
+      return
+    }
+    setEstimateState('loading')
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      void apiJson<TopupEstimateResponse>(
+        user,
+        `/api/web/billing/estimate?gross_amount_paise=${custom.paise}`,
+        { signal: controller.signal },
+      ).then(response => {
+        if (requestId !== estimateRequest.current || response.gross_amount_paise !== custom.paise) return
+        setCustomEstimate(response.token_estimate)
+        setEstimateState('ready')
+      }).catch(() => {
+        if (requestId === estimateRequest.current && !controller.signal.aborted) setEstimateState('error')
+      })
+    }, 350)
+    return () => { window.clearTimeout(timer); controller.abort() }
+  }, [config.custom_topup_enabled, custom.error, custom.paise, selected, user])
 
   const closeSoon = () => { closeTimer.current = window.setTimeout(close, 500) }
   const finishPending = async (internalOrderId: string) => {
@@ -74,11 +131,11 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
   }
 
   const checkout = async () => {
-    if (!selected || busy || !config.checkout_enabled) return
+    if (!checkoutReady || selectedAmountPaise === null || busy || !config.checkout_enabled) return
     setBusy(true); setStatus('Creating secure order…')
     try {
       const order = await apiJson<Order>(user, '/api/web/billing/orders', {
-        method: 'POST', body: JSON.stringify({ gross_amount_paise: selected.gross_amount_paise, idempotency_key: crypto.randomUUID() }),
+        method: 'POST', body: JSON.stringify({ gross_amount_paise: selectedAmountPaise, idempotency_key: crypto.randomUUID() }),
       })
       await loadRazorpay()
       if (!window.Razorpay) throw new Error('Checkout unavailable')
@@ -102,6 +159,17 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
       setStatus(error instanceof Error ? error.message : 'Order creation failed. Checkout was not opened.'); setBusy(false)
     }
   }
+  const changeCustomInput = (value: string) => {
+    setCustomInput(value)
+    setCustomEstimate(null)
+    setEstimateState('idle')
+  }
+  const payButtonLabel = busy ? 'Please wait…'
+    : selected === 'custom' && custom.paise === null ? 'Enter a valid amount'
+    : selected === 'custom' && estimateState === 'loading' ? 'Calculating estimate…'
+    : selected === 'custom' && estimateState === 'error' ? 'Estimate unavailable'
+    : selectedAmountPaise !== null ? `Pay ${packageRupees(selectedAmountPaise)} securely`
+    : 'Choose an amount'
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) close() }}>
     <section ref={dialogRef} className="billing-modal" role="dialog" aria-modal="true" aria-labelledby="billing-title">
       <button ref={closeRef} className="modal-close icon-button" aria-label="Close add token credits" title="Close" disabled={busy} onClick={close}><X size={20} /></button>
@@ -118,10 +186,15 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
           {presentation.showReversalEstimate && <div><dt>Estimated tokens reversed</dt><dd>{estimateRange(item.reversal_token_estimate)}</dd></div>}
         </dl><span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}
       </div> : <>
-      <div className="packages">{config.packages.map(item => <button key={item.gross_amount_paise} className={selected === item ? 'selected' : ''} aria-label={packageAccessibleName(item)} aria-pressed={selected === item} onClick={() => setSelected(item)}><strong>Pay {packageRupees(item.gross_amount_paise)}</strong><span>{estimateRange(item.token_estimate)}</span></button>)}</div>
-      {selected && <div className="package-summary"><strong>Pay {packageRupees(selected.gross_amount_paise)}</strong><span>Estimated token range <strong>{estimateRange(selected.token_estimate)}</strong></span></div>}
+      <div className="packages">{PRESETS.map(amount => {
+        const item = config.packages.find(candidate => candidate.gross_amount_paise === amount)
+        const key = `preset-${amount}` as SelectionKey
+        return <button key={key} className={selected === key ? 'selected' : ''} aria-label={item ? packageAccessibleName(item) : `Pay ${packageRupees(amount)}, estimate unavailable`} aria-pressed={selected === key} onClick={() => setSelected(key)}><strong>Pay {packageRupees(amount)}</strong><span>{estimateRange(item?.token_estimate ?? null)}</span></button>
+      })}<button className={selected === 'custom' ? 'selected' : ''} aria-label="Enter a custom payment amount" aria-pressed={selected === 'custom'} aria-expanded={selected === 'custom'} aria-controls="custom-amount-fields" disabled={!config.custom_topup_enabled} onClick={() => setSelected('custom')}><strong>Custom amount</strong><span>{config.custom_topup_enabled ? 'Enter whole rupees' : 'Unavailable'}</span></button></div>
+      {selected === 'custom' && <div id="custom-amount-fields" className="custom-amount-fields"><label htmlFor="custom-topup-rupees">Custom amount</label><div className="inr-input"><span aria-hidden="true">₹</span><input id="custom-topup-rupees" type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off" value={customInput} onChange={event => changeCustomInput(event.target.value)} aria-describedby={`custom-amount-help${custom.error ? ' custom-amount-error' : ''}`} aria-invalid={custom.paise === null} /></div><small id="custom-amount-help">Minimum {packageRupees(config.min_topup_paise)} · Maximum {packageRupees(config.max_topup_paise)}</small>{custom.error && <p id="custom-amount-error" className="custom-amount-error" role="alert">{custom.error}</p>}{custom.paise !== null && estimateState === 'loading' && <p className="custom-estimate-state" role="status">Calculating estimate…</p>}{estimateState === 'error' && <p className="custom-amount-error" role="alert">Token estimate is unavailable. Try again.</p>}</div>}
+      {selectedAmountPaise !== null && selectedEstimate && <div className="package-summary"><strong>Pay {packageRupees(selectedAmountPaise)}</strong><span>Estimated token range <strong>{estimateRange(selectedEstimate)}</strong></span></div>}
       {!config.checkout_enabled && <p className="checkout-disabled" role="status">Checkout is currently disabled. Existing token credits can still be used.</p>}
-      <button className="primary wide" disabled={busy || !selected || !config.checkout_enabled} onClick={() => void checkout()}>{busy ? 'Please wait…' : selected ? `Pay ${packageRupees(selected.gross_amount_paise)} securely` : 'Choose a package'}</button>
+      <button className="primary wide" disabled={busy || !checkoutReady || !config.checkout_enabled} onClick={() => void checkout()}>{payButtonLabel}</button>
       {status && <p className="payment-status" role="status" aria-live="polite">{status}</p>}</>}
     </section>
   </div>

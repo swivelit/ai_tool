@@ -20,12 +20,15 @@ def test_environment_validation_never_returns_secret_values():
     module = _module()
     environment = {
         "RAZORPAY_MODE": "live",
-        "RAZORPAY_KEY_ID": "rzp_live_sensitive_identifier",
+        "RAZORPAY_KEY_ID": "rzp_live_test",
         "RAZORPAY_KEY_SECRET": "sensitive-key-secret",
         "RAZORPAY_WEBHOOK_SECRET": "sensitive-webhook-secret",
         "BILLING_CHECKOUT_ENABLED": "false",
         "DATABASE_URL": "postgresql://sensitive-database-url",
-        "BILLING_TOPUP_PACKAGES_PAISE": "1000,5000",
+        "BILLING_TOPUP_PACKAGES_PAISE": "29900,1000",
+        "BILLING_ENFORCE_TOPUP_PACKAGES": "false",
+        "BILLING_MIN_TOPUP_PAISE": "1000",
+        "BILLING_MAX_TOPUP_PAISE": "50000",
         "OPENAI_PRICING_AS_OF": "2026-07-17",
     }
     for key, rates in module.PRICES.items():
@@ -39,10 +42,28 @@ def test_environment_validation_never_returns_secret_values():
     assert "sensitive-database-url" not in rendered
 
 
-def test_repository_mode_accepts_complete_owner_attested_publication(monkeypatch):
+def test_repository_mode_blocks_stale_approved_pricing_and_checks_custom_topups(monkeypatch):
     module = _module()
     monkeypatch.setattr(module, "_idempotency_tests_pass", lambda: True)
     checks = dict(module.repository_checks())
-    assert checks["legal publication approved and complete"] is True
+    assert checks["legal publication approved and complete"] is False
     assert checks["canonical Razorpay webhook endpoint is implemented"] is True
     assert checks["one Alembic head is known"] is True
+    assert checks["configured packages are exactly INR 10 and INR 299"] is True
+    assert checks["BILLING_ENFORCE_TOPUP_PACKAGES is false"] is True
+    assert checks["BILLING_MIN_TOPUP_PAISE is 1000"] is True
+    assert checks["BILLING_MAX_TOPUP_PAISE is valid and allows INR 299"] is True
+    assert checks["custom top-ups remain bounded"] is True
+
+
+def test_environment_rejects_unbounded_or_fixed_package_custom_topups():
+    module = _module()
+    checks = dict(module._custom_topup_checks({
+        "BILLING_TOPUP_PACKAGES_PAISE": "1000,29900,50000",
+        "BILLING_ENFORCE_TOPUP_PACKAGES": "true",
+        "BILLING_MIN_TOPUP_PAISE": "1000",
+        "BILLING_MAX_TOPUP_PAISE": "25000",
+    }))
+    assert checks["configured packages are exactly INR 10 and INR 299"] is False
+    assert checks["BILLING_ENFORCE_TOPUP_PACKAGES is false"] is False
+    assert checks["BILLING_MAX_TOPUP_PAISE is valid and allows INR 299"] is False

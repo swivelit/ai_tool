@@ -9,7 +9,7 @@ test.skip(process.env.PLAYWRIGHT_MODE !== 'staging', 'Staging deployment only')
 const email = process.env.E2E_TEST_EMAIL ?? ''
 const password = process.env.E2E_TEST_PASSWORD ?? ''
 
-type Bootstrap = { wallet: { available_micros: number }; billing: { razorpay_mode: string } }
+type Bootstrap = { wallet: { available_micros: number }; billing: { razorpay_mode: string; custom_topup_enabled: boolean; packages: Array<{ gross_amount_paise:number }> } }
 type Thread = { id: string; title: string }
 type UsagePreferencesSnapshot = RestorableUsagePreferences & Record<string, unknown>
 
@@ -115,6 +115,8 @@ test('real staging authentication, reversible mutations, token usage, Test Mode,
     api = authenticated.api
     assertUsableTokenCredits(authenticated.bootstrap.wallet.available_micros)
     expect(authenticated.bootstrap.billing.razorpay_mode, 'Staging must use Razorpay Test Mode').toBe('test')
+    expect(authenticated.bootstrap.billing.custom_topup_enabled).toBe(true)
+    expect(authenticated.bootstrap.billing.packages.map(item => item.gross_amount_paise)).toEqual([1000, 29900])
 
     const profileResponse = await api.request<RestorableProfile>('GET', '/api/web/settings/profile')
     // Keep the complete response as the immutable snapshot; cleanup sends and
@@ -179,10 +181,13 @@ test('real staging authentication, reversible mutations, token usage, Test Mode,
     await page.getByRole('button', { name:/Add tokens/ }).click()
     const billing = page.getByRole('dialog', { name:'Add token credits' })
     await expect(billing.getByText('Test Mode', { exact:true })).toBeVisible()
-    const packageCard = billing.locator('.packages button').first()
-    await expect(packageCard).toContainText(/Pay ₹\d+(?:\.\d{2})?/)
+    await expect(billing.locator('.packages button')).toHaveCount(3)
+    const packageCard = billing.getByRole('button', { name:/Pay ₹10, estimated/ })
+    await expect(packageCard).toContainText('Pay ₹10')
     await expect(packageCard).toContainText(/\d+(?:\.\d+)?[KM]?–\d+(?:\.\d+)?[KM]? tokens/)
-    await expect(packageCard).toHaveAccessibleName(/Pay ₹\d+(?:\.\d{2})?, estimated \d+(?:\.\d+)?[KM]? to \d+(?:\.\d+)?[KM]? tokens/)
+    await expect(packageCard).toHaveAccessibleName(/Pay ₹10, estimated \d+(?:\.\d+)?[KM]? to \d+(?:\.\d+)?[KM]? tokens/)
+    await expect(billing.getByRole('button', { name:/Pay ₹299, estimated/ })).toBeVisible()
+    await expect(billing.getByRole('button', { name:'Enter a custom payment amount' })).toBeVisible()
     await expect(billing).not.toContainText(/converted to token credits|service(?: and platform)? allocation|\d+%/i)
     await expect(billing).not.toContainText(/Equivalent to ₹|\d+\.\d{2}\s+(?:token\s+)?credits/i)
     await page.getByRole('button', { name:'Close add token credits' }).click()

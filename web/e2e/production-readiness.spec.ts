@@ -16,6 +16,7 @@ const tokenEstimate = (blended = 60_000) => ({
 
 type MockState = {
   wallet: number
+  pendingGross: number
   orderFails: boolean
   monthlyUsed: number
   hardLimit: number | null
@@ -32,6 +33,7 @@ async function json(route: Route, body: unknown, status = 200) {
 async function installBackend(page: Page, initial?: Partial<MockState>) {
   const state: MockState = {
     wallet: 0,
+    pendingGross: 1000,
     orderFails: false,
     monthlyUsed: 0,
     hardLimit: null,
@@ -52,7 +54,10 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     if (path === '/api/web/bootstrap') return json(route, {
       user: { id: 1, name: state.profile.name, email: state.profile.email, reply_language: state.profile.reply_language },
       wallet: { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 1, token_estimate:tokenEstimate(state.wallet ? 60_000 : 0) },
-      billing: { currency: 'INR', credit_percent: '50', razorpay_key_id: 'rzp_test_local', razorpay_mode: 'test', checkout_enabled: true, min_topup_paise: 1000, max_topup_paise: 50000, packages: [{ gross_amount_paise: 1000, credited_amount_micros: 5_000_000, platform_share_paise: 500, token_estimate:tokenEstimate() }] },
+      billing: { currency: 'INR', credit_percent: '50', razorpay_key_id: 'rzp_test_local', razorpay_mode: 'test', checkout_enabled: true, custom_topup_enabled:true, min_topup_paise: 1000, max_topup_paise: 50000, packages: [
+        { gross_amount_paise: 1000, credited_amount_micros: 5_000_000, platform_share_paise: 500, token_estimate:tokenEstimate() },
+        { gross_amount_paise: 29900, credited_amount_micros: 149_500_000, platform_share_paise: 14950, token_estimate:{ ...tokenEstimate(860_000), range_min_tokens:358_000, range_max_tokens:2_100_000 } },
+      ] },
       assistant: { tier:'lite', tier_label:'Swico Lite', tier_description:'Fast and efficient for everyday questions.', tier_selection_enabled:true, tiers:[
         { id:'lite', label:'Swico Lite', description:'Fast and efficient for everyday questions.', available:true, selected:true },
         { id:'standard', label:'Swico', description:'Balanced quality and speed for most tasks.', available:true, selected:false },
@@ -63,6 +68,10 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     if (path === '/api/web/billing/wallet') return json(route, { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 2, token_estimate:tokenEstimate(state.wallet ? 60_000 : 0) })
     if (path === '/api/web/billing/ledger') return json(route, { items: [] })
     if (path === '/api/web/billing/payments') return json(route, { items: state.payments })
+    if (path === '/api/web/billing/estimate') {
+      const gross = Number(url.searchParams.get('gross_amount_paise'))
+      return json(route, { gross_amount_paise:gross, token_estimate:{ tier:'lite', tier_label:'Swico Lite', estimated_blended_tokens:450_000, range_min_tokens:187_000, range_max_tokens:1_350_000 } })
+    }
     if (path === '/api/web/settings/profile' && request.method() === 'GET') return json(route, state.profile)
     if (path === '/api/web/settings/profile' && request.method() === 'PATCH') {
       state.profile = { ...state.profile, ...(request.postDataJSON() as Partial<MockState['profile']>) }
@@ -91,11 +100,12 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     })
     if (path === '/api/web/billing/orders') {
       if (state.orderFails) return json(route, { detail: 'Order creation failed safely.' }, 502)
-      return json(route, { key_id: 'rzp_test_local', provider_order_id: 'order_test', amount: 1000, currency: 'INR', internal_order_id: 'internal-order', credited_amount_micros: 5_000_000, platform_share_paise: 500 }, 201)
+      state.pendingGross = Number((request.postDataJSON() as { gross_amount_paise:number }).gross_amount_paise)
+      return json(route, { key_id: 'rzp_test_local', provider_order_id: 'order_test', amount: state.pendingGross, currency: 'INR', internal_order_id: 'internal-order', credited_amount_micros: state.pendingGross * 5000, platform_share_paise: state.pendingGross / 2 }, 201)
     }
     if (path === '/api/web/billing/verify') {
-      state.wallet = 5_000_000
-      state.payments = [{ id:'internal-order', gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, refunded_amount_paise:0, credit_reversal_micros:0, status:'credited', created_at:now, updated_at:now, paid_at:now, refunded_at:null, payment_received:true, credit_applied:true, token_estimate:tokenEstimate(), reversal_token_estimate:tokenEstimate(0) }]
+      state.wallet = state.pendingGross * 5000
+      state.payments = [{ id:'internal-order', gross_amount_paise:state.pendingGross, credited_amount_micros:state.wallet, platform_share_paise:state.pendingGross / 2, refunded_amount_paise:0, credit_reversal_micros:0, status:'credited', created_at:now, updated_at:now, paid_at:now, refunded_at:null, payment_received:true, credit_applied:true, token_estimate:tokenEstimate(), reversal_token_estimate:tokenEstimate(0) }]
       return json(route, { status: 'credited', credited: true })
     }
     if (path === '/api/web/threads' && request.method() === 'GET') {
@@ -176,12 +186,19 @@ test('zero-credit block, token package details, Test Mode payment, streaming, se
   await expect(billingDialog).toBeVisible()
   await expect(page.getByText('Test Mode')).toBeVisible()
   const packageCard = billingDialog.getByRole('button', { name:'Pay ₹10, estimated 25K to 180K tokens' })
+  await expect(billingDialog.locator('.packages button')).toHaveCount(3)
+  await expect(billingDialog.getByRole('button', { name:'Pay ₹299, estimated 358K to 2.1M tokens' })).toBeVisible()
+  await expect(billingDialog.getByRole('button', { name:'Enter a custom payment amount' })).toBeVisible()
   await expect(packageCard).toContainText('Pay ₹10')
   await expect(packageCard).toContainText('25K–180K tokens')
   await expect(billingDialog.locator('.package-summary')).toContainText('Pay ₹10')
   await expect(billingDialog.locator('.package-summary')).toContainText('25K–180K tokens')
   await expect(billingDialog).not.toContainText(/converted to token credits|service(?: and platform)? allocation|\d+%/i)
   await expect(billingDialog).not.toContainText(/5\.00|Equivalent to ₹/)
+  await billingDialog.getByRole('button', { name:'Enter a custom payment amount' }).click()
+  await billingDialog.getByLabel('Custom amount').fill('75')
+  await expect(billingDialog.getByRole('button', { name:'Pay ₹75 securely' })).toBeEnabled()
+  await packageCard.click()
   await page.getByRole('button', { name: 'Pay ₹10 securely' }).click()
   await expect.poll(() => state.wallet).toBe(5_000_000)
   await expect(page.getByRole('dialog', { name: 'Add token credits' })).toBeHidden()

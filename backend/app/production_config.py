@@ -196,16 +196,26 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         errors.append("BILLING_MAX_TOPUP_PAISE must be valid")
     if minimum is not None and maximum is not None and not (minimum <= 1000 <= maximum):
         errors.append("BILLING_MIN_TOPUP_PAISE and BILLING_MAX_TOPUP_PAISE must allow ₹10")
-    enforce_packages = _bool(env, "BILLING_ENFORCE_TOPUP_PACKAGES", True)
+    enforce_packages = _bool(env, "BILLING_ENFORCE_TOPUP_PACKAGES", False)
+    package_values: list[int] = []
     packages: set[int] = set()
     try:
-        packages = {int(item.strip()) for item in _value(env, "BILLING_TOPUP_PACKAGES_PAISE", "1000,5000,10000,50000").split(",") if item.strip()}
+        package_values = [int(item.strip()) for item in _value(env, "BILLING_TOPUP_PACKAGES_PAISE", "1000,29900").split(",") if item.strip()]
+        packages = set(package_values)
     except ValueError:
         errors.append("BILLING_TOPUP_PACKAGES_PAISE must contain integers")
     if enforce_packages is None:
         errors.append("BILLING_ENFORCE_TOPUP_PACKAGES must be a boolean")
-    elif enforce_packages and 1000 not in packages:
+    elif enforce_packages:
+        errors.append("BILLING_ENFORCE_TOPUP_PACKAGES must be false")
+    if 1000 not in packages:
         errors.append("BILLING_TOPUP_PACKAGES_PAISE must include ₹10")
+    if packages != {1000, 29900} or len(package_values) != 2:
+        errors.append("BILLING_TOPUP_PACKAGES_PAISE must contain exactly ₹10 and ₹299")
+    if minimum != 1000:
+        errors.append("BILLING_MIN_TOPUP_PAISE must be 1000")
+    if maximum is not None and (maximum < 29900 or maximum % 100 != 0):
+        errors.append("BILLING_MAX_TOPUP_PAISE must be a whole-rupee bound allowing ₹299")
 
     origins = [item.strip() for item in _value(env, "CORS_ALLOW_ORIGINS").split(",") if item.strip()]
     if not origins:

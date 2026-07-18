@@ -74,6 +74,10 @@ Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUT
 Exact environment delta for this release:
 
 - Add API variable `BILLING_CHECKOUT_ENABLED=false` (backend-only, explicit in production).
+- Set API variable `BILLING_TOPUP_PACKAGES_PAISE=1000,29900`.
+- Set API variable `BILLING_ENFORCE_TOPUP_PACKAGES=false`.
+- Set API variable `BILLING_MIN_TOPUP_PAISE=1000`.
+- Set API variable `BILLING_MAX_TOPUP_PAISE=50000`.
 - Add backend-only `SWICO_DEFAULT_TIER=lite`, `SWICO_TIER_SELECTION_ENABLED=true`, and `SWICO_PRO_ENABLED=false`.
 - Add backend-only `SWICO_LITE_MODEL_PRIMARY`, `SWICO_LITE_MODEL_FALLBACKS`, `SWICO_STANDARD_MODEL_PRIMARY`, `SWICO_STANDARD_MODEL_FALLBACKS`, `SWICO_PRO_MODEL_PRIMARY`, and `SWICO_PRO_MODEL_FALLBACKS`. Production validation requires explicit allowlisted values; use the reviewed production mappings and pricing overrides.
 - Add `OPENAI_PRICING_AS_OF=2026-07-17` and every explicit input, cached-input, and output price variable used by the enabled Swico ladders.
@@ -91,6 +95,8 @@ Render setup is a secret file named `firebase-admin.json` plus
 `FIREBASE_CREDENTIALS_JSON` when using that secret file. Production startup
 rejects both methods together and rejects neither method; it never logs their
 values or credential paths.
+
+All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is ₹299. The preset list is exactly those two values; custom whole-rupee top-ups are accepted only from the configured 1,000-paise minimum through the configured maximum. The API remains authoritative. Do not hardcode or remove the 50,000-paise maximum in the static site, and treat any future maximum change as a deliberate operator review. This release does not change Razorpay keys, mode, webhook URL, subscribed events, or webhook secrets.
 
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
@@ -251,6 +257,8 @@ The API returns an explicit `razorpay_mode` enum and validates its public-key pr
 
 Run the non-charging repository check with `python scripts/check-razorpay-live-readiness.py`. It validates the owner-attested legal publication and the other repository prerequisites. An authorized operator may additionally validate the current environment with `python scripts/check-razorpay-live-readiness.py --validate-environment`; the command prints check names only, never credential values.
 
+For this package change the legal portion is expected to block: the approved Terms package description, Pricing **Gross top-up price** section, and owner attestation still describe ₹10/₹50/₹100/₹500. Do not deploy the API or static-site pricing change, enable checkout, or proceed to Live cutover until exact owner/counsel-approved replacement text and a matching approval record make `python scripts/check-legal-publication.py` pass. Do not infer approval from the code change.
+
 ### Two-phase Live cutover
 
 Phase one keeps checkout closed. Configure the Live key ID, Live key secret, and a separate Live webhook secret; set `RAZORPAY_MODE=live` and `BILLING_CHECKOUT_ENABLED=false`; deploy and verify the canonical webhook/public configuration; then run reconciliation and the financial audit. Test and Live credentials and webhooks are separate and must never be mixed.
@@ -345,11 +353,14 @@ reconciliation dry-run, and financial audit.
 
 ## Production launch checks
 
-Run `python scripts/check-legal-publication.py`. The seven policy bodies are
-published through the tracked owner attestation and have not been reviewed or
-approved by counsel. The checker validates content and accountable publication
-metadata; it is not legal advice or legal-compliance certification. Future
-professional review remains recommended. Verify provider prices/FX policy;
+Run `python scripts/check-legal-publication.py`. The seven policy bodies retain
+their tracked owner approval and have not been reviewed or approved by counsel,
+but the checker now blocks because the approved package wording and attestation
+do not match the ₹10/₹299/custom product. Exact owner/counsel-approved replacement
+wording and a matching approval record are required; do not change publication
+metadata or effective dates speculatively. The checker validates content and
+accountable publication metadata; it is not legal advice or legal-compliance
+certification. Verify provider prices/FX policy;
 configure alerts/reconciliation; validate the refund/incident ownership
 template; load-test PostgreSQL connections/rate limiting; and confirm edge
 headers/CORS. Razorpay Live Mode and Live checkout remain blocked until every

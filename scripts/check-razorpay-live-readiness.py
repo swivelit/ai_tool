@@ -91,6 +91,34 @@ def _positive_decimal(value: str) -> bool:
         return False
 
 
+def _integer(value: str) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _package_values(value: str) -> list[int] | None:
+    try:
+        return [int(item.strip()) for item in value.split(",") if item.strip()]
+    except ValueError:
+        return None
+
+
+def _custom_topup_checks(values: dict[str, str]) -> list[tuple[str, bool]]:
+    packages = _package_values(values.get("BILLING_TOPUP_PACKAGES_PAISE", ""))
+    minimum = _integer(values.get("BILLING_MIN_TOPUP_PAISE", ""))
+    maximum = _integer(values.get("BILLING_MAX_TOPUP_PAISE", ""))
+    enforcement = values.get("BILLING_ENFORCE_TOPUP_PACKAGES", "").strip().lower()
+    return [
+        ("configured packages are exactly INR 10 and INR 299", packages is not None and len(packages) == 2 and set(packages) == {1000, 29900}),
+        ("BILLING_ENFORCE_TOPUP_PACKAGES is false", enforcement == "false"),
+        ("BILLING_MIN_TOPUP_PAISE is 1000", minimum == 1000),
+        ("BILLING_MAX_TOPUP_PAISE is valid and allows INR 299", maximum is not None and maximum >= 29900 and maximum % 100 == 0),
+        ("custom top-ups remain bounded", minimum is not None and maximum is not None and 0 < minimum <= maximum),
+    ]
+
+
 def repository_checks() -> list[tuple[str, bool]]:
     values = _dotenv_values()
     app_source = WEB_APP.read_text(encoding="utf-8")
@@ -108,7 +136,6 @@ def repository_checks() -> list[tuple[str, bool]]:
         )),
         ("required Razorpay webhook events are documented", all(event in docs for event in REQUIRED_EVENTS)),
         ("phase-one checkout default is disabled", values.get("BILLING_CHECKOUT_ENABLED") == "false"),
-        ("configured packages include INR 10", "1000" in values.get("BILLING_TOPUP_PACKAGES_PAISE", "").split(",")),
         ("billing allocation remains 50 percent", values.get("BILLING_CREDIT_PERCENT") == "50"),
         ("pricing snapshot date is explicit", values.get("OPENAI_PRICING_AS_OF") == "2026-07-17"),
         ("production database guard requires PostgreSQL", "is_postgres_database_url" in (
@@ -116,6 +143,7 @@ def repository_checks() -> list[tuple[str, bool]]:
         ).read_text(encoding="utf-8")),
         ("one Alembic head is known", _known_alembic_head() is not None),
     ]
+    checks.extend(_custom_topup_checks(values))
     for key, expected in PRICES.items():
         names = (
             f"OPENAI_PRICE_{key}_INPUT_PER_1M",
@@ -145,11 +173,14 @@ def environment_checks(environ: dict[str, str]) -> list[tuple[str, bool]]:
         ("DATABASE_URL uses PostgreSQL", get("DATABASE_URL").split(":", 1)[0] in {
             "postgres", "postgresql", "postgresql+psycopg", "postgresql+psycopg2",
         }),
-        ("configured packages include INR 10", "1000" in {
-            item.strip() for item in get("BILLING_TOPUP_PACKAGES_PAISE").split(",")
-        }),
         ("OPENAI_PRICING_AS_OF is current", get("OPENAI_PRICING_AS_OF") == "2026-07-17"),
     ]
+    checks.extend(_custom_topup_checks({
+        name: get(name) for name in (
+            "BILLING_TOPUP_PACKAGES_PAISE", "BILLING_ENFORCE_TOPUP_PACKAGES",
+            "BILLING_MIN_TOPUP_PAISE", "BILLING_MAX_TOPUP_PAISE",
+        )
+    }))
     for key, expected in PRICES.items():
         checks.append((f"environment pricing is explicit for {key}", all(
             _positive_decimal(get(f"OPENAI_PRICE_{key}_{suffix}_PER_1M"))

@@ -137,15 +137,19 @@ Refund window: TBD
     assert ("Refunds", "the refund window is unresolved") in findings
 
 
-def test_actual_owner_attested_publication_passes(capsys):
+def test_actual_owner_attested_publication_is_blocked_by_stale_package_approval(capsys):
     data = _publication_data()
     assert data["publication"]["publicationStatus"] == "owner_approved"
-    assert PUBLICATION_CHECKER.findings() == []
-    assert PUBLICATION_CHECKER.main() == 0
-    assert capsys.readouterr().out.strip() == (
-        "legal publication check passed (owner-attested publication; "
-        "no counsel approval or legal advice inferred)"
-    )
+    blockers = PUBLICATION_CHECKER.findings()
+    assert blockers == [
+        "terms: approved package description still lists Rs.10, Rs.50, Rs.100 and Rs.500; exact owner/counsel-approved replacement wording is required",
+        "pricing: approved Gross top-up price section still describes the removed Rs.50, Rs.100 and Rs.500 package set; exact owner/counsel-approved replacement wording is required",
+        "owner attestation: approved package statement still lists ₹10, ₹50, ₹100 and ₹500; a new matching owner/counsel approval record is required",
+    ]
+    assert PUBLICATION_CHECKER.main() == 1
+    output = capsys.readouterr().out
+    assert all(blocker in output for blocker in blockers)
+    assert "legal publication check failed: 3 blocker(s)" in output
 
 
 def test_owner_status_without_approver_fails(tmp_path: Path, monkeypatch):

@@ -10,6 +10,7 @@ import pytest
 from sqlmodel import Session, select
 
 from app.billing.errors import InsufficientCreditError
+from app.billing.audit import financial_audit
 from app.billing.pricing import calculate_topup, openai_price, sarvam_price, snapshot_json
 from app.billing.reconciliation import reconcile_razorpay_orders
 from app.billing.service import (
@@ -18,7 +19,7 @@ from app.billing.service import (
     reverse_credit_for_refund, settle_usage_reservation,
 )
 from app.database import SessionLocal
-from app.models import PaymentOrder, UsageCharge, WalletLedger
+from app.models import PaymentOrder, UsageCharge, WalletLedger, WebUsagePreferences
 from app.time_utils import utc_now
 from tests.conftest import auth_headers, create_test_user
 
@@ -44,6 +45,8 @@ def test_public_config_exposes_explicit_mode_and_checkout_boolean(client):
     body = response.json()
     assert body["razorpay_mode"] == "test"
     assert body["checkout_enabled"] is True
+    assert body["custom_topup_enabled"] is True
+    assert [item["gross_amount_paise"] for item in body["packages"]] == [1000, 29900]
     assert body["packages"][0]["credited_amount_micros"] == 5_000_000
     assert body["packages"][0]["token_estimate"]["estimated_blended_tokens"] > 0
     estimate = body["packages"][0]["token_estimate"]
@@ -52,6 +55,73 @@ def test_public_config_exposes_explicit_mode_and_checkout_boolean(client):
     assert "reference_provider" not in estimate
     assert "pricing_snapshot" not in estimate
     assert "RAZORPAY_KEY_SECRET" not in json.dumps(body)
+
+
+def test_public_config_reports_package_enforcement(client, monkeypatch):
+    monkeypatch.setenv("BILLING_ENFORCE_TOPUP_PACKAGES", "true")
+    response = client.get("/api/web/billing/public-config")
+    assert response.status_code == 200
+    assert response.json()["custom_topup_enabled"] is False
+
+
+@pytest.mark.parametrize("gross", [1000, 29900, 7500])
+def test_topup_estimate_accepts_presets_and_custom_without_charging(client, gross):
+    create_test_user()
+    response = client.get(
+        f"/api/web/billing/estimate?gross_amount_paise={gross}",
+        headers=auth_headers("test-uid"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["gross_amount_paise"] == gross
+    assert set(body["token_estimate"]) == {
+        "tier", "tier_label", "estimated_blended_tokens",
+        "range_min_tokens", "range_max_tokens",
+    }
+    assert body["token_estimate"]["estimated_blended_tokens"] > 0
+    assert "provider" not in json.dumps(body).lower()
+    assert "model" not in json.dumps(body).lower()
+    with SessionLocal() as session:
+        assert session.exec(select(PaymentOrder)).all() == []
+        assert session.exec(select(WalletLedger)).all() == []
+        assert session.exec(select(UsageCharge)).all() == []
+
+
+def test_topup_estimate_uses_selected_tier_and_does_not_require_checkout(client, monkeypatch):
+    user = create_test_user()
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), assistant_tier="standard"))
+        session.commit()
+    monkeypatch.setenv("BILLING_CHECKOUT_ENABLED", "false")
+    monkeypatch.setenv("RAZORPAY_KEY_ID", "not-configured-for-checkout")
+    response = client.get(
+        "/api/web/billing/estimate?gross_amount_paise=7500",
+        headers=auth_headers("test-uid"),
+    )
+    assert response.status_code == 200
+    assert response.json()["token_estimate"]["tier"] == "standard"
+    assert response.json()["token_estimate"]["tier_label"] == "Swico"
+
+
+@pytest.mark.parametrize("gross", [900, 50100, 7501])
+def test_topup_estimate_rejects_out_of_bounds_or_fractional_rupee_amounts(client, gross):
+    create_test_user()
+    response = client.get(
+        f"/api/web/billing/estimate?gross_amount_paise={gross}",
+        headers=auth_headers("test-uid"),
+    )
+    assert response.status_code == 422
+
+
+def test_topup_estimate_rejects_unlisted_custom_amount_when_enforced(client, monkeypatch):
+    create_test_user()
+    monkeypatch.setenv("BILLING_ENFORCE_TOPUP_PACKAGES", "true")
+    response = client.get(
+        "/api/web/billing/estimate?gross_amount_paise=7500",
+        headers=auth_headers("test-uid"),
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Select an available top-up package."
 
 
 def test_public_config_rejects_mixed_razorpay_mode_and_key(client, monkeypatch):
@@ -97,6 +167,57 @@ def test_checkout_enabled_creates_server_order_before_provider_order(client, mon
     })
     assert response.status_code == 201
     assert response.json()["credited_amount_micros"] == 5_000_000
+
+
+@pytest.mark.parametrize("gross", [1000, 29900, 2500, 7500, 35000])
+def test_order_creation_accepts_presets_and_custom_and_sends_exact_paise(client, monkeypatch, gross):
+    create_test_user()
+    received: list[int] = []
+
+    def create_provider_order(_self, amount, receipt):
+        received.append(amount)
+        return {"id": f"order_exact_{amount}", "amount": amount, "currency": "INR"}
+
+    monkeypatch.setattr("app.web_api.router.RazorpayClient.create_order", create_provider_order)
+    response = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
+        "gross_amount_paise": gross, "idempotency_key": f"exact-{gross}",
+    })
+    assert response.status_code == 201
+    assert response.json()["amount"] == gross
+    assert received == [gross]
+    with SessionLocal() as session:
+        order = session.exec(select(PaymentOrder)).one()
+        assert order.gross_amount_paise == gross
+        assert order.credited_amount_micros == calculate_topup(gross)[0]
+
+
+@pytest.mark.parametrize("gross", [900, 50100, 7501, 7500.5, "7500"])
+def test_order_creation_rejects_invalid_custom_amounts_before_provider_call(client, monkeypatch, gross):
+    create_test_user()
+    called = False
+
+    def unexpected_provider(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("app.web_api.router.RazorpayClient.create_order", unexpected_provider)
+    response = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
+        "gross_amount_paise": gross, "idempotency_key": "invalid-custom",
+    })
+    assert response.status_code == 422
+    assert called is False
+    with SessionLocal() as session:
+        assert session.exec(select(PaymentOrder)).all() == []
+
+
+def test_fixed_package_enforcement_still_rejects_custom_order(client, monkeypatch):
+    create_test_user()
+    monkeypatch.setenv("BILLING_ENFORCE_TOPUP_PACKAGES", "true")
+    response = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
+        "gross_amount_paise": 7500, "idempotency_key": "fixed-package-only",
+    })
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Select an available top-up package."
 
 
 def test_credit_and_duplicate_are_idempotent():
@@ -263,6 +384,33 @@ def test_verify_rejects_bad_provider_state(client, monkeypatch, bad_field, bad_v
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
 
 
+def test_custom_capture_amount_mismatch_is_rejected(client, monkeypatch):
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id), 7500)
+        session.add(order); session.commit(); order_id = order.id
+    payment = {
+        "id": "pay_custom_mismatch", "order_id": f"order_{user.id}_7500",
+        "amount": 7400, "currency": "INR", "status": "captured",
+    }
+    monkeypatch.setattr(
+        "app.web_api.router.RazorpayClient.fetch_payment",
+        lambda self, payment_id: payment,
+    )
+    signature = hmac.new(
+        b"test_checkout_secret",
+        f"order_{user.id}_7500|pay_custom_mismatch".encode(), hashlib.sha256,
+    ).hexdigest()
+    response = client.post("/api/web/billing/verify", headers=auth_headers("test-uid"), json={
+        "internal_order_id": order_id, "razorpay_order_id": f"order_{user.id}_7500",
+        "razorpay_payment_id": "pay_custom_mismatch", "razorpay_signature": signature,
+    })
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Payment amount does not match."
+    with SessionLocal() as session:
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
+
+
 def test_invalid_checkout_signature_never_credits(client):
     user = create_test_user()
     with SessionLocal() as session:
@@ -307,6 +455,39 @@ def test_duplicate_verify_does_not_double_credit(client, monkeypatch):
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
 
 
+def test_custom_duplicate_verify_and_webhook_credit_only_once(client, monkeypatch):
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id), 7500)
+        session.add(order); session.commit(); order_id = order.id
+    payment = {
+        "id": "pay_custom_once", "order_id": f"order_{user.id}_7500",
+        "amount": 7500, "currency": "INR", "status": "captured",
+    }
+    monkeypatch.setattr(
+        "app.web_api.router.RazorpayClient.fetch_payment",
+        lambda self, payment_id: payment,
+    )
+    signature = hmac.new(
+        b"test_checkout_secret",
+        f"order_{user.id}_7500|pay_custom_once".encode(), hashlib.sha256,
+    ).hexdigest()
+    request = {
+        "internal_order_id": order_id, "razorpay_order_id": f"order_{user.id}_7500",
+        "razorpay_payment_id": "pay_custom_once", "razorpay_signature": signature,
+    }
+    assert client.post("/api/web/billing/verify", headers=auth_headers("test-uid"), json=request).status_code == 200
+    assert client.post("/api/web/billing/verify", headers=auth_headers("test-uid"), json=request).status_code == 200
+    captured = {"event": "payment.captured", "payload": {"payment": {"entity": payment}}}
+    assert _webhook(client, "custom-captured", captured).status_code == 200
+    assert _webhook(client, "custom-captured", captured).json()["duplicate"] is True
+    with SessionLocal() as session:
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 37_500_000
+        assert len(session.exec(select(WalletLedger).where(
+            WalletLedger.entry_type == "payment_credit"
+        )).all()) == 1
+
+
 def test_partial_then_full_refund_webhooks_reverse_proportionally(client):
     user = create_test_user()
     with SessionLocal() as session:
@@ -318,6 +499,31 @@ def test_partial_then_full_refund_webhooks_reverse_proportionally(client):
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 3_750_000
     assert _webhook(client, "refund-2", full_rest).status_code == 200
     with SessionLocal() as session:
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
+
+
+def test_custom_partial_and_full_refunds_use_exact_original_gross(client):
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id), 7500)
+        order.provider_payment_id = "pay_custom_refund"
+        session.add(order); session.flush(); credit_payment_once(session, order); session.commit()
+    partial = {"event": "refund.processed", "payload": {"refund": {"entity": {
+        "id": "rfnd_custom_1", "payment_id": "pay_custom_refund",
+        "amount": 2500, "currency": "INR",
+    }}}}
+    full_rest = {"event": "refund.processed", "payload": {"refund": {"entity": {
+        "id": "rfnd_custom_2", "payment_id": "pay_custom_refund",
+        "amount": 5000, "currency": "INR",
+    }}}}
+    assert _webhook(client, "custom-refund-1", partial).status_code == 200
+    with SessionLocal() as session:
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 25_000_000
+    assert _webhook(client, "custom-refund-2", full_rest).status_code == 200
+    with SessionLocal() as session:
+        order = session.exec(select(PaymentOrder)).one()
+        assert order.refunded_amount_paise == 7500
+        assert order.status == "refunded"
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
 
 
@@ -479,6 +685,31 @@ def test_reconciliation_dry_run_is_non_mutating_and_apply_is_idempotent():
         order = session.get(PaymentOrder, order_id); order.created_at = utc_now() - timedelta(hours=1); order.status = "captured"; session.add(order); session.commit()
         reconcile_razorpay_orders(session, client=client, apply=True)
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+
+
+def test_custom_reconciliation_and_financial_audit_remain_exact_and_clean():
+    user = create_test_user()
+    with SessionLocal() as session:
+        order = make_order(int(user.id), 7500)
+        order.status = "attempted"
+        order.created_at = utc_now() - timedelta(hours=1)
+        session.add(order); session.commit()
+        payment = {
+            "id": "pay_custom_reconcile", "order_id": order.provider_order_id,
+            "amount": 7500, "currency": "INR", "status": "captured",
+        }
+        client = _ReconciliationClient(payment)
+        first = reconcile_razorpay_orders(session, client=client, apply=True)
+        second = reconcile_razorpay_orders(session, client=client, apply=True)
+        assert first[0]["action"] == "credit_captured_payment"
+        assert second[0]["action"] == "already_credited"
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 37_500_000
+        assert len(session.exec(select(WalletLedger).where(
+            WalletLedger.entry_type == "payment_credit"
+        )).all()) == 1
+        report = financial_audit(session)
+        assert report["high_severity_count"] == 0
+        assert report["actionable_finding_count"] == 0
 
 
 @pytest.mark.parametrize("field,value", [("amount", 999), ("currency", "USD"), ("order_id", "order_wrong"), ("id", "")])

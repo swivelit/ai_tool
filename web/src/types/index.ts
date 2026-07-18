@@ -22,7 +22,7 @@ export type BillingPackage = { gross_amount_paise: number; credited_amount_micro
 export type BillingConfig = {
   currency: 'INR'; credit_percent: string; razorpay_key_id: string; min_topup_paise: number;
   razorpay_mode: 'test' | 'live'; checkout_enabled: boolean;
-  max_topup_paise: number; packages: BillingPackage[];
+  max_topup_paise: number; custom_topup_enabled: boolean; packages: BillingPackage[];
 }
 export type Bootstrap = {
   user: { id: number; name: string; email: string | null; reply_language: string };
@@ -62,6 +62,13 @@ export type TokenEstimate = {
   estimated_blended_tokens: number | null;
   blended_assumption?: string; range_min_tokens: number; range_max_tokens: number;
   explanation: string;
+}
+export type TopupTokenEstimate = {
+  tier: SwicoTier; tier_label: string; estimated_blended_tokens: number | null;
+  range_min_tokens: number; range_max_tokens: number;
+}
+export type TopupEstimateResponse = {
+  gross_amount_paise: number; token_estimate: TopupTokenEstimate;
 }
 export type UsageSummary = {
   period: 'current_month' | '30d' | 'all'; timezone: string;

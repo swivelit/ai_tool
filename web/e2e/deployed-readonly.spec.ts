@@ -56,10 +56,12 @@ test('production authentication and public/account surfaces remain read-only', a
     const publicBilling = await page.evaluate(async url => {
       const response = await fetch(url)
       if (!response.ok) throw new Error(`public billing config failed (${response.status})`)
-      return response.json() as Promise<{ razorpay_mode: string; checkout_enabled: boolean }>
+      return response.json() as Promise<{ razorpay_mode: string; checkout_enabled: boolean; custom_topup_enabled:boolean; packages:Array<{ gross_amount_paise:number }> }>
     }, publicConfigUrl)
     expect(publicBilling.razorpay_mode).toBe('test')
     expect(publicBilling.checkout_enabled).toBe(false)
+    expect(publicBilling.custom_topup_enabled).toBe(true)
+    expect(publicBilling.packages.map(item => item.gross_amount_paise)).toEqual([1000, 29900])
     await expect(page.getByRole('button', { name:'Send message' })).toBeVisible()
     await openSidebarOnMobile(page)
     const tokenCard = page.getByRole('button', { name:/Add token credits\. Estimated balance/i })

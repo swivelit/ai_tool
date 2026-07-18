@@ -170,3 +170,14 @@ def test_internal_account_cannot_create_razorpay_order(client, monkeypatch):
         "Payments are not available for this internal testing account."
     )
     assert called["value"] is False
+
+
+def test_internal_account_cannot_request_payment_estimates(client, monkeypatch):
+    _configure(monkeypatch)
+    create_test_user("internal-estimate", TEST_EMAIL)
+    response = client.get(
+        "/api/web/billing/estimate?gross_amount_paise=7500",
+        headers=auth_headers("internal-estimate", TEST_EMAIL),
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "payments_unavailable"
