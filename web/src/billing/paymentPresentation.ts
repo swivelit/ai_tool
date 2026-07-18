@@ -5,7 +5,6 @@ export type PaymentPresentation = {
   detail: string | null
   amountLabel: 'Selected checkout amount' | 'Gross amount paid' | null
   showTokensAdded: boolean
-  showServiceAllocation: boolean
   showRefundAmount: boolean
   showReversalEstimate: boolean
   timestamp: string
@@ -20,7 +19,6 @@ export function paymentPresentation(payment: PaymentHistory): PaymentPresentatio
     detail: null,
     amountLabel: null,
     showTokensAdded: false,
-    showServiceAllocation: false,
     showRefundAmount: false,
     showReversalEstimate: false,
     timestamp: completedTimestamp ?? payment.created_at,
@@ -52,7 +50,6 @@ export function paymentPresentation(payment: PaymentHistory): PaymentPresentatio
   const creditedPresentation = {
     amountLabel: 'Gross amount paid' as const,
     showTokensAdded: creditApplied,
-    showServiceAllocation: creditApplied,
   }
   if (status === 'partially_refunded') {
     return {

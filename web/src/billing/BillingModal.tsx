@@ -18,6 +18,12 @@ function estimateRange(estimate: BillingPackage['token_estimate']) {
   return estimate ? tokenRangeLabel(estimate.range_min_tokens, estimate.range_max_tokens) : 'Estimate unavailable'
 }
 
+function packageAccessibleName(item: BillingPackage) {
+  const amount = packageRupees(item.gross_amount_paise)
+  const estimate = estimateRange(item.token_estimate)
+  return estimate === 'Estimate unavailable' ? `Pay ${amount}, estimate unavailable` : `Pay ${amount}, estimated ${estimate.replace('–', ' to ')}`
+}
+
 export function BillingModal({ user, config, close, refreshed }: { user: User; config: BillingConfig; close: () => void; refreshed: () => void }) {
   const [selected, setSelected] = useState<BillingPackage | null>(config.packages[0] ?? null)
   const [status, setStatus] = useState(''); const [busy, setBusy] = useState(false)
@@ -108,13 +114,12 @@ export function BillingModal({ user, config, close, refreshed }: { user: User; c
         {history.map(item => { const presentation = paymentPresentation(item); return <article key={item.id}><header><strong>{presentation.heading}</strong>{presentation.detail && <span>{presentation.detail}</span>}</header><dl>
           {presentation.amountLabel && <div><dt>{presentation.amountLabel}</dt><dd>{formatRupeesFromPaise(item.gross_amount_paise)}</dd></div>}
           {presentation.showTokensAdded && <div><dt>Estimated tokens added</dt><dd>{estimateRange(item.token_estimate)}</dd></div>}
-          {presentation.showServiceAllocation && <div><dt>Service allocation</dt><dd>{config.credit_percent}%</dd></div>}
           {presentation.showRefundAmount && <div><dt>Refund amount</dt><dd>{formatRupeesFromPaise(item.refunded_amount_paise)}</dd></div>}
           {presentation.showReversalEstimate && <div><dt>Estimated tokens reversed</dt><dd>{estimateRange(item.reversal_token_estimate)}</dd></div>}
         </dl><span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}
       </div> : <>
-      <div className="packages">{config.packages.map(item => <button key={item.gross_amount_paise} className={selected === item ? 'selected' : ''} aria-pressed={selected === item} onClick={() => setSelected(item)}><strong>Pay {packageRupees(item.gross_amount_paise)}</strong><span>{config.credit_percent}% converted to token credits</span><span>{estimateRange(item.token_estimate)}</span></button>)}</div>
-      {selected && <div className="allocation"><strong className="package-summary">Pay {packageRupees(selected.gross_amount_paise)}</strong><span>Converted to token credits <strong>{config.credit_percent}%</strong></span><span>Estimated token range <strong>{estimateRange(selected.token_estimate)}</strong></span><span>Service and platform allocation <strong>{100 - Number(config.credit_percent)}%</strong></span></div>}
+      <div className="packages">{config.packages.map(item => <button key={item.gross_amount_paise} className={selected === item ? 'selected' : ''} aria-label={packageAccessibleName(item)} aria-pressed={selected === item} onClick={() => setSelected(item)}><strong>Pay {packageRupees(item.gross_amount_paise)}</strong><span>{estimateRange(item.token_estimate)}</span></button>)}</div>
+      {selected && <div className="package-summary"><strong>Pay {packageRupees(selected.gross_amount_paise)}</strong><span>Estimated token range <strong>{estimateRange(selected.token_estimate)}</strong></span></div>}
       {!config.checkout_enabled && <p className="checkout-disabled" role="status">Checkout is currently disabled. Existing token credits can still be used.</p>}
       <button className="primary wide" disabled={busy || !selected || !config.checkout_enabled} onClick={() => void checkout()}>{busy ? 'Please wait…' : selected ? `Pay ${packageRupees(selected.gross_amount_paise)} securely` : 'Choose a package'}</button>
       {status && <p className="payment-status" role="status" aria-live="polite">{status}</p>}</>}

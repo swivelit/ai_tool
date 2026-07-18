@@ -21,7 +21,6 @@ describe('paymentPresentation', () => {
     expect(view.detail).toBe('Payment not confirmed')
     expect(view.amountLabel).toBe('Selected checkout amount')
     expect(view.showTokensAdded).toBe(false)
-    expect(view.showServiceAllocation).toBe(false)
   })
 
   it('presents an attempted checkout as confirmation pending', () => {
@@ -32,14 +31,12 @@ describe('paymentPresentation', () => {
     const view = paymentPresentation(payment('captured', { payment_received:true, paid_at:paidAt }))
     expect(view.heading).toBe('Payment received — token confirmation pending')
     expect(view.showTokensAdded).toBe(false)
-    expect(view.showServiceAllocation).toBe(false)
   })
 
   it('presents a ledger-credited payment as completed', () => {
     const view = paymentPresentation(payment('credited', { payment_received:true, credit_applied:true, paid_at:paidAt }))
     expect(view.heading).toBe('Payment completed')
     expect(view.showTokensAdded).toBe(true)
-    expect(view.showServiceAllocation).toBe(true)
     expect(view.timestamp).toBe(paidAt)
     expect(view.timestampLabel).toBe('Payment completed')
   })
@@ -69,6 +66,5 @@ describe('paymentPresentation', () => {
     expect(view.heading).toBe('Checkout failed')
     expect(view.amountLabel).toBe('Selected checkout amount')
     expect(view.showTokensAdded).toBe(false)
-    expect(view.showServiceAllocation).toBe(false)
   })
 })

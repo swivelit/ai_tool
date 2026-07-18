@@ -179,7 +179,11 @@ test('real staging authentication, reversible mutations, token usage, Test Mode,
     await page.getByRole('button', { name:/Add tokens/ }).click()
     const billing = page.getByRole('dialog', { name:'Add token credits' })
     await expect(billing.getByText('Test Mode', { exact:true })).toBeVisible()
-    await expect(billing).toContainText('50% converted to token credits')
+    const packageCard = billing.locator('.packages button').first()
+    await expect(packageCard).toContainText(/Pay ₹\d+(?:\.\d{2})?/)
+    await expect(packageCard).toContainText(/\d+(?:\.\d+)?[KM]?–\d+(?:\.\d+)?[KM]? tokens/)
+    await expect(packageCard).toHaveAccessibleName(/Pay ₹\d+(?:\.\d{2})?, estimated \d+(?:\.\d+)?[KM]? to \d+(?:\.\d+)?[KM]? tokens/)
+    await expect(billing).not.toContainText(/converted to token credits|service(?: and platform)? allocation|\d+%/i)
     await expect(billing).not.toContainText(/Equivalent to ₹|\d+\.\d{2}\s+(?:token\s+)?credits/i)
     await page.getByRole('button', { name:'Close add token credits' }).click()
 

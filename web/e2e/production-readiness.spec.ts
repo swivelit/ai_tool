@@ -167,7 +167,7 @@ test('authentication, OTP state, password visibility, and direct legal routes', 
   }
 })
 
-test('zero-credit block, exact allocation, Test Mode payment, streaming, search, rename, archive, and theme', async ({ page }, testInfo) => {
+test('zero-credit block, token package details, Test Mode payment, streaming, search, rename, archive, and theme', async ({ page }, testInfo) => {
   const state = await installBackend(page)
   await signIn(page)
   await page.getByLabel('Message Swico').fill('hello')
@@ -175,9 +175,12 @@ test('zero-credit block, exact allocation, Test Mode payment, streaming, search,
   const billingDialog = page.getByRole('dialog', { name: 'Add token credits' })
   await expect(billingDialog).toBeVisible()
   await expect(page.getByText('Test Mode')).toBeVisible()
-  await expect(billingDialog.locator('.allocation')).toContainText('Pay ₹10')
-  await expect(billingDialog.locator('.allocation')).toContainText('50%')
-  await expect(billingDialog.locator('.allocation')).toContainText('25K–180K tokens')
+  const packageCard = billingDialog.getByRole('button', { name:'Pay ₹10, estimated 25K to 180K tokens' })
+  await expect(packageCard).toContainText('Pay ₹10')
+  await expect(packageCard).toContainText('25K–180K tokens')
+  await expect(billingDialog.locator('.package-summary')).toContainText('Pay ₹10')
+  await expect(billingDialog.locator('.package-summary')).toContainText('25K–180K tokens')
+  await expect(billingDialog).not.toContainText(/converted to token credits|service(?: and platform)? allocation|\d+%/i)
   await expect(billingDialog).not.toContainText(/5\.00|Equivalent to ₹/)
   await page.getByRole('button', { name: 'Pay ₹10 securely' }).click()
   await expect.poll(() => state.wallet).toBe(5_000_000)

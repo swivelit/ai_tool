@@ -55,6 +55,24 @@ it('uses the same conservative created-checkout presentation in settings', async
   expect(screen.queryByText('50% service allocation')).not.toBeInTheDocument()
 })
 
+it('shows completed and refunded payment details without allocation percentages', async () => {
+  const tokenEstimate = usage.estimated_tokens_remaining
+  mockSettingsApi([
+    { id:'credited-order', gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, refunded_amount_paise:0, credit_reversal_micros:0, status:'credited', created_at:'2026-07-17T00:00:00Z', updated_at:'2026-07-17T00:05:00Z', paid_at:'2026-07-17T00:05:00Z', refunded_at:null, payment_received:true, credit_applied:true, token_estimate:tokenEstimate, reversal_token_estimate:tokenEstimate },
+    { id:'refund-order', gross_amount_paise:1000, credited_amount_micros:5_000_000, platform_share_paise:500, refunded_amount_paise:500, credit_reversal_micros:2_500_000, status:'partially_refunded', created_at:'2026-07-17T00:00:00Z', updated_at:'2026-07-18T00:05:00Z', paid_at:'2026-07-17T00:05:00Z', refunded_at:'2026-07-18T00:05:00Z', payment_received:true, credit_applied:true, token_estimate:tokenEstimate, reversal_token_estimate:tokenEstimate },
+  ])
+  render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
+  await userEvent.click(await screen.findByRole('button', { name:'Token credits' }))
+  expect(screen.getAllByText('Payment completed')).toHaveLength(3)
+  expect(screen.getByText('Partially refunded')).toBeInTheDocument()
+  expect(screen.getAllByText('Gross amount paid: ₹10.00')).toHaveLength(2)
+  expect(screen.getAllByText('Estimated 25K–180K tokens added')).toHaveLength(2)
+  expect(screen.getByText('₹5.00 refunded')).toBeInTheDocument()
+  expect(screen.getByText('Estimated 25K–180K tokens reversed')).toBeInTheDocument()
+  expect(screen.queryByText(/service(?: and platform)? allocation/i)).not.toBeInTheDocument()
+  expect(screen.queryByText(/50%/)).not.toBeInTheDocument()
+})
+
 it('shows concise tier estimates and this-month token categories', async () => {
   mockSettingsApi()
   render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)

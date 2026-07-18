@@ -73,6 +73,7 @@ test('production authentication and public/account surfaces remain read-only', a
     await expect(settings).not.toContainText(/Measured requests|Estimated requests|Pricing timestamp|Estimated for Swico/i)
     await expect(settings.locator('.settings-history article > strong').filter({ hasText:/₹.*\bpaid\b/i })).toHaveCount(0)
     await expect(settings).not.toContainText(/cash balance|credited balance/i)
+    await expect(settings).not.toContainText(/service(?: and platform)? allocation|\d+% service allocation/i)
     await page.getByRole('button', { name:'Close settings' }).click()
     for (const route of ['terms', 'privacy', 'refunds', 'contact', 'ai', 'delivery', 'pricing']) {
       await page.goto(`/legal/${route}`)
