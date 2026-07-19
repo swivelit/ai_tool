@@ -47,3 +47,9 @@ it('shows endpoint pending, toggles captions, and retries without closing the di
   expect(document.querySelector('.voice-orb-core')).toBeInTheDocument()
   expect(document.body.textContent).not.toMatch(/chatgpt|openai/i)
 })
+
+it.each(['thinking', 'speaking'] as const)('never shows cannot-hear while %s', phase => {
+  vi.mocked(useRealtimeVoice).mockReturnValue({ ...base, phase, cannotHear:true, muted:false } as never)
+  render(<VoiceMode user={{} as never} threadId={null} close={vi.fn()} addCredits={vi.fn()} />)
+  expect(screen.queryByText(/We cannot hear you/i)).not.toBeInTheDocument()
+})

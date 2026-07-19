@@ -8,6 +8,8 @@ from unittest.mock import Mock
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlmodel import select
+from sqlalchemy.engine import Connection
+from alembic.runtime.migration import MigrationContext
 
 import app.main as main_module
 import app.observability as observability
@@ -664,6 +666,71 @@ def test_version_endpoint_exposes_release_and_safe_provider_config(client, monke
     dumped = json.dumps(payload)
     assert "sarvam-secret" not in dumped
     assert "openai-secret" not in dumped
+    assert "postgresql://" not in dumped
+    assert "sqlite://" not in dumped
+    assert set(payload["alembic"]) >= {"current", "head", "ok"}
+
+
+def test_alembic_status_opens_engine_and_accepts_existing_connection(monkeypatch):
+    configured_with = []
+
+    class Context:
+        @staticmethod
+        def get_current_revision():
+            return "e2b7c4d9a1f3"
+
+    monkeypatch.setattr(
+        MigrationContext, "configure",
+        lambda bind: configured_with.append(bind) or Context(),
+    )
+
+    class TemporaryConnection:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            self.closed = True
+        closed = False
+
+    connection = TemporaryConnection()
+
+    class EngineLike:
+        def connect(self):
+            return connection
+
+    engine_status = main_module._alembic_revision_status(
+        SimpleNamespace(get_bind=lambda: EngineLike())
+    )
+    assert engine_status == {
+        "current": "e2b7c4d9a1f3", "head": "e2b7c4d9a1f3", "ok": True,
+    }
+    assert configured_with[-1] is connection
+    assert connection.closed is True
+
+    from app.database import engine
+    with engine.connect() as live_connection:
+        assert isinstance(live_connection, Connection)
+        direct_status = main_module._alembic_revision_status(
+            SimpleNamespace(get_bind=lambda: live_connection)
+        )
+        assert configured_with[-1] is live_connection
+        assert direct_status["head"] == "e2b7c4d9a1f3"
+
+
+def test_alembic_status_failure_is_publicly_safe(monkeypatch):
+    secret = "postgresql://username:password@private-host/database"
+
+    class BrokenEngine:
+        def connect(self):
+            raise RuntimeError(secret)
+
+    status = main_module._alembic_revision_status(
+        SimpleNamespace(get_bind=lambda: BrokenEngine())
+    )
+    assert status == {
+        "current": None, "head": "e2b7c4d9a1f3", "ok": False,
+        "error": "alembic_connection_failed",
+    }
+    assert secret not in json.dumps(status)
 
 
 def test_global_qa_cache_debug_endpoint_is_admin_only(client, monkeypatch):

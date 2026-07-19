@@ -65,6 +65,23 @@ class VoiceTicketStore:
         except Exception:
             return False
 
+    def session_status(self, user_id: int) -> tuple[bool, int]:
+        """Return lock presence/TTL only; never return a session ID or ticket."""
+        if self._redis is not None:
+            try:
+                ttl = int(self._redis.ttl(f"{ACTIVE_PREFIX}{int(user_id)}"))
+            except Exception:
+                return False, 0
+            return ttl != -2, max(0, ttl)
+        now = int(time.time())
+        with self._lock:
+            current = self._locks.get(int(user_id))
+            if not current or current[0] <= now:
+                if current:
+                    self._locks.pop(int(user_id), None)
+                return False, 0
+            return True, max(0, current[0] - now)
+
     @staticmethod
     def _digest(ticket: str) -> str:
         return hashlib.sha256(ticket.encode("utf-8")).hexdigest()

@@ -16,6 +16,11 @@ type Ticket = {
 }
 type ProtocolMessage = { protocol_version: 1; type: string; [key: string]: unknown }
 type VoiceError = { code: string; message: string; credit_bucket?: CreditBucket }
+export type MicrophoneDiagnostics = {
+  selectedDeviceLabel: string; browserSampleRate: number; resampledSampleRate: 16000;
+  currentRms: number; calibratedNoiseFloor: number; activeThreshold: number;
+  emittedFrameCount: number; backpressureDroppedFrameCount: number;
+}
 
 const OPEN_TIMEOUT_MS = 12_000
 const PING_INTERVAL_MS = 20_000
@@ -72,8 +77,9 @@ export function validatedSocketUrl(
   return url
 }
 
-export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_TUNING }: {
+export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_TUNING, collectDiagnostics = false }: {
   user: User; threadId: string | null; onTurnDone?: (turn: VoiceTurnDone) => void; tuning?: VoiceTuning;
+  collectDiagnostics?: boolean;
 }) {
   const owner = useRef(Symbol('voice-session'))
   const initialThreadId = useRef(threadId)
@@ -90,6 +96,11 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
   const [creditRequired, setCreditRequired] = useState<CreditBucket | null>(null)
   const [microphoneLevel, setMicrophoneLevel] = useState(0)
   const [cannotHear, setCannotHear] = useState(false)
+  const [microphoneDiagnostics, setMicrophoneDiagnostics] = useState<MicrophoneDiagnostics>({
+    selectedDeviceLabel:'unavailable', browserSampleRate:0, resampledSampleRate:16000,
+    currentRms:0, calibratedNoiseFloor:0, activeThreshold:tuning.threshold_min,
+    emittedFrameCount:0, backpressureDroppedFrameCount:0,
+  })
   const socket = useRef<WebSocket | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const context = useRef<AudioContext | null>(null)
@@ -127,9 +138,21 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
   const lastLevelUpdate = useRef(0)
   const pingTimer = useRef<number | null>(null)
   const playbackListeners = useRef<Array<() => void>>([])
+  const readyForAudio = useRef(false)
+  const readyWaiter = useRef<{ resolve:() => void; reject:(error:Error) => void } | null>(null)
+  const emittedFrameCount = useRef(0)
+  const backpressureDroppedFrameCount = useRef(0)
 
-  useEffect(() => { mutedRef.current = muted }, [muted])
-  useEffect(() => { phaseRef.current = phase }, [phase])
+  useEffect(() => {
+    mutedRef.current = muted
+    if (muted) { setCannotHear(false); noGatedAudioMs.current = 0 }
+  }, [muted])
+  useEffect(() => {
+    phaseRef.current = phase
+    if (!['listening', 'endpoint_pending'].includes(phase)) {
+      setCannotHear(false); noGatedAudioMs.current = 0
+    }
+  }, [phase])
   useEffect(() => { onTurnDoneRef.current = onTurnDone }, [onTurnDone])
 
   const rememberError = useCallback((value: VoiceError) => {
@@ -296,14 +319,21 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     try { message = JSON.parse(String(event.data)) as ProtocolMessage } catch { return }
     if (message.protocol_version !== 1) { rememberError(CLOSE_ERRORS[4400]); return }
     if (message.type === 'session.ready') {
-      if (message.state === 'listening') setPhase('listening')
+      if (message.state === 'listening') {
+        readyForAudio.current = true; setPhase('listening'); setCannotHear(false)
+        readyWaiter.current?.resolve(); readyWaiter.current = null
+      }
       if (typeof message.preroll_ms === 'number') preRollMs.current = message.preroll_ms
       if (typeof message.barge_in_min_ms === 'number') bargeMinMs.current = message.barge_in_min_ms
     } else if (message.type === 'state.changed') {
       const next = String(message.state) as VoicePhase
-      if (['connecting','listening','endpoint_pending','thinking','speaking','interrupted','closing','error','closed'].includes(next)) setPhase(next)
-    } else if (message.type === 'stt.partial') setPartial(String(message.transcript ?? ''))
-    else if (message.type === 'stt.final') { setPartial(String(message.transcript ?? '')); setPhase('thinking') }
+      if (['connecting','listening','endpoint_pending','thinking','speaking','interrupted','closing','error','closed'].includes(next)) {
+        if (next === 'thinking' || next === 'speaking') setCannotHear(false)
+        setPhase(next)
+      }
+    } else if (message.type === 'speech_start') setCannotHear(false)
+    else if (message.type === 'stt.partial') { setCannotHear(false); setPartial(String(message.transcript ?? '')) }
+    else if (message.type === 'stt.final') { setCannotHear(false); setPartial(String(message.transcript ?? '')); setPhase('thinking') }
     else if (message.type === 'assistant.start') { setAssistant(''); setPhase('thinking') }
     else if (message.type === 'assistant.delta') setAssistant(value => value + String(message.delta ?? ''))
     else if (message.type === 'audio.start') setupPlayback(String(message.content_type ?? 'audio/mpeg'))
@@ -323,21 +353,33 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     else if (message.type === 'error') {
       const bucket = message.credit_bucket === 'chat' || message.credit_bucket === 'voice' ? message.credit_bucket : undefined
       rememberError({ code:String(message.code ?? 'voice_internal_failure'), message:String(message.message ?? 'Voice Mode stopped safely.'), ...(bucket ? { credit_bucket:bucket } : {}) })
-    } else if (message.type === 'session.closed') setPhase('closed')
+    } else if (message.type === 'session.closed') { readyForAudio.current = false; setCannotHear(false); setPhase('closed') }
   }, [appendAudio, completeProviderAudio, rememberError, setupPlayback, stopPlayback])
 
   const sendPcm = useCallback((pcm: ArrayBuffer) => {
     const ws = socket.current
-    if (!ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 256 * 1024) return
+    if (!readyForAudio.current || !ws || ws.readyState !== WebSocket.OPEN) return false
+    if (ws.bufferedAmount > 256 * 1024) {
+      backpressureDroppedFrameCount.current += 1
+      setMicrophoneDiagnostics(value => ({
+        ...value, backpressureDroppedFrameCount:backpressureDroppedFrameCount.current,
+      }))
+      return false
+    }
     const packet = new Uint8Array(4 + pcm.byteLength)
     new DataView(packet.buffer).setUint32(0, ++sequence.current); packet.set(new Uint8Array(pcm), 4); ws.send(packet)
+    return true
   }, [])
 
   const cleanup = useCallback(async () => {
     closing.current = true; clearPing()
+    readyForAudio.current = false
+    readyWaiter.current?.reject(new Error('Voice session closed before it became ready.'))
+    readyWaiter.current = null
     if (activeOwner === owner.current) activeOwner = null
     const ws = socket.current; socket.current = null
     if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'client_closed')
+    worklet.current?.port.postMessage({ type:'shutdown' })
     if (worklet.current) worklet.current.port.onmessage = null
     worklet.current?.disconnect(); worklet.current = null
     const audioContext = context.current; context.current = null
@@ -346,6 +388,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     stopPlayback(); preRoll.current = []; preRollDuration.current = 0; voicedDuration.current = 0
     silenceDuration.current = 0; gateOpen.current = false; calibrationElapsed.current = 0
     calibrationEnergy.current = 0; calibrationFrames.current = 0; noGatedAudioMs.current = 0
+    setCannotHear(false)
   }, [clearPing, stopPlayback])
 
   const start = useCallback(async () => {
@@ -355,37 +398,8 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
       activeOwner = owner.current; closing.current = false; actionableError.current = null
       setError(''); setErrorCode(''); setErrorStatus(null); setCreditRequired(null); setPlaybackWarning(''); setCannotHear(false)
       setPhase('connecting'); setPartial(''); setAssistant(''); sequence.current = 0
+      readyForAudio.current = false; emittedFrameCount.current = 0; backpressureDroppedFrameCount.current = 0
       try {
-        const info = await apiJson<Ticket>(user, '/api/web/voice/sessions', { method:'POST' })
-        if (closing.current) return
-        setTicketInfo(info)
-        const url = validatedSocketUrl(info.websocket_url, info.approved_websocket_hosts)
-        url.searchParams.set('ticket', info.ticket)
-        const ws = new WebSocket(url); ws.binaryType = 'arraybuffer'; socket.current = ws
-        await new Promise<void>((resolve, reject) => {
-          let settled = false
-          const finish = (callback: () => void) => { if (!settled) { settled = true; window.clearTimeout(timeout); callback() } }
-          const timeout = window.setTimeout(() => finish(() => reject(new Error('Voice connection timed out before opening.'))), OPEN_TIMEOUT_MS)
-          ws.addEventListener('message', handleMessage)
-          ws.addEventListener('close', event => {
-            clearPing()
-            if (socket.current !== ws || closing.current || (event.code === 1000 && event.reason === 'client_closed')) return
-            const mapped = CLOSE_ERRORS[event.code] ?? { code:'voice_network_interrupted', message:'Voice connection closed unexpectedly. Try again for a fresh session.' }
-            if (!actionableError.current) rememberError(mapped)
-            finish(() => reject(new Error(mapped.message)))
-          })
-          ws.addEventListener('error', () => {
-            const value = { code:'voice_network_interrupted', message:'Voice connection failed before it was ready.' }
-            if (!actionableError.current) rememberError(value)
-            finish(() => reject(new Error(value.message)))
-          })
-          ws.addEventListener('open', () => finish(resolve), { once:true })
-        })
-        if (closing.current) { ws.close(1000, 'client_closed'); return }
-        pingTimer.current = window.setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ protocol_version:1, type:'ping' }))
-        }, PING_INTERVAL_MS)
-        ws.send(JSON.stringify({ protocol_version:1, type:'session.start', audio:{ encoding:'pcm_s16le', sample_rate:16000, channels:1 }, ...(initialThreadId.current ? { thread_id:initialThreadId.current } : {}) }))
         let microphone: MediaStream
         try {
           microphone = await navigator.mediaDevices.getUserMedia({ audio:{ channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } })
@@ -395,27 +409,60 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
           throw caught
         }
         stream.current = microphone
+        if (closing.current) { microphone.getTracks().forEach(track => track.stop()); stream.current = null; return }
         const audioContext = new AudioContext(); context.current = audioContext
         await audioContext.audioWorklet.addModule('/audio-worklet.js')
         const source = audioContext.createMediaStreamSource(microphone)
         const node = new AudioWorkletNode(audioContext, 'swico-pcm16'); worklet.current = node
         const silent = audioContext.createGain(); silent.gain.value = 0
         source.connect(node); node.connect(silent); silent.connect(audioContext.destination)
+        const microphoneTrack = microphone.getAudioTracks?.()[0] ?? microphone.getTracks()[0]
+        if (collectDiagnostics) setMicrophoneDiagnostics(value => ({
+          ...value,
+          selectedDeviceLabel:microphoneTrack?.label || 'default microphone',
+          browserSampleRate:Number(audioContext.sampleRate || 0), resampledSampleRate:16000,
+          currentRms:0, calibratedNoiseFloor:0, activeThreshold:tuning.threshold_min,
+          emittedFrameCount:0, backpressureDroppedFrameCount:0,
+        }))
+        let finishCalibration: (() => void) | null = null
+        let calibrationFinished = false
+        const calibrationComplete = new Promise<void>(resolve => { finishCalibration = resolve })
+        const completeCalibration = () => {
+          if (calibrationFinished) return
+          calibrationFinished = true
+          const floor = calibrationEnergy.current / Math.max(1, calibrationFrames.current)
+          adaptiveThreshold.current = Math.min(
+            tuning.threshold_max, Math.max(tuning.threshold_min, floor * tuning.noise_multiplier),
+          )
+          if (collectDiagnostics) setMicrophoneDiagnostics(value => ({
+            ...value, calibratedNoiseFloor:floor, activeThreshold:adaptiveThreshold.current,
+          }))
+          finishCalibration?.()
+        }
+        const calibrationTimer = window.setTimeout(completeCalibration, tuning.calibration_ms)
         node.port.onmessage = (workletMessage: MessageEvent<{ type:string; pcm:ArrayBuffer; rms:number }>) => {
-          if (mutedRef.current || socket.current?.readyState !== WebSocket.OPEN) return
+          if (workletMessage.data.type !== 'pcm') return
           const { pcm, rms } = workletMessage.data
+          if (pcm.byteLength !== 1024) return
           const duration = pcm.byteLength / 2 / 16_000 * 1000
+          emittedFrameCount.current += 1
           const now = performance.now()
-          if (now - lastLevelUpdate.current >= 80) { lastLevelUpdate.current = now; setMicrophoneLevel(Math.min(1, rms / Math.max(adaptiveThreshold.current, 0.01))) }
-          if (calibrationElapsed.current < tuning.calibration_ms) {
+          if (now - lastLevelUpdate.current >= 80) {
+            lastLevelUpdate.current = now
+            setMicrophoneLevel(Math.min(1, rms / Math.max(adaptiveThreshold.current, 0.01)))
+            if (collectDiagnostics) setMicrophoneDiagnostics(value => ({
+              ...value, currentRms:rms, activeThreshold:adaptiveThreshold.current,
+              emittedFrameCount:emittedFrameCount.current,
+              backpressureDroppedFrameCount:backpressureDroppedFrameCount.current,
+            }))
+          }
+          if (!calibrationFinished) {
             calibrationElapsed.current += duration; calibrationEnergy.current += rms; calibrationFrames.current += 1
-            if (calibrationElapsed.current >= tuning.calibration_ms) {
-              const floor = calibrationEnergy.current / Math.max(1, calibrationFrames.current)
-              adaptiveThreshold.current = Math.min(tuning.threshold_max, Math.max(tuning.threshold_min, floor * tuning.noise_multiplier))
-            }
+            if (calibrationElapsed.current >= tuning.calibration_ms) completeCalibration()
             return
           }
-          if (phaseRef.current !== 'speaking') {
+          if (mutedRef.current || !readyForAudio.current) return
+          if (phaseRef.current === 'listening' || phaseRef.current === 'endpoint_pending') {
             noGatedAudioMs.current += duration
             if (noGatedAudioMs.current >= tuning.no_speech_warning_ms) setCannotHear(true)
           }
@@ -438,6 +485,53 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
             if (silenceDuration.current >= 1_800) { gateOpen.current = false; silenceDuration.current = 0 }
           }
         }
+        await calibrationComplete
+        window.clearTimeout(calibrationTimer)
+        if (closing.current) return
+
+        const info = await apiJson<Ticket>(user, '/api/web/voice/sessions', { method:'POST' })
+        if (closing.current) return
+        setTicketInfo(info)
+        const url = validatedSocketUrl(info.websocket_url, info.approved_websocket_hosts)
+        url.searchParams.set('ticket', info.ticket)
+        const ws = new WebSocket(url); ws.binaryType = 'arraybuffer'; socket.current = ws
+        await new Promise<void>((resolve, reject) => {
+          let settled = false
+          const finish = (callback: () => void) => { if (!settled) { settled = true; window.clearTimeout(timeout); callback() } }
+          const timeout = window.setTimeout(() => finish(() => reject(new Error('Voice connection timed out before opening.'))), OPEN_TIMEOUT_MS)
+          ws.addEventListener('message', handleMessage)
+          ws.addEventListener('close', event => {
+            clearPing(); readyForAudio.current = false; setCannotHear(false)
+            readyWaiter.current?.reject(new Error('Voice connection closed before it was ready.')); readyWaiter.current = null
+            if (socket.current !== ws || closing.current || (event.code === 1000 && event.reason === 'client_closed')) return
+            const mapped = CLOSE_ERRORS[event.code] ?? { code:'voice_network_interrupted', message:'Voice connection closed unexpectedly. Try again for a fresh session.' }
+            if (!actionableError.current) rememberError(mapped)
+            finish(() => reject(new Error(mapped.message)))
+          })
+          ws.addEventListener('error', () => {
+            const value = { code:'voice_network_interrupted', message:'Voice connection failed before it was ready.' }
+            if (!actionableError.current) rememberError(value)
+            finish(() => reject(new Error(value.message)))
+          })
+          ws.addEventListener('open', () => finish(resolve), { once:true })
+        })
+        if (closing.current) { ws.close(1000, 'client_closed'); return }
+        pingTimer.current = window.setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ protocol_version:1, type:'ping' }))
+        }, PING_INTERVAL_MS)
+        let readyTimeout = 0
+        const ready = new Promise<void>((resolve, reject) => {
+          readyWaiter.current = {
+            resolve:() => { window.clearTimeout(readyTimeout); resolve() },
+            reject:error => { window.clearTimeout(readyTimeout); reject(error) },
+          }
+          readyTimeout = window.setTimeout(() => {
+            readyWaiter.current = null
+            reject(new Error('Voice connection opened but the listening session did not become ready.'))
+          }, OPEN_TIMEOUT_MS)
+        })
+        ws.send(JSON.stringify({ protocol_version:1, type:'session.start', audio:{ encoding:'pcm_s16le', sample_rate:16000, channels:1, frame_samples:512 }, ...(initialThreadId.current ? { thread_id:initialThreadId.current } : {}) }))
+        await ready
       } catch (caught) {
         const structured = caught instanceof ApiError ? apiVoiceError(caught) : null
         if (caught instanceof ApiError) setErrorStatus(caught.status)
@@ -449,18 +543,40 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     })()
     startInFlight.current = operation
     try { await operation } finally { startInFlight.current = null }
-  }, [cleanup, clearPing, handleMessage, rememberError, sendPcm, tuning, user])
+  }, [cleanup, clearPing, collectDiagnostics, handleMessage, rememberError, sendPcm, tuning, user])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void start(), 0)
     return () => { window.clearTimeout(timer); void cleanup() }
   }, [cleanup, start])
 
-  const retry = useCallback(async () => { if (!startInFlight.current) { await cleanup(); closing.current = false; await start() } }, [cleanup, start])
+  useEffect(() => {
+    const unload = () => {
+      readyForAudio.current = false
+      const ws = socket.current
+      if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'client_closed')
+      stream.current?.getTracks().forEach(track => track.stop())
+    }
+    window.addEventListener('pagehide', unload)
+    window.addEventListener('beforeunload', unload)
+    return () => {
+      window.removeEventListener('pagehide', unload)
+      window.removeEventListener('beforeunload', unload)
+    }
+  }, [])
+
+  const retry = useCallback(async () => {
+    const pending = startInFlight.current
+    if (pending) await pending
+    await cleanup(); closing.current = false; await start()
+  }, [cleanup, start])
   const toggleMute = useCallback(() => setMuted(value => {
     const next = !value
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ protocol_version:1, type:next ? 'mute' : 'unmute' }))
-    if (next) { gateOpen.current = false; preRoll.current = []; preRollDuration.current = 0; setMicrophoneLevel(0) }
+    if (next) {
+      gateOpen.current = false; preRoll.current = []; preRollDuration.current = 0
+      noGatedAudioMs.current = 0; setMicrophoneLevel(0); setCannotHear(false)
+    }
     return next
   }), [])
   const manualPlay = useCallback(async () => { await requestPlay() }, [requestPlay])
@@ -473,7 +589,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
 
   return {
     phase, playbackState, partial, assistant, muted, error, errorCode, errorStatus, playbackWarning,
-    ticketInfo, creditRequired, microphoneLevel, cannotHear,
+    ticketInfo, creditRequired, microphoneLevel, cannotHear, microphoneDiagnostics,
     toggleMute, manualPlay, skipPlayback, retry, end,
   }
 }

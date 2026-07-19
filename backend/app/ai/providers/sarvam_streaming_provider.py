@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 from urllib.parse import urlencode
@@ -26,15 +27,42 @@ from .sarvam_provider import (
 
 SARVAM_STREAMING_STT_URL = "wss://api.sarvam.ai/speech-to-text/ws"
 SARVAM_STREAMING_TTS_URL = "wss://api.sarvam.ai/text-to-speech/ws"
+SARVAM_STT_SAMPLE_RATE = 16_000
+SARVAM_STT_INPUT_AUDIO_CODEC = "pcm_s16le"
+SARVAM_STT_MESSAGE_ENCODINGS = frozenset({"audio/wav", "pcm_s16le"})
+
+
+def sarvam_stt_message_encoding(value: str | None = None) -> str:
+    configured = str(
+        value if value is not None else os.getenv("SARVAM_STT_STREAM_MESSAGE_ENCODING", "audio/wav")
+    ).strip().lower()
+    if configured not in SARVAM_STT_MESSAGE_ENCODINGS:
+        raise ValueError("SARVAM_STT_STREAM_MESSAGE_ENCODING is unsupported.")
+    return configured
 
 
 class SarvamStreamingError(RuntimeError):
     """Sanitized provider failure; raw provider payloads never leave the adapter."""
 
-    def __init__(self, message: str, *, category: str = "temporary", close_code: int | None = None) -> None:
+    def __init__(
+        self, message: str, *, category: str = "temporary",
+        safe_code: str = "unknown_provider_error",
+        websocket_close_code: int | None = None,
+        handshake_status: int | None = None,
+        retryable: bool | None = None,
+        close_code: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.category = category
-        self.close_code = close_code
+        self.safe_code = safe_code
+        self.websocket_close_code = websocket_close_code if websocket_close_code is not None else close_code
+        self.handshake_status = handshake_status
+        self.retryable = category == "temporary" if retryable is None else bool(retryable)
+
+    @property
+    def close_code(self) -> int | None:
+        """Backward-compatible alias used by older call sites."""
+        return self.websocket_close_code
 
 
 def _provider_category(code: int | None, reason: str = "") -> str:
@@ -44,9 +72,70 @@ def _provider_category(code: int | None, reason: str = "") -> str:
         return "authentication"
     if code in {4008, 4029, 429, 4429} or any(x in lowered for x in ("quota", "rate limit", "too many")):
         return "quota"
-    if code in {1002, 1003, 1007, 1008} or "protocol" in lowered:
+    if code in {1002, 1003, 1007, 1008, 400, 404, 405, 415, 422, 426, 4400} or any(
+        x in lowered for x in ("protocol", "encoding", "codec", "sample rate", "invalid message")
+    ):
         return "protocol"
     return "temporary"
+
+
+def _bounded_scalar(value: Any) -> str:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return ""
+    return str(value).strip().lower()[:80]
+
+
+def _safe_provider_code(value: str, *, category: str, close_code: int | None = None) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")[:80]
+    if "sample" in normalized and "rate" in normalized:
+        return "invalid_sample_rate"
+    if any(marker in normalized for marker in ("encoding", "codec", "audio_format")):
+        return "invalid_audio_encoding"
+    if "audio" in normalized and any(marker in normalized for marker in ("frame", "chunk", "data")):
+        return "invalid_audio_frame"
+    if any(marker in normalized for marker in ("auth", "api_key", "unauthor", "forbidden", "credential")):
+        return "authentication_failed"
+    if any(marker in normalized for marker in ("rate_limit", "too_many")):
+        return "rate_limited"
+    if any(marker in normalized for marker in ("quota", "credit", "limit_exceeded")):
+        return "quota_exhausted"
+    if any(marker in normalized for marker in ("internal", "server_error", "unavailable")):
+        return "provider_internal"
+    if close_code == 1006:
+        return "abnormal_close"
+    if category == "protocol":
+        return "invalid_message"
+    if category == "authentication":
+        return "authentication_failed"
+    if category == "quota":
+        return "rate_limited" if close_code in {429, 4429} else "quota_exhausted"
+    if close_code in {1006, 1011}:
+        return "abnormal_close" if close_code == 1006 else "provider_internal"
+    return "unknown_provider_error"
+
+
+def _error_fields(payload: dict[str, Any]) -> tuple[str, int | None]:
+    """Read bounded scalar code/status fields only; never retain a provider body."""
+    data = (
+        payload.get("data") if isinstance(payload.get("data"), dict)
+        else payload.get("error") if isinstance(payload.get("error"), dict)
+        else payload
+    )
+    values = [
+        _bounded_scalar(data.get(name))
+        for name in ("code", "error_code", "status", "status_code", "type")
+    ]
+    scalar = " ".join(value for value in values if value)
+    status: int | None = None
+    for name in ("status", "status_code"):
+        try:
+            candidate = int(data.get(name))
+        except (TypeError, ValueError):
+            continue
+        if 100 <= candidate <= 599:
+            status = candidate
+            break
+    return scalar, status
 
 
 def _handshake_status(exc: BaseException) -> int | None:
@@ -92,7 +181,10 @@ class SarvamStreamingProvider:
 
     async def _open(self, url: str):
         if not self._api_key:
-            raise SarvamStreamingError("Sarvam streaming is not configured.")
+            raise SarvamStreamingError(
+                "Sarvam streaming is not configured.", category="authentication",
+                safe_code="authentication_failed", retryable=False,
+            )
         kwargs = {
             "ping_interval": 20,
             "ping_timeout": 20,
@@ -113,23 +205,33 @@ class SarvamStreamingProvider:
                 )
         except InvalidStatus as exc:
             status = _handshake_status(exc)
+            category = _handshake_category(status)
             raise SarvamStreamingError(
                 "Sarvam streaming connection was rejected.",
-                category=_handshake_category(status), close_code=status,
+                category=category, safe_code=_safe_provider_code("", category=category, close_code=status),
+                handshake_status=status, retryable=status in {429, 500, 502, 503, 504},
             ) from exc
         except ConnectionClosed as exc:
+            category = _provider_category(exc.code, exc.reason)
             raise SarvamStreamingError(
                 "Sarvam streaming connection was rejected.",
-                category=_provider_category(exc.code, exc.reason), close_code=exc.code,
+                category=category,
+                safe_code=_safe_provider_code(_bounded_scalar(exc.reason), category=category, close_code=exc.code),
+                websocket_close_code=exc.code,
             ) from exc
         except InvalidHandshake as exc:
             status = _handshake_status(exc)
+            category = _handshake_category(status)
             raise SarvamStreamingError(
                 "Sarvam streaming handshake failed.",
-                category=_handshake_category(status), close_code=status,
+                category=category, safe_code=_safe_provider_code("", category=category, close_code=status),
+                handshake_status=status, retryable=status not in {400, 401, 403, 404, 405, 415, 422, 426},
             ) from exc
         except (OSError, asyncio.TimeoutError) as exc:
-            raise SarvamStreamingError("Sarvam streaming is temporarily unavailable.") from exc
+            raise SarvamStreamingError(
+                "Sarvam streaming is temporarily unavailable.",
+                safe_code="abnormal_close", retryable=True,
+            ) from exc
 
     async def connect_stt(self, language: str) -> None:
         language_code = normalize_sarvam_tts_language_code(language)
@@ -137,22 +239,23 @@ class SarvamStreamingProvider:
             "language-code": language_code,
             "model": os.getenv("SARVAM_STT_MODEL", "saaras:v3"),
             "mode": "transcribe",
-            "sample_rate": "16000",
-            "input_audio_codec": "pcm_s16le",
+            "sample_rate": str(SARVAM_STT_SAMPLE_RATE),
+            "input_audio_codec": SARVAM_STT_INPUT_AUDIO_CODEC,
             "vad_signals": "true",
             "flush_signal": "true",
             "high_vad_sensitivity": "true",
         })
         self._stt = await self._open(f"{SARVAM_STREAMING_STT_URL}?{query}")
 
-    async def send_audio(self, pcm_s16le: bytes) -> None:
+    async def send_audio(self, pcm_s16le: bytes, *, payload_encoding: str | None = None) -> None:
         if self._stt is None:
             raise SarvamStreamingError("STT stream is not connected.")
+        encoding = sarvam_stt_message_encoding(payload_encoding)
         await self._stt.send(json.dumps({
             "audio": {
                 "data": base64.b64encode(pcm_s16le).decode("ascii"),
-                "sample_rate": 16000,
-                "encoding": "pcm_s16le",
+                "sample_rate": SARVAM_STT_SAMPLE_RATE,
+                "encoding": encoding,
             }
         }, separators=(",", ":")))
 
@@ -185,8 +288,16 @@ class SarvamStreamingProvider:
                     yield {"type": "speech_end"}
                     continue
                 if event_type in {"error", "errors"} or payload.get("error"):
-                    category = _provider_category(None, str(data.get("code") or data.get("message") or ""))
-                    yield {"type": "provider_error", "category": category, "close_code": None}
+                    scalar, status = _error_fields(payload)
+                    category = _handshake_category(status) if status else _provider_category(None, scalar)
+                    yield {
+                        "type": "provider_error",
+                        "category": category,
+                        "safe_code": _safe_provider_code(scalar, category=category),
+                        "websocket_close_code": None,
+                        "handshake_status": status,
+                        "retryable": category == "temporary" or status == 429,
+                    }
                     continue
                 transcript = str(data.get("transcript") or "").strip()
                 if transcript:
@@ -205,10 +316,16 @@ class SarvamStreamingProvider:
                 if event_type in {"warning", "warnings"}:
                     yield {"type": "provider_warning"}
         except ConnectionClosed as exc:
+            category = _provider_category(exc.code, exc.reason)
             yield {
                 "type": "provider_error",
-                "category": _provider_category(exc.code, exc.reason),
-                "close_code": exc.code,
+                "category": category,
+                "safe_code": _safe_provider_code(
+                    _bounded_scalar(exc.reason), category=category, close_code=exc.code
+                ),
+                "websocket_close_code": exc.code,
+                "handshake_status": None,
+                "retryable": category == "temporary" or exc.code in {1013, 4429},
             }
 
     async def connect_tts(self, language: str) -> None:
@@ -291,15 +408,24 @@ class SarvamStreamingProvider:
                     }:
                         return
                 elif payload.get("type") == "error" or payload.get("error"):
-                    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+                    scalar, status = _error_fields(payload)
+                    category = _handshake_category(status) if status else _provider_category(None, scalar)
                     raise SarvamStreamingError(
                         "Sarvam TTS rejected the stream.",
-                        category=_provider_category(None, str(data.get("code") or data.get("message") or "")),
+                        category=category,
+                        safe_code=_safe_provider_code(scalar, category=category),
+                        handshake_status=status,
+                        retryable=category == "temporary" or status == 429,
                     )
         except ConnectionClosed as exc:
+            category = _provider_category(exc.code, exc.reason)
             raise SarvamStreamingError(
                 "Sarvam TTS connection closed unexpectedly.",
-                category=_provider_category(exc.code, exc.reason), close_code=exc.code,
+                category=category,
+                safe_code=_safe_provider_code(
+                    _bounded_scalar(exc.reason), category=category, close_code=exc.code
+                ),
+                websocket_close_code=exc.code,
             ) from exc
 
     async def close(self) -> None:

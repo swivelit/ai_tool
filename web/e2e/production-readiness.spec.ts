@@ -382,19 +382,20 @@ test('real-time Voice Mode completes a pause-aware turn, syncs chat, handles bar
       constructor() { super(); setTimeout(() => this.dispatchEvent(new Event('sourceopen')), 0) }
       addSourceBuffer(mime: string) { void mime; return new MockSourceBuffer() }
     }
-    class MockAudio {
+    class MockAudio extends EventTarget {
       src = ''
-      play() { return Promise.resolve() }
+      play() { this.dispatchEvent(new Event('playing')); return Promise.resolve() }
       pause() {}
     }
     class MockWorkletNode {
-      port = { onmessage:null as ((event: MessageEvent) => void) | null }
+      port = { onmessage:null as ((event: MessageEvent) => void) | null, postMessage:() => undefined }
       connect() { return this }
       disconnect() {}
     }
     class MockAudioContext {
       audioWorklet = { addModule:async () => undefined }
       destination = {}
+      sampleRate = 48000
       createMediaStreamSource() { return { connect:() => undefined } }
       createGain() { return { gain:{ value:1 }, connect:() => undefined } }
       close() { return Promise.resolve() }
@@ -413,7 +414,7 @@ test('real-time Voice Mode completes a pause-aware turn, syncs chat, handles bar
         const message = JSON.parse(value) as { type?: string }
         if (message.type !== 'session.start') return
         setTimeout(() => this.emit({ type:'session.ready', state:'connected', preroll_ms:320, barge_in_min_ms:180 }), 10)
-        setTimeout(() => this.emit({ type:'state.changed', state:'listening', turn_number:1 }), 20)
+        setTimeout(() => this.emit({ type:'session.ready', state:'listening', turn_number:1, preroll_ms:320, barge_in_min_ms:180 }), 20)
         setTimeout(() => this.emit({ type:'stt.partial', transcript:'I need', turn_number:1 }), 50)
         setTimeout(() => this.emit({ type:'state.changed', state:'endpoint_pending', turn_number:1 }), 80)
         setTimeout(() => this.emit({ type:'state.changed', state:'listening', turn_number:1 }), 750)
@@ -431,7 +432,10 @@ test('real-time Voice Mode completes a pause-aware turn, syncs chat, handles bar
       }
     }
     Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{
-      getUserMedia:async () => ({ getTracks:() => [{ stop:() => undefined }] }),
+      getUserMedia:async () => ({
+        getTracks:() => [{ stop:() => undefined, label:'Mock microphone' }],
+        getAudioTracks:() => [{ stop:() => undefined, label:'Mock microphone' }],
+      }),
     } })
     Object.assign(window, { WebSocket:MockWebSocket, MediaSource:MockMediaSource, Audio:MockAudio, AudioContext:MockAudioContext, AudioWorkletNode:MockWorkletNode })
     URL.createObjectURL = () => 'blob:mock-voice'

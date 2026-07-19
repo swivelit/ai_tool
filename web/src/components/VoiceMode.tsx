@@ -10,6 +10,7 @@ type InternalVoiceDiagnostics = {
   features: { web_realtime_voice:boolean; separate_voice_credits:boolean; web_voice_billing:boolean };
   valkey: { configured:boolean; reachable:boolean }; sarvam: { configured:boolean };
   origin: { request_origin_allowed:boolean };
+  session_lock: { active_session:boolean; remaining_lock_ttl_seconds:number };
 }
 
 export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tuning, frontendRelease = 'dev', backendRelease = 'unavailable', internalDiagnostics = false }: {
@@ -21,7 +22,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
   const closeRef = useRef<HTMLButtonElement>(null)
   const [captions, setCaptions] = useState(true)
   const [diagnostics, setDiagnostics] = useState<InternalVoiceDiagnostics | null>(null)
-  const voice = useRealtimeVoice({ user, threadId, onTurnDone, tuning })
+  const voice = useRealtimeVoice({ user, threadId, onTurnDone, tuning, collectDiagnostics:internalDiagnostics })
   const endVoice = voice.end
 
   useEffect(() => {
@@ -92,7 +93,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
         <div className="voice-microphone-level" aria-label="Microphone level" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(voice.microphoneLevel * 100)}>
           <span style={{ transform:`scaleX(${Math.max(.02, voice.microphoneLevel)})` }} />
         </div>
-        {voice.cannotHear && !voice.muted && <p className="voice-interruption" role="status">We cannot hear you. Move closer to the microphone or check its input level.</p>}
+        {voice.cannotHear && !voice.muted && ['listening', 'endpoint_pending'].includes(voice.phase) && <p className="voice-interruption" role="status">We cannot hear you. Move closer to the microphone or check its input level.</p>}
         {voice.playbackWarning && <div className="voice-playback-warning" role="status"><p>{voice.playbackWarning}</p>
           {voice.playbackState === 'autoplay_blocked' && <button className="primary voice-tap-play" onClick={() => void voice.manualPlay()}>Tap to play</button>}
           {(voice.playbackState === 'autoplay_blocked' || voice.playbackState === 'playback_error') && <button onClick={voice.skipPlayback}>Skip audio</button>}
@@ -112,8 +113,18 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
             <dt>Valkey ready</dt><dd>{diagnostics ? String(diagnostics.valkey.configured && diagnostics.valkey.reachable) : 'loading'}</dd>
             <dt>Sarvam configured</dt><dd>{diagnostics ? String(diagnostics.sarvam.configured) : 'loading'}</dd>
             <dt>Origin allowed</dt><dd>{diagnostics ? String(diagnostics.origin.request_origin_allowed) : 'loading'}</dd>
+            <dt>Active session</dt><dd>{diagnostics ? String(diagnostics.session_lock.active_session) : 'loading'}</dd>
+            <dt>Lock TTL seconds</dt><dd>{diagnostics?.session_lock.remaining_lock_ttl_seconds ?? 'loading'}</dd>
             <dt>HTTP status</dt><dd>{voice.errorStatus ?? 'none'}</dd><dt>Error code</dt><dd>{voice.errorCode || 'none'}</dd>
-            <dt>Playback state</dt><dd>{voice.playbackState}</dd></dl>
+            <dt>Playback state</dt><dd>{voice.playbackState}</dd>
+            <dt>Microphone device</dt><dd>{voice.microphoneDiagnostics.selectedDeviceLabel}</dd>
+            <dt>Browser sample rate</dt><dd>{voice.microphoneDiagnostics.browserSampleRate}</dd>
+            <dt>Resampled rate</dt><dd>{voice.microphoneDiagnostics.resampledSampleRate}</dd>
+            <dt>Current RMS</dt><dd>{voice.microphoneDiagnostics.currentRms.toFixed(4)}</dd>
+            <dt>Noise floor</dt><dd>{voice.microphoneDiagnostics.calibratedNoiseFloor.toFixed(4)}</dd>
+            <dt>Active threshold</dt><dd>{voice.microphoneDiagnostics.activeThreshold.toFixed(4)}</dd>
+            <dt>Emitted frames</dt><dd>{voice.microphoneDiagnostics.emittedFrameCount}</dd>
+            <dt>Backpressure drops</dt><dd>{voice.microphoneDiagnostics.backpressureDroppedFrameCount}</dd></dl>
         </details>}
       </div>
 

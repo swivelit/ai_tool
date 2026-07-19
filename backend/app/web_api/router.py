@@ -433,6 +433,10 @@ def voice_diagnostics(
     voice_required = stt_price(5_000).micros
     chat_required = _voice_chat_preflight_micros(tier)
     store = _tickets()
+    session_status = getattr(store, "session_status", None)
+    active_session, remaining_lock_ttl_seconds = (
+        session_status(int(user.id)) if callable(session_status) else (False, 0)
+    )
     configured_origins = sorted({
         value.strip() for value in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if value.strip()
     })
@@ -473,6 +477,10 @@ def voice_diagnostics(
             },
         },
         "valkey": {"configured": store.configured, "reachable": store.reachable()},
+        "session_lock": {
+            "active_session": active_session,
+            "remaining_lock_ttl_seconds": remaining_lock_ttl_seconds,
+        },
         "sarvam": {
             "configured": bool(os.getenv("SARVAM_API_KEY", "").strip()),
             "stt_model": os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
@@ -682,6 +690,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
     current_thread_id: str | None = None
     current_stt_request: str | None = None
     received_audio_bytes = 0
+    audio_message_count = 0
     stt_reserved_milliseconds = 0
     stt_reserved_micros = 0
     last_audio_sequence = 0
@@ -709,11 +718,22 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 "stage": stage,
                 "exception_class": type(exc).__name__ if exc else None,
                 "provider_close_code": (
-                    exc.close_code if isinstance(exc, SarvamStreamingError) else None
+                    exc.websocket_close_code if isinstance(exc, SarvamStreamingError) else None
+                ),
+                "provider_handshake_status": (
+                    exc.handshake_status if isinstance(exc, SarvamStreamingError) else None
                 ),
                 "provider_category": (
                     exc.category if isinstance(exc, SarvamStreamingError) else None
                 ),
+                "provider_safe_code": (
+                    exc.safe_code if isinstance(exc, SarvamStreamingError) else None
+                ),
+                "provider_retryable": (
+                    exc.retryable if isinstance(exc, SarvamStreamingError) else None
+                ),
+                "audio_frame_samples": 512,
+                "audio_message_count": audio_message_count,
                 "session_duration_ms": int((time.monotonic() - started_at) * 1000),
                 "turn_number": turn_number,
                 "cleanup_succeeded": cleanup,
@@ -1150,12 +1170,16 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             if event_type == "provider_error":
                 exc = SarvamStreamingError(
                     "Sarvam STT stream closed.", category=str(event.get("category") or "temporary"),
-                    close_code=event.get("close_code"),
+                    safe_code=str(event.get("safe_code") or "unknown_provider_error"),
+                    websocket_close_code=event.get("websocket_close_code"),
+                    handshake_status=event.get("handshake_status"),
+                    retryable=bool(event.get("retryable")),
                 )
                 diagnostic(exc)
                 await provider_failure(exc)
                 return
             if event_type == "speech_start":
+                await _voice_send(websocket, "speech_start", turn_number=turn_number)
                 if endpoint_task and not endpoint_task.done():
                     endpoint_task.cancel()
                     await asyncio.gather(endpoint_task, return_exceptions=True)
@@ -1195,8 +1219,9 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
 
     async def forward_audio(data: bytes) -> None:
         nonlocal last_audio_sequence, received_audio_bytes, stt_reserved_milliseconds
-        nonlocal stt_reserved_micros, current_stt_request, stage
-        if len(data) < 5 or len(data) > 64 * 1024:
+        nonlocal stt_reserved_micros, current_stt_request, stage, audio_message_count
+        # Browser frames are exactly 512 mono int16 samples plus a 4-byte sequence.
+        if len(data) != 4 + 512 * 2:
             await _voice_send(websocket, "error", code="invalid_audio_chunk", message="Audio chunk rejected.")
             return
         sequence = int.from_bytes(data[:4], "big")
@@ -1237,6 +1262,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         await provider.send_audio(data[4:])
         received_audio_bytes = proposed_bytes
         last_audio_sequence = sequence
+        audio_message_count += 1
 
     try:
         stage = "session_started"
@@ -1254,14 +1280,27 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                     code=VOICE_CLOSE_CODES["voice_maximum_duration"], reason="voice_maximum_duration"
                 )
                 break
-            try:
-                incoming = await asyncio.wait_for(websocket.receive(), timeout=min(idle_timeout, remaining))
-            except asyncio.TimeoutError:
+            receive_task = asyncio.create_task(websocket.receive(), name="voice-client-receive")
+            stop_waiter = asyncio.create_task(stop_event.wait(), name="voice-stop-waiter")
+            done, pending = await asyncio.wait(
+                {receive_task, stop_waiter}, timeout=min(idle_timeout, remaining),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for pending_task in pending:
+                pending_task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if stop_waiter in done and stop_event.is_set():
+                if receive_task in done:
+                    await asyncio.gather(receive_task, return_exceptions=True)
+                break
+            if receive_task not in done:
                 maximum = time.monotonic() - started_at >= max_session
                 code = "voice_maximum_duration" if maximum else "voice_idle_timeout"
                 await _voice_send(websocket, "session.closed", reason="maximum_duration" if maximum else "idle_timeout")
                 await websocket.close(code=VOICE_CLOSE_CODES[code], reason=code)
                 break
+            incoming = receive_task.result()
             if incoming.get("type") == "websocket.disconnect":
                 stage = "client_disconnect"
                 break

@@ -146,6 +146,14 @@ def test_staging_static_site_includes_exact_security_headers():
     assert web["routes"] == [{"type": "rewrite", "source": "/*", "destination": "/index.html"}]
 
 
+def test_public_headers_preserve_voice_csp_and_nonduplicated_permissions_policy():
+    source = (ROOT / "web" / "public" / "_headers").read_text(encoding="utf-8")
+    assert "Permissions-Policy: camera=(), geolocation=(), microphone=(self)" in source
+    assert "Permissions-Policy: Permissions-Policy:" not in source
+    assert "connect-src 'self' https: wss:" in source
+    assert "media-src 'self' blob:" in source
+
+
 def test_workflow_selects_exact_test_file_for_each_mode():
     source = WORKFLOW.read_text(encoding="utf-8")
     assert "staging) test_file='e2e/deployed-smoke.spec.ts'" in source

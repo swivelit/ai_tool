@@ -114,6 +114,10 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         errors.append("WEB_REALTIME_VOICE_ENABLED requires WEB_VOICE_BILLING_ENABLED")
     if realtime_voice is True and not _value(env, "WEB_UPLOAD_CACHE_URL"):
         errors.append("WEB_REALTIME_VOICE_ENABLED requires WEB_UPLOAD_CACHE_URL")
+    if _value(env, "SARVAM_STT_STREAM_MESSAGE_ENCODING", "audio/wav").lower() not in {
+        "audio/wav", "pcm_s16le",
+    }:
+        errors.append("SARVAM_STT_STREAM_MESSAGE_ENCODING is unsupported")
     for name, default in (
         ("WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS", "60"),
         ("WEB_REALTIME_VOICE_MAX_SESSION_SECONDS", "900"),

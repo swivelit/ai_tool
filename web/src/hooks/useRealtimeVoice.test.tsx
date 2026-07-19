@@ -14,6 +14,7 @@ class FakeWebSocket extends EventTarget {
   static CLOSING = 2
   static instances: FakeWebSocket[] = []
   static autoEvent: 'open' | 'close' | 'error' | 'none' = 'open'
+  static autoReady = true
   readyState = 0
   bufferedAmount = 0
   binaryType = ''
@@ -27,14 +28,27 @@ class FakeWebSocket extends EventTarget {
       else if (FakeWebSocket.autoEvent === 'error') this.dispatchEvent(new Event('error'))
     }, 0)
   }
-  send(value: unknown) { this.sent.push(value) }
+  send(value: unknown) {
+    this.sent.push(value)
+    if (FakeWebSocket.autoReady && typeof value === 'string' && value.includes('"type":"session.start"')) {
+      window.setTimeout(() => {
+        if (this.readyState !== FakeWebSocket.OPEN) return
+        this.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+          protocol_version:1, type:'session.ready', state:'listening', preroll_ms:320, barge_in_min_ms:180,
+        }) }))
+      }, 0)
+    }
+  }
   close(code = 1000, reason = '') { this.readyState = 3; this.closed = true; this.dispatchEvent(new CloseEvent('close', { code, reason })) }
 }
 
 class FakeWorkletNode {
   static latest: FakeWorkletNode | null = null
   disconnect = vi.fn()
-  port: { onmessage: ((event: MessageEvent<{ type:string; pcm:ArrayBuffer; rms:number }>) => void) | null } = { onmessage:null }
+  port = {
+    onmessage:null as ((event: MessageEvent<{ type:string; pcm:ArrayBuffer; rms:number }>) => void) | null,
+    postMessage:vi.fn(),
+  }
   constructor() { FakeWorkletNode.latest = this }
   connect() { return this }
 }
@@ -47,6 +61,7 @@ const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDe
 class FakeAudioContext {
   audioWorklet = { addModule }
   destination = {}
+  sampleRate = 48000
   createMediaStreamSource() { return { connect:vi.fn() } }
   createGain() { return { gain:{ value:1 }, connect:vi.fn() } }
   close = closeContext
@@ -83,7 +98,7 @@ class FakeAudio extends EventTarget {
 }
 
 afterEach(() => {
-  vi.clearAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); FakeWebSocket.instances = []; FakeWebSocket.autoEvent = 'open'; FakeAudio.instances = []; FakeAudio.rejectPlay = false; FakeWorkletNode.latest = null; FakeMediaSource.latest = null
+  vi.clearAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); FakeWebSocket.instances = []; FakeWebSocket.autoEvent = 'open'; FakeWebSocket.autoReady = true; FakeAudio.instances = []; FakeAudio.rejectPlay = false; FakeWorkletNode.latest = null; FakeMediaSource.latest = null
   if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices)
   else Reflect.deleteProperty(navigator, 'mediaDevices')
 })
@@ -98,7 +113,10 @@ function stubBrowser({ mediaSource = true }: { mediaSource?: boolean } = {}) {
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-voice')
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
   Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{
-    getUserMedia:vi.fn().mockResolvedValue({ getTracks:() => [{ stop:stopTrack }] }),
+    getUserMedia:vi.fn().mockResolvedValue({
+      getTracks:() => [{ stop:stopTrack, label:'Test microphone' }],
+      getAudioTracks:() => [{ stop:stopTrack, label:'Test microphone' }],
+    }),
   } })
 }
 
@@ -118,7 +136,10 @@ it('mints one ticket in Strict Mode, parses events, sends mute, and releases med
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-voice')
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
   Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{
-    getUserMedia:vi.fn().mockResolvedValue({ getTracks:() => [{ stop:stopTrack }] }),
+    getUserMedia:vi.fn().mockResolvedValue({
+      getTracks:() => [{ stop:stopTrack, label:'Test microphone' }],
+      getAudioTracks:() => [{ stop:stopTrack, label:'Test microphone' }],
+    }),
   } })
   vi.mocked(apiJson).mockResolvedValue({
     protocol_version:1, session_id:'session-1', ticket:'one-use-secret',
@@ -135,6 +156,7 @@ it('mints one ticket in Strict Mode, parses events, sends mute, and releases med
   expect(apiJson).toHaveBeenCalledTimes(1)
   expect(apiJson).toHaveBeenCalledWith(expect.anything(), '/api/web/voice/sessions', { method:'POST' })
   const socket = FakeWebSocket.instances[0]
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
   expect(String(socket.url)).toContain('ticket=one-use-secret')
   expect(socket.sent[0]).toContain('"type":"session.start"')
 
@@ -150,7 +172,7 @@ it('mints one ticket in Strict Mode, parses events, sends mute, and releases med
   const progressive = new Uint8Array([0, 0, 0, 1, 10, 20, 30]).buffer
   act(() => socket.dispatchEvent(new MessageEvent('message', { data:progressive })))
   expect(FakeMediaSource.latest?.buffer.appended[0].byteLength).toBe(3)
-  const bargePcm = new ArrayBuffer(320)
+  const bargePcm = new ArrayBuffer(1024)
   act(() => {
     for (let index = 0; index < 65; index += 1) {
       FakeWorkletNode.latest?.port.onmessage?.(new MessageEvent('message', { data:{ type:'pcm', pcm:bargePcm.slice(0), rms:0.2 } }))
@@ -164,7 +186,7 @@ it('mints one ticket in Strict Mode, parses events, sends mute, and releases med
   act(() => result.current.toggleMute())
   expect(socket.sent.at(-1)).toContain('"type":"mute"')
 
-  const pcm = new ArrayBuffer(320)
+  const pcm = new ArrayBuffer(1024)
   act(() => FakeWorkletNode.latest?.port.onmessage?.(new MessageEvent('message', { data:{ type:'pcm', pcm, rms:0.01 } })))
   expect(socket.sent.some(value => value instanceof Uint8Array)).toBe(true)
   unmount()
@@ -184,7 +206,10 @@ it('preserves a structured error across close and retry mints a fresh ticket aft
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-voice')
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
   Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{
-    getUserMedia:vi.fn().mockResolvedValue({ getTracks:() => [{ stop:stopTrack }] }),
+    getUserMedia:vi.fn().mockResolvedValue({
+      getTracks:() => [{ stop:stopTrack, label:'Test microphone' }],
+      getAudioTracks:() => [{ stop:stopTrack, label:'Test microphone' }],
+    }),
   } })
   vi.mocked(apiJson)
     .mockResolvedValueOnce({
@@ -224,7 +249,10 @@ it('maps known application close codes without replacing an earlier server error
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-voice')
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
   Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{
-    getUserMedia:vi.fn().mockResolvedValue({ getTracks:() => [{ stop:stopTrack }] }),
+    getUserMedia:vi.fn().mockResolvedValue({
+      getTracks:() => [{ stop:stopTrack, label:'Test microphone' }],
+      getAudioTracks:() => [{ stop:stopTrack, label:'Test microphone' }],
+    }),
   } })
   vi.mocked(apiJson).mockResolvedValue({
     protocol_version:1, session_id:'session-close', ticket:'ticket-close', websocket_url:'ws://localhost:8000/api/web/voice/ws',
@@ -244,7 +272,7 @@ it.each([
   [503, 'voice_ticket_store_unavailable', null, 'Voice Mode is temporarily unavailable.'],
   [409, 'voice_session_active', null, 'Another Voice Mode session may already be active.'],
 ] as const)('preserves pre-WebSocket HTTP %s/%s and never opens a socket', async (status, code, bucket, message) => {
-  vi.stubGlobal('WebSocket', FakeWebSocket)
+  stubBrowser()
   vi.mocked(apiJson).mockRejectedValue(new ApiError(status, { error:{ code, message, ...(bucket ? { credit_bucket:bucket } : {}) } }))
   const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
   await waitFor(() => expect(result.current.errorCode).toBe(code))
@@ -255,7 +283,7 @@ it.each([
 })
 
 it('captures close and error events that occur before open', async () => {
-  vi.stubGlobal('WebSocket', FakeWebSocket)
+  stubBrowser()
   vi.mocked(apiJson).mockResolvedValue(ticket('early-close'))
   FakeWebSocket.autoEvent = 'close'
   const close = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
@@ -279,11 +307,11 @@ it('rejects mixed-content, unexpected hosts and unexpected paths without rewriti
 
 it('bounds the WebSocket opening wait and closes the unused ticket socket', async () => {
   vi.useFakeTimers()
-  vi.stubGlobal('WebSocket', FakeWebSocket)
+  stubBrowser()
   FakeWebSocket.autoEvent = 'none'
   vi.mocked(apiJson).mockResolvedValue(ticket('timeout'))
   const { result, unmount } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
-  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(401) })
   expect(FakeWebSocket.instances).toHaveLength(1)
   await act(async () => { await vi.advanceTimersByTimeAsync(12_001) })
   expect(result.current.error).toMatch(/timed out before opening/i)
@@ -296,7 +324,7 @@ it('sends JSON ping keepalives and stops the interval during cleanup', async () 
   stubBrowser()
   vi.mocked(apiJson).mockResolvedValue(ticket('ping'))
   const { unmount } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
-  await act(async () => { await vi.advanceTimersByTimeAsync(5) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(405) })
   const ws = FakeWebSocket.instances[0]
   expect(ws.sent.some(value => typeof value === 'string' && value.includes('"type":"session.start"'))).toBe(true)
   await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
@@ -312,6 +340,7 @@ it('drains progressive audio after audio.end and waits for the media ended event
   vi.mocked(apiJson).mockResolvedValue(ticket('drain'))
   const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
   await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
   const ws = FakeWebSocket.instances[0]
   act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.start', content_type:'audio/mpeg' }) })))
   await waitFor(() => expect(FakeMediaSource.latest?.buffer).toBeDefined())
@@ -332,6 +361,7 @@ it('uses a bounded Blob fallback and keeps autoplay failure non-fatal', async ()
   vi.mocked(apiJson).mockResolvedValue(ticket('fallback'))
   const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
   await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
   const ws = FakeWebSocket.instances[0]
   act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'assistant.delta', delta:'Visible answer' }) })))
   act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.start', content_type:'audio/mpeg' }) })))
@@ -355,11 +385,12 @@ it('uses a bounded Blob fallback and keeps autoplay failure non-fatal', async ()
 it('does not mint a duplicate ticket when chat synchronization changes the thread prop', async () => {
   stubBrowser()
   vi.mocked(apiJson).mockResolvedValue(ticket('thread-stable'))
-  const { rerender } = renderHook(
+  const { result, rerender } = renderHook(
     ({ threadId }: { threadId:string | null }) => useRealtimeVoice({ user:testUser, threadId }),
     { initialProps:{ threadId:null as string | null } },
   )
   await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
   rerender({ threadId:'voice-created-thread' })
   await new Promise(resolve => window.setTimeout(resolve, 20))
   expect(apiJson).toHaveBeenCalledTimes(1)
@@ -371,26 +402,31 @@ it('calibrates locally, rejects spikes/echo, admits quiet sustained speech with 
   vi.mocked(apiJson).mockResolvedValue(ticket('adaptive-gate'))
   const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
   await waitFor(() => expect(FakeWorkletNode.latest?.port.onmessage).toBeTypeOf('function'))
-  const ws = FakeWebSocket.instances[0]
   const feed = (rms: number, count: number, marker = 1) => act(() => {
     for (let index = 0; index < count; index += 1) {
-      const pcm = new Uint8Array(320); pcm[0] = marker
+      const pcm = new Uint8Array(1024); pcm[0] = marker
       FakeWorkletNode.latest?.port.onmessage?.(new MessageEvent('message', { data:{ type:'pcm', pcm:pcm.buffer, rms } }))
     }
   })
 
-  feed(0.004, 40) // 400 ms local-only calibration
+  feed(0.004, 13) // 416 ms local-only calibration
+  await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  const ws = FakeWebSocket.instances[0]
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const media = vi.mocked(navigator.mediaDevices.getUserMedia)
+  expect(media.mock.invocationCallOrder[0]).toBeLessThan(addModule.mock.invocationCallOrder[0])
+  expect(addModule.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(apiJson).mock.invocationCallOrder[0])
   expect(ws.sent.filter(value => value instanceof Uint8Array)).toHaveLength(0)
-  feed(0.2, 1); feed(0.004, 30) // one spike is not sustained speech
+  feed(0.2, 1); feed(0.004, 10) // one spike is not sustained speech
   expect(ws.sent.filter(value => value instanceof Uint8Array)).toHaveLength(0)
-  feed(0.01, 225, 7) // bounded quiet-speaker fallback after two seconds
+  feed(0.01, 70, 7) // bounded quiet-speaker fallback after two seconds
   const speechPackets = ws.sent.filter((value): value is Uint8Array => value instanceof Uint8Array)
   expect(speechPackets.length).toBeGreaterThan(18)
   expect(speechPackets[0][4]).toBe(7) // pre-roll retained the first syllable marker
   const beforeSilence = speechPackets.length
-  feed(0.001, 200)
+  feed(0.001, 65)
   const afterTrailing = ws.sent.filter(value => value instanceof Uint8Array).length
-  expect(afterTrailing - beforeSilence).toBeLessThanOrEqual(180)
+  expect(afterTrailing - beforeSilence).toBeLessThanOrEqual(57)
   feed(0.001, 20)
   expect(ws.sent.filter(value => value instanceof Uint8Array)).toHaveLength(afterTrailing)
 
@@ -405,17 +441,123 @@ it('calibrates locally, rejects spikes/echo, admits quiet sustained speech with 
 it('raises the adaptive threshold in a noisy room but still admits sustained nearby speech', async () => {
   stubBrowser()
   vi.mocked(apiJson).mockResolvedValue(ticket('noisy-gate'))
-  renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
   await waitFor(() => expect(FakeWorkletNode.latest?.port.onmessage).toBeTypeOf('function'))
-  const ws = FakeWebSocket.instances[0]
   const feed = (rms: number, count: number) => act(() => {
     for (let index = 0; index < count; index += 1) {
-      FakeWorkletNode.latest?.port.onmessage?.(new MessageEvent('message', { data:{ type:'pcm', pcm:new ArrayBuffer(320), rms } }))
+      FakeWorkletNode.latest?.port.onmessage?.(new MessageEvent('message', { data:{ type:'pcm', pcm:new ArrayBuffer(1024), rms } }))
     }
   })
-  feed(0.04, 40)
-  feed(0.05, 80)
+  feed(0.04, 13)
+  await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  const ws = FakeWebSocket.instances[0]
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  feed(0.05, 25)
   expect(ws.sent.filter(value => value instanceof Uint8Array)).toHaveLength(0)
   feed(0.09, 20)
   expect(ws.sent.some(value => value instanceof Uint8Array)).toBe(true)
+})
+
+it('does not mint a ticket when microphone permission is denied', async () => {
+  stubBrowser()
+  vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValue(
+    new DOMException('denied', 'NotAllowedError'),
+  )
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
+  await waitFor(() => expect(result.current.errorCode).toBe('microphone_permission_denied'))
+  expect(apiJson).not.toHaveBeenCalled()
+  expect(FakeWebSocket.instances).toHaveLength(0)
+})
+
+const DEFAULT_TEST_TUNING = {
+  calibration_ms:1, noise_multiplier:2.4, threshold_min:0.012,
+  threshold_max:0.065, quiet_fallback:0.008, no_speech_warning_ms:64,
+}
+
+it('sends no audio before listening-ready and reports WebSocket backpressure safely', async () => {
+  stubBrowser(); FakeWebSocket.autoReady = false
+  vi.mocked(apiJson).mockResolvedValue(ticket('ready-gate'))
+  const { result } = renderHook(() => useRealtimeVoice({
+    user:testUser, threadId:null, tuning:DEFAULT_TEST_TUNING, collectDiagnostics:true,
+  }))
+  await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  const ws = FakeWebSocket.instances[0]
+  const feed = (rms: number, count: number) => act(() => {
+    for (let index = 0; index < count; index += 1) {
+      FakeWorkletNode.latest?.port.onmessage?.(new MessageEvent('message', {
+        data:{ type:'pcm', pcm:new ArrayBuffer(1024), rms },
+      }))
+    }
+  })
+  feed(0.2, 20)
+  expect(ws.sent.filter(value => value instanceof Uint8Array)).toHaveLength(0)
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'session.ready', state:'listening',
+  }) })))
+  ws.bufferedAmount = 300 * 1024
+  feed(0.2, 8)
+  expect(ws.sent.filter(value => value instanceof Uint8Array)).toHaveLength(0)
+  expect(result.current.microphoneDiagnostics.backpressureDroppedFrameCount).toBeGreaterThan(0)
+})
+
+it('shows cannot-hear only while listening and clears it on STT/thinking/mute activity', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue(ticket('warning-state'))
+  const { result } = renderHook(() => useRealtimeVoice({
+    user:testUser, threadId:null, tuning:DEFAULT_TEST_TUNING,
+  }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  act(() => {
+    for (let index = 0; index < 3; index += 1) FakeWorkletNode.latest?.port.onmessage?.(
+      new MessageEvent('message', { data:{ type:'pcm', pcm:new ArrayBuffer(1024), rms:0 } }),
+    )
+  })
+  expect(result.current.cannotHear).toBe(true)
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'stt.partial', transcript:'activity',
+  }) })))
+  expect(result.current.cannotHear).toBe(false)
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'state.changed', state:'thinking',
+  }) })))
+  expect(result.current.cannotHear).toBe(false)
+  act(() => result.current.toggleMute())
+  expect(result.current.cannotHear).toBe(false)
+})
+
+it('completes two continuous mocked turns with stable message IDs and returns to listening', async () => {
+  stubBrowser({ mediaSource:false })
+  vi.mocked(apiJson).mockResolvedValue(ticket('two-turns'))
+  const completed = vi.fn()
+  const { result } = renderHook(() => useRealtimeVoice({
+    user:testUser, threadId:'existing-thread', onTurnDone:completed,
+    tuning:DEFAULT_TEST_TUNING,
+  }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  const emit = (message: object) => act(() => ws.dispatchEvent(new MessageEvent('message', {
+    data:JSON.stringify({ protocol_version:1, ...message }),
+  })))
+  for (const turn of [1, 2]) {
+    emit({ type:'speech_start', turn_number:turn })
+    emit({ type:'stt.partial', transcript:`turn ${turn}`, turn_number:turn })
+    emit({ type:'stt.final', transcript:`turn ${turn} final`, turn_number:turn })
+    emit({ type:'state.changed', state:'endpoint_pending', turn_number:turn })
+    emit({ type:'state.changed', state:'thinking', turn_number:turn })
+    emit({ type:'assistant.start', turn_number:turn })
+    emit({ type:'assistant.delta', delta:`answer ${turn}`, turn_number:turn })
+    emit({
+      type:'turn.done', thread_id:'existing-thread', user_message_id:`user-${turn}`,
+      assistant_message_id:`assistant-${turn}`, turn_number:turn,
+      input_mode:'realtime_voice', completion_status:'complete',
+    })
+    expect(result.current.phase).toBe('listening')
+  }
+  expect(completed.mock.calls.map(call => call[0])).toEqual([
+    expect.objectContaining({ user_message_id:'user-1', assistant_message_id:'assistant-1', turn_number:1 }),
+    expect.objectContaining({ user_message_id:'user-2', assistant_message_id:'assistant-2', turn_number:2 }),
+  ])
+  await act(async () => { await result.current.end() })
+  expect(result.current.phase).toBe('closed')
 })

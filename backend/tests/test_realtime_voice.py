@@ -5,12 +5,13 @@ import asyncio
 import json
 import time
 import logging
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from app.ai.providers.sarvam_streaming_provider import (
-    SarvamStreamingProvider, _handshake_category,
+    SarvamStreamingProvider, _handshake_category, sarvam_stt_message_encoding,
 )
 from app.billing.pricing import stt_price
 from app.billing.service import get_or_create_wallet
@@ -21,7 +22,7 @@ from app.web_api.realtime_voice import (
     VoiceEndpointConfig, endpoint_delay_ms, join_final_segments,
     safe_provider_category, transcript_appears_unfinished,
 )
-from app.web_api.voice_sessions import VoiceTicket
+from app.web_api.voice_sessions import VoiceTicket, VoiceTicketStore
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -170,6 +171,21 @@ def test_ticket_origin_reuse_and_concurrent_session_security(client, monkeypatch
     assert reused.value.code == 4401
 
 
+def test_voice_lock_status_is_metadata_only_and_release_is_owner_scoped(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    store = VoiceTicketStore(url="")
+    first = VoiceTicket("session-one", 101, "lite", "en", True, int(time.time()) + 60)
+    other = VoiceTicket("session-other", 101, "lite", "en", True, int(time.time()) + 60)
+    ticket = store.mint(first, 60, 900)
+    active, ttl = store.session_status(101)
+    assert active is True and 0 < ttl <= 60
+    store.release(other)
+    assert store.session_status(101)[0] is True
+    assert store.consume(ticket) == first
+    store.release(first)
+    assert store.session_status(101) == (False, 0)
+
+
 def test_expired_ticket_idle_timeout_and_maximum_duration(client, monkeypatch):
     _enable(monkeypatch, idle=1, maximum=30)
     user = create_test_user("voice-timeouts", "voice-timeouts@example.com")
@@ -245,7 +261,7 @@ def test_streaming_adapter_resolves_tamil_and_exposes_partial_final_and_audio():
         assert events[-1]["audio_milliseconds"] == 1250
         assert "language-code=ta-IN" in urls[0]
         sent_audio = json.loads(stt.sent[0])["audio"]
-        assert sent_audio["encoding"] == "pcm_s16le"
+        assert sent_audio["encoding"] == "audio/wav"
         assert sent_audio["sample_rate"] == 16000
 
         await provider.connect_tts("ta")
@@ -326,6 +342,72 @@ def test_streaming_adapter_normalizes_vad_compatibility_errors_and_tts_final():
     asyncio.run(scenario())
 
 
+def test_streaming_stt_contract_has_exact_query_header_and_sdk_message(monkeypatch):
+    async def scenario():
+        socket = _FakeSocket()
+        calls = []
+
+        async def connect(url: str, **kwargs):
+            calls.append((url, kwargs))
+            return socket
+
+        provider = SarvamStreamingProvider(connect=connect, api_key="unit-test-key")
+        await provider.connect_stt("en")
+        await provider.send_audio(bytes(1024))
+        url, kwargs = calls[0]
+        assert urlsplit(url).path == "/speech-to-text/ws"
+        assert parse_qs(urlsplit(url).query) == {
+            "language-code": ["en-IN"], "model": ["saaras:v3"], "mode": ["transcribe"],
+            "sample_rate": ["16000"], "input_audio_codec": ["pcm_s16le"],
+            "vad_signals": ["true"], "flush_signal": ["true"],
+            "high_vad_sensitivity": ["true"],
+        }
+        assert kwargs["additional_headers"] == {"Api-Subscription-Key": "unit-test-key"}
+        assert json.loads(socket.sent[0]) == {"audio": {
+            "data": base64.b64encode(bytes(1024)).decode("ascii"),
+            "sample_rate": 16000, "encoding": "audio/wav",
+        }}
+
+        await provider.send_audio(bytes(1024), payload_encoding="pcm_s16le")
+        assert json.loads(socket.sent[1])["audio"]["encoding"] == "pcm_s16le"
+
+    monkeypatch.delenv("SARVAM_STT_STREAM_MESSAGE_ENCODING", raising=False)
+    asyncio.run(scenario())
+
+
+def test_streaming_stt_encoding_enum_and_safe_provider_error_mapping(monkeypatch):
+    monkeypatch.setenv("SARVAM_STT_STREAM_MESSAGE_ENCODING", "not-an-encoding")
+    with pytest.raises(ValueError, match="unsupported"):
+        sarvam_stt_message_encoding()
+
+    async def scenario():
+        socket = _FakeSocket([
+            json.dumps({"type": "error", "data": {
+                "code": "INVALID_AUDIO_ENCODING", "message": "private provider body",
+                "audio": "must-not-escape", "status": 422,
+            }})
+        ])
+
+        async def connect(_url: str, **_kwargs):
+            return socket
+
+        provider = SarvamStreamingProvider(connect=connect, api_key="unit-test-key")
+        await provider.connect_stt("en")
+        events = [event async for event in provider.stt_events()]
+        assert events == [{
+            "type": "provider_error", "category": "protocol",
+            "safe_code": "invalid_audio_encoding", "websocket_close_code": None,
+            "handshake_status": 422, "retryable": False,
+        }]
+        serialized = json.dumps(events)
+        assert "private provider body" not in serialized
+        assert "must-not-escape" not in serialized
+        assert "unit-test-key" not in serialized
+
+    monkeypatch.setenv("SARVAM_STT_STREAM_MESSAGE_ENCODING", "audio/wav")
+    asyncio.run(scenario())
+
+
 def test_pause_aware_endpointing_english_tamil_punctuation_and_segments():
     config = VoiceEndpointConfig()
     assert endpoint_delay_ms("This is complete.", "en", config) == 900
@@ -377,6 +459,49 @@ def test_reservation_race_after_open_is_targeted_once_and_releases_lock(client, 
     # A released active-session lock means the next request reaches preflight
     # and returns 402, rather than the 409 active-session conflict.
     assert _session(client, "voice-race", "voice-race@example.com").status_code == 402
+
+
+def test_provider_protocol_error_releases_reservation_and_session_lock(client, monkeypatch):
+    _enable(monkeypatch)
+    user = create_test_user("voice-protocol", "voice-protocol@example.com")
+    _set_balance(int(user.id), "chat", 5_000_000)
+    _set_balance(int(user.id), "voice", 5_000_000)
+
+    class ProtocolFailureProvider:
+        stt_connected = False
+        async def connect_stt(self, _language):
+            self.stt_connected = True
+        async def stt_events(self):
+            yield {
+                "type": "provider_error", "category": "protocol",
+                "safe_code": "invalid_audio_encoding", "websocket_close_code": 4400,
+                "handshake_status": None, "retryable": False,
+            }
+        async def close(self):
+            return None
+        async def close_tts(self):
+            return None
+
+    monkeypatch.setattr("app.web_api.router.SarvamStreamingProvider", ProtocolFailureProvider)
+    created = _session(client, "voice-protocol", "voice-protocol@example.com")
+    with pytest.raises(WebSocketDisconnect) as stopped:
+        with client.websocket_connect(
+            f"/api/web/voice/ws?ticket={created.json()['ticket']}", headers={"origin": ORIGIN},
+        ) as socket:
+            assert socket.receive_json()["state"] == "connected"
+            socket.send_json({
+                "protocol_version": 1, "type": "session.start",
+                "audio": {"encoding": "pcm_s16le", "sample_rate": 16000, "channels": 1, "frame_samples": 512},
+            })
+            messages = []
+            while True:
+                message = socket.receive_json()
+                messages.append(message)
+                if message.get("type") == "error":
+                    assert message["code"] == "sarvam_protocol_error"
+    assert stopped.value.code == 4463
+    # Cleanup has compare-deleted the old lock and released the unused STT reserve.
+    assert _session(client, "voice-protocol", "voice-protocol@example.com").status_code == 201
 
 
 def test_tts_chunks_release_complete_sentences_before_the_answer_finishes():

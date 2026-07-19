@@ -4929,24 +4929,48 @@ def api_debug_observability(
 def _alembic_revision_status(session: Session) -> Dict[str, Any]:
     try:
         from alembic.config import Config
-        from alembic.runtime.migration import MigrationContext
         from alembic.script import ScriptDirectory
 
         config = Config(str(BACKEND_ROOT / "alembic.ini"))
         script = ScriptDirectory.from_config(config)
-        context = MigrationContext.configure(session.get_bind())
-        current = context.get_current_revision()
-        return {
-            "current": current,
-            "head": script.get_current_head(),
-            "ok": bool(current and current == script.get_current_head()),
-        }
+        head = script.get_current_head()
     except Exception as exc:
+        logger.warning("alembic_revision_diagnostic", extra={
+            "safe_code": "alembic_revision_unavailable", "exception_class": type(exc).__name__,
+        })
         return {
             "current": None,
             "head": None,
             "ok": False,
-            "error": sanitize_log_text(str(exc), 160),
+            "error": "alembic_revision_unavailable",
+        }
+    try:
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy.engine import Connection, Engine
+
+        bind = session.get_bind()
+        if isinstance(bind, Connection):
+            current = MigrationContext.configure(bind).get_current_revision()
+        elif isinstance(bind, Engine):
+            with bind.connect() as connection:
+                current = MigrationContext.configure(connection).get_current_revision()
+        elif hasattr(bind, "connect"):
+            # Supports SQLAlchemy-compatible Engine test doubles without
+            # passing an Engine into MigrationContext.configure().
+            with bind.connect() as connection:
+                current = MigrationContext.configure(connection).get_current_revision()
+        else:
+            current = MigrationContext.configure(bind).get_current_revision()
+        return {"current": current, "head": head, "ok": bool(current and current == head)}
+    except Exception as exc:
+        logger.warning("alembic_revision_diagnostic", extra={
+            "safe_code": "alembic_connection_failed", "exception_class": type(exc).__name__,
+        })
+        return {
+            "current": None,
+            "head": head,
+            "ok": False,
+            "error": "alembic_connection_failed",
         }
 
 

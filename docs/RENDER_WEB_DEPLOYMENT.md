@@ -96,6 +96,7 @@ Exact environment delta for this release:
   WEB_REALTIME_VOICE_MAX_UTTERANCE_MS=30000
   WEB_REALTIME_VOICE_BARGE_IN_MIN_MS=180
   WEB_REALTIME_VOICE_PREROLL_MS=320
+  SARVAM_STT_STREAM_MESSAGE_ENCODING=audio/wav
   RAZORPAY_READ_RETRY_ATTEMPTS=3
   RAZORPAY_READ_RETRY_BASE_MS=500
   RAZORPAY_READ_RETRY_MAX_MS=4000
@@ -186,6 +187,7 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
    WEB_REALTIME_VOICE_MAX_UTTERANCE_MS=30000
    WEB_REALTIME_VOICE_BARGE_IN_MIN_MS=180
    WEB_REALTIME_VOICE_PREROLL_MS=320
+   SARVAM_STT_STREAM_MESSAGE_ENCODING=audio/wav
    RAZORPAY_READ_RETRY_ATTEMPTS=3
    RAZORPAY_READ_RETRY_BASE_MS=500
    RAZORPAY_READ_RETRY_MAX_MS=4000
@@ -201,7 +203,8 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
    required; keep using the existing Key Value internal URL.
 5. Open **swico-web → Settings → Headers**. Replace the existing
    `Permissions-Policy` value with
-   `camera=(), geolocation=(), microphone=(self)`. Replace the existing CSP with
+   `camera=(), geolocation=(), microphone=(self)`. The header name is entered
+   separately; do **not** put `Permissions-Policy:` inside the value. Replace the existing CSP with
    the exact value in `web/public/_headers`, including
    `media-src 'self' blob:`. Save the header changes.
 6. Run the API pre-deploy migration, deploy **ai_tool**, and run all three
