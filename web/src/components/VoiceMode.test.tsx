@@ -10,6 +10,12 @@ const base = {
   phase:'listening' as const, partial:'hello', assistant:'', muted:false, error:'',
   ticketInfo:{ tier_label:'Swico Pro', language:'ta' as const }, creditRequired:null,
   toggleMute:vi.fn(), retry:vi.fn(), end:vi.fn().mockResolvedValue(undefined),
+  endpointDiagnostics:{
+    transcript_classification:'neutral', terminal_cadence_detected:false,
+    trailing_off_detected:false, voiced_duration_ms:0, endpoint_delay_ms:0,
+    endpoint_reason:'no_clear_transcript', endpoint_deadline_generation:0,
+    endpoint_cancel_count:0,
+  },
 }
 
 beforeEach(() => vi.mocked(useRealtimeVoice).mockReturnValue(base as never))
@@ -42,6 +48,8 @@ it('shows endpoint pending, toggles captions, and retries without closing the di
   vi.mocked(useRealtimeVoice).mockReturnValue({ ...base, phase:'endpoint_pending', retry } as never)
   render(<VoiceMode user={{} as never} threadId={null} close={vi.fn()} addCredits={vi.fn()} />)
   expect(screen.getByRole('heading', { name:'Still listening…' })).toBeInTheDocument()
+  expect(screen.getByText('Take your time')).toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name:'Thinking' })).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name:'Hide captions' }))
   expect(screen.queryByText('hello')).not.toBeInTheDocument()
   expect(document.querySelector('.voice-orb-core')).toBeInTheDocument()

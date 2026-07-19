@@ -37,6 +37,12 @@ export type PlaybackDiagnostics = {
   dom_exception_name: string | null; failure_stage: string | null; autoplay_blocked: boolean;
   scheduled_pcm_seconds: number; active_pcm_sources: number; playback_finished: boolean;
 }
+export type EndpointDiagnostics = {
+  transcript_classification: 'complete' | 'neutral' | 'unfinished';
+  terminal_cadence_detected: boolean; trailing_off_detected: boolean;
+  voiced_duration_ms: number; endpoint_delay_ms: number; endpoint_reason: string;
+  endpoint_deadline_generation: number; endpoint_cancel_count: number;
+}
 
 export function pcm16LeToFloat32(value: ArrayBuffer): Float32Array {
   if (!value.byteLength || value.byteLength % 2) throw new DOMException('Invalid PCM frame', 'NotSupportedError')
@@ -61,6 +67,11 @@ const SAFE_DOM_EXCEPTION_NAMES = new Set([
 const MEDIA_ERROR_CATEGORIES: Record<number, string> = {
   1:'aborted', 2:'network', 3:'decode', 4:'source_not_supported',
 }
+const SAFE_ENDPOINT_REASONS = new Set([
+  'explicit_end', 'maximum_utterance', 'complete_terminal_cadence', 'complete_neutral',
+  'transcript_unstable', 'unfinished_sentence', 'trailing_off', 'no_clear_transcript',
+  'speech_resumed',
+])
 const EMPTY_PLAYBACK_DIAGNOSTICS: PlaybackDiagnostics = {
   playback_mode:null, selected_codec:null, content_type:null, provider_sample_rate:null,
   media_source_available:false, media_source_type_supported:false, source_buffer_created:false,
@@ -70,6 +81,12 @@ const EMPTY_PLAYBACK_DIAGNOSTICS: PlaybackDiagnostics = {
   audio_element_media_error_code:null, media_error_category:null, dom_exception_name:null,
   failure_stage:null, autoplay_blocked:false, scheduled_pcm_seconds:0,
   active_pcm_sources:0, playback_finished:true,
+}
+const EMPTY_ENDPOINT_DIAGNOSTICS: EndpointDiagnostics = {
+  transcript_classification:'neutral', terminal_cadence_detected:false,
+  trailing_off_detected:false, voiced_duration_ms:0, endpoint_delay_ms:0,
+  endpoint_reason:'no_clear_transcript', endpoint_deadline_generation:0,
+  endpoint_cancel_count:0,
 }
 const DEFAULT_TUNING: VoiceTuning = {
   calibration_ms:400, noise_multiplier:2.4, threshold_min:0.012,
@@ -139,6 +156,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
   const [playbackWarning, setPlaybackWarning] = useState('')
   const [serverVoiceState, setServerVoiceState] = useState<VoicePhase>('connecting')
   const [playbackDiagnostics, setPlaybackDiagnostics] = useState<PlaybackDiagnostics>(EMPTY_PLAYBACK_DIAGNOSTICS)
+  const [endpointDiagnostics, setEndpointDiagnostics] = useState<EndpointDiagnostics>(EMPTY_ENDPOINT_DIAGNOSTICS)
   const [ticketInfo, setTicketInfo] = useState<Ticket | null>(null)
   const [creditRequired, setCreditRequired] = useState<CreditBucket | null>(null)
   const [microphoneLevel, setMicrophoneLevel] = useState(0)
@@ -589,6 +607,21 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
         if (!(next === 'listening' && !audioEnded.current)) setPhase(next)
       }
     } else if (message.type === 'speech_start') setCannotHear(false)
+    else if (message.type === 'endpoint.metadata' && collectDiagnostics) {
+      const classification = ['complete','neutral','unfinished'].includes(String(message.transcript_classification))
+        ? String(message.transcript_classification) as EndpointDiagnostics['transcript_classification'] : 'neutral'
+      setEndpointDiagnostics({
+        transcript_classification:classification,
+        terminal_cadence_detected:Boolean(message.terminal_cadence_detected),
+        trailing_off_detected:Boolean(message.trailing_off_detected),
+        voiced_duration_ms:Math.max(0, Number(message.voiced_duration_ms) || 0),
+        endpoint_delay_ms:Math.max(0, Number(message.endpoint_delay_ms) || 0),
+        endpoint_reason:SAFE_ENDPOINT_REASONS.has(String(message.endpoint_reason))
+          ? String(message.endpoint_reason) : 'no_clear_transcript',
+        endpoint_deadline_generation:Math.max(0, Number(message.endpoint_deadline_generation) || 0),
+        endpoint_cancel_count:Math.max(0, Number(message.endpoint_cancel_count) || 0),
+      })
+    }
     else if (message.type === 'stt.partial') { setCannotHear(false); setPartial(String(message.transcript ?? '')) }
     else if (message.type === 'stt.final') { setCannotHear(false); setPartial(String(message.transcript ?? '')); setPhase('thinking') }
     else if (message.type === 'assistant.start') { setAssistant(''); setPhase('thinking') }
@@ -612,7 +645,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
       const bucket = message.credit_bucket === 'chat' || message.credit_bucket === 'voice' ? message.credit_bucket : undefined
       rememberError({ code:String(message.code ?? 'voice_internal_failure'), message:String(message.message ?? 'Voice Mode stopped safely.'), ...(bucket ? { credit_bucket:bucket } : {}) })
     } else if (message.type === 'session.closed') { readyForAudio.current = false; setCannotHear(false); setPhase('closed') }
-  }, [appendAudio, completeProviderAudio, rememberError, setupPlayback, stopPlayback])
+  }, [appendAudio, collectDiagnostics, completeProviderAudio, rememberError, setupPlayback, stopPlayback])
 
   const sendPcm = useCallback((pcm: ArrayBuffer) => {
     const ws = socket.current
@@ -877,7 +910,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     playbackState, localPlaybackState:playbackState,
     partial, assistant, muted, error, errorCode, errorStatus, playbackWarning,
     ticketInfo, creditRequired, microphoneLevel, cannotHear, microphoneDiagnostics,
-    playbackDiagnostics,
+    playbackDiagnostics, endpointDiagnostics,
     canReplay:manualReplayAvailable.current,
     toggleMute, manualPlay, skipPlayback, retry, end,
   }

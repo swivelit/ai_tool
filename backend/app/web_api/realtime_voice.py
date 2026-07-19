@@ -50,6 +50,7 @@ SAFE_CLOSE_REASONS = {
 
 @dataclass(frozen=True)
 class VoiceEndpointConfig:
+    adaptive_enabled: bool = True
     end_silence_ms: int = 900
     unfinished_grace_ms: int = 650
     max_endpoint_wait_ms: int = 1800
@@ -61,6 +62,7 @@ class VoiceEndpointConfig:
     @classmethod
     def from_env(cls) -> "VoiceEndpointConfig":
         return cls(
+            adaptive_enabled=_enabled("WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED", True),
             end_silence_ms=_positive_int("WEB_REALTIME_VOICE_END_SILENCE_MS", 900),
             unfinished_grace_ms=_positive_int("WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS", 650),
             max_endpoint_wait_ms=_positive_int("WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS", 1800),
@@ -77,6 +79,15 @@ def _positive_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _enabled(name: str, default: bool) -> bool:
+    value = str(os.getenv(name, "true" if default else "false")).strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
 
 
 _EN_CONTINUATIONS = re.compile(

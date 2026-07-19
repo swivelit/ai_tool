@@ -99,6 +99,10 @@ from .realtime_voice import (
     VOICE_CLOSE_CODES, VoiceEndpointConfig, VoiceState, endpoint_delay_ms,
     join_final_segments, provider_error_code,
 )
+from .adaptive_endpointing import (
+    EndpointEvidence, EndpointTiming, VoiceProsodyTracker, append_final_segment,
+    decide_endpoint,
+)
 
 router = APIRouter(prefix="/api/web", tags=["web"])
 logger = logging.getLogger(__name__)
@@ -792,6 +796,14 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
     last_partial = ""
     provider_audio_milliseconds = 0
     utterance_started_at: float | None = None
+    speech_ended_at: float | None = None
+    transcript_updated_at: float | None = None
+    deadline_generation = 0
+    endpoint_cancel_count = 0
+    endpoint_delay = 0
+    endpoint_reason = "no_clear_transcript"
+    endpoint_classification = "neutral"
+    prosody = VoiceProsodyTracker()
     endpoint_task: asyncio.Task[Any] | None = None
     stt_task: asyncio.Task[Any] | None = None
     process_task: asyncio.Task[Any] | None = None
@@ -839,6 +851,23 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         nonlocal state
         state = next_state
         await _voice_send(websocket, "state.changed", state=next_state.value, turn_number=turn_number)
+
+    async def endpoint_metadata() -> None:
+        """Expose scalar endpoint evidence to internal test accounts only."""
+        if not metadata.billing_exempt or not endpoint.adaptive_enabled:
+            return
+        summary = prosody.summary()
+        await _voice_send(
+            websocket, "endpoint.metadata",
+            transcript_classification=endpoint_classification,
+            terminal_cadence_detected=summary.terminal_cadence,
+            trailing_off_detected=summary.trailing_off,
+            voiced_duration_ms=summary.voiced_duration_ms,
+            endpoint_delay_ms=endpoint_delay,
+            endpoint_reason=endpoint_reason,
+            endpoint_deadline_generation=deadline_generation,
+            endpoint_cancel_count=endpoint_cancel_count,
+        )
 
     async def targeted_error(
         code: str, message: str, *, credit_bucket: str | None = None,
@@ -1200,7 +1229,8 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
 
     async def discard_short_turn() -> None:
         nonlocal current_stt_request, final_segments, last_partial, provider_audio_milliseconds
-        nonlocal received_audio_bytes, utterance_started_at
+        nonlocal received_audio_bytes, utterance_started_at, speech_ended_at
+        nonlocal transcript_updated_at
         request_id = current_stt_request
         if request_id:
             with SessionLocal() as billing_session:
@@ -1215,13 +1245,21 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         provider_audio_milliseconds = 0
         received_audio_bytes = 0
         utterance_started_at = None
+        speech_ended_at = None
+        transcript_updated_at = None
+        prosody.reset()
         await _voice_send(websocket, "warning", code="empty_voice_turn", message="No clear speech was detected.")
         await begin_stt_reservation(announce=True)
 
-    async def finalize_endpoint(*, explicit: bool = False) -> None:
+    async def finalize_endpoint(*, explicit: bool = False, generation: int | None = None) -> None:
         nonlocal current_stt_request, final_segments, last_partial, provider_audio_milliseconds
         nonlocal received_audio_bytes, utterance_started_at, process_task, turn_number, stage
-        transcript = join_final_segments(final_segments) or (last_partial.strip() if explicit else "")
+        nonlocal speech_ended_at, transcript_updated_at
+        if generation is not None and generation != deadline_generation:
+            return
+        transcript = join_final_segments(final_segments) or (
+            last_partial.strip() if explicit or endpoint.adaptive_enabled else ""
+        )
         actual_ms = provider_audio_milliseconds or received_audio_bytes // 32
         if not transcript or actual_ms < endpoint.min_speech_ms:
             await discard_short_turn()
@@ -1239,6 +1277,9 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         provider_audio_milliseconds = 0
         received_audio_bytes = 0
         utterance_started_at = None
+        speech_ended_at = None
+        transcript_updated_at = None
+        prosody.reset()
         # Reserve the next gated STT turn before thinking/speaking. This is what
         # makes authoritative provider-confirmed barge-in possible without ever
         # forwarding unreserved audio.
@@ -1247,22 +1288,67 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         process_tasks.add(process_task)
         process_task.add_done_callback(process_tasks.discard)
 
-    async def schedule_endpoint(*, explicit: bool = False) -> None:
-        nonlocal endpoint_task
+    async def schedule_endpoint(*, explicit: bool = False, maximum: bool = False) -> None:
+        nonlocal endpoint_task, deadline_generation, endpoint_cancel_count
+        nonlocal endpoint_delay, endpoint_reason, endpoint_classification
+        deadline_generation += 1
+        scheduled_generation = deadline_generation
         if endpoint_task and not endpoint_task.done():
+            endpoint_cancel_count += 1
             endpoint_task.cancel()
             await asyncio.gather(endpoint_task, return_exceptions=True)
         await set_state(VoiceState.ENDPOINT_PENDING)
         transcript = join_final_segments(final_segments) or last_partial
-        delay = 0 if explicit else endpoint_delay_ms(transcript, metadata.language, endpoint)
-        if utterance_started_at is not None:
-            remaining = endpoint.max_utterance_ms - int((time.monotonic() - utterance_started_at) * 1000)
-            delay = max(0, min(delay, remaining))
+        now = time.monotonic()
+        if endpoint.adaptive_enabled:
+            summary = prosody.summary()
+            utterance_ms = int((now - utterance_started_at) * 1000) if utterance_started_at else 0
+            decision = decide_endpoint(EndpointEvidence(
+                language=metadata.language,
+                accumulated_transcript=join_final_segments(final_segments),
+                latest_partial=last_partial,
+                has_final_transcript=bool(final_segments),
+                transcript_updated_at=transcript_updated_at,
+                speech_started_at=utterance_started_at,
+                speech_ended_at=speech_ended_at if speech_ended_at is not None else now,
+                utterance_duration_ms=utterance_ms,
+                terminal_cadence=summary.terminal_cadence,
+                trailing_off=summary.trailing_off,
+                voiced_duration_ms=summary.voiced_duration_ms,
+                explicit_end=explicit,
+                maximum_duration_reached=maximum or utterance_ms >= endpoint.max_utterance_ms,
+                speech_active=False,
+                deadline_generation=deadline_generation,
+            ), EndpointTiming(
+                endpoint.end_silence_ms, endpoint.unfinished_grace_ms,
+                endpoint.max_endpoint_wait_ms, endpoint.max_utterance_ms,
+            ), now=now)
+            delay = decision.delay_ms
+            endpoint_reason = decision.reason
+            endpoint_classification = decision.transcript_classification.value
+        else:
+            delay = 0 if explicit else endpoint_delay_ms(transcript, metadata.language, endpoint)
+            endpoint_reason = "explicit_end" if explicit else (
+                "unfinished_sentence" if delay > endpoint.end_silence_ms else "complete_neutral"
+            )
+            endpoint_classification = "unfinished" if delay > endpoint.end_silence_ms else "neutral"
+            if utterance_started_at is not None:
+                remaining = endpoint.max_utterance_ms - int((now - utterance_started_at) * 1000)
+                delay = max(0, min(delay, remaining))
+        endpoint_delay = delay
+        await endpoint_metadata()
 
         async def wait_and_finalize() -> None:
+            nonlocal endpoint_task
             try:
                 await asyncio.sleep(delay / 1000)
-                await finalize_endpoint(explicit=explicit)
+                if scheduled_generation != deadline_generation or state != VoiceState.ENDPOINT_PENDING:
+                    return
+                # Detach the committing timer before settlement begins. A
+                # provider START_SPEECH arriving after this commit belongs to
+                # the next turn and must not cancel settlement halfway through.
+                endpoint_task = None
+                await finalize_endpoint(explicit=explicit, generation=scheduled_generation)
             except asyncio.CancelledError:
                 return
             except _VoiceTargetedStop:
@@ -1278,7 +1364,9 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
 
     async def read_stt() -> None:
         nonlocal endpoint_task, last_partial, utterance_started_at, provider_audio_milliseconds
-        nonlocal generation_cancellation, stage, tts_task
+        nonlocal generation_cancellation, stage, tts_task, speech_ended_at
+        nonlocal transcript_updated_at, deadline_generation, endpoint_cancel_count
+        nonlocal endpoint_delay, endpoint_reason
         stage = "microphone_stream"
         async for event in provider.stt_events():
             event_type = event.get("type")
@@ -1298,8 +1386,13 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             if event_type == "speech_start":
                 await _voice_send(websocket, "speech_start", turn_number=turn_number)
                 if endpoint_task and not endpoint_task.done():
+                    deadline_generation += 1
+                    endpoint_cancel_count += 1
                     endpoint_task.cancel()
                     await asyncio.gather(endpoint_task, return_exceptions=True)
+                speech_ended_at = None
+                endpoint_delay = 0
+                endpoint_reason = "speech_resumed"
                 if utterance_started_at is None:
                     utterance_started_at = time.monotonic()
                 if state in {VoiceState.THINKING, VoiceState.SPEAKING}:
@@ -1314,24 +1407,36 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                         message="Assistant interrupted. Listening now.",
                     )
                 await set_state(VoiceState.LISTENING)
+                await endpoint_metadata()
                 continue
             if event_type == "speech_end":
                 stage = "endpoint_pending"
+                speech_ended_at = time.monotonic()
                 await schedule_endpoint()
                 continue
             if event_type == "partial":
-                last_partial = str(event.get("transcript") or "").strip()
+                next_partial = str(event.get("transcript") or "").strip()
+                if next_partial != last_partial:
+                    last_partial = next_partial
+                    transcript_updated_at = time.monotonic()
                 await _voice_send(
                     websocket, "stt.partial", transcript=last_partial, turn_number=turn_number
                 )
+                if endpoint.adaptive_enabled and state == VoiceState.ENDPOINT_PENDING:
+                    await schedule_endpoint()
                 continue
             if event_type == "final":
                 segment = str(event.get("transcript") or "").strip()
-                if segment and (not final_segments or final_segments[-1] != segment):
-                    final_segments.append(segment)
-                provider_audio_milliseconds += max(0, int(event.get("audio_milliseconds") or 0))
+                appended = append_final_segment(final_segments, segment)
+                if appended:
+                    provider_audio_milliseconds += max(0, int(event.get("audio_milliseconds") or 0))
+                    transcript_updated_at = time.monotonic()
                 last_partial = ""
+                if not appended:
+                    continue
                 stage = "endpoint_pending"
+                if speech_ended_at is None:
+                    speech_ended_at = time.monotonic()
                 await schedule_endpoint()
 
     async def forward_audio(data: bytes) -> None:
@@ -1380,6 +1485,12 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         received_audio_bytes = proposed_bytes
         last_audio_sequence = sequence
         audio_message_count += 1
+        if endpoint.adaptive_enabled:
+            prosody.accept_pcm_frame(data[4:], int((time.monotonic() - started_at) * 1000))
+        if endpoint.adaptive_enabled and utterance_started_at is not None and (
+            time.monotonic() - utterance_started_at
+        ) * 1000 >= endpoint.max_utterance_ms:
+            await schedule_endpoint(maximum=True)
 
     try:
         stage = "session_started"

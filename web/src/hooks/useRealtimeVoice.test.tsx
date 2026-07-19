@@ -800,3 +800,47 @@ it('completes two continuous mocked turns with stable message IDs and returns to
   await act(async () => { await result.current.end() })
   expect(result.current.phase).toBe('closed')
 })
+
+it('keeps partial captions through endpoint pending and returns smoothly on speech resumption', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue(ticket('adaptive-pause'))
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  const emit = (value: object) => act(() => ws.dispatchEvent(new MessageEvent('message', {
+    data:JSON.stringify({ protocol_version:1, ...value }),
+  })))
+  emit({ type:'stt.partial', transcript:'I paused because' })
+  emit({ type:'state.changed', state:'endpoint_pending' })
+  expect(result.current.phase).toBe('endpoint_pending')
+  expect(result.current.partial).toBe('I paused because')
+  expect(result.current.phase).not.toBe('thinking')
+  emit({ type:'speech_start' })
+  emit({ type:'state.changed', state:'listening' })
+  expect(result.current.phase).toBe('listening')
+  expect(result.current.partial).toBe('I paused because')
+})
+
+it('collects only safe scalar adaptive endpoint metadata', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue(ticket('endpoint-diagnostics'))
+  const { result } = renderHook(() => useRealtimeVoice({
+    user:testUser, threadId:null, collectDiagnostics:true,
+  }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'endpoint.metadata', transcript_classification:'unfinished',
+    terminal_cadence_detected:false, trailing_off_detected:true, voiced_duration_ms:448,
+    endpoint_delay_ms:2600, endpoint_reason:'trailing_off', endpoint_deadline_generation:7,
+    endpoint_cancel_count:2, raw_pcm:'must-not-appear', pitch_history:[180, 160], transcript:'private',
+  }) })))
+  expect(result.current.endpointDiagnostics).toEqual({
+    transcript_classification:'unfinished', terminal_cadence_detected:false,
+    trailing_off_detected:true, voiced_duration_ms:448, endpoint_delay_ms:2600,
+    endpoint_reason:'trailing_off', endpoint_deadline_generation:7,
+    endpoint_cancel_count:2,
+  })
+  const serialized = JSON.stringify(result.current.endpointDiagnostics)
+  expect(serialized).not.toMatch(/raw_pcm|pitch_history|private/)
+})

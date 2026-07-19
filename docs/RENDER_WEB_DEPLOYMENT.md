@@ -92,9 +92,10 @@ Exact environment delta for this release:
   WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS=60
   WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER=1
   WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE=5
-  WEB_REALTIME_VOICE_END_SILENCE_MS=900
-  WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=650
-  WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=1800
+  WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED=true
+  WEB_REALTIME_VOICE_END_SILENCE_MS=1100
+  WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=900
+  WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=2600
   WEB_REALTIME_VOICE_MIN_SPEECH_MS=250
   WEB_REALTIME_VOICE_MAX_UTTERANCE_MS=30000
   WEB_REALTIME_VOICE_BARGE_IN_MIN_MS=180
@@ -186,9 +187,10 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
    WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS=60
    WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER=1
    WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE=5
-   WEB_REALTIME_VOICE_END_SILENCE_MS=900
-   WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=650
-   WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=1800
+   WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED=true
+   WEB_REALTIME_VOICE_END_SILENCE_MS=1100
+   WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=900
+   WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=2600
    WEB_REALTIME_VOICE_MIN_SPEECH_MS=250
    WEB_REALTIME_VOICE_MAX_UTTERANCE_MS=30000
    WEB_REALTIME_VOICE_BARGE_IN_MIN_MS=180
@@ -239,7 +241,11 @@ deploying in this exact order:
 1. On the existing API only, configure Stage 1:
    `SARVAM_TTS_STREAM_OUTPUT_CODEC=mp3`,
    `SARVAM_TTS_STREAM_SAMPLE_RATE=24000`, and
-   `WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3`. Do not add these to the
+   `WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3`. Also configure
+   `WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED=true`,
+   `WEB_REALTIME_VOICE_END_SILENCE_MS=1100`,
+   `WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=900`, and
+   `WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=2600`. Do not add these to the
    static site or create a resource.
 2. Deploy the existing API service first. There is no schema step for this patch;
    retain the normal pre-deploy `upgrade head` safety command.
@@ -266,8 +272,16 @@ variables to `SARVAM_TTS_STREAM_OUTPUT_CODEC=linear16`,
 `WEB_REALTIME_VOICE_PLAYBACK_MODE=pcm_stream`, then repeats steps 2, 4, and 5.
 The API must be deployed before the static site because authenticated session
 metadata is authoritative. `auto` is optional and should be staged separately.
+Adaptive endpointing reuses accepted STT PCM for bounded local scalar analysis;
+it adds no provider call, billable audio, reservation, usage charge, or pause
+billing and does not change Chat/Voice wallet rules.
 
-Immediate rollback is a feature disable: set
+Endpoint-only rollback is API-first: set
+`WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED=false` on the existing API
+and deploy that configuration. This restores fixed silence plus bounded
+English/Tamil unfinished grace while retaining buffered MP3/PCM playback,
+barge-in, billing, and ordinary-chat synchronization. If a full Voice disable
+is required, set
 `WEB_REALTIME_VOICE_ENABLED=false` on the existing API and deploy that
 configuration. Bootstrap then hides Voice Mode. Fix forward; do not revert the
 database, move balances, reclassify history, or delete completed Voice chat

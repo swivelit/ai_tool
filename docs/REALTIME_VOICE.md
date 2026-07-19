@@ -154,20 +154,51 @@ assistant echo therefore cannot repeatedly interrupt.
 The server has one persistent STT reader. It normalizes official
 `type=events`/`signal_type=START_SPEECH|END_SPEECH`, compatible direct speech
 events, partials, finals, errors, and provider closes. Final transcript segments
-are accumulated. END_SPEECH/final starts a 900 ms timer; speech restart cancels
-it without dropping accumulated text. Bounded English/Tamil continuation
-heuristics add 650 ms for conjunctions, fillers, trailing comma/dash, and
-incomplete clauses. Terminal punctuation avoids grace. The delay never exceeds
-1,800 ms, an utterance never exceeds 30 seconds, and explicit `turn.end`
-flushes/finalizes safely. This is VAD, duration, and text-completeness logic; it
-does not claim emotion or tone understanding.
+are accumulated exactly once. Provider `END_SPEECH` or a final transcript is a
+candidate boundary, not a committed end of turn. The application enters
+`endpoint_pending`, continues accepting microphone/provider input, and starts a
+generation-checked adaptive deadline. A new `START_SPEECH` invalidates and
+cancels the old deadline, keeps accumulated final segments and new audio in the
+same user turn, and returns smoothly to Listening. Partial or final updates
+also invalidate and recalculate the timer from that latest meaningful evidence,
+so Thinking never begins merely because of a short pause.
+
+The transcript classifier returns `complete`, `neutral`, or `unfinished`.
+English continuation examples include “and”, “but”, “because”, “if”, “to”,
+“actually”, “well”, “um”, and “uh”. Tamil examples include “மற்றும்”, “ஆனால்”,
+“ஏனெனில்”, “என்றால்”, “என்று”, “அப்புறம்”, “ஆனா”, and “அதனால”. A trailing
+comma, colon, dash, or ellipsis is unfinished. Terminal punctuation supports
+completion but is not required because provider punctuation is probabilistic;
+recently changing partials and partials longer than accumulated finals remain
+unstable.
+
+For each already accepted 512-sample, 16 kHz PCM frame, the backend retains at
+most about 1.44 seconds of scalar RMS/dBFS, zero-crossing, voicing, and bounded
+autocorrelation pitch measurements. Pitch work runs only every third frame in
+the 70–400 Hz range. Terminal cadence requires several confident voiced pitch
+measurements, a roughly 1.25-semitone fall across windows, and non-rising
+energy. Gradually falling energy plus declining voicing can mark trailing-off.
+One noisy frame or rising pitch cannot shorten a deadline. These are weak
+prosodic timing cues—not emotion, intent, or semantic understanding—and they
+only adjust a bounded timer; they never finalize a turn by themselves.
+
+With recommended tuning, complete terminal cadence uses about 850 ms, complete
+neutral speech 1,100 ms, unstable/neutral text about 1,500 ms, unfinished text
+2,000 ms, and incomplete trailing-off evidence up to 2,600 ms. Every wait is
+capped by `MAX_ENDPOINT_WAIT_MS` and the 30-second utterance maximum. Explicit
+`turn.end` commits immediately; maximum duration commits usable speech safely;
+empty/noise-only turns are discarded. Setting adaptive endpointing false
+restores the prior fixed base-plus-unfinished-grace behavior.
 
 Every provider PCM byte is forwarded only while an STT reservation or explicit
 billing-exempt audit row is active. Reservation expansion commits before audio
 forwarding. After endpointing, consumed gated audio is settled once and the
 next turn is reserved before thinking/speaking so provider-confirmed barge-in
 cannot become unreserved audio. Silence suppressed by the browser is neither
-sent nor billed. TTS reserves before sending text, expands idempotently, settles
+sent nor billed. Prosody reuses those same accepted PCM frames locally: it
+creates no provider request, reservation, usage charge, stored audio, or billed
+pause duration. Endpoint timer recalculation is not usage. TTS reserves before
+sending text, expands idempotently, settles
 submitted characters, and releases unused remainder. Disconnect/interruption
 cancels and awaits tasks, releases every live reservation, closes providers,
 and compare-deletes the Valkey lock.
@@ -219,9 +250,10 @@ WEB_REALTIME_VOICE_MAX_SESSION_SECONDS=900
 WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS=60
 WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER=1
 WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE=5
-WEB_REALTIME_VOICE_END_SILENCE_MS=900
-WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=650
-WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=1800
+WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED=true
+WEB_REALTIME_VOICE_END_SILENCE_MS=1100
+WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=900
+WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=2600
 WEB_REALTIME_VOICE_MIN_SPEECH_MS=250
 WEB_REALTIME_VOICE_MAX_UTTERANCE_MS=30000
 WEB_REALTIME_VOICE_BARGE_IN_MIN_MS=180
@@ -252,11 +284,14 @@ provider sample rate), exact configured origins, and expected WebSocket
 scheme/path. Session status is limited to `active_session` and
 `remaining_lock_ttl_seconds`. The internal UI additionally shows the selected
 device label after permission, browser/resampled rates, RMS, noise floor,
-threshold, emitted frames, backpressure drops, safe MediaError category/code,
+threshold, emitted frames, backpressure drops, safe endpoint classification,
+terminal-cadence/trailing-off booleans, voiced duration, selected delay/reason,
+deadline generation/cancellation count, safe MediaError category/code,
 allowlisted DOMException name, failure stage, chunk/byte/sequence counts,
 first-chunk/playback timings, fallback/autoplay state, scheduled PCM seconds,
-active sources, and playback completion. It excludes email, Firebase UID, ticket, credentials/URLs, header
-dumps, transcripts, audio, and provider bodies.
+active sources, and playback completion. It excludes email, Firebase UID,
+ticket, credentials/URLs, header dumps, transcript text, raw PCM, pitch history,
+audio, and provider bodies.
 
 ### Explicit live provider probe
 
@@ -310,6 +345,12 @@ If a prior attempt ended before the socket could consume/release its lock, wait
 the diagnostic `remaining_lock_ttl_seconds` (ticket TTL defaults to 60 seconds),
 refresh diagnostics until `active_session=false`, then request a fresh ticket.
 Do not reuse a ticket and do not add or call a public lock-deletion endpoint.
+
+Endpoint-only rollback: set
+`WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED=false` on the existing API
+service and deploy the API before changing the web service. This preserves the
+working fixed-silence Voice path. No migration, new service, database, Valkey,
+or Cron Job is involved.
 
 Immediate feature disable: set `WEB_REALTIME_VOICE_ENABLED=false` on the
 existing API service and deploy the API configuration. Bootstrap removes the

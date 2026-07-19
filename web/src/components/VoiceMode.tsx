@@ -87,6 +87,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
         </div>
         <h2>{status}</h2>
         <span className="voice-status-live" aria-live="polite">{status}</span>
+        {voice.phase === 'endpoint_pending' && <p className="voice-take-time" aria-hidden="true">Take your time</p>}
         {captions && <div className="voice-captions" aria-label="Voice captions">
           {voice.partial && <p className="voice-transcript"><span>You</span>{voice.partial}</p>}
           {voice.assistant && <p className="voice-transcript assistant"><span>Swico</span>{voice.assistant}</p>}
@@ -121,6 +122,14 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
             <dt>HTTP status</dt><dd>{voice.errorStatus ?? 'none'}</dd><dt>Error code</dt><dd>{voice.errorCode || 'none'}</dd>
             <dt>Playback state</dt><dd>{voice.playbackState}</dd>
             <dt>Server voice state</dt><dd>{voice.serverVoiceState}</dd>
+            <dt>Transcript classification</dt><dd>{voice.endpointDiagnostics.transcript_classification}</dd>
+            <dt>Terminal cadence</dt><dd>{String(voice.endpointDiagnostics.terminal_cadence_detected)}</dd>
+            <dt>Trailing off</dt><dd>{String(voice.endpointDiagnostics.trailing_off_detected)}</dd>
+            <dt>Voiced duration ms</dt><dd>{voice.endpointDiagnostics.voiced_duration_ms}</dd>
+            <dt>Endpoint delay ms</dt><dd>{voice.endpointDiagnostics.endpoint_delay_ms}</dd>
+            <dt>Endpoint reason</dt><dd>{voice.endpointDiagnostics.endpoint_reason}</dd>
+            <dt>Endpoint generation</dt><dd>{voice.endpointDiagnostics.endpoint_deadline_generation}</dd>
+            <dt>Endpoint cancellations</dt><dd>{voice.endpointDiagnostics.endpoint_cancel_count}</dd>
             <dt>Playback mode</dt><dd>{voice.playbackDiagnostics.playback_mode ?? diagnostics?.sarvam.playback_mode ?? 'loading'}</dd>
             <dt>Selected codec</dt><dd>{voice.playbackDiagnostics.selected_codec ?? diagnostics?.sarvam.selected_codec ?? 'loading'}</dd>
             <dt>Content type</dt><dd>{voice.playbackDiagnostics.content_type ?? 'none'}</dd>

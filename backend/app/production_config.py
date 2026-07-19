@@ -104,10 +104,13 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         errors.append("WEB_VOICE_BILLING_ENABLED requires WEB_VOICE_RECORDING_ENABLED")
     realtime_voice = _bool(env, "WEB_REALTIME_VOICE_ENABLED", False)
     separate_voice = _bool(env, "WEB_SEPARATE_VOICE_CREDITS_ENABLED", False)
+    adaptive_endpointing = _bool(env, "WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED", True)
     if realtime_voice is None:
         errors.append("WEB_REALTIME_VOICE_ENABLED must be a boolean")
     if separate_voice is None:
         errors.append("WEB_SEPARATE_VOICE_CREDITS_ENABLED must be a boolean")
+    if adaptive_endpointing is None:
+        errors.append("WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED must be a boolean")
     if realtime_voice is True and separate_voice is not True:
         errors.append("WEB_REALTIME_VOICE_ENABLED requires WEB_SEPARATE_VOICE_CREDITS_ENABLED")
     if realtime_voice is True and voice_billing is not True:
@@ -168,6 +171,11 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     end_silence = _integer(env, "WEB_REALTIME_VOICE_END_SILENCE_MS", "900")
     if endpoint_wait is not None and end_silence is not None and endpoint_wait < end_silence:
         errors.append("WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS must be at least WEB_REALTIME_VOICE_END_SILENCE_MS")
+    if endpoint_wait is not None and endpoint_wait > 10_000:
+        errors.append("WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS must be at most 10000")
+    max_utterance = _integer(env, "WEB_REALTIME_VOICE_MAX_UTTERANCE_MS", "30000")
+    if endpoint_wait is not None and max_utterance is not None and max_utterance <= endpoint_wait:
+        errors.append("WEB_REALTIME_VOICE_MAX_UTTERANCE_MS must be greater than WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS")
     retry_base = _integer(env, "RAZORPAY_READ_RETRY_BASE_MS", "500")
     retry_max = _integer(env, "RAZORPAY_READ_RETRY_MAX_MS", "4000")
     if retry_base is not None and retry_max is not None and retry_max < retry_base:
