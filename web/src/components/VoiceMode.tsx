@@ -8,7 +8,9 @@ import { apiJson } from '../api/client'
 type InternalVoiceDiagnostics = {
   backend_release: string; alembic_head: string;
   features: { web_realtime_voice:boolean; separate_voice_credits:boolean; web_voice_billing:boolean };
-  valkey: { configured:boolean; reachable:boolean }; sarvam: { configured:boolean };
+  valkey: { configured:boolean; reachable:boolean }; sarvam: {
+    configured:boolean; playback_mode:string; selected_codec:string; provider_sample_rate:number;
+  };
   origin: { request_origin_allowed:boolean };
   session_lock: { active_session:boolean; remaining_lock_ttl_seconds:number };
 }
@@ -96,6 +98,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
         {voice.cannotHear && !voice.muted && ['listening', 'endpoint_pending'].includes(voice.phase) && <p className="voice-interruption" role="status">We cannot hear you. Move closer to the microphone or check its input level.</p>}
         {voice.playbackWarning && <div className="voice-playback-warning" role="status"><p>{voice.playbackWarning}</p>
           {voice.playbackState === 'autoplay_blocked' && <button className="primary voice-tap-play" onClick={() => void voice.manualPlay()}>Tap to play</button>}
+          {voice.playbackState === 'playback_error' && voice.canReplay && <button className="primary voice-tap-play" onClick={() => void voice.manualPlay()}>Replay full spoken answer</button>}
           {(voice.playbackState === 'autoplay_blocked' || voice.playbackState === 'playback_error') && <button onClick={voice.skipPlayback}>Skip audio</button>}
         </div>}
         {voice.error && <div className="voice-error" role="alert">
@@ -117,6 +120,27 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
             <dt>Lock TTL seconds</dt><dd>{diagnostics?.session_lock.remaining_lock_ttl_seconds ?? 'loading'}</dd>
             <dt>HTTP status</dt><dd>{voice.errorStatus ?? 'none'}</dd><dt>Error code</dt><dd>{voice.errorCode || 'none'}</dd>
             <dt>Playback state</dt><dd>{voice.playbackState}</dd>
+            <dt>Server voice state</dt><dd>{voice.serverVoiceState}</dd>
+            <dt>Playback mode</dt><dd>{voice.playbackDiagnostics.playback_mode ?? diagnostics?.sarvam.playback_mode ?? 'loading'}</dd>
+            <dt>Selected codec</dt><dd>{voice.playbackDiagnostics.selected_codec ?? diagnostics?.sarvam.selected_codec ?? 'loading'}</dd>
+            <dt>Content type</dt><dd>{voice.playbackDiagnostics.content_type ?? 'none'}</dd>
+            <dt>Provider sample rate</dt><dd>{voice.playbackDiagnostics.provider_sample_rate ?? 'none'}</dd>
+            <dt>MediaSource available</dt><dd>{String(voice.playbackDiagnostics.media_source_available)}</dd>
+            <dt>MediaSource type supported</dt><dd>{String(voice.playbackDiagnostics.media_source_type_supported)}</dd>
+            <dt>SourceBuffer created</dt><dd>{String(voice.playbackDiagnostics.source_buffer_created)}</dd>
+            <dt>Audio chunks</dt><dd>{voice.playbackDiagnostics.audio_chunks_received}</dd>
+            <dt>Audio bytes</dt><dd>{voice.playbackDiagnostics.audio_bytes_received}</dd>
+            <dt>Expected sequence</dt><dd>{voice.playbackDiagnostics.expected_sequence}</dd>
+            <dt>Duplicate chunks</dt><dd>{voice.playbackDiagnostics.duplicate_chunks}</dd>
+            <dt>Sequence gap</dt><dd>{String(voice.playbackDiagnostics.missing_sequence_detected)}</dd>
+            <dt>Fallback used</dt><dd>{String(voice.playbackDiagnostics.fallback_used)}</dd>
+            <dt>Failure stage</dt><dd>{voice.playbackDiagnostics.failure_stage ?? 'none'}</dd>
+            <dt>Media error</dt><dd>{voice.playbackDiagnostics.media_error_category ?? 'none'}</dd>
+            <dt>DOM exception</dt><dd>{voice.playbackDiagnostics.dom_exception_name ?? 'none'}</dd>
+            <dt>Autoplay blocked</dt><dd>{String(voice.playbackDiagnostics.autoplay_blocked)}</dd>
+            <dt>Scheduled PCM seconds</dt><dd>{voice.playbackDiagnostics.scheduled_pcm_seconds.toFixed(3)}</dd>
+            <dt>Active PCM sources</dt><dd>{voice.playbackDiagnostics.active_pcm_sources}</dd>
+            <dt>Playback finished</dt><dd>{String(voice.playbackDiagnostics.playback_finished)}</dd>
             <dt>Microphone device</dt><dd>{voice.microphoneDiagnostics.selectedDeviceLabel}</dd>
             <dt>Browser sample rate</dt><dd>{voice.microphoneDiagnostics.browserSampleRate}</dd>
             <dt>Resampled rate</dt><dd>{voice.microphoneDiagnostics.resampledSampleRate}</dd>

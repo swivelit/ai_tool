@@ -30,6 +30,12 @@ SARVAM_STREAMING_TTS_URL = "wss://api.sarvam.ai/text-to-speech/ws"
 SARVAM_STT_SAMPLE_RATE = 16_000
 SARVAM_STT_INPUT_AUDIO_CODEC = "pcm_s16le"
 SARVAM_STT_MESSAGE_ENCODINGS = frozenset({"audio/wav", "pcm_s16le"})
+SARVAM_TTS_OPERATOR_CODECS = frozenset({"mp3", "linear16"})
+SARVAM_TTS_SAMPLE_RATES = frozenset({8_000, 16_000, 22_050, 24_000})
+# sarvamai 0.1.28's generated ConfigureConnectionDataOutputAudioCodec schema
+# and socket serializer send `linear16` unchanged. Keep this normalization at
+# the provider edge so an SDK/API contract change remains one-line and tested.
+SARVAM_TTS_WIRE_CODECS = {"mp3": "mp3", "linear16": "linear16"}
 
 
 def sarvam_stt_message_encoding(value: str | None = None) -> str:
@@ -38,6 +44,26 @@ def sarvam_stt_message_encoding(value: str | None = None) -> str:
     ).strip().lower()
     if configured not in SARVAM_STT_MESSAGE_ENCODINGS:
         raise ValueError("SARVAM_STT_STREAM_MESSAGE_ENCODING is unsupported.")
+    return configured
+
+
+def sarvam_tts_output_codec(value: str | None = None) -> str:
+    configured = str(
+        value if value is not None else os.getenv("SARVAM_TTS_STREAM_OUTPUT_CODEC", "mp3")
+    ).strip().lower()
+    if configured not in SARVAM_TTS_OPERATOR_CODECS:
+        raise ValueError("SARVAM_TTS_STREAM_OUTPUT_CODEC is unsupported.")
+    return configured
+
+
+def sarvam_tts_sample_rate(value: int | str | None = None) -> int:
+    raw = value if value is not None else os.getenv("SARVAM_TTS_STREAM_SAMPLE_RATE", "24000")
+    try:
+        configured = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SARVAM_TTS_STREAM_SAMPLE_RATE is unsupported.") from exc
+    if configured not in SARVAM_TTS_SAMPLE_RATES:
+        raise ValueError("SARVAM_TTS_STREAM_SAMPLE_RATE is unsupported.")
     return configured
 
 
@@ -170,6 +196,7 @@ class SarvamStreamingProvider:
         self._stt: Any = None
         self._tts: Any = None
         self._tts_ping_task: asyncio.Task[Any] | None = None
+        self._tts_completion_received = False
 
     @property
     def stt_connected(self) -> bool:
@@ -178,6 +205,10 @@ class SarvamStreamingProvider:
     @property
     def tts_connected(self) -> bool:
         return self._tts is not None
+
+    @property
+    def tts_completion_received(self) -> bool:
+        return self._tts_completion_received
 
     async def _open(self, url: str):
         if not self._api_key:
@@ -328,9 +359,15 @@ class SarvamStreamingProvider:
                 "retryable": category == "temporary" or exc.code in {1013, 4429},
             }
 
-    async def connect_tts(self, language: str) -> None:
+    async def connect_tts(
+        self, language: str, *, output_codec: str | None = None,
+        sample_rate: int | str | None = None,
+    ) -> None:
         language_code = normalize_sarvam_tts_language_code(language)
         model = normalize_sarvam_tts_model(os.getenv("SARVAM_TTS_MODEL"), premium=False)
+        codec = sarvam_tts_output_codec(output_codec)
+        rate = sarvam_tts_sample_rate(sample_rate)
+        self._tts_completion_received = False
         self._tts = await self._open(
             f"{SARVAM_STREAMING_TTS_URL}?{urlencode({'model': model, 'send_completion_event': 'true'})}"
         )
@@ -343,7 +380,8 @@ class SarvamStreamingProvider:
                 "pace": voice.get("pace", 1.0),
                 "min_buffer_size": 40,
                 "max_chunk_length": 240,
-                "output_audio_codec": "mp3",
+                "output_audio_codec": SARVAM_TTS_WIRE_CODECS[codec],
+                "speech_sample_rate": rate,
             },
         }, separators=(",", ":")))
         self._tts_ping_task = asyncio.create_task(
@@ -406,6 +444,7 @@ class SarvamStreamingProvider:
                     if payload.get("type") == "completion" or str(data.get("event_type") or "").lower() in {
                         "final", "complete", "completion",
                     }:
+                        self._tts_completion_received = True
                         return
                 elif payload.get("type") == "error" or payload.get("error"):
                     scalar, status = _error_fields(payload)
@@ -417,6 +456,11 @@ class SarvamStreamingProvider:
                         handshake_status=status,
                         retryable=category == "temporary" or status == 429,
                     )
+            if not self._tts_completion_received:
+                raise SarvamStreamingError(
+                    "Sarvam TTS ended without completion.", category="protocol",
+                    safe_code="invalid_message", retryable=False,
+                )
         except ConnectionClosed as exc:
             category = _provider_category(exc.code, exc.reason)
             raise SarvamStreamingError(

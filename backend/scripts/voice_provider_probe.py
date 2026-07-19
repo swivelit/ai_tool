@@ -12,8 +12,11 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 import time
 import wave
 from collections.abc import Callable
@@ -39,6 +42,10 @@ class ProbeOptions:
     language: str
     payload_encoding: str
     audio_file: Path | None = None
+    output_codec: str = "mp3"
+    sample_rate: int = 24_000
+    validate_audio: bool = False
+    temporary_output: Path | None = None
 
 
 def _allowed() -> bool:
@@ -51,7 +58,52 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", required=True, choices=("en", "ta"))
     parser.add_argument("--payload-encoding", choices=("audio/wav", "pcm_s16le"))
     parser.add_argument("--audio-file", type=Path)
+    parser.add_argument("--output-codec", choices=("mp3", "linear16"), default="mp3")
+    parser.add_argument("--sample-rate", type=int, choices=(8000, 16000, 22050, 24000), default=24000)
+    parser.add_argument("--validate-audio", action="store_true")
+    parser.add_argument("--temporary-output", type=Path)
     return parser
+
+
+def classify_mp3_signature(audio: bytes) -> str:
+    if audio.startswith(b"ID3"):
+        return "id3"
+    if len(audio) >= 2 and audio[0] == 0xFF and audio[1] & 0xE0 == 0xE0:
+        return "mpeg_sync"
+    return "unknown"
+
+
+def validate_linear16(audio: bytes, sample_rate: int) -> dict[str, int]:
+    if not audio or len(audio) % 2:
+        raise ValueError("pcm_byte_alignment_invalid")
+    samples = struct.unpack(f"<{len(audio) // 2}h", audio)
+    if not any(samples):
+        raise ValueError("pcm_audio_is_silent")
+    return {
+        "samples_received": len(samples),
+        "estimated_duration_ms": round(len(samples) / sample_rate * 1000),
+    }
+
+
+def _validate_mp3_with_optional_ffprobe(audio: bytes) -> bool:
+    executable = shutil.which("ffprobe")
+    if not executable:
+        return False
+    name = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as output:
+            name = output.name
+            output.write(audio)
+        completed = subprocess.run(
+            [executable, "-v", "error", "-show_entries", "format=format_name", name],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if completed.returncode != 0:
+            raise ValueError("mp3_decoder_validation_failed")
+        return True
+    finally:
+        if name:
+            Path(name).unlink(missing_ok=True)
 
 
 def _synthetic_pcm() -> bytes:
@@ -147,26 +199,58 @@ async def _probe_tts(provider: SarvamStreamingProvider, options: ProbeOptions) -
     started = time.monotonic()
     result: dict[str, Any] = {
         "ok": False, "config_sent": False, "text_sent": False, "flush_sent": False,
-        "audio_chunk_received": False, "completion_event_received": False,
+        "codec": options.output_codec, "sample_rate": options.sample_rate, "channels": 1,
+        "chunks_received": 0, "bytes_received": 0,
+        "completion_event_received": False, "mp3_signature": None,
+        "samples_received": 0, "estimated_duration_ms": 0,
+        "ffprobe_used": False,
         "provider_safe_code": None, "provider_close_code": None,
     }
     try:
-        await provider.connect_tts(options.language)
+        await provider.connect_tts(
+            options.language, output_codec=options.output_codec,
+            sample_rate=options.sample_rate,
+        )
         result["config_sent"] = True
         sentence = "This is a fixed Swico provider readiness test."
         await provider.send_tts_text(sentence)
         result["text_sent"] = True
         await provider.flush_tts()
         result["flush_sent"] = True
+        chunks: list[bytes] = []
         async for chunk in provider.tts_audio():
-            if chunk:
-                result["audio_chunk_received"] = True
+            if not chunk:
+                raise ValueError("empty_audio_chunk")
+            chunks.append(chunk)
+            result["chunks_received"] += 1
+            result["bytes_received"] += len(chunk)
         result["completion_event_received"] = True
-        result["ok"] = bool(result["audio_chunk_received"] and result["completion_event_received"])
+        audio = b"".join(chunks)
+        if not audio:
+            return result
+        if options.output_codec == "mp3":
+            signature = classify_mp3_signature(audio)
+            result["mp3_signature"] = signature
+            if options.validate_audio and signature == "unknown":
+                raise ValueError("mp3_signature_invalid")
+            if options.validate_audio:
+                result["ffprobe_used"] = _validate_mp3_with_optional_ffprobe(audio)
+        else:
+            pcm = validate_linear16(audio, options.sample_rate)
+            result.update(pcm)
+        if options.temporary_output:
+            destination = options.temporary_output.expanduser().resolve()
+            if not destination.parent.is_dir():
+                raise ValueError("temporary_output_parent_unavailable")
+            destination.write_bytes(audio)
+        result["ok"] = bool(result["bytes_received"] and result["completion_event_received"])
         return result
     except SarvamStreamingError as exc:
         result["provider_safe_code"] = exc.safe_code
         result["provider_close_code"] = exc.websocket_close_code
+        return result
+    except ValueError as exc:
+        result["provider_safe_code"] = str(exc)[:80]
         return result
     finally:
         result["elapsed_ms"] = int((time.monotonic() - started) * 1000)
@@ -203,7 +287,11 @@ def main(argv: list[str] | None = None) -> int:
     if not os.getenv("SARVAM_API_KEY", "").strip():
         print("Refusing live probe: SARVAM_API_KEY is not configured.", file=sys.stderr)
         return 2
-    options = ProbeOptions(parsed.mode, parsed.language, encoding, parsed.audio_file)
+    options = ProbeOptions(
+        parsed.mode, parsed.language, encoding, parsed.audio_file,
+        parsed.output_codec, parsed.sample_rate, parsed.validate_audio,
+        parsed.temporary_output,
+    )
     try:
         result = asyncio.run(run_probe(options))
     except ValueError as exc:

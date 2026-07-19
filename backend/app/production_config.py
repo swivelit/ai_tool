@@ -118,6 +118,23 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         "audio/wav", "pcm_s16le",
     }:
         errors.append("SARVAM_STT_STREAM_MESSAGE_ENCODING is unsupported")
+    if _value(env, "WEB_REALTIME_VOICE_PLAYBACK_MODE", "buffered_mp3").lower() not in {
+        "buffered_mp3", "pcm_stream", "auto",
+    }:
+        errors.append("WEB_REALTIME_VOICE_PLAYBACK_MODE is unsupported")
+    if _value(env, "SARVAM_TTS_STREAM_OUTPUT_CODEC", "mp3").lower() not in {
+        "mp3", "linear16",
+    }:
+        errors.append("SARVAM_TTS_STREAM_OUTPUT_CODEC is unsupported")
+    tts_sample_rate = _integer(env, "SARVAM_TTS_STREAM_SAMPLE_RATE", "24000")
+    if tts_sample_rate not in {8000, 16000, 22050, 24000}:
+        errors.append("SARVAM_TTS_STREAM_SAMPLE_RATE is unsupported")
+    playback_mode = _value(env, "WEB_REALTIME_VOICE_PLAYBACK_MODE", "buffered_mp3").lower()
+    tts_codec = _value(env, "SARVAM_TTS_STREAM_OUTPUT_CODEC", "mp3").lower()
+    if playback_mode == "buffered_mp3" and tts_codec != "mp3":
+        errors.append("WEB_REALTIME_VOICE_PLAYBACK_MODE buffered_mp3 requires SARVAM_TTS_STREAM_OUTPUT_CODEC mp3")
+    if playback_mode == "pcm_stream" and tts_codec != "linear16":
+        errors.append("WEB_REALTIME_VOICE_PLAYBACK_MODE pcm_stream requires SARVAM_TTS_STREAM_OUTPUT_CODEC linear16")
     for name, default in (
         ("WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS", "60"),
         ("WEB_REALTIME_VOICE_MAX_SESSION_SECONDS", "900"),

@@ -72,6 +72,14 @@ export type VoiceTuning = {
   calibration_ms: number; noise_multiplier: number; threshold_min: number;
   threshold_max: number; quiet_fallback: number; no_speech_warning_ms: number;
 }
+export type RealtimeVoicePlaybackMode = 'buffered_mp3' | 'pcm_stream' | 'auto'
+export type RealtimeVoiceCodec = 'mp3' | 'linear16'
+export type RealtimeVoiceSession = {
+  protocol_version: 1; session_id: string; ticket: string; websocket_url: string;
+  tier: SwicoTier; tier_label: string; language: 'en' | 'ta'; wallets: Wallets;
+  playback_mode: RealtimeVoicePlaybackMode; selected_codec: RealtimeVoiceCodec;
+  provider_sample_rate: number | null; media_source_allowed: boolean;
+}
 export type StreamEventName = 'thread' | 'status' | 'delta' | 'usage' | 'wallet' | 'done' | 'error'
 export type SSEEvent = { event: StreamEventName | (string & {}); data: unknown }
 export type PaymentStatus = {

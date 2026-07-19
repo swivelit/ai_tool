@@ -12,12 +12,16 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.ai.providers.sarvam_streaming_provider import (
     SarvamStreamingProvider, _handshake_category, sarvam_stt_message_encoding,
+    sarvam_tts_output_codec, sarvam_tts_sample_rate,
 )
 from app.billing.pricing import stt_price
 from app.billing.service import get_or_create_wallet
 from app.database import SessionLocal
 from app.models import WebUsagePreferences
-from app.web_api.router import _tickets, _voice_tts_chunks
+from app.web_api.router import (
+    _tickets, _voice_audio_end, _voice_audio_start, _voice_playback_selection,
+    _voice_tts_chunks,
+)
 from app.web_api.realtime_voice import (
     VoiceEndpointConfig, endpoint_delay_ms, join_final_segments,
     safe_provider_category, transcript_appears_unfinished,
@@ -70,8 +74,28 @@ def test_voice_session_requires_auth_and_uses_saved_tier_language(client, monkey
     assert body["wallet"] == body["wallets"]["chat"]
     assert body["wallets"]["chat"]["balance_micros"] == 0
     assert body["wallets"]["voice"]["balance_micros"] == 0
+    assert body["playback_mode"] == "buffered_mp3"
+    assert body["selected_codec"] == "mp3"
+    assert body["provider_sample_rate"] is None
+    assert body["media_source_allowed"] is False
     assert "user" not in body["websocket_url"]
     assert "ticket" not in body["websocket_url"]
+
+
+def test_auto_session_accepts_only_bounded_capabilities(client, monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setenv("SWICO_INTERNAL_TEST_EMAILS", "voice-auto@example.com")
+    monkeypatch.setenv("WEB_REALTIME_VOICE_PLAYBACK_MODE", "auto")
+    monkeypatch.setenv("SARVAM_TTS_STREAM_OUTPUT_CODEC", "linear16")
+    create_test_user("voice-auto", "voice-auto@example.com")
+    response = client.post(
+        "/api/web/voice/sessions", headers=auth_headers("voice-auto", "voice-auto@example.com"),
+        json={"browser_capabilities": {"web_audio": True, "media_source": True, "media_source_mp3": True}},
+    )
+    assert response.status_code == 201
+    assert response.json()["playback_mode"] == "pcm_stream"
+    assert response.json()["selected_codec"] == "linear16"
+    assert response.json()["provider_sample_rate"] == 24000
 
 
 def test_internal_voice_diagnostics_are_safe_and_hidden_from_normal_users(client, monkeypatch):
@@ -273,12 +297,77 @@ def test_streaming_adapter_resolves_tamil_and_exposes_partial_final_and_audio():
         config = json.loads(tts.sent[0])
         assert config["type"] == "config"
         assert config["data"]["target_language_code"] == "ta-IN"
+        assert config["data"]["output_audio_codec"] == "mp3"
+        assert config["data"]["speech_sample_rate"] == 24000
         assert json.loads(tts.sent[1]) == {"type": "ping"}
         assert json.loads(tts.sent[2])["data"]["text"] == "வணக்கம் உலகம்"
         await provider.close()
         assert stt.closed and tts.closed
 
     asyncio.run(scenario())
+
+
+def test_streaming_tts_exact_linear16_wire_contract_and_sample_rate(monkeypatch):
+    async def scenario():
+        socket = _FakeSocket([json.dumps({"type": "completion"})])
+        async def connect(_url: str, **_kwargs):
+            return socket
+        provider = SarvamStreamingProvider(connect=connect, api_key="unit-test-key")
+        await provider.connect_tts("en", output_codec="linear16", sample_rate=16000)
+        config = json.loads(socket.sent[0])
+        assert config["type"] == "config"
+        assert config["data"]["output_audio_codec"] == "linear16"
+        assert config["data"]["speech_sample_rate"] == 16000
+        assert [chunk async for chunk in provider.tts_audio()] == []
+        assert provider.tts_completion_received is True
+    monkeypatch.setenv("SARVAM_TTS_STREAM_OUTPUT_CODEC", "mp3")
+    asyncio.run(scenario())
+
+
+def test_voice_playback_selection_is_server_authoritative(monkeypatch):
+    monkeypatch.setenv("WEB_REALTIME_VOICE_PLAYBACK_MODE", "buffered_mp3")
+    monkeypatch.setenv("SARVAM_TTS_STREAM_OUTPUT_CODEC", "mp3")
+    monkeypatch.setenv("SARVAM_TTS_STREAM_SAMPLE_RATE", "24000")
+    selected = _voice_playback_selection({"web_audio": True, "media_source": True, "media_source_mp3": True})
+    assert selected == {
+        "playback_mode": "buffered_mp3", "output_codec": "mp3", "sample_rate": 24000,
+        "media_source_allowed": False,
+    }
+    monkeypatch.setenv("WEB_REALTIME_VOICE_PLAYBACK_MODE", "auto")
+    monkeypatch.setenv("SARVAM_TTS_STREAM_OUTPUT_CODEC", "linear16")
+    assert _voice_playback_selection({"web_audio": True})["output_codec"] == "linear16"
+    fallback = _voice_playback_selection({"web_audio": False})
+    assert fallback["output_codec"] == "mp3"
+    assert fallback["playback_mode"] == "buffered_mp3"
+    assert sarvam_tts_output_codec("linear16") == "linear16"
+    assert sarvam_tts_sample_rate("22050") == 22050
+
+
+def test_audio_start_and_end_contracts_are_exact_and_content_free():
+    mp3 = VoiceTicket(
+        "mp3-session", 1, "lite", "en", False, 4_000_000_000,
+        "buffered_mp3", "mp3", 24000, False,
+    )
+    assert _voice_audio_start(mp3, 1) == {
+        "content_type": "audio/mpeg", "codec": "mp3", "sample_rate": None,
+        "channels": 1, "sample_format": None, "playback_mode": "buffered_mp3",
+        "turn_number": 1,
+    }
+    pcm = VoiceTicket(
+        "pcm-session", 1, "lite", "ta", True, 4_000_000_000,
+        "pcm_stream", "linear16", 24000, False,
+    )
+    assert _voice_audio_start(pcm, 2) == {
+        "content_type": "audio/L16", "codec": "linear16", "sample_rate": 24000,
+        "channels": 1, "sample_format": "pcm_s16le", "playback_mode": "pcm_stream",
+        "turn_number": 2,
+    }
+    assert _voice_audio_end(
+        pcm, 2, chunks_sent=3, bytes_sent=960, characters=42, interrupted=False,
+    ) == {
+        "turn_number": 2, "codec": "linear16", "chunks_sent": 3,
+        "bytes_sent": 960, "characters": 42, "interrupted": False,
+    }
 
 
 def test_voice_ticket_preflight_targets_voice_then_chat_and_exempt_bypasses(client, monkeypatch):

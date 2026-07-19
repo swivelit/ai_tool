@@ -83,6 +83,9 @@ Exact environment delta for this release:
 
   ```dotenv
   WEB_REALTIME_VOICE_ENABLED=false
+  WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3
+  SARVAM_TTS_STREAM_OUTPUT_CODEC=mp3
+  SARVAM_TTS_STREAM_SAMPLE_RATE=24000
   WEB_SEPARATE_VOICE_CREDITS_ENABLED=false
   WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS=60
   WEB_REALTIME_VOICE_MAX_SESSION_SECONDS=900
@@ -174,6 +177,9 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
    WEB_TTS_RATE_LIMIT_PER_MINUTE=10
    WEB_UPLOAD_STORE_RAW=false
    WEB_REALTIME_VOICE_ENABLED=false
+   WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3
+   SARVAM_TTS_STREAM_OUTPUT_CODEC=mp3
+   SARVAM_TTS_STREAM_SAMPLE_RATE=24000
    WEB_SEPARATE_VOICE_CREDITS_ENABLED=false
    WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS=60
    WEB_REALTIME_VOICE_MAX_SESSION_SECONDS=900
@@ -230,9 +236,12 @@ This patch has no migration. Confirm `alembic heads` is still
 `BILLING_CHECKOUT_ENABLED=false` and `WEB_REALTIME_VOICE_ENABLED=false` while
 deploying in this exact order:
 
-1. Update environment defaults on the existing API and existing reconciliation
-   Cron Job. Do not add credentials or create a resource.
-2. Deploy the existing API service. There is no schema step for this patch;
+1. On the existing API only, configure Stage 1:
+   `SARVAM_TTS_STREAM_OUTPUT_CODEC=mp3`,
+   `SARVAM_TTS_STREAM_SAMPLE_RATE=24000`, and
+   `WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3`. Do not add these to the
+   static site or create a resource.
+2. Deploy the existing API service first. There is no schema step for this patch;
    retain the normal pre-deploy `upgrade head` safety command.
 3. Manually run the existing stale-reservation, dry-run Razorpay reconciliation
    (without `--apply`), and financial-audit commands. A persistent Razorpay read
@@ -240,21 +249,31 @@ deploying in this exact order:
 4. Verify health/bootstrap, Voice 402 preflight for both buckets, one dedicated
    `SWICO_INTERNAL_TEST_EMAILS` account, exact Origin rejection, safe logs, and
    one-use lock cleanup.
-5. Deploy/rebuild the existing static site. In DevTools verify one ticket POST
-   and one WebSocket, English/Tamil pause continuation, progressive audio,
-   barge-in, ordinary chat-history synchronization, browser refresh persistence,
-   320 px/mobile landscape, keyboard focus, and reduced motion.
+5. Deploy/rebuild the existing static site and clear its build/cache. In
+   DevTools verify one ticket POST and one WebSocket, English/Tamil buffered MP3
+   playback, autoplay enable, a second turn without reopening, barge-in,
+   ordinary chat-history synchronization, browser refresh persistence, 320 px/
+   mobile landscape, keyboard focus, and reduced motion.
 6. Enable `WEB_SEPARATE_VOICE_CREDITS_ENABLED=true` only if it is not already
    enabled and the deployed wallet architecture is verified. Enable
    `WEB_REALTIME_VOICE_ENABLED=true` last as its own reviewed API configuration
    deploy. Checkout stays disabled pending legal and payment verification.
+
+After a successful opt-in English and Tamil probe with `--output-codec
+linear16 --sample-rate 24000 --validate-audio`, Stage 2 changes those same API
+variables to `SARVAM_TTS_STREAM_OUTPUT_CODEC=linear16`,
+`SARVAM_TTS_STREAM_SAMPLE_RATE=24000`, and
+`WEB_REALTIME_VOICE_PLAYBACK_MODE=pcm_stream`, then repeats steps 2, 4, and 5.
+The API must be deployed before the static site because authenticated session
+metadata is authoritative. `auto` is optional and should be staged separately.
 
 Immediate rollback is a feature disable: set
 `WEB_REALTIME_VOICE_ENABLED=false` on the existing API and deploy that
 configuration. Bootstrap then hides Voice Mode. Fix forward; do not revert the
 database, move balances, reclassify history, or delete completed Voice chat
 messages. No new Render service, database, Valkey, Cron Job, disk, migration,
-or public Vite variable is part of this patch.
+object storage, or public Vite variable is part of this patch. Checkout remains
+disabled.
 
 ## Financial Cron Jobs
 

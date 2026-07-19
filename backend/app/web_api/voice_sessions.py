@@ -25,6 +25,10 @@ class VoiceTicket:
     language: str
     billing_exempt: bool
     expires_at_epoch: int
+    playback_mode: str = "buffered_mp3"
+    output_codec: str = "mp3"
+    sample_rate: int = 24_000
+    media_source_allowed: bool = False
 
 
 class VoiceSessionConflict(RuntimeError):

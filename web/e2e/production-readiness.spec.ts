@@ -1,9 +1,11 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { readFileSync } from 'node:fs'
 
 test.skip((process.env.PLAYWRIGHT_MODE ?? 'local') !== 'local', 'Local mocked suite only')
 
 const now = '2026-07-15T12:00:00Z'
+const generatedToneMp3 = readFileSync(new URL('./fixtures/generated-tone.mp3.base64', import.meta.url), 'utf8').trim()
 const tokenEstimate = (blended = 60_000) => ({
   tier:'lite', tier_label:'Swico Lite',
   reference_provider:'openai', reference_model:'gpt-5-nano', pricing_as_of:now,
@@ -24,6 +26,7 @@ type MockState = {
   profile: { name: string; place: string | null; timezone: string; assistant_name: string; reply_language: 'en' | 'ta'; email: string; email_editable: false }
   payments: Array<{ id: string; gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; refunded_amount_paise: number; credit_reversal_micros: number; status: string; created_at: string; updated_at: string; paid_at: string | null; refunded_at: string | null; payment_received: boolean; credit_applied: boolean; token_estimate: ReturnType<typeof tokenEstimate>; reversal_token_estimate: ReturnType<typeof tokenEstimate> }>
   threads: Array<{ id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }>
+  voiceScenario: 'normal' | 'autoplay' | 'pcm' | 'media_fail'
 }
 
 async function json(route: Route, body: unknown, status = 200) {
@@ -41,6 +44,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     profile: { name: 'E2E User', place: 'Chennai', timezone: 'Asia/Kolkata', assistant_name: 'Elli', reply_language: 'en', email: 'e2e@example.test', email_editable: false },
     payments: [],
     threads: [{ id: 'thread-1', title: 'Tamil planning', archived_at: null, created_at: now, updated_at: now }],
+    voiceScenario:'normal',
     ...initial,
   }
   await page.route('https://checkout.razorpay.com/v1/checkout.js', route => route.fulfill({
@@ -85,6 +89,10 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
         protocol_version:1, session_id:`voice-session-${Date.now()}`, ticket:`fresh-ticket-${Date.now()}`,
         websocket_url:'ws://127.0.0.1:4173/api/web/voice/ws', tier:'lite', tier_label:'Swico Lite', language:'en',
         approved_websocket_hosts:['127.0.0.1:4173'],
+        playback_mode:state.voiceScenario === 'pcm' ? 'pcm_stream' : state.voiceScenario === 'media_fail' ? 'auto' : 'buffered_mp3',
+        selected_codec:state.voiceScenario === 'pcm' ? 'linear16' : 'mp3',
+        provider_sample_rate:state.voiceScenario === 'pcm' ? 24000 : null,
+        media_source_allowed:state.voiceScenario === 'media_fail',
         wallets:{ chat:{ available_micros:state.wallet }, voice:{ available_micros:5_000_000 } },
       }, 201)
     }
@@ -142,6 +150,8 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     if (path === '/api/web/threads/voice-thread/messages') return json(route, { items:[
       { id:'voice-user-1', thread_id:'voice-thread', role:'user', content:'I need help planning', request_id:'voice-request-1', tier:null, tier_label:'Swico', input_tokens:0, output_tokens:0, usage_source:null, charge_micros:0, status:'complete', created_at:now, attachments:[], input_mode:'realtime_voice', voice_turn_id:'voice-session', reply_language:'en' },
       { id:'voice-assistant-1', thread_id:'voice-thread', role:'assistant', content:'Let us make a clear plan.', request_id:'voice-request-1', tier:'lite', tier_label:'Swico Lite', input_tokens:8, output_tokens:7, usage_source:'actual', charge_micros:10, status:'complete', created_at:now, attachments:[], input_mode:'realtime_voice', voice_turn_id:'voice-session', reply_language:'en' },
+      { id:'voice-user-2', thread_id:'voice-thread', role:'user', content:'What comes next?', request_id:'voice-request-2', tier:null, tier_label:'Swico', input_tokens:0, output_tokens:0, usage_source:null, charge_micros:0, status:'complete', created_at:now, attachments:[], input_mode:'realtime_voice', voice_turn_id:'voice-session', reply_language:'en' },
+      { id:'voice-assistant-2', thread_id:'voice-thread', role:'assistant', content:'Next, choose the first task.', request_id:'voice-request-2', tier:'lite', tier_label:'Swico Lite', input_tokens:5, output_tokens:6, usage_source:'actual', charge_micros:10, status:'complete', created_at:now, attachments:[], input_mode:'realtime_voice', voice_turn_id:'voice-session', reply_language:'en' },
     ] })
     if (path === '/api/web/threads/thread-1' && request.method() === 'PATCH') {
       const update = request.postDataJSON() as { title?: string; archived?: boolean }
@@ -422,10 +432,17 @@ test('real-time Voice Mode completes a pause-aware turn, syncs chat, handles bar
         setTimeout(() => this.emit({ type:'stt.final', transcript:'I need help planning', turn_number:1 }), 850)
         setTimeout(() => this.emit({ type:'assistant.start', turn_number:1 }), 880)
         setTimeout(() => this.emit({ type:'assistant.delta', delta:'Let us make a clear plan.', turn_number:1 }), 920)
-        setTimeout(() => this.emit({ type:'audio.start', content_type:'audio/mpeg' }), 960)
+        setTimeout(() => this.emit({ type:'audio.start', content_type:'audio/mpeg', codec:'mp3', sample_rate:null, channels:1, sample_format:null, playback_mode:'buffered_mp3', turn_number:1 }), 960)
         setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,1,1,2,3]).buffer })), 990)
-        setTimeout(() => this.emit({ type:'audio.end', characters:25, interrupted:false }), 1040)
+        setTimeout(() => this.emit({ type:'audio.end', turn_number:1, codec:'mp3', chunks_sent:1, bytes_sent:3, characters:25, interrupted:false }), 1040)
         setTimeout(() => this.emit({ type:'turn.done', thread_id:'voice-thread', user_message_id:'voice-user-1', assistant_message_id:'voice-assistant-1', turn_number:1, input_mode:'realtime_voice', completion_status:'complete' }), 1080)
+        setTimeout(() => this.emit({ type:'stt.final', transcript:'What comes next?', turn_number:2 }), 1300)
+        setTimeout(() => this.emit({ type:'assistant.start', turn_number:2 }), 1330)
+        setTimeout(() => this.emit({ type:'assistant.delta', delta:'Next, choose the first task.', turn_number:2 }), 1360)
+        setTimeout(() => this.emit({ type:'audio.start', content_type:'audio/mpeg', codec:'mp3', sample_rate:null, channels:1, sample_format:null, playback_mode:'buffered_mp3', turn_number:2 }), 1390)
+        setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,1,4,5,6]).buffer })), 1420)
+        setTimeout(() => this.emit({ type:'audio.end', turn_number:2, codec:'mp3', chunks_sent:1, bytes_sent:3, characters:28, interrupted:false }), 1450)
+        setTimeout(() => this.emit({ type:'turn.done', thread_id:'voice-thread', user_message_id:'voice-user-2', assistant_message_id:'voice-assistant-2', turn_number:2, input_mode:'realtime_voice', completion_status:'complete' }), 1480)
       }
       close(code = 1000, reason = 'client_closed') {
         this.readyState = 3; this.dispatchEvent(new CloseEvent('close', { code, reason }))
@@ -455,6 +472,8 @@ test('real-time Voice Mode completes a pause-aware turn, syncs chat, handles bar
     socket?.emit({ type:'warning', code:'assistant_interrupted', message:'Assistant interrupted. Listening now.' })
   })
   await expect(page.getByRole('heading', { name:'Listening' })).toBeVisible()
+  await expect(page.getByText('What comes next?')).toBeVisible()
+  await expect(page.getByText('Next, choose the first task.')).toBeVisible()
   const axe = await new AxeBuilder({ page }).analyze()
   expect(axe.violations.filter(item => item.impact === 'critical')).toEqual([])
   if (testInfo.project.name === 'chromium') await page.setViewportSize({ width:320, height:640 })
@@ -465,4 +484,144 @@ test('real-time Voice Mode completes a pause-aware turn, syncs chat, handles bar
   await expect(page.getByRole('dialog', { name:'Voice' })).toBeHidden()
   await expect(page.getByText('I need help planning')).toBeVisible()
   await expect(page.getByText('Let us make a clear plan.')).toBeVisible()
+  await expect(page.getByText('What comes next?')).toBeVisible()
+  await expect(page.getByText('Next, choose the first task.')).toBeVisible()
+})
+
+async function installPlaybackScenarioBrowser(page: Page, scenario: 'autoplay' | 'pcm' | 'media_fail') {
+  await page.addInitScript(selected => {
+    const state = { audioPlays:0, pcmStarts:0, fallbackAudio:false }
+    ;(window as typeof window & { __playbackScenario?: typeof state }).__playbackScenario = state
+    class MockWorkletNode {
+      port = { onmessage:null as ((event: MessageEvent) => void) | null, postMessage:() => undefined }
+      connect() { return this }
+      disconnect() {}
+    }
+    class MockBufferSource {
+      buffer: AudioBuffer | null = null
+      onended: (() => void) | null = null
+      connect() {}
+      disconnect() {}
+      start() { state.pcmStarts += 1; setTimeout(() => this.onended?.(), 40) }
+      stop() { this.onended = null }
+    }
+    class MockAudioContext {
+      audioWorklet = { addModule:async () => undefined }
+      destination = {}; sampleRate = 48000; currentTime = 0; state = 'running'
+      createMediaStreamSource() { return { connect:() => undefined } }
+      createGain() { return { gain:{ value:1 }, connect:() => undefined } }
+      createBuffer(channels: number, length: number, sampleRate: number) {
+        return { duration:length / sampleRate, sampleRate, copyToChannel:() => undefined, numberOfChannels:channels } as AudioBuffer
+      }
+      createBufferSource() { return new MockBufferSource() }
+      resume() { this.state = 'running'; return Promise.resolve() }
+      close() { return Promise.resolve() }
+    }
+    class MockAudio extends EventTarget {
+      src = ''; error = null
+      play() {
+        state.audioPlays += 1
+        if (selected === 'autoplay' && state.audioPlays === 1) return Promise.reject(new DOMException('blocked', 'NotAllowedError'))
+        state.fallbackAudio ||= selected === 'media_fail'
+        this.dispatchEvent(new Event('playing')); setTimeout(() => this.dispatchEvent(new Event('ended')), 60)
+        return Promise.resolve()
+      }
+      pause() {}
+    }
+    class FailingMediaSource extends EventTarget {
+      static isTypeSupported() { return true }
+      readyState = 'open'
+      constructor() { super(); setTimeout(() => this.dispatchEvent(new Event('sourceopen')), 0) }
+      addSourceBuffer() { throw new DOMException('private', 'NotSupportedError') }
+    }
+    class MockWebSocket extends EventTarget {
+      static OPEN = 1; static CLOSING = 2
+      readyState = 0; bufferedAmount = 0; binaryType = ''
+      constructor(url: string | URL) { super(); void url; setTimeout(() => { this.readyState = 1; this.dispatchEvent(new Event('open')) }, 0) }
+      emit(message: object) { this.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, ...message }) })) }
+      send(value: string | ArrayBuffer) {
+        if (typeof value !== 'string' || !value.includes('session.start')) return
+        setTimeout(() => this.emit({ type:'session.ready', state:'listening' }), 10)
+        setTimeout(() => this.emit({ type:'assistant.delta', delta:'Playback text remains visible.' }), 40)
+        if (selected === 'pcm') {
+          setTimeout(() => this.emit({ type:'audio.start', content_type:'audio/L16', codec:'linear16', sample_rate:24000, channels:1, sample_format:'pcm_s16le', playback_mode:'pcm_stream', turn_number:1 }), 60)
+          setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,1,1,0,2,0]).buffer })), 80)
+          setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,2,3,0,4,0]).buffer })), 90)
+          setTimeout(() => this.emit({ type:'audio.end', turn_number:1, codec:'linear16', chunks_sent:2, bytes_sent:8, characters:30, interrupted:false }), 100)
+        } else {
+          setTimeout(() => this.emit({ type:'audio.start', content_type:'audio/mpeg', codec:'mp3', sample_rate:null, channels:1, sample_format:null, playback_mode:selected === 'media_fail' ? 'auto' : 'buffered_mp3', turn_number:1 }), 60)
+          setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,1,1,2,3]).buffer })), 80)
+          setTimeout(() => this.emit({ type:'audio.end', turn_number:1, codec:'mp3', chunks_sent:1, bytes_sent:3, characters:30, interrupted:false }), 100)
+        }
+      }
+      close(code = 1000, reason = 'client_closed') { this.readyState = 3; this.dispatchEvent(new CloseEvent('close', { code, reason })) }
+    }
+    Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{
+      getUserMedia:async () => ({
+        getTracks:() => [{ stop:() => undefined, label:'Mock microphone' }],
+        getAudioTracks:() => [{ stop:() => undefined, label:'Mock microphone' }],
+      }),
+    } })
+    Object.assign(window, {
+      WebSocket:MockWebSocket, Audio:MockAudio, AudioContext:MockAudioContext,
+      AudioWorkletNode:MockWorkletNode,
+      ...(selected === 'media_fail' ? { MediaSource:FailingMediaSource } : {}),
+    })
+    URL.createObjectURL = () => 'blob:playback-scenario'
+    URL.revokeObjectURL = () => undefined
+  }, scenario)
+}
+
+test('Voice Mode preserves buffered MP3 across autoplay blocking and manual enable', async ({ page }) => {
+  await installPlaybackScenarioBrowser(page, 'autoplay')
+  await installBackend(page, { wallet:5_000_000, voiceScenario:'autoplay' })
+  await signIn(page)
+  await page.getByRole('button', { name:'Start real-time Voice Mode' }).click()
+  await expect(page.getByText('Playback text remains visible.')).toBeVisible()
+  await expect(page.getByRole('button', { name:'Tap to play' })).toBeVisible()
+  await page.getByRole('button', { name:'Tap to play' }).click()
+  await expect(page.getByRole('heading', { name:'Listening' })).toBeVisible()
+})
+
+test('Voice Mode schedules progressive PCM and falls back from rejected MediaSource', async ({ page }) => {
+  await installPlaybackScenarioBrowser(page, 'pcm')
+  await installBackend(page, { wallet:5_000_000, voiceScenario:'pcm' })
+  await signIn(page)
+  await page.getByRole('button', { name:'Start real-time Voice Mode' }).click()
+  await expect(page.getByRole('heading', { name:'Listening' })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __playbackScenario?: { pcmStarts:number } }).__playbackScenario?.pcmStarts)).toBe(2)
+  await page.getByRole('button', { name:'End conversation' }).click()
+
+  await installPlaybackScenarioBrowser(page, 'media_fail')
+  await installBackend(page, { wallet:5_000_000, voiceScenario:'media_fail' })
+  await page.reload()
+  await page.getByRole('button', { name:'Start real-time Voice Mode' }).click()
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __playbackScenario?: { fallbackAudio:boolean } }).__playbackScenario?.fallbackAudio)).toBe(true)
+  await expect(page.getByText('Playback text remains visible.')).toBeVisible()
+})
+
+test('Chromium decodes the committed generated MP3 and schedules generated PCM at its declared rate', async ({ page }) => {
+  await page.goto('/')
+  const decoded = await page.evaluate(async base64 => {
+    const bytes = Uint8Array.from(atob(base64), value => value.charCodeAt(0))
+    const blob = new Blob([bytes], { type:'audio/mpeg' })
+    const context = new AudioContext()
+    const decodedMp3 = await context.decodeAudioData(await blob.arrayBuffer())
+    const mp3 = { duration:decodedMp3.duration, channels:decodedMp3.numberOfChannels }
+    const rate = 24000
+    const pcm = new Int16Array(Math.round(rate * 0.16))
+    for (let index = 0; index < pcm.length; index += 1) pcm[index] = Math.round(Math.sin(2 * Math.PI * 440 * index / rate) * 8000)
+    const buffer = context.createBuffer(1, pcm.length, rate)
+    const floats = new Float32Array(pcm.length)
+    for (let index = 0; index < pcm.length; index += 1) floats[index] = pcm[index] / 32768
+    buffer.copyToChannel(floats, 0)
+    const result = { mp3, pcmDuration:buffer.duration, pcmSampleRate:buffer.sampleRate, contextSampleRate:context.sampleRate }
+    await context.close()
+    return result
+  }, generatedToneMp3)
+  expect(decoded.mp3.duration).toBeGreaterThan(0)
+  expect(decoded.mp3.channels).toBe(1)
+  expect(decoded.pcmDuration).toBeCloseTo(0.16, 2)
+  expect(decoded.pcmSampleRate).toBe(24000)
+  expect(decoded.contextSampleRate).toBeGreaterThan(0)
 })

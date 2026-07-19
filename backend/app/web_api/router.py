@@ -15,7 +15,7 @@ from decimal import Decimal, ROUND_CEILING
 from uuid import UUID, uuid4
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import delete as sa_delete, text, update as sa_update
@@ -51,7 +51,10 @@ from ..ai.providers.sarvam_provider import (
     normalize_sarvam_tts_language_code, normalize_stt_upload_mime_type,
     resolve_sarvam_tts_voice,
 )
-from ..ai.providers.sarvam_streaming_provider import SarvamStreamingError, SarvamStreamingProvider
+from ..ai.providers.sarvam_streaming_provider import (
+    SarvamStreamingError, SarvamStreamingProvider, sarvam_tts_output_codec,
+    sarvam_tts_sample_rate,
+)
 from ..ai.types import AIProviderResponse
 from ..ai.usage import record_ai_usage_event
 from ..audio_transcription import transcribe_audio_file
@@ -166,6 +169,56 @@ def _voice_tuning() -> dict[str, int | float]:
             _bounded_float_env("WEB_VOICE_GATE_QUIET_FALLBACK", 0.008, 0.006, 0.06),
         ),
         "no_speech_warning_ms": _bounded_int_env("WEB_VOICE_NO_SPEECH_WARNING_MS", 10_000, 3_000, 30_000),
+    }
+
+
+def _voice_playback_selection(
+    browser_capabilities: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Select one provider codec before a paid turn begins.
+
+    Browser input is capability-only. It can make `auto` choose the safe MP3
+    path, but can never supply a codec, sample rate, price, or provider option.
+    """
+    requested_mode = os.getenv(
+        "WEB_REALTIME_VOICE_PLAYBACK_MODE", "buffered_mp3"
+    ).strip().lower()
+    configured_codec = sarvam_tts_output_codec()
+    sample_rate = sarvam_tts_sample_rate()
+    capabilities = browser_capabilities if isinstance(browser_capabilities, dict) else {}
+    allowed_keys = {"web_audio", "media_source", "media_source_mp3"}
+    if len(capabilities) > len(allowed_keys) or any(
+        key not in allowed_keys or not isinstance(value, bool)
+        for key, value in capabilities.items()
+    ):
+        raise HTTPException(422, "Invalid browser capabilities")
+
+    web_audio = capabilities.get("web_audio") is True
+    media_source_allowed = bool(
+        capabilities.get("media_source") is True
+        and capabilities.get("media_source_mp3") is True
+    )
+    if requested_mode == "buffered_mp3":
+        return {
+            "playback_mode": "buffered_mp3", "output_codec": "mp3",
+            "sample_rate": sample_rate, "media_source_allowed": False,
+        }
+    if requested_mode == "pcm_stream":
+        return {
+            "playback_mode": "pcm_stream", "output_codec": "linear16",
+            "sample_rate": sample_rate, "media_source_allowed": False,
+        }
+    if requested_mode != "auto":
+        raise HTTPException(503, "Voice playback configuration is invalid")
+    if configured_codec == "linear16" and web_audio:
+        return {
+            "playback_mode": "pcm_stream", "output_codec": "linear16",
+            "sample_rate": sample_rate, "media_source_allowed": False,
+        }
+    return {
+        "playback_mode": "auto" if media_source_allowed else "buffered_mp3",
+        "output_codec": "mp3", "sample_rate": sample_rate,
+        "media_source_allowed": media_source_allowed,
     }
 
 
@@ -485,6 +538,11 @@ def voice_diagnostics(
             "configured": bool(os.getenv("SARVAM_API_KEY", "").strip()),
             "stt_model": os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
             "tts_model": normalize_sarvam_tts_model(os.getenv("SARVAM_TTS_MODEL"), premium=False),
+            "playback_mode": os.getenv(
+                "WEB_REALTIME_VOICE_PLAYBACK_MODE", "buffered_mp3"
+            ).strip().lower(),
+            "selected_codec": sarvam_tts_output_codec(),
+            "provider_sample_rate": sarvam_tts_sample_rate(),
         },
         "origin": {
             "configured_origins": configured_origins,
@@ -500,6 +558,7 @@ def voice_diagnostics(
 @router.post("/voice/sessions", status_code=201)
 def create_voice_session(
     request: Request, response: Response,
+    payload: dict[str, Any] | None = Body(default=None),
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     started = time.monotonic()
@@ -508,6 +567,10 @@ def create_voice_session(
     tier = selected_swico_tier(session, int(user.id))
     language = _resolved_reply_language(user)
     billing_exempt = is_internal_test_user(auth, user)
+    body = payload if isinstance(payload, dict) else {}
+    if len(body) > 1 or any(key != "browser_capabilities" for key in body):
+        raise HTTPException(422, "Invalid voice session metadata")
+    playback = _voice_playback_selection(body.get("browser_capabilities"))
 
     def outcome(status: int, code: str) -> None:
         logger.info("voice_session_creation", extra={
@@ -573,6 +636,9 @@ def create_voice_session(
     metadata = VoiceTicket(
         session_id=session_id, user_id=int(user.id), tier=tier, language=language,
         billing_exempt=billing_exempt, expires_at_epoch=expires_epoch,
+        playback_mode=playback["playback_mode"], output_codec=playback["output_codec"],
+        sample_rate=playback["sample_rate"],
+        media_source_allowed=playback["media_source_allowed"],
     )
     try:
         ticket = _tickets().mint(metadata, ttl, max_session)
@@ -600,6 +666,10 @@ def create_voice_session(
         "tier": tier,
         "tier_label": SWICO_TIER_LABELS[tier],
         "language": language,
+        "playback_mode": playback["playback_mode"],
+        "selected_codec": playback["output_codec"],
+        "provider_sample_rate": playback["sample_rate"] if playback["output_codec"] == "linear16" else None,
+        "media_source_allowed": playback["media_source_allowed"],
         "wallet": wallets["chat"],
         "wallets": wallets,
     }
@@ -614,6 +684,30 @@ def _allowed_websocket_origin(origin: str | None) -> bool:
 
 async def _voice_send(websocket: WebSocket, message_type: str, **data: Any) -> None:
     await websocket.send_json({"protocol_version": 1, "type": message_type, **data})
+
+
+def _voice_audio_start(metadata: VoiceTicket, turn_number: int) -> dict[str, Any]:
+    linear16 = metadata.output_codec == "linear16"
+    return {
+        "content_type": "audio/L16" if linear16 else "audio/mpeg",
+        "codec": metadata.output_codec,
+        "sample_rate": metadata.sample_rate if linear16 else None,
+        "channels": 1,
+        "sample_format": "pcm_s16le" if linear16 else None,
+        "playback_mode": metadata.playback_mode,
+        "turn_number": int(turn_number),
+    }
+
+
+def _voice_audio_end(
+    metadata: VoiceTicket, turn_number: int, *, chunks_sent: int,
+    bytes_sent: int, characters: int, interrupted: bool,
+) -> dict[str, Any]:
+    return {
+        "turn_number": int(turn_number), "codec": metadata.output_codec,
+        "chunks_sent": max(0, int(chunks_sent)), "bytes_sent": max(0, int(bytes_sent)),
+        "characters": max(0, int(characters)), "interrupted": bool(interrupted),
+    }
 
 
 def _voice_tts_chunks(buffer: str, *, final: bool = False) -> tuple[list[str], str]:
@@ -869,7 +963,9 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             )
             billing_session.commit()
 
-    async def synthesize_stream(text_queue: asyncio.Queue[str | None], request_id: str) -> None:
+    async def synthesize_stream(
+        text_queue: asyncio.Queue[str | None], request_id: str, active_turn: int,
+    ) -> None:
         nonlocal stage
         first_chunk = await text_queue.get()
         if first_chunk is None:
@@ -900,6 +996,8 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         submitted = 0
         reserved_micros = initial.micros
         audio_reader: asyncio.Task[Any] | None = None
+        chunks_sent = 0
+        bytes_sent = 0
 
         def settle_or_release() -> None:
             with SessionLocal() as billing_session:
@@ -922,16 +1020,30 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 billing_session.commit()
 
         async def send_audio() -> None:
-            sequence = 0
+            nonlocal chunks_sent, bytes_sent
             async for audio_chunk in provider.tts_audio():
-                sequence += 1
-                await websocket.send_bytes(sequence.to_bytes(4, "big") + audio_chunk)
+                if not audio_chunk:
+                    raise SarvamStreamingError(
+                        "Sarvam returned empty TTS audio.", category="protocol",
+                        safe_code="invalid_audio_frame", retryable=False,
+                    )
+                if metadata.output_codec == "linear16" and len(audio_chunk) % 2:
+                    raise SarvamStreamingError(
+                        "Sarvam returned misaligned PCM audio.", category="protocol",
+                        safe_code="invalid_audio_frame", retryable=False,
+                    )
+                chunks_sent += 1
+                bytes_sent += len(audio_chunk)
+                await websocket.send_bytes(chunks_sent.to_bytes(4, "big") + audio_chunk)
 
         try:
             stage = "sarvam_tts_connect"
-            await provider.connect_tts(metadata.language)
+            await provider.connect_tts(
+                metadata.language, output_codec=metadata.output_codec,
+                sample_rate=metadata.sample_rate,
+            )
             await set_state(VoiceState.SPEAKING)
-            await _voice_send(websocket, "audio.start", content_type="audio/mpeg")
+            await _voice_send(websocket, "audio.start", **_voice_audio_start(metadata, active_turn))
             stage = "tts_stream"
             audio_reader = asyncio.create_task(send_audio(), name="voice-tts-audio")
             chunk: str | None = first_chunk
@@ -966,7 +1078,10 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 await provider.flush_tts()
             if audio_reader:
                 await audio_reader
-            await _voice_send(websocket, "audio.end", characters=submitted, interrupted=exhausted)
+            await _voice_send(websocket, "audio.end", **_voice_audio_end(
+                metadata, active_turn, chunks_sent=chunks_sent, bytes_sent=bytes_sent,
+                characters=submitted, interrupted=exhausted,
+            ))
         except asyncio.CancelledError:
             await provider.close_tts()
             raise
@@ -1011,7 +1126,9 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             text_queue: asyncio.Queue[str | None] = asyncio.Queue()
             delta_queue: asyncio.Queue[str] = asyncio.Queue()
             tts_task = asyncio.create_task(
-                synthesize_stream(text_queue, f"realtime-tts:{metadata.session_id}:{active_turn}"),
+                synthesize_stream(
+                    text_queue, f"realtime-tts:{metadata.session_id}:{active_turn}", active_turn,
+                ),
                 name="voice-tts",
             )
             loop = asyncio.get_running_loop()

@@ -59,24 +59,50 @@ const addModule = vi.fn().mockResolvedValue(undefined)
 const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices')
 
 class FakeAudioContext {
+  static suspended = false
+  static instances: FakeAudioContext[] = []
   audioWorklet = { addModule }
   destination = {}
   sampleRate = 48000
+  state = FakeAudioContext.suspended ? 'suspended' : 'running'
+  currentTime = 1
   createMediaStreamSource() { return { connect:vi.fn() } }
   createGain() { return { gain:{ value:1 }, connect:vi.fn() } }
+  createBuffer(channels: number, length: number, sampleRate: number) {
+    return { numberOfChannels:channels, length, sampleRate, duration:length / sampleRate, copyToChannel:vi.fn() }
+  }
+  createBufferSource() { return new FakeBufferSource() as never }
+  resume = vi.fn(async () => { this.state = 'running' })
   close = closeContext
+  constructor() { FakeAudioContext.instances.push(this) }
+}
+
+class FakeBufferSource {
+  static instances: FakeBufferSource[] = []
+  buffer: { duration:number } | null = null
+  onended: (() => void) | null = null
+  connect = vi.fn()
+  disconnect = vi.fn()
+  start = vi.fn()
+  stop = vi.fn()
+  constructor() { FakeBufferSource.instances.push(this) }
 }
 
 class FakeSourceBuffer extends EventTarget {
+  static appendThrows = false
   updating = false
   appended: ArrayBuffer[] = []
-  appendBuffer(value: ArrayBuffer) { this.appended.push(value) }
+  appendBuffer(value: ArrayBuffer) {
+    if (FakeSourceBuffer.appendThrows) throw new DOMException('private details', 'QuotaExceededError')
+    this.appended.push(value)
+  }
   abort = vi.fn()
 }
 
 class FakeMediaSource extends EventTarget {
   static latest: FakeMediaSource | null = null
   static isTypeSupported = () => true
+  static addThrows = false
   readyState = 'open'
   buffer = new FakeSourceBuffer()
   endOfStream = vi.fn()
@@ -84,13 +110,17 @@ class FakeMediaSource extends EventTarget {
     super(); FakeMediaSource.latest = this
     window.setTimeout(() => this.dispatchEvent(new Event('sourceopen')), 0)
   }
-  addSourceBuffer() { return this.buffer }
+  addSourceBuffer() {
+    if (FakeMediaSource.addThrows) throw new DOMException('private details', 'NotSupportedError')
+    return this.buffer
+  }
 }
 
 class FakeAudio extends EventTarget {
   static instances: FakeAudio[] = []
   static rejectPlay = false
   src = ''
+  error: { code:number } | null = null
   pause = vi.fn()
   play = vi.fn(() => FakeAudio.rejectPlay
     ? Promise.reject(new DOMException('blocked', 'NotAllowedError')) : Promise.resolve())
@@ -99,6 +129,7 @@ class FakeAudio extends EventTarget {
 
 afterEach(() => {
   vi.clearAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); FakeWebSocket.instances = []; FakeWebSocket.autoEvent = 'open'; FakeWebSocket.autoReady = true; FakeAudio.instances = []; FakeAudio.rejectPlay = false; FakeWorkletNode.latest = null; FakeMediaSource.latest = null
+  FakeAudioContext.suspended = false; FakeAudioContext.instances = []; FakeBufferSource.instances = []; FakeMediaSource.addThrows = false; FakeSourceBuffer.appendThrows = false
   if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices)
   else Reflect.deleteProperty(navigator, 'mediaDevices')
 })
@@ -124,6 +155,8 @@ const ticket = (id = 'session-test') => ({
   protocol_version:1 as const, session_id:id, ticket:`fresh-${id}`,
   websocket_url:'ws://localhost:8000/api/web/voice/ws', tier:'lite', tier_label:'Swico Lite',
   language:'en' as const, wallets:{ chat:{} as never, voice:{} as never },
+  playback_mode:'buffered_mp3' as const, selected_codec:'mp3' as const,
+  provider_sample_rate:null, media_source_allowed:false,
 })
 const testUser = {} as never
 
@@ -154,7 +187,11 @@ it('mints one ticket in Strict Mode, parses events, sends mute, and releases med
   await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
   await waitFor(() => expect(addModule).toHaveBeenCalledWith('/audio-worklet.js'))
   expect(apiJson).toHaveBeenCalledTimes(1)
-  expect(apiJson).toHaveBeenCalledWith(expect.anything(), '/api/web/voice/sessions', { method:'POST' })
+  expect(apiJson).toHaveBeenCalledWith(expect.anything(), '/api/web/voice/sessions', {
+    method:'POST', body:JSON.stringify({ browser_capabilities:{
+      web_audio:true, media_source:true, media_source_mp3:true,
+    } }),
+  })
   const socket = FakeWebSocket.instances[0]
   await waitFor(() => expect(result.current.phase).toBe('listening'))
   expect(String(socket.url)).toContain('ticket=one-use-secret')
@@ -166,12 +203,15 @@ it('mints one ticket in Strict Mode, parses events, sends mute, and releases med
   expect(result.current.phase).toBe('thinking')
   act(() => socket.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'assistant.delta', delta:'Hello' }) })))
   expect(result.current.assistant).toBe('Hello')
-  act(() => socket.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.start', content_type:'audio/mpeg' }) })))
+  act(() => socket.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/mpeg', codec:'mp3', sample_rate:null,
+    channels:1, sample_format:null, playback_mode:'buffered_mp3', turn_number:1,
+  }) })))
   await waitFor(() => expect(result.current.phase).toBe('speaking'))
-  await waitFor(() => expect(FakeMediaSource.latest).not.toBeNull())
   const progressive = new Uint8Array([0, 0, 0, 1, 10, 20, 30]).buffer
   act(() => socket.dispatchEvent(new MessageEvent('message', { data:progressive })))
-  expect(FakeMediaSource.latest?.buffer.appended[0].byteLength).toBe(3)
+  expect(FakeMediaSource.latest).toBeNull()
+  expect(FakeAudio.instances).toHaveLength(0)
   const bargePcm = new ArrayBuffer(1024)
   act(() => {
     for (let index = 0; index < 65; index += 1) {
@@ -194,7 +234,6 @@ it('mints one ticket in Strict Mode, parses events, sends mute, and releases med
   await waitFor(() => expect(stopTrack).toHaveBeenCalled())
   expect(closeContext).toHaveBeenCalled()
   expect(FakeWorkletNode.latest?.disconnect).toHaveBeenCalled()
-  expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-voice')
 })
 
 it('preserves a structured error across close and retry mints a fresh ticket after cleanup', async () => {
@@ -335,20 +374,25 @@ it('sends JSON ping keepalives and stops the interval during cleanup', async () 
   expect(ws.sent).toHaveLength(sentAtCleanup)
 })
 
-it('drains progressive audio after audio.end and waits for the media ended event', async () => {
+it('buffers ordered MP3 until audio.end, then waits for the audio ended event', async () => {
   stubBrowser()
   vi.mocked(apiJson).mockResolvedValue(ticket('drain'))
   const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
   await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
   await waitFor(() => expect(result.current.phase).toBe('listening'))
   const ws = FakeWebSocket.instances[0]
-  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.start', content_type:'audio/mpeg' }) })))
-  await waitFor(() => expect(FakeMediaSource.latest?.buffer).toBeDefined())
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/mpeg', codec:'mp3',
+    sample_rate:null, channels:1, sample_format:null, playback_mode:'buffered_mp3', turn_number:1,
+  }) })))
   act(() => ws.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0, 0, 0, 1, 1, 2, 3]).buffer })))
+  expect(FakeAudio.instances).toHaveLength(0)
   act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.end' }) })))
+  await waitFor(() => expect(FakeAudio.instances).toHaveLength(1))
   expect(FakeAudio.instances[0].pause).not.toHaveBeenCalled()
-  expect(FakeMediaSource.latest?.buffer.abort).not.toHaveBeenCalled()
-  expect(FakeMediaSource.latest?.endOfStream).toHaveBeenCalled()
+  expect(FakeMediaSource.latest).toBeNull()
+  expect(FakeAudio.instances[0].src).toBe('blob:test-voice')
+  expect(FakeAudio.instances[0].play).toHaveBeenCalledTimes(1)
   expect(result.current.phase).toBe('speaking')
   act(() => FakeAudio.instances[0].dispatchEvent(new Event('ended')))
   expect(result.current.phase).toBe('listening')
@@ -364,7 +408,10 @@ it('uses a bounded Blob fallback and keeps autoplay failure non-fatal', async ()
   await waitFor(() => expect(result.current.phase).toBe('listening'))
   const ws = FakeWebSocket.instances[0]
   act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'assistant.delta', delta:'Visible answer' }) })))
-  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.start', content_type:'audio/mpeg' }) })))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/mpeg', codec:'mp3', sample_rate:null,
+    channels:1, sample_format:null, playback_mode:'buffered_mp3', turn_number:1,
+  }) })))
   act(() => ws.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0, 0, 0, 1, 4, 5, 6]).buffer })))
   act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.end' }) })))
   await waitFor(() => expect(result.current.playbackState).toBe('autoplay_blocked'))
@@ -380,6 +427,198 @@ it('uses a bounded Blob fallback and keeps autoplay failure non-fatal', async ()
   act(() => result.current.skipPlayback())
   expect(result.current.phase).toBe('listening')
   expect(URL.revokeObjectURL).toHaveBeenCalled()
+})
+
+it('orders buffered MP3, ignores duplicates, detects a temporary gap, and keeps server Listening visually Speaking', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue(ticket('ordered'))
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null, collectDiagnostics:true }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  const message = (value: object) => act(() => ws.dispatchEvent(new MessageEvent('message', {
+    data:JSON.stringify({ protocol_version:1, ...value }),
+  })))
+  message({ type:'audio.start', content_type:'audio/mpeg', codec:'mp3', sample_rate:null,
+    channels:1, sample_format:null, playback_mode:'buffered_mp3', turn_number:1 })
+  const packet = (sequence: number, ...bytes: number[]) => {
+    const value = new Uint8Array(4 + bytes.length); new DataView(value.buffer).setUint32(0, sequence); value.set(bytes, 4)
+    act(() => ws.dispatchEvent(new MessageEvent('message', { data:value.buffer })))
+  }
+  packet(1, 1, 2); packet(1, 9, 9); packet(3, 5, 6); packet(2, 3, 4)
+  message({ type:'state.changed', state:'listening' })
+  expect(result.current.phase).toBe('speaking')
+  message({ type:'audio.end', turn_number:1, codec:'mp3', chunks_sent:3, bytes_sent:6, characters:4, interrupted:false })
+  await waitFor(() => expect(FakeAudio.instances).toHaveLength(1))
+  expect(result.current.playbackDiagnostics.duplicate_chunks).toBe(1)
+  expect(result.current.playbackDiagnostics.missing_sequence_detected).toBe(true)
+  expect(result.current.playbackDiagnostics.audio_chunks_received).toBe(3)
+  expect(result.current.playbackDiagnostics.audio_bytes_received).toBe(6)
+  expect(result.current.phase).toBe('speaking')
+  act(() => FakeAudio.instances[0].dispatchEvent(new Event('ended')))
+  expect(result.current.phase).toBe('listening')
+})
+
+it.each([
+  ['source_buffer_create', () => { FakeMediaSource.addThrows = true }],
+  ['source_buffer_append', () => { FakeSourceBuffer.appendThrows = true }],
+] as const)('falls back to retained MP3 when MediaSource fails at %s', async (stage, arrange) => {
+  stubBrowser(); arrange()
+  vi.mocked(apiJson).mockResolvedValue({
+    ...ticket(`media-${stage}`), playback_mode:'auto', media_source_allowed:true,
+  })
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null, collectDiagnostics:true }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/mpeg', codec:'mp3',
+    sample_rate:null, channels:1, sample_format:null, playback_mode:'auto', turn_number:1,
+  }) })))
+  await waitFor(() => expect(FakeMediaSource.latest).not.toBeNull())
+  if (stage === 'source_buffer_create') {
+    await waitFor(() => expect(result.current.playbackDiagnostics.fallback_used).toBe(true))
+  } else {
+    await waitFor(() => expect(result.current.playbackDiagnostics.source_buffer_created).toBe(true))
+  }
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,1,1,2]).buffer })))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.end' }) })))
+  await waitFor(() => expect(result.current.playbackDiagnostics.fallback_used).toBe(true))
+  await waitFor(() => expect(FakeAudio.instances.some(item => item.src === 'blob:test-voice')).toBe(true))
+  expect(result.current.playbackDiagnostics.failure_stage).toBe(stage)
+  expect(result.current.playbackDiagnostics.dom_exception_name).toMatch(/NotSupportedError|QuotaExceededError/)
+  expect(JSON.stringify(result.current.playbackDiagnostics)).not.toContain('private details')
+})
+
+it('retains all MP3 after an audible MediaSource failure and replays without another ticket or TTS request', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue({ ...ticket('media-audible'), playback_mode:'auto', media_source_allowed:true })
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null, collectDiagnostics:true }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/mpeg', codec:'mp3', sample_rate:null,
+    channels:1, sample_format:null, playback_mode:'auto', turn_number:1,
+  }) })))
+  await waitFor(() => expect(result.current.playbackDiagnostics.source_buffer_created).toBe(true))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,1,1,2]).buffer })))
+  act(() => FakeMediaSource.latest?.buffer.dispatchEvent(new Event('updateend')))
+  await waitFor(() => expect(FakeAudio.instances[0].play).toHaveBeenCalled())
+  act(() => FakeAudio.instances[0].dispatchEvent(new Event('playing')))
+  act(() => FakeMediaSource.latest?.buffer.dispatchEvent(new Event('error')))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,2,3,4]).buffer })))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.end' }) })))
+  expect(result.current.playbackState).toBe('playback_error')
+  expect(result.current.canReplay).toBe(true)
+  expect(result.current.playbackWarning).toMatch(/Replay the full spoken answer/i)
+  const ticketCalls = vi.mocked(apiJson).mock.calls.length
+  await act(async () => { await result.current.manualPlay() })
+  expect(FakeAudio.instances).toHaveLength(2)
+  expect(FakeAudio.instances[1].src).toBe('blob:test-voice')
+  expect(apiJson).toHaveBeenCalledTimes(ticketCalls)
+})
+
+it('uses retained Blob after a SourceBuffer error before playback begins', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue({ ...ticket('buffer-error'), playback_mode:'auto', media_source_allowed:true })
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null, collectDiagnostics:true }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/mpeg', codec:'mp3', sample_rate:null,
+    channels:1, sample_format:null, playback_mode:'auto', turn_number:1,
+  }) })))
+  await waitFor(() => expect(result.current.playbackDiagnostics.source_buffer_created).toBe(true))
+  act(() => FakeMediaSource.latest?.buffer.dispatchEvent(new Event('error')))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,1,1,2]).buffer })))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.end' }) })))
+  await waitFor(() => expect(FakeAudio.instances.some(item => item.src === 'blob:test-voice')).toBe(true))
+  expect(result.current.playbackDiagnostics.failure_stage).toBe('source_buffer_error')
+  expect(result.current.playbackDiagnostics.fallback_used).toBe(true)
+})
+
+it.each([
+  [1, 'aborted'], [2, 'network'], [3, 'decode'], [4, 'source_not_supported'],
+] as const)('maps MediaError %s to safe category %s while preserving text and replay', async (code, category) => {
+  stubBrowser({ mediaSource:false })
+  vi.mocked(apiJson).mockResolvedValue(ticket(`media-error-${code}`))
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null, collectDiagnostics:true }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'assistant.delta', delta:'Still visible' }) })))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/mpeg', codec:'mp3', sample_rate:null,
+    channels:1, sample_format:null, playback_mode:'buffered_mp3', turn_number:1,
+  }) })))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,1,1,2]).buffer })))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.end' }) })))
+  await waitFor(() => expect(FakeAudio.instances).toHaveLength(1))
+  FakeAudio.instances[0].error = { code }
+  act(() => FakeAudio.instances[0].dispatchEvent(new Event('error')))
+  expect(result.current.playbackDiagnostics.audio_element_media_error_code).toBe(code)
+  expect(result.current.playbackDiagnostics.media_error_category).toBe(category)
+  expect(result.current.assistant).toBe('Still visible')
+  expect(result.current.error).toBe('')
+  expect(result.current.canReplay).toBe(true)
+})
+
+it('streams LINEAR16 at the provider rate, waits for final scheduled source, and stops all sources on barge-in', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue({
+    ...ticket('pcm'), playback_mode:'pcm_stream', selected_codec:'linear16', provider_sample_rate:24000,
+  })
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null, collectDiagnostics:true }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  const ws = FakeWebSocket.instances[0]
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/L16', codec:'linear16',
+    sample_rate:24000, channels:1, sample_format:'pcm_s16le', playback_mode:'pcm_stream', turn_number:1,
+  }) })))
+  const samples = new Int16Array([0, 32767, -32768, 16384])
+  const packet = new Uint8Array(4 + samples.byteLength); new DataView(packet.buffer).setUint32(0, 1)
+  packet.set(new Uint8Array(samples.buffer), 4)
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:packet.buffer })))
+  const nextPacket = new Uint8Array(packet); new DataView(nextPacket.buffer).setUint32(0, 2)
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:nextPacket.buffer })))
+  expect(FakeBufferSource.instances).toHaveLength(2)
+  expect(FakeBufferSource.instances[0].start).toHaveBeenCalledWith(1.16)
+  expect(FakeBufferSource.instances[1].start).toHaveBeenCalledWith(1.16 + 4 / 24000)
+  expect(result.current.playbackDiagnostics.scheduled_pcm_seconds).toBeCloseTo(8 / 24000)
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'audio.end' }) })))
+  expect(result.current.phase).toBe('speaking')
+  act(() => FakeBufferSource.instances[0].onended?.())
+  expect(result.current.phase).toBe('speaking')
+  act(() => FakeBufferSource.instances[1].onended?.())
+  expect(result.current.phase).toBe('listening')
+
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/L16', codec:'linear16', sample_rate:24000,
+    channels:1, sample_format:'pcm_s16le', playback_mode:'pcm_stream', turn_number:2,
+  }) })))
+  const second = new Uint8Array(packet); new DataView(second.buffer).setUint32(0, 1)
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:second.buffer })))
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'warning', code:'assistant_interrupted' }) })))
+  expect(FakeBufferSource.instances.at(-1)?.stop).toHaveBeenCalled()
+  expect(result.current.phase).toBe('interrupted')
+})
+
+it('preserves suspended PCM until a manual user action resumes the dedicated AudioContext', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue({
+    ...ticket('pcm-blocked'), playback_mode:'pcm_stream', selected_codec:'linear16', provider_sample_rate:16000,
+  })
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null, collectDiagnostics:true }))
+  await waitFor(() => expect(result.current.phase).toBe('listening'))
+  FakeAudioContext.instances[0].state = 'suspended'
+  const ws = FakeWebSocket.instances[0]
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'audio.start', content_type:'audio/L16', codec:'linear16', sample_rate:16000,
+    channels:1, sample_format:'pcm_s16le', playback_mode:'pcm_stream', turn_number:1,
+  }) })))
+  const value = new Uint8Array([0,0,0,1,1,0,2,0])
+  act(() => ws.dispatchEvent(new MessageEvent('message', { data:value.buffer })))
+  await waitFor(() => expect(result.current.playbackState).toBe('autoplay_blocked'))
+  expect(FakeBufferSource.instances).toHaveLength(0)
+  await act(async () => { await result.current.manualPlay() })
+  expect(FakeBufferSource.instances).toHaveLength(1)
 })
 
 it('does not mint a duplicate ticket when chat synchronization changes the thread prop', async () => {

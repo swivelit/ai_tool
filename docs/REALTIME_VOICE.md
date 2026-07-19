@@ -90,19 +90,43 @@ Representative messages:
 {"protocol_version":1,"type":"stt.final","transcript":"...","turn_number":1}
 {"protocol_version":1,"type":"assistant.start","turn_number":1}
 {"protocol_version":1,"type":"assistant.delta","delta":"...","turn_number":1}
-{"protocol_version":1,"type":"audio.start","content_type":"audio/mpeg"}
-{"protocol_version":1,"type":"audio.end","characters":42,"interrupted":false}
+{"protocol_version":1,"type":"audio.start","content_type":"audio/mpeg","codec":"mp3","sample_rate":null,"channels":1,"sample_format":null,"playback_mode":"buffered_mp3","turn_number":1}
+{"protocol_version":1,"type":"audio.end","turn_number":1,"codec":"mp3","chunks_sent":8,"bytes_sent":32768,"characters":42,"interrupted":false}
 {"protocol_version":1,"type":"turn.done","thread_id":"...","user_message_id":"...","assistant_message_id":"...","turn_number":1,"input_mode":"realtime_voice","completion_status":"complete"}
 ```
 
-`audio.end` means provider input is complete, not playback is complete. Ordered
-chunks continue appending; MediaSource ends only after its queue is empty and
-SourceBuffer is idle; the UI remains Speaking until the audio element emits
-`ended`. Only accepted barge-in, End conversation, cleanup, or fatal playback
-failure aborts/clears audio. Unsupported progressive MP3 uses a reply-local
-bounded Blob (8 MiB/96 chunks), revoked on every end/interruption/retry/cleanup.
-Autoplay rejection preserves the socket, assistant text, and buffered audio and
-shows accessible **Tap to play** and Skip audio actions.
+`audio.end` means provider output is complete, not browser playback is complete.
+Every binary message remains a four-byte big-endian sequence followed by the
+provider payload. In the default `buffered_mp3` mode the browser never uses
+MediaSource: it rejects duplicates, detects gaps, retains at most 8 MiB/96
+chunks, concatenates them in sequence order only after `audio.end`, creates one
+`audio/mpeg` Blob URL, and calls `play()` only after attaching that URL. The UI
+stays Speaking until `ended`. Autoplay rejection retains the same Blob and URL
+for **Tap to play**; decode failure permits one manual replay from the same Blob;
+Skip, barge-in, close, retry, thread teardown, page unload, and unmount pause and
+revoke it. None of these paths requests or bills TTS again.
+
+`pcm_stream` carries raw mono signed 16-bit little-endian samples with no
+per-chunk WAV header. A dedicated AudioContext converts Int16 to Float32,
+creates one-channel AudioBuffers declared at the provider sample rate, and
+schedules sources against a monotonic clock with a 160 ms initial jitter
+buffer. The browser performs sample-rate conversion when its device rate
+differs. `audio.end` waits for the final scheduled source. Suspended contexts
+retain queued PCM for **Tap to enable audio**. Barge-in stops all source nodes,
+clears unscheduled PCM, and resets the schedule.
+
+`auto` may use MediaSource only when the session request reports Web Audio and
+MP3 MediaSource capability and `MediaSource.isTypeSupported("audio/mpeg")`
+agrees locally. A complete ordered MP3 copy is retained independently. Failure
+before audible playback falls back to the complete Blob at `audio.end`; failure
+after audible playback stops the progressive element and offers **Replay full
+spoken answer** from the beginning. MediaSource is therefore an optimization,
+never the sole production decoder.
+
+The hook tracks server voice state separately from local playback. A server
+Listening transition cannot override local Speaking while an element or PCM
+source remains active; microphone forwarding stays gated except through the
+existing provider-confirmed barge-in path.
 
 `turn.done` is emitted only after both ordinary chat messages are complete and
 the chat reservation is settled. The web app activates a new Voice-created
@@ -186,6 +210,9 @@ error. The first structured error always wins over a later socket close.
 
 ```dotenv
 WEB_REALTIME_VOICE_ENABLED=false
+WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3
+SARVAM_TTS_STREAM_OUTPUT_CODEC=mp3
+SARVAM_TTS_STREAM_SAMPLE_RATE=24000
 WEB_SEPARATE_VOICE_CREDITS_ENABLED=false
 WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS=60
 WEB_REALTIME_VOICE_MAX_SESSION_SECONDS=900
@@ -220,11 +247,15 @@ start is blocked with refresh guidance; ordinary text chat continues.
 returns 404 unless `is_internal_test_user(...)` is true. Its no-store response
 makes no provider call and includes only safe release/protocol/Alembic
 identifiers, feature/auth booleans, wallet preflight counts, Valkey/Sarvam
-configuration readiness, exact configured origins, and expected WebSocket
+configuration readiness (including playback mode, selected operator codec, and
+provider sample rate), exact configured origins, and expected WebSocket
 scheme/path. Session status is limited to `active_session` and
 `remaining_lock_ttl_seconds`. The internal UI additionally shows the selected
 device label after permission, browser/resampled rates, RMS, noise floor,
-threshold, emitted frames, and backpressure drops. It excludes email, Firebase UID, ticket, credentials/URLs, header
+threshold, emitted frames, backpressure drops, safe MediaError category/code,
+allowlisted DOMException name, failure stage, chunk/byte/sequence counts,
+first-chunk/playback timings, fallback/autoplay state, scheduled PCM seconds,
+active sources, and playback completion. It excludes email, Firebase UID, ticket, credentials/URLs, header
 dumps, transcripts, audio, and provider bodies.
 
 ### Explicit live provider probe
@@ -235,12 +266,15 @@ An operator may deliberately run this billable interoperability check from
 
 ```bash
 ALLOW_LIVE_SARVAM_VOICE_PROBE=true .venv/bin/python -m scripts.voice_provider_probe --mode stt --language en
-ALLOW_LIVE_SARVAM_VOICE_PROBE=true .venv/bin/python -m scripts.voice_provider_probe --mode both --language ta --payload-encoding audio/wav
+ALLOW_LIVE_SARVAM_VOICE_PROBE=true .venv/bin/python -m scripts.voice_provider_probe --mode tts --language en --output-codec mp3 --sample-rate 24000 --validate-audio
+ALLOW_LIVE_SARVAM_VOICE_PROBE=true .venv/bin/python -m scripts.voice_provider_probe --mode both --language ta --payload-encoding audio/wav --output-codec linear16 --sample-rate 24000 --validate-audio
 ALLOW_LIVE_SARVAM_VOICE_PROBE=true .venv/bin/python -m scripts.voice_provider_probe --mode stt --language en --audio-file /safe/local/operator-fixture.wav
+ALLOW_LIVE_SARVAM_VOICE_PROBE=true .venv/bin/python -m scripts.voice_provider_probe --mode tts --language ta --output-codec mp3 --validate-audio --temporary-output /explicit/operator/path/swico-probe.mp3
 ```
 
 It also requires `SARVAM_API_KEY`, refuses without the exact guard, and prints
-only safe booleans/counts/codes—never transcripts, audio, keys, headers, URLs,
+only safe booleans/counts/codes—never transcripts, generated text, audio,
+base64, keys, headers, URLs,
 or provider response bodies. A synthetic run reports `protocol_accepted` only
 after a safe speech/transcript event; otherwise it reports
 `inconclusive_no_speech` and exits non-zero. `provider_error` and abnormal close
@@ -248,7 +282,7 @@ always fail. Payload comparison is an explicit separate operator invocation,
 never an automatic retry within a customer operation. Example mocked shape:
 
 ```json
-{"ok":true,"stt":{"handshake_succeeded":true,"payload_encoding":"audio/wav","input_audio_codec":"pcm_s16le","sample_rate":16000,"frame_samples":512,"frames_sent":32,"flush_sent":true,"speech_event_received":true,"transcript_event_received":false,"provider_safe_code":null,"provider_close_code":null,"classification":"protocol_accepted"}}
+{"ok":true,"tts":{"codec":"linear16","sample_rate":24000,"channels":1,"chunks_received":6,"bytes_received":48000,"samples_received":24000,"estimated_duration_ms":1000,"completion_event_received":true,"provider_safe_code":null,"provider_close_code":null}}
 ```
 
 ## Manual production verification and rollback
@@ -282,3 +316,30 @@ existing API service and deploy the API configuration. Bootstrap removes the
 entry point; existing ordinary chat/history and wallet data remain intact.
 Fix forward—do not roll back the database. Checkout remains disabled pending
 legal publication and payment verification.
+
+### Staged playback rollout
+
+Stage 1 is the production-safe default and is backward compatible when the new
+variables were previously absent:
+
+```dotenv
+SARVAM_TTS_STREAM_OUTPUT_CODEC=mp3
+WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3
+SARVAM_TTS_STREAM_SAMPLE_RATE=24000
+```
+
+Only after both English and Tamil LINEAR16 probes succeed, Stage 2 is:
+
+```dotenv
+SARVAM_TTS_STREAM_OUTPUT_CODEC=linear16
+SARVAM_TTS_STREAM_SAMPLE_RATE=24000
+WEB_REALTIME_VOICE_PLAYBACK_MODE=pcm_stream
+```
+
+Allowed playback modes are `buffered_mp3`, `pcm_stream`, and `auto`; operator
+codecs are `mp3` and `linear16`; sample rates are `8000`, `16000`, `22050`, and
+`24000`. The installed official `sarvamai 0.1.28` generated schema and socket
+serializer send `linear16` unchanged. A current narrative WebSocket guide also
+uses the label `pcm` for LINEAR16, so the provider adapter owns the wire mapping
+and Stage 2 remains gated on the explicit PCM probe. A codec is fixed in the
+one-use authenticated session before TTS and never changes during a paid turn.

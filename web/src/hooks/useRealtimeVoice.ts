@@ -5,6 +5,8 @@ import type { CreditBucket, VoiceTuning, Wallets } from '../types'
 
 export type VoicePhase = 'connecting' | 'listening' | 'endpoint_pending' | 'thinking' | 'speaking' | 'interrupted' | 'closing' | 'error' | 'closed'
 export type PlaybackState = 'provider_stream_open' | 'provider_stream_finished' | 'media_buffer_draining' | 'playing' | 'playback_finished' | 'interrupted' | 'playback_error' | 'autoplay_blocked'
+export type PlaybackMode = 'buffered_mp3' | 'pcm_stream' | 'auto'
+export type AudioCodec = 'mp3' | 'linear16'
 export type VoiceTurnDone = {
   thread_id: string; user_message_id: string; assistant_message_id: string;
   turn_number: number; input_mode: 'realtime_voice'; completion_status: 'complete';
@@ -13,6 +15,8 @@ type Ticket = {
   protocol_version: 1; session_id: string; ticket: string; websocket_url: string;
   tier: string; tier_label: string; language: 'en' | 'ta'; wallets: Wallets;
   approved_websocket_hosts?: string[];
+  playback_mode?: PlaybackMode; selected_codec?: AudioCodec;
+  provider_sample_rate?: number | null; media_source_allowed?: boolean;
 }
 type ProtocolMessage = { protocol_version: 1; type: string; [key: string]: unknown }
 type VoiceError = { code: string; message: string; credit_bucket?: CreditBucket }
@@ -21,11 +25,52 @@ export type MicrophoneDiagnostics = {
   currentRms: number; calibratedNoiseFloor: number; activeThreshold: number;
   emittedFrameCount: number; backpressureDroppedFrameCount: number;
 }
+export type PlaybackDiagnostics = {
+  playback_mode: PlaybackMode | null; selected_codec: AudioCodec | null; content_type: string | null;
+  provider_sample_rate: number | null; media_source_available: boolean;
+  media_source_type_supported: boolean; source_buffer_created: boolean;
+  audio_chunks_received: number; audio_bytes_received: number;
+  first_audio_chunk_ms: number | null; first_playback_ms: number | null;
+  expected_sequence: number; duplicate_chunks: number; missing_sequence_detected: boolean;
+  provider_audio_end_received: boolean; fallback_used: boolean;
+  audio_element_media_error_code: number | null; media_error_category: string | null;
+  dom_exception_name: string | null; failure_stage: string | null; autoplay_blocked: boolean;
+  scheduled_pcm_seconds: number; active_pcm_sources: number; playback_finished: boolean;
+}
+
+export function pcm16LeToFloat32(value: ArrayBuffer): Float32Array {
+  if (!value.byteLength || value.byteLength % 2) throw new DOMException('Invalid PCM frame', 'NotSupportedError')
+  const input = new DataView(value)
+  const output = new Float32Array(value.byteLength / 2)
+  for (let index = 0; index < output.length; index += 1) {
+    const sample = input.getInt16(index * 2, true)
+    output[index] = sample < 0 ? sample / 32768 : sample / 32767
+  }
+  return output
+}
 
 const OPEN_TIMEOUT_MS = 12_000
 const PING_INTERVAL_MS = 20_000
 const MAX_AUDIO_BYTES = 8 * 1024 * 1024
 const MAX_AUDIO_CHUNKS = 96
+const PCM_JITTER_SECONDS = 0.16
+const SAFE_DOM_EXCEPTION_NAMES = new Set([
+  'NotSupportedError', 'InvalidStateError', 'QuotaExceededError', 'AbortError',
+  'NotAllowedError', 'UnknownError',
+])
+const MEDIA_ERROR_CATEGORIES: Record<number, string> = {
+  1:'aborted', 2:'network', 3:'decode', 4:'source_not_supported',
+}
+const EMPTY_PLAYBACK_DIAGNOSTICS: PlaybackDiagnostics = {
+  playback_mode:null, selected_codec:null, content_type:null, provider_sample_rate:null,
+  media_source_available:false, media_source_type_supported:false, source_buffer_created:false,
+  audio_chunks_received:0, audio_bytes_received:0, first_audio_chunk_ms:null,
+  first_playback_ms:null, expected_sequence:1, duplicate_chunks:0,
+  missing_sequence_detected:false, provider_audio_end_received:false, fallback_used:false,
+  audio_element_media_error_code:null, media_error_category:null, dom_exception_name:null,
+  failure_stage:null, autoplay_blocked:false, scheduled_pcm_seconds:0,
+  active_pcm_sources:0, playback_finished:true,
+}
 const DEFAULT_TUNING: VoiceTuning = {
   calibration_ms:400, noise_multiplier:2.4, threshold_min:0.012,
   threshold_max:0.065, quiet_fallback:0.008, no_speech_warning_ms:10_000,
@@ -92,6 +137,8 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
   const [errorCode, setErrorCode] = useState('')
   const [errorStatus, setErrorStatus] = useState<number | null>(null)
   const [playbackWarning, setPlaybackWarning] = useState('')
+  const [serverVoiceState, setServerVoiceState] = useState<VoicePhase>('connecting')
+  const [playbackDiagnostics, setPlaybackDiagnostics] = useState<PlaybackDiagnostics>(EMPTY_PLAYBACK_DIAGNOSTICS)
   const [ticketInfo, setTicketInfo] = useState<Ticket | null>(null)
   const [creditRequired, setCreditRequired] = useState<CreditBucket | null>(null)
   const [microphoneLevel, setMicrophoneLevel] = useState(0)
@@ -104,19 +151,38 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
   const socket = useRef<WebSocket | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const context = useRef<AudioContext | null>(null)
+  const playbackContext = useRef<AudioContext | null>(null)
   const worklet = useRef<AudioWorkletNode | null>(null)
   const sequence = useRef(0)
   const mediaSource = useRef<MediaSource | null>(null)
   const sourceBuffer = useRef<SourceBuffer | null>(null)
   const audio = useRef<HTMLAudioElement | null>(null)
   const objectUrl = useRef<string | null>(null)
-  const audioQueue = useRef<ArrayBuffer[]>([])
-  const fallbackChunks = useRef<ArrayBuffer[]>([])
+  const mediaQueue = useRef<ArrayBuffer[]>([])
+  const retainedChunks = useRef(new Map<number, ArrayBuffer>())
   const audioBytes = useRef(0)
-  const fallbackMode = useRef(false)
+  const playbackMode = useRef<PlaybackMode>('buffered_mp3')
+  const selectedCodec = useRef<AudioCodec>('mp3')
+  const providerSampleRate = useRef<number | null>(null)
+  const contentType = useRef('audio/mpeg')
+  const mediaSourceAllowed = useRef(false)
+  const mediaSourceFailed = useRef(false)
+  const mediaSourceAudible = useRef(false)
+  const mediaSourceReplayRequired = useRef(false)
+  const firstAppendPending = useRef(false)
   const providerFinished = useRef(false)
   const audioEnded = useRef(true)
   const audioSequences = useRef(new Set<number>())
+  const expectedAudioSequence = useRef(1)
+  const duplicateAudioChunks = useRef(0)
+  const audioStartedAt = useRef(0)
+  const manualReplayAvailable = useRef(false)
+  const playBufferedRef = useRef<((manual?: boolean) => void) | null>(null)
+  const replayAttempted = useRef(false)
+  const pcmPending = useRef(new Map<number, ArrayBuffer>())
+  const pcmSources = useRef(new Set<AudioBufferSourceNode>())
+  const nextPlaybackTime = useRef(0)
+  const pcmScheduledSeconds = useRef(0)
   const mutedRef = useRef(false)
   const phaseRef = useRef<VoicePhase>('connecting')
   const closing = useRef(false)
@@ -142,6 +208,10 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
   const readyWaiter = useRef<{ resolve:() => void; reject:(error:Error) => void } | null>(null)
   const emittedFrameCount = useRef(0)
   const backpressureDroppedFrameCount = useRef(0)
+
+  const updatePlaybackDiagnostics = useCallback((patch: Partial<PlaybackDiagnostics>) => {
+    if (collectDiagnostics) setPlaybackDiagnostics(value => ({ ...value, ...patch }))
+  }, [collectDiagnostics])
 
   useEffect(() => {
     mutedRef.current = muted
@@ -178,34 +248,96 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
   const stopPlayback = useCallback((state: PlaybackState = 'interrupted') => {
     detachPlaybackListeners()
     audio.current?.pause()
-    audioQueue.current = []; fallbackChunks.current = []; audioBytes.current = 0
-    audioEnded.current = true
+    for (const source of pcmSources.current) {
+      source.onended = null
+      try { source.stop() } catch { /* source already ended */ }
+      try { source.disconnect() } catch { /* source already detached */ }
+    }
+    pcmSources.current.clear(); pcmPending.current.clear(); nextPlaybackTime.current = 0
     if (sourceBuffer.current?.updating) {
       try { sourceBuffer.current.abort() } catch { /* already detached */ }
     }
     audio.current = null; sourceBuffer.current = null; mediaSource.current = null
-    providerFinished.current = false; fallbackMode.current = false
-    audioSequences.current.clear(); revokeObjectUrl(); setPlaybackState(state)
-  }, [detachPlaybackListeners, revokeObjectUrl])
+    mediaQueue.current = []; retainedChunks.current.clear(); audioBytes.current = 0
+    providerFinished.current = false; audioEnded.current = true
+    mediaSourceFailed.current = false; mediaSourceAudible.current = false
+    mediaSourceReplayRequired.current = false
+    manualReplayAvailable.current = false; replayAttempted.current = false
+    audioSequences.current.clear(); expectedAudioSequence.current = 1
+    duplicateAudioChunks.current = 0
+    revokeObjectUrl(); setPlaybackState(state)
+    updatePlaybackDiagnostics({ active_pcm_sources:0, playback_finished:state === 'playback_finished' })
+  }, [detachPlaybackListeners, revokeObjectUrl, updatePlaybackDiagnostics])
 
   const finishPlayback = useCallback(() => {
     detachPlaybackListeners(); revokeObjectUrl()
     audio.current = null; sourceBuffer.current = null; mediaSource.current = null
-    audioQueue.current = []; fallbackChunks.current = []; audioBytes.current = 0
-    audioEnded.current = true; setPlaybackState('playback_finished'); setPlaybackWarning('')
+    mediaQueue.current = []; retainedChunks.current.clear(); pcmPending.current.clear()
+    audioBytes.current = 0; audioEnded.current = true
+    manualReplayAvailable.current = false; setPlaybackState('playback_finished'); setPlaybackWarning('')
+    updatePlaybackDiagnostics({ active_pcm_sources:0, playback_finished:true })
     if (!closing.current && phaseRef.current !== 'error') setPhase('listening')
-  }, [detachPlaybackListeners, revokeObjectUrl])
+  }, [detachPlaybackListeners, revokeObjectUrl, updatePlaybackDiagnostics])
 
-  const playbackFailed = useCallback((message = 'The spoken reply could not be played. The text is still available.') => {
-    stopPlayback('playback_error'); setPlaybackWarning(message)
-    if (!closing.current && phaseRef.current !== 'error') setPhase('listening')
-  }, [stopPlayback])
+  const recordDomFailure = useCallback((stage: string, caught?: unknown) => {
+    const rawName = caught instanceof DOMException ? caught.name : ''
+    updatePlaybackDiagnostics({
+      failure_stage:stage,
+      dom_exception_name:SAFE_DOM_EXCEPTION_NAMES.has(rawName) ? rawName : rawName ? 'UnknownError' : null,
+    })
+  }, [updatePlaybackDiagnostics])
 
-  const attachAudioListeners = useCallback((element: HTMLAudioElement) => {
-    const onPlaying = () => { setPlaybackState('playing'); setPhase('speaking'); setPlaybackWarning('') }
-    const onWaiting = () => { if (!audioEnded.current) { setPlaybackState('media_buffer_draining'); setPhase('speaking') } }
+  const playbackFailed = useCallback((stage: string, mediaCode: number | null = null) => {
+    audio.current?.pause()
+    manualReplayAvailable.current = Boolean(objectUrl.current && selectedCodec.current === 'mp3')
+    setPlaybackState('playback_error')
+    setPlaybackWarning(mediaSourceAudible.current
+      ? 'The spoken reply stopped. Replay the full spoken answer from the beginning.'
+      : 'The spoken reply could not be played. The text is still available.')
+    updatePlaybackDiagnostics({
+      failure_stage:stage, audio_element_media_error_code:mediaCode,
+      media_error_category:mediaCode ? MEDIA_ERROR_CATEGORIES[mediaCode] ?? 'unknown' : null,
+      playback_finished:false,
+    })
+  }, [updatePlaybackDiagnostics])
+
+  const failMediaSource = useCallback((stage: string, caught?: unknown) => {
+    const wasAudible = mediaSourceAudible.current
+    recordDomFailure(stage, caught)
+    detachPlaybackListeners(); audio.current?.pause()
+    audio.current = null; sourceBuffer.current = null; mediaSource.current = null
+    mediaQueue.current = []; mediaSourceFailed.current = true
+    revokeObjectUrl(); updatePlaybackDiagnostics({ fallback_used:true })
+    if (wasAudible) {
+      mediaSourceReplayRequired.current = true
+      manualReplayAvailable.current = true
+      setPlaybackState('playback_error')
+      setPlaybackWarning('The spoken reply stopped. Replay the full spoken answer from the beginning.')
+    } else if (providerFinished.current && retainedChunks.current.size) {
+      queueMicrotask(() => playBufferedRef.current?.())
+    }
+  }, [detachPlaybackListeners, recordDomFailure, revokeObjectUrl, updatePlaybackDiagnostics])
+
+  const attachAudioListeners = useCallback((element: HTMLAudioElement, mediaSourcePath = false) => {
+    const onPlaying = () => {
+      if (mediaSourcePath) mediaSourceAudible.current = true
+      setPlaybackState('playing'); setPhase('speaking'); setPlaybackWarning('')
+      updatePlaybackDiagnostics({
+        first_playback_ms:performance.now() - audioStartedAt.current, autoplay_blocked:false,
+      })
+    }
+    const onWaiting = () => { if (!audioEnded.current) setPlaybackState('media_buffer_draining') }
     const onEnded = () => finishPlayback()
-    const onError = () => playbackFailed()
+    const onError = () => {
+      const code = Number(element.error?.code || 0) || null
+      if (mediaSourcePath) {
+        updatePlaybackDiagnostics({
+          audio_element_media_error_code:code,
+          media_error_category:code ? MEDIA_ERROR_CATEGORIES[code] ?? 'unknown' : null,
+        })
+        failMediaSource('audio_element_error')
+      } else playbackFailed('audio_element_error', code)
+    }
     element.addEventListener('playing', onPlaying); element.addEventListener('waiting', onWaiting)
     element.addEventListener('ended', onEnded); element.addEventListener('error', onError)
     playbackListeners.current.push(
@@ -214,103 +346,226 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
       () => element.removeEventListener('ended', onEnded),
       () => element.removeEventListener('error', onError),
     )
-  }, [finishPlayback, playbackFailed])
+  }, [failMediaSource, finishPlayback, playbackFailed, updatePlaybackDiagnostics])
 
   const requestPlay = useCallback(async () => {
     const element = audio.current
-    if (!element) return
-    try { await element.play(); setPlaybackState('playing'); setPlaybackWarning('') }
-    catch { setPlaybackState('autoplay_blocked'); setPlaybackWarning('Tap to play the spoken reply.') }
-  }, [])
+    if (!element?.src) return
+    try {
+      await element.play(); setPlaybackState('playing'); setPlaybackWarning('')
+      updatePlaybackDiagnostics({ autoplay_blocked:false })
+    } catch (caught) {
+      recordDomFailure('audio_play', caught)
+      if (caught instanceof DOMException && caught.name === 'NotAllowedError') {
+        setPlaybackState('autoplay_blocked'); setPlaybackWarning('Tap to play the spoken reply.')
+        updatePlaybackDiagnostics({ autoplay_blocked:true })
+      } else playbackFailed('audio_play')
+    }
+  }, [playbackFailed, recordDomFailure, updatePlaybackDiagnostics])
+
+  const playBufferedMp3 = useCallback((manual = false) => {
+    if (!retainedChunks.current.size) {
+      playbackFailed('audio_end_no_chunks'); return
+    }
+    if (manual && replayAttempted.current) return
+    if (manual) replayAttempted.current = true
+    detachPlaybackListeners(); audio.current?.pause(); revokeObjectUrl()
+    const chunks = [...retainedChunks.current.entries()]
+      .sort(([left], [right]) => left - right).map(([, chunk]) => chunk)
+    const blob = new Blob(chunks, { type:'audio/mpeg' })
+    objectUrl.current = URL.createObjectURL(blob)
+    const element = new Audio(); element.src = objectUrl.current
+    audio.current = element; attachAudioListeners(element)
+    manualReplayAvailable.current = true
+    setPlaybackState('media_buffer_draining'); void requestPlay()
+  }, [attachAudioListeners, detachPlaybackListeners, playbackFailed, requestPlay, revokeObjectUrl])
+  playBufferedRef.current = playBufferedMp3
 
   const maybeEndMediaStream = useCallback(() => {
     const source = mediaSource.current; const buffer = sourceBuffer.current
-    if (!providerFinished.current || audioQueue.current.length || buffer?.updating) return
+    if (!providerFinished.current || mediaQueue.current.length || buffer?.updating) return
     if (source?.readyState === 'open') {
       setPlaybackState('media_buffer_draining')
-      try { source.endOfStream() } catch { playbackFailed() }
+      try { source.endOfStream() } catch (caught) { failMediaSource('media_source_end', caught) }
     }
-  }, [playbackFailed])
+  }, [failMediaSource])
 
   const drainQueue = useCallback(() => {
     const buffer = sourceBuffer.current
-    if (!buffer || buffer.updating) return
-    const next = audioQueue.current.shift()
+    if (!buffer || buffer.updating || mediaSourceFailed.current) return
+    const next = mediaQueue.current.shift()
     if (next) {
-      try { buffer.appendBuffer(next) } catch { playbackFailed() }
+      try { firstAppendPending.current = true; buffer.appendBuffer(next) }
+      catch (caught) { failMediaSource('source_buffer_append', caught) }
       return
     }
     maybeEndMediaStream()
-  }, [maybeEndMediaStream, playbackFailed])
+  }, [failMediaSource, maybeEndMediaStream])
+
+  const finishPcmIfReady = useCallback(() => {
+    if (providerFinished.current && pcmSources.current.size === 0 && pcmPending.current.size === 0) finishPlayback()
+  }, [finishPlayback])
+
+  const schedulePcm = useCallback(() => {
+    const playback = playbackContext.current
+    if (!playback || typeof playback.createBuffer !== 'function' || typeof playback.createBufferSource !== 'function') {
+      playbackFailed('pcm_context_init'); return
+    }
+    if (playback.state === 'suspended') {
+      setPlaybackState('autoplay_blocked'); setPlaybackWarning('Tap to enable audio.')
+      updatePlaybackDiagnostics({ autoplay_blocked:true, failure_stage:'pcm_context_suspended' }); return
+    }
+    let chunk = pcmPending.current.get(expectedAudioSequence.current)
+    while (chunk) {
+      pcmPending.current.delete(expectedAudioSequence.current)
+      let samples: Float32Array
+      try { samples = pcm16LeToFloat32(chunk) } catch (caught) {
+        recordDomFailure('pcm_decode', caught); playbackFailed('pcm_decode'); return
+      }
+      const rate = providerSampleRate.current
+      if (!rate) { playbackFailed('pcm_sample_rate'); return }
+      const buffer = playback.createBuffer(1, samples.length, rate)
+      buffer.copyToChannel(samples, 0)
+      const source = playback.createBufferSource(); source.buffer = buffer; source.connect(playback.destination)
+      const startAt = Math.max(nextPlaybackTime.current, playback.currentTime + (pcmSources.current.size ? 0 : PCM_JITTER_SECONDS))
+      nextPlaybackTime.current = startAt + buffer.duration
+      pcmScheduledSeconds.current += buffer.duration; pcmSources.current.add(source)
+      source.onended = () => {
+        pcmSources.current.delete(source)
+        try { source.disconnect() } catch { /* already detached */ }
+        updatePlaybackDiagnostics({ active_pcm_sources:pcmSources.current.size })
+        finishPcmIfReady()
+      }
+      source.start(startAt); expectedAudioSequence.current += 1
+      setPlaybackState('playing'); setPhase('speaking')
+      updatePlaybackDiagnostics({
+        expected_sequence:expectedAudioSequence.current,
+        scheduled_pcm_seconds:pcmScheduledSeconds.current,
+        active_pcm_sources:pcmSources.current.size,
+        first_playback_ms:pcmSources.current.size === 1 ? performance.now() - audioStartedAt.current : undefined,
+        autoplay_blocked:false,
+      })
+      chunk = pcmPending.current.get(expectedAudioSequence.current)
+    }
+  }, [finishPcmIfReady, playbackFailed, recordDomFailure, updatePlaybackDiagnostics])
 
   const appendAudio = useCallback((packet: ArrayBuffer) => {
     if (audioEnded.current || packet.byteLength <= 4) return
-    if (!fallbackMode.current && mediaSource.current?.readyState === 'ended') return
     const sequenceNumber = new DataView(packet).getUint32(0)
-    if (audioSequences.current.has(sequenceNumber)) return
-    audioSequences.current.add(sequenceNumber)
+    if (audioSequences.current.has(sequenceNumber)) {
+      duplicateAudioChunks.current += 1
+      updatePlaybackDiagnostics({ duplicate_chunks:duplicateAudioChunks.current }); return
+    }
     const chunk = packet.slice(4)
-    if (audioBytes.current + chunk.byteLength > MAX_AUDIO_BYTES ||
-        (fallbackMode.current ? fallbackChunks.current.length : audioQueue.current.length) >= MAX_AUDIO_CHUNKS) {
-      fallbackChunks.current = []; audioQueue.current = []; audioEnded.current = true
-      playbackFailed('The spoken reply was too large to play safely. The text is still available.')
-      return
+    if (!chunk.byteLength || audioBytes.current + chunk.byteLength > MAX_AUDIO_BYTES ||
+        retainedChunks.current.size >= MAX_AUDIO_CHUNKS) {
+      stopPlayback('playback_error'); setPlaybackWarning('The spoken reply was too large to play safely. The text is still available.')
+      if (!closing.current) setPhase('listening'); return
+    }
+    audioSequences.current.add(sequenceNumber); retainedChunks.current.set(sequenceNumber, chunk)
+    if (sequenceNumber > expectedAudioSequence.current) {
+      updatePlaybackDiagnostics({ missing_sequence_detected:true })
     }
     audioBytes.current += chunk.byteLength
-    if (fallbackMode.current) { fallbackChunks.current.push(chunk); return }
-    audioQueue.current.push(chunk); drainQueue()
-  }, [drainQueue, playbackFailed])
+    updatePlaybackDiagnostics({
+      audio_chunks_received:retainedChunks.current.size, audio_bytes_received:audioBytes.current,
+      ...(retainedChunks.current.size === 1 ? { first_audio_chunk_ms:performance.now() - audioStartedAt.current } : {}),
+    })
+    if (selectedCodec.current === 'linear16') {
+      pcmPending.current.set(sequenceNumber, chunk); schedulePcm(); return
+    }
+    while (retainedChunks.current.has(expectedAudioSequence.current)) expectedAudioSequence.current += 1
+    updatePlaybackDiagnostics({ expected_sequence:expectedAudioSequence.current })
+    if (sourceBuffer.current && !mediaSourceFailed.current) { mediaQueue.current.push(chunk); drainQueue() }
+  }, [drainQueue, schedulePcm, stopPlayback, updatePlaybackDiagnostics])
 
-  const playFallback = useCallback(() => {
-    if (audioEnded.current) return
-    const element = audio.current
-    if (!element) return playbackFailed()
-    const blob = new Blob(fallbackChunks.current, { type:'audio/mpeg' })
-    fallbackChunks.current = []
-    revokeObjectUrl(); objectUrl.current = URL.createObjectURL(blob); element.src = objectUrl.current
-    setPlaybackState('media_buffer_draining'); void requestPlay()
-  }, [playbackFailed, requestPlay, revokeObjectUrl])
-
-  const setupPlayback = useCallback((contentType = 'audio/mpeg') => {
+  const setupPlayback = useCallback((message: ProtocolMessage) => {
     stopPlayback('provider_stream_open')
-    audioEnded.current = false; providerFinished.current = false; setPlaybackWarning(''); setPhase('speaking')
-    const element = new Audio(); audio.current = element; attachAudioListeners(element)
-    const progressiveSupported = typeof MediaSource !== 'undefined' &&
-      (typeof MediaSource.isTypeSupported !== 'function' || MediaSource.isTypeSupported(contentType))
-    if (!progressiveSupported) { fallbackMode.current = true; return }
+    const mode = message.playback_mode as PlaybackMode
+    const codec = message.codec as AudioCodec
+    const mime = String(message.content_type ?? '')
+    const rate = message.sample_rate === null ? null : Number(message.sample_rate)
+    const turn = Number(message.turn_number)
+    const valid = ['buffered_mp3','pcm_stream','auto'].includes(mode)
+      && ['mp3','linear16'].includes(codec)
+      && message.channels === 1 && Number.isInteger(turn) && turn > 0
+      && (codec === 'mp3'
+        ? mime === 'audio/mpeg' && rate === null && message.sample_format === null && mode !== 'pcm_stream'
+        : mime === 'audio/L16' && [8000,16000,22050,24000].includes(rate ?? 0)
+          && message.sample_format === 'pcm_s16le' && mode === 'pcm_stream')
+    if (!valid) {
+      setPlaybackState('playback_error')
+      setPlaybackWarning('The spoken reply could not be played. The text is still available.')
+      updatePlaybackDiagnostics({ failure_stage:'audio_start_contract' })
+      if (!closing.current) setPhase('listening')
+      return
+    }
+    playbackMode.current = mode; selectedCodec.current = codec; contentType.current = mime
+    providerSampleRate.current = rate
+    audioEnded.current = false; providerFinished.current = false; audioStartedAt.current = performance.now()
+    expectedAudioSequence.current = 1; pcmScheduledSeconds.current = 0
+    setPlaybackWarning(''); setPhase('speaking')
+    const available = typeof MediaSource !== 'undefined'
+    const supported = available && typeof MediaSource.isTypeSupported === 'function' && MediaSource.isTypeSupported(mime)
+    setPlaybackDiagnostics({
+      ...EMPTY_PLAYBACK_DIAGNOSTICS, playback_mode:mode, selected_codec:codec,
+      content_type:mime, provider_sample_rate:rate, media_source_available:available,
+      media_source_type_supported:supported, playback_finished:false,
+    })
+    if (codec !== 'mp3' || mode !== 'auto' || !mediaSourceAllowed.current || !supported) return
     const source = new MediaSource(); mediaSource.current = source
+    const element = new Audio(); audio.current = element; attachAudioListeners(element, true)
     objectUrl.current = URL.createObjectURL(source); element.src = objectUrl.current
     const onOpen = () => {
       if (source.readyState !== 'open' || audioEnded.current) return
       try {
-        const buffer = source.addSourceBuffer(contentType); sourceBuffer.current = buffer
-        const onUpdate = () => drainQueue()
-        const onBufferError = () => playbackFailed()
-        const onAbort = () => { if (!audioEnded.current) playbackFailed() }
+        const buffer = source.addSourceBuffer(mime); sourceBuffer.current = buffer
+        updatePlaybackDiagnostics({ source_buffer_created:true })
+        const onUpdate = () => {
+          if (firstAppendPending.current) {
+            firstAppendPending.current = false
+            if (!mediaSourceAudible.current) void requestPlay()
+          }
+          drainQueue()
+        }
+        const onBufferError = () => failMediaSource('source_buffer_error')
+        const onAbort = () => { if (!audioEnded.current) failMediaSource('source_buffer_abort') }
         buffer.addEventListener('updateend', onUpdate); buffer.addEventListener('error', onBufferError); buffer.addEventListener('abort', onAbort)
         playbackListeners.current.push(
           () => buffer.removeEventListener('updateend', onUpdate),
           () => buffer.removeEventListener('error', onBufferError),
           () => buffer.removeEventListener('abort', onAbort),
         )
-        drainQueue(); void requestPlay()
-      } catch { playbackFailed() }
+        for (const [, chunk] of [...retainedChunks.current.entries()].sort(([a], [b]) => a - b)) mediaQueue.current.push(chunk)
+        drainQueue()
+      } catch (caught) { failMediaSource('source_buffer_create', caught) }
     }
-    source.addEventListener('sourceopen', onOpen, { once:true })
-    const onSourceError = () => playbackFailed()
-    source.addEventListener('error', onSourceError)
+    const onSourceError = () => failMediaSource('media_source_error')
+    source.addEventListener('sourceopen', onOpen, { once:true }); source.addEventListener('error', onSourceError)
     playbackListeners.current.push(
       () => source.removeEventListener('sourceopen', onOpen),
       () => source.removeEventListener('error', onSourceError),
     )
-  }, [attachAudioListeners, drainQueue, playbackFailed, requestPlay, stopPlayback])
+  }, [attachAudioListeners, drainQueue, failMediaSource, requestPlay, stopPlayback, updatePlaybackDiagnostics])
 
   const completeProviderAudio = useCallback(() => {
     if (audioEnded.current) return
     providerFinished.current = true; setPlaybackState('provider_stream_finished')
-    if (fallbackMode.current) playFallback()
-    else { setPlaybackState('media_buffer_draining'); drainQueue() }
-  }, [drainQueue, playFallback])
+    updatePlaybackDiagnostics({ provider_audio_end_received:true })
+    if (!retainedChunks.current.size || expectedAudioSequence.current !== retainedChunks.current.size + 1) {
+      playbackFailed(!retainedChunks.current.size ? 'audio_end_no_chunks' : 'audio_sequence_gap'); return
+    }
+    if (selectedCodec.current === 'linear16') { schedulePcm(); finishPcmIfReady(); return }
+    if (mediaSource.current && !mediaSourceFailed.current) {
+      setPlaybackState('media_buffer_draining'); drainQueue(); return
+    }
+    if (mediaSourceReplayRequired.current) {
+      setPlaybackState('playback_error')
+      setPlaybackWarning('The spoken reply stopped. Replay the full spoken answer from the beginning.')
+      return
+    }
+    playBufferedMp3()
+  }, [drainQueue, finishPcmIfReady, playBufferedMp3, playbackFailed, schedulePcm, updatePlaybackDiagnostics])
 
   const handleMessage = useCallback((event: MessageEvent) => {
     if (event.data instanceof Blob) { void event.data.arrayBuffer().then(appendAudio); return }
@@ -320,7 +575,8 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     if (message.protocol_version !== 1) { rememberError(CLOSE_ERRORS[4400]); return }
     if (message.type === 'session.ready') {
       if (message.state === 'listening') {
-        readyForAudio.current = true; setPhase('listening'); setCannotHear(false)
+        readyForAudio.current = true; setServerVoiceState('listening')
+        if (audioEnded.current) setPhase('listening'); setCannotHear(false)
         readyWaiter.current?.resolve(); readyWaiter.current = null
       }
       if (typeof message.preroll_ms === 'number') preRollMs.current = message.preroll_ms
@@ -329,14 +585,15 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
       const next = String(message.state) as VoicePhase
       if (['connecting','listening','endpoint_pending','thinking','speaking','interrupted','closing','error','closed'].includes(next)) {
         if (next === 'thinking' || next === 'speaking') setCannotHear(false)
-        setPhase(next)
+        setServerVoiceState(next)
+        if (!(next === 'listening' && !audioEnded.current)) setPhase(next)
       }
     } else if (message.type === 'speech_start') setCannotHear(false)
     else if (message.type === 'stt.partial') { setCannotHear(false); setPartial(String(message.transcript ?? '')) }
     else if (message.type === 'stt.final') { setCannotHear(false); setPartial(String(message.transcript ?? '')); setPhase('thinking') }
     else if (message.type === 'assistant.start') { setAssistant(''); setPhase('thinking') }
     else if (message.type === 'assistant.delta') setAssistant(value => value + String(message.delta ?? ''))
-    else if (message.type === 'audio.start') setupPlayback(String(message.content_type ?? 'audio/mpeg'))
+    else if (message.type === 'audio.start') setupPlayback(message)
     else if (message.type === 'audio.end') completeProviderAudio()
     else if (message.type === 'turn.done' && message.completion_status === 'complete') {
       const turn = message as ProtocolMessage & VoiceTurnDone
@@ -346,6 +603,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
         input_mode:'realtime_voice', completion_status:'complete',
       })
       setPartial('')
+      setServerVoiceState('listening')
       if (audioEnded.current) setPhase('listening')
     } else if (message.type === 'warning' && message.code === 'assistant_interrupted') {
       stopPlayback('interrupted'); setPhase('interrupted')
@@ -384,6 +642,8 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     worklet.current?.disconnect(); worklet.current = null
     const audioContext = context.current; context.current = null
     if (audioContext) await Promise.resolve(audioContext.close()).catch(() => undefined)
+    const outputContext = playbackContext.current; playbackContext.current = null
+    if (outputContext) await Promise.resolve(outputContext.close()).catch(() => undefined)
     stream.current?.getTracks().forEach(track => track.stop()); stream.current = null
     stopPlayback(); preRoll.current = []; preRollDuration.current = 0; voicedDuration.current = 0
     silenceDuration.current = 0; gateOpen.current = false; calibrationElapsed.current = 0
@@ -400,6 +660,12 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
       setPhase('connecting'); setPartial(''); setAssistant(''); sequence.current = 0
       readyForAudio.current = false; emittedFrameCount.current = 0; backpressureDroppedFrameCount.current = 0
       try {
+        if (!playbackContext.current) {
+          const outputContext = new AudioContext(); playbackContext.current = outputContext
+          if (outputContext.state === 'suspended' && typeof outputContext.resume === 'function') {
+            void outputContext.resume().catch(() => undefined)
+          }
+        }
         let microphone: MediaStream
         try {
           microphone = await navigator.mediaDevices.getUserMedia({ audio:{ channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } })
@@ -489,9 +755,18 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
         window.clearTimeout(calibrationTimer)
         if (closing.current) return
 
-        const info = await apiJson<Ticket>(user, '/api/web/voice/sessions', { method:'POST' })
+        const mediaSourceAvailable = typeof MediaSource !== 'undefined'
+        const mediaSourceMp3 = mediaSourceAvailable && typeof MediaSource.isTypeSupported === 'function'
+          && MediaSource.isTypeSupported('audio/mpeg')
+        const info = await apiJson<Ticket>(user, '/api/web/voice/sessions', {
+          method:'POST', body:JSON.stringify({ browser_capabilities:{
+            web_audio:typeof AudioContext !== 'undefined',
+            media_source:mediaSourceAvailable, media_source_mp3:mediaSourceMp3,
+          } }),
+        })
         if (closing.current) return
         setTicketInfo(info)
+        mediaSourceAllowed.current = Boolean(info.media_source_allowed)
         const url = validatedSocketUrl(info.websocket_url, info.approved_websocket_hosts)
         url.searchParams.set('ticket', info.ticket)
         const ws = new WebSocket(url); ws.binaryType = 'arraybuffer'; socket.current = ws
@@ -556,6 +831,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
       const ws = socket.current
       if (ws && ws.readyState < WebSocket.CLOSING) ws.close(1000, 'client_closed')
       stream.current?.getTracks().forEach(track => track.stop())
+      stopPlayback('interrupted')
     }
     window.addEventListener('pagehide', unload)
     window.addEventListener('beforeunload', unload)
@@ -563,7 +839,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
       window.removeEventListener('pagehide', unload)
       window.removeEventListener('beforeunload', unload)
     }
-  }, [])
+  }, [stopPlayback])
 
   const retry = useCallback(async () => {
     const pending = startInFlight.current
@@ -579,7 +855,16 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     }
     return next
   }), [])
-  const manualPlay = useCallback(async () => { await requestPlay() }, [requestPlay])
+  const manualPlay = useCallback(async () => {
+    if (selectedCodec.current === 'linear16') {
+      const output = playbackContext.current
+      try { await output?.resume(); schedulePcm() }
+      catch (caught) { recordDomFailure('pcm_context_resume', caught); playbackFailed('pcm_context_resume') }
+      return
+    }
+    if (playbackState === 'playback_error' && manualReplayAvailable.current) playBufferedMp3(true)
+    else await requestPlay()
+  }, [playBufferedMp3, playbackFailed, playbackState, recordDomFailure, requestPlay, schedulePcm])
   const skipPlayback = useCallback(() => { stopPlayback('playback_finished'); setPlaybackWarning(''); if (!closing.current) setPhase('listening') }, [stopPlayback])
   const end = useCallback(async () => {
     setPhase('closing')
@@ -588,8 +873,12 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
   }, [cleanup])
 
   return {
-    phase, playbackState, partial, assistant, muted, error, errorCode, errorStatus, playbackWarning,
+    phase, effectiveVoicePhase:phase, serverVoiceState,
+    playbackState, localPlaybackState:playbackState,
+    partial, assistant, muted, error, errorCode, errorStatus, playbackWarning,
     ticketInfo, creditRequired, microphoneLevel, cannotHear, microphoneDiagnostics,
+    playbackDiagnostics,
+    canReplay:manualReplayAvailable.current,
     toggleMute, manualPlay, skipPlayback, retry, end,
   }
 }

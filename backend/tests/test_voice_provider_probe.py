@@ -50,8 +50,10 @@ class FakeProvider:
         for event in self.events:
             yield event
 
-    async def connect_tts(self, language):
+    async def connect_tts(self, language, *, output_codec="mp3", sample_rate=24000):
         self.tts_language = language
+        self.tts_output_codec = output_codec
+        self.tts_sample_rate = sample_rate
 
     async def send_tts_text(self, text):
         self.text = text
@@ -125,3 +127,47 @@ def test_tts_only_probe_requires_audio_and_completion():
     assert successful["ok"] is True
     assert successful["tts"]["completion_event_received"] is True
     assert empty["ok"] is False
+
+
+def test_probe_validates_mp3_signature_and_linear16_metrics(monkeypatch):
+    monkeypatch.setattr(voice_provider_probe.shutil, "which", lambda _name: None)
+    mp3 = asyncio.run(voice_provider_probe.run_probe(
+        voice_provider_probe.ProbeOptions(
+            "tts", "en", "audio/wav", output_codec="mp3", validate_audio=True,
+        ),
+        lambda: FakeProvider(tts_chunks=[b"ID3\x04\x00\x00fixture"]),
+    ))
+    assert mp3["tts"]["mp3_signature"] == "id3"
+    assert mp3["tts"]["chunks_received"] == 1
+    assert mp3["tts"]["bytes_received"] > 0
+
+    pcm_bytes = b"\x00\x00\xff\x7f\x00\x80\x01\x00"
+    pcm = asyncio.run(voice_provider_probe.run_probe(
+        voice_provider_probe.ProbeOptions(
+            "tts", "en", "audio/wav", output_codec="linear16", sample_rate=8000,
+            validate_audio=True,
+        ),
+        lambda: FakeProvider(tts_chunks=[pcm_bytes]),
+    ))
+    assert pcm["tts"]["samples_received"] == 4
+    assert pcm["tts"]["estimated_duration_ms"] == 0
+    assert pcm["tts"]["codec"] == "linear16"
+
+
+def test_probe_rejects_invalid_mp3_pcm_and_provider_failure(monkeypatch):
+    monkeypatch.setattr(voice_provider_probe.shutil, "which", lambda _name: None)
+    invalid_mp3 = asyncio.run(voice_provider_probe.run_probe(
+        voice_provider_probe.ProbeOptions(
+            "tts", "en", "audio/wav", output_codec="mp3", validate_audio=True,
+        ), lambda: FakeProvider(tts_chunks=[b"not-mp3"]),
+    ))
+    assert invalid_mp3["ok"] is False
+    assert invalid_mp3["tts"]["provider_safe_code"] == "mp3_signature_invalid"
+
+    invalid_pcm = asyncio.run(voice_provider_probe.run_probe(
+        voice_provider_probe.ProbeOptions(
+            "tts", "en", "audio/wav", output_codec="linear16", validate_audio=True,
+        ), lambda: FakeProvider(tts_chunks=[b"odd"]),
+    ))
+    assert invalid_pcm["ok"] is False
+    assert invalid_pcm["tts"]["provider_safe_code"] == "pcm_byte_alignment_invalid"
