@@ -28,5 +28,11 @@ class PaymentValidationError(BillingError):
     pass
 
 
+class PaymentProviderUnavailableError(BillingError):
+    """An idempotent provider read remained unavailable after safe retries."""
+
+    pass
+
+
 class RateLimitError(BillingError):
     pass

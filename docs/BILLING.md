@@ -126,6 +126,22 @@ Provider reconciliation remains necessary because the financial audit intentiona
 
 Never schedule `--apply`. A mutating run is a separately reviewed, one-off operator action; dry-run is always the scheduled form. Exit `0` covers clean, informational-only, and warning-only reports. With `--fail-on-findings`, exit `3` occurs only when a result is both high severity and actionable. Configuration errors use `78`. Audit output contains categories, counts, safe internal IDs, age, and status only. It excludes names, emails, prompts/responses, signatures, raw provider payloads, credentials, and database URLs. With `SENTRY_DSN` set, only actionable high-severity categories/counts use the existing PII-disabled Sentry integration. Recommended settings:
 
+Razorpay GET reads retry connection/connect/read timeouts and HTTP
+408/429/500/502/503/504. Backoff is exponential with bounded jitter and a
+valid, bounded `Retry-After`; permanent 400/401/403/404 failures do not retry.
+Order-creation POST is never blindly retried. Exhaustion raises a distinct
+provider-unavailable error, rolls the reconciliation transaction back, and
+makes the Cron process exit non-zero. No credit/refund mutation is reached
+without its required provider read. A later successful run remains exactly
+once through existing ledger idempotency keys.
+
+```dotenv
+RAZORPAY_READ_RETRY_ATTEMPTS=3
+RAZORPAY_READ_RETRY_BASE_MS=500
+RAZORPAY_READ_RETRY_MAX_MS=4000
+RAZORPAY_HTTP_TIMEOUT_SECONDS=15
+```
+
 ```dotenv
 SENTRY_DSN=
 SENTRY_TRACES_SAMPLE_RATE=0.05

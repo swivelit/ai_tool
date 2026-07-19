@@ -128,6 +128,30 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
     if concurrency is not None and concurrency != 1:
         errors.append("WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER must be 1")
     for name, default in (
+        ("WEB_REALTIME_VOICE_END_SILENCE_MS", "900"),
+        ("WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS", "650"),
+        ("WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS", "1800"),
+        ("WEB_REALTIME_VOICE_MIN_SPEECH_MS", "250"),
+        ("WEB_REALTIME_VOICE_MAX_UTTERANCE_MS", "30000"),
+        ("WEB_REALTIME_VOICE_BARGE_IN_MIN_MS", "180"),
+        ("WEB_REALTIME_VOICE_PREROLL_MS", "320"),
+        ("RAZORPAY_READ_RETRY_ATTEMPTS", "3"),
+        ("RAZORPAY_READ_RETRY_BASE_MS", "500"),
+        ("RAZORPAY_READ_RETRY_MAX_MS", "4000"),
+        ("RAZORPAY_HTTP_TIMEOUT_SECONDS", "15"),
+    ):
+        configured = _integer(env, name, default)
+        if configured is None or configured <= 0:
+            errors.append(f"{name} must be a positive integer")
+    endpoint_wait = _integer(env, "WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS", "1800")
+    end_silence = _integer(env, "WEB_REALTIME_VOICE_END_SILENCE_MS", "900")
+    if endpoint_wait is not None and end_silence is not None and endpoint_wait < end_silence:
+        errors.append("WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS must be at least WEB_REALTIME_VOICE_END_SILENCE_MS")
+    retry_base = _integer(env, "RAZORPAY_READ_RETRY_BASE_MS", "500")
+    retry_max = _integer(env, "RAZORPAY_READ_RETRY_MAX_MS", "4000")
+    if retry_base is not None and retry_max is not None and retry_max < retry_base:
+        errors.append("RAZORPAY_READ_RETRY_MAX_MS must be at least RAZORPAY_READ_RETRY_BASE_MS")
+    for name, default in (
         ("WEB_TTS_MAX_CHARACTERS", "5000"),
         ("WEB_STT_RATE_LIMIT_PER_MINUTE", "10"),
         ("WEB_TTS_RATE_LIMIT_PER_MINUTE", "10"),

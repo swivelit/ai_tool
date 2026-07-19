@@ -10,6 +10,7 @@ import { Conversation } from '../components/Conversation'
 import { Composer } from '../components/Composer'
 import { applyTheme, resolveTheme, type Theme } from '../theme'
 import { useVoiceReply } from '../hooks/useVoiceReply'
+import type { VoiceTurnDone } from '../hooks/useRealtimeVoice'
 
 const BillingModal = lazy(() => import('../billing/BillingModal').then(module => ({ default: module.BillingModal })))
 const SettingsModal = lazy(() => import('../components/SettingsModal').then(module => ({ default: module.SettingsModal })))
@@ -38,6 +39,7 @@ export function ChatPage() {
   const billingButtonRef = useRef<HTMLElement | null>(null)
   const removedLocalUploads = useRef(new Set<string>())
   const threadCountRef = useRef(0)
+  const voiceThreadRef = useRef<string | null>(null)
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
 
   const loadThreads = useCallback(async (reset = true) => {
@@ -55,6 +57,19 @@ export function ChatPage() {
       ...value, wallet:response.wallet ?? response,
       ...(response.wallets ? { wallets:response.wallets } : {}),
     } : value)
+  }, [user])
+  const loadMessages = useCallback(async (threadId: string) => {
+    if (!user) return
+    const data = await apiJson<{ items: Message[] }>(user, `/api/web/threads/${threadId}/messages`)
+    const unique = Array.from(new Map(data.items.map(message => [message.id, message])).values())
+    setMessages(unique)
+    const restored = new Map<string, MessageAttachment>()
+    for (const message of unique) {
+      for (const attachment of message.attachments ?? []) {
+        if (attachment.status === 'ready' && new Date(attachment.expires_at).getTime() > Date.now()) restored.set(attachment.id, attachment)
+      }
+    }
+    setAttachments(Array.from(restored.values()).slice(-5))
   }, [user])
   const applyWallet = useCallback((wallet: Wallet) => {
     setBootstrap(value => value ? { ...value, wallet } : value)
@@ -125,16 +140,7 @@ export function ChatPage() {
   useEffect(() => {
     if (!user || !active) { if (!streaming) { setMessages([]); setAttachments([]) }; return }
     if (streaming && streamState.assistant?.thread_id === active) return
-    void apiJson<{ items: Message[] }>(user, `/api/web/threads/${active}/messages`).then(data => {
-      setMessages(data.items)
-      const restored = new Map<string, MessageAttachment>()
-      for (const message of data.items) {
-        for (const attachment of message.attachments ?? []) {
-          if (attachment.status === 'ready' && new Date(attachment.expires_at).getTime() > Date.now()) restored.set(attachment.id, attachment)
-        }
-      }
-      setAttachments(Array.from(restored.values()).slice(-5))
-    }).catch(() => setError('Conversation could not be loaded.'))
+    void loadMessages(active).catch(() => setError('Conversation could not be loaded.'))
   }, [user, active]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!attachments.some(item => item.status === 'ready')) return
@@ -307,6 +313,24 @@ export function ChatPage() {
   const closeBilling = () => { setBilling(false); window.setTimeout(() => billingButtonRef.current?.focus(), 0) }
   const openSettings = () => { billingButtonRef.current = document.activeElement as HTMLElement; setSettings(true) }
   const closeSettings = () => { setSettings(false); window.setTimeout(() => billingButtonRef.current?.focus(), 0) }
+  const voiceTurnDone = useCallback((turn: VoiceTurnDone) => {
+    if (turn.completion_status !== 'complete') return
+    voiceThreadRef.current = turn.thread_id
+    setActive(turn.thread_id)
+    void Promise.all([loadMessages(turn.thread_id), loadThreads(true), refreshWallet()])
+      .catch(() => setError('The Voice turn was saved, but chat history could not be refreshed yet.'))
+  }, [loadMessages, loadThreads, refreshWallet])
+  const closeVoiceMode = useCallback(() => {
+    setVoiceMode(false)
+    const authoritativeThread = voiceThreadRef.current ?? active
+    if (authoritativeThread) {
+      setActive(authoritativeThread)
+      void loadMessages(authoritativeThread).catch(() => setError('Voice messages were saved, but the final refresh failed.'))
+    }
+    void loadThreads(true).catch(() => undefined)
+    void refreshWallet().catch(() => undefined)
+    setFocusKey(`voice-close-${Date.now()}`)
+  }, [active, loadMessages, loadThreads, refreshWallet])
 
   if (!user || !bootstrap) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
@@ -322,13 +346,13 @@ export function ChatPage() {
         attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
         realtimeVoiceEnabled={Boolean(bootstrap.features.web_realtime_voice && bootstrap.features.separate_voice_credits)}
         assistant={bootstrap.assistant} tierDisabled={streaming || voiceMode} tierSaving={tierSaving} onTierSelect={saveTier}
-        onRealtimeVoice={() => setVoiceMode(true)}
+        onRealtimeVoice={() => { voiceThreadRef.current = active; setVoiceMode(true) }}
         voiceResetKey={`${active ?? 'new-chat'}:${focusKey}`}
         onVoiceDraft={setDraftVoiceTurnId} onVoiceCancel={() => setDraftVoiceTurnId(null)} onComposerClear={() => setDraftVoiceTurnId(null)} onVoiceWallet={applyWallet}
         supportedExtensions={bootstrap.uploads?.supported_extensions ?? []} addFiles={addFiles} removeAttachment={removeAttachment} />
     </section>
     {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} initialBucket={billingBucket} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
-    {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={() => { setVoiceMode(false); setFocusKey(`voice-close-${Date.now()}`) }} addCredits={bucket => { setVoiceMode(false); openBilling(bucket) }} /></Suspense>}
+    {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={closeVoiceMode} onTurnDone={voiceTurnDone} addCredits={bucket => { closeVoiceMode(); openBilling(bucket) }} /></Suspense>}
     {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}
     {dialog && <ThreadDialog state={dialog} setState={setDialog} confirm={() => { const current = dialog; setDialog(null); void runMutation(current.thread, current.type, current.value.trim()) }} />}
   </main>

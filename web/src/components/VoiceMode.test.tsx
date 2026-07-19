@@ -9,7 +9,7 @@ vi.mock('../hooks/useRealtimeVoice', () => ({ useRealtimeVoice:vi.fn() }))
 const base = {
   phase:'listening' as const, partial:'hello', assistant:'', muted:false, error:'',
   ticketInfo:{ tier_label:'Swico Pro', language:'ta' as const }, creditRequired:null,
-  toggleMute:vi.fn(), end:vi.fn(),
+  toggleMute:vi.fn(), retry:vi.fn(), end:vi.fn().mockResolvedValue(undefined),
 }
 
 beforeEach(() => vi.mocked(useRealtimeVoice).mockReturnValue(base as never))
@@ -30,9 +30,20 @@ it('renders streamed text, interruption, errors and targeted credit actions', as
   const addCredits = vi.fn()
   vi.mocked(useRealtimeVoice).mockReturnValue({ ...base, phase:'interrupted', partial:'', assistant:'streamed answer', error:'Connection closed.', creditRequired:'voice' } as never)
   render(<VoiceMode user={{} as never} threadId={null} close={vi.fn()} addCredits={addCredits} />)
-  expect(screen.getByRole('heading', { name:'Interrupted' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name:'Listening' })).toBeInTheDocument()
   expect(screen.getByText('streamed answer')).toBeInTheDocument()
-  expect(screen.getByText(/does not reconnect automatically/i)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Try again' })).toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name:'Add Voice credits' }))
   expect(addCredits).toHaveBeenCalledWith('voice')
+})
+
+it('shows endpoint pending, toggles captions, and retries without closing the dialog', async () => {
+  const retry = vi.fn()
+  vi.mocked(useRealtimeVoice).mockReturnValue({ ...base, phase:'endpoint_pending', retry } as never)
+  render(<VoiceMode user={{} as never} threadId={null} close={vi.fn()} addCredits={vi.fn()} />)
+  expect(screen.getByRole('heading', { name:'Still listening…' })).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name:'Hide captions' }))
+  expect(screen.queryByText('hello')).not.toBeInTheDocument()
+  expect(document.querySelector('.voice-orb-core')).toBeInTheDocument()
+  expect(document.body.textContent).not.toMatch(/chatgpt|openai/i)
 })

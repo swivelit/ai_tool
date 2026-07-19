@@ -89,6 +89,17 @@ Exact environment delta for this release:
   WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS=60
   WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER=1
   WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE=5
+  WEB_REALTIME_VOICE_END_SILENCE_MS=900
+  WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=650
+  WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=1800
+  WEB_REALTIME_VOICE_MIN_SPEECH_MS=250
+  WEB_REALTIME_VOICE_MAX_UTTERANCE_MS=30000
+  WEB_REALTIME_VOICE_BARGE_IN_MIN_MS=180
+  WEB_REALTIME_VOICE_PREROLL_MS=320
+  RAZORPAY_READ_RETRY_ATTEMPTS=3
+  RAZORPAY_READ_RETRY_BASE_MS=500
+  RAZORPAY_READ_RETRY_MAX_MS=4000
+  RAZORPAY_HTTP_TIMEOUT_SECONDS=15
   ```
 
   Keep both feature flags false through migration and financial verification.
@@ -168,6 +179,17 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
    WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS=60
    WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER=1
    WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE=5
+   WEB_REALTIME_VOICE_END_SILENCE_MS=900
+   WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=650
+   WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=1800
+   WEB_REALTIME_VOICE_MIN_SPEECH_MS=250
+   WEB_REALTIME_VOICE_MAX_UTTERANCE_MS=30000
+   WEB_REALTIME_VOICE_BARGE_IN_MIN_MS=180
+   WEB_REALTIME_VOICE_PREROLL_MS=320
+   RAZORPAY_READ_RETRY_ATTEMPTS=3
+   RAZORPAY_READ_RETRY_BASE_MS=500
+   RAZORPAY_READ_RETRY_MAX_MS=4000
+   RAZORPAY_HTTP_TIMEOUT_SECONDS=15
    ```
 
 4. Add the voice flags and limits directly to the existing **ai_tool** API
@@ -197,6 +219,39 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
    operator enable `WEB_SEPARATE_VOICE_CREDITS_ENABLED`; enable
    `WEB_REALTIME_VOICE_ENABLED` as a separate reviewed step. This does not
    authorize checkout or a live provider/payment request.
+
+## Voice patch deployment and rollback order
+
+This patch has no migration. Confirm `alembic heads` is still
+`e2b7c4d9a1f3`; do not create or run another revision. Keep
+`BILLING_CHECKOUT_ENABLED=false` and `WEB_REALTIME_VOICE_ENABLED=false` while
+deploying in this exact order:
+
+1. Update environment defaults on the existing API and existing reconciliation
+   Cron Job. Do not add credentials or create a resource.
+2. Deploy the existing API service. There is no schema step for this patch;
+   retain the normal pre-deploy `upgrade head` safety command.
+3. Manually run the existing stale-reservation, dry-run Razorpay reconciliation
+   (without `--apply`), and financial-audit commands. A persistent Razorpay read
+   outage must fail the reconciliation job non-zero.
+4. Verify health/bootstrap, Voice 402 preflight for both buckets, one dedicated
+   `SWICO_INTERNAL_TEST_EMAILS` account, exact Origin rejection, safe logs, and
+   one-use lock cleanup.
+5. Deploy/rebuild the existing static site. In DevTools verify one ticket POST
+   and one WebSocket, English/Tamil pause continuation, progressive audio,
+   barge-in, ordinary chat-history synchronization, browser refresh persistence,
+   320 px/mobile landscape, keyboard focus, and reduced motion.
+6. Enable `WEB_SEPARATE_VOICE_CREDITS_ENABLED=true` only if it is not already
+   enabled and the deployed wallet architecture is verified. Enable
+   `WEB_REALTIME_VOICE_ENABLED=true` last as its own reviewed API configuration
+   deploy. Checkout stays disabled pending legal and payment verification.
+
+Immediate rollback is a feature disable: set
+`WEB_REALTIME_VOICE_ENABLED=false` on the existing API and deploy that
+configuration. Bootstrap then hides Voice Mode. Fix forward; do not revert the
+database, move balances, reclassify history, or delete completed Voice chat
+messages. No new Render service, database, Valkey, Cron Job, disk, migration,
+or public Vite variable is part of this patch.
 
 ## Financial Cron Jobs
 

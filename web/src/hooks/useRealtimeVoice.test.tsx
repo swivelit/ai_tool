@@ -11,6 +11,7 @@ vi.mock('../api/client', async importOriginal => {
 
 class FakeWebSocket extends EventTarget {
   static OPEN = 1
+  static CLOSING = 2
   static instances: FakeWebSocket[] = []
   readyState = 0
   bufferedAmount = 0
@@ -22,7 +23,7 @@ class FakeWebSocket extends EventTarget {
     window.setTimeout(() => { this.readyState = 1; this.dispatchEvent(new Event('open')) }, 0)
   }
   send(value: unknown) { this.sent.push(value) }
-  close() { this.readyState = 3; this.closed = true }
+  close(code = 1000, reason = '') { this.readyState = 3; this.closed = true; this.dispatchEvent(new CloseEvent('close', { code, reason })) }
 }
 
 class FakeWorkletNode {
@@ -118,9 +119,16 @@ it('mints one ticket in Strict Mode, parses events, sends mute, and releases med
   act(() => socket.dispatchEvent(new MessageEvent('message', { data:progressive })))
   expect(FakeMediaSource.latest?.buffer.appended[0].byteLength).toBe(3)
   const bargePcm = new ArrayBuffer(320)
-  act(() => FakeWorkletNode.latest?.port.onmessage?.(new MessageEvent('message', { data:{ type:'pcm', pcm:bargePcm, rms:0.2 } })))
+  act(() => {
+    for (let index = 0; index < 18; index += 1) {
+      FakeWorkletNode.latest?.port.onmessage?.(new MessageEvent('message', { data:{ type:'pcm', pcm:bargePcm.slice(0), rms:0.2 } }))
+    }
+  })
+  expect(result.current.phase).toBe('speaking')
+  expect(socket.sent.some(value => value instanceof Uint8Array)).toBe(true)
+  expect(socket.sent.some(value => typeof value === 'string' && value.includes('"type":"interrupt"'))).toBe(false)
+  act(() => socket.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, type:'warning', code:'assistant_interrupted' }) })))
   expect(result.current.phase).toBe('interrupted')
-  expect(socket.sent.some(value => typeof value === 'string' && value.includes('"type":"interrupt"'))).toBe(true)
   act(() => result.current.toggleMute())
   expect(socket.sent.at(-1)).toContain('"type":"mute"')
 
@@ -129,8 +137,71 @@ it('mints one ticket in Strict Mode, parses events, sends mute, and releases med
   expect(socket.sent.some(value => value instanceof Uint8Array)).toBe(true)
   unmount()
   expect(socket.closed).toBe(true)
-  expect(stopTrack).toHaveBeenCalled()
+  await waitFor(() => expect(stopTrack).toHaveBeenCalled())
   expect(closeContext).toHaveBeenCalled()
   expect(FakeWorkletNode.latest?.disconnect).toHaveBeenCalled()
   expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-voice')
+})
+
+it('preserves a structured error across close and retry mints a fresh ticket after cleanup', async () => {
+  vi.stubGlobal('WebSocket', FakeWebSocket)
+  vi.stubGlobal('AudioContext', FakeAudioContext)
+  vi.stubGlobal('AudioWorkletNode', FakeWorkletNode)
+  vi.stubGlobal('MediaSource', FakeMediaSource)
+  vi.stubGlobal('Audio', FakeAudio)
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-voice')
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+  Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{
+    getUserMedia:vi.fn().mockResolvedValue({ getTracks:() => [{ stop:stopTrack }] }),
+  } })
+  vi.mocked(apiJson)
+    .mockResolvedValueOnce({
+      protocol_version:1, session_id:'session-1', ticket:'ticket-one', websocket_url:'wss://api.example.test/api/web/voice/ws',
+      tier:'lite', tier_label:'Swico Lite', language:'en', wallets:{ chat:{} as never, voice:{} as never },
+    })
+    .mockResolvedValueOnce({
+      protocol_version:1, session_id:'session-2', ticket:'ticket-two', websocket_url:'wss://api.example.test/api/web/voice/ws',
+      tier:'lite', tier_label:'Swico Lite', language:'en', wallets:{ chat:{} as never, voice:{} as never },
+    })
+  const user = {} as never
+  const { result } = renderHook(() => useRealtimeVoice({ user, threadId:null }))
+  await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  const first = FakeWebSocket.instances[0]
+  act(() => first.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({
+    protocol_version:1, type:'error', code:'insufficient_voice_credit', credit_bucket:'voice',
+    message:'Add Voice credits to continue.',
+  }) })))
+  act(() => first.dispatchEvent(new CloseEvent('close', { code:4451, reason:'insufficient_voice_credit' })))
+  expect(result.current.error).toBe('Add Voice credits to continue.')
+  expect(result.current.creditRequired).toBe('voice')
+
+  await act(async () => { await result.current.retry() })
+  await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2))
+  expect(first.closed).toBe(true)
+  expect(String(FakeWebSocket.instances[1].url)).toContain('ticket=ticket-two')
+  expect(String(FakeWebSocket.instances[1].url)).not.toContain('ticket-one')
+  expect(apiJson).toHaveBeenCalledTimes(2)
+})
+
+it('maps known application close codes without replacing an earlier server error', async () => {
+  vi.stubGlobal('WebSocket', FakeWebSocket)
+  vi.stubGlobal('AudioContext', FakeAudioContext)
+  vi.stubGlobal('AudioWorkletNode', FakeWorkletNode)
+  vi.stubGlobal('MediaSource', FakeMediaSource)
+  vi.stubGlobal('Audio', FakeAudio)
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-voice')
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+  Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{
+    getUserMedia:vi.fn().mockResolvedValue({ getTracks:() => [{ stop:stopTrack }] }),
+  } })
+  vi.mocked(apiJson).mockResolvedValue({
+    protocol_version:1, session_id:'session-close', ticket:'ticket-close', websocket_url:'wss://api.example.test/api/web/voice/ws',
+    tier:'lite', tier_label:'Swico Lite', language:'en', wallets:{ chat:{} as never, voice:{} as never },
+  })
+  const user = {} as never
+  const { result } = renderHook(() => useRealtimeVoice({ user, threadId:null }))
+  await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  act(() => FakeWebSocket.instances[0].dispatchEvent(new CloseEvent('close', { code:4401, reason:'voice_session_expired' })))
+  expect(result.current.errorCode).toBe('voice_session_expired')
+  expect(result.current.error).toMatch(/fresh ticket/i)
 })

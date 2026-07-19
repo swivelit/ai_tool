@@ -63,11 +63,30 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
         { id:'standard', label:'Swico', description:'Balanced quality and speed for most tasks.', available:true, selected:false },
         { id:'pro', label:'Swico Pro', description:'Best for complex reasoning, planning, and coding.', available:true, selected:false },
       ] },
-      features: { web_chat: true, prepaid_billing: true, local_models: false },
+      features: {
+        web_chat:true, prepaid_billing:true, local_models:false,
+        web_attachments:true, web_voice_recording:true, web_voice_reply:true,
+        web_voice_billing:true, web_realtime_voice:true, separate_voice_credits:true,
+      },
+      wallets: {
+        chat:{ balance_micros:state.wallet, reserved_micros:0, available_micros:state.wallet, version:1 },
+        voice:{ balance_micros:5_000_000, reserved_micros:0, available_micros:5_000_000, version:1 },
+      },
+      uploads:{ available:true, ttl_seconds:600, max_file_bytes:10485760, max_files_per_message:5, max_total_bytes:26214400, supported_extensions:['.txt','.pdf'] },
     })
     if (path === '/api/web/billing/wallet') return json(route, { balance_micros: state.wallet, reserved_micros: 0, available_micros: state.wallet, version: 2, token_estimate:tokenEstimate(state.wallet ? 60_000 : 0) })
     if (path === '/api/web/billing/ledger') return json(route, { items: [] })
     if (path === '/api/web/billing/payments') return json(route, { items: state.payments })
+    if (path === '/api/web/voice/sessions' && request.method() === 'POST') {
+      if (!state.threads.some(item => item.id === 'voice-thread')) {
+        state.threads.unshift({ id:'voice-thread', title:'Voice planning', archived_at:null, created_at:now, updated_at:now })
+      }
+      return json(route, {
+        protocol_version:1, session_id:`voice-session-${Date.now()}`, ticket:`fresh-ticket-${Date.now()}`,
+        websocket_url:'ws://127.0.0.1:4173/api/web/voice/ws', tier:'lite', tier_label:'Swico Lite', language:'en',
+        wallets:{ chat:{ available_micros:state.wallet }, voice:{ available_micros:5_000_000 } },
+      }, 201)
+    }
     if (path === '/api/web/billing/estimate') {
       const gross = Number(url.searchParams.get('gross_amount_paise'))
       return json(route, { gross_amount_paise:gross, token_estimate:{ tier:'lite', tier_label:'Swico Lite', estimated_blended_tokens:450_000, range_min_tokens:187_000, range_max_tokens:1_350_000 } })
@@ -119,6 +138,10 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
       return json(route, { items: state.threads.filter(item => item.title.toLowerCase().includes(query)), has_more: false })
     }
     if (path === '/api/web/threads/thread-1/messages') return json(route, { items: [] })
+    if (path === '/api/web/threads/voice-thread/messages') return json(route, { items:[
+      { id:'voice-user-1', thread_id:'voice-thread', role:'user', content:'I need help planning', request_id:'voice-request-1', tier:null, tier_label:'Swico', input_tokens:0, output_tokens:0, usage_source:null, charge_micros:0, status:'complete', created_at:now, attachments:[], input_mode:'realtime_voice', voice_turn_id:'voice-session', reply_language:'en' },
+      { id:'voice-assistant-1', thread_id:'voice-thread', role:'assistant', content:'Let us make a clear plan.', request_id:'voice-request-1', tier:'lite', tier_label:'Swico Lite', input_tokens:8, output_tokens:7, usage_source:'actual', charge_micros:10, status:'complete', created_at:now, attachments:[], input_mode:'realtime_voice', voice_turn_id:'voice-session', reply_language:'en' },
+    ] })
     if (path === '/api/web/threads/thread-1' && request.method() === 'PATCH') {
       const update = request.postDataJSON() as { title?: string; archived?: boolean }
       if (update.title) state.threads[0].title = update.title
@@ -344,4 +367,97 @@ test('stop generation sends cancellation and mobile drawer is operable', async (
     await expect(page.getByRole('complementary', { name: 'Chat history' })).toHaveClass(/open/)
     await page.locator('.mobile-close').click()
   }
+})
+
+test('real-time Voice Mode completes a pause-aware turn, syncs chat, handles barge-in, and retries safely', async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    class MockSourceBuffer extends EventTarget {
+      updating = false
+      appendBuffer(value: ArrayBuffer) { void value; this.dispatchEvent(new Event('updateend')) }
+      abort() {}
+    }
+    class MockMediaSource extends EventTarget {
+      readyState = 'open'
+      constructor() { super(); setTimeout(() => this.dispatchEvent(new Event('sourceopen')), 0) }
+      addSourceBuffer(mime: string) { void mime; return new MockSourceBuffer() }
+    }
+    class MockAudio {
+      src = ''
+      play() { return Promise.resolve() }
+      pause() {}
+    }
+    class MockWorkletNode {
+      port = { onmessage:null as ((event: MessageEvent) => void) | null }
+      connect() { return this }
+      disconnect() {}
+    }
+    class MockAudioContext {
+      audioWorklet = { addModule:async () => undefined }
+      destination = {}
+      createMediaStreamSource() { return { connect:() => undefined } }
+      createGain() { return { gain:{ value:1 }, connect:() => undefined } }
+      close() { return Promise.resolve() }
+    }
+    class MockWebSocket extends EventTarget {
+      static OPEN = 1; static CLOSING = 2; static CLOSED = 3
+      readyState = 0; bufferedAmount = 0; binaryType = ''; url: string
+      constructor(url: string | URL) {
+        super(); this.url = String(url)
+        ;(window as typeof window & { __voiceSocket?: MockWebSocket }).__voiceSocket = this
+        setTimeout(() => { this.readyState = 1; this.dispatchEvent(new Event('open')) }, 0)
+      }
+      emit(message: object) { this.dispatchEvent(new MessageEvent('message', { data:JSON.stringify({ protocol_version:1, ...message }) })) }
+      send(value: string | ArrayBuffer) {
+        if (typeof value !== 'string') return
+        const message = JSON.parse(value) as { type?: string }
+        if (message.type !== 'session.start') return
+        setTimeout(() => this.emit({ type:'session.ready', state:'connected', preroll_ms:320, barge_in_min_ms:180 }), 10)
+        setTimeout(() => this.emit({ type:'state.changed', state:'listening', turn_number:1 }), 20)
+        setTimeout(() => this.emit({ type:'stt.partial', transcript:'I need', turn_number:1 }), 50)
+        setTimeout(() => this.emit({ type:'state.changed', state:'endpoint_pending', turn_number:1 }), 80)
+        setTimeout(() => this.emit({ type:'state.changed', state:'listening', turn_number:1 }), 750)
+        setTimeout(() => this.emit({ type:'stt.partial', transcript:'I need help planning', turn_number:1 }), 780)
+        setTimeout(() => this.emit({ type:'stt.final', transcript:'I need help planning', turn_number:1 }), 850)
+        setTimeout(() => this.emit({ type:'assistant.start', turn_number:1 }), 880)
+        setTimeout(() => this.emit({ type:'assistant.delta', delta:'Let us make a clear plan.', turn_number:1 }), 920)
+        setTimeout(() => this.emit({ type:'audio.start', content_type:'audio/mpeg' }), 960)
+        setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data:new Uint8Array([0,0,0,1,1,2,3]).buffer })), 990)
+        setTimeout(() => this.emit({ type:'audio.end', characters:25, interrupted:false }), 1040)
+        setTimeout(() => this.emit({ type:'turn.done', thread_id:'voice-thread', user_message_id:'voice-user-1', assistant_message_id:'voice-assistant-1', turn_number:1, input_mode:'realtime_voice', completion_status:'complete' }), 1080)
+      }
+      close(code = 1000, reason = 'client_closed') {
+        this.readyState = 3; this.dispatchEvent(new CloseEvent('close', { code, reason }))
+      }
+    }
+    Object.defineProperty(navigator, 'mediaDevices', { configurable:true, value:{
+      getUserMedia:async () => ({ getTracks:() => [{ stop:() => undefined }] }),
+    } })
+    Object.assign(window, { WebSocket:MockWebSocket, MediaSource:MockMediaSource, Audio:MockAudio, AudioContext:MockAudioContext, AudioWorkletNode:MockWorkletNode })
+    URL.createObjectURL = () => 'blob:mock-voice'
+    URL.revokeObjectURL = () => undefined
+  })
+  await installBackend(page, { wallet:5_000_000 })
+  await page.emulateMedia({ reducedMotion:'reduce' })
+  await signIn(page)
+  await page.getByRole('button', { name:'Start real-time Voice Mode' }).click()
+  await expect(page.getByRole('dialog', { name:'Voice' })).toBeVisible()
+  await expect.poll(() => page.locator('.voice-orb').evaluate(element => parseFloat(getComputedStyle(element).animationDuration))).toBeLessThan(0.001)
+  await expect(page.getByRole('heading', { name:'Still listening…' })).toBeVisible()
+  await expect(page.getByText('I need help planning')).toBeVisible()
+  await expect(page.getByText('Let us make a clear plan.')).toBeVisible()
+  await page.evaluate(() => {
+    const socket = (window as typeof window & { __voiceSocket?: { emit:(message: object) => void } }).__voiceSocket
+    socket?.emit({ type:'warning', code:'assistant_interrupted', message:'Assistant interrupted. Listening now.' })
+  })
+  await expect(page.getByRole('heading', { name:'Listening' })).toBeVisible()
+  const axe = await new AxeBuilder({ page }).analyze()
+  expect(axe.violations.filter(item => item.impact === 'critical')).toEqual([])
+  if (testInfo.project.name === 'chromium') await page.setViewportSize({ width:320, height:640 })
+  else await page.setViewportSize({ width:844, height:390 })
+  await expect(page.getByRole('dialog', { name:'Voice' })).toBeVisible()
+  await expect(page.getByRole('button', { name:'End conversation' })).toBeVisible()
+  await page.getByRole('button', { name:'End conversation' }).click()
+  await expect(page.getByRole('dialog', { name:'Voice' })).toBeHidden()
+  await expect(page.getByText('I need help planning')).toBeVisible()
+  await expect(page.getByText('Let us make a clear plan.')).toBeVisible()
 })

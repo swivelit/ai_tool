@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import websockets
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
 from .sarvam_provider import (
     normalize_sarvam_tts_language_code,
@@ -28,7 +29,46 @@ SARVAM_STREAMING_TTS_URL = "wss://api.sarvam.ai/text-to-speech/ws"
 
 
 class SarvamStreamingError(RuntimeError):
-    pass
+    """Sanitized provider failure; raw provider payloads never leave the adapter."""
+
+    def __init__(self, message: str, *, category: str = "temporary", close_code: int | None = None) -> None:
+        super().__init__(message)
+        self.category = category
+        self.close_code = close_code
+
+
+def _provider_category(code: int | None, reason: str = "") -> str:
+    # Kept local to avoid coupling the provider layer to the web router.
+    lowered = str(reason or "").lower()
+    if code in {4001, 4003, 4401, 4403} or any(x in lowered for x in ("auth", "api key", "unauthor", "forbidden")):
+        return "authentication"
+    if code in {4008, 4029, 429, 4429} or any(x in lowered for x in ("quota", "rate limit", "too many")):
+        return "quota"
+    if code in {1002, 1003, 1007, 1008} or "protocol" in lowered:
+        return "protocol"
+    return "temporary"
+
+
+def _handshake_status(exc: BaseException) -> int | None:
+    """Read only the HTTP status from a failed handshake, never its body."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _handshake_category(status: int | None) -> str:
+    if status in {401, 403}:
+        return "authentication"
+    if status == 429:
+        return "quota"
+    if status in {400, 404, 405, 406, 409, 415, 422, 426}:
+        return "protocol"
+    return "temporary"
 
 
 class SarvamStreamingProvider:
@@ -62,13 +102,33 @@ class SarvamStreamingProvider:
         }
         # websockets 15 uses additional_headers; 10.x uses extra_headers.
         try:
-            return await self._connect(
-                url, additional_headers={"Api-Subscription-Key": self._api_key}, **kwargs
-            )
-        except TypeError:
-            return await self._connect(
-                url, extra_headers={"Api-Subscription-Key": self._api_key}, **kwargs
-            )
+            try:
+                return await self._connect(
+                    url, additional_headers={"Api-Subscription-Key": self._api_key}, **kwargs
+                )
+            except TypeError:
+                return await self._connect(
+                    url, extra_headers={"Api-Subscription-Key": self._api_key}, **kwargs
+                )
+        except InvalidStatus as exc:
+            status = _handshake_status(exc)
+            raise SarvamStreamingError(
+                "Sarvam streaming connection was rejected.",
+                category=_handshake_category(status), close_code=status,
+            ) from exc
+        except ConnectionClosed as exc:
+            raise SarvamStreamingError(
+                "Sarvam streaming connection was rejected.",
+                category=_provider_category(exc.code, exc.reason), close_code=exc.code,
+            ) from exc
+        except InvalidHandshake as exc:
+            status = _handshake_status(exc)
+            raise SarvamStreamingError(
+                "Sarvam streaming handshake failed.",
+                category=_handshake_category(status), close_code=status,
+            ) from exc
+        except (OSError, asyncio.TimeoutError) as exc:
+            raise SarvamStreamingError("Sarvam streaming is temporarily unavailable.") from exc
 
     async def connect_stt(self, language: str) -> None:
         language_code = normalize_sarvam_tts_language_code(language)
@@ -79,6 +139,7 @@ class SarvamStreamingProvider:
             "sample_rate": "16000",
             "input_audio_codec": "pcm_s16le",
             "vad_signals": "true",
+            "flush_signal": "true",
             "high_vad_sensitivity": "true",
         })
         self._stt = await self._open(f"{SARVAM_STREAMING_STT_URL}?{query}")
@@ -97,20 +158,57 @@ class SarvamStreamingProvider:
     async def stt_events(self) -> AsyncIterator[dict[str, Any]]:
         if self._stt is None:
             raise SarvamStreamingError("STT stream is not connected.")
-        async for raw in self._stt:
-            payload = json.loads(raw)
-            event_type = str(payload.get("type") or "")
-            data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-            transcript = str(data.get("transcript") or "")
-            if event_type in {"speech_start", "speech_end"}:
-                yield {"type": event_type}
-            elif transcript:
-                final = event_type in {"transcript", "data"} and not bool(data.get("partial"))
-                yield {
-                    "type": "final" if final else "partial",
-                    "transcript": transcript,
-                    "audio_milliseconds": max(0, int(float((data.get("metrics") or {}).get("audio_duration") or 0) * 1000)),
-                }
+        try:
+            async for raw in self._stt:
+                try:
+                    payload = json.loads(raw)
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise SarvamStreamingError(
+                        "Sarvam returned an incompatible STT message.", category="protocol"
+                    ) from exc
+                if not isinstance(payload, dict):
+                    raise SarvamStreamingError("Sarvam returned an incompatible STT message.", category="protocol")
+                event_type = str(payload.get("type") or "").strip().lower()
+                data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+                signal = str(data.get("signal_type") or data.get("event_type") or "").strip().upper()
+                if event_type in {"events", "event"} and signal in {"START_SPEECH", "SPEECH_START"}:
+                    yield {"type": "speech_start"}
+                    continue
+                if event_type in {"events", "event"} and signal in {"END_SPEECH", "SPEECH_END"}:
+                    yield {"type": "speech_end"}
+                    continue
+                if event_type in {"speech_start", "start_speech"}:
+                    yield {"type": "speech_start"}
+                    continue
+                if event_type in {"speech_end", "end_speech"}:
+                    yield {"type": "speech_end"}
+                    continue
+                if event_type in {"error", "errors"} or payload.get("error"):
+                    category = _provider_category(None, str(data.get("code") or data.get("message") or ""))
+                    yield {"type": "provider_error", "category": category, "close_code": None}
+                    continue
+                transcript = str(data.get("transcript") or "").strip()
+                if transcript:
+                    partial = bool(data.get("partial")) or event_type in {
+                        "partial", "partial_transcript", "interim", "interim_transcript",
+                    }
+                    metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+                    yield {
+                        "type": "partial" if partial else "final",
+                        "transcript": transcript,
+                        "audio_milliseconds": max(
+                            0, int(float(metrics.get("audio_duration") or data.get("duration") or 0) * 1000)
+                        ),
+                    }
+                    continue
+                if event_type in {"warning", "warnings"}:
+                    yield {"type": "provider_warning"}
+        except ConnectionClosed as exc:
+            yield {
+                "type": "provider_error",
+                "category": _provider_category(exc.code, exc.reason),
+                "close_code": exc.code,
+            }
 
     async def connect_tts(self, language: str) -> None:
         language_code = normalize_sarvam_tts_language_code(language)
@@ -151,15 +249,41 @@ class SarvamStreamingProvider:
     async def tts_audio(self) -> AsyncIterator[bytes]:
         if self._tts is None:
             raise SarvamStreamingError("TTS stream is not connected.")
-        async for raw in self._tts:
-            payload = json.loads(raw)
-            if payload.get("type") == "audio":
-                data = payload.get("data") or {}
-                encoded = data.get("audio")
-                if encoded:
-                    yield base64.b64decode(encoded, validate=True)
-            elif payload.get("type") in {"event", "completion"}:
-                return
+        try:
+            async for raw in self._tts:
+                try:
+                    payload = json.loads(raw)
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise SarvamStreamingError(
+                        "Sarvam returned an incompatible TTS message.", category="protocol"
+                    ) from exc
+                if payload.get("type") == "audio":
+                    data = payload.get("data") or {}
+                    encoded = data.get("audio")
+                    if encoded:
+                        try:
+                            yield base64.b64decode(encoded, validate=True)
+                        except (ValueError, TypeError) as exc:
+                            raise SarvamStreamingError(
+                                "Sarvam returned invalid TTS audio.", category="protocol"
+                            ) from exc
+                elif payload.get("type") in {"event", "events", "completion"}:
+                    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                    if payload.get("type") == "completion" or str(data.get("event_type") or "").lower() in {
+                        "final", "complete", "completion",
+                    }:
+                        return
+                elif payload.get("type") == "error" or payload.get("error"):
+                    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+                    raise SarvamStreamingError(
+                        "Sarvam TTS rejected the stream.",
+                        category=_provider_category(None, str(data.get("code") or data.get("message") or "")),
+                    )
+        except ConnectionClosed as exc:
+            raise SarvamStreamingError(
+                "Sarvam TTS connection closed unexpectedly.",
+                category=_provider_category(exc.code, exc.reason), close_code=exc.code,
+            ) from exc
 
     async def close(self) -> None:
         sockets = [socket for socket in (self._stt, self._tts) if socket is not None]

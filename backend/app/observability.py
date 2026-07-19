@@ -166,6 +166,13 @@ _SAFE_EXTRA_KEYS = {
     "smtp_use_tls",
     "smtp_stage",
     "smtp_exception_class",
+    "stage",
+    "provider_close_code",
+    "provider_category",
+    "session_duration_ms",
+    "turn_number",
+    "cleanup_succeeded",
+    "reservations_released",
 }
 
 _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")
