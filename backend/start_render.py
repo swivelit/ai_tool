@@ -233,6 +233,10 @@ def main() -> None:
         log_level=os.getenv("UVICORN_LOG_LEVEL", os.getenv("LOG_LEVEL", "info")).lower(),
         proxy_headers=True,
         forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
+        # The realtime voice handshake intentionally carries a short-lived
+        # one-use ticket in the WebSocket query string. Application request
+        # logs retain path/status telemetry without recording query strings.
+        access_log=False,
     )
 
 

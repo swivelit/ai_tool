@@ -4,6 +4,11 @@ import { vi } from 'vitest'
 import { Composer } from './Composer'
 import type { ComposerAttachment, ReadyAttachment } from '../types'
 
+const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_description:'', tier_selection_enabled:true, tiers:[
+  { id:'lite' as const, label:'Swico Lite', description:'Fast', available:true, selected:true },
+  { id:'standard' as const, label:'Swico', description:'Balanced', available:true, selected:false },
+] }
+
 const ready = (overrides: Partial<ReadyAttachment> = {}): ReadyAttachment => ({
   id:'upload-1', name:'notes.txt', media_type:'text/plain', size_bytes:1024,
   created_at:new Date().toISOString(), expires_at:new Date(Date.now() + 600_000).toISOString(),
@@ -43,6 +48,38 @@ it('selects and drops documents through the attachment control', async () => {
   expect(addFiles).toHaveBeenCalledTimes(2)
 })
 
+it('opens the Plus menu accessibly, uploads, restores focus, and hosts the tier selector', async () => {
+  const addFiles = vi.fn(); const onTierSelect = vi.fn()
+  const { container } = render(<Composer value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false}
+    attachmentsEnabled supportedExtensions={['.txt']} addFiles={addFiles}
+    assistant={assistant} onTierSelect={onTierSelect} />)
+  const plus = screen.getByRole('button', { name:'Add to prompt' })
+  await userEvent.click(plus)
+  expect(plus).toHaveAttribute('aria-expanded', 'true')
+  const upload = await screen.findByRole('menuitem', { name:/Upload files/ })
+  expect(upload).toHaveFocus()
+  fireEvent.keyDown(window, { key:'Escape' })
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  expect(plus).toHaveFocus()
+  await userEvent.click(plus)
+  await userEvent.click(screen.getByRole('menuitem', { name:/Upload files/ }))
+  const file = new File(['hello'], 'notes.txt', { type:'text/plain' })
+  await userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, file)
+  expect(addFiles).toHaveBeenCalledWith([file])
+  await userEvent.click(screen.getByRole('button', { name:/Swico Lite/ }))
+  await userEvent.click(screen.getByRole('option', { name:/Balanced/ }))
+  expect(onTierSelect).toHaveBeenCalledWith('standard')
+})
+
+it('shows waveform only when empty and replaces it with Send for content', () => {
+  const props = { setValue:vi.fn(), send:vi.fn(), stop:vi.fn(), streaming:false, realtimeVoiceEnabled:true }
+  const { rerender } = render(<Composer {...props} value="" />)
+  expect(screen.getByRole('button', { name:'Start real-time Voice Mode' })).toBeEnabled()
+  rerender(<Composer {...props} value="draft" />)
+  expect(screen.queryByRole('button', { name:'Start real-time Voice Mode' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name:'Send message' })).toBeEnabled()
+})
+
 it('shows upload state, countdown, expiry, and removes attachments', async () => {
   const remove = vi.fn()
   const uploading: ComposerAttachment = {
@@ -62,7 +99,7 @@ it('shows upload state, countdown, expiry, and removes attachments', async () =>
   rerender(<Composer value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false}
     attachments={[ready({ status:'expired' } as never)]} removeAttachment={remove} />)
   expect(screen.getByText('Expired')).toBeInTheDocument()
-  expect(screen.getByRole('button', { name:'Send message' })).toBeDisabled()
+  expect(screen.getByRole('button', { name:'Start real-time Voice Mode' })).toBeDisabled()
 })
 
 it('sends an attachment-only message on Enter', () => {

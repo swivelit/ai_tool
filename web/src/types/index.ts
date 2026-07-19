@@ -1,8 +1,11 @@
 export type Wallet = {
+  credit_bucket?: CreditBucket;
   balance_micros: number; reserved_micros: number; available_micros: number;
   version: number; token_estimate?: TokenEstimate | null;
   billing_exempt?: boolean; balance_display?: 'Unlimited';
 }
+export type CreditBucket = 'chat' | 'voice'
+export type Wallets = { chat: Wallet; voice: Wallet }
 export type SwicoTier = 'lite' | 'standard' | 'pro'
 export type SwicoTierOption = {
   id: SwicoTier; label: string; description: string; available: boolean; selected: boolean;
@@ -28,7 +31,8 @@ export type AudioRecorderState = {
   status: 'idle' | 'requesting' | 'recording' | 'stopping' | 'transcribing' | 'error';
   elapsed_seconds: number; mime_type: string | null; error: string | null;
 }
-export type InputMode = 'text' | 'voice'
+/** `voice` is retained only for deserializing historical dictation rows. */
+export type InputMode = 'text' | 'voice' | 'dictation' | 'realtime_voice'
 export type Message = {
   id: string; thread_id: string; role: 'user' | 'assistant' | 'system'; content: string;
   request_id: string | null; tier: SwicoTier | null; tier_label: string;
@@ -37,7 +41,11 @@ export type Message = {
   attachments?: MessageAttachment[];
   input_mode: InputMode; voice_turn_id: string | null; reply_language: 'en' | 'ta' | null;
 }
-export type BillingPackage = { gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; token_estimate?: TokenEstimate }
+export type VoiceCreditEstimate = {
+  pricing_version: string; estimated_stt_seconds: number; estimated_stt_minutes: string;
+  estimated_tts_characters: number; assumption: string;
+}
+export type BillingPackage = { gross_amount_paise: number; credited_amount_micros: number; platform_share_paise: number; token_estimate?: TokenEstimate; voice_estimate?: VoiceCreditEstimate }
 export type BillingConfig = {
   currency: 'INR'; credit_percent: string; razorpay_key_id: string; min_topup_paise: number;
   razorpay_mode: 'test' | 'live'; checkout_enabled: boolean;
@@ -45,11 +53,12 @@ export type BillingConfig = {
 }
 export type Bootstrap = {
   user: { id: number; name: string; email: string | null; reply_language: string };
-  wallet: Wallet; billing: BillingConfig; assistant: AssistantSettings;
+  wallet: Wallet; wallets?: Wallets; billing: BillingConfig; assistant: AssistantSettings;
   features: {
     web_chat: boolean; prepaid_billing: boolean;
     web_attachments: boolean; web_voice_recording: boolean;
     web_voice_reply: boolean; web_voice_billing: boolean;
+    web_realtime_voice: boolean; separate_voice_credits: boolean;
   };
   uploads: {
     available: boolean; ttl_seconds: number; max_file_bytes: number;
@@ -59,6 +68,7 @@ export type Bootstrap = {
 export type StreamEventName = 'thread' | 'status' | 'delta' | 'usage' | 'wallet' | 'done' | 'error'
 export type SSEEvent = { event: StreamEventName | (string & {}); data: unknown }
 export type PaymentStatus = {
+  credit_bucket?: CreditBucket;
   internal_order_id: string; gross_amount_paise: number; credited_amount_micros: number;
   platform_share_paise: number; refunded_amount_paise: number; status: string;
   provider_payment_id: string | null; created_at: string; paid_at: string | null;
@@ -87,12 +97,14 @@ export type UsageBreakdown = {
 export type TierUsageBreakdown = UsageBreakdown & {
   label: string; debited_token_credits: string;
   period_debit_percentage: number; monthly_limit_percentage: number;
+  utilization_percentage?: number; utilization_basis?: 'monthly_hard_limit' | 'available_plus_period_debit';
 }
 export type VoiceUsageBreakdown = {
   label: 'Voice'; stt_request_count: number; tts_request_count: number;
   total_audio_seconds: number; total_tts_characters: number; request_count: number;
   debited_micros: number; debited_voice_credits: string;
   period_debit_percentage: number; monthly_limit_percentage: number;
+  utilization_percentage?: number; utilization_basis?: 'monthly_hard_limit' | 'available_plus_period_debit';
 }
 export type TokenEstimate = {
   tier: SwicoTier; tier_label: string; pricing_as_of: string;
@@ -105,7 +117,8 @@ export type TopupTokenEstimate = {
   range_min_tokens: number; range_max_tokens: number;
 }
 export type TopupEstimateResponse = {
-  gross_amount_paise: number; token_estimate: TopupTokenEstimate;
+  gross_amount_paise: number; credit_bucket?: CreditBucket;
+  token_estimate: TopupTokenEstimate | null; voice_estimate?: VoiceCreditEstimate | null;
 }
 export type UsageSummary = {
   period: 'current_month' | '30d' | 'all'; timezone: string;
@@ -115,6 +128,8 @@ export type UsageSummary = {
   output_tokens: number; total_tokens: number; actual_usage_count: number;
   estimated_usage_count: number; debited_micros: number; debited_ai_credits: string;
   available_micros: number; available_ai_credits: string;
+  chat_available_micros?: number; chat_available_credits?: string;
+  voice_available_micros?: number; voice_available_credits?: string; wallets?: Wallets;
   daily: Array<{ date: string } & UsageBreakdown>;
   estimated_tokens_remaining: TokenEstimate | null;
   monthly_hard_limit_micros: number | null;
@@ -125,22 +140,24 @@ export type UsageSummary = {
 export type TranscriptionResponse = {
   transcript: string; detected_language: string; duration_seconds: number;
   duration_milliseconds: number; voice_turn_id: string;
-  stt_charge: { charged_micros: number; voice_credits: string }; wallet: Wallet;
+  stt_charge: { charged_micros: number; voice_credits: string }; wallet: Wallet; wallets?: Wallets;
 }
 export type SynthesisResponse = {
   audio_base64: string; mime_type: string; speaker: string;
   target_language_code: 'en-IN' | 'ta-IN'; model: string; character_count: number;
-  charged_micros: number; voice_credits: string; wallet: Wallet;
+  charged_micros: number; voice_credits: string; wallet: Wallet; wallets?: Wallets;
 }
 export type VoiceReplyStatus = 'generating' | 'ready' | 'playing' | 'paused' | 'ended' | 'error'
 export type VoiceReplyState = {
   status: VoiceReplyStatus; error: string | null; insufficientCredits: boolean; canRetry?: boolean;
 }
 export type PaymentHistory = {
+  credit_bucket?: CreditBucket;
   id: string; gross_amount_paise: number; credited_amount_micros: number;
   platform_share_paise: number; refunded_amount_paise: number;
   credit_reversal_micros: number; status: string; created_at: string;
   updated_at: string; paid_at: string | null; refunded_at: string | null;
   payment_received: boolean; credit_applied: boolean;
   token_estimate?: TokenEstimate; reversal_token_estimate?: TokenEstimate;
+  voice_estimate?: VoiceCreditEstimate;
 }

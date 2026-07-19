@@ -20,12 +20,12 @@ from tests.conftest import auth_headers, create_test_user
 WAV_BASE64 = base64.b64encode(b"RIFF" + b"\x00" * 20).decode()
 
 
-def _fund(user_id: int) -> int:
+def _fund(user_id: int, bucket: str = "chat") -> int:
     credit, platform = calculate_topup(1000)
     with SessionLocal() as session:
         order = PaymentOrder(
-            user_id=user_id, receipt=f"voice-reply-fund-{user_id}",
-            provider_order_id=f"voice-reply-order-{user_id}", gross_amount_paise=1000,
+            user_id=user_id, credit_bucket=bucket, receipt=f"voice-reply-fund-{user_id}-{bucket}",
+            provider_order_id=f"voice-reply-order-{user_id}-{bucket}", gross_amount_paise=1000,
             credited_amount_micros=credit, platform_share_paise=platform, status="captured",
         )
         session.add(order); session.flush(); credit_payment_once(session, order); session.commit()
@@ -174,6 +174,33 @@ def test_tts_insufficient_credit_and_monthly_limit_prevent_provider(client, monk
     response = _post_tts(client, "tts-limit", limited_message, limited_turn)
     assert response.status_code == 402 and response.json()["error"]["code"] == "usage_limit_reached"
     assert called == 0
+
+
+def test_separate_voice_tts_debits_voice_only_and_preserves_stored_text(client, monkeypatch):
+    monkeypatch.setenv("WEB_SEPARATE_VOICE_CREDITS_ENABLED", "true")
+    user = create_test_user("separate-tts", "separate-tts@example.com")
+    _fund(int(user.id), "chat")
+    turn = str(uuid4()); message_id = _message(int(user.id), voice_turn_id=turn)
+    calls = 0
+    def provider(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return WAV_BASE64
+    monkeypatch.setattr("app.web_api.router.SarvamProvider.tts", provider)
+    insufficient = _post_tts(client, "separate-tts", message_id, turn)
+    assert insufficient.status_code == 402
+    assert insufficient.json()["error"]["credit_bucket"] == "voice"
+    assert calls == 0
+    _fund(int(user.id), "voice")
+    completed = _post_tts(client, "separate-tts", message_id, turn)
+    assert completed.status_code == 200 and calls == 1
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge)).one()
+        message = session.get(WebChatMessage, message_id)
+        assert charge.credit_bucket == "voice"
+        assert message is not None and message.content == "A stored answer."
+        assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["balance_micros"] < 5_000_000
 
 
 def test_tts_billing_exempt_user_is_audited_without_wallet_debit(client, monkeypatch):

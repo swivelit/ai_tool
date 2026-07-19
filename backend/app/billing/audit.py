@@ -55,10 +55,10 @@ def financial_audit(
     ledgers = list(session.exec(select(WalletLedger)).all())
     webhooks = list(session.exec(select(ProcessedWebhook)).all())
 
-    active_reserved_by_user: dict[int, int] = defaultdict(int)
+    active_reserved_by_wallet: dict[tuple[int, str], int] = defaultdict(int)
     for charge in charges:
         if charge.status == "reserved":
-            active_reserved_by_user[int(charge.user_id)] += max(0, int(charge.reserved_micros))
+            active_reserved_by_wallet[(int(charge.user_id), str(charge.credit_bucket))] += max(0, int(charge.reserved_micros))
 
     findings: list[dict[str, Any]] = []
     candidates = (
@@ -67,7 +67,9 @@ def financial_audit(
         _finding("invalid_wallet_reservation", (
             _item(row, current, timestamp="updated_at") for row in wallets
             if int(row.reserved_micros) > max(0, int(row.balance_micros))
-            or int(row.reserved_micros) != active_reserved_by_user.get(int(row.user_id), 0)
+            or int(row.reserved_micros) != active_reserved_by_wallet.get(
+                (int(row.user_id), str(row.credit_bucket)), 0
+            )
         )),
     )
     findings.extend(item for item in candidates if item)
@@ -138,6 +140,27 @@ def financial_audit(
     if finding:
         findings.append(finding)
 
+    reversed_by_order: dict[str, int] = defaultdict(int)
+    for row in ledgers:
+        if row.entry_type == "refund_debit" and row.reference_type == "payment_refund":
+            reversed_by_order[str(row.reference_id)] += -min(0, int(row.amount_micros))
+    short_refunds = []
+    for row in orders:
+        if not row.gross_amount_paise or not row.refunded_amount_paise:
+            continue
+        expected = (
+            int(row.credited_amount_micros) * int(row.refunded_amount_paise)
+            // int(row.gross_amount_paise)
+        )
+        if reversed_by_order.get(str(row.id), 0) < expected:
+            short_refunds.append(row)
+    finding = _finding(
+        "refund_credit_reversal_shortfall",
+        (_item(row, current, timestamp="updated_at") for row in short_refunds),
+    )
+    if finding:
+        findings.append(finding)
+
     abandoned = [
         row for row in orders
         if row.status == "created"
@@ -179,4 +202,12 @@ def financial_audit(
         "high_severity_count": high_count,
         "actionable_finding_count": actionable_count,
         "findings": findings,
+        "wallet_totals_by_bucket": {
+            bucket: {
+                "balance_micros": sum(int(row.balance_micros) for row in wallets if row.credit_bucket == bucket),
+                "reserved_micros": sum(int(row.reserved_micros) for row in wallets if row.credit_bucket == bucket),
+                "debited_micros": sum(int(row.debited_micros) for row in charges if row.credit_bucket == bucket),
+            }
+            for bucket in ("chat", "voice")
+        },
     }

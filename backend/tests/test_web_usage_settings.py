@@ -96,8 +96,10 @@ def test_usage_summary_has_zero_filled_tiers_and_authoritative_voice_breakdown(c
         "total_tts_characters": 25, "request_count": 2,
         "debited_micros": 15_000, "total_audio_seconds": 1.5,
         "debited_voice_credits": "0.015000",
-        "period_debit_percentage": 42.86, "monthly_limit_percentage": 0.0,
-    }
+            "period_debit_percentage": 42.86, "monthly_limit_percentage": 0.0,
+            "utilization_percentage": 100.0,
+            "utilization_basis": "available_plus_period_debit",
+        }
     assert body["debited_micros"] == 35_000
 
 
@@ -404,4 +406,5 @@ def test_chat_limit_error_has_stable_402_contract(client, monkeypatch):
         "configured_limit_micros": 1_000_000,
         "remaining_micros": 100_000,
         "reset_at": "2026-08-31T18:30:00+00:00",
+        "credit_bucket": "chat",
     }}

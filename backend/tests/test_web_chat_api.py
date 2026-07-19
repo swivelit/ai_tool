@@ -177,7 +177,9 @@ def test_saved_profile_language_is_authoritative_and_voice_metadata_is_serialize
         f"/api/web/threads/{thread_id}/messages",
         headers=auth_headers("language-en", "language-en@example.com"),
     ).json()["items"]
-    assert all(item["input_mode"] == "voice" for item in serialized)
+    # Historical/legacy `voice` metadata is presented as explicit dictation
+    # without rewriting the stored audit rows.
+    assert all(item["input_mode"] == "dictation" for item in serialized)
     assert all(item["voice_turn_id"] == english_voice_turn for item in serialized)
     assert all(item["reply_language"] == "en" for item in serialized)
 

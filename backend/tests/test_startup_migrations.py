@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 import start_render
 
@@ -94,6 +95,10 @@ def test_voice_usage_migration_backfills_chat_and_downgrades_additively(tmp_path
     engine = create_engine(env["DATABASE_URL"])
     with engine.begin() as connection:
         connection.execute(text(
+            "INSERT INTO user (id,name,timezone,assistant_name,reply_language,created_at) "
+            "VALUES (1,'Legacy','Asia/Kolkata','Elli','en',CURRENT_TIMESTAMP)"
+        ))
+        connection.execute(text(
             "INSERT INTO usage_charge "
             "(id, request_id, user_id, provider, model, status, created_at) "
             "VALUES ('legacy-charge', 'legacy-request', 1, 'openai', 'legacy-model', "
@@ -122,6 +127,100 @@ def test_voice_usage_migration_backfills_chat_and_downgrades_additively(tmp_path
     assert downgraded.returncode == 0, downgraded.stderr
     remaining = {column["name"] for column in inspect(engine).get_columns("usage_charge")}
     assert not {"usage_kind", "voice_turn_id", "audio_milliseconds", "characters"} & remaining
+
+
+def test_credit_bucket_migration_preserves_legacy_money_and_downgrades(tmp_path):
+    db_path = tmp_path / "credit-buckets.sqlite3"
+    env = os.environ.copy()
+    env.update({
+        "DATABASE_URL": f"sqlite:///{db_path.as_posix()}",
+        "APP_ENV": "test", "AUTO_CREATE_TABLES": "false",
+    })
+    preceding = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "c5d8a2e9f4b1"],
+        cwd=BACKEND_ROOT, env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert preceding.returncode == 0, preceding.stderr
+    engine = create_engine(env["DATABASE_URL"])
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO user (id,name,timezone,assistant_name,reply_language,created_at) "
+            "VALUES (77,'Legacy','Asia/Kolkata','Elli','en',CURRENT_TIMESTAMP)"
+        ))
+        connection.execute(text(
+            "INSERT INTO wallet_account (id,user_id,balance_micros,reserved_micros,version,created_at,updated_at) "
+            "VALUES ('legacy-wallet',77,123456789,0,4,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+        ))
+        connection.execute(text(
+            "INSERT INTO wallet_ledger (id,user_id,entry_type,amount_micros,balance_after_micros,reference_type,reference_id,idempotency_key,created_at) "
+            "VALUES ('legacy-ledger',77,'payment_credit',123456789,123456789,'payment_order','legacy-order','legacy-key',CURRENT_TIMESTAMP)"
+        ))
+        connection.execute(text(
+            "INSERT INTO payment_order (id,user_id,receipt,gross_amount_paise,credited_amount_micros,platform_share_paise,status,created_at,updated_at) "
+            "VALUES ('legacy-order',77,'legacy-receipt',1000,5000000,500,'credited',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+        ))
+        connection.execute(text(
+            "INSERT INTO usage_charge (id,request_id,user_id,provider,model,status,created_at,usage_kind) "
+            "VALUES ('legacy-usage','legacy-usage-request',77,'sarvam','saaras:v3','settled',CURRENT_TIMESTAMP,'stt')"
+        ))
+    upgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND_ROOT,
+        env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    with engine.connect() as connection:
+        wallet = connection.execute(text(
+            "SELECT balance_micros, credit_bucket FROM wallet_account WHERE id='legacy-wallet'"
+        )).mappings().one()
+        assert dict(wallet) == {"balance_micros": 123456789, "credit_bucket": "chat"}
+        for table, row_id in (("wallet_ledger", "legacy-ledger"), ("payment_order", "legacy-order"), ("usage_charge", "legacy-usage")):
+            assert connection.execute(text(
+                f"SELECT credit_bucket FROM {table} WHERE id=:row_id"
+            ), {"row_id": row_id}).scalar_one() == "chat"
+        assert connection.execute(text(
+            "SELECT COUNT(*) FROM wallet_account WHERE user_id=77 AND credit_bucket='voice'"
+        )).scalar_one() == 0
+    unique = inspect(engine).get_unique_constraints("wallet_account")
+    assert any(item["column_names"] == ["user_id", "credit_bucket"] for item in unique)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO wallet_account (id,user_id,credit_bucket,balance_micros,reserved_micros,version,created_at,updated_at) "
+            "VALUES ('voice-wallet',77,'voice',0,0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+        ))
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO wallet_account (id,user_id,credit_bucket,balance_micros,reserved_micros,version,created_at,updated_at) "
+            "VALUES ('duplicate-voice-wallet',77,'voice',0,0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+        ))
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO wallet_account (id,user_id,credit_bucket,balance_micros,reserved_micros,version,created_at,updated_at) "
+            "VALUES ('invalid-wallet',77,'other',0,0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+        ))
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO payment_order "
+            "(id,user_id,receipt,gross_amount_paise,credited_amount_micros,platform_share_paise,status,credit_bucket,created_at,updated_at) "
+            "VALUES ('voice-order',77,'voice-receipt',1000,5000000,500,'created','voice',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+        ))
+    refused = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "c5d8a2e9f4b1"], cwd=BACKEND_ROOT,
+        env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert refused.returncode != 0
+    assert "Refusing to downgrade credit buckets" in refused.stderr
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM payment_order WHERE id='voice-order'"))
+    downgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "c5d8a2e9f4b1"], cwd=BACKEND_ROOT,
+        env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert downgraded.returncode == 0, downgraded.stderr
+    assert "credit_bucket" not in {column["name"] for column in inspect(engine).get_columns("wallet_account")}
+    with engine.connect() as connection:
+        assert connection.execute(text(
+            "SELECT balance_micros FROM wallet_account WHERE id='legacy-wallet'"
+        )).scalar_one() == 123456789
 
 
 class _FailingMigrationProcess:

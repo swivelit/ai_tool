@@ -5,7 +5,7 @@ import type { AssistantSettings, SwicoTier } from '../types'
 
 export function SwicoTierSelector({ assistant, disabled = false, saving = false, onSelect, context = 'header' }: {
   assistant: AssistantSettings; disabled?: boolean; saving?: boolean;
-  onSelect: (tier: SwicoTier) => Promise<void> | void; context?: 'header' | 'settings';
+  onSelect: (tier: SwicoTier) => Promise<void> | void; context?: 'header' | 'settings' | 'composer';
 }) {
   const [open, setOpen] = useState(false)
   const id = useId()
@@ -62,7 +62,7 @@ export function SwicoTierSelector({ assistant, disabled = false, saving = false,
     }
   }
 
-  return <div ref={rootRef} className={`tier-selector ${context}`}>
+  return <div ref={rootRef} className={`tier-selector tier-selector-${context}`}>
     <button ref={triggerRef} type="button" className="product-selector" aria-haspopup="listbox" aria-expanded={open}
       aria-controls={`${id}-options`} disabled={unavailable} onClick={() => open ? close(true) : openMenu()}
       onKeyDown={event => {

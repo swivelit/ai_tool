@@ -95,7 +95,13 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
     if (path === '/api/web/usage/summary') return json(route, {
       period:'current_month', tier:'lite', tier_label:'Swico Lite', timezone:state.profile.timezone, period_start:'2026-07-01T00:00:00Z', period_end:'2026-08-01T00:00:00Z', next_reset_at:'2026-08-01T00:00:00Z', request_count:state.monthlyUsed ? 1 : 0,
       input_tokens:10, cached_input_tokens:2, output_tokens:4, total_tokens:14, actual_usage_count:state.monthlyUsed ? 1 : 0, estimated_usage_count:0,
-      debited_micros:state.monthlyUsed, debited_ai_credits:String(state.monthlyUsed / 1_000_000), available_micros:state.wallet, available_ai_credits:String(state.wallet / 1_000_000), daily:[], provider_breakdown:[], model_breakdown:[],
+      debited_micros:state.monthlyUsed, debited_ai_credits:String(state.monthlyUsed / 1_000_000), available_micros:state.wallet, available_ai_credits:String(state.wallet / 1_000_000), chat_available_credits:String(state.wallet / 1_000_000), voice_available_credits:'0.000000', daily:[], provider_breakdown:[], model_breakdown:[], monthly_hard_limit_micros:state.hardLimit,
+      by_tier: Object.fromEntries([
+        ['lite', { label:'Swico Lite', request_count:state.monthlyUsed ? 1 : 0, input_tokens:10, cached_input_tokens:2, output_tokens:4, total_tokens:14, debited_micros:state.monthlyUsed, debited_ai_credits:String(state.monthlyUsed / 1_000_000), debited_token_credits:String(state.monthlyUsed / 1_000_000), period_debit_percentage:state.monthlyUsed ? 100 : 0, monthly_limit_percentage:0, utilization_percentage:state.monthlyUsed ? 100 : 0, utilization_basis:'available_balance_plus_period_debit' }],
+        ['standard', { label:'Swico', request_count:0, input_tokens:0, cached_input_tokens:0, output_tokens:0, total_tokens:0, debited_micros:0, debited_ai_credits:'0.000000', debited_token_credits:'0.000000', period_debit_percentage:0, monthly_limit_percentage:0, utilization_percentage:0, utilization_basis:'available_balance_plus_period_debit' }],
+        ['pro', { label:'Swico Pro', request_count:0, input_tokens:0, cached_input_tokens:0, output_tokens:0, total_tokens:0, debited_micros:0, debited_ai_credits:'0.000000', debited_token_credits:'0.000000', period_debit_percentage:0, monthly_limit_percentage:0, utilization_percentage:0, utilization_basis:'available_balance_plus_period_debit' }],
+      ]),
+      voice:{ label:'Voice', stt_request_count:0, tts_request_count:0, total_audio_seconds:0, total_tts_characters:0, request_count:0, debited_micros:0, debited_voice_credits:'0.000000', period_debit_percentage:0, monthly_limit_percentage:0, utilization_percentage:0, utilization_basis:'available_balance_plus_period_debit' },
       estimated_tokens_remaining:tokenEstimate(), token_estimate:tokenEstimate(),
     })
     if (path === '/api/web/billing/orders') {
@@ -150,7 +156,7 @@ async function signIn(page: Page) {
   await page.getByLabel('Email address').fill('e2e@example.test')
   await page.getByLabel('Password', { exact: true }).fill('local-only-password')
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start real-time Voice Mode' })).toBeVisible()
 }
 
 test('authentication, OTP state, password visibility, and direct legal routes', async ({ page }) => {
@@ -182,7 +188,7 @@ test('zero-credit block, token package details, Test Mode payment, streaming, se
   await signIn(page)
   await page.getByLabel('Message Swico').fill('hello')
   await page.getByRole('button', { name: 'Send message' }).click()
-  const billingDialog = page.getByRole('dialog', { name: 'Add token credits' })
+  const billingDialog = page.getByRole('dialog', { name: 'Add credits' })
   await expect(billingDialog).toBeVisible()
   await expect(page.getByText('Test Mode')).toBeVisible()
   const packageCard = billingDialog.getByRole('button', { name:'Pay ₹10, estimated 25K to 180K tokens' })
@@ -191,17 +197,17 @@ test('zero-credit block, token package details, Test Mode payment, streaming, se
   await expect(billingDialog.getByRole('button', { name:'Enter a custom payment amount' })).toBeVisible()
   await expect(packageCard).toContainText('Pay ₹10')
   await expect(packageCard).toContainText('25K–180K tokens')
-  await expect(billingDialog.locator('.package-summary')).toContainText('Pay ₹10')
+  await expect(billingDialog.locator('.package-summary')).toContainText('Pay ₹10 for Chat credits')
   await expect(billingDialog.locator('.package-summary')).toContainText('25K–180K tokens')
   await expect(billingDialog).not.toContainText(/converted to token credits|service(?: and platform)? allocation|\d+%/i)
   await expect(billingDialog).not.toContainText(/5\.00|Equivalent to ₹/)
   await billingDialog.getByRole('button', { name:'Enter a custom payment amount' }).click()
   await billingDialog.getByLabel('Custom amount').fill('75')
-  await expect(billingDialog.getByRole('button', { name:'Pay ₹75 securely' })).toBeEnabled()
+  await expect(billingDialog.getByRole('button', { name:'Pay ₹75 for Chat credits' })).toBeEnabled()
   await packageCard.click()
-  await page.getByRole('button', { name: 'Pay ₹10 securely' }).click()
+  await page.getByRole('button', { name: 'Pay ₹10 for Chat credits' }).click()
   await expect.poll(() => state.wallet).toBe(5_000_000)
-  await expect(page.getByRole('dialog', { name: 'Add token credits' })).toBeHidden()
+  await expect(page.getByRole('dialog', { name: 'Add credits' })).toBeHidden()
   await expect(page.getByText('≈ 60K tokens')).toBeVisible()
 
   await page.getByLabel('Message Swico').fill('தமிழில் பதில்')
@@ -236,7 +242,7 @@ test('order failure is safe and primary views have no critical accessibility vio
   }
   await page.getByRole('button', { name: /Add token credits/ }).click()
   state.orderFails = true
-  await page.getByRole('button', { name: 'Pay ₹10 securely' }).click()
+  await page.getByRole('button', { name: 'Pay ₹10 for Chat credits' }).click()
   await expect(page.getByRole('status')).toContainText('Order creation failed safely')
   expect(state.wallet).toBe(0)
   const results = await new AxeBuilder({ page }).analyze()
@@ -256,7 +262,7 @@ test('settings persist profile, show usage estimates, enforce a monthly cap, and
   await page.getByLabel('Name', { exact:true }).fill('E2E தமிழர்')
   await page.getByLabel('Assistant name', { exact:true }).fill('கவி')
   await settings.getByRole('combobox', { name:'Reply language', exact:true }).selectOption('ta')
-  await page.getByRole('button', { name:'Save profile' }).click()
+  await page.getByRole('button', { name:'Save profile' }).click({ force:true })
   await expect(page.getByRole('status')).toContainText('Profile saved')
   await page.getByRole('button', { name:'Close settings' }).click()
   await page.reload()
@@ -265,8 +271,9 @@ test('settings persist profile, show usage estimates, enforce a monthly cap, and
   await page.getByRole('button', { name:/E2E தமிழர்/ }).click()
   await page.getByRole('menuitem', { name:'Settings' }).click()
   await settings.getByRole('button', { name:'Token credits', exact:true }).click()
-  await expect(settings.getByText('Swico Lite balance')).toBeVisible()
-  await expect(settings.getByText('Estimated range')).toBeVisible()
+  await expect(settings.getByText('Chat credits available')).toBeVisible()
+  await expect(settings.getByText('Voice credits available')).toBeVisible()
+  await expect(settings.getByText('Swico Lite estimated token range')).toBeVisible()
   await expect(settings.getByText('25,000–180,000 tokens')).toBeVisible()
   await expect(settings).not.toContainText(/not a guaranteed quota|Pricing timestamp|Measured requests|Estimated requests|Estimated for Swico/i)
   await expect(page.getByText('Cached input tokens')).toBeVisible()

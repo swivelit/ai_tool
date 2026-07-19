@@ -31,6 +31,20 @@ projects:
                 value: "false"
               - key: WEB_VOICE_BILLING_ENABLED
                 value: "false"
+              - key: WEB_REALTIME_VOICE_ENABLED
+                value: "false"
+              - key: WEB_SEPARATE_VOICE_CREDITS_ENABLED
+                value: "false"
+              - key: WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS
+                value: "60"
+              - key: WEB_REALTIME_VOICE_MAX_SESSION_SECONDS
+                value: "900"
+              - key: WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS
+                value: "60"
+              - key: WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER
+                value: "1"
+              - key: WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE
+                value: "5"
               - key: WEB_UPLOAD_TTL_SECONDS
                 value: "600"
               - key: WEB_UPLOAD_MAX_FILE_BYTES

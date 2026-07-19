@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class CreateOrderRequest(BaseModel):
     gross_amount_paise: int = Field(gt=0, strict=True)
     idempotency_key: str = Field(min_length=8, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
+    credit_bucket: Literal["chat", "voice"] = "chat"
 
 
 class PublicTopupTokenEstimate(BaseModel):
@@ -16,9 +19,19 @@ class PublicTopupTokenEstimate(BaseModel):
     range_max_tokens: int
 
 
+class PublicVoiceCreditEstimate(BaseModel):
+    pricing_version: str
+    estimated_stt_seconds: int
+    estimated_stt_minutes: str
+    estimated_tts_characters: int
+    assumption: str
+
+
 class TopupEstimateResponse(BaseModel):
     gross_amount_paise: int
-    token_estimate: PublicTopupTokenEstimate
+    credit_bucket: Literal["chat", "voice"] = "chat"
+    token_estimate: PublicTopupTokenEstimate | None = None
+    voice_estimate: PublicVoiceCreditEstimate | None = None
 
 
 class VerifyPaymentRequest(BaseModel):

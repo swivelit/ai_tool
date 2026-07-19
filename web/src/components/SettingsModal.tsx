@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Archive, CreditCard, Database, Settings2, UserRound, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import { ApiError, ApiNetworkError, apiJson } from '../api/client'
-import { estimatedTokenLabel, formatRupeesFromPaise, fullTokenRangeLabel, tokenRangeLabel } from '../credits'
+import { formatRupeesFromPaise, fullTokenRangeLabel, tokenRangeLabel } from '../credits'
 import type { AssistantSettings, PaymentHistory, ProfileSettings, SwicoTier, UsagePreferences, UsageSummary } from '../types'
 import type { Theme } from '../theme'
 import { paymentPresentation } from '../billing/paymentPresentation'
@@ -25,32 +25,34 @@ function safeError(error: unknown) {
 }
 
 function UsageBars({ usage }: { usage: UsageSummary }) {
-  const hardLimit = usage.monthly_hard_limit_micros
   const tiers = (['lite', 'standard', 'pro'] as const).map(id => {
     const item = usage.by_tier[id]
     return {
       id, label: item.label, credits: item.debited_token_credits,
-      percent: hardLimit !== null ? item.monthly_limit_percentage : item.period_debit_percentage,
-      detail: `${item.total_tokens.toLocaleString()} tokens`, creditLabel: 'Token credits',
+      percent: item.utilization_percentage ?? (usage.monthly_hard_limit_micros !== null ? item.monthly_limit_percentage : item.period_debit_percentage),
+      detail: `${item.request_count.toLocaleString()} requests · ${item.input_tokens.toLocaleString()} input · ${item.cached_input_tokens.toLocaleString()} cached · ${item.output_tokens.toLocaleString()} output · ${item.total_tokens.toLocaleString()} total tokens`, creditLabel: 'Chat credits',
+      basis: item.utilization_basis ?? (usage.monthly_hard_limit_micros !== null ? 'monthly_hard_limit' : 'available_plus_period_debit'),
     }
   })
   const voice = usage.voice
   const items = [...tiers, {
     id: 'voice', label: voice.label, credits: voice.debited_voice_credits,
-    percent: hardLimit !== null ? voice.monthly_limit_percentage : voice.period_debit_percentage,
-    detail: `${voice.total_audio_seconds.toLocaleString()} STT seconds · ${voice.total_tts_characters.toLocaleString()} TTS characters`,
+    percent: voice.utilization_percentage ?? (usage.monthly_hard_limit_micros !== null ? voice.monthly_limit_percentage : voice.period_debit_percentage),
+    detail: `${voice.stt_request_count.toLocaleString()} STT requests · ${voice.tts_request_count.toLocaleString()} TTS requests · ${voice.total_audio_seconds.toLocaleString()} STT seconds · ${voice.total_tts_characters.toLocaleString()} TTS characters`,
     creditLabel: 'Voice credits',
+    basis: voice.utilization_basis ?? (usage.monthly_hard_limit_micros !== null ? 'monthly_hard_limit' : 'available_plus_period_debit'),
   }]
   return <div className="usage-breakdowns" aria-label="Usage by category">
     {items.map(item => {
       const value = Math.min(100, Math.max(0, item.percent))
       return <article key={item.id} className="usage-breakdown">
         <div><strong>{item.label}</strong><span>{item.credits} {item.creditLabel}</span></div>
-        <div className="usage-progress" role="progressbar" aria-label={`${item.label} usage`}
-          aria-valuemin={0} aria-valuemax={100} aria-valuenow={value} aria-valuetext={`${item.credits} ${item.creditLabel} used`}>
+        <div className="usage-progress" role="progressbar" aria-label={`${item.label} credit utilization`}
+          aria-valuemin={0} aria-valuemax={100} aria-valuenow={usage.billing_exempt ? undefined : value} aria-valuetext={usage.billing_exempt ? 'Unlimited' : `${value}% utilization; ${item.credits} ${item.creditLabel} used`}>
           <span style={{ width: `${value}%` }} />
         </div>
-        <small>{item.detail}</small>
+        <small>{usage.billing_exempt ? 'Unlimited' : `${value}% · ${item.credits} exact credits · ${item.basis === 'monthly_hard_limit' ? 'monthly limit' : 'available balance plus period debit'}`}</small>
+        <small>{item.detail}{Number(item.credits) === 0 ? ' · No usage yet' : ''}</small>
       </article>
     })}
   </div>
@@ -169,13 +171,13 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
             <label>Email<input value={profile.email ?? ''} readOnly aria-describedby="email-readonly" /><small id="email-readonly">Email is managed by your sign-in account and cannot be changed here.</small></label>
           </div><button className="primary" disabled={saving} onClick={() => void saveProfile()}>{saving ? 'Saving…' : 'Save profile'}</button></section>}
           {loaded && section === 'usage' && <section aria-labelledby="usage-settings"><h3 id="usage-settings">Token credits</h3>
-            <div className="usage-cards"><article><span>{loaded.usage.tier_label} balance</span><strong>{billingExempt ? 'Unlimited' : estimatedTokenLabel(estimate?.estimated_blended_tokens)}</strong></article>{!billingExempt && <article><span>Estimated range</span><strong>{tokenRange}</strong></article>}</div>
+            <div className="usage-cards"><article><span>Chat credits available</span><strong>{billingExempt ? 'Unlimited' : loaded.usage.chat_available_credits ?? loaded.usage.available_ai_credits}</strong></article><article><span>Voice credits available</span><strong>{billingExempt ? 'Unlimited' : loaded.usage.voice_available_credits ?? '0.000000'}</strong></article>{!billingExempt && <article><span>{loaded.usage.tier_label} estimated token range</span><strong>{tokenRange}</strong></article>}</div>
             <UsageBars usage={loaded.usage} />
             <div className="actual-usage" aria-label="This month token usage"><h4>This month</h4><dl><div><dt>Input tokens</dt><dd>{loaded.usage.input_tokens.toLocaleString()}</dd></div><div><dt>Cached input tokens</dt><dd>{loaded.usage.cached_input_tokens.toLocaleString()}</dd></div><div><dt>Output tokens</dt><dd>{loaded.usage.output_tokens.toLocaleString()}</dd></div><div><dt>Total tokens</dt><dd>{loaded.usage.total_tokens.toLocaleString()}</dd></div></dl></div>
-            <p className="usage-note">Remaining chat token estimates do not represent voice minutes. Voice uses STT seconds and TTS characters from the same prepaid Token Credit wallet.</p>
+            <p className="usage-note">Chat and Voice are separate prepaid balances. Speech uses STT seconds and TTS characters; these are not LLM tokens.</p>
             {!billingExempt && <fieldset className="usage-limit"><legend>Estimated monthly token limit</legend><label className="check-row"><input type="checkbox" checked={unlimited} onChange={event => setUnlimited(event.target.checked)} />No monthly limit beyond prepaid token credits</label>{!unlimited && <label>Estimated monthly tokens<input inputMode="numeric" pattern="[0-9]*" value={cap} onChange={event => setCap(event.target.value)} aria-describedby="cap-help" /><small id="cap-help">Converted by the server to the existing monetary hard limit using your selected Swico mode. Actual usage varies; automatic recharge is not enabled.</small></label>}<label>Warning threshold (%)<input type="number" min="1" max="100" value={warning} onChange={event => setWarning(event.target.value)} /></label><label className="check-row"><input type="checkbox" checked={notify} onChange={event => setNotify(event.target.checked)} />Show a warning at the threshold</label>{loaded.preferences.warning_reached && <p className="usage-warning" role="status">You have reached your configured warning threshold.</p>}<button className="primary" disabled={saving} onClick={() => void saveUsage()}>{saving ? 'Saving…' : 'Save usage limit'}</button><small>Resets {new Date(loaded.preferences.next_reset_at).toLocaleString()} ({loaded.preferences.timezone}).</small></fieldset>}
-            {!billingExempt && <button className="secondary-button" onClick={addCredits}>Add tokens</button>}
-            <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => { const presentation = paymentPresentation(payment); return <article key={payment.id}><strong>{presentation.heading}</strong>{presentation.detail && <span>{presentation.detail}</span>}{presentation.amountLabel && <span>{presentation.amountLabel}: {formatRupeesFromPaise(payment.gross_amount_paise)}</span>}{presentation.showTokensAdded && <span>Estimated {payment.token_estimate ? tokenRangeLabel(payment.token_estimate.range_min_tokens, payment.token_estimate.range_max_tokens) : 'tokens unavailable'} added</span>}{presentation.showRefundAmount && <span>{formatRupeesFromPaise(payment.refunded_amount_paise)} refunded</span>}{presentation.showReversalEstimate && <span>Estimated {payment.reversal_token_estimate ? tokenRangeLabel(payment.reversal_token_estimate.range_min_tokens, payment.reversal_token_estimate.range_max_tokens) : 'tokens unavailable'} reversed</span>}<span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}</div>
+            {!billingExempt && <button className="secondary-button" onClick={addCredits}>Add credits</button>}
+            <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => { const presentation = paymentPresentation(payment); const paymentBucket = payment.credit_bucket ?? 'chat'; return <article key={payment.id}><strong>{presentation.heading}</strong><span>{paymentBucket === 'voice' ? 'Voice credits' : 'Chat credits'}</span>{presentation.detail && <span>{presentation.detail}</span>}{presentation.amountLabel && <span>{presentation.amountLabel}: {formatRupeesFromPaise(payment.gross_amount_paise)}</span>}{presentation.showTokensAdded && paymentBucket === 'chat' && <span>Estimated {payment.token_estimate ? tokenRangeLabel(payment.token_estimate.range_min_tokens, payment.token_estimate.range_max_tokens) : 'tokens unavailable'} added</span>}{presentation.showTokensAdded && paymentBucket === 'voice' && <span>{payment.voice_estimate ? `${payment.voice_estimate.estimated_stt_minutes} STT-only minutes or ${payment.voice_estimate.estimated_tts_characters.toLocaleString()} TTS-only characters` : 'Voice estimate unavailable'}</span>}{presentation.showRefundAmount && <span>{formatRupeesFromPaise(payment.refunded_amount_paise)} refunded</span>}{presentation.showReversalEstimate && <span>Estimated {payment.reversal_token_estimate ? tokenRangeLabel(payment.reversal_token_estimate.range_min_tokens, payment.reversal_token_estimate.range_max_tokens) : 'credits unavailable'} reversed</span>}<span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}</div>
           </section>}
           {loaded && section === 'data' && <section aria-labelledby="data-settings"><h3 id="data-settings">Data controls</h3><button className="data-control" onClick={openArchived}><Archive size={18} /><span><strong>Archived chats</strong><small>Review or restore conversations you archived.</small></span></button><div className="settings-legal"><a href="/legal/terms">Terms</a><a href="/legal/privacy">Privacy</a><a href="/legal/refunds">Refund and cancellation</a><a href="/legal/contact">Contact and support</a><a href="/legal/ai">AI limitations</a><a href="/legal/delivery">Digital delivery</a><a href="/legal/pricing">Pricing and top-ups</a></div><p className="data-note">Account deletion is not offered here because secure reauthentication and server-side deletion are not implemented.</p></section>}
           <div className="sr-status" role="status" aria-live="polite">{notice}</div>{notice && <p className="settings-notice" aria-hidden="true">{notice}</p>}

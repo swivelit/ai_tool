@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { AssistantSettings, ComposerAttachment, InputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, SSEEvent } from '../types'
+import type { AssistantSettings, ComposerAttachment, InputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, Wallets, SSEEvent } from '../types'
 import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, uploadDocument } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
@@ -8,12 +8,12 @@ import { useAuth } from '../auth/useAuth'
 import { Sidebar, SidebarTrigger } from '../components/Sidebar'
 import { Conversation } from '../components/Conversation'
 import { Composer } from '../components/Composer'
-import { SwicoTierSelector } from '../components/SwicoTierSelector'
 import { applyTheme, resolveTheme, type Theme } from '../theme'
 import { useVoiceReply } from '../hooks/useVoiceReply'
 
 const BillingModal = lazy(() => import('../billing/BillingModal').then(module => ({ default: module.BillingModal })))
 const SettingsModal = lazy(() => import('../components/SettingsModal').then(module => ({ default: module.SettingsModal })))
+const VoiceMode = lazy(() => import('../components/VoiceMode').then(module => ({ default: module.VoiceMode })))
 
 type DialogState = { type: 'rename' | 'delete'; thread: Thread; value: string } | null
 
@@ -28,6 +28,8 @@ export function ChatPage() {
   const [drawer, setDrawer] = useState(false); const [collapsed, setCollapsed] = useState(localStorage.getItem('swico-sidebar-collapsed') === 'true')
   const [archived, setArchived] = useState(false); const [query, setQuery] = useState('')
   const [billing, setBilling] = useState(false); const [settings, setSettings] = useState(false); const [dialog, setDialog] = useState<DialogState>(null)
+  const [billingBucket, setBillingBucket] = useState<'chat' | 'voice'>('chat')
+  const [voiceMode, setVoiceMode] = useState(false)
   const [error, setError] = useState(''); const [offline, setOffline] = useState(!navigator.onLine)
   const [theme, setTheme] = useState<Theme>(resolveTheme)
   const [controller, setController] = useState<AbortController | null>(null); const [requestId, setRequestId] = useState<string | null>(null)
@@ -48,8 +50,11 @@ export function ChatPage() {
   }, [archived, query, user])
   const refreshWallet = useCallback(async () => {
     if (!user) return
-    const wallet = await apiJson<Wallet>(user, '/api/web/billing/wallet')
-    setBootstrap(value => value ? { ...value, wallet } : value)
+    const response = await apiJson<Wallet & { wallet?: Wallet; wallets?: Wallets }>(user, '/api/web/billing/wallet')
+    setBootstrap(value => value ? {
+      ...value, wallet:response.wallet ?? response,
+      ...(response.wallets ? { wallets:response.wallets } : {}),
+    } : value)
   }, [user])
   const applyWallet = useCallback((wallet: Wallet) => {
     setBootstrap(value => value ? { ...value, wallet } : value)
@@ -171,14 +176,8 @@ export function ChatPage() {
         setMessages(value => value.map(item => item.thread_id ? item : { ...item, thread_id: id }))
       }
     }
-    if (event.event === 'done' && typeof event.data === 'object' && event.data) {
-      const data = event.data as Record<string, unknown>
-      const messageId = String(data.message_id ?? '')
-      const voiceTurnId = String(data.voice_turn_id ?? '')
-      if (!data.cancelled && data.input_mode === 'voice' && messageId && voiceTurnId) {
-        void voiceReply.generate(messageId, voiceTurnId, true)
-      }
-    }
+    // Dictation is an input convenience only. Manual speaker playback remains
+    // available from completed messages, but is never auto-generated here.
   }
 
   const send = async (
@@ -189,7 +188,7 @@ export function ChatPage() {
     if (!user || !bootstrap || streaming || (!text.trim() && !selectedAttachments.length) || offline || attachments.some(item => item.status === 'uploading')) return
     const nextRequestId = retryRequestId || crypto.randomUUID()
     const origin = originOverride ?? {
-      inputMode: draftVoiceTurnId ? 'voice' as const : 'text' as const,
+      inputMode: draftVoiceTurnId ? 'dictation' as const : 'text' as const,
       voiceTurnId: draftVoiceTurnId,
     }
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
@@ -207,7 +206,7 @@ export function ChatPage() {
         message: text.trim(),
         attachment_ids: selectedAttachments.map(item => item.id),
         input_mode: origin.inputMode,
-        ...(origin.inputMode === 'voice' && origin.voiceTurnId ? { voice_turn_id: origin.voiceTurnId } : {}),
+        ...(origin.inputMode !== 'text' && origin.voiceTurnId ? { voice_turn_id: origin.voiceTurnId } : {}),
         ...(threadId ? { thread_id: threadId } : {}),
       }, handleEvent, abort.signal)
       setDraftVoiceTurnId(null)
@@ -216,10 +215,13 @@ export function ChatPage() {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
         dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial measured usage may already have been charged.')
       } else {
-        if (origin.inputMode === 'voice') { setDraft(text); setDraftVoiceTurnId(origin.voiceTurnId) }
+        if (origin.inputMode === 'dictation' || origin.inputMode === 'voice') { setDraft(text); setDraftVoiceTurnId(origin.voiceTurnId) }
         const code = caught instanceof ApiError && caught.body && typeof caught.body === 'object' && 'error' in caught.body
           ? String((caught.body as { error?: { code?: string } }).error?.code ?? '') : ''
-        if (caught instanceof ApiError && caught.status === 402 && code !== 'usage_limit_reached') setBilling(true)
+        if (caught instanceof ApiError && caught.status === 402 && code !== 'usage_limit_reached') {
+          const body = caught.body as { error?: { credit_bucket?: string } } | undefined
+          setBillingBucket(body?.error?.credit_bucket === 'voice' ? 'voice' : 'chat'); setBilling(true)
+        }
         setError(chatErrorMessage(caught, !navigator.onLine))
         if (!(caught instanceof SSEStreamError)) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: chatErrorMessage(caught, !navigator.onLine) } } })
       }
@@ -247,7 +249,7 @@ export function ChatPage() {
     })
   }
   const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
-  const select = (id: string) => { if (draftVoiceTurnId) setDraft(''); setDraftVoiceTurnId(null); setAttachments([]); setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const select = (id: string) => { setDraftVoiceTurnId(null); setAttachments([]); setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
   const addFiles = (files: File[]) => {
     if (!user || !bootstrap?.features.web_attachments || !bootstrap.uploads) return
     const limits = bootstrap.uploads
@@ -301,7 +303,7 @@ export function ChatPage() {
     if (action === 'archive') { void runMutation(thread, action); return }
     setDialog({ type: action, thread, value: thread.title })
   }
-  const openBilling = () => { billingButtonRef.current = document.activeElement as HTMLElement; setBilling(true) }
+  const openBilling = (bucket: 'chat' | 'voice' = 'chat') => { billingButtonRef.current = document.activeElement as HTMLElement; setBillingBucket(bucket); setBilling(true) }
   const closeBilling = () => { setBilling(false); window.setTimeout(() => billingButtonRef.current?.focus(), 0) }
   const openSettings = () => { billingButtonRef.current = document.activeElement as HTMLElement; setSettings(true) }
   const closeSettings = () => { setSettings(false); window.setTimeout(() => billingButtonRef.current?.focus(), 0) }
@@ -309,20 +311,24 @@ export function ChatPage() {
   if (!user || !bootstrap) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
-      select={select} newChat={newChat} addCredit={openBilling} openSettings={openSettings} mutate={mutate} signOut={() => void signOut()} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
-    <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><SwicoTierSelector assistant={bootstrap.assistant} disabled={streaming} saving={tierSaving} onSelect={saveTier} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
+      select={select} newChat={newChat} addCredit={() => openBilling('chat')} openSettings={openSettings} mutate={mutate} signOut={() => void signOut()} close={() => setDrawer(false)} toggleCollapsed={() => setCollapsed(!collapsed)} toggleArchived={() => { setArchived(!archived); setActive(null) }} loadMore={() => void loadThreads(false)} toggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />
+    <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
       <Conversation messages={messages} phase={streamState.phase} retry={retry} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
         voiceStates={voiceReply.states} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
-        retryVoice={voiceReply.retry} addCredits={openBilling} />
+        retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')} />
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey}
         attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
+        realtimeVoiceEnabled={Boolean(bootstrap.features.web_realtime_voice && bootstrap.features.separate_voice_credits)}
+        assistant={bootstrap.assistant} tierDisabled={streaming || voiceMode} tierSaving={tierSaving} onTierSelect={saveTier}
+        onRealtimeVoice={() => setVoiceMode(true)}
         voiceResetKey={`${active ?? 'new-chat'}:${focusKey}`}
         onVoiceDraft={setDraftVoiceTurnId} onVoiceCancel={() => setDraftVoiceTurnId(null)} onComposerClear={() => setDraftVoiceTurnId(null)} onVoiceWallet={applyWallet}
         supportedExtensions={bootstrap.uploads?.supported_extensions ?? []} addFiles={addFiles} removeAttachment={removeAttachment} />
     </section>
-    {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
+    {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} initialBucket={billingBucket} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
+    {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={() => { setVoiceMode(false); setFocusKey(`voice-close-${Date.now()}`) }} addCredits={bucket => { setVoiceMode(false); openBilling(bucket) }} /></Suspense>}
     {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}
     {dialog && <ThreadDialog state={dialog} setState={setDialog} confirm={() => { const current = dialog; setDialog(null); void runMutation(current.thread, current.type, current.value.trim()) }} />}
   </main>

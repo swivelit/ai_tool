@@ -103,6 +103,20 @@ def test_topup_estimate_uses_selected_tier_and_does_not_require_checkout(client,
     assert response.json()["token_estimate"]["tier_label"] == "Swico"
 
 
+def test_voice_estimate_uses_speech_units_not_tokens(client):
+    create_test_user()
+    response = client.get(
+        "/api/web/billing/estimate?gross_amount_paise=1000&credit_bucket=voice",
+        headers=auth_headers("test-uid"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["credit_bucket"] == "voice" and body["token_estimate"] is None
+    assert body["voice_estimate"]["estimated_stt_seconds"] > 0
+    assert body["voice_estimate"]["estimated_tts_characters"] > 0
+    assert body["voice_estimate"]["pricing_version"]
+
+
 @pytest.mark.parametrize("gross", [900, 50100, 7501])
 def test_topup_estimate_rejects_out_of_bounds_or_fractional_rupee_amounts(client, gross):
     create_test_user()
@@ -167,6 +181,24 @@ def test_checkout_enabled_creates_server_order_before_provider_order(client, mon
     })
     assert response.status_code == 201
     assert response.json()["credited_amount_micros"] == 5_000_000
+
+
+def test_order_idempotency_key_cannot_change_credit_bucket(client, monkeypatch):
+    create_test_user()
+    monkeypatch.setattr(
+        "app.web_api.router.RazorpayClient.create_order",
+        lambda _self, amount, _receipt: {"id":"order_bucket", "amount":amount, "currency":"INR"},
+    )
+    first = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
+        "gross_amount_paise":1000, "credit_bucket":"voice", "idempotency_key":"same-bucket-key",
+    })
+    changed = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
+        "gross_amount_paise":1000, "credit_bucket":"chat", "idempotency_key":"same-bucket-key",
+    })
+    assert first.status_code == 201 and first.json()["credit_bucket"] == "voice"
+    assert changed.status_code == 409
+    with SessionLocal() as session:
+        assert session.exec(select(PaymentOrder)).one().credit_bucket == "voice"
 
 
 @pytest.mark.parametrize("gross", [1000, 29900, 2500, 7500, 35000])
@@ -276,7 +308,7 @@ def test_current_sarvam_cached_input_prices(monkeypatch):
     assert sarvam_price("sarvam-105b", 1_000_000, 0, 1_000_000).micros == 2_500_000
 
 
-def test_full_and_partial_refund_reclaim_credit_and_can_go_negative():
+def test_full_and_partial_refund_reclaim_credit_without_negative_balance():
     user = create_test_user()
     with SessionLocal() as session:
         order = make_order(int(user.id)); session.add(order); session.flush(); credit_payment_once(session, order)
@@ -285,7 +317,7 @@ def test_full_and_partial_refund_reclaim_credit_and_can_go_negative():
         wallet = session.exec(select(__import__('app.models', fromlist=['WalletAccount']).WalletAccount)).one()
         wallet.balance_micros = 1_000_000; session.add(wallet)
         reverse_credit_for_refund(session, order, 1000)
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == -1_500_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
         with pytest.raises(InsufficientCreditError):
             create_usage_reservation(session, request_id="d" * 36, user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=1, pricing_snapshot_json="{}")
 
@@ -685,6 +717,31 @@ def test_reconciliation_dry_run_is_non_mutating_and_apply_is_idempotent():
         order = session.get(PaymentOrder, order_id); order.created_at = utc_now() - timedelta(hours=1); order.status = "captured"; session.add(order); session.commit()
         reconcile_razorpay_orders(session, client=client, apply=True)
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+
+
+def test_voice_reconciliation_and_refund_stay_in_original_bucket():
+    user = create_test_user(uid="voice-reconcile", email="voice-reconcile@example.com")
+    with SessionLocal() as session:
+        order = make_order(int(user.id))
+        order.credit_bucket = "voice"
+        order.status = "attempted"
+        order.created_at = utc_now() - timedelta(hours=1)
+        session.add(order); session.commit()
+        payment = {
+            "id":"pay_voice_reconcile", "order_id":order.provider_order_id,
+            "amount":1000, "currency":"INR", "status":"captured",
+        }
+        result = reconcile_razorpay_orders(
+            session, client=_ReconciliationClient(payment), apply=True,
+        )[0]
+        assert result["action"] == "credit_captured_payment"
+        assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] == 0
+        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["balance_micros"] == 5_000_000
+        assert reverse_credit_for_refund(session, order, 500) == 2_500_000
+        session.commit()
+        assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] == 0
+        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["balance_micros"] == 2_500_000
+        assert financial_audit(session)["wallet_totals_by_bucket"]["voice"]["balance_micros"] == 2_500_000
 
 
 def test_custom_reconciliation_and_financial_audit_remain_exact_and_clean():

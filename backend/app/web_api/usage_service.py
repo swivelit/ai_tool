@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 
 from ..ai.swico_tiers import SWICO_TIER_LABELS, default_swico_tier, normalize_swico_tier
 from ..billing.pricing import MILLION
-from ..billing.service import get_wallet_summary
+from ..billing.service import get_wallet_summaries
 from ..billing.token_estimates import token_estimate
 from ..billing.usage_limits import monthly_period_bounds, validated_timezone
 from ..models import UsageCharge, User, WebUsagePreferences
@@ -137,10 +137,12 @@ def usage_summary(
             ("debited_micros", int(row.debited_micros)),
         ):
             day[key] += value
-    wallet = get_wallet_summary(
+    wallets = get_wallet_summaries(
         session, int(user.id), swico_tier=swico_tier,
         billing_exempt=billing_exempt,
     )
+    chat_wallet = wallets["chat"]
+    voice_wallet = wallets["voice"]
     for day, values in daily.items():
         values["debited_ai_credits"] = ai_credits(values["debited_micros"])
 
@@ -150,11 +152,15 @@ def usage_summary(
         return float((Decimal(numerator) * Decimal("100") / Decimal(denominator)).quantize(Decimal("0.01")))
 
     period_debit = int(totals["debited_micros"])
+    chat_period_debit = sum(int(values["debited_micros"]) for values in by_tier.values())
+    chat_basis = monthly_limit if monthly_limit is not None else int(chat_wallet["available_micros"]) + chat_period_debit
     for values in by_tier.values():
         debit = int(values["debited_micros"])
         values["debited_token_credits"] = ai_credits(debit)
         values["period_debit_percentage"] = percent(debit, period_debit)
         values["monthly_limit_percentage"] = percent(debit, monthly_limit)
+        values["utilization_percentage"] = 0.0 if billing_exempt else percent(debit, chat_basis)
+        values["utilization_basis"] = "monthly_hard_limit" if monthly_limit is not None else "available_plus_period_debit"
     voice_debit = int(voice["debited_micros"])
     voice["total_audio_seconds"] = float(
         Decimal(int(voice.pop("total_audio_milliseconds"))) / Decimal("1000")
@@ -162,6 +168,9 @@ def usage_summary(
     voice["debited_voice_credits"] = ai_credits(voice_debit)
     voice["period_debit_percentage"] = percent(voice_debit, period_debit)
     voice["monthly_limit_percentage"] = percent(voice_debit, monthly_limit)
+    voice_basis = monthly_limit if monthly_limit is not None else int(voice_wallet["available_micros"]) + voice_debit
+    voice["utilization_percentage"] = 0.0 if billing_exempt else percent(voice_debit, voice_basis)
+    voice["utilization_basis"] = "monthly_hard_limit" if monthly_limit is not None else "available_plus_period_debit"
     return {
         "period": period,
         "tier": swico_tier,
@@ -172,14 +181,19 @@ def usage_summary(
         "next_reset_at": next_reset,
         **totals,
         "debited_ai_credits": ai_credits(totals["debited_micros"]),
-        "available_micros": int(wallet["available_micros"]),
-        "available_ai_credits": ai_credits(int(wallet["available_micros"])),
+        "available_micros": int(chat_wallet["available_micros"]),
+        "available_ai_credits": ai_credits(int(chat_wallet["available_micros"])),
+        "chat_available_micros": int(chat_wallet["available_micros"]),
+        "chat_available_credits": ai_credits(int(chat_wallet["available_micros"])),
+        "voice_available_micros": int(voice_wallet["available_micros"]),
+        "voice_available_credits": ai_credits(int(voice_wallet["available_micros"])),
+        "wallets": wallets,
         "daily": [{"date": day, **values} for day, values in sorted(daily.items())],
         "by_tier": by_tier,
         "voice": voice,
         "monthly_hard_limit_micros": monthly_limit,
-        "estimated_tokens_remaining": wallet["token_estimate"],
-        "token_estimate": wallet["token_estimate"],
+        "estimated_tokens_remaining": chat_wallet["token_estimate"],
+        "token_estimate": chat_wallet["token_estimate"],
         "billing_exempt": bool(billing_exempt),
         **({"balance_display": "Unlimited"} if billing_exempt else {}),
     }

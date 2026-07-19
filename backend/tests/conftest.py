@@ -32,6 +32,13 @@ os.environ["WEB_ATTACHMENTS_ENABLED"] = "true"
 os.environ["WEB_VOICE_RECORDING_ENABLED"] = "true"
 os.environ["WEB_VOICE_REPLY_ENABLED"] = "true"
 os.environ["WEB_VOICE_BILLING_ENABLED"] = "true"
+os.environ["WEB_REALTIME_VOICE_ENABLED"] = "false"
+os.environ["WEB_SEPARATE_VOICE_CREDITS_ENABLED"] = "false"
+os.environ["WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS"] = "60"
+os.environ["WEB_REALTIME_VOICE_MAX_SESSION_SECONDS"] = "900"
+os.environ["WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS"] = "60"
+os.environ["WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER"] = "1"
+os.environ["WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE"] = "1000"
 os.environ["WEB_UPLOAD_TTL_SECONDS"] = "600"
 os.environ["WEB_UPLOAD_MAX_FILE_BYTES"] = "10485760"
 os.environ["WEB_UPLOAD_MAX_FILES_PER_MESSAGE"] = "5"
@@ -110,8 +117,10 @@ def create_test_user(uid: str = "test-uid", email: str = "test@example.com", nam
 @pytest.fixture(autouse=True)
 def clean_db():
     from app.web_api.upload_store import reset_upload_store_for_tests
+    from app.web_api.router import reset_voice_ticket_store_for_tests
 
     reset_upload_store_for_tests()
+    reset_voice_ticket_store_for_tests()
     SQLModel.metadata.create_all(engine)
     queue = _get_job_queue()
     queue.stop()
@@ -121,6 +130,7 @@ def clean_db():
         session.commit()
     yield
     reset_upload_store_for_tests()
+    reset_voice_ticket_store_for_tests()
     queue.stop()
     with SessionLocal() as session:
         for model in [*WEB_MODELS, AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User, EmailOtpCode]:

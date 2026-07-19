@@ -55,7 +55,7 @@ const uploaded = {
   status:'ready' as const, warnings:[],
 }
 
-it('opens an accessible header mode selector with all public names and closes on Escape', async () => {
+it('opens the accessible composer mode selector with all public names and closes on Escape', async () => {
   mockApi(); render(<ChatPage />)
   const trigger = await screen.findByRole('button', { name:'Swico Lite' })
   await userEvent.click(trigger)
@@ -114,7 +114,7 @@ it('opens billing when the API reports insufficient credit', async () => {
   render(<ChatPage />)
   const composer = await screen.findByRole('textbox', { name:'Message Swico' })
   await userEvent.type(composer, 'hello'); await userEvent.click(screen.getByRole('button', { name:'Send message' }))
-  expect(await screen.findByRole('dialog', { name:'Add token credits' })).toBeInTheDocument()
+  expect(await screen.findByRole('dialog', { name:'Add credits' })).toBeInTheDocument()
 })
 
 it('shows stop generation and sends a cooperative cancellation request', async () => {
@@ -178,7 +178,7 @@ it('supports drag-and-drop and prevents send while an upload is pending', async 
   expect(streamChat).not.toHaveBeenCalled()
 })
 
-it('sends an edited transcript as one voice turn, synthesizes only its matching completion, then resets to text', async () => {
+it('sends an edited transcript as dictation without automatic synthesis, then resets to text', async () => {
   mockApi()
   class VoiceMediaRecorder {
     static isTypeSupported = () => true
@@ -228,9 +228,10 @@ it('sends an edited transcript as one voice turn, synthesizes only its matching 
   await waitFor(() => expect(composer).toHaveValue('editable transcript'))
   await userEvent.type(composer, ' changed')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
-  await waitFor(() => expect(synthesizeAudio).toHaveBeenCalledOnce())
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  expect(synthesizeAudio).not.toHaveBeenCalled()
   const voicePayload = vi.mocked(streamChat).mock.calls[0][1]
-  expect(voicePayload).toMatchObject({ message:'editable transcript changed', input_mode:'voice' })
+  expect(voicePayload).toMatchObject({ message:'editable transcript changed', input_mode:'dictation' })
   expect(voicePayload.voice_turn_id).toMatch(/^[0-9a-f-]{36}$/)
   expect(vi.mocked(transcribeAudio).mock.calls[0][2]).not.toBe(voicePayload.voice_turn_id)
   expect(screen.getByText('Visible answer')).toBeInTheDocument()
@@ -240,6 +241,6 @@ it('sends an edited transcript as one voice turn, synthesizes only its matching 
   await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
   expect(vi.mocked(streamChat).mock.calls[1][1]).toMatchObject({ input_mode:'text' })
   expect(vi.mocked(streamChat).mock.calls[1][1]).not.toHaveProperty('voice_turn_id')
-  expect(synthesizeAudio).toHaveBeenCalledOnce()
+  expect(synthesizeAudio).not.toHaveBeenCalled()
   view.unmount()
 })

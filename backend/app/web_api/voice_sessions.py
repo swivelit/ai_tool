@@ -1,0 +1,120 @@
+"""One-use realtime voice tickets backed by the existing Valkey service."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import threading
+import time
+from dataclasses import dataclass, asdict
+from typing import Any
+
+
+TICKET_PREFIX = "swico:voice:ticket:"
+ACTIVE_PREFIX = "swico:voice:active:"
+
+
+@dataclass(frozen=True)
+class VoiceTicket:
+    session_id: str
+    user_id: int
+    tier: str
+    language: str
+    billing_exempt: bool
+    expires_at_epoch: int
+
+
+class VoiceSessionConflict(RuntimeError):
+    pass
+
+
+class VoiceTicketStore:
+    def __init__(self, url: str | None = None) -> None:
+        self._url = str(url if url is not None else os.getenv("WEB_UPLOAD_CACHE_URL", "")).strip()
+        self._redis = None
+        self._items: dict[str, tuple[int, str]] = {}
+        self._locks: dict[int, tuple[int, str]] = {}
+        self._lock = threading.RLock()
+        if self._url:
+            import redis
+            self._redis = redis.Redis.from_url(
+                self._url, decode_responses=True, socket_connect_timeout=2, socket_timeout=2
+            )
+
+    @staticmethod
+    def _digest(ticket: str) -> str:
+        return hashlib.sha256(ticket.encode("utf-8")).hexdigest()
+
+    def mint(self, metadata: VoiceTicket, ttl_seconds: int, max_session_seconds: int) -> str:
+        ticket = secrets.token_urlsafe(32)
+        digest = self._digest(ticket)
+        payload = json.dumps(asdict(metadata), separators=(",", ":"), sort_keys=True)
+        # A ticket that is never connected must not block the user for the full
+        # session duration. The lock is extended atomically only on consume.
+        lock_ttl = max(1, int(ttl_seconds))
+        if self._redis is not None:
+            lock_key = f"{ACTIVE_PREFIX}{metadata.user_id}"
+            if not self._redis.set(lock_key, metadata.session_id, nx=True, ex=lock_ttl):
+                raise VoiceSessionConflict("A Voice Mode session is already active.")
+            try:
+                self._redis.setex(f"{TICKET_PREFIX}{digest}", int(ttl_seconds), payload)
+            except Exception:
+                self._redis.delete(lock_key)
+                raise
+            return ticket
+        now = int(time.time())
+        with self._lock:
+            current = self._locks.get(metadata.user_id)
+            if current and current[0] > now:
+                raise VoiceSessionConflict("A Voice Mode session is already active.")
+            self._locks[metadata.user_id] = (now + lock_ttl, metadata.session_id)
+            self._items[digest] = (now + int(ttl_seconds), payload)
+        return ticket
+
+    def consume(self, ticket: str) -> VoiceTicket | None:
+        digest = self._digest(ticket)
+        if self._redis is not None:
+            value = self._redis.getdel(f"{TICKET_PREFIX}{digest}")
+        else:
+            with self._lock:
+                row = self._items.pop(digest, None)
+            value = row[1] if row and row[0] > int(time.time()) else None
+        if not value:
+            return None
+        data = json.loads(value)
+        metadata = VoiceTicket(**data)
+        now = int(time.time())
+        if metadata.expires_at_epoch < now:
+            self.release(metadata)
+            return None
+        max_session = max(1, int(os.getenv("WEB_REALTIME_VOICE_MAX_SESSION_SECONDS", "900")))
+        if self._redis is not None:
+            lock_key = f"{ACTIVE_PREFIX}{metadata.user_id}"
+            script = (
+                "if redis.call('get',KEYS[1])==ARGV[1] then "
+                "return redis.call('expire',KEYS[1],ARGV[2]) else return 0 end"
+            )
+            if not self._redis.eval(script, 1, lock_key, metadata.session_id, max_session):
+                return None
+        else:
+            with self._lock:
+                current = self._locks.get(metadata.user_id)
+                if not current or not hmac.compare_digest(current[1], metadata.session_id):
+                    return None
+                self._locks[metadata.user_id] = (now + max_session, metadata.session_id)
+        return metadata
+
+    def release(self, metadata: VoiceTicket) -> None:
+        if self._redis is not None:
+            key = f"{ACTIVE_PREFIX}{metadata.user_id}"
+            # Compare-and-delete prevents an old socket from releasing a newer session.
+            script = "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end"
+            self._redis.eval(script, 1, key, metadata.session_id)
+            return
+        with self._lock:
+            current = self._locks.get(metadata.user_id)
+            if current and hmac.compare_digest(current[1], metadata.session_id):
+                self._locks.pop(metadata.user_id, None)

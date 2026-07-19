@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_FLOOR
 from typing import Any
@@ -26,6 +27,22 @@ LEDGER_TYPES = {
     "refund_debit", "manual_adjustment",
 }
 USAGE_KINDS = {"chat", "stt", "tts"}
+CREDIT_BUCKETS = {"chat", "voice"}
+
+
+def normalize_credit_bucket(value: str | None) -> str:
+    bucket = str(value or "chat").strip().lower()
+    if bucket not in CREDIT_BUCKETS:
+        raise ValueError("Unsupported credit bucket")
+    return bucket
+
+
+def usage_credit_bucket(usage_kind: str) -> str:
+    kind = _usage_kind(usage_kind)
+    separate = os.getenv("WEB_SEPARATE_VOICE_CREDITS_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    return "voice" if separate and kind in {"stt", "tts"} else "chat"
 
 
 def _usage_kind(value: str) -> str:
@@ -35,37 +52,44 @@ def _usage_kind(value: str) -> str:
     return normalized
 
 
-def _locked_wallet(session: Session, user_id: int) -> WalletAccount:
+def _locked_wallet(session: Session, user_id: int, credit_bucket: str = "chat") -> WalletAccount:
+    bucket = normalize_credit_bucket(credit_bucket)
     wallet = session.exec(
-        select(WalletAccount).where(WalletAccount.user_id == int(user_id)).with_for_update()
+        select(WalletAccount).where(
+            WalletAccount.user_id == int(user_id), WalletAccount.credit_bucket == bucket,
+        ).with_for_update()
     ).first()
     if wallet is None:
         if IS_POSTGRES:
             now = utc_now()
             session.exec(
                 postgresql_insert(WalletAccount).values(
-                    id=str(uuid4()), user_id=int(user_id), balance_micros=0,
+                    id=str(uuid4()), user_id=int(user_id), credit_bucket=bucket, balance_micros=0,
                     reserved_micros=0, version=0, created_at=now, updated_at=now,
-                ).on_conflict_do_nothing(index_elements=["user_id"])
+                ).on_conflict_do_nothing(index_elements=["user_id", "credit_bucket"])
             )
             wallet = session.exec(
-                select(WalletAccount).where(WalletAccount.user_id == int(user_id)).with_for_update()
+                select(WalletAccount).where(
+                    WalletAccount.user_id == int(user_id), WalletAccount.credit_bucket == bucket,
+                ).with_for_update()
             ).one()
         else:
-            wallet = WalletAccount(user_id=int(user_id))
+            wallet = WalletAccount(user_id=int(user_id), credit_bucket=bucket)
             try:
                 with session.begin_nested():
                     session.add(wallet)
                     session.flush()
             except IntegrityError:
                 wallet = session.exec(
-                    select(WalletAccount).where(WalletAccount.user_id == int(user_id)).with_for_update()
+                    select(WalletAccount).where(
+                        WalletAccount.user_id == int(user_id), WalletAccount.credit_bucket == bucket,
+                    ).with_for_update()
                 ).one()
     return wallet
 
 
-def get_or_create_wallet(session: Session, user_id: int) -> WalletAccount:
-    return _locked_wallet(session, user_id)
+def get_or_create_wallet(session: Session, user_id: int, credit_bucket: str = "chat") -> WalletAccount:
+    return _locked_wallet(session, user_id, credit_bucket)
 
 
 def wallet_dict(
@@ -73,11 +97,16 @@ def wallet_dict(
 ) -> dict[str, Any]:
     available = int(wallet.balance_micros - wallet.reserved_micros)
     result = {
+        "credit_bucket": wallet.credit_bucket,
         "balance_micros": int(wallet.balance_micros),
         "reserved_micros": int(wallet.reserved_micros),
         "available_micros": available,
         "version": int(wallet.version),
-        "token_estimate": None if billing_exempt else token_estimate(available, tier=swico_tier),
+        "token_estimate": (
+            None
+            if billing_exempt or wallet.credit_bucket == "voice"
+            else token_estimate(available, tier=swico_tier)
+        ),
         "billing_exempt": bool(billing_exempt),
     }
     if billing_exempt:
@@ -87,13 +116,26 @@ def wallet_dict(
 
 def get_wallet_summary(
     session: Session, user_id: int, *, swico_tier: str = "lite",
-    billing_exempt: bool = False,
+    billing_exempt: bool = False, credit_bucket: str = "chat",
 ) -> dict[str, Any]:
     return wallet_dict(
-        get_or_create_wallet(session, user_id),
+        get_or_create_wallet(session, user_id, credit_bucket),
         swico_tier=swico_tier,
         billing_exempt=billing_exempt,
     )
+
+
+def get_wallet_summaries(
+    session: Session, user_id: int, *, swico_tier: str = "lite",
+    billing_exempt: bool = False,
+) -> dict[str, dict[str, Any]]:
+    return {
+        bucket: get_wallet_summary(
+            session, user_id, swico_tier=swico_tier,
+            billing_exempt=billing_exempt, credit_bucket=bucket,
+        )
+        for bucket in ("chat", "voice")
+    }
 
 
 def _ledger(
@@ -104,9 +146,12 @@ def _ledger(
         raise ValueError("Unsupported ledger entry type")
     existing = session.exec(select(WalletLedger).where(WalletLedger.idempotency_key == idempotency_key)).first()
     if existing:
+        if existing.credit_bucket != wallet.credit_bucket:
+            raise PaymentValidationError("Idempotency key was already used for another credit bucket.")
         return existing
     row = WalletLedger(
-        user_id=wallet.user_id, entry_type=entry_type, amount_micros=int(amount_micros),
+        user_id=wallet.user_id, credit_bucket=wallet.credit_bucket,
+        entry_type=entry_type, amount_micros=int(amount_micros),
         balance_after_micros=int(wallet.balance_micros), reference_type=reference_type,
         reference_id=reference_id, idempotency_key=idempotency_key,
         metadata_json=json.dumps(metadata or {}, sort_keys=True, separators=(",", ":")),
@@ -120,12 +165,14 @@ def credit_payment_once(session: Session, order: PaymentOrder) -> WalletLedger:
     key = f"payment-credit:{order.id}"
     existing = session.exec(select(WalletLedger).where(WalletLedger.idempotency_key == key)).first()
     if existing:
+        if existing.credit_bucket != normalize_credit_bucket(order.credit_bucket):
+            raise PaymentValidationError("Payment credit already exists in another credit bucket.")
         if order.status != "credited":
             order.status = "credited"
             order.updated_at = utc_now()
             session.add(order)
         return existing
-    wallet = _locked_wallet(session, order.user_id)
+    wallet = _locked_wallet(session, order.user_id, order.credit_bucket)
     wallet.balance_micros += int(order.credited_amount_micros)
     wallet.version += 1
     wallet.updated_at = utc_now()
@@ -133,7 +180,8 @@ def credit_payment_once(session: Session, order: PaymentOrder) -> WalletLedger:
     entry = _ledger(
         session, wallet, entry_type="payment_credit", amount_micros=order.credited_amount_micros,
         reference_type="payment_order", reference_id=order.id, idempotency_key=key,
-        metadata={"provider": order.provider, "gross_amount_paise": order.gross_amount_paise},
+        metadata={"provider": order.provider, "gross_amount_paise": order.gross_amount_paise,
+                  "credit_bucket": order.credit_bucket},
     )
     order.status = "credited"
     order.paid_at = order.paid_at or utc_now()
@@ -146,16 +194,20 @@ def create_usage_reservation(
     session: Session, *, request_id: str, user_id: int, thread_id: str | None,
     provider: str, model: str, reserved_micros: int, pricing_snapshot_json: str,
     swico_tier: str | None = None, usage_kind: str = "chat",
+    credit_bucket: str | None = None,
     voice_turn_id: str | None = None, audio_milliseconds: int = 0,
     characters: int = 0, assistant_message_id: str | None = None,
 ) -> UsageCharge:
     usage_kind = _usage_kind(usage_kind)
+    bucket = normalize_credit_bucket(credit_bucket or usage_credit_bucket(usage_kind))
     acquire_sqlite_usage_transaction_lock(session, user_id)
     existing = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
     if existing and existing.status != "released":
+        if existing.credit_bucket != bucket:
+            raise PaymentValidationError("Request ID was already used for another credit bucket.")
         return existing
     required = max(0, int(reserved_micros))
-    wallet = _locked_wallet(session, user_id)
+    wallet = _locked_wallet(session, user_id, bucket)
     available = int(wallet.balance_micros - wallet.reserved_micros)
     if available < required or wallet.balance_micros <= 0:
         raise InsufficientCreditError(available, required)
@@ -172,6 +224,7 @@ def create_usage_reservation(
         charge.model = model
         charge.swico_tier = swico_tier
         charge.usage_kind = usage_kind
+        charge.credit_bucket = bucket
         charge.voice_turn_id = voice_turn_id
         charge.audio_milliseconds = max(0, int(audio_milliseconds))
         charge.characters = max(0, int(characters))
@@ -185,6 +238,7 @@ def create_usage_reservation(
             request_id=request_id, user_id=user_id, thread_id=thread_id, provider=provider,
             model=model, swico_tier=swico_tier, reserved_micros=required, status="reserved",
             pricing_snapshot_json=pricing_snapshot_json, usage_kind=usage_kind,
+            credit_bucket=bucket,
             voice_turn_id=voice_turn_id, audio_milliseconds=max(0, int(audio_milliseconds)),
             characters=max(0, int(characters)), assistant_message_id=assistant_message_id,
         )
@@ -213,12 +267,14 @@ def create_billing_exempt_usage(
     session: Session, *, request_id: str, user_id: int, thread_id: str | None,
     provider: str, model: str, pricing_snapshot_json: str,
     swico_tier: str | None = None, reason: str = "internal_capability_test",
-    usage_kind: str = "chat", voice_turn_id: str | None = None,
+    usage_kind: str = "chat", credit_bucket: str | None = None,
+    voice_turn_id: str | None = None,
     audio_milliseconds: int = 0, characters: int = 0,
     assistant_message_id: str | None = None,
 ) -> UsageCharge:
     """Create an idempotency/audit row without touching wallet or limit state."""
     usage_kind = _usage_kind(usage_kind)
+    bucket = normalize_credit_bucket(credit_bucket or usage_credit_bucket(usage_kind))
     existing = session.exec(
         select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
     ).first()
@@ -237,6 +293,7 @@ def create_billing_exempt_usage(
     charge.model = model
     charge.swico_tier = swico_tier
     charge.usage_kind = usage_kind
+    charge.credit_bucket = bucket
     charge.voice_turn_id = voice_turn_id
     charge.audio_milliseconds = max(0, int(audio_milliseconds))
     charge.characters = max(0, int(characters))
@@ -258,6 +315,47 @@ def create_billing_exempt_usage(
     )
     session.add(charge)
     session.flush()
+    return charge
+
+
+def expand_usage_reservation(
+    session: Session, *, request_id: str, additional_micros: int,
+    expansion_id: str,
+) -> UsageCharge:
+    """Atomically grow a streaming reservation in its original bucket."""
+    charge = session.exec(
+        select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
+    ).first()
+    if charge is None or charge.status != "reserved":
+        raise PaymentValidationError("Usage reservation is not active.")
+    delta = max(0, int(additional_micros))
+    if delta == 0:
+        return charge
+    wallet = _locked_wallet(session, charge.user_id, charge.credit_bucket)
+    key = f"usage-expand:{request_id}:{expansion_id}"
+    existing = session.exec(
+        select(WalletLedger).where(WalletLedger.idempotency_key == key)
+    ).first()
+    if existing:
+        if existing.credit_bucket != charge.credit_bucket:
+            raise PaymentValidationError("Expansion ID was used for another credit bucket.")
+        return charge
+    available = int(wallet.balance_micros - wallet.reserved_micros)
+    if available < delta:
+        raise InsufficientCreditError(available, delta)
+    enforce_usage_limit(session, user_id=charge.user_id, required_micros=delta)
+    charge.reserved_micros += delta
+    wallet.reserved_micros += delta
+    wallet.version += 1
+    wallet.updated_at = utc_now()
+    session.add(charge)
+    session.add(wallet)
+    _ledger(
+        session, wallet, entry_type="reservation", amount_micros=-delta,
+        reference_type="usage_charge", reference_id=charge.id,
+        idempotency_key=key,
+        metadata={"request_id": request_id, "expansion_id": expansion_id},
+    )
     return charge
 
 
@@ -361,7 +459,7 @@ def settle_usage_reservation(
         return charge
     if charge.status != "reserved":
         raise PaymentValidationError("Usage reservation is not active.")
-    wallet = _locked_wallet(session, charge.user_id)
+    wallet = _locked_wallet(session, charge.user_id, charge.credit_bucket)
     reserved_provider = charge.provider
     reserved_model = charge.model
     try:
@@ -460,7 +558,7 @@ def release_usage_reservation(
     charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()).first()
     if charge is None or charge.status in {"released", "settled", "failed"}:
         return charge
-    wallet = _locked_wallet(session, charge.user_id)
+    wallet = _locked_wallet(session, charge.user_id, charge.credit_bucket)
     reservation_attempt = _reservation_attempt(charge)
     wallet.reserved_micros = max(0, wallet.reserved_micros - int(charge.reserved_micros))
     wallet.version += 1
@@ -526,17 +624,25 @@ def reverse_credit_for_refund(session: Session, order: PaymentOrder, new_refunde
     already_reversed = -sum(min(0, int(entry.amount_micros)) for entry in existing_entries)
     delta = max(0, target_reversal - already_reversed)
     if delta:
-        wallet = _locked_wallet(session, order.user_id)
-        wallet.balance_micros -= delta
-        wallet.version += 1
-        wallet.updated_at = utc_now()
-        session.add(wallet)
-        _ledger(
-            session, wallet, entry_type="refund_debit", amount_micros=-delta,
-            reference_type="payment_refund", reference_id=order.id,
-            idempotency_key=f"refund:{order.id}:{total_refunded}",
-            metadata={"cumulative_refund_paise": total_refunded},
+        wallet = _locked_wallet(session, order.user_id, order.credit_bucket)
+        # A refund never borrows from the other bucket or creates a negative
+        # balance. Any uncollectable reversal remains visible to audit via the
+        # order/ledger difference.
+        delta = min(
+            delta,
+            max(0, int(wallet.balance_micros) - int(wallet.reserved_micros)),
         )
+        if delta:
+            wallet.balance_micros -= delta
+            wallet.version += 1
+            wallet.updated_at = utc_now()
+            session.add(wallet)
+            _ledger(
+                session, wallet, entry_type="refund_debit", amount_micros=-delta,
+                reference_type="payment_refund", reference_id=order.id,
+                idempotency_key=f"refund:{order.id}:{already_reversed}:{delta}",
+                metadata={"cumulative_refund_paise": total_refunded},
+            )
     order.refunded_amount_paise = max(order.refunded_amount_paise, total_refunded)
     order.status = "refunded" if total_refunded >= order.gross_amount_paise else "partially_refunded"
     order.refunded_at = utc_now() if order.status == "refunded" else order.refunded_at
@@ -545,10 +651,13 @@ def reverse_credit_for_refund(session: Session, order: PaymentOrder, new_refunde
     return delta
 
 
-def list_wallet_ledger(session: Session, user_id: int, *, limit: int = 50, offset: int = 0) -> list[WalletLedger]:
+def list_wallet_ledger(session: Session, user_id: int, *, credit_bucket: str | None = None,
+                       limit: int = 50, offset: int = 0) -> list[WalletLedger]:
+    statement = select(WalletLedger).where(WalletLedger.user_id == user_id)
+    if credit_bucket is not None:
+        statement = statement.where(WalletLedger.credit_bucket == normalize_credit_bucket(credit_bucket))
     return list(session.exec(
-        select(WalletLedger).where(WalletLedger.user_id == user_id)
-        .order_by(WalletLedger.created_at.desc()).offset(offset).limit(limit)
+        statement.order_by(WalletLedger.created_at.desc()).offset(offset).limit(limit)
     ).all())
 
 

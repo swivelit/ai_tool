@@ -21,6 +21,8 @@ const config = {
     { gross_amount_paise:29900, credited_amount_micros:149_500_000, platform_share_paise:14950, token_estimate:estimate299 },
   ],
 }
+const voiceEstimate = { pricing_version:'test-v1', estimated_stt_seconds:600, estimated_stt_minutes:'10.00', estimated_tts_characters:5000, assumption:'STT-only or TTS-only; not guaranteed.' }
+const voiceConfig = { ...config, packages:config.packages.map(item => ({ ...item, voice_estimate:voiceEstimate })) }
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -32,7 +34,7 @@ it('renders exactly ₹10, ₹299, and Custom amount with ₹10 initially select
   vi.mocked(apiJson).mockReset().mockResolvedValueOnce({ items:[] })
   render(<BillingModal user={{} as never} config={config} close={vi.fn()} refreshed={vi.fn()} />)
   await act(async () => { await Promise.resolve() })
-  const dialog = screen.getByRole('dialog', { name:'Add token credits' })
+  const dialog = screen.getByRole('dialog', { name:'Add credits' })
   expect(dialog).not.toHaveAttribute('aria-describedby')
   expect(screen.getByText('Test Mode')).toBeInTheDocument()
   const cards = dialog.querySelectorAll('.packages button')
@@ -42,8 +44,8 @@ it('renders exactly ₹10, ₹299, and Custom amount with ₹10 initially select
   expect(screen.getByRole('button', { name:'Enter a custom payment amount' })).toHaveAttribute('aria-pressed', 'false')
   expect(within(dialog).getByText('Custom amount')).toBeInTheDocument()
   expect(dialog).not.toHaveTextContent(/Pay ₹50|Pay ₹100|Pay ₹500/)
-  expect(document.querySelector('.package-summary')).toHaveTextContent('Pay ₹10Estimated token range 25K–180K tokens')
-  expect(screen.getByRole('button', { name:'Pay ₹10 securely' })).toBeEnabled()
+  expect(document.querySelector('.package-summary')).toHaveTextContent('Pay ₹10 for Chat creditsEstimated token range 25K–180K tokens')
+  expect(screen.getByRole('button', { name:'Pay ₹10 for Chat credits' })).toBeEnabled()
   expect(dialog).not.toHaveTextContent(/converted to token credits|service(?: and platform)? allocation|Pricing timestamp|Estimated for Swico|%/i)
   expect(document.body.textContent).not.toMatch(/openai|gpt-|claude|anthropic|gemini|llama|mistral|deepseek|sarvam/i)
 })
@@ -56,11 +58,27 @@ it('uses stable preset selection and sends ₹299 exactly', async () => {
   })
   render(<BillingModal user={{} as never} config={config} close={vi.fn()} refreshed={vi.fn()} />)
   await userEvent.click(screen.getByRole('button', { name:'Pay ₹299, estimated 358K to 2.1M tokens' }))
-  expect(document.querySelector('.package-summary')).toHaveTextContent('Pay ₹299Estimated token range 358K–2.1M tokens')
-  await userEvent.click(screen.getByRole('button', { name:'Pay ₹299 securely' }))
+  expect(document.querySelector('.package-summary')).toHaveTextContent('Pay ₹299 for Chat creditsEstimated token range 358K–2.1M tokens')
+  await userEvent.click(screen.getByRole('button', { name:'Pay ₹299 for Chat credits' }))
   await screen.findByText('order stopped for test')
   const orderCall = vi.mocked(apiJson).mock.calls.find(call => call[1] === '/api/web/billing/orders')
   expect(JSON.parse(String(orderCall?.[2]?.body))).toMatchObject({ gross_amount_paise:29900 })
+})
+
+it('selects Voice credits and sends the authoritative bucket with speech estimates', async () => {
+  vi.mocked(apiJson).mockReset().mockImplementation((_user, path) => {
+    if (path === '/api/web/billing/payments') return Promise.resolve({ items:[] })
+    if (path === '/api/web/billing/orders') return Promise.reject(new Error('order stopped for test'))
+    throw new Error(`unexpected ${path}`)
+  })
+  render(<BillingModal user={{} as never} config={voiceConfig} close={vi.fn()} refreshed={vi.fn()} />)
+  await userEvent.click(screen.getByRole('button', { name:'Voice credits' }))
+  expect(document.querySelector('.package-summary')).toHaveTextContent('STT-only estimate 10.00 minutes')
+  expect(document.querySelector('.package-summary')).toHaveTextContent('TTS-only estimate 5,000 characters')
+  await userEvent.click(screen.getByRole('button', { name:'Pay ₹10 for Voice credits' }))
+  await screen.findByText('order stopped for test')
+  const call = vi.mocked(apiJson).mock.calls.find(item => item[1] === '/api/web/billing/orders')
+  expect(JSON.parse(String(call?.[2]?.body))).toMatchObject({ gross_amount_paise:1000, credit_bucket:'voice' })
 })
 
 it('validates custom whole rupees and never estimates or opens checkout for invalid input', async () => {
@@ -89,7 +107,7 @@ it('validates custom whole rupees and never estimates or opens checkout for inva
 it('debounces a valid ₹75 estimate, updates summary, retains input across tabs, and sends 7500 paise', async () => {
   vi.mocked(apiJson).mockReset().mockImplementation((_user, path) => {
     if (path === '/api/web/billing/payments') return Promise.resolve({ items:[] })
-    if (path === '/api/web/billing/estimate?gross_amount_paise=7500') {
+    if (path === '/api/web/billing/estimate?gross_amount_paise=7500&credit_bucket=chat') {
       return Promise.resolve({ gross_amount_paise:7500, token_estimate:customEstimate })
     }
     if (path === '/api/web/billing/orders') return Promise.reject(new Error('order stopped for test'))
@@ -101,15 +119,15 @@ it('debounces a valid ₹75 estimate, updates summary, retains input across tabs
   await userEvent.type(input, '75')
   expect(screen.getByRole('button', { name:'Calculating estimate…' })).toBeDisabled()
   await waitFor(() => expect(apiJson).toHaveBeenCalledWith(
-    expect.anything(), '/api/web/billing/estimate?gross_amount_paise=7500',
+    expect.anything(), '/api/web/billing/estimate?gross_amount_paise=7500&credit_bucket=chat',
     expect.objectContaining({ signal:expect.any(AbortSignal) }),
   ))
-  expect(await screen.findByRole('button', { name:'Pay ₹75 securely' })).toBeEnabled()
-  expect(document.querySelector('.package-summary')).toHaveTextContent('Pay ₹75Estimated token range 187K–1.3M tokens')
+  expect(await screen.findByRole('button', { name:'Pay ₹75 for Chat credits' })).toBeEnabled()
+  expect(document.querySelector('.package-summary')).toHaveTextContent('Pay ₹75 for Chat creditsEstimated token range 187K–1.3M tokens')
   await userEvent.click(screen.getByRole('tab', { name:'Payment history' }))
-  await userEvent.click(screen.getByRole('tab', { name:'Add tokens' }))
+  await userEvent.click(screen.getByRole('tab', { name:'Add credits' }))
   expect(screen.getByLabelText('Custom amount')).toHaveValue('75')
-  await userEvent.click(screen.getByRole('button', { name:'Pay ₹75 securely' }))
+  await userEvent.click(screen.getByRole('button', { name:'Pay ₹75 for Chat credits' }))
   await screen.findByText('order stopped for test')
   const orderCall = vi.mocked(apiJson).mock.calls.find(call => call[1] === '/api/web/billing/orders')
   expect(JSON.parse(String(orderCall?.[2]?.body))).toMatchObject({ gross_amount_paise:7500 })
@@ -120,19 +138,19 @@ it('ignores a stale custom estimate response after the amount changes', async ()
   const second = deferred<TopupEstimateResponse>()
   vi.mocked(apiJson).mockReset().mockImplementation((_user, path) => {
     if (path === '/api/web/billing/payments') return Promise.resolve({ items:[] })
-    if (path.endsWith('=7500')) return first.promise
-    if (path.endsWith('=7600')) return second.promise
+    if (path.includes('gross_amount_paise=7500&')) return first.promise
+    if (path.includes('gross_amount_paise=7600&')) return second.promise
     throw new Error(`unexpected ${path}`)
   })
   render(<BillingModal user={{} as never} config={config} close={vi.fn()} refreshed={vi.fn()} />)
   await userEvent.click(screen.getByRole('button', { name:'Enter a custom payment amount' }))
   const input = screen.getByLabelText('Custom amount')
   await userEvent.type(input, '75')
-  await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => call[1].endsWith('=7500'))).toBe(true))
+  await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => call[1].includes('gross_amount_paise=7500&'))).toBe(true))
   await userEvent.clear(input); await userEvent.type(input, '76')
-  await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => call[1].endsWith('=7600'))).toBe(true))
+  await waitFor(() => expect(vi.mocked(apiJson).mock.calls.some(call => call[1].includes('gross_amount_paise=7600&'))).toBe(true))
   await act(async () => second.resolve({ gross_amount_paise:7600, token_estimate:newerCustomEstimate }))
-  expect(await screen.findByRole('button', { name:'Pay ₹76 securely' })).toBeEnabled()
+  expect(await screen.findByRole('button', { name:'Pay ₹76 for Chat credits' })).toBeEnabled()
   expect(document.querySelector('.package-summary')).toHaveTextContent('190K–1.3M tokens')
   await act(async () => first.resolve({ gross_amount_paise:7500, token_estimate:customEstimate }))
   await waitFor(() => expect(document.querySelector('.package-summary')).toHaveTextContent('Pay ₹76'))
@@ -181,11 +199,11 @@ it('keeps completed payment details visible without service allocation', async (
 it('keeps checkout-disabled behavior and accessibility focus unchanged', async () => {
   vi.mocked(apiJson).mockReset().mockResolvedValueOnce({ items:[] })
   render(<BillingModal user={{} as never} config={{ ...config, razorpay_key_id:'rzp_test_misleading', razorpay_mode:'live', checkout_enabled:false }} close={vi.fn()} refreshed={vi.fn()} />)
-  expect(screen.getByRole('button', { name:'Close add token credits' })).toHaveFocus()
+  expect(screen.getByRole('button', { name:'Close add credits' })).toHaveFocus()
   await userEvent.click(screen.getByRole('tab', { name:'Payment history' }))
   expect(await screen.findByText('No payments or refunds yet.')).toBeInTheDocument()
-  await userEvent.click(screen.getByRole('tab', { name:'Add tokens' }))
+  await userEvent.click(screen.getByRole('tab', { name:'Add credits' }))
   expect(screen.queryByText('Test Mode')).not.toBeInTheDocument()
   expect(screen.getByText(/Checkout is currently disabled/)).toBeInTheDocument()
-  expect(screen.getByRole('button', { name:'Pay ₹10 securely' })).toBeDisabled()
+  expect(screen.getByRole('button', { name:'Pay ₹10 for Chat credits' })).toBeDisabled()
 })

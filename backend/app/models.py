@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 from .time_utils import utc_now
 from sqlmodel import SQLModel, Field
-from sqlalchemy import BigInteger, Column, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint
 
 
 # --------------------
@@ -252,10 +252,14 @@ def _public_id() -> str:
 
 class WalletAccount(SQLModel, table=True):
     __tablename__ = "wallet_account"
-    __table_args__ = (UniqueConstraint("user_id", name="uq_wallet_account_user_id"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "credit_bucket", name="uq_wallet_account_user_bucket"),
+        CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_wallet_account_credit_bucket"),
+    )
 
     id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
     user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    credit_bucket: str = Field(default="chat", max_length=16, sa_column=Column(String(16), nullable=False, server_default="chat"))
     balance_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
     reserved_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
     version: int = Field(default=0)
@@ -267,11 +271,14 @@ class WalletLedger(SQLModel, table=True):
     __tablename__ = "wallet_ledger"
     __table_args__ = (
         Index("ix_wallet_ledger_user_created", "user_id", "created_at"),
+        Index("ix_wallet_ledger_user_bucket_created", "user_id", "credit_bucket", "created_at"),
         Index("ix_wallet_ledger_reference", "reference_type", "reference_id"),
+        CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_wallet_ledger_credit_bucket"),
     )
 
     id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
     user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    credit_bucket: str = Field(default="chat", max_length=16, sa_column=Column(String(16), nullable=False, server_default="chat"))
     entry_type: str = Field(max_length=32, index=True)
     amount_micros: int = Field(sa_column=Column(BigInteger, nullable=False))
     balance_after_micros: int = Field(sa_column=Column(BigInteger, nullable=False))
@@ -284,10 +291,14 @@ class WalletLedger(SQLModel, table=True):
 
 class PaymentOrder(SQLModel, table=True):
     __tablename__ = "payment_order"
-    __table_args__ = (Index("ix_payment_order_user_created", "user_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_payment_order_user_created", "user_id", "created_at"),
+        CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_payment_order_credit_bucket"),
+    )
 
     id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
     user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    credit_bucket: str = Field(default="chat", max_length=16, sa_column=Column(String(16), nullable=False, server_default="chat"))
     provider: str = Field(default="razorpay", max_length=24)
     provider_order_id: Optional[str] = Field(default=None, unique=True, max_length=80)
     provider_payment_id: Optional[str] = Field(default=None, unique=True, max_length=80)
@@ -363,11 +374,13 @@ class UsageCharge(SQLModel, table=True):
         Index("ix_usage_charge_user_created", "user_id", "created_at"),
         Index("ix_usage_charge_user_kind_settled", "user_id", "usage_kind", "settled_at"),
         UniqueConstraint("request_id", name="uq_usage_charge_request_id"),
+        CheckConstraint("credit_bucket IN ('chat', 'voice')", name="ck_usage_charge_credit_bucket"),
     )
 
     id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
     request_id: str = Field(max_length=64, index=True)
     user_id: int = Field(foreign_key="user.id", ondelete="RESTRICT", index=True)
+    credit_bucket: str = Field(default="chat", max_length=16, sa_column=Column(String(16), nullable=False, server_default="chat"))
     thread_id: Optional[str] = Field(default=None, foreign_key="web_chat_thread.id", ondelete="SET NULL", index=True, max_length=36)
     assistant_message_id: Optional[str] = Field(default=None, foreign_key="web_chat_message.id", ondelete="SET NULL", max_length=36)
     usage_kind: str = Field(default="chat", max_length=16, sa_column=Column(String(16), nullable=False, server_default="chat"))

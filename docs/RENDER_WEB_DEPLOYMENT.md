@@ -79,6 +79,22 @@ Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUT
 Exact environment delta for this release:
 
 - Add API variable `BILLING_CHECKOUT_ENABLED=false` (backend-only, explicit in production).
+- Add these backend-only variables with the shown safe defaults:
+
+  ```dotenv
+  WEB_REALTIME_VOICE_ENABLED=false
+  WEB_SEPARATE_VOICE_CREDITS_ENABLED=false
+  WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS=60
+  WEB_REALTIME_VOICE_MAX_SESSION_SECONDS=900
+  WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS=60
+  WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER=1
+  WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE=5
+  ```
+
+  Keep both feature flags false through migration and financial verification.
+  Do not create public Vite equivalents or a Vite WebSocket URL. The browser
+  derives `wss://` from an HTTPS API origin (and `ws://` from localhost), and
+  the authenticated bootstrap is authoritative.
 - Set API variable `BILLING_TOPUP_PACKAGES_PAISE=1000,29900`.
 - Set API variable `BILLING_ENFORCE_TOPUP_PACKAGES=false`.
 - Set API variable `BILLING_MIN_TOPUP_PAISE=1000`.
@@ -108,7 +124,12 @@ All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is
 
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
-Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores selected web-tier audit fields, revision `a7c4e9d2f1b6` adds the nullable billing-exemption reason, and revision `c5d8a2e9f4b1` additively classifies authoritative chat/STT/TTS charges and their voice units. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode checkout, capture, duplicate webhook replay, and refund in staging after intentionally enabling the switch there.
+Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores selected web-tier audit fields, revision `a7c4e9d2f1b6` adds the nullable billing-exemption reason, revision `c5d8a2e9f4b1` classifies authoritative chat/STT/TTS charges and their voice units, and revision `e2b7c4d9a1f3` adds independent Chat and Voice credit buckets. It backfills every historical wallet, ledger entry, payment order, and usage charge as Chat without changing an amount. Voice wallets are created idempotently with zero balance; existing funds are never copied. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, both wallet balances, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode Chat and Voice checkout, duplicate webhook replay, reconciliation, audit, and same-bucket refunds after intentionally enabling the switch there.
+
+This release uses the existing API service, PostgreSQL database, and private
+Valkey at `WEB_UPLOAD_CACHE_URL`. It needs no new Render service, database,
+Valkey, Cron Job, disk, object storage, or stored-audio facility. The existing
+three financial Cron code paths become bucket-aware; do not add a fourth job.
 
 ## Production temporary uploads and voice — exact dashboard steps
 
@@ -140,6 +161,13 @@ Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c
    WEB_STT_RATE_LIMIT_PER_MINUTE=10
    WEB_TTS_RATE_LIMIT_PER_MINUTE=10
    WEB_UPLOAD_STORE_RAW=false
+   WEB_REALTIME_VOICE_ENABLED=false
+   WEB_SEPARATE_VOICE_CREDITS_ENABLED=false
+   WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS=60
+   WEB_REALTIME_VOICE_MAX_SESSION_SECONDS=900
+   WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS=60
+   WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER=1
+   WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE=5
    ```
 
 4. Add the voice flags and limits directly to the existing **ai_tool** API
@@ -154,7 +182,9 @@ Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c
    `camera=(), geolocation=(), microphone=(self)`. Replace the existing CSP with
    the exact value in `web/public/_headers`, including
    `media-src 'self' blob:`. Save the header changes.
-6. Run the API pre-deploy migration, then deploy **ai_tool** first. Verify authenticated `/api/web/bootstrap` reports
+6. Run the API pre-deploy migration, deploy **ai_tool**, and run all three
+   existing financial job commands against the migrated schema before the
+   static site. Keep `BILLING_CHECKOUT_ENABLED=false` throughout. Verify authenticated `/api/web/bootstrap` reports
    `web_attachments: true`, `web_voice_recording: true`, and
    `web_voice_billing: true`, `web_voice_reply: true`, and `uploads.available:
    true`; smoke one document upload, one paid transcription, one voice-originated
@@ -162,10 +192,15 @@ Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c
    Only then select **Save, rebuild, and deploy** on **swico-web**. This order
    prevents the browser from exposing controls before the authoritative API is
    ready.
+7. Only after Chat/Voice audit totals, reconciliation, stale-reservation
+   cleanup, ticket security, and existing mobile contracts pass should an
+   operator enable `WEB_SEPARATE_VOICE_CREDITS_ENABLED`; enable
+   `WEB_REALTIME_VOICE_ENABLED` as a separate reviewed step. This does not
+   authorize checkout or a live provider/payment request.
 
 ## Financial Cron Jobs
 
-Both Cron Jobs use branch `main`, region **Virginia**, and a blank Root
+All three Cron Jobs use branch `main`, region **Virginia**, and a blank Root
 Directory. Render evaluates Cron schedules in UTC. Configure these schedules:
 
 - `billing-stale-reservations`: `*/10 * * * *`
@@ -318,7 +353,7 @@ The API returns an explicit `razorpay_mode` enum and validates its public-key pr
 
 Run the non-charging repository check with `python scripts/check-razorpay-live-readiness.py`. It validates the owner-attested legal publication and the other repository prerequisites. An authorized operator may additionally validate the current environment with `python scripts/check-razorpay-live-readiness.py --validate-environment`; the command prints check names only, never credential values.
 
-For this package change the legal portion is expected to block: the approved Terms package description, Pricing **Gross top-up price** section, and owner attestation still describe ₹10/₹50/₹100/₹500. Do not deploy the API or static-site pricing change, enable checkout, or proceed to Live cutover until exact owner/counsel-approved replacement text and a matching approval record make `python scripts/check-legal-publication.py` pass. Do not infer approval from the code change.
+For this package change the legal portion is expected to block: the approved Terms, Pricing, digital-delivery, AI-usage, privacy and refund text describes a single product called Token Credits and does not explain separate Chat and Voice balances, bucket-specific consumption, or same-bucket refund reversal. The approved Terms package description, Pricing **Gross top-up price** section, and owner attestation also still describe ₹10/₹50/₹100/₹500. Those owner/counsel-controlled policy bodies were intentionally not edited here. Do not deploy the purchasable product change, enable checkout, or proceed to Live cutover until exact owner/counsel-approved replacement text and a matching approval record make `python scripts/check-legal-publication.py` pass. Do not infer approval from product copy or code.
 
 ### Two-phase Live cutover
 
@@ -335,10 +370,10 @@ It does not modify wallet or payment balances. Recordings, transcripts, and
 generated audio are not stored in the database or Key Value service.
 
 1. Back up PostgreSQL and note the currently deployed image and Alembic revision.
-2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `c5d8a2e9f4b1`.
+2. Run `cd backend && python -m alembic -c alembic.ini upgrade head` as the pre-deploy step; confirm head `e2b7c4d9a1f3`.
 3. Deploy the API first with `BILLING_CHECKOUT_ENABLED=false` and `SWICO_PRO_ENABLED=false`, smoke existing mobile endpoints and new web contracts, then deploy the static site. Never deploy the tier-aware static site before its API and migration.
 4. For an application rollback, first disable checkout, then deploy the previous API/static versions. Leave additive billing/chat/settings tables intact so ledger/payment and user-setting history is preserved.
-5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields; downgrading `a7c4e9d2f1b6` removes the billing-exemption reason; downgrading `c5d8a2e9f4b1` removes voice classification fields but preserves the pre-existing charge rows. In production, preserve additive tables and fix forward.
+5. Database downgrade of `6d4f2a9c8b71` destroys financial/chat tables and is not a normal rollback. Downgrading `8c1f4e7b2a90` removes user preferences and serialization rows; downgrading `9d2f6a1c4b7e` removes tier audit fields; downgrading `a7c4e9d2f1b6` removes the billing-exemption reason; downgrading `c5d8a2e9f4b1` removes voice classification fields but preserves the pre-existing charge rows. Revision `e2b7c4d9a1f3` permits downgrade only before any Voice payment, usage, ledger entry, or non-zero Voice wallet exists; it refuses a lossy downgrade after Voice financial activity. In production, preserve additive tables and fix forward.
 
 ## Disposable recovery drill
 

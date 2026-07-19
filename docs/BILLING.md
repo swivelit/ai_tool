@@ -36,6 +36,30 @@ An internal order is durable before the provider call. Checkout verification use
 
 Public config returns explicit `razorpay_mode`, `checkout_enabled`, `custom_topup_enabled`, configured bounds, and package token estimates. The preset collection is exactly 1,000 and 29,900 paise (₹10 and ₹299). Custom whole-rupee amounts are enabled only when `BILLING_ENFORCE_TOPUP_PACKAGES=false` and must remain within `BILLING_MIN_TOPUP_PAISE` and `BILLING_MAX_TOPUP_PAISE`. The backend is authoritative; the browser cannot widen these bounds or bypass package enforcement. `BILLING_CHECKOUT_ENABLED=false` blocks new orders only; existing token credits remain usable.
 
+## Chat and Voice credit buckets
+
+Wallets are keyed by `(user_id, credit_bucket)`, where the supported buckets
+are `chat` and `voice`. LLM generation reserves and debits Chat. New STT and
+TTS operations reserve and debit Voice only when
+`WEB_SEPARATE_VOICE_CREDITS_ENABLED=true`; the false default preserves the
+legacy shared-Chat behavior during rollout. A real-time turn can therefore
+have three independent, stable usage IDs: `realtime-stt:<session>:<turn>`,
+`realtime-chat:<session>:<turn>`, and `realtime-tts:<session>:<turn>`.
+
+Revision `e2b7c4d9a1f3` classifies every historical wallet, ledger entry,
+payment, and usage charge as Chat. It preserves all integer-micro balances
+exactly and does not reinterpret old speech charges. Voice starts at zero and
+is created lazily and idempotently. A top-up applies
+`BILLING_CREDIT_PERCENT=50` once, to the order's authoritative database bucket;
+webhooks, verification, reconciliation and refunds cannot change it. Partial
+refund proportional arithmetic uses `Decimal`/integer micros and reverses the
+same bucket. There is no transfer operation between buckets.
+
+The legacy single `wallet` response remains the Chat wallet for mobile and old
+web clients. New clients use `wallets: { chat, voice }`. Payment and ledger
+history include `credit_bucket`; missing historical client fields display as
+Chat.
+
 The authenticated non-charging `GET /api/web/billing/estimate?gross_amount_paise=<integer>` endpoint applies the same whole-rupee, minimum, maximum, and package-enforcement checks as order creation. It calculates credited micro-INR with `calculate_topup`, estimates against the authenticated user's selected Swico tier, and creates no Razorpay order, `PaymentOrder`, wallet/ledger entry, or `UsageCharge`. It is rate limited and does not require checkout or Razorpay readiness.
 
 Required production values are:

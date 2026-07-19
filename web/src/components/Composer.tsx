@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import type { User } from 'firebase/auth'
-import { ArrowUp, FileText, Mic, Paperclip, Square, X } from 'lucide-react'
-import type { ComposerAttachment, Wallet } from '../types'
+import { ArrowUp, AudioLines, FileText, Mic, Plus, Square, Upload, X } from 'lucide-react'
+import type { AssistantSettings, ComposerAttachment, SwicoTier, Wallet } from '../types'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
+import { SwicoTierSelector } from './SwicoTierSelector'
+
+const DEFAULT_ASSISTANT: AssistantSettings = {
+  tier: 'lite', tier_label: 'Swico Lite', tier_description: '', tier_selection_enabled: false,
+  tiers: [{ id: 'lite', label: 'Swico Lite', description: '', available: true, selected: true }],
+}
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -33,6 +39,12 @@ export function Composer({
   attachments = [],
   attachmentsEnabled = false,
   voiceEnabled = false,
+  realtimeVoiceEnabled = false,
+  assistant = DEFAULT_ASSISTANT,
+  tierDisabled = false,
+  tierSaving = false,
+  onTierSelect = async () => undefined,
+  onRealtimeVoice = () => undefined,
   voiceResetKey = '',
   onVoiceDraft = () => undefined,
   onVoiceCancel = () => undefined,
@@ -46,6 +58,9 @@ export function Composer({
   value: string; setValue: (value: string) => void; send: () => void; stop: () => void;
   streaming: boolean; disabled?: boolean; focusKey?: string;
   attachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
+  realtimeVoiceEnabled?: boolean; assistant?: AssistantSettings;
+  tierDisabled?: boolean; tierSaving?: boolean;
+  onTierSelect?: (tier: SwicoTier) => Promise<void>; onRealtimeVoice?: () => void;
   voiceResetKey?: string;
   onVoiceDraft?: (voiceTurnId: string) => void; onVoiceCancel?: () => void;
   onComposerClear?: () => void;
@@ -55,10 +70,13 @@ export function Composer({
 }) {
   const ref = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const plusRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const valueRef = useRef(value)
   const composing = useRef(false)
   const [dragging, setDragging] = useState(false)
   const [now, setNow] = useState(Date.now())
+  const [menuOpen, setMenuOpen] = useState(false)
   useEffect(() => { valueRef.current = value }, [value])
   useEffect(() => {
     if (!attachments.some(item => item.status === 'ready')) return
@@ -82,7 +100,8 @@ export function Composer({
   const audioBusy = ['requesting', 'recording', 'stopping', 'transcribing'].includes(recorder.state.status)
   const uploadBusy = attachments.some(item => item.status === 'uploading')
   const readyAttachments = attachments.filter(item => item.status === 'ready')
-  const canSend = !disabled && !streaming && !uploadBusy && !audioBusy && (!!value.trim() || readyAttachments.length > 0)
+  const hasSendableContent = !!value.trim() || readyAttachments.length > 0
+  const canSend = !disabled && !streaming && !uploadBusy && !audioBusy && hasSendableContent
 
   const resize = () => {
     const element = ref.current
@@ -92,6 +111,31 @@ export function Composer({
   }
   useEffect(resize, [value])
   useEffect(() => { ref.current?.focus({ preventScroll: true }) }, [focusKey])
+  useEffect(() => {
+    if (!menuOpen) return
+    const outside = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node) && !plusRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    const keyboard = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault(); setMenuOpen(false); plusRef.current?.focus(); return
+      }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+      const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])]
+      if (!items.length) return
+      event.preventDefault()
+      const current = items.indexOf(document.activeElement as HTMLButtonElement)
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+        : (current + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length
+      items[next]?.focus()
+    }
+    document.addEventListener('pointerdown', outside)
+    window.addEventListener('keydown', keyboard, true)
+    window.setTimeout(() => menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus(), 0)
+    return () => { document.removeEventListener('pointerdown', outside); window.removeEventListener('keydown', keyboard, true) }
+  }, [menuOpen])
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !composing.current && !event.nativeEvent.isComposing) {
       event.preventDefault()
@@ -139,21 +183,28 @@ export function Composer({
       {recorder.state.status === 'transcribing' && <div className="recording-row" role="status"><span className="spinner" />Transcribing…</div>}
       {recorder.state.error && <div className="composer-error" role="alert"><span>{recorder.state.error}</span><button type="button" onClick={recorder.resetError}>Dismiss</button></div>}
       <div className="composer" data-testid="composer">
-        <div className="composer-tools">
-          {attachmentsEnabled && <><input ref={fileRef} className="hidden-file-input" type="file" multiple accept={supportedExtensions.join(',')}
+        <div className="composer-plus-wrap">
+          <input ref={fileRef} className="hidden-file-input" type="file" multiple aria-label="Upload files" accept={supportedExtensions.join(',')}
             onChange={event => chooseFiles(event.target.files)} />
-            <button className="composer-tool" type="button" aria-label="Attach documents" title="Attach documents" disabled={disabled || streaming || audioBusy} onClick={() => fileRef.current?.click()}><Paperclip size={19} /></button></>}
-          {voiceEnabled && recorder.state.status !== 'recording' && recorder.state.status !== 'stopping' && <button className="composer-tool" type="button" aria-label="Start voice dictation" title="Start voice dictation" disabled={disabled || streaming || uploadBusy || recorder.state.status === 'transcribing'} onClick={() => void recorder.start()}><Mic size={19} /></button>}
+          <button ref={plusRef} className="composer-tool composer-plus" type="button" aria-label="Add to prompt" title="Add to prompt"
+            aria-haspopup="menu" aria-expanded={menuOpen} disabled={disabled || streaming || audioBusy || !attachmentsEnabled}
+            onClick={() => setMenuOpen(value => !value)}><Plus size={20} /></button>
+          {menuOpen && <div ref={menuRef} className="composer-add-menu" role="menu" aria-label="Add to prompt options">
+            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); fileRef.current?.click(); window.setTimeout(() => plusRef.current?.focus(), 0) }}><Upload size={18} /><span><strong>Upload files</strong><small>Add documents from this device</small></span></button>
+          </div>}
         </div>
         <textarea ref={ref} aria-label="Message Swico" value={value} disabled={disabled}
           onChange={event => { setValue(event.target.value); if (!event.target.value) onComposerClear() }} onKeyDown={keyDown}
           onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
           placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} maxLength={16000} />
+        <SwicoTierSelector assistant={assistant} disabled={tierDisabled || streaming} saving={tierSaving} onSelect={onTierSelect} context="composer" />
+        {voiceEnabled && recorder.state.status !== 'recording' && recorder.state.status !== 'stopping' && <button className="composer-tool" type="button" aria-label="Start voice dictation" title="Start voice dictation" disabled={disabled || streaming || uploadBusy || recorder.state.status === 'transcribing'} onClick={() => void recorder.start()}><Mic size={19} /></button>}
         {streaming
           ? <button className="send stop" type="button" aria-label="Stop generation" title="Stop generation" onClick={stop}><Square size={15} fill="currentColor" /></button>
-          : <button className="send" type="button" aria-label="Send message" title="Send message" disabled={!canSend} onClick={send}><ArrowUp size={20} /></button>}
+          : hasSendableContent ? <button className="send" type="button" aria-label="Send message" title="Send message" disabled={!canSend} onClick={send}><ArrowUp size={20} /></button>
+            : <button className="voice-mode-button" type="button" aria-label="Start real-time Voice Mode" title="Start real-time Voice Mode" disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
       </div>
-      {dragging && <div className="drop-overlay" aria-hidden="true"><Paperclip size={20} /> Drop documents to attach</div>}
+      {dragging && <div className="drop-overlay" aria-hidden="true"><Upload size={20} /> Drop documents to attach</div>}
     </div>
     <span className="sr-status" aria-live="polite">{statusText}</span>
     <p>Swico can make mistakes. Check important information.</p>

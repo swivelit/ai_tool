@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import tempfile
 import threading
 import time
@@ -14,7 +15,7 @@ from decimal import Decimal, ROUND_CEILING
 from uuid import UUID, uuid4
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import delete as sa_delete, text, update as sa_update
@@ -27,13 +28,13 @@ from ..billing.errors import (
     UsageLimitReachedError,
 )
 from ..billing.pricing import (
-    calculate_topup, credit_percent, snapshot_json, stt_price, tts_price,
+    calculate_topup, credit_percent, env_decimal, snapshot_json, stt_price, tts_price,
 )
 from ..billing.razorpay_client import RazorpayClient, verify_checkout_signature, verify_webhook_signature
 from ..billing.schemas import CreateOrderRequest, TopupEstimateResponse, VerifyPaymentRequest
 from ..billing.service import (
     create_billing_exempt_usage, create_usage_reservation, credit_payment_once,
-    enforce_rate_limit, get_wallet_summary, list_wallet_ledger,
+    enforce_rate_limit, expand_usage_reservation, get_wallet_summary, get_wallet_summaries, list_wallet_ledger,
     release_billing_exempt_usage, release_usage_reservation, reverse_credit_for_refund,
     settle_billing_exempt_usage, settle_usage_reservation,
 )
@@ -50,6 +51,7 @@ from ..ai.providers.sarvam_provider import (
     normalize_sarvam_tts_language_code, normalize_stt_upload_mime_type,
     resolve_sarvam_tts_voice,
 )
+from ..ai.providers.sarvam_streaming_provider import SarvamStreamingProvider
 from ..ai.types import AIProviderResponse
 from ..ai.usage import record_ai_usage_event
 from ..audio_transcription import transcribe_audio_file
@@ -85,11 +87,25 @@ from .upload_store import (
     EphemeralUpload, UploadStoreUnavailable, expiration_iso, get_upload_store,
     upload_ttl_seconds, utc_iso,
 )
+from .voice_sessions import VoiceSessionConflict, VoiceTicket, VoiceTicketStore
 
 router = APIRouter(prefix="/api/web", tags=["web"])
 logger = logging.getLogger(__name__)
 _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
 _active_generations_lock = threading.Lock()
+_voice_ticket_store: VoiceTicketStore | None = None
+
+
+def _tickets() -> VoiceTicketStore:
+    global _voice_ticket_store
+    if _voice_ticket_store is None:
+        _voice_ticket_store = VoiceTicketStore()
+    return _voice_ticket_store
+
+
+def reset_voice_ticket_store_for_tests() -> None:
+    global _voice_ticket_store
+    _voice_ticket_store = None
 
 
 def _env_enabled(name: str, default: bool = False) -> bool:
@@ -165,6 +181,27 @@ def _razorpay_mode() -> str:
     return mode
 
 
+def _voice_credit_estimate(credited_micros: int) -> dict[str, Any]:
+    credit_inr = Decimal(max(0, int(credited_micros))) / Decimal("1000000")
+    markup = env_decimal("USAGE_MARKUP_MULTIPLIER", "1.0")
+    stt_rate = env_decimal("SARVAM_PRICE_STT_INR_PER_HOUR", "30") * markup
+    tts_model = normalize_sarvam_tts_model(os.getenv("SARVAM_TTS_MODEL"), premium=False)
+    tts_rate = env_decimal(
+        "SARVAM_PRICE_TTS_V3_INR_PER_10K_CHARS" if "v3" in tts_model.lower()
+        else "SARVAM_PRICE_TTS_V2_INR_PER_10K_CHARS",
+        "30" if "v3" in tts_model.lower() else "15",
+    ) * markup
+    stt_seconds = int(credit_inr * Decimal("3600") / stt_rate) if stt_rate > 0 else 0
+    tts_characters = int(credit_inr * Decimal("10000") / tts_rate) if tts_rate > 0 else 0
+    return {
+        "pricing_version": os.getenv("SARVAM_PRICING_AS_OF", "configured-current"),
+        "estimated_stt_seconds": stt_seconds,
+        "estimated_stt_minutes": str((Decimal(stt_seconds) / Decimal("60")).quantize(Decimal("0.01"))),
+        "estimated_tts_characters": tts_characters,
+        "assumption": "STT-only or TTS-only at configured Sarvam rates; not guaranteed conversation time.",
+    }
+
+
 def public_billing_config(swico_tier: str = "lite") -> dict[str, Any]:
     mode = _razorpay_mode()
     minimum, maximum = topup_bounds()
@@ -176,6 +213,7 @@ def public_billing_config(swico_tier: str = "lite") -> dict[str, Any]:
             "credited_amount_micros": credit_micros,
             "platform_share_paise": platform_paise,
             "token_estimate": token_estimate(credit_micros, tier=swico_tier),
+            "voice_estimate": _voice_credit_estimate(credit_micros),
         })
     return {
         "currency": "INR", "credit_percent": str(credit_percent()),
@@ -204,8 +242,10 @@ def _serialize_message(
     except (TypeError, ValueError):
         metadata = {}
     input_mode = metadata.get("input_mode") if isinstance(metadata, dict) else None
-    input_mode = input_mode if input_mode in {"text", "voice"} else "text"
-    voice_turn_id = metadata.get("voice_turn_id") if input_mode == "voice" else None
+    input_mode = input_mode if input_mode in {"text", "voice", "dictation", "realtime_voice"} else "text"
+    if input_mode == "voice":
+        input_mode = "dictation"
+    voice_turn_id = metadata.get("voice_turn_id") if input_mode != "text" else None
     reply_language = metadata.get("reply_language") if isinstance(metadata, dict) else None
     reply_language = reply_language if reply_language in {"en", "ta"} else None
     raw_attachments = metadata.get("attachments") if isinstance(metadata, dict) else []
@@ -298,10 +338,12 @@ def bootstrap(
     uploads = _uploads_public_config()
     return {
         "user": {"id": user.id, "name": user.name, "email": user.email, "reply_language": user.reply_language},
-        "wallet": get_wallet_summary(
-            session, int(user.id), swico_tier=swico_tier,
-            billing_exempt=billing_exempt,
-        ),
+        # `wallet` is the legacy Chat wallet and remains for mobile/web
+        # compatibility. New clients should use `wallets`.
+        "wallet": get_wallet_summary(session, int(user.id), swico_tier=swico_tier,
+                                     billing_exempt=billing_exempt, credit_bucket="chat"),
+        "wallets": get_wallet_summaries(session, int(user.id), swico_tier=swico_tier,
+                                         billing_exempt=billing_exempt),
         "billing": public_billing_config(swico_tier),
         "assistant": public_tier_settings(swico_tier),
         "features": {
@@ -311,9 +353,552 @@ def bootstrap(
             "web_voice_recording": _env_enabled("WEB_VOICE_RECORDING_ENABLED"),
             "web_voice_reply": _env_enabled("WEB_VOICE_REPLY_ENABLED"),
             "web_voice_billing": _env_enabled("WEB_VOICE_BILLING_ENABLED"),
+            "web_realtime_voice": _env_enabled("WEB_REALTIME_VOICE_ENABLED"),
+            "separate_voice_credits": _env_enabled("WEB_SEPARATE_VOICE_CREDITS_ENABLED"),
         },
         "uploads": uploads,
     }
+
+
+@router.post("/voice/sessions", status_code=201)
+def create_voice_session(
+    request: Request, response: Response,
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    response.headers["Cache-Control"] = "no-store"
+    user = get_owned_user(session, auth)
+    if not _env_enabled("WEB_REALTIME_VOICE_ENABLED"):
+        return _temporary_error(503, "realtime_voice_disabled", "Real-time Voice Mode is unavailable.")
+    if not _env_enabled("WEB_SEPARATE_VOICE_CREDITS_ENABLED"):
+        return _temporary_error(503, "voice_wallets_disabled", "Separate Voice credits are unavailable.")
+    _rate_limit(
+        session, user_id=int(user.id), action="voice_session_start",
+        limit=int(os.getenv("WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE", "5")),
+    )
+    tier = selected_swico_tier(session, int(user.id))
+    language = _resolved_reply_language(user)
+    billing_exempt = is_internal_test_user(auth, user)
+    wallets = get_wallet_summaries(
+        session, int(user.id), swico_tier=tier, billing_exempt=billing_exempt,
+    )
+    session.commit()
+    ttl = int(os.getenv("WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS", "60"))
+    max_session = int(os.getenv("WEB_REALTIME_VOICE_MAX_SESSION_SECONDS", "900"))
+    session_id = str(uuid4())
+    expires_epoch = int(time.time()) + ttl
+    metadata = VoiceTicket(
+        session_id=session_id, user_id=int(user.id), tier=tier, language=language,
+        billing_exempt=billing_exempt, expires_at_epoch=expires_epoch,
+    )
+    try:
+        ticket = _tickets().mint(metadata, ttl, max_session)
+    except VoiceSessionConflict as exc:
+        raise HTTPException(409, {"code": "voice_session_active", "message": str(exc)}) from exc
+    base = str(request.base_url).rstrip("/")
+    websocket_url = ("wss://" + base[8:] if base.startswith("https://")
+                     else "ws://" + base[7:] if base.startswith("http://") else base)
+    return {
+        "protocol_version": 1,
+        "session_id": session_id,
+        "ticket": ticket,
+        "websocket_url": f"{websocket_url}/api/web/voice/ws",
+        "expires_at_epoch": expires_epoch,
+        "tier": tier,
+        "tier_label": SWICO_TIER_LABELS[tier],
+        "language": language,
+        "wallet": wallets["chat"],
+        "wallets": wallets,
+    }
+
+
+def _allowed_websocket_origin(origin: str | None) -> bool:
+    configured = {
+        value.strip() for value in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if value.strip()
+    }
+    return bool(origin and origin in configured)
+
+
+async def _voice_send(websocket: WebSocket, message_type: str, **data: Any) -> None:
+    await websocket.send_json({"protocol_version": 1, "type": message_type, **data})
+
+
+def _voice_tts_chunks(buffer: str, *, final: bool = False) -> tuple[list[str], str]:
+    """Return bounded, speakable chunks without waiting for the full answer."""
+    chunks: list[str] = []
+
+    def append_bounded(value: str) -> None:
+        remaining = value.strip()
+        while len(remaining) > 240:
+            boundary = remaining.rfind(" ", 0, 241)
+            boundary = boundary if boundary > 0 else 240
+            chunks.append(remaining[:boundary].strip())
+            remaining = remaining[boundary:].strip()
+        if remaining:
+            chunks.append(remaining)
+
+    while buffer:
+        sentence = re.search(r"[.!?।](?:\s+|$)", buffer)
+        if sentence:
+            append_bounded(buffer[:sentence.end()])
+            buffer = buffer[sentence.end():].lstrip()
+            continue
+        # Do not hold an unusually long unpunctuated answer indefinitely.
+        if len(buffer) > 480:
+            boundary = buffer.rfind(" ", 0, 241)
+            boundary = boundary if boundary > 0 else 240
+            append_bounded(buffer[:boundary])
+            buffer = buffer[boundary:].lstrip()
+            continue
+        break
+    if final and buffer.strip():
+        append_bounded(buffer)
+        buffer = ""
+    return chunks, buffer
+
+
+@router.websocket("/voice/ws")
+async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., min_length=20, max_length=160)):
+    # Ticket values are never included in application logs. They are consumed
+    # before the socket is accepted and cannot be replayed.
+    if not _allowed_websocket_origin(websocket.headers.get("origin")):
+        await websocket.close(code=4403, reason="Origin not allowed")
+        return
+    metadata = await asyncio.to_thread(_tickets().consume, ticket)
+    if metadata is None:
+        await websocket.close(code=4401, reason="Invalid or expired ticket")
+        return
+    await websocket.accept()
+    provider = SarvamStreamingProvider()
+    idle_timeout = int(os.getenv("WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS", "60"))
+    max_session = int(os.getenv("WEB_REALTIME_VOICE_MAX_SESSION_SECONDS", "900"))
+    started_at = time.monotonic()
+    turn_number = 1
+    current_thread_id: str | None = None
+    received_audio_bytes = 0
+    last_audio_sequence = 0
+    stt_reserved_milliseconds = 0
+    stt_reserved_micros = 0
+    current_stt_request: str | None = None
+    stt_task: asyncio.Task | None = None
+    process_task: asyncio.Task | None = None
+    generation_cancellation: GenerationCancellation | None = None
+    processing_lock = asyncio.Lock()
+
+    async def wallets_message() -> None:
+        with SessionLocal() as billing_session:
+            summaries = get_wallet_summaries(
+                billing_session, metadata.user_id, swico_tier=metadata.tier,
+                billing_exempt=metadata.billing_exempt,
+            )
+        await _voice_send(websocket, "wallet.updated", wallets=summaries)
+
+    async def begin_listening() -> None:
+        nonlocal current_stt_request, received_audio_bytes, stt_reserved_milliseconds
+        nonlocal stt_reserved_micros, stt_task, last_audio_sequence
+        current_stt_request = f"realtime-stt:{metadata.session_id}:{turn_number}"
+        received_audio_bytes = 0
+        last_audio_sequence = 0
+        stt_reserved_milliseconds = 5_000
+        reserve = stt_price(stt_reserved_milliseconds)
+        stt_reserved_micros = reserve.micros
+        with SessionLocal() as billing_session:
+            try:
+                enforce_rate_limit(
+                    billing_session, user_id=metadata.user_id,
+                    action="realtime_voice_turn",
+                    limit=int(os.getenv("WEB_STT_RATE_LIMIT_PER_MINUTE", "10")),
+                )
+                if metadata.billing_exempt:
+                    create_billing_exempt_usage(
+                        billing_session, request_id=current_stt_request,
+                        user_id=metadata.user_id, thread_id=None, provider="sarvam",
+                        model=os.getenv("SARVAM_STT_MODEL", "saaras:v3"),
+                        pricing_snapshot_json=snapshot_json(reserve.snapshot), usage_kind="stt",
+                        credit_bucket="voice", voice_turn_id=metadata.session_id,
+                    )
+                else:
+                    create_usage_reservation(
+                        billing_session, request_id=current_stt_request,
+                        user_id=metadata.user_id, thread_id=None, provider="sarvam",
+                        model=os.getenv("SARVAM_STT_MODEL", "saaras:v3"), reserved_micros=reserve.micros,
+                        pricing_snapshot_json=snapshot_json(reserve.snapshot), usage_kind="stt",
+                        credit_bucket="voice", voice_turn_id=metadata.session_id,
+                    )
+                billing_session.commit()
+            except InsufficientCreditError as exc:
+                billing_session.rollback()
+                await _voice_send(websocket, "error", code="insufficient_voice_credit",
+                                  credit_bucket="voice", message="Add Voice credits to continue.",
+                                  available_micros=exc.available_micros)
+                raise
+            except RateLimitError:
+                billing_session.rollback()
+                current_stt_request = None
+                await _voice_send(
+                    websocket, "error", code="voice_rate_limit",
+                    message="Too many Voice Mode turns. Please wait a moment.",
+                )
+                return
+        if not provider.stt_connected:
+            await provider.connect_stt(metadata.language)
+        if stt_task is None or stt_task.done():
+            stt_task = asyncio.create_task(read_stt())
+        await _voice_send(websocket, "session.ready", state="listening", turn_number=turn_number)
+
+    async def synthesize_stream(text_queue: asyncio.Queue[str | None], request_id: str) -> None:
+        first_chunk = await text_queue.get()
+        if first_chunk is None:
+            return
+        tts_model = normalize_sarvam_tts_model(os.getenv("SARVAM_TTS_MODEL"), premium=False)
+        initial_price = tts_price(len(first_chunk), tts_model)
+        with SessionLocal() as billing_session:
+            try:
+                if metadata.billing_exempt:
+                    create_billing_exempt_usage(
+                        billing_session, request_id=request_id, user_id=metadata.user_id,
+                        thread_id=None, provider="sarvam", model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v2"),
+                        pricing_snapshot_json=snapshot_json(initial_price.snapshot), usage_kind="tts",
+                        credit_bucket="voice", voice_turn_id=metadata.session_id,
+                        characters=len(first_chunk),
+                    )
+                else:
+                    create_usage_reservation(
+                        billing_session, request_id=request_id, user_id=metadata.user_id,
+                        thread_id=None, provider="sarvam", model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v2"),
+                        reserved_micros=initial_price.micros,
+                        pricing_snapshot_json=snapshot_json(initial_price.snapshot),
+                        usage_kind="tts", credit_bucket="voice", voice_turn_id=metadata.session_id,
+                        characters=len(first_chunk),
+                    )
+                billing_session.commit()
+            except InsufficientCreditError:
+                billing_session.rollback()
+                await _voice_send(websocket, "warning", code="insufficient_voice_credit",
+                                  credit_bucket="voice",
+                                  message="Speech is unavailable; text generation will continue.")
+                return
+        submitted = 0
+        reserved_micros = initial_price.micros
+        audio_task: asyncio.Task | None = None
+
+        def settle_or_release() -> None:
+            with SessionLocal() as billing_session:
+                if submitted > 0:
+                    consumed = tts_price(submitted, tts_model)
+                    settle = (
+                        settle_billing_exempt_usage
+                        if metadata.billing_exempt else settle_usage_reservation
+                    )
+                    settle(
+                        billing_session, request_id=request_id,
+                        provider_cost_amount=consumed.amount,
+                        provider_cost_currency=consumed.currency,
+                        provider_cost_micros=consumed.micros,
+                        input_tokens=0, cached_input_tokens=0, output_tokens=0,
+                        usage_source="actual",
+                        pricing_snapshot_json=snapshot_json(consumed.snapshot),
+                        usage_kind="tts", characters=submitted,
+                    )
+                elif metadata.billing_exempt:
+                    release_billing_exempt_usage(billing_session, request_id)
+                else:
+                    release_usage_reservation(billing_session, request_id)
+                billing_session.commit()
+
+        async def send_audio() -> None:
+            sequence = 0
+            async for audio in provider.tts_audio():
+                sequence += 1
+                await websocket.send_bytes(sequence.to_bytes(4, "big") + audio)
+
+        try:
+            await provider.connect_tts(metadata.language)
+            await _voice_send(websocket, "audio.start", content_type="audio/mpeg")
+            audio_task = asyncio.create_task(send_audio())
+            chunk: str | None = first_chunk
+            exhausted = False
+            while chunk is not None:
+                next_characters = submitted + len(chunk)
+                next_price = tts_price(next_characters, tts_model)
+                additional = max(0, next_price.micros - reserved_micros)
+                if additional and not metadata.billing_exempt:
+                    try:
+                        with SessionLocal() as billing_session:
+                            expand_usage_reservation(
+                                billing_session, request_id=request_id,
+                                additional_micros=additional,
+                                expansion_id=f"characters-{next_characters}",
+                            )
+                            billing_session.commit()
+                        reserved_micros = next_price.micros
+                    except InsufficientCreditError:
+                        exhausted = True
+                        await _voice_send(
+                            websocket, "warning", code="insufficient_voice_credit",
+                            credit_bucket="voice",
+                            message="Speech stopped; the completed text answer is preserved.",
+                        )
+                        break
+                await provider.send_tts_text(chunk)
+                submitted += len(chunk)
+                chunk = await text_queue.get()
+            if exhausted:
+                await provider.close_tts()
+            else:
+                await provider.flush_tts()
+            if audio_task is not None:
+                await audio_task
+            await _voice_send(
+                websocket, "audio.end", characters=submitted, interrupted=exhausted,
+            )
+            settle_or_release()
+        except BaseException as exc:
+            await provider.close_tts()
+            if audio_task is not None and not audio_task.done():
+                audio_task.cancel()
+                await asyncio.gather(audio_task, return_exceptions=True)
+            settle_or_release()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            await _voice_send(websocket, "warning", code="tts_interrupted",
+                              message="Speech stopped; the completed text answer is preserved.")
+
+    async def process_final(transcript: str, audio_milliseconds: int) -> None:
+        nonlocal turn_number, current_stt_request, current_thread_id, generation_cancellation
+        async with processing_lock:
+            if not current_stt_request:
+                return
+            stt_request = current_stt_request
+            current_stt_request = None
+            actual_ms = (
+                int(audio_milliseconds)
+                if int(audio_milliseconds) > 0 else received_audio_bytes // 32
+            )
+            actual = stt_price(actual_ms)
+            with SessionLocal() as billing_session:
+                if metadata.billing_exempt:
+                    settle_billing_exempt_usage(
+                        billing_session, request_id=stt_request, provider_cost_amount=actual.amount,
+                        provider_cost_currency=actual.currency, provider_cost_micros=actual.micros,
+                        input_tokens=0, cached_input_tokens=0, output_tokens=0, usage_source="actual",
+                        pricing_snapshot_json=snapshot_json(actual.snapshot), usage_kind="stt",
+                        audio_milliseconds=actual_ms,
+                    )
+                else:
+                    settle_usage_reservation(
+                        billing_session, request_id=stt_request, provider_cost_amount=actual.amount,
+                        provider_cost_currency=actual.currency, provider_cost_micros=actual.micros,
+                        input_tokens=0, cached_input_tokens=0, output_tokens=0, usage_source="actual",
+                        pricing_snapshot_json=snapshot_json(actual.snapshot), usage_kind="stt",
+                        audio_milliseconds=actual_ms,
+                    )
+                billing_session.commit()
+            await _voice_send(websocket, "stt.final", transcript=transcript, turn_number=turn_number)
+            await _voice_send(websocket, "assistant.start", turn_number=turn_number)
+            chat_request = f"realtime-chat:{metadata.session_id}:{turn_number}"
+            text_queue: asyncio.Queue[str | None] = asyncio.Queue()
+            delta_queue: asyncio.Queue[str] = asyncio.Queue()
+            tts_task = asyncio.create_task(
+                synthesize_stream(
+                    text_queue, f"realtime-tts:{metadata.session_id}:{turn_number}",
+                )
+            )
+            completed = None
+            try:
+                prepared = await asyncio.to_thread(
+                    prepare_web_turn, user_id=metadata.user_id, message=transcript,
+                    request_id=chat_request, thread_id=current_thread_id, reply_language=metadata.language,
+                    billing_exempt=metadata.billing_exempt, input_mode="realtime_voice",
+                    voice_turn_id=metadata.session_id,
+                )
+                generation_cancellation = GenerationCancellation()
+                prepared.ai_request.metadata["cancellation_signal"] = generation_cancellation
+                loop = asyncio.get_running_loop()
+                active_turn = turn_number
+
+                def delta(value: str) -> None:
+                    loop.call_soon_threadsafe(delta_queue.put_nowait, value)
+
+                chat_task = asyncio.create_task(
+                    asyncio.to_thread(execute_web_turn, prepared, on_delta=delta)
+                )
+                pending_text = ""
+                saw_delta = False
+                while not chat_task.done() or not delta_queue.empty():
+                    try:
+                        value = await asyncio.wait_for(delta_queue.get(), timeout=0.05)
+                    except asyncio.TimeoutError:
+                        continue
+                    saw_delta = True
+                    pending_text += value
+                    await _voice_send(
+                        websocket, "assistant.delta", delta=value, turn_number=active_turn,
+                    )
+                    chunks, pending_text = _voice_tts_chunks(pending_text)
+                    for chunk in chunks:
+                        text_queue.put_nowait(chunk)
+                completed = await chat_task
+                if completed.message.status != "cancelled":
+                    if not saw_delta:
+                        pending_text = completed.message.content
+                        await _voice_send(
+                            websocket, "assistant.delta", delta=pending_text,
+                            turn_number=active_turn,
+                        )
+                    chunks, pending_text = _voice_tts_chunks(pending_text, final=True)
+                    for chunk in chunks:
+                        text_queue.put_nowait(chunk)
+            except InsufficientCreditError:
+                await _voice_send(websocket, "error", code="insufficient_chat_credit",
+                                  credit_bucket="chat", message="Add Chat credits to continue.")
+                return
+            finally:
+                generation_cancellation = None
+                text_queue.put_nowait(None)
+                await asyncio.gather(tts_task, return_exceptions=True)
+            if completed is None:
+                return
+            current_thread_id = completed.thread_id
+            await wallets_message()
+            await _voice_send(websocket, "turn.done", turn_number=turn_number,
+                              thread_id=completed.thread_id, message_id=completed.message.id)
+            turn_number += 1
+            await begin_listening()
+
+    async def read_stt() -> None:
+        nonlocal process_task
+        async def safe_process_final(event: dict[str, Any]) -> None:
+            try:
+                await process_final(
+                    event["transcript"], int(event.get("audio_milliseconds") or 0)
+                )
+            except Exception:
+                await _voice_send(
+                    websocket, "error", code="voice_turn_failed",
+                    message="This voice turn stopped safely. You can start another turn.",
+                )
+        async for event in provider.stt_events():
+            if event["type"] == "partial":
+                await _voice_send(websocket, "stt.partial", transcript=event["transcript"], turn_number=turn_number)
+            elif event["type"] == "speech_start":
+                await _voice_send(websocket, "warning", code="speech_started", message="Listening")
+            elif event["type"] == "final":
+                process_task = asyncio.create_task(safe_process_final(event))
+                return
+
+    try:
+        await _voice_send(websocket, "session.ready", state="connected", session_id=metadata.session_id,
+                          tier=metadata.tier, tier_label=SWICO_TIER_LABELS[metadata.tier], language=metadata.language)
+        while True:
+            remaining = max_session - (time.monotonic() - started_at)
+            if remaining <= 0:
+                await _voice_send(websocket, "session.closed", reason="maximum_duration")
+                break
+            try:
+                incoming = await asyncio.wait_for(websocket.receive(), timeout=min(idle_timeout, remaining))
+            except asyncio.TimeoutError:
+                reason = "maximum_duration" if time.monotonic() - started_at >= max_session else "idle_timeout"
+                await _voice_send(websocket, "session.closed", reason=reason)
+                break
+            if incoming.get("type") == "websocket.disconnect":
+                break
+            if incoming.get("bytes") is not None:
+                data = incoming["bytes"]
+                if len(data) < 5 or len(data) > 64 * 1024:
+                    await _voice_send(websocket, "error", code="invalid_audio_chunk", message="Audio chunk rejected.")
+                    continue
+                sequence = int.from_bytes(data[:4], "big")
+                if sequence <= last_audio_sequence:
+                    await _voice_send(websocket, "warning", code="duplicate_audio_chunk",
+                                      message="Duplicate audio chunk ignored.")
+                    continue
+                last_audio_sequence = sequence
+                received_audio_bytes += len(data) - 4
+                required_ms = max(1, (received_audio_bytes + 31) // 32)
+                if required_ms > stt_reserved_milliseconds and current_stt_request:
+                    next_reserved_ms = ((required_ms + 4_999) // 5_000) * 5_000
+                    next_price = stt_price(next_reserved_ms)
+                    additional = max(0, next_price.micros - stt_reserved_micros)
+                    if additional and not metadata.billing_exempt:
+                        try:
+                            with SessionLocal() as billing_session:
+                                expand_usage_reservation(
+                                    billing_session, request_id=current_stt_request,
+                                    additional_micros=additional,
+                                    expansion_id=f"audio-ms-{next_reserved_ms}",
+                                )
+                                billing_session.commit()
+                        except InsufficientCreditError:
+                            with SessionLocal() as billing_session:
+                                release_usage_reservation(
+                                    billing_session, current_stt_request,
+                                    reason="voice_credit_exhausted_during_stt",
+                                )
+                                billing_session.commit()
+                            current_stt_request = None
+                            await _voice_send(websocket, "error", code="insufficient_voice_credit",
+                                              credit_bucket="voice", message="Add Voice credits to continue.")
+                            continue
+                    stt_reserved_milliseconds = next_reserved_ms
+                    stt_reserved_micros = next_price.micros
+                await provider.send_audio(data[4:])
+                continue
+            payload = json.loads(incoming.get("text") or "{}")
+            if int(payload.get("protocol_version") or 0) != 1:
+                await _voice_send(websocket, "error", code="protocol_version", message="Unsupported protocol version.")
+                continue
+            event_type = payload.get("type")
+            if event_type == "session.start":
+                if current_stt_request is None:
+                    supplied_thread = payload.get("thread_id")
+                    current_thread_id = str(supplied_thread) if supplied_thread else None
+                    await begin_listening()
+            elif event_type == "turn.end":
+                # Provider VAD normally finalizes the turn; flush is a safe hint.
+                await provider.flush_stt()
+            elif event_type == "interrupt":
+                if generation_cancellation is not None:
+                    generation_cancellation.cancel()
+                await provider.close_tts()
+                await _voice_send(websocket, "warning", code="assistant_interrupted", message="Assistant interrupted.")
+            elif event_type == "ping":
+                await _voice_send(websocket, "pong")
+            elif event_type == "session.close":
+                await _voice_send(websocket, "session.closed", reason="client_closed")
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        # Deliberately avoid exception/context logging here: WebSocket scope,
+        # provider frames, or task state can contain the one-use ticket or
+        # private speech content. The client receives only a generic failure.
+        try:
+            await _voice_send(
+                websocket, "error", code="voice_session_failed",
+                message="Voice Mode stopped safely. Start a fresh session to try again.",
+            )
+        except Exception:
+            pass
+    finally:
+        if generation_cancellation is not None:
+            generation_cancellation.cancel()
+        if stt_task:
+            stt_task.cancel()
+        if process_task:
+            process_task.cancel()
+        await provider.close()
+        if current_stt_request:
+            with SessionLocal() as billing_session:
+                if metadata.billing_exempt:
+                    release_billing_exempt_usage(billing_session, current_stt_request, reason="voice_disconnect")
+                else:
+                    release_usage_reservation(billing_session, current_stt_request, reason="voice_disconnect")
+                billing_session.commit()
+        await asyncio.to_thread(_tickets().release, metadata)
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass
 
 
 def _profile_response(user) -> dict[str, Any]:
@@ -790,6 +1375,7 @@ async def transcribe_web_audio(
             "message": "Not enough Voice credits to transcribe this recording.",
             "available_micros": exc.available_micros,
             "estimated_required_micros": exc.estimated_required_micros,
+            "credit_bucket": "voice",
         }}, headers={"Cache-Control": "no-store"})
     except UsageLimitReachedError as exc:
         session.rollback()
@@ -830,7 +1416,7 @@ async def transcribe_web_audio(
             except OSError:
                 pass
 
-    wallet = get_wallet_summary(
+    wallets = get_wallet_summaries(
         session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id)),
         billing_exempt=billing_exempt,
     )
@@ -849,7 +1435,8 @@ async def transcribe_web_audio(
                 "charged_micros": int(charge.debited_micros),
                 "voice_credits": ai_credits(int(charge.debited_micros)),
             },
-            "wallet": wallet,
+            "wallet": wallets["chat"],
+            "wallets": wallets,
         }),
         headers={"Cache-Control": "no-store"},
     )
@@ -994,6 +1581,7 @@ async def synthesize_web_audio(
             "message": "Not enough Voice credits to play this reply.",
             "available_micros": exc.available_micros,
             "estimated_required_micros": exc.estimated_required_micros,
+            "credit_bucket": "voice",
         }}, headers={"Cache-Control": "no-store"})
     except UsageLimitReachedError as exc:
         session.rollback()
@@ -1027,7 +1615,7 @@ async def synthesize_web_audio(
             logger.exception("web_tts_failed", extra={"request_id": billing_request_id})
             return _temporary_error(500, "tts_failed", "This voice reply could not be generated.")
         raise
-    wallet = get_wallet_summary(
+    wallets = get_wallet_summaries(
         session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id)),
         billing_exempt=billing_exempt,
     )
@@ -1037,7 +1625,8 @@ async def synthesize_web_audio(
         "model": model, "character_count": len(text_content),
         "charged_micros": int(charge.debited_micros),
         "voice_credits": ai_credits(int(charge.debited_micros)),
-        "wallet": wallet,
+        "wallet": wallets["chat"],
+        "wallets": wallets,
     }), headers={"Cache-Control": "no-store"})
 
 
@@ -1069,7 +1658,8 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             "code": "insufficient_credit", "message": "Add AI credit to continue.",
             "available_micros": exc.available_micros,
             "estimated_required_micros": exc.estimated_required_micros,
-        }})
+            "credit_bucket": "chat",
+        }}, headers={"Cache-Control": "no-store"})
     except UsageLimitReachedError as exc:
         return JSONResponse(status_code=402, content={"error": {
             "code": "usage_limit_reached",
@@ -1078,7 +1668,8 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             "configured_limit_micros": exc.configured_limit_micros,
             "remaining_micros": exc.remaining_micros,
             "reset_at": exc.reset_at,
-        }})
+            "credit_bucket": "chat",
+        }}, headers={"Cache-Control": "no-store"})
     except LookupError:
         raise HTTPException(404, "Thread not found")
     except DuplicateRequestInProgress as exc:
@@ -1208,15 +1799,16 @@ async def cancel_chat_request(
 @router.get("/billing/wallet")
 def wallet(session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user)):
     user = get_owned_user(session, auth)
-    return get_wallet_summary(
-        session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id)),
-        billing_exempt=is_internal_test_user(auth, user),
-    )
+    tier = selected_swico_tier(session, int(user.id))
+    exempt = is_internal_test_user(auth, user)
+    wallets = get_wallet_summaries(session, int(user.id), swico_tier=tier, billing_exempt=exempt)
+    return {**wallets["chat"], "wallet": wallets["chat"], "wallets": wallets}
 
 
 @router.get("/billing/estimate", response_model=TopupEstimateResponse)
 def estimate_topup(
     gross_amount_paise: int = Query(..., gt=0),
+    credit_bucket: str = Query("chat", pattern="^(chat|voice)$"),
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
     user = get_owned_user(session, auth)
@@ -1237,13 +1829,15 @@ def estimate_topup(
     )
     return {
         "gross_amount_paise": amount,
+        "credit_bucket": credit_bucket,
         "token_estimate": {
             "tier": estimate["tier"],
             "tier_label": estimate["tier_label"],
             "estimated_blended_tokens": estimate["estimated_blended_tokens"],
             "range_min_tokens": estimate["range_min_tokens"],
             "range_max_tokens": estimate["range_max_tokens"],
-        },
+        } if credit_bucket == "chat" else None,
+        "voice_estimate": _voice_credit_estimate(credited_amount_micros) if credit_bucket == "voice" else None,
     }
 
 
@@ -1258,6 +1852,7 @@ def ledger(
         "id": row.id, "entry_type": row.entry_type, "amount_micros": row.amount_micros,
         "balance_after_micros": row.balance_after_micros, "reference_type": row.reference_type,
         "reference_id": row.reference_id, "created_at": row.created_at,
+        "credit_bucket": row.credit_bucket,
     } for row in rows]}
 
 
@@ -1283,17 +1878,19 @@ def payments(
     payment_received_statuses = {"captured", "credited", "partially_refunded", "refunded"}
     return {"items": [{
         "id": row.id, "gross_amount_paise": row.gross_amount_paise,
+        "credit_bucket": row.credit_bucket,
         "credited_amount_micros": row.credited_amount_micros,
         "platform_share_paise": row.platform_share_paise, "refunded_amount_paise": row.refunded_amount_paise,
         "credit_reversal_micros": (
             row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
             if row.gross_amount_paise else 0
         ),
-        "token_estimate": token_estimate(row.credited_amount_micros, tier=swico_tier),
+        "token_estimate": token_estimate(row.credited_amount_micros, tier=swico_tier) if row.credit_bucket == "chat" else None,
+        "voice_estimate": _voice_credit_estimate(row.credited_amount_micros) if row.credit_bucket == "voice" else None,
         "reversal_token_estimate": token_estimate(
             row.credited_amount_micros * row.refunded_amount_paise // row.gross_amount_paise
             if row.gross_amount_paise else 0, tier=swico_tier
-        ),
+        ) if row.credit_bucket == "chat" else None,
         "status": row.status,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -1307,6 +1904,7 @@ def payments(
 def _payment_status_response(row: PaymentOrder) -> dict[str, Any]:
     return {
         "internal_order_id": row.id,
+        "credit_bucket": row.credit_bucket,
         "gross_amount_paise": row.gross_amount_paise,
         "credited_amount_micros": row.credited_amount_micros,
         "platform_share_paise": row.platform_share_paise,
@@ -1345,7 +1943,7 @@ def create_order(payload: CreateOrderRequest, session: Session = Depends(get_ses
     if not _checkout_enabled():
         raise HTTPException(503, {
             "code": "checkout_disabled",
-            "message": "Adding token credits is temporarily unavailable. Existing token credits can still be used.",
+            "message": "Adding credits is temporarily unavailable. Existing credits can still be used.",
         })
     _razorpay_mode()
     _rate_limit(session, user_id=int(user.id), action="payment_order", limit=6)
@@ -1356,15 +1954,16 @@ def create_order(payload: CreateOrderRequest, session: Session = Depends(get_ses
     digest = hashlib.sha256(f"{user.id}:{payload.idempotency_key}".encode()).hexdigest()[:26]
     receipt = f"sw_{digest}"[:40]
     existing = session.exec(select(PaymentOrder).where(PaymentOrder.receipt == receipt, PaymentOrder.user_id == user.id)).first()
+    if existing and (existing.gross_amount_paise != gross_amount_paise or existing.credit_bucket != payload.credit_bucket):
+        raise HTTPException(409, "Idempotency key was already used for another amount or credit bucket.")
     if existing and existing.provider_order_id:
         return _order_checkout_response(existing)
     credit_micros, platform_paise = calculate_topup(gross_amount_paise)
     order = existing or PaymentOrder(
         user_id=int(user.id), receipt=receipt, gross_amount_paise=gross_amount_paise,
+        credit_bucket=payload.credit_bucket,
         credited_amount_micros=credit_micros, platform_share_paise=platform_paise,
     )
-    if existing and existing.gross_amount_paise != gross_amount_paise:
-        raise HTTPException(409, "Idempotency key was already used for another amount.")
     session.add(order)
     session.commit()  # The durable internal order exists before the external call.
     try:
@@ -1391,6 +1990,7 @@ def _order_checkout_response(order: PaymentOrder) -> dict[str, Any]:
         "amount": order.gross_amount_paise, "currency": "INR", "internal_order_id": order.id,
         "credited_amount_micros": order.credited_amount_micros,
         "platform_share_paise": order.platform_share_paise,
+        "credit_bucket": order.credit_bucket,
     }
 
 
@@ -1438,6 +2038,9 @@ def verify_payment(payload: VerifyPaymentRequest, session: Session = Depends(get
         "wallet": get_wallet_summary(
             session, int(user.id),
             swico_tier=selected_swico_tier(session, int(user.id)),
+        ),
+        "wallets": get_wallet_summaries(
+            session, int(user.id), swico_tier=selected_swico_tier(session, int(user.id)),
         ),
     }
 

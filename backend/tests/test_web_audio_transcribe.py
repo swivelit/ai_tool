@@ -13,12 +13,12 @@ from app.models import Item, PaymentOrder, UsageCharge, WebChatMessage
 from tests.conftest import auth_headers, create_test_user
 
 
-def _fund(user_id: int) -> None:
+def _fund(user_id: int, bucket: str = "chat") -> None:
     credit, platform = calculate_topup(1000)
     with SessionLocal() as session:
         order = PaymentOrder(
-            user_id=user_id, receipt=f"voice-fund-{user_id}",
-            provider_order_id=f"voice-order-{user_id}", gross_amount_paise=1000,
+            user_id=user_id, credit_bucket=bucket, receipt=f"voice-fund-{user_id}-{bucket}",
+            provider_order_id=f"voice-order-{user_id}-{bucket}", gross_amount_paise=1000,
             credited_amount_micros=credit, platform_share_paise=platform,
             status="captured",
         )
@@ -141,6 +141,31 @@ def test_stt_insufficient_credit_prevents_provider_call(client, monkeypatch):
     response = _post_audio(client)
     assert response.status_code == 402
     assert response.json()["error"]["code"] == "insufficient_voice_credit"
+
+
+def test_separate_voice_stt_never_uses_chat_and_returns_both_wallets(client, monkeypatch):
+    monkeypatch.setenv("WEB_SEPARATE_VOICE_CREDITS_ENABLED", "true")
+    user = create_test_user("separate-stt", "separate-stt@example.com")
+    _fund(int(user.id), "chat")
+    calls = 0
+    def transcribe(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return "editable"
+    monkeypatch.setattr("app.web_api.router.transcribe_audio_file", transcribe)
+    insufficient = _post_audio(client, uid="separate-stt")
+    assert insufficient.status_code == 402
+    assert insufficient.json()["error"]["credit_bucket"] == "voice"
+    assert calls == 0
+    _fund(int(user.id), "voice")
+    completed = _post_audio(client, uid="separate-stt")
+    assert completed.status_code == 200 and calls == 1
+    body = completed.json()
+    assert body["wallet"] == body["wallets"]["chat"]
+    assert body["wallets"]["chat"]["balance_micros"] == 5_000_000
+    assert body["wallets"]["voice"]["balance_micros"] < 5_000_000
+    with SessionLocal() as session:
+        assert session.exec(select(UsageCharge)).one().credit_bucket == "voice"
 
 
 def test_legacy_mobile_transcription_endpoint_still_runs_original_pipeline(client, monkeypatch):

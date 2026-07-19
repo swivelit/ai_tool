@@ -102,6 +102,31 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         errors.append("WEB_VOICE_REPLY_ENABLED requires WEB_VOICE_BILLING_ENABLED")
     if voice_billing is True and voice_recording is not True:
         errors.append("WEB_VOICE_BILLING_ENABLED requires WEB_VOICE_RECORDING_ENABLED")
+    realtime_voice = _bool(env, "WEB_REALTIME_VOICE_ENABLED", False)
+    separate_voice = _bool(env, "WEB_SEPARATE_VOICE_CREDITS_ENABLED", False)
+    if realtime_voice is None:
+        errors.append("WEB_REALTIME_VOICE_ENABLED must be a boolean")
+    if separate_voice is None:
+        errors.append("WEB_SEPARATE_VOICE_CREDITS_ENABLED must be a boolean")
+    if realtime_voice is True and separate_voice is not True:
+        errors.append("WEB_REALTIME_VOICE_ENABLED requires WEB_SEPARATE_VOICE_CREDITS_ENABLED")
+    if realtime_voice is True and voice_billing is not True:
+        errors.append("WEB_REALTIME_VOICE_ENABLED requires WEB_VOICE_BILLING_ENABLED")
+    if realtime_voice is True and not _value(env, "WEB_UPLOAD_CACHE_URL"):
+        errors.append("WEB_REALTIME_VOICE_ENABLED requires WEB_UPLOAD_CACHE_URL")
+    for name, default in (
+        ("WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS", "60"),
+        ("WEB_REALTIME_VOICE_MAX_SESSION_SECONDS", "900"),
+        ("WEB_REALTIME_VOICE_IDLE_TIMEOUT_SECONDS", "60"),
+        ("WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER", "1"),
+        ("WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE", "5"),
+    ):
+        configured = _integer(env, name, default)
+        if configured is None or configured <= 0:
+            errors.append(f"{name} must be a positive integer")
+    concurrency = _integer(env, "WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER", "1")
+    if concurrency is not None and concurrency != 1:
+        errors.append("WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER must be 1")
     for name, default in (
         ("WEB_TTS_MAX_CHARACTERS", "5000"),
         ("WEB_STT_RATE_LIMIT_PER_MINUTE", "10"),
