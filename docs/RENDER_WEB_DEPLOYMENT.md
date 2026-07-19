@@ -80,11 +80,13 @@ Exact environment delta for this release:
 
 The Web Turn Optimizer values below belong directly on the existing **ai_tool**
 API service. Do not add them to a shared environment group, the static site,
-`web/.env.example`, or any `VITE_*` variable. No Render resource or database
+`swico-web`, `web/.env.example`, any `VITE_*` variable, the PostgreSQL service,
+the Valkey service, or billing cron jobs. No Render resource or database
 migration is required:
 
 ```text
 WEB_TURN_OPTIMIZER_ENABLED=true
+WEB_SWICO_BRAND_GUARD_ENABLED=true
 WEB_CONTEXT_MAX_TURNS=2
 WEB_CONTEXT_MAX_CHARS=900
 WEB_PROFILE_PROMPT_MAX_CHARS=500
@@ -102,6 +104,9 @@ Keep prompt caching disabled for this pass: provider cache-write token billing
 is not part of wallet settlement yet, so enabling it could undercharge writes.
 Rollback is configuration-only: set `WEB_TURN_OPTIMIZER_ENABLED=false` and
 redeploy the API; this restores legacy web history/profile prompt behavior.
+The narrower Swico Brand Guard rollback is
+`WEB_SWICO_BRAND_GUARD_ENABLED=false`; it restores the previous provider path
+for public product questions while retaining the vendor-neutral public prompt.
 
 - Add API variable `BILLING_CHECKOUT_ENABLED=false` (backend-only, explicit in production).
 - Add these backend-only variables with the shown safe defaults:

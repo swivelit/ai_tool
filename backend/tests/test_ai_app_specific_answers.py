@@ -13,8 +13,8 @@ class _Response:
     usage = _Usage()
     output_text = (
         "For this mobile app: use a backend API gateway, then an AI router/orchestrator "
-        "that chooses Sarvam for Tamil/Tanglish/STT/TTS and OpenAI via a cheap model ladder "
-        "for English/reasoning. Add cache, memory/RAG, usage/cost logging, Firebase auth, "
+        "that chooses managed multilingual speech and language models and intelligently routes "
+        "English/reasoning requests. Add cache, memory/RAG, usage/cost logging, secure auth, "
         "rate limits, and safety checks."
     )
 
@@ -48,17 +48,19 @@ def test_architecture_answer_is_prompted_with_app_specific_context(monkeypatch):
 
     text = response.text
     assert "mobile app" in text
-    assert "Sarvam" in text
-    assert "OpenAI" in text
+    assert "managed multilingual speech and language models" in text
+    assert "intelligently routes" in text
     assert "AI router" in text or "orchestrator" in text
     assert "cache" in text
     assert "usage/cost logging" in text
-    assert "Firebase auth" in text
+    assert "secure auth" in text
     assert not text.startswith("Client Layer / API Gateway / Application Layer")
 
     call = client.responses.calls[0]
     instructions = call["instructions"]
     assert "backend-first AI control plane" in instructions
-    assert "Sarvam is used for Indic" in instructions
-    assert "OpenAI uses a cheap model ladder" in instructions
+    assert "managed large language and speech models" in instructions
+    assert "intelligent model routing" in instructions
+    assert "OpenAI" not in instructions
+    assert "Sarvam" not in instructions
     assert len(text) < 420

@@ -31,6 +31,7 @@ from .usage_service import selected_swico_tier
 from .turn_optimizer import (
     WebTurnOptimization, optimize_web_turn, optimizer_enabled, with_prompt_estimate,
 )
+from .swico_brand import swico_brand_response
 
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,33 @@ def _context(session: Session, thread_id: str, user_id: int, limit: int = 20) ->
             turns.append({"user": pending.content, "assistant": row.content})
             pending = None
     return turns[-6:]
+
+
+def _previous_assistant_safe_metadata(
+    session: Session, thread_id: str, user_id: int
+) -> dict[str, str]:
+    """Read only bounded Brand Guard metadata from the immediately prior answer."""
+    row = session.exec(
+        select(WebChatMessage).where(
+            WebChatMessage.thread_id == thread_id,
+            WebChatMessage.user_id == user_id,
+            WebChatMessage.role == "assistant",
+            WebChatMessage.status == "complete",
+        ).order_by(WebChatMessage.created_at.desc()).limit(1)
+    ).first()
+    if row is None:
+        return {}
+    try:
+        stored = json.loads(row.metadata_json or "{}")
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    return {
+        key: str(stored.get(key) or "")[:80]
+        for key in ("topic", "brand_subintent", "brand_profile_version")
+        if stored.get(key)
+    }
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -275,10 +303,15 @@ def prepare_web_turn(
         thread.updated_at = utc_now()
         session.add(thread)
 
+        previous_safe_metadata = _previous_assistant_safe_metadata(
+            session, thread.id, user_id
+        )
+
         enabled = optimizer_enabled()
         preliminary = optimize_web_turn(
             model_message, reply_language=reply_language,
             has_attachments=bool(uploads),
+            previous_topic=previous_safe_metadata.get("topic"),
         )
         base_metadata = {
             "client_surface": "web", "billing_required": True, "cloud_only": True,
@@ -293,18 +326,36 @@ def prepare_web_turn(
 
         # Existing local routes remain ahead of profile/history/cache/provider
         # work and therefore cannot create a reservation.
-        if enabled and preliminary.local_intent:
+        if preliminary.local_intent == "swico_brand" or (enabled and preliminary.local_intent):
+            brand_metadata = (
+                {
+                    "topic": preliminary.brand_topic,
+                    "brand_topic": preliminary.brand_topic,
+                    "brand_subintent": preliminary.brand_subintent,
+                    "brand_profile_version": preliminary.brand_profile_version,
+                }
+                if preliminary.local_intent == "swico_brand" else {}
+            )
             ai_request = AIRequest(
                 user_id=user_id, message=model_message, reply_language=reply_language,
-                channel="text", request_id=request_id, metadata=base_metadata,
+                channel="text", request_id=request_id,
+                metadata={**base_metadata, **brand_metadata},
             )
-            route = AIProviderRouter().select_route(ai_request)
-            if route.provider in {"openai", "sarvam"}:
+            if preliminary.local_intent == "swico_brand":
                 route = AIRoute(
-                    "backend_tool", None, "unsupported_web_capability",
-                    "web_capability_not_available", route.language,
-                    preliminary.local_intent, 0,
+                    "backend_tool", None, "deterministic_swico_brand",
+                    "approved_swico_public_profile",
+                    str(reply_language or "en"), "swico_brand", 0,
+                    metadata=brand_metadata,
                 )
+            else:
+                route = AIProviderRouter().select_route(ai_request)
+                if route.provider in {"openai", "sarvam"}:
+                    route = AIRoute(
+                        "backend_tool", None, "unsupported_web_capability",
+                        "web_capability_not_available", route.language,
+                        preliminary.local_intent, 0,
+                    )
             session.commit()
             return PreparedWebTurn(
                 request_id, user_id, thread.id, ai_request, route, 0,
@@ -352,6 +403,7 @@ def prepare_web_turn(
                 context_turns=all_context, profile_context=profile_context,
                 attachment_prompt_context=attachment_context,
                 has_attachments=bool(uploads),
+                previous_topic=previous_safe_metadata.get("topic"),
             )
             context_turns = optimization.selected_context_turns
             profile_prompt = optimization.compact_profile_prompt
@@ -473,7 +525,13 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
     tamil = str(
         request.reply_language or route.metadata.get("reply_language") or route.language
     ).strip().lower() in {"ta", "tamil", "mixed", "tanglish"}
-    if route.provider == "blocked":
+    if route.intent == "swico_brand":
+        text = swico_brand_response(
+            str(route.metadata.get("brand_subintent") or "general"),
+            reply_language=request.reply_language or route.language,
+            message=request.message,
+        )
+    elif route.provider == "blocked":
         text = "I can’t help with that request, but I can help with a safer alternative."
     elif route.intent == "greeting":
         text = "வணக்கம்! இன்று நான் எப்படி உதவலாம்?" if tamil else "Hi! How can I help you today?"
@@ -488,7 +546,9 @@ def _deterministic_response(request: AIRequest, route: AIRoute) -> AIProviderRes
     else:
         text = "அந்த வசதி இன்னும் இணையத்தில் கிடைக்கவில்லை." if tamil else "That capability is not available on the web yet."
     return AIProviderResponse(
-        text=text, provider="blocked", model=None, route=route.route, reason=route.reason,
+        text=text,
+        provider="backend_tool" if route.intent == "swico_brand" else "blocked",
+        model=None, route=route.route, reason=route.reason,
         language=route.language, intent=route.intent, characters=len(text),
         raw={
             "deterministic": True, "zero_charge": True,

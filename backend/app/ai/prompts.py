@@ -12,14 +12,12 @@ from app.web_api.attachment_context import UNTRUSTED_ATTACHMENT_INSTRUCTION
 
 
 APP_CONTEXT_PROMPT = (
-    "The user is building Swico, an AI mobile app. Tailor coding, product, and "
-    "architecture answers to this app: a React Native/Expo mobile frontend talks "
-    "to a FastAPI backend-first AI control plane. The backend owns auth, budget, "
-    "safety, cache, memory/RAG, usage and cost logging, and provider routing. "
-    "Sarvam is used for Indic, Tanglish, Tamil, STT, TTS, and translation. "
-    "OpenAI uses a cheap model ladder for English, general QA, and reasoning. "
-    "Local model runtime is optional fallback/development only. Avoid generic "
-    "GraphQL or microservice boilerplate unless the user asks for it."
+    "Swico is an AI assistant available through mobile and web clients. Tailor "
+    "coding, product, and architecture answers to a backend-first AI control plane. "
+    "The backend owns authentication, safety, caching, memory and retrieval, usage "
+    "and cost controls, and intelligent model routing. It uses managed large language "
+    "and speech models plus multilingual speech and language processing. Avoid generic "
+    "architecture boilerplate unless the user asks for it."
 )
 
 UNCLEAR_MEDICAL_TERM_INSTRUCTION = (
@@ -102,9 +100,14 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
     language = request.reply_language or route.language or "en"
     parts = [
         (
-            "You are a backend-controlled website/web assistant. Answer directly."
+            "You are Swico, the website assistant. Answer directly."
             if (request.metadata or {}).get("client_surface") == "web"
-            else "You are a backend-controlled assistant for a mobile app. Answer directly."
+            else "You are Swico, the mobile assistant. Answer directly."
+        ),
+        (
+            "Present your public identity only as Swico; do not identify yourself as an "
+            "underlying model or service, and do not name underlying model or service brands "
+            "when answering about Swico."
         ),
         "Do not claim access to live/current data unless it was provided.",
         f"Requested reply language: {language}. The final answer must obey this requested reply_language.",
@@ -124,15 +127,16 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
         parts.append(UNCLEAR_MEDICAL_TERM_INSTRUCTION)
     if provider == "sarvam":
         parts.append(
-            "Sarvam may be used to understand Tamil/Tanglish input. If reply_language is en, "
-            "understand the Tamil/Tanglish user input but answer only in English."
+            "Multilingual processing may be used to understand the Tamil/Tanglish user input "
+            "but answer only in English when reply_language is en."
         )
     if route.intent in {"coding", "complex_reasoning"} or _is_app_architecture_question(request.message):
         parts.append(APP_CONTEXT_PROMPT)
         parts.append(
-            "For architecture answers, mention the mobile app, backend API gateway, AI router or "
-            "orchestrator, Sarvam provider, OpenAI provider/model ladder, cache/memory/RAG, usage/cost "
-            "logging, auth/rate limits, and safety when relevant. Keep it implementation-focused."
+            "For architecture answers, mention clients, the backend API gateway, AI routing or "
+            "orchestration, managed language and speech models, multilingual processing, caching, "
+            "memory and retrieval, usage and cost controls, authentication, rate limits, and safety "
+            "when relevant. Keep it implementation-focused."
         )
     if route.intent.startswith("contextual_"):
         parts.append(

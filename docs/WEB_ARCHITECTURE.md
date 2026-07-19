@@ -24,6 +24,22 @@ with zero provider calls and no reservation. Cache lookup uses the existing
 privacy/live-data eligibility rules and deterministic token-hash lookup; it
 does not add an embedding call.
 
+The same optimizer contains a deterministic Swico Brand Guard. Explicit public
+product and identity questions, plus a bounded follow-up based only on the
+immediately previous completed assistant message's safe `topic=swico` metadata,
+are answered from the canonical structured profile in
+`backend/app/web_api/swico_brand.py`. The route runs before approved-cache lookup,
+profile/history selection, wallet reservation, and provider I/O. It makes no
+provider call, creates no usage reservation, is never written to the global
+provider-answer cache, and preserves the normal persistence and SSE contract for
+both website text and realtime voice turns. Set
+`WEB_SWICO_BRAND_GUARD_ENABLED=false` to roll back only this route; it defaults to
+true.
+
+`WEB_SWICO_BRAND_GUARD_ENABLED` belongs directly on the `ai_tool` API service.
+Do not place it on `swico-web`, in a shared environment group, on PostgreSQL or
+Valkey, or on billing cron jobs.
+
 Standalone questions send no historical turns. Contextual follow-ups use the
 shared `classify_contextual_followup` rules and send at most two recent turns
 and 900 formatted characters by default. Profile and attachment blocks are

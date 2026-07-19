@@ -10,6 +10,10 @@ from ..ai.intent import classify_contextual_followup, classify_intent_with_metad
 from ..ai.prompts import detailed_answer_requested
 from ..billing.pricing import estimate_tokens
 from ..global_qa_cache import is_live_or_current_question, is_private_or_personal_question
+from .swico_brand import (
+    SWICO_PUBLIC_PROFILE_VERSION,
+    classify_swico_brand_query,
+)
 
 
 AnswerClass = Literal["simple", "normal", "detailed"]
@@ -32,6 +36,9 @@ class WebTurnOptimization:
     metrics: dict[str, Any] = field(default_factory=dict)
     formatted_context: str = ""
     local_intent: str = ""
+    brand_topic: str = ""
+    brand_subintent: str = ""
+    brand_profile_version: str = ""
 
 
 def optimizer_enabled() -> bool:
@@ -46,9 +53,48 @@ def optimize_web_turn(
     profile_context: dict[str, Any] | None = None,
     attachment_prompt_context: str = "",
     has_attachments: bool = False,
+    previous_topic: str | None = None,
 ) -> WebTurnOptimization:
     """Build a deterministic, provider-free website turn policy."""
     text = str(message or "").strip()
+    brand_match = classify_swico_brand_query(text, previous_topic=previous_topic)
+    if brand_match is not None:
+        maximum = output_ceiling("simple")
+        metrics = {
+            "optimization_route": "deterministic_swico_brand",
+            "answer_class": "simple",
+            "context_turns_sent": 0,
+            "context_chars_sent": 0,
+            "profile_chars_sent": 0,
+            "attachment_chars_sent": 0,
+            "cache_hit": False,
+            "cache_hit_source": "",
+            "estimated_prompt_tokens": 0,
+            "max_output_tokens": maximum,
+            "provider_attempts": 0,
+            "provider_calls_with_usage": 0,
+            "fallback_attempted": False,
+            "cached_input_tokens": 0,
+            "cache_write_tokens": 0,
+            "reserved_micros": 0,
+            "charged_micros": 0,
+            "topic": "swico",
+            "brand_topic": "swico",
+            "brand_subintent": brand_match.subintent.value,
+            "brand_profile_version": SWICO_PUBLIC_PROFILE_VERSION,
+        }
+        return WebTurnOptimization(
+            optimization_route="deterministic_swico_brand",
+            is_contextual_followup=brand_match.contextual,
+            answer_class="simple",
+            max_output_tokens=maximum,
+            cache_eligible=False,
+            metrics=metrics,
+            local_intent="swico_brand",
+            brand_topic="swico",
+            brand_subintent=brand_match.subintent.value,
+            brand_profile_version=SWICO_PUBLIC_PROFILE_VERSION,
+        )
     decision = classify_intent_with_metadata(text)
     contextual = classify_contextual_followup(text) is not None
     answer_class = classify_answer_class(text, decision.intent)
