@@ -74,6 +74,16 @@ _QUESTION_OR_SUBJECT_RE = re.compile(
 
 _CONTEXTUAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
+        "contextual_reference",
+        re.compile(
+            r"(?:\b(?:explain|rewrite|summarize)\s+(?:that|this|it|the previous answer)\b|"
+            r"\btranslate\s+(?:that|it|the previous answer)\b|"
+            r"\bwhat about (?:that|this|the (?:first|second|third|last) option)\b|"
+            r"\b(?:the )?(?:first|second|third|last) option\b)",
+            re.I,
+        ),
+    ),
+    (
         "contextual_translate",
         re.compile(r"(?:\btamil\s+la\s+sollu(?:nga)?\b|தமிழில்\s+சொல்ல)", re.I),
     ),
@@ -88,7 +98,7 @@ _CONTEXTUAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "contextual_rewrite",
         re.compile(
-            r"(?:\bmake\s+it\s+(?:shorter|short|concise|brief)\b|\bshort\s+ah\s+sollu(?:nga)?\b|"
+            r"(?:\bmake\s+(?:it|that|this)\s+(?:shorter|short|concise|brief)\b|\bshort\s+ah\s+sollu(?:nga)?\b|"
             r"\bsummar(?:y|ize)\s+it\b|\bshorten\s+it\b)",
             re.I,
         ),
@@ -233,7 +243,7 @@ def classify_contextual_followup(message: str) -> IntentDecision | None:
     for intent, pattern in _CONTEXTUAL_PATTERNS:
         if not pattern.search(text):
             continue
-        if _has_explicit_subject(text):
+        if intent != "contextual_reference" and _has_explicit_subject(text):
             continue
         return IntentDecision(intent=intent, route=intent, reason=f"{intent}_needs_recent_context")
     return None

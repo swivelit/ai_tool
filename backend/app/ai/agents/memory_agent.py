@@ -11,15 +11,6 @@ class MemoryAgent:
         return plan.action == "memory"
 
     def search(self, query: str):
-
-        memory_store = [
-            "SWICO V1 project",
-            "Master Agent architecture",
-            "Token optimization task"
-        ]
-
-        for item in memory_store:
-            if query.lower() in item.lower():
-                return item
-
+        # Prototype fixtures are not production memory. Real memory access is
+        # handled through should_use_local_memory and the configured stores.
         return None

@@ -346,12 +346,17 @@ class OpenAIModelRouter:
         return selections
 
     def select_swico_candidates(
-        self, tier: str, message: str, *, user_tier: Optional[str] = None
+        self, tier: str, message: str, *, user_tier: Optional[str] = None,
+        estimated_input_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
+        answer_class: str = "normal",
     ) -> list[ModelSelection]:
         """Select only candidates configured for one branded web tier."""
         swico_tier = normalize_swico_tier(tier)
-        input_tokens = self.estimate_tokens(message)
-        output_tokens = min(self.max_output_default, self.max_output_hard)
+        input_tokens = max(1, int(estimated_input_tokens or self.estimate_tokens(message)))
+        output_tokens = min(
+            int(max_output_tokens or self.max_output_default), self.max_output_hard
+        )
         selections: list[ModelSelection] = []
         skipped_models: list[dict[str, str]] = []
         names = configured_model_ladder(swico_tier)
@@ -381,9 +386,14 @@ class OpenAIModelRouter:
                     estimated_cost_usd=self.estimate_cost(model, input_tokens, output_tokens),
                 )
             )
+        if str(answer_class).lower() == "simple":
+            selections.sort(key=lambda item: (item.estimated_cost_usd, names.index(item.model)))
+            selection_reason = "cheapest_sufficient_in_swico_tier"
+        else:
+            selection_reason = "configured_swico_tier_primary_first"
         self.last_selection_metadata = {
             "primary_model_candidate": names[0] if names else "",
-            "selected_model_reason": "configured_swico_tier",
+            "selected_model_reason": selection_reason,
             "skipped_models": skipped_models,
             "model_health_skip_reason": next(
                 (item["reason"] for item in skipped_models if item["reason"] == "model_health_cache"),

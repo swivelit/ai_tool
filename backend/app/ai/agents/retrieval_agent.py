@@ -23,21 +23,5 @@ class RetrievalAgent:
         return None
     
     def search(self, query: str):
-
-
-        docs = [
-            "SWICO V1 architecture",
-            "Master Agent integration",
-            "Token optimization design",
-            "Semantic cache implementation"
-        ]
-
-
-        matches = []
-
-
-        for doc in docs:
-            if query.lower() in doc.lower():
-                matches.append(doc)
-
-        return matches[:3]
+        # Retrieval must come from an authorized configured document store.
+        return []

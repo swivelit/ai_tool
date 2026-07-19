@@ -125,9 +125,8 @@ def test_system_prompt_constrains_life_context_usage():
 
     instructions = build_system_instructions(request, _route("en"), provider="openai")
 
-    assert "Use life context only when provided" in instructions
-    assert "Do not claim exact gaze" in instructions
-    assert "Never invent missing life data" in instructions
+    assert "life context" not in instructions.lower()
+    assert "exact gaze" not in instructions.lower()
 
 
 def test_response_adapter_keeps_requested_english_reply_as_english_for_sarvam():

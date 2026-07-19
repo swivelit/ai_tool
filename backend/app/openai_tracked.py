@@ -163,6 +163,10 @@ def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any) -> dic
     if details is None and isinstance(usage, dict):
         details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
     cached_input_tokens = _usage_int(details, "cached_tokens") if details is not None else None
+    cache_write_tokens = (
+        _usage_int(details, "cache_write_tokens", "cache_creation_input_tokens")
+        if details is not None else None
+    )
     if output_tokens is None and input_tokens is not None and total_tokens is not None:
         output_tokens = max(0, total_tokens - input_tokens)
     metadata: dict[str, Any] = {}
@@ -172,6 +176,8 @@ def _usage_metadata(router: OpenAIModelRouter, model: str, response: Any) -> dic
         metadata["actual_output_tokens"] = output_tokens
     if cached_input_tokens is not None:
         metadata["cached_input_tokens"] = cached_input_tokens
+    if cache_write_tokens is not None:
+        metadata["cache_write_tokens"] = cache_write_tokens
     if input_tokens is not None or output_tokens is not None:
         metadata["actual_cost_usd"] = router.estimate_cost(
             model, input_tokens or 0, output_tokens or 0,
@@ -404,6 +410,8 @@ def tracked_openai_generation(
     max_output_tokens: Optional[int] = None,
     response_format: Optional[dict[str, Any]] = None,
     temperature: Optional[float] = None,
+    max_provider_attempts: Optional[int] = None,
+    estimated_input_tokens: Optional[int] = None,
     **extra: Any,
 ) -> Any:
     """Generate text with Responses or Chat Completions using an ordered ladder."""
@@ -452,12 +460,15 @@ def tracked_openai_generation(
                 )
                 continue
 
+            if len(attempted_models) >= min(2, max(1, int(max_provider_attempts or len(selections) or 1))):
+                break
+
             output_tokens = min(
                 int(max_output_tokens or selection.max_output_tokens),
                 int(selection.max_output_tokens),
                 int(router.max_output_hard),
             )
-            input_tokens = router.estimate_tokens(prompt_text)
+            input_tokens = max(1, int(estimated_input_tokens or router.estimate_tokens(prompt_text)))
             estimated_cost = router.estimate_cost(selection.model, input_tokens, output_tokens)
             _check_budget_or_raise(
                 usage_session,
@@ -527,6 +538,11 @@ def tracked_openai_generation(
                         "error_message_sanitized": error_message,
                     }
                 )
+                # Provider ladders may fail over only when the failed request
+                # produced neither output nor reportable usage.
+                exc_response = getattr(exc, "response", None)
+                if _response_output_text(exc_response) or _chat_output_text(exc_response) or _usage_metadata(router, selection.model, exc_response):
+                    raise
                 continue
 
             actual_metadata = _usage_metadata(router, selection.model, response)
@@ -545,7 +561,9 @@ def tracked_openai_generation(
                 "endpoint": endpoint,
                 "reason": selection.reason,
                 "candidate_index": index,
-                "fallback_attempted": index > 0 or bool(skipped_models),
+                "fallback_attempted": len(attempted_models) > 1,
+                "provider_attempts": len(attempted_models),
+                "provider_calls_with_usage": 1 if actual_metadata else 0,
                 "attempted_models": list(attempted_models),
                 "model_candidates": [candidate.model for candidate in selections],
                 "primary_model_candidate": primary_model_candidate,
@@ -604,7 +622,8 @@ def tracked_openai_generation(
             "model_candidates": [selection.model for selection in selections],
             "errors": errors,
             "provider_error_type": errors[-1]["error_type"] if errors else "no_candidate_available",
-            "fallback_attempted": len(attempted_models) > 1 or any(e.get("error_type") == "model_health_skip" for e in errors),
+            "fallback_attempted": len(attempted_models) > 1,
+            "provider_attempts": len(attempted_models),
             "primary_model_candidate": primary_model_candidate,
             "selected_model_reason": _selected_model_reason(
                 index=max(0, len(attempted_models) - 1),

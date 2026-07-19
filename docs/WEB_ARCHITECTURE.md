@@ -15,6 +15,34 @@ The existing FastAPI process conditionally mounts `backend/app/web_api/router.py
 5. A short database transaction settles the debit, releases the reservation, persists the assistant response and emits final SSE usage/wallet events. Each wallet event includes a fresh token estimate, so bootstrap, settlement, payment credit, and explicit refresh need no polling.
 6. Provider failure releases the reservation and leaves a retryable message. Request and ledger uniqueness keys prevent duplicate provider billing after completion.
 
+### Web Turn Optimizer / Token Guardian
+
+Website text turns pass through a deterministic Python optimizer before wallet
+reservation. Greetings, thanks, capability answers, safety blocks, unsupported
+web-only tools, and approved cache hits use the existing persistence/SSE path
+with zero provider calls and no reservation. Cache lookup uses the existing
+privacy/live-data eligibility rules and deterministic token-hash lookup; it
+does not add an embedding call.
+
+Standalone questions send no historical turns. Contextual follow-ups use the
+shared `classify_contextual_followup` rules and send at most two recent turns
+and 900 formatted characters by default. Profile and attachment blocks are
+selective and bounded at 500 and 8,000 characters. The exact provider messages
+are built once and reused for model-cost ordering, the conservative wallet
+reservation, provider budget guard, provider request, and telemetry. Simple
+turns may reorder healthy candidates only inside the selected Swico tier by
+complete-turn cost; detailed/coding/architecture turns retain configured
+primary-first order.
+
+A successful provider turn makes one network generation attempt. One fallback
+is permitted only after a zero-output, zero-usage failure and only within
+`WEB_MAX_PROVIDER_ATTEMPTS`. Prompt-cache request parameters are disabled by
+default because cache-write token pricing is not yet included in settlement.
+Sanitized decisions and counts are stored in the existing assistant message
+metadata; no schema migration or new service is required. Set
+`WEB_TURN_OPTIMIZER_ENABLED=false` for an application-level rollback to the
+legacy context/profile behavior.
+
 OpenAI streaming uses provider deltas and the final usage event. Sarvam streaming is used when supported by the installed SDK; otherwise the service emits the completed response as one `delta` and marks estimated usage where needed.
 
 ## Storage

@@ -14,7 +14,7 @@ from fastapi import HTTPException
 
 from ...observability import chat_log_payload
 from ...openai_model_router import OpenAIModelRouter
-from ..prompts import build_provider_messages
+from ..prompts import build_provider_messages, serialize_provider_messages
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import AIProvider, GenerationCancellation, GenerationCancelled
 
@@ -88,6 +88,7 @@ def _extract_chat_usage(raw: Any) -> dict[str, int]:
         "input_tokens": value("prompt_tokens", "input_tokens"),
         "output_tokens": value("completion_tokens", "output_tokens"),
         "cached_input_tokens": value("cached_input_tokens", "cached_tokens"),
+        "cache_write_tokens": value("cache_write_tokens", "cache_creation_input_tokens"),
     }
     return result if result["input_tokens"] or result["output_tokens"] else {}
 
@@ -256,7 +257,8 @@ class SarvamProvider(AIProvider):
             exc.metadata = {"provider_error_type": "empty_sarvam_response"}  # type: ignore[attr-defined]
             raise exc
         usage = _extract_chat_usage(raw)
-        input_tokens = int(usage.get("input_tokens") or OpenAIModelRouter.estimate_tokens(request.message))
+        prompt_tokens = int(request.metadata.get("estimated_prompt_tokens") or OpenAIModelRouter.estimate_tokens(serialize_provider_messages(messages)))
+        input_tokens = int(usage.get("input_tokens") or prompt_tokens)
         output_tokens = int(usage.get("output_tokens") or OpenAIModelRouter.estimate_tokens(text))
         cost = estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens)
         response = AIProviderResponse(
@@ -285,6 +287,9 @@ class SarvamProvider(AIProvider):
                 "intent_after_cleanup": route.metadata.get("intent_after_cleanup") or route.intent,
                 "usage_actual": bool(usage),
                 "cached_input_tokens": int(usage.get("cached_input_tokens") or 0),
+                "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
+                "provider_attempts": 1,
+                "provider_calls_with_usage": 1 if usage else 0,
             },
         )
         if self._cache_recorder is not None:
@@ -301,6 +306,8 @@ class SarvamProvider(AIProvider):
         if cancellation and cancellation.cancelled:
             raise GenerationCancelled()
         messages = build_provider_messages(request, route, provider="sarvam")
+        prompt_tokens = int(request.metadata.get("estimated_prompt_tokens") or OpenAIModelRouter.estimate_tokens(serialize_provider_messages(messages)))
+        max_attempts = min(2, max(1, int(request.metadata.get("max_provider_attempts") or 2)))
         completions = getattr(getattr(client, "chat", None), "completions", None)
         create = getattr(completions, "create", None)
         caller = completions if callable(completions) else create
@@ -314,7 +321,11 @@ class SarvamProvider(AIProvider):
         except TypeError:
             if cancellation and cancellation.cancelled:
                 raise GenerationCancelled()
+            if max_attempts < 2:
+                raise HTTPException(status_code=502, detail="Sarvam streaming is unsupported.")
             response = self.complete(request, route)
+            response.raw["provider_attempts"] = 2
+            response.raw["fallback_attempted"] = True
             on_delta(response.text)
             return response
         if cancellation:
@@ -327,7 +338,7 @@ class SarvamProvider(AIProvider):
                     text = "".join(parts).strip()
                     response = None
                     if text or final_usage:
-                        input_tokens = int(final_usage.get("input_tokens") or OpenAIModelRouter.estimate_tokens(request.message))
+                        input_tokens = int(final_usage.get("input_tokens") or prompt_tokens)
                         output_tokens = int(final_usage.get("output_tokens") or OpenAIModelRouter.estimate_tokens(text))
                         response = AIProviderResponse(
                             text=text, provider="sarvam", model=route.model, route=route.route,
@@ -335,7 +346,7 @@ class SarvamProvider(AIProvider):
                             input_tokens=input_tokens, output_tokens=output_tokens, characters=len(text),
                             estimated_cost_amount=estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens),
                             estimated_cost_currency="INR",
-                            raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cancelled": True},
+                            raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "cancelled": True, "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False},
                         )
                     raise GenerationCancelled(response)
                 final_usage = _extract_chat_usage(chunk) or final_usage
@@ -357,16 +368,20 @@ class SarvamProvider(AIProvider):
             return response
         text = "".join(parts).strip()
         if not text:
+            if max_attempts < 2:
+                raise HTTPException(status_code=502, detail="Sarvam chat returned empty text.")
             response = self.complete(request, route)
+            response.raw["provider_attempts"] = 2
+            response.raw["fallback_attempted"] = True
             on_delta(response.text)
             return response
-        input_tokens = int(final_usage.get("input_tokens") or OpenAIModelRouter.estimate_tokens(request.message))
+        input_tokens = int(final_usage.get("input_tokens") or prompt_tokens)
         output_tokens = int(final_usage.get("output_tokens") or OpenAIModelRouter.estimate_tokens(text))
         return AIProviderResponse(
             text=text, provider="sarvam", model=route.model, route=route.route, reason=route.reason,
             language=route.language, intent=route.intent, input_tokens=input_tokens, output_tokens=output_tokens,
             characters=len(text), estimated_cost_amount=estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens),
-            estimated_cost_currency="INR", raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0)},
+            estimated_cost_currency="INR", raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False},
         )
 
 

@@ -243,6 +243,17 @@ def test_unsupported_web_tool_is_truthful_and_safety_stays_distinct(client):
     assert "That capability is not available on the web yet." in _stream_text(unsupported)
     assert "Swico cannot complete this request through the current web route." not in unsupported.text
 
+    unsupported_tts = client.post("/api/web/chat/stream", headers=headers, json={
+        "request_id": "10000000-0000-4000-8000-000000000003",
+        "message": "read aloud this paragraph",
+    })
+    assert unsupported_tts.status_code == 200
+    assert "That capability is not available on the web yet." in _stream_text(unsupported_tts)
+    with SessionLocal() as session:
+        assert session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == "10000000-0000-4000-8000-000000000003"
+        )).first() is None
+
     safety = client.post("/api/web/chat/stream", headers=headers, json={
         "request_id": "10000000-0000-4000-8000-000000000002",
         "message": "I want to hurt myself",
@@ -449,7 +460,8 @@ def test_web_followup_context_is_paired_and_profile_context_is_private(client, m
         "user": "What is an index?", "assistant": "It speeds database lookups.",
     }]
     assert captured["metadata"]["age_group"] == "13_17"
-    assert "student" in captured["metadata"]["profile_prompt_context"]
+    assert "student" not in captured["metadata"]["profile_prompt_context"]
+    assert "minor_safety" in captured["metadata"]["profile_prompt_context"]
     assert "profile_prompt_context" not in response.text
 
 

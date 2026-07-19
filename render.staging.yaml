@@ -23,6 +23,28 @@ projects:
                 value: staging
               - key: WEB_APP_ENABLED
                 value: "true"
+              - key: WEB_TURN_OPTIMIZER_ENABLED
+                value: "true"
+              - key: WEB_CONTEXT_MAX_TURNS
+                value: "2"
+              - key: WEB_CONTEXT_MAX_CHARS
+                value: "900"
+              - key: WEB_PROFILE_PROMPT_MAX_CHARS
+                value: "500"
+              - key: WEB_SIMPLE_MAX_OUTPUT_TOKENS
+                value: "220"
+              - key: WEB_NORMAL_MAX_OUTPUT_TOKENS
+                value: "320"
+              - key: WEB_DETAILED_MAX_OUTPUT_TOKENS
+                value: "700"
+              - key: WEB_CACHE_BEFORE_BILLING_ENABLED
+                value: "true"
+              - key: WEB_PROMPT_CACHE_ENABLED
+                value: "false"
+              - key: WEB_PROMPT_CACHE_VERSION
+                value: v1
+              - key: WEB_MAX_PROVIDER_ATTEMPTS
+                value: "2"
               - key: WEB_ATTACHMENTS_ENABLED
                 value: "true"
               - key: WEB_VOICE_RECORDING_ENABLED
@@ -56,7 +78,7 @@ projects:
               - key: WEB_UPLOAD_MAX_EXTRACTED_CHARS
                 value: "100000"
               - key: WEB_ATTACHMENT_PROMPT_MAX_CHARS
-                value: "24000"
+                value: "8000"
               - key: WEB_AUDIO_MAX_SECONDS
                 value: "300"
               - key: WEB_TTS_MAX_CHARACTERS

@@ -12,7 +12,7 @@ from ...openai_tracked import (
     tracked_openai_generation,
 )
 from ..model_health import is_model_temporarily_unavailable, mark_model_unavailable
-from ..prompts import build_provider_messages, build_system_instructions
+from ..prompts import build_provider_messages, serialize_provider_messages
 from ..types import AIProviderResponse, AIRequest, AIRoute
 from .base import AIProvider, GenerationCancellation, GenerationCancelled
 
@@ -45,7 +45,6 @@ class OpenAIProvider(AIProvider):
             if index < len(route.provider_endpoint_candidates):
                 candidate["endpoint"] = route.provider_endpoint_candidates[index]
             candidates.append(candidate)
-        instructions = build_system_instructions(request, route, provider="openai")
         messages = build_provider_messages(request, route, provider="openai")
         response = tracked_openai_generation(
             self._client_or_create(),
@@ -55,15 +54,18 @@ class OpenAIProvider(AIProvider):
             user_id=request.user_id,
             request_id=request.request_id,
             candidates=candidates,
-            input_text=request.message,
-            instructions=instructions,
+            input_text=None,
+            instructions=None,
             messages=messages,
             temperature=0.2,
             max_output_tokens=route.max_output_tokens,
+            max_provider_attempts=min(2, int(request.metadata.get("max_provider_attempts") or 2)),
+            estimated_input_tokens=int(request.metadata.get("estimated_prompt_tokens") or 0) or None,
         )
         text = _extract_response_text(response)
         metadata = get_tracked_chat_completion_metadata(response)
-        input_tokens = int(metadata.get("actual_input_tokens") or metadata.get("estimated_input_tokens") or router.estimate_tokens(request.message))
+        canonical_prompt = str(request.metadata.get("serialized_provider_prompt") or serialize_provider_messages(messages))
+        input_tokens = int(metadata.get("actual_input_tokens") or metadata.get("estimated_input_tokens") or router.estimate_tokens(canonical_prompt))
         output_tokens = int(metadata.get("actual_output_tokens") or metadata.get("estimated_output_tokens") or router.estimate_tokens(text))
         estimated_cost = float(metadata.get("actual_cost_usd") if metadata.get("actual_cost_usd") is not None else metadata.get("estimated_cost_usd") or router.estimate_cost(route.model or "", input_tokens, output_tokens))
         raw = {
@@ -82,8 +84,8 @@ class OpenAIProvider(AIProvider):
             "openai_attempted_models": metadata.get("attempted_models") or [],
             "fallback_attempted": bool(metadata.get("fallback_attempted")),
             "candidate_index": metadata.get("candidate_index"),
-            "primary_model_candidate": metadata.get("primary_model_candidate")
-            or route.metadata.get("primary_model_candidate")
+            "primary_model_candidate": route.metadata.get("primary_model_candidate")
+            or metadata.get("primary_model_candidate")
             or (route.model_candidates[0] if route.model_candidates else route.model),
             "selected_model_reason": metadata.get("selected_model_reason")
             or route.metadata.get("selected_model_reason")
@@ -96,6 +98,9 @@ class OpenAIProvider(AIProvider):
             "usage_actual": metadata.get("actual_input_tokens") is not None
             or metadata.get("actual_output_tokens") is not None,
             "cached_input_tokens": int(metadata.get("cached_input_tokens") or 0),
+            "cache_write_tokens": int(metadata.get("cache_write_tokens") or 0),
+            "provider_attempts": int(metadata.get("provider_attempts") or len(metadata.get("attempted_models") or []) or 1),
+            "provider_calls_with_usage": int(metadata.get("provider_calls_with_usage") or (1 if metadata.get("actual_input_tokens") is not None or metadata.get("actual_output_tokens") is not None else 0)),
             "actual_cost_usd": metadata.get("actual_cost_usd"),
         }
         return AIProviderResponse(
@@ -120,12 +125,15 @@ class OpenAIProvider(AIProvider):
         """Stream one tier-contained candidate ladder and retain billing usage."""
         client = self._client_or_create()
         messages = build_provider_messages(request, route, provider="openai")
+        canonical_prompt = str(request.metadata.get("serialized_provider_prompt") or serialize_provider_messages(messages))
         candidates = [item for item in (route.model_candidates or [route.model]) if item]
         endpoints = route.provider_endpoint_candidates or []
         cancellation = request.metadata.get("cancellation_signal")
         if not isinstance(cancellation, GenerationCancellation):
             cancellation = None
         last_error: Exception | None = None
+        provider_attempts = 0
+        max_attempts = min(2, max(1, int(request.metadata.get("max_provider_attempts") or 2)))
         for index, model in enumerate(candidates):
             endpoint = str(
                 (endpoints[index] if index < len(endpoints) else "")
@@ -133,11 +141,14 @@ class OpenAIProvider(AIProvider):
             )
             if is_model_temporarily_unavailable("openai", model, endpoint):
                 continue
+            if provider_attempts >= max_attempts:
+                break
+            provider_attempts += 1
             text_parts: list[str] = []
-            input_tokens = output_tokens = cached_tokens = 0
+            input_tokens = output_tokens = cached_tokens = cache_write_tokens = 0
             provider_usage_received = False
             budget_router = OpenAIModelRouter()
-            budget_input = budget_router.estimate_tokens(request.message)
+            budget_input = int(request.metadata.get("estimated_prompt_tokens") or budget_router.estimate_tokens(canonical_prompt))
             budget_output = min(route.max_output_tokens, budget_router.max_output_hard)
             estimated_budget_cost = budget_router.estimate_cost(
                 model, budget_input, budget_output
@@ -153,7 +164,7 @@ class OpenAIProvider(AIProvider):
                 if not text and not provider_usage_received:
                     return None
                 router = OpenAIModelRouter()
-                billed_input = input_tokens or router.estimate_tokens(request.message)
+                billed_input = input_tokens or int(request.metadata.get("estimated_prompt_tokens") or router.estimate_tokens(canonical_prompt))
                 billed_output = output_tokens or router.estimate_tokens(text)
                 return AIProviderResponse(
                     text=text, provider="openai", model=model, route=route.route,
@@ -165,8 +176,11 @@ class OpenAIProvider(AIProvider):
                     raw={
                         "usage_actual": provider_usage_received,
                         "cached_input_tokens": cached_tokens,
+                        "cache_write_tokens": cache_write_tokens,
                         "endpoint": endpoint,
                         "cancelled": True,
+                        "provider_attempts": provider_attempts,
+                        "provider_calls_with_usage": 1 if provider_usage_received else 0,
                     },
                 )
 
@@ -203,6 +217,10 @@ class OpenAIProvider(AIProvider):
                             output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
                             details = getattr(usage, "input_tokens_details", None)
                             cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+                            cache_write_tokens = int(
+                                getattr(details, "cache_write_tokens", 0)
+                                or getattr(details, "cache_creation_input_tokens", 0) or 0
+                            )
                 else:
                     stream = client.chat.completions.create(
                         model=model,
@@ -231,11 +249,15 @@ class OpenAIProvider(AIProvider):
                             output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
                             details = getattr(usage, "prompt_tokens_details", None)
                             cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+                            cache_write_tokens = int(
+                                getattr(details, "cache_write_tokens", 0)
+                                or getattr(details, "cache_creation_input_tokens", 0) or 0
+                            )
                 text = "".join(text_parts).strip()
                 if not text:
                     raise RuntimeError("Empty streamed response")
                 router = OpenAIModelRouter()
-                input_tokens = input_tokens or router.estimate_tokens(request.message)
+                input_tokens = input_tokens or int(request.metadata.get("estimated_prompt_tokens") or router.estimate_tokens(canonical_prompt))
                 output_tokens = output_tokens or router.estimate_tokens(text)
                 actual_cost = router.estimate_cost(
                     model, input_tokens, output_tokens, cached_tokens,
@@ -270,15 +292,24 @@ class OpenAIProvider(AIProvider):
                     raw={
                         "usage_actual": provider_usage_received,
                         "cached_input_tokens": cached_tokens,
+                        "cache_write_tokens": cache_write_tokens,
                         "endpoint": endpoint,
-                        "fallback_attempted": index > 0,
+                        "fallback_attempted": provider_attempts > 1,
+                        "provider_attempts": provider_attempts,
+                        "provider_calls_with_usage": 1 if provider_usage_received else 0,
+                        "primary_model_candidate": route.metadata.get("primary_model_candidate") or (candidates[0] if candidates else model),
+                        "selected_model_reason": (
+                            "zero_output_zero_usage_failover"
+                            if provider_attempts > 1
+                            else route.metadata.get("selected_model_reason") or "configured_primary"
+                        ),
                     },
                 )
             except GenerationCancelled:
                 raise
             except Exception as exc:
                 last_error = exc
-                if text_parts or provider_usage_received:
+                if text_parts or provider_usage_received or _exception_reported_output_or_usage(exc):
                     raise
                 mark_model_unavailable(
                     "openai", model, endpoint, exc.__class__.__name__, ttl_seconds=60
@@ -316,3 +347,15 @@ def _extract_response_text(response: Any) -> str:
     except Exception:
         return ""
     return ""
+
+
+def _exception_reported_output_or_usage(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return False
+    if _extract_response_text(response):
+        return True
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    return usage is not None

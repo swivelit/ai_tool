@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from typing import Any
 
 from app.age_utils import normalize_age_group
@@ -33,6 +34,12 @@ UNCLEAR_MEDICAL_TERM_INSTRUCTION = (
 
 
 def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str) -> list[dict[str, str]]:
+    prepared = (request.metadata or {}).get("provider_messages")
+    if isinstance(prepared, list) and all(isinstance(item, dict) for item in prepared):
+        return [
+            {"role": str(item.get("role") or "user"), "content": str(item.get("content") or "")}
+            for item in prepared
+        ]
     instructions = build_system_instructions(request, route, provider=provider)
     messages: list[dict[str, str]] = [{"role": "system", "content": instructions}]
     profile_context = str((request.metadata or {}).get("profile_prompt_context") or "").strip()
@@ -47,7 +54,12 @@ def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str
                 ),
             }
         )
-    context = format_recent_context(request.context_turns)
+    preformatted_context = (request.metadata or {}).get("formatted_context")
+    context = (
+        str(preformatted_context).strip()
+        if preformatted_context is not None
+        else format_recent_context(request.context_turns)
+    )
     if context:
         messages.append(
             {
@@ -76,6 +88,11 @@ def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str
     return messages
 
 
+def serialize_provider_messages(messages: list[dict[str, str]]) -> str:
+    """Canonical conservative representation used by every web preflight."""
+    return json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: str) -> str:
     """Build provider system instructions.
 
@@ -84,16 +101,25 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
     """
     language = request.reply_language or route.language or "en"
     parts = [
-        "You are a backend-controlled assistant for a mobile app. Answer directly.",
+        (
+            "You are a backend-controlled website/web assistant. Answer directly."
+            if (request.metadata or {}).get("client_surface") == "web"
+            else "You are a backend-controlled assistant for a mobile app. Answer directly."
+        ),
         "Do not claim access to live/current data unless it was provided.",
         f"Requested reply language: {language}. The final answer must obey this requested reply_language.",
         _language_contract(language),
-        "Apply saved profile preferences and onboarding answers when available. Do not invent profile facts.",
-        "Use life context only when provided. If the user asks about walking, movement, screen time, or app usage, answer from the provided context and mention confidence or permission gaps. Do not claim exact gaze or screen-looking time. Never invent missing life data.",
+        "Apply saved profile preferences only when supplied. Do not invent or reveal profile facts.",
         _style_policy(request.message),
     ]
-    if (request.metadata or {}).get("attachment_prompt_context"):
-        parts.append(UNTRUSTED_ATTACHMENT_INSTRUCTION)
+    life_context_present = bool(
+        ((request.metadata or {}).get("client_context") or {}).get("life_context")
+    )
+    if life_context_present:
+        parts.append(
+            "Use the supplied life context only for relevant questions. Mention confidence or permission "
+            "gaps, do not claim exact gaze or screen-looking time, and never invent missing life data."
+        )
     if _looks_unclear_medical_like(request.message):
         parts.append(UNCLEAR_MEDICAL_TERM_INSTRUCTION)
     if provider == "sarvam":
@@ -117,7 +143,11 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
         if _requests_tamil(request.message, language):
             parts.append("Answer in simple Tamil or natural Tanglish as requested; preserve the prior topic.")
 
-    age_style = _age_adaptive_style(request.metadata)
+    age_style = (
+        _age_adaptive_style(request.metadata)
+        if (request.metadata or {}).get("client_surface") != "web" or life_context_present
+        else ""
+    )
     if age_style:
         parts.append(age_style)
 
@@ -342,11 +372,19 @@ def _looks_unclear_medical_like(message: Any) -> bool:
     if not text:
         return False
     lowered = text.lower()
-    if re.search(r"\b(disease|symptoms?|treatments?|medical|condition|infection|doctor|clinic|health)\b", lowered):
-        return True
-    if re.search(r"\b(?:what is|tell me about|explain|do you know about)\s+[A-Za-z][A-Za-z-]{4,}\b", text, re.I):
-        return True
-    return False
+    strong_medical = re.search(
+        r"\b(disease|symptoms?|treatments?|medical|medicine|medication|condition|infection|"
+        r"doctor|physician|clinician|clinic|hospital|diagnos(?:e|is)|prescription|dosage|"
+        r"pain|fever|rash|injury|syndrome|disorder|cancer|therapy|surgery|health)\b",
+        lowered,
+    )
+    if not strong_medical:
+        return False
+    return bool(
+        re.search(r"\b(?:what is|tell me about|explain|do you know about|is this|could this)\b", lowered)
+        or re.search(r"\b(?:unknown|unclear|misspell|misheard|term|called|named)\b", lowered)
+        or len(lowered.split()) <= 16
+    )
 
 
 def _compact(value: Any, limit: int) -> str:

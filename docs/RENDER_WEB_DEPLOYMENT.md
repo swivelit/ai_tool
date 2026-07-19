@@ -78,6 +78,31 @@ Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUT
 
 Exact environment delta for this release:
 
+The Web Turn Optimizer values below belong directly on the existing **ai_tool**
+API service. Do not add them to a shared environment group, the static site,
+`web/.env.example`, or any `VITE_*` variable. No Render resource or database
+migration is required:
+
+```text
+WEB_TURN_OPTIMIZER_ENABLED=true
+WEB_CONTEXT_MAX_TURNS=2
+WEB_CONTEXT_MAX_CHARS=900
+WEB_PROFILE_PROMPT_MAX_CHARS=500
+WEB_ATTACHMENT_PROMPT_MAX_CHARS=8000
+WEB_SIMPLE_MAX_OUTPUT_TOKENS=220
+WEB_NORMAL_MAX_OUTPUT_TOKENS=320
+WEB_DETAILED_MAX_OUTPUT_TOKENS=700
+WEB_CACHE_BEFORE_BILLING_ENABLED=true
+WEB_PROMPT_CACHE_ENABLED=false
+WEB_PROMPT_CACHE_VERSION=v1
+WEB_MAX_PROVIDER_ATTEMPTS=2
+```
+
+Keep prompt caching disabled for this pass: provider cache-write token billing
+is not part of wallet settlement yet, so enabling it could undercharge writes.
+Rollback is configuration-only: set `WEB_TURN_OPTIMIZER_ENABLED=false` and
+redeploy the API; this restores legacy web history/profile prompt behavior.
+
 - Add API variable `BILLING_CHECKOUT_ENABLED=false` (backend-only, explicit in production).
 - Add these backend-only variables with the shown safe defaults:
 
@@ -170,7 +195,7 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
    WEB_UPLOAD_MAX_FILES_PER_MESSAGE=5
    WEB_UPLOAD_MAX_TOTAL_BYTES=26214400
    WEB_UPLOAD_MAX_EXTRACTED_CHARS=100000
-   WEB_ATTACHMENT_PROMPT_MAX_CHARS=24000
+   WEB_ATTACHMENT_PROMPT_MAX_CHARS=8000
    WEB_AUDIO_MAX_SECONDS=300
    WEB_TTS_MAX_CHARACTERS=5000
    WEB_UPLOAD_RATE_LIMIT_PER_MINUTE=10

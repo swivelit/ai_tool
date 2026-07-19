@@ -21,7 +21,6 @@ from .router import AIProviderRouter
 from .tools import handle_backend_tool, try_handle_pending_reminder
 from .types import AIProviderResponse, AIRequest, AIRoute
 from .usage import record_ai_usage_event
-from app.ai.master_agent import MasterAgent
 
 
 logger = logging.getLogger(__name__)
@@ -98,22 +97,10 @@ def run_text_turn(
         if contextual[1] is not None:
             return _record(session, contextual[1], ai_request, started)
         
-    # Master Agent
-    master = MasterAgent()
-
-    decision = master.process(ai_request.message)
-
-    ai_request.metadata["master_intent"] = decision["intent"]
-    ai_request.metadata["master_provider"] = decision["provider"]
-    ai_request.metadata["master_agent"] = decision["agent"]  
-
     route = context.get("router", AIProviderRouter()).select_route(ai_request)
     logger.debug(
         "ai_route_selected",
         extra={
-            "master_intent": str(decision.get("intent") or ""),
-            "master_provider": str(decision.get("provider") or ""),
-            "master_agent": str(decision.get("agent") or ""),
             "route_provider": route.provider,
             "route_intent": route.intent,
         },

@@ -24,9 +24,6 @@ class MasterAgent:
         # Step 1: Intent Detection
         intent_result = classify_intent(message)
 
-        print(intent_result)
-        print(type(intent_result))
-
         intent = intent_result.intent
 
         # Step 2: Provider Selection
@@ -43,9 +40,8 @@ class MasterAgent:
         try:
             if hasattr(self.memory, "search"):
                 memory_result = self.memory.search(message)
-                print("Memory Result:", memory_result)
-        except Exception as e:
-            print("Memory Error:", e)
+        except Exception:
+            memory_result = None
 
         # Step 5: Retrieval Check
         retrieval_result = None
@@ -58,10 +54,8 @@ class MasterAgent:
                 retrieval_result = self.compressor.compress(
                     retrieval_result
                 )    
-                print("Retrieval Result:", retrieval_result)
-    
-        except Exception as e:
-            print("Retrieval Error:", e)
+        except Exception:
+            retrieval_result = None
 
         # Step 6: Tool Execution
         tool_result = None
