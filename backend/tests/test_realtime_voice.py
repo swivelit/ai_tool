@@ -4,6 +4,7 @@ import base64
 import asyncio
 import json
 import time
+import logging
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -70,6 +71,73 @@ def test_voice_session_requires_auth_and_uses_saved_tier_language(client, monkey
     assert body["wallets"]["voice"]["balance_micros"] == 0
     assert "user" not in body["websocket_url"]
     assert "ticket" not in body["websocket_url"]
+
+
+def test_internal_voice_diagnostics_are_safe_and_hidden_from_normal_users(client, monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setenv("WEB_VOICE_BILLING_ENABLED", "true")
+    monkeypatch.setenv("SARVAM_API_KEY", "sarvam-super-secret")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://secret-database")
+    monkeypatch.setenv("WEB_UPLOAD_CACHE_URL", "redis://secret-valkey")
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "208e3024abcdef")
+    create_test_user("voice-normal", "voice-normal@example.com")
+    hidden = client.get(
+        "/api/web/voice/diagnostics", headers={**auth_headers("voice-normal", "voice-normal@example.com"), "origin": ORIGIN},
+    )
+    assert hidden.status_code == 404
+    assert hidden.headers["cache-control"] == "no-store"
+
+    email = "voice-diagnostic@example.com"
+    monkeypatch.setenv("SWICO_INTERNAL_TEST_EMAILS", email)
+    create_test_user("voice-diagnostic", email)
+
+    class Store:
+        configured = True
+        @staticmethod
+        def reachable():
+            return True
+
+    monkeypatch.setattr("app.web_api.router._tickets", lambda: Store())
+    response = client.get(
+        "/api/web/voice/diagnostics", headers={**auth_headers("voice-diagnostic", email), "origin": ORIGIN},
+    )
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert body["backend_release"] == "208e3024abcd"
+    assert body["alembic_head"] == "e2b7c4d9a1f3"
+    assert body["authentication"] == {
+        "internal_test_user": True, "email_verified": True, "owned_email_matches": True,
+    }
+    assert body["valkey"] == {"configured": True, "reachable": True}
+    serialized = json.dumps(body)
+    for forbidden in ("sarvam-super-secret", "secret-database", "secret-valkey", email, "firebase_uid", "ticket"):
+        assert forbidden not in serialized
+
+
+def test_voice_ticket_store_failure_is_stable_and_telemetry_is_content_free(client, monkeypatch, caplog):
+    _enable(monkeypatch)
+    email = "voice-store@example.com"
+    monkeypatch.setenv("SWICO_INTERNAL_TEST_EMAILS", email)
+    create_test_user("voice-store", email)
+
+    class BrokenStore:
+        def mint(self, *_args, **_kwargs):
+            raise RuntimeError("redis://must-not-be-logged")
+
+    monkeypatch.setattr("app.web_api.router._tickets", lambda: BrokenStore())
+    with caplog.at_level(logging.INFO, logger="app.web_api.router"):
+        response = _session(client, "voice-store", email)
+    assert response.status_code == 503
+    assert response.json() == {"error": {
+        "code": "voice_ticket_store_unavailable",
+        "message": "Voice Mode is temporarily unavailable.",
+    }}
+    event = next(record for record in caplog.records if record.message == "voice_session_creation")
+    assert event.outcome_code == "valkey_unavailable"
+    assert event.http_status == 503
+    assert event.billing_exempt is True
+    assert email not in caplog.text and "redis://must-not-be-logged" not in caplog.text
 
 
 def test_ticket_origin_reuse_and_concurrent_session_security(client, monkeypatch):
@@ -181,6 +249,7 @@ def test_streaming_adapter_resolves_tamil_and_exposes_partial_final_and_audio():
         assert sent_audio["sample_rate"] == 16000
 
         await provider.connect_tts("ta")
+        await provider.ping_tts()
         await provider.send_tts_text(" வணக்கம்   உலகம் ")
         await provider.flush_tts()
         chunks = [chunk async for chunk in provider.tts_audio()]
@@ -188,7 +257,8 @@ def test_streaming_adapter_resolves_tamil_and_exposes_partial_final_and_audio():
         config = json.loads(tts.sent[0])
         assert config["type"] == "config"
         assert config["data"]["target_language_code"] == "ta-IN"
-        assert json.loads(tts.sent[1])["data"]["text"] == "வணக்கம் உலகம்"
+        assert json.loads(tts.sent[1]) == {"type": "ping"}
+        assert json.loads(tts.sent[2])["data"]["text"] == "வணக்கம் உலகம்"
         await provider.close()
         assert stt.closed and tts.closed
 

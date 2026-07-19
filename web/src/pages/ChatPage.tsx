@@ -11,6 +11,8 @@ import { Composer } from '../components/Composer'
 import { applyTheme, resolveTheme, type Theme } from '../theme'
 import { useVoiceReply } from '../hooks/useVoiceReply'
 import type { VoiceTurnDone } from '../hooks/useRealtimeVoice'
+import { frontendRelease } from '../config/publicConfig'
+import { voiceAvailability } from '../voiceReadiness'
 
 const BillingModal = lazy(() => import('../billing/BillingModal').then(module => ({ default: module.BillingModal })))
 const SettingsModal = lazy(() => import('../components/SettingsModal').then(module => ({ default: module.SettingsModal })))
@@ -332,6 +334,11 @@ export function ChatPage() {
     setFocusKey(`voice-close-${Date.now()}`)
   }, [active, loadMessages, loadThreads, refreshWallet])
 
+  const backendRelease = bootstrap?.backend_release || 'unavailable'
+  const voiceReady = bootstrap ? voiceAvailability(bootstrap, frontendRelease) : { enabled:false, reason:'Voice Mode is loading.' }
+  const voiceUnavailableReason = voiceReady.reason
+  const realtimeVoiceEnabled = voiceReady.enabled
+
   if (!user || !bootstrap) return <div className="app-loading"><div className="brand-mark">S</div><span>Opening Swico…</span></div>
   return <main className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <Sidebar threads={threads} activeId={active} wallet={bootstrap.wallet} userName={bootstrap.user.name} open={drawer} collapsed={collapsed} archived={archived} hasMore={hasMore} query={query} setQuery={setQuery}
@@ -344,7 +351,7 @@ export function ChatPage() {
         retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')} />
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey}
         attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
-        realtimeVoiceEnabled={Boolean(bootstrap.features.web_realtime_voice && bootstrap.features.separate_voice_credits)}
+        realtimeVoiceEnabled={realtimeVoiceEnabled} realtimeVoiceUnavailableReason={voiceUnavailableReason}
         assistant={bootstrap.assistant} tierDisabled={streaming || voiceMode} tierSaving={tierSaving} onTierSelect={saveTier}
         onRealtimeVoice={() => { voiceThreadRef.current = active; setVoiceMode(true) }}
         voiceResetKey={`${active ?? 'new-chat'}:${focusKey}`}
@@ -352,7 +359,10 @@ export function ChatPage() {
         supportedExtensions={bootstrap.uploads?.supported_extensions ?? []} addFiles={addFiles} removeAttachment={removeAttachment} />
     </section>
     {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} initialBucket={billingBucket} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
-    {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={closeVoiceMode} onTurnDone={voiceTurnDone} addCredits={bucket => { closeVoiceMode(); openBilling(bucket) }} /></Suspense>}
+    {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={closeVoiceMode} onTurnDone={voiceTurnDone}
+      tuning={bootstrap.voice_tuning} frontendRelease={frontendRelease} backendRelease={backendRelease}
+      internalDiagnostics={Boolean(bootstrap.wallet.billing_exempt || bootstrap.wallets?.chat.billing_exempt)}
+      addCredits={bucket => { closeVoiceMode(); openBilling(bucket) }} /></Suspense>}
     {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}
     {dialog && <ThreadDialog state={dialog} setState={setDialog} confirm={() => { const current = dialog; setDialog(null); void runMutation(current.thread, current.type, current.value.trim()) }} />}
   </main>

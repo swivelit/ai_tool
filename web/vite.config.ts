@@ -4,10 +4,15 @@ import react from '@vitejs/plugin-react'
 import { validatePublicWebConfig } from './src/config/publicWebConfig'
 
 export default defineConfig(({ command, mode }) => {
-  if (command === 'build') validatePublicWebConfig(loadEnv(mode, process.cwd(), ''), 'production')
+  const environment = loadEnv(mode, process.cwd(), '')
+  if (command === 'build') validatePublicWebConfig(environment, 'production')
+  const frontendRelease = String(
+    process.env.RENDER_GIT_COMMIT || environment.RENDER_GIT_COMMIT || 'dev',
+  ).trim().slice(0, 12) || 'dev'
 
   return {
     plugins: [react()],
+    define: { __SWICO_FRONTEND_RELEASE__:JSON.stringify(frontendRelease) },
     test: {
       environment: 'jsdom',
       setupFiles: './src/test/setup.ts',

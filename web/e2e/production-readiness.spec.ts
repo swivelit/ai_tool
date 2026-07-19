@@ -84,6 +84,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
       return json(route, {
         protocol_version:1, session_id:`voice-session-${Date.now()}`, ticket:`fresh-ticket-${Date.now()}`,
         websocket_url:'ws://127.0.0.1:4173/api/web/voice/ws', tier:'lite', tier_label:'Swico Lite', language:'en',
+        approved_websocket_hosts:['127.0.0.1:4173'],
         wallets:{ chat:{ available_micros:state.wallet }, voice:{ available_micros:5_000_000 } },
       }, 201)
     }

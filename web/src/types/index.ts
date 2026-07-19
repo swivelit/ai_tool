@@ -60,10 +60,17 @@ export type Bootstrap = {
     web_voice_reply: boolean; web_voice_billing: boolean;
     web_realtime_voice: boolean; separate_voice_credits: boolean;
   };
+  backend_release?: string;
+  voice_protocol_version?: number;
+  voice_tuning?: VoiceTuning;
   uploads: {
     available: boolean; ttl_seconds: number; max_file_bytes: number;
     max_files_per_message: number; max_total_bytes: number; supported_extensions: string[];
   };
+}
+export type VoiceTuning = {
+  calibration_ms: number; noise_multiplier: number; threshold_min: number;
+  threshold_max: number; quiet_fallback: number; no_speech_warning_ms: number;
 }
 export type StreamEventName = 'thread' | 'status' | 'delta' | 'usage' | 'wallet' | 'done' | 'error'
 export type SSEEvent = { event: StreamEventName | (string & {}); data: unknown }

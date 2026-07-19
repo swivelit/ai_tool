@@ -80,6 +80,18 @@ it('shows waveform only when empty and replaces it with Send for content', () =>
   expect(screen.getByRole('button', { name:'Send message' })).toBeEnabled()
 })
 
+it('explains authenticated Voice disablement and issues no start action', async () => {
+  const start = vi.fn()
+  render(<Composer value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false}
+    realtimeVoiceEnabled={false} realtimeVoiceUnavailableReason="Voice Mode is disabled on the server."
+    onRealtimeVoice={start} />)
+  const button = screen.getByRole('button', { name:'Start real-time Voice Mode' })
+  expect(button).toBeDisabled()
+  expect(button).toHaveAttribute('title', 'Voice Mode is disabled on the server.')
+  await userEvent.click(button)
+  expect(start).not.toHaveBeenCalled()
+})
+
 it('shows upload state, countdown, expiry, and removes attachments', async () => {
   const remove = vi.fn()
   const uploading: ComposerAttachment = {

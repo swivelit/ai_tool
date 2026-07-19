@@ -80,6 +80,7 @@ class SarvamStreamingProvider:
         self._api_key = api_key if api_key is not None else os.getenv("SARVAM_API_KEY", "").strip()
         self._stt: Any = None
         self._tts: Any = None
+        self._tts_ping_task: asyncio.Task[Any] | None = None
 
     @property
     def stt_connected(self) -> bool:
@@ -228,6 +229,22 @@ class SarvamStreamingProvider:
                 "output_audio_codec": "mp3",
             },
         }, separators=(",", ":")))
+        self._tts_ping_task = asyncio.create_task(
+            self._tts_keepalive(), name="sarvam-tts-application-ping"
+        )
+
+    async def ping_tts(self) -> None:
+        """Send Sarvam's JSON application ping, not a WebSocket control ping."""
+        if self._tts is not None:
+            await self._tts.send('{"type":"ping"}')
+
+    async def _tts_keepalive(self) -> None:
+        try:
+            while self._tts is not None:
+                await asyncio.sleep(25)
+                await self.ping_tts()
+        except (asyncio.CancelledError, ConnectionClosed):
+            return
 
     async def send_tts_text(self, text: str) -> None:
         if self._tts is None:
@@ -286,11 +303,22 @@ class SarvamStreamingProvider:
             ) from exc
 
     async def close(self) -> None:
+        ping_task, self._tts_ping_task = self._tts_ping_task, None
+        if ping_task is not None:
+            ping_task.cancel()
         sockets = [socket for socket in (self._stt, self._tts) if socket is not None]
         self._stt = self._tts = None
-        await asyncio.gather(*(socket.close() for socket in sockets), return_exceptions=True)
+        await asyncio.gather(
+            *([ping_task] if ping_task is not None else []),
+            *(socket.close() for socket in sockets), return_exceptions=True,
+        )
 
     async def close_tts(self) -> None:
+        ping_task, self._tts_ping_task = self._tts_ping_task, None
+        if ping_task is not None:
+            ping_task.cancel()
         socket, self._tts = self._tts, None
-        if socket is not None:
-            await asyncio.gather(socket.close(), return_exceptions=True)
+        await asyncio.gather(
+            *([ping_task] if ping_task is not None else []),
+            *([socket.close()] if socket is not None else []), return_exceptions=True,
+        )

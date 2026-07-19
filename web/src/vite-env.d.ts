@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+declare const __SWICO_FRONTEND_RELEASE__: string
+
 interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string
   readonly VITE_E2E_MOCK_AUTH?: string

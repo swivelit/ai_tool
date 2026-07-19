@@ -1,18 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
 import { Captions, Mic, MicOff, PhoneOff, RefreshCw, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
-import type { CreditBucket } from '../types'
+import type { CreditBucket, VoiceTuning } from '../types'
 import { useRealtimeVoice, type VoiceTurnDone } from '../hooks/useRealtimeVoice'
+import { apiJson } from '../api/client'
 
-export function VoiceMode({ user, threadId, close, addCredits, onTurnDone }: {
+type InternalVoiceDiagnostics = {
+  backend_release: string; alembic_head: string;
+  features: { web_realtime_voice:boolean; separate_voice_credits:boolean; web_voice_billing:boolean };
+  valkey: { configured:boolean; reachable:boolean }; sarvam: { configured:boolean };
+  origin: { request_origin_allowed:boolean };
+}
+
+export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tuning, frontendRelease = 'dev', backendRelease = 'unavailable', internalDiagnostics = false }: {
   user: User; threadId: string | null; close: () => void;
   addCredits: (bucket: CreditBucket) => void; onTurnDone?: (turn: VoiceTurnDone) => void;
+  tuning?: VoiceTuning; frontendRelease?: string; backendRelease?: string; internalDiagnostics?: boolean;
 }) {
   const dialogRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const [captions, setCaptions] = useState(true)
-  const voice = useRealtimeVoice({ user, threadId, onTurnDone })
+  const [diagnostics, setDiagnostics] = useState<InternalVoiceDiagnostics | null>(null)
+  const voice = useRealtimeVoice({ user, threadId, onTurnDone, tuning })
   const endVoice = voice.end
+
+  useEffect(() => {
+    if (!internalDiagnostics) return
+    let active = true
+    void apiJson<InternalVoiceDiagnostics>(user, '/api/web/voice/diagnostics')
+      .then(value => { if (active) setDiagnostics(value) })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [internalDiagnostics, user])
 
   const finish = async () => {
     await endVoice()
@@ -70,6 +89,14 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone }: {
           {voice.assistant && <p className="voice-transcript assistant"><span>Swico</span>{voice.assistant}</p>}
         </div>}
         {voice.phase === 'interrupted' && <p className="voice-interruption" role="status">Listening for you now.</p>}
+        <div className="voice-microphone-level" aria-label="Microphone level" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(voice.microphoneLevel * 100)}>
+          <span style={{ transform:`scaleX(${Math.max(.02, voice.microphoneLevel)})` }} />
+        </div>
+        {voice.cannotHear && !voice.muted && <p className="voice-interruption" role="status">We cannot hear you. Move closer to the microphone or check its input level.</p>}
+        {voice.playbackWarning && <div className="voice-playback-warning" role="status"><p>{voice.playbackWarning}</p>
+          {voice.playbackState === 'autoplay_blocked' && <button className="primary voice-tap-play" onClick={() => void voice.manualPlay()}>Tap to play</button>}
+          {(voice.playbackState === 'autoplay_blocked' || voice.playbackState === 'playback_error') && <button onClick={voice.skipPlayback}>Skip audio</button>}
+        </div>}
         {voice.error && <div className="voice-error" role="alert">
           <p>{voice.error}</p>
           <div className="voice-error-actions">
@@ -78,6 +105,16 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone }: {
             {voice.creditRequired === 'voice' && <button onClick={() => addCredits('voice')}>Add Voice credits</button>}
           </div>
         </div>}
+        {internalDiagnostics && <details className="voice-diagnostics"><summary>Voice diagnostics</summary>
+          <dl><dt>Frontend release</dt><dd>{frontendRelease}</dd><dt>Backend release</dt><dd>{diagnostics?.backend_release ?? backendRelease}</dd>
+            <dt>Alembic head</dt><dd>{diagnostics?.alembic_head ?? 'loading'}</dd>
+            <dt>Features ready</dt><dd>{diagnostics ? String(Object.values(diagnostics.features).every(Boolean)) : 'loading'}</dd>
+            <dt>Valkey ready</dt><dd>{diagnostics ? String(diagnostics.valkey.configured && diagnostics.valkey.reachable) : 'loading'}</dd>
+            <dt>Sarvam configured</dt><dd>{diagnostics ? String(diagnostics.sarvam.configured) : 'loading'}</dd>
+            <dt>Origin allowed</dt><dd>{diagnostics ? String(diagnostics.origin.request_origin_allowed) : 'loading'}</dd>
+            <dt>HTTP status</dt><dd>{voice.errorStatus ?? 'none'}</dd><dt>Error code</dt><dd>{voice.errorCode || 'none'}</dd>
+            <dt>Playback state</dt><dd>{voice.playbackState}</dd></dl>
+        </details>}
       </div>
 
       <footer className="voice-controls">

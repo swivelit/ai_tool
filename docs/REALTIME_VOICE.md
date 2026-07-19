@@ -33,11 +33,26 @@ existing private Valkey. Origin must exactly match `CORS_ALLOW_ORIGINS`; a
 per-user compare-and-delete lock allows one session. Retry fully closes the old
 socket/media and always calls the ticket endpoint again.
 
+The browser installs message/error/close listeners before waiting for the 101,
+uses a 12-second open deadline, and sends protocol-v1 JSON `ping` every 20
+seconds while connected. HTTPS requires `wss:`; `ws:` is accepted only on HTTP
+development. Host and path must match the configured API or an explicitly
+approved host. Cleanup stops keepalives. Retry obtains a fresh ticket; completed
+billable turns are never auto-reconnected.
+
+Configured Valkey failure never falls back to process memory in production:
+
+```json
+{"error":{"code":"voice_ticket_store_unavailable","message":"Voice Mode is temporarily unavailable."}}
+```
+
 Never log tickets, Firebase tokens, headers, API keys, raw audio, transcript,
 assistant text, email, provider response bodies, or payment secrets. Safe Voice
 diagnostics contain only stage, exception class, sanitized provider close code
 and category, duration, turn number, cleanup result, and reservation-release
-result. Allowed stages are `ticket_consumed`, `session_started`,
+result. Ticket creation logs only request ID, backend release, tier/language
+identifiers, billing-exempt boolean, HTTP status, safe duration, and an outcome
+category—never content, identity, balances, tickets, or secrets. Allowed stages are `ticket_consumed`, `session_started`,
 `stt_reservation`, `sarvam_stt_connect`, `microphone_stream`,
 `endpoint_pending`, `chat_prepare`, `chat_generate`, `sarvam_tts_connect`,
 `tts_stream`, `settlement`, and `client_disconnect`.
@@ -67,6 +82,15 @@ Representative messages:
 {"protocol_version":1,"type":"turn.done","thread_id":"...","user_message_id":"...","assistant_message_id":"...","turn_number":1,"input_mode":"realtime_voice","completion_status":"complete"}
 ```
 
+`audio.end` means provider input is complete, not playback is complete. Ordered
+chunks continue appending; MediaSource ends only after its queue is empty and
+SourceBuffer is idle; the UI remains Speaking until the audio element emits
+`ended`. Only accepted barge-in, End conversation, cleanup, or fatal playback
+failure aborts/clears audio. Unsupported progressive MP3 uses a reply-local
+bounded Blob (8 MiB/96 chunks), revoked on every end/interruption/retry/cleanup.
+Autoplay rejection preserves the socket, assistant text, and buffered audio and
+shows accessible **Tap to play** and Skip audio actions.
+
 `turn.done` is emitted only after both ordinary chat messages are complete and
 the chat reservation is settled. The web app activates a new Voice-created
 thread, reloads authoritative messages by public ID, refreshes the thread list
@@ -76,7 +100,11 @@ conversation and survive browser refresh.
 
 ## Endpointing, gating, barge-in, and accounting
 
-The browser keeps a 320 ms PCM ring but forwards nothing until RMS indicates
+After permission, a 300–500 ms local-only calibration estimates noise floor.
+Those samples are never uploaded or billed. Authenticated bootstrap supplies
+bounded threshold multiplier/minimum/maximum, quiet-speaker fallback, and the
+no-speech warning duration. The UI displays a local microphone meter and “We
+cannot hear you” after the bound. The browser keeps a 320 ms PCM ring but forwards nothing until RMS indicates
 sustained speech for 180 ms. It then sends bounded pre-roll, speech, and at most
 1.8 seconds of trailing silence so Sarvam VAD can close the segment. RMS is
 only a speech gate and visual cue; it never stops assistant playback. Sarvam
@@ -105,7 +133,7 @@ submitted characters, and releases unused remainder. Disconnect/interruption
 cancels and awaits tasks, releases every live reservation, closes providers,
 and compare-deletes the Valkey lock.
 
-Sarvam wire behavior follows the official [streaming STT guide](https://docs.sarvam.ai/api/api-guides-tutorials/speech-to-text/streaming-api), [STT WebSocket reference](https://docs.sarvam.ai/api-reference/speech-to-text/transcribe/ws), and [TTS WebSocket reference](https://docs.sarvam.ai/api-reference/text-to-speech/stream). The current endpoints are `/speech-to-text/ws` and `/text-to-speech/ws`; both use `Api-Subscription-Key`. TTS sends config first, then text and flush, decodes progressive MP3, and stops on final completion event.
+Sarvam wire behavior follows the official [streaming STT guide](https://docs.sarvam.ai/api/api-guides-tutorials/speech-to-text/streaming-api), [STT WebSocket reference](https://docs.sarvam.ai/api-reference/speech-to-text/transcribe/ws), and [TTS WebSocket reference](https://docs.sarvam.ai/api-reference/text-to-speech/stream). The current endpoints are `/speech-to-text/ws` and `/text-to-speech/ws`; both use `Api-Subscription-Key`. STT uses `language-code`, Saaras v3, `mode=transcribe`, 16 kHz raw `pcm_s16le`, VAD/flush settings, base64 JSON audio, START/END speech, partial/final transcript, and safe error/close normalization. TTS sends config first with language/speaker/MP3 codec, then text, flush, and documented JSON application `ping`; it decodes progressive audio and stops on completion. Application ping is distinct from a WebSocket protocol control ping.
 
 ## Stable errors and close codes
 
@@ -148,7 +176,43 @@ WEB_REALTIME_VOICE_MIN_SPEECH_MS=250
 WEB_REALTIME_VOICE_MAX_UTTERANCE_MS=30000
 WEB_REALTIME_VOICE_BARGE_IN_MIN_MS=180
 WEB_REALTIME_VOICE_PREROLL_MS=320
+WEB_VOICE_GATE_CALIBRATION_MS=400
+WEB_VOICE_GATE_NOISE_MULTIPLIER=2.4
+WEB_VOICE_GATE_THRESHOLD_MIN=0.012
+WEB_VOICE_GATE_THRESHOLD_MAX=0.065
+WEB_VOICE_GATE_QUIET_FALLBACK=0.008
+WEB_VOICE_NO_SPEECH_WARNING_MS=10000
 ```
+
+Authenticated bootstrap also returns safe `backend_release` and
+`voice_protocol_version`. Vite embeds the first 12 characters of
+`RENDER_GIT_COMMIT` (local fallback `dev`) without a manually maintained
+`VITE_*` flag. When both non-dev releases exist and differ, only billable Voice
+start is blocked with refresh guidance; ordinary text chat continues.
+
+### Internal readiness diagnostics
+
+`GET /api/web/voice/diagnostics` authenticates and loads the owned user, then
+returns 404 unless `is_internal_test_user(...)` is true. Its no-store response
+makes no provider call and includes only safe release/protocol/Alembic
+identifiers, feature/auth booleans, wallet preflight counts, Valkey/Sarvam
+configuration readiness, exact configured origins, and expected WebSocket
+scheme/path. It excludes email, Firebase UID, ticket, credentials/URLs, header
+dumps, transcripts, audio, and provider bodies.
+
+### Explicit live provider probe
+
+The default tests, CI, startup, and deployment never run a live provider call.
+An operator may deliberately run this billable interoperability check from
+`backend/`:
+
+```bash
+ALLOW_LIVE_SARVAM_VOICE_PROBE=true .venv/bin/python scripts/voice_provider_probe.py
+```
+
+It also requires `SARVAM_API_KEY`, refuses without the exact guard, and prints
+only safe connection/event/chunk counts—never transcripts, audio, keys, URLs,
+or provider response bodies.
 
 ## Manual production verification and rollback
 
@@ -161,6 +225,13 @@ provider-confirmed barge-in. Complete a turn, close Voice Mode, confirm both
 text messages appear in ordinary chat, then refresh the browser and confirm
 they persist. Test 320 px portrait and mobile landscape with keyboard focus,
 Escape, reduced motion, and microphone denial.
+
+Before the live smoke, use the internal diagnostics endpoint/panel to verify
+matching frontend/backend releases, Alembic head `e2b7c4d9a1f3`, all three
+Voice features, billing exemption, Valkey and Sarvam configuration, and Origin.
+In DevTools filter `voice/sessions` or **All**, not only `ws`, so prerequisite
+HTTP 201/402/409/503 remains visible. Ignore extension `background.js`, service
+worker, and unrelated preload warnings.
 
 Immediate feature disable: set `WEB_REALTIME_VOICE_ENABLED=false` on the
 existing API service and deploy the API configuration. Bootstrap removes the

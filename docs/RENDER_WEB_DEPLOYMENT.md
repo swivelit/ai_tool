@@ -367,7 +367,14 @@ converted with `AT TIME ZONE 'UTC'`; no OTP rows are deleted or recreated.
 - Publish Directory: `dist`
 - Rewrite: `/*` to `/index.html`
 
-Set the backend and static site to the same explicit Git branch and record the deployed commit SHA during each release. This repository cannot prove the private dashboard selection; verify it in **Settings → Build & Deploy → Branch** for both services.
+Set the backend and static site to the same explicit Git branch. Authenticated
+bootstrap exposes the API's short `RENDER_GIT_COMMIT`; Vite embeds the same
+Render variable during the static build without a manual `VITE_*` release
+setting. The internal Voice diagnostics panel shows both. Two unequal non-dev
+SHAs block only billable Voice start and request a refresh; text chat continues.
+Unavailable/dev metadata does not create a false mismatch. This repository
+cannot prove the private dashboard selection; verify it in **Settings → Build
+& Deploy → Branch** for both services.
 
 Set only the public `VITE_*` values in `web/.env.example`: API base URL and Firebase Web app configuration. Do not place Firebase Admin credentials, model IDs, AI provider names, tier ladders, Razorpay secrets, webhook secrets, or database values in the static site. Customer-facing copy must use only Swico Lite, Swico, and Swico Pro.
 

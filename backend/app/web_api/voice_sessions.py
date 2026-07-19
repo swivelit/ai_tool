@@ -31,9 +31,17 @@ class VoiceSessionConflict(RuntimeError):
     pass
 
 
+class VoiceTicketStoreUnavailable(RuntimeError):
+    """The configured shared ticket store cannot be used safely."""
+
+
+def configured_voice_ticket_store_url() -> str:
+    return os.getenv("WEB_UPLOAD_CACHE_URL", "").strip()
+
+
 class VoiceTicketStore:
     def __init__(self, url: str | None = None) -> None:
-        self._url = str(url if url is not None else os.getenv("WEB_UPLOAD_CACHE_URL", "")).strip()
+        self._url = str(url if url is not None else configured_voice_ticket_store_url()).strip()
         self._redis = None
         self._items: dict[str, tuple[int, str]] = {}
         self._locks: dict[int, tuple[int, str]] = {}
@@ -43,6 +51,19 @@ class VoiceTicketStore:
             self._redis = redis.Redis.from_url(
                 self._url, decode_responses=True, socket_connect_timeout=2, socket_timeout=2
             )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._url)
+
+    def reachable(self) -> bool:
+        """Perform a bounded metadata-only readiness check; never touches tickets."""
+        if self._redis is None:
+            return False
+        try:
+            return bool(self._redis.ping())
+        except Exception:
+            return False
 
     @staticmethod
     def _digest(ticket: str) -> str:
@@ -57,14 +78,21 @@ class VoiceTicketStore:
         lock_ttl = max(1, int(ttl_seconds))
         if self._redis is not None:
             lock_key = f"{ACTIVE_PREFIX}{metadata.user_id}"
-            if not self._redis.set(lock_key, metadata.session_id, nx=True, ex=lock_ttl):
-                raise VoiceSessionConflict("A Voice Mode session is already active.")
             try:
+                if not self._redis.set(lock_key, metadata.session_id, nx=True, ex=lock_ttl):
+                    raise VoiceSessionConflict("A Voice Mode session is already active.")
                 self._redis.setex(f"{TICKET_PREFIX}{digest}", int(ttl_seconds), payload)
-            except Exception:
-                self._redis.delete(lock_key)
+            except VoiceSessionConflict:
                 raise
+            except Exception:
+                try:
+                    self._redis.delete(lock_key)
+                except Exception:
+                    pass
+                raise VoiceTicketStoreUnavailable("Voice ticket store is unavailable.") from None
             return ticket
+        if os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower() in {"prod", "production"}:
+            raise VoiceTicketStoreUnavailable("Voice ticket store is not configured.")
         now = int(time.time())
         with self._lock:
             current = self._locks.get(metadata.user_id)

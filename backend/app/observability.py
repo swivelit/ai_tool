@@ -173,6 +173,12 @@ _SAFE_EXTRA_KEYS = {
     "turn_number",
     "cleanup_succeeded",
     "reservations_released",
+    "backend_release",
+    "selected_tier_id",
+    "selected_language_code",
+    "billing_exempt",
+    "outcome_code",
+    "safe_duration_ms",
 }
 
 _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")

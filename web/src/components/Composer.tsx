@@ -40,6 +40,7 @@ export function Composer({
   attachmentsEnabled = false,
   voiceEnabled = false,
   realtimeVoiceEnabled = false,
+  realtimeVoiceUnavailableReason = 'Voice Mode is not enabled for this account.',
   assistant = DEFAULT_ASSISTANT,
   tierDisabled = false,
   tierSaving = false,
@@ -58,7 +59,7 @@ export function Composer({
   value: string; setValue: (value: string) => void; send: () => void; stop: () => void;
   streaming: boolean; disabled?: boolean; focusKey?: string;
   attachments?: ComposerAttachment[]; attachmentsEnabled?: boolean; voiceEnabled?: boolean;
-  realtimeVoiceEnabled?: boolean; assistant?: AssistantSettings;
+  realtimeVoiceEnabled?: boolean; realtimeVoiceUnavailableReason?: string; assistant?: AssistantSettings;
   tierDisabled?: boolean; tierSaving?: boolean;
   onTierSelect?: (tier: SwicoTier) => Promise<void>; onRealtimeVoice?: () => void;
   voiceResetKey?: string;
@@ -202,7 +203,10 @@ export function Composer({
         {streaming
           ? <button className="send stop" type="button" aria-label="Stop generation" title="Stop generation" onClick={stop}><Square size={15} fill="currentColor" /></button>
           : hasSendableContent ? <button className="send" type="button" aria-label="Send message" title="Send message" disabled={!canSend} onClick={send}><ArrowUp size={20} /></button>
-            : <button className="voice-mode-button" type="button" aria-label="Start real-time Voice Mode" title="Start real-time Voice Mode" disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
+            : <button className="voice-mode-button" type="button"
+              aria-label="Start real-time Voice Mode"
+              title={realtimeVoiceEnabled ? 'Start real-time Voice Mode' : realtimeVoiceUnavailableReason}
+              disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
       </div>
       {dragging && <div className="drop-overlay" aria-hidden="true"><Upload size={20} /> Drop documents to attach</div>}
     </div>

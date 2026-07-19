@@ -71,6 +71,7 @@ from ..models import (
     PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage, WebChatThread,
     WalletLedger, WebUsagePreferences,
 )
+from ..observability import APP_RELEASE, get_request_id
 from ..time_utils import utc_now
 from .chat_service import (
     AttachmentRequestError, DuplicateRequestInProgress, execute_web_turn, prepare_web_turn,
@@ -88,7 +89,9 @@ from .upload_store import (
     EphemeralUpload, UploadStoreUnavailable, expiration_iso, get_upload_store,
     upload_ttl_seconds, utc_iso,
 )
-from .voice_sessions import VoiceSessionConflict, VoiceTicket, VoiceTicketStore
+from .voice_sessions import (
+    VoiceSessionConflict, VoiceTicket, VoiceTicketStore,
+)
 from .realtime_voice import (
     VOICE_CLOSE_CODES, VoiceEndpointConfig, VoiceState, endpoint_delay_ms,
     join_final_segments, provider_error_code,
@@ -99,6 +102,8 @@ logger = logging.getLogger(__name__)
 _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
 _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
+VOICE_PROTOCOL_VERSION = 1
+ALEMBIC_HEAD = "e2b7c4d9a1f3"
 
 
 def _tickets() -> VoiceTicketStore:
@@ -118,6 +123,50 @@ def _env_enabled(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _backend_release() -> str:
+    for name in ("RENDER_GIT_COMMIT", "APP_RELEASE_SHA", "GIT_SHA", "SOURCE_VERSION"):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value[:12]
+    release = str(APP_RELEASE or "").strip()
+    return release[:12] if release and release != "dev" else "dev"
+
+
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(maximum, max(minimum, value))
+
+
+def _bounded_float_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(maximum, max(minimum, value))
+
+
+def _voice_tuning() -> dict[str, int | float]:
+    threshold_min = _bounded_float_env("WEB_VOICE_GATE_THRESHOLD_MIN", 0.012, 0.005, 0.08)
+    threshold_max = max(
+        threshold_min,
+        _bounded_float_env("WEB_VOICE_GATE_THRESHOLD_MAX", 0.065, 0.02, 0.12),
+    )
+    return {
+        "calibration_ms": _bounded_int_env("WEB_VOICE_GATE_CALIBRATION_MS", 400, 300, 500),
+        "noise_multiplier": _bounded_float_env("WEB_VOICE_GATE_NOISE_MULTIPLIER", 2.4, 1.25, 5.0),
+        "threshold_min": threshold_min,
+        "threshold_max": threshold_max,
+        "quiet_fallback": min(
+            threshold_min,
+            _bounded_float_env("WEB_VOICE_GATE_QUIET_FALLBACK", 0.008, 0.006, 0.06),
+        ),
+        "no_speech_warning_ms": _bounded_int_env("WEB_VOICE_NO_SPEECH_WARNING_MS", 10_000, 3_000, 30_000),
+    }
 
 
 def _temporary_error(status_code: int, code: str, message: str) -> JSONResponse:
@@ -361,7 +410,82 @@ def bootstrap(
             "web_realtime_voice": _env_enabled("WEB_REALTIME_VOICE_ENABLED"),
             "separate_voice_credits": _env_enabled("WEB_SEPARATE_VOICE_CREDITS_ENABLED"),
         },
+        "backend_release": _backend_release(),
+        "voice_protocol_version": VOICE_PROTOCOL_VERSION,
+        "voice_tuning": _voice_tuning(),
         "uploads": uploads,
+    }
+
+
+@router.get("/voice/diagnostics")
+def voice_diagnostics(
+    request: Request, response: Response, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    response.headers["Cache-Control"] = "no-store"
+    user = get_owned_user(session, auth)
+    if not is_internal_test_user(auth, user):
+        return _temporary_error(404, "not_found", "Not found.")
+    tier = selected_swico_tier(session, int(user.id))
+    wallets = get_wallet_summaries(
+        session, int(user.id), swico_tier=tier, billing_exempt=True,
+    )
+    voice_required = stt_price(5_000).micros
+    chat_required = _voice_chat_preflight_micros(tier)
+    store = _tickets()
+    configured_origins = sorted({
+        value.strip() for value in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if value.strip()
+    })
+    origin = request.headers.get("origin")
+    return {
+        "ok": True,
+        "protocol_version": VOICE_PROTOCOL_VERSION,
+        "backend_release": _backend_release(),
+        "alembic_head": ALEMBIC_HEAD,
+        "selected_tier_id": tier,
+        "selected_language_code": _resolved_reply_language(user),
+        "features": {
+            "web_realtime_voice": _env_enabled("WEB_REALTIME_VOICE_ENABLED"),
+            "separate_voice_credits": _env_enabled("WEB_SEPARATE_VOICE_CREDITS_ENABLED"),
+            "web_voice_billing": _env_enabled("WEB_VOICE_BILLING_ENABLED"),
+        },
+        "authentication": {
+            "internal_test_user": True,
+            "email_verified": bool(auth.email_verified),
+            "owned_email_matches": bool(
+                auth.email and str(auth.email).strip().casefold() == str(user.email or "").strip().casefold()
+            ),
+        },
+        "wallet_preflight": {
+            "chat": {
+                "billing_exempt": True,
+                "available_micros": max(0, int(wallets["chat"]["available_micros"])),
+                "required_micros": 0,
+                "ready": True,
+                "non_exempt_required_micros": chat_required,
+            },
+            "voice": {
+                "billing_exempt": True,
+                "available_micros": max(0, int(wallets["voice"]["available_micros"])),
+                "required_micros": 0,
+                "ready": True,
+                "non_exempt_required_micros": voice_required,
+            },
+        },
+        "valkey": {"configured": store.configured, "reachable": store.reachable()},
+        "sarvam": {
+            "configured": bool(os.getenv("SARVAM_API_KEY", "").strip()),
+            "stt_model": os.getenv("SARVAM_STT_MODEL", "saaras:v3") or "saaras:v3",
+            "tts_model": normalize_sarvam_tts_model(os.getenv("SARVAM_TTS_MODEL"), premium=False),
+        },
+        "origin": {
+            "configured_origins": configured_origins,
+            "request_origin_allowed": bool(origin and origin in configured_origins),
+        },
+        "websocket": {
+            "expected_scheme": "wss" if request.url.scheme == "https" or str(origin or "").startswith("https://") else "ws",
+            "expected_path": "/api/web/voice/ws",
+        },
     }
 
 
@@ -370,11 +494,26 @@ def create_voice_session(
     request: Request, response: Response,
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
 ):
+    started = time.monotonic()
     response.headers["Cache-Control"] = "no-store"
     user = get_owned_user(session, auth)
+    tier = selected_swico_tier(session, int(user.id))
+    language = _resolved_reply_language(user)
+    billing_exempt = is_internal_test_user(auth, user)
+
+    def outcome(status: int, code: str) -> None:
+        logger.info("voice_session_creation", extra={
+            "request_id": get_request_id(), "backend_release": _backend_release(),
+            "selected_tier_id": tier, "selected_language_code": language,
+            "billing_exempt": billing_exempt, "http_status": status,
+            "outcome_code": code, "safe_duration_ms": int((time.monotonic() - started) * 1000),
+        })
+
     if not _env_enabled("WEB_REALTIME_VOICE_ENABLED"):
+        outcome(503, "feature_disabled")
         return _temporary_error(503, "realtime_voice_disabled", "Real-time Voice Mode is unavailable.")
     if not _env_enabled("WEB_SEPARATE_VOICE_CREDITS_ENABLED"):
+        outcome(503, "wallet_feature_disabled")
         return _temporary_error(503, "voice_wallets_disabled", "Separate Voice credits are unavailable.")
     try:
         _rate_limit(
@@ -385,13 +524,11 @@ def create_voice_session(
         if exc.status_code != 429:
             raise
         session.rollback()
+        outcome(429, "rate_limited")
         return JSONResponse(status_code=429, content={"error": {
             "code": "voice_rate_limit",
             "message": "Too many Voice Mode starts. Please wait a moment.",
         }}, headers={"Cache-Control": "no-store", "Retry-After": "60"})
-    tier = selected_swico_tier(session, int(user.id))
-    language = _resolved_reply_language(user)
-    billing_exempt = is_internal_test_user(auth, user)
     wallets = get_wallet_summaries(
         session, int(user.id), swico_tier=tier, billing_exempt=billing_exempt,
     )
@@ -400,6 +537,7 @@ def create_voice_session(
         voice_available = max(0, int(wallets["voice"]["available_micros"]))
         if voice_available < voice_required:
             session.rollback()
+            outcome(402, "insufficient_voice_credit")
             return JSONResponse(status_code=402, content={"error": {
                 "code": "insufficient_voice_credit",
                 "credit_bucket": "voice",
@@ -411,6 +549,7 @@ def create_voice_session(
         chat_available = max(0, int(wallets["chat"]["available_micros"]))
         if chat_available < chat_required:
             session.rollback()
+            outcome(402, "insufficient_chat_credit")
             return JSONResponse(status_code=402, content={"error": {
                 "code": "insufficient_chat_credit",
                 "credit_bucket": "chat",
@@ -429,15 +568,23 @@ def create_voice_session(
     )
     try:
         ticket = _tickets().mint(metadata, ttl, max_session)
-    except VoiceSessionConflict as exc:
+    except VoiceSessionConflict:
+        outcome(409, "session_conflict")
         return JSONResponse(status_code=409, content={"error": {
-            "code": "voice_session_active", "message": str(exc),
+            "code": "voice_session_active",
+            "message": "Another Voice Mode session may already be active. End it before trying again.",
         }}, headers={"Cache-Control": "no-store"})
+    except Exception:
+        outcome(503, "valkey_unavailable")
+        return _temporary_error(
+            503, "voice_ticket_store_unavailable", "Voice Mode is temporarily unavailable."
+        )
     base = str(request.base_url).rstrip("/")
     websocket_url = ("wss://" + base[8:] if base.startswith("https://")
                      else "ws://" + base[7:] if base.startswith("http://") else base)
+    outcome(201, "ticket_created")
     return {
-        "protocol_version": 1,
+        "protocol_version": VOICE_PROTOCOL_VERSION,
         "session_id": session_id,
         "ticket": ticket,
         "websocket_url": f"{websocket_url}/api/web/voice/ws",
