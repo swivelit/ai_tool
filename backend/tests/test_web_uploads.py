@@ -9,9 +9,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.web_api.document_extraction import DocumentValidationError
+from app.web_api.attachment_context import select_attachment_context
 from app.web_api.upload_store import (
     EphemeralUpload, ExtractedChunk, RedisEphemeralUploadStore, get_upload_store,
-    reset_upload_store_for_tests, utc_iso,
+    reset_upload_store_for_tests, upload_ttl_seconds, utc_iso,
 )
 from tests.conftest import auth_headers, create_test_user
 
@@ -111,6 +112,32 @@ def test_unsupported_mismatch_empty_and_per_file_limit(client, monkeypatch):
     assert too_large.status_code == 413 and too_large.json()["error"]["code"] == "file_too_large"
 
 
+def test_octet_stream_requires_a_valid_signature_and_legacy_doc_is_honest(client):
+    create_test_user("upload-user", "upload-user@example.com")
+    valid = _upload(client, "report.pdf", _supported_files()["pdf"], "application/octet-stream")
+    assert valid.status_code == 201
+    invalid = _upload(client, "report.pdf", b"not a pdf", "application/octet-stream")
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "invalid_pdf"
+    legacy = _upload(client, "report.doc", b"\xd0\xcf\x11\xe0", "application/msword")
+    assert legacy.status_code == 422
+    assert legacy.json()["error"]["code"] == "legacy_doc_conversion_required"
+
+
+def test_encrypted_pdf_is_rejected_explicitly(client):
+    from pypdf import PdfWriter
+
+    create_test_user("upload-user", "upload-user@example.com")
+    value = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.encrypt("private-password")
+    writer.write(value)
+    response = _upload(client, "encrypted.pdf", value.getvalue(), MIME["pdf"])
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "encrypted_document"
+
+
 def test_filename_is_sanitized_and_macro_extension_rejected(client):
     create_test_user("upload-user", "upload-user@example.com")
     response = _upload(client, "../../private/notes.txt", b"safe", "text/plain")
@@ -144,6 +171,71 @@ def test_successful_extraction_for_every_supported_format_preserves_sources(clie
         "pdf": "page ", "docx": "paragraph ", "xlsx": "Budget row ", "pptx": "slide ",
     }[extension]
     assert any(source.startswith(expected_source) for source in upload.source_locators)
+
+
+def test_docx_extracts_headers_and_footers(client):
+    from docx import Document
+    create_test_user("upload-user", "upload-user@example.com")
+    value = io.BytesIO()
+    document = Document()
+    document.add_paragraph("Body")
+    document.sections[0].header.paragraphs[0].text = "Header text"
+    document.sections[0].footer.paragraphs[0].text = "Footer text"
+    document.save(value)
+    response = _upload(client, "header.docx", value.getvalue(), MIME["docx"])
+    assert response.status_code == 201
+    upload = get_upload_store().get(response.json()["id"])
+    assert upload is not None
+    assert any("header" in chunk.source and "Header text" in chunk.text for chunk in upload.chunks)
+    assert any("footer" in chunk.source and "Footer text" in chunk.text for chunk in upload.chunks)
+
+
+def test_likely_scanned_pdf_is_ready_with_explicit_no_ocr_warning(client):
+    from reportlab.pdfgen import canvas
+    create_test_user("upload-user", "upload-user@example.com")
+    value = io.BytesIO()
+    document = canvas.Canvas(value)
+    document.showPage(); document.save()
+    response = _upload(client, "scan.pdf", value.getvalue(), MIME["pdf"])
+    assert response.status_code == 201
+    payload = response.json()
+    assert "likely_scanned_pdf" in payload["warning_codes"]
+    assert any("OCR was not performed" in warning for warning in payload["warnings"])
+    upload = get_upload_store().get(payload["id"])
+    assert upload is not None and upload.chunks == []
+
+
+def test_virtual_text_upload_accepts_50000_chars_and_chunks(client, monkeypatch):
+    monkeypatch.setenv("WEB_LONG_INPUT_ENABLED", "true")
+    create_test_user("upload-user", "upload-user@example.com")
+    text = ("architecture roadmap database api testing deployment " * 1000)[:50_000]
+    response = client.post(
+        "/api/web/uploads/text",
+        headers=auth_headers("upload-user", "upload-user@example.com"),
+        json={
+            "upload_id": "90000000-0000-4000-8000-000000000050",
+            "text": text, "operation": "analyze",
+        },
+    )
+    assert response.status_code == 201
+    upload = get_upload_store().get(response.json()["id"])
+    assert upload is not None and len(upload.chunks) > 20
+    assert upload.virtual_text_operation == "analyze"
+    assert max(len(chunk.text) for chunk in upload.chunks) <= 2000
+    provider_excerpt = select_attachment_context([upload], "Which deployment architecture is described?")
+    assert len(provider_excerpt) <= 8000
+    assert len(provider_excerpt) < len(text)
+    full_operation = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("upload-user", "upload-user@example.com"),
+        json={
+            "request_id": "90000000-0000-4000-8000-000000000051",
+            "message": "Analyze the attached pasted text. Preserve its meaning.",
+            "attachment_ids": [upload.id],
+        },
+    )
+    assert full_operation.status_code == 422
+    assert full_operation.json()["error"]["code"] == "full_document_confirmation_required"
 
 
 def test_upload_ownership_isolation_explicit_delete_and_expiry(client):
@@ -208,6 +300,13 @@ def test_redis_setex_uses_600_and_reads_do_not_renew(monkeypatch):
     store.get(upload.id)
     assert calls[0][0] == "setex" and calls[0][2] == 600
     assert [call[0] for call in calls] == ["setex", "get"]
+
+
+def test_upload_ttl_defaults_to_one_hour_and_is_capped_at_24_hours(monkeypatch):
+    monkeypatch.delenv("WEB_UPLOAD_TTL_SECONDS", raising=False)
+    assert upload_ttl_seconds() == 3600
+    monkeypatch.setenv("WEB_UPLOAD_TTL_SECONDS", "999999")
+    assert upload_ttl_seconds() == 86400
 
 
 @pytest.mark.parametrize("parser_fails", [False, True])

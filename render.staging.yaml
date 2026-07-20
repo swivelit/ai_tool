@@ -36,9 +36,17 @@ projects:
               - key: WEB_SIMPLE_MAX_OUTPUT_TOKENS
                 value: "220"
               - key: WEB_NORMAL_MAX_OUTPUT_TOKENS
-                value: "320"
+                value: "420"
               - key: WEB_DETAILED_MAX_OUTPUT_TOKENS
-                value: "700"
+                value: "1400"
+              - key: WEB_LONG_FORM_MAX_OUTPUT_TOKENS
+                value: "1400"
+              - key: OPENAI_MAX_OUTPUT_TOKENS_HARD
+                value: "1800"
+              - key: WEB_PROVIDER_CALLS_PER_TURN_MAX
+                value: "1"
+              - key: WEB_PROMPT_TOKEN_BREAKDOWN_ENABLED
+                value: "true"
               - key: WEB_CACHE_BEFORE_BILLING_ENABLED
                 value: "true"
               - key: WEB_PROMPT_CACHE_ENABLED
@@ -46,7 +54,27 @@ projects:
               - key: WEB_PROMPT_CACHE_VERSION
                 value: v1
               - key: WEB_MAX_PROVIDER_ATTEMPTS
-                value: "2"
+                value: "1"
+              - key: WEB_MESSAGE_EDIT_ENABLED
+                value: "false"
+              - key: WEB_CROSS_THREAD_MEMORY_ENABLED
+                value: "false"
+              - key: WEB_MEMORY_MAX_ITEMS
+                value: "4"
+              - key: WEB_MEMORY_MAX_CHARS
+                value: "1200"
+              - key: WEB_MEMORY_LLM_SUMMARIZATION_ENABLED
+                value: "false"
+              - key: WEB_LONG_INPUT_ENABLED
+                value: "false"
+              - key: WEB_LONG_INPUT_INLINE_THRESHOLD_CHARS
+                value: "12000"
+              - key: WEB_LONG_INPUT_MAX_CHARS
+                value: "64000"
+              - key: WEB_DOCUMENT_OCR_ENABLED
+                value: "false"
+              - key: WEB_LEGACY_DOC_CONVERSION_ENABLED
+                value: "false"
               - key: WEB_ATTACHMENTS_ENABLED
                 value: "true"
               - key: WEB_VOICE_RECORDING_ENABLED
@@ -56,6 +84,10 @@ projects:
               - key: WEB_VOICE_BILLING_ENABLED
                 value: "false"
               - key: WEB_REALTIME_VOICE_ENABLED
+                value: "false"
+              - key: WEB_REALTIME_VOICE_PLAYBACK_MODE
+                value: pcm_stream
+              - key: WEB_REALTIME_VOICE_BACKCHANNEL_ENABLED
                 value: "false"
               - key: WEB_SEPARATE_VOICE_CREDITS_ENABLED
                 value: "false"
@@ -70,7 +102,7 @@ projects:
               - key: WEB_REALTIME_VOICE_START_RATE_LIMIT_PER_MINUTE
                 value: "5"
               - key: WEB_UPLOAD_TTL_SECONDS
-                value: "600"
+                value: "3600"
               - key: WEB_UPLOAD_MAX_FILE_BYTES
                 value: "10485760"
               - key: WEB_UPLOAD_MAX_FILES_PER_MESSAGE
@@ -80,7 +112,7 @@ projects:
               - key: WEB_UPLOAD_MAX_EXTRACTED_CHARS
                 value: "100000"
               - key: WEB_ATTACHMENT_PROMPT_MAX_CHARS
-                value: "8000"
+                value: "6000"
               - key: WEB_AUDIO_MAX_SECONDS
                 value: "300"
               - key: WEB_TTS_MAX_CHARACTERS

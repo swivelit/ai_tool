@@ -100,9 +100,9 @@ from sqlmodel import SQLModel, delete
 
 from app.database import SessionLocal, engine
 from app.main import app, _get_job_queue
-from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, PaymentOrder, ProcessedWebhook, QACache, RagEmbedding, UsageCharge, User, UserProfile, WalletAccount, WalletLedger, WebChatMessage, WebChatThread, WebUsagePeriodLock, WebUsagePreferences
+from app.models import AIUsageEvent, AgentRun, AgentStep, ApiRateLimit, Conversation, DailyRoutine, DocumentArtifact, EmailOtpCode, GlobalQACache, GlobalQAObservation, GlobalQATombstone, Item, Job, OpenAIUsageLog, PaymentOrder, ProcessedWebhook, QACache, RagEmbedding, UsageCharge, User, UserProfile, WalletAccount, WalletLedger, WebChatMessage, WebChatThread, WebConversationSummary, WebMemoryFact, WebUsagePeriodLock, WebUsagePreferences
 
-WEB_MODELS = [ProcessedWebhook, WalletLedger, UsageCharge, WebChatMessage, WebChatThread, PaymentOrder, WalletAccount, ApiRateLimit, WebUsagePeriodLock, WebUsagePreferences]
+WEB_MODELS = [ProcessedWebhook, WalletLedger, UsageCharge, WebMemoryFact, WebConversationSummary, WebChatMessage, WebChatThread, PaymentOrder, WalletAccount, ApiRateLimit, WebUsagePeriodLock, WebUsagePreferences]
 
 
 def auth_headers(uid: str, email: str | None = None) -> dict[str, str]:
@@ -128,11 +128,13 @@ def create_test_user(uid: str = "test-uid", email: str = "test@example.com", nam
 
 @pytest.fixture(autouse=True)
 def clean_db():
+    from app.ai.model_health import clear_model_health
     from app.web_api.upload_store import reset_upload_store_for_tests
     from app.web_api.router import reset_voice_ticket_store_for_tests
 
     reset_upload_store_for_tests()
     reset_voice_ticket_store_for_tests()
+    clear_model_health()
     SQLModel.metadata.create_all(engine)
     queue = _get_job_queue()
     queue.stop()
@@ -143,6 +145,7 @@ def clean_db():
     yield
     reset_upload_store_for_tests()
     reset_voice_ticket_store_for_tests()
+    clear_model_health()
     queue.stop()
     with SessionLocal() as session:
         for model in [*WEB_MODELS, AgentStep, AgentRun, AIUsageEvent, OpenAIUsageLog, GlobalQAObservation, GlobalQATombstone, GlobalQACache, Job, RagEmbedding, Conversation, QACache, DocumentArtifact, Item, DailyRoutine, UserProfile, User, EmailOtpCode]:

@@ -54,6 +54,17 @@ def test_standalone_sends_zero_context_and_contextual_caps(monkeypatch):
     assert "question 5" in followup.formatted_context
 
 
+def test_complete_software_developer_roadmap_is_long_form(monkeypatch):
+    monkeypatch.setenv("WEB_LONG_FORM_MAX_OUTPUT_TOKENS", "1400")
+    monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "1800")
+    result = optimize_web_turn(
+        "I want to become a software developer. Give me a complete roadmap"
+    )
+    assert result.answer_class == "long_form"
+    assert result.max_output_tokens == 1400
+    assert result.max_output_tokens > optimize_web_turn("What is Python?").max_output_tokens
+
+
 def test_compact_profile_is_selective_private_and_bounded(monkeypatch):
     monkeypatch.setenv("WEB_PROFILE_PROMPT_MAX_CHARS", "500")
     profile = {

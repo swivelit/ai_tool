@@ -1,37 +1,45 @@
-# Current Swico V1 Architecture
+# Current Swico architecture
 
-## High Level Flow
+## Standalone website path
 
-User
-↓
-FastAPI Endpoint
-↓
-Router
-↓
-Agent Runtime
-↓
-Sarvam AI / OpenAI
-↓
-Response
+The production website does **not** use `AgentRuntime`.
 
-## Components
+```text
+web/src/pages/ChatPage.tsx
+  -> web/src/api/client.ts streamChat()
+  -> POST /api/web/chat/stream
+  -> backend/app/web_api/router.py
+  -> backend/app/web_api/chat_service.py prepare_web_turn()
+  -> backend/app/web_api/request_coordinator.py WebRequestCoordinator
+  -> execute_web_turn()
+  -> AIProviderRouter
+  -> OpenAIProvider or SarvamProvider
+  -> SSE
+```
 
-### Router
-- Receives request
-- Detects intent
-- Routes request
+`WebRequestCoordinator` is deterministic and provider-free. It classifies the
+answer size, selects bounded same-thread, cross-thread memory, profile, and
+document sources, freezes one exact provider prompt, and supplies safe token
+source telemetry. Normal provider-backed turns permit one paid generation
+attempt. A configured fallback is safe only after zero output and zero reported
+usage.
 
-### Agent Runtime
-- Executes AI workflow
-- Calls AI providers
+Website messages, revisions, user-scoped memory, reservations, settled usage,
+and wallet ledger records live in PostgreSQL. Temporary extracted attachment
+text lives in the dedicated private Valkey and raw uploads are not retained.
 
-### AI Providers
-- Sarvam AI
-- OpenAI
+## Legacy/mobile orchestration path
 
-## Current Challenges
+`backend/app/ai/orchestrator.py` uses `AgentRuntime` for another, legacy/mobile
+path. Its `MemoryAgent` and `RetrievalAgent` remain prototypes and are not a
+production website data source. Website traffic must not be redirected through
+that runtime.
 
-- High token consumption
-- Limited memory
-- No centralized orchestration
-- Limited retrieval optimization
+## Voice path
+
+Real-time website voice uses the existing WebSocket pipeline in
+`backend/app/web_api/router.py`, `SarvamStreamingProvider`, and
+`web/src/hooks/useRealtimeVoice.ts`: AudioWorklet PCM frames, streaming STT,
+deterministic adaptive endpointing, one finalized transcript per generation,
+incremental model deltas, early clause TTS, streamed audio, provider-confirmed
+barge-in, and separate billing settlement.

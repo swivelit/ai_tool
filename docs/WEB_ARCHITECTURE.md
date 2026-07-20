@@ -17,7 +17,8 @@ The existing FastAPI process conditionally mounts `backend/app/web_api/router.py
 
 ### Web Turn Optimizer / Token Guardian
 
-Website text turns pass through a deterministic Python optimizer before wallet
+Website text turns pass through `backend/app/web_api/request_coordinator.py`
+and its deterministic optimizer before wallet
 reservation. Greetings, thanks, capability answers, safety blocks, unsupported
 web-only tools, and approved cache hits use the existing persistence/SSE path
 with zero provider calls and no reservation. Cache lookup uses the existing
@@ -43,7 +44,9 @@ Valkey, or on billing cron jobs.
 Standalone questions send no historical turns. Contextual follow-ups use the
 shared `classify_contextual_followup` rules and send at most two recent turns
 and 900 formatted characters by default. Profile and attachment blocks are
-selective and bounded at 500 and 8,000 characters. The exact provider messages
+selective and bounded at 500 and 6,000 characters. Cross-thread memory is
+retrieved only for explicit lexical memory requests, is owner-scoped, and is
+bounded to four items / 1,200 characters. The exact provider messages
 are built once and reused for model-cost ordering, the conservative wallet
 reservation, provider budget guard, provider request, and telemetry. Simple
 turns may reorder healthy candidates only inside the selected Swico tier by
@@ -52,14 +55,63 @@ primary-first order.
 
 A successful provider turn makes one network generation attempt. One fallback
 is permitted only after a zero-output, zero-usage failure and only within
-`WEB_MAX_PROVIDER_ATTEMPTS`. Prompt-cache request parameters are disabled by
+`WEB_PROVIDER_CALLS_PER_TURN_MAX`. The production-safe default is one.
+Prompt-cache request parameters are disabled by
 default because cache-write token pricing is not yet included in settlement.
-Sanitized decisions and counts are stored in the existing assistant message
-metadata; no schema migration or new service is required. Set
+Sanitized decisions and counts are stored in assistant message metadata. The
+additive revision `f9c2d7a4e1b6` adds active message revisions and user-scoped
+memory tables. Set
 `WEB_TURN_OPTIMIZER_ENABLED=false` for an application-level rollback to the
 legacy context/profile behavior.
 
 OpenAI streaming uses provider deltas and the final usage event. Sarvam streaming is used when supported by the installed SDK; otherwise the service emits the completed response as one `delta` and marks estimated usage where needed.
+
+## Completion, revisions, and memory
+
+Provider completion status is normalized to `finish_reason`, `truncated`, and
+`completion_status` on the assistant message and SSE `done` event. The browser
+offers Continue only for a completed truncated answer. Continue is a new billed
+request and sends only a bounded tail of the interrupted answer.
+
+With `WEB_MESSAGE_EDIT_ENABLED=true`, only the latest active user message can be
+edited. The original user/assistant rows are marked superseded and the new user
+row links back with an incremented revision number. Normal history/context reads
+exclude superseded rows. Usage charges and wallet ledger rows are append-only
+and are never edited during regeneration.
+
+Cross-thread memory requires both the deployment flag and user opt-in. Explicit
+memory requests use deterministic owner-scoped lexical ranking over at most four
+facts/summaries and 1,200 formatted characters. The deterministic writer stores
+only explicit durable preferences/projects and bounded project/roadmap summaries;
+it skips recognized sensitive statements. It makes no embedding or LLM call.
+
+## Documents and large pasted text
+
+Temporary uploads are extension-allowlisted and content-signature/container
+validated. Text PDFs use `pypdf`; likely scanned PDFs return an explicit warning
+that OCR was not performed. DOCX extraction includes paragraphs, tables,
+headers, footers, and supported Word XML text boxes. The API does not bundle an
+OCR or legacy `.doc` converter worker, so those flags remain false and `.doc`
+asks the user to save as DOCX. Extracted text expires after 3,600 seconds by
+default (maximum 24 hours); raw upload retention remains disabled.
+
+When enabled, pasted input above 12,000 characters is stored as a temporary
+virtual text attachment and chunked instead of being sent inline. Question
+answering uses bounded lexical chunk retrieval. Whole-document summarize,
+analyze, rewrite, or translate operations that exceed the 6,000-character
+attachment prompt budget return `full_document_confirmation_required`; no text
+is silently truncated into a misleading complete operation.
+
+## Realtime voice
+
+The existing AudioWorklet/STT/model/TTS pipeline remains concurrent. Adaptive
+endpointing combines transcript completion/stability, pause length, utterance
+duration, and local prosody evidence; partial transcripts never start model
+generation. First-clause TTS runs before model completion, and provider-confirmed
+speech start atomically cancels generation and audio. Optional local deterministic
+backchannel audio is rate-limited, makes no provider call, and defaults off.
+Telemetry records first STT partial, final transcript, first model delta, first
+TTS audio, and barge-in stop latency without logging audio or transcript text.
 
 ## Storage
 

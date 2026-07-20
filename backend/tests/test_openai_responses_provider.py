@@ -44,6 +44,36 @@ class _Client:
         self.chat = type("Chat", (), {"completions": self.completions})()
 
 
+def test_responses_stream_maps_incomplete_max_output_to_truncation():
+    usage = type("Usage", (), {"input_tokens": 10, "output_tokens": 8, "input_tokens_details": None})()
+    incomplete = type("Final", (), {
+        "status": "incomplete", "usage": usage,
+        "incomplete_details": type("Details", (), {"reason": "max_output_tokens"})(),
+    })()
+    events = [
+        type("Event", (), {"type": "response.created", "response": type("Created", (), {"status": "in_progress", "usage": None})()})(),
+        type("Event", (), {"type": "response.output_text.delta", "delta": "partial answer", "response": None})(),
+        type("Event", (), {"type": "response.completed", "response": incomplete})(),
+    ]
+    client = _Client()
+    client.responses = _Recorder(events)
+    route = AIRoute(
+        provider="openai", model="gpt-5.4-mini", route="openai_general",
+        reason="test", language="en", intent="general", max_output_tokens=8,
+        model_candidates=["gpt-5.4-mini"], provider_endpoint_candidates=["responses"],
+    )
+    response = OpenAIProvider(client).stream_complete(
+        AIRequest(
+            user_id=1, message="Explain", reply_language="en", channel="text",
+            request_id="truncated-stream", metadata={"max_provider_attempts": 1},
+        ),
+        route, lambda _delta: None,
+    )
+    assert response.raw["finish_reason"] == "length"
+    assert response.raw["truncated"] is True
+    assert response.raw["completion_status"] == "incomplete"
+
+
 def test_gpt5_nano_uses_responses_without_chat_only_params():
     client = _Client()
 
@@ -120,4 +150,3 @@ def test_openai_provider_respects_single_route_candidate():
     assert response.raw["endpoint"] == "chat_completions"
     assert client.completions.calls[0]["model"] == "gpt-4.1-nano"
     assert client.responses.calls == []
-

@@ -81,8 +81,9 @@ Exact environment delta for this release:
 The Web Turn Optimizer values below belong directly on the existing **ai_tool**
 API service. Do not add them to a shared environment group, the static site,
 `swico-web`, `web/.env.example`, any `VITE_*` variable, the PostgreSQL service,
-the Valkey service, or billing cron jobs. No Render resource or database
-migration is required:
+the Valkey service, or billing cron jobs. No new Render resource is required;
+Alembic revision `f9c2d7a4e1b6` must run before enabling message editing or
+cross-thread memory:
 
 ```text
 WEB_TURN_OPTIMIZER_ENABLED=true
@@ -90,14 +91,28 @@ WEB_SWICO_BRAND_GUARD_ENABLED=true
 WEB_CONTEXT_MAX_TURNS=2
 WEB_CONTEXT_MAX_CHARS=900
 WEB_PROFILE_PROMPT_MAX_CHARS=500
-WEB_ATTACHMENT_PROMPT_MAX_CHARS=8000
+WEB_ATTACHMENT_PROMPT_MAX_CHARS=6000
 WEB_SIMPLE_MAX_OUTPUT_TOKENS=220
-WEB_NORMAL_MAX_OUTPUT_TOKENS=320
-WEB_DETAILED_MAX_OUTPUT_TOKENS=700
+WEB_NORMAL_MAX_OUTPUT_TOKENS=420
+WEB_DETAILED_MAX_OUTPUT_TOKENS=1400
+WEB_LONG_FORM_MAX_OUTPUT_TOKENS=1400
+OPENAI_MAX_OUTPUT_TOKENS_HARD=1800
+WEB_PROVIDER_CALLS_PER_TURN_MAX=1
+WEB_PROMPT_TOKEN_BREAKDOWN_ENABLED=true
 WEB_CACHE_BEFORE_BILLING_ENABLED=true
 WEB_PROMPT_CACHE_ENABLED=false
 WEB_PROMPT_CACHE_VERSION=v1
-WEB_MAX_PROVIDER_ATTEMPTS=2
+WEB_MAX_PROVIDER_ATTEMPTS=1
+WEB_MESSAGE_EDIT_ENABLED=false
+WEB_CROSS_THREAD_MEMORY_ENABLED=false
+WEB_MEMORY_MAX_ITEMS=4
+WEB_MEMORY_MAX_CHARS=1200
+WEB_MEMORY_LLM_SUMMARIZATION_ENABLED=false
+WEB_LONG_INPUT_ENABLED=false
+WEB_LONG_INPUT_INLINE_THRESHOLD_CHARS=12000
+WEB_LONG_INPUT_MAX_CHARS=64000
+WEB_DOCUMENT_OCR_ENABLED=false
+WEB_LEGACY_DOC_CONVERSION_ENABLED=false
 ```
 
 Keep prompt caching disabled for this pass: provider cache-write token billing
@@ -108,12 +123,21 @@ The narrower Swico Brand Guard rollback is
 `WEB_SWICO_BRAND_GUARD_ENABLED=false`; it restores the previous provider path
 for public product questions while retaining the vendor-neutral public prompt.
 
+After the migration and staging verification, enable high-impact features one
+at a time on the API service only: `WEB_MESSAGE_EDIT_ENABLED=true`, then
+`WEB_CROSS_THREAD_MEMORY_ENABLED=true` (users still opt in individually), then
+`WEB_LONG_INPUT_ENABLED=true`. Leave `WEB_DOCUMENT_OCR_ENABLED=false` and
+`WEB_LEGACY_DOC_CONVERSION_ENABLED=false`: this release does not deploy an
+isolated OCR or legacy Office converter worker. Scanned PDFs are reported as
+likely scanned, and `.doc` uploads instruct the user to save as DOCX.
+
 - Add API variable `BILLING_CHECKOUT_ENABLED=false` (backend-only, explicit in production).
 - Add these backend-only variables with the shown safe defaults:
 
   ```dotenv
   WEB_REALTIME_VOICE_ENABLED=false
-  WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3
+  WEB_REALTIME_VOICE_PLAYBACK_MODE=pcm_stream
+  WEB_REALTIME_VOICE_BACKCHANNEL_ENABLED=false
   SARVAM_TTS_STREAM_OUTPUT_CODEC=mp3
   SARVAM_TTS_STREAM_SAMPLE_RATE=24000
   WEB_SEPARATE_VOICE_CREDITS_ENABLED=false
@@ -170,7 +194,7 @@ All four billing amounts above are integer paise: `1000` is ₹10 and `29900` is
 
 For the controlled release, set `RAZORPAY_MODE=test` and prove that `RAZORPAY_KEY_ID` starts with `rzp_test_`. Do not add Live credentials yet. Production startup validates these combinations without logging values and exits before serving if they are unsafe.
 
-Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores selected web-tier audit fields, revision `a7c4e9d2f1b6` adds the nullable billing-exemption reason, revision `c5d8a2e9f4b1` classifies authoritative chat/STT/TTS charges and their voice units, and revision `e2b7c4d9a1f3` adds independent Chat and Voice credit buckets. It backfills every historical wallet, ledger entry, payment order, and usage charge as Chat without changing an amount. Voice wallets are created idempotently with zero balance; existing funds are never copied. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, both wallet balances, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode Chat and Voice checkout, duplicate webhook replay, reconciliation, audit, and same-bucket refunds after intentionally enabling the switch there.
+Run the pre-deploy migration before enabling website traffic. Revision `9d2f6a1c4b7e` additively stores selected web-tier audit fields, revision `a7c4e9d2f1b6` adds the nullable billing-exemption reason, revision `c5d8a2e9f4b1` classifies authoritative chat/STT/TTS charges and their voice units, revision `e2b7c4d9a1f3` adds independent Chat and Voice credit buckets, and revision `f9c2d7a4e1b6` adds message revisions, the per-user memory switch, and user-scoped memory tables without changing settled charges. The earlier bucket migration backfills every historical wallet, ledger entry, payment order, and usage charge as Chat without changing an amount. Voice wallets are created idempotently with zero balance; existing funds are never copied. The Alembic pre-deploy command must succeed before the new API starts. Verify `/api/web/health`, authenticated bootstrap/assistant/profile/usage contracts, both wallet balances, each enabled tier's contained fallback behavior, existing-credit chat while checkout is disabled, then Test Mode Chat and Voice checkout, duplicate webhook replay, reconciliation, audit, and same-bucket refunds after intentionally enabling the switch there.
 
 This release uses the existing API service, PostgreSQL database, and private
 Valkey at `WEB_UPLOAD_CACHE_URL`. It needs no new Render service, database,
@@ -195,12 +219,12 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
    WEB_VOICE_RECORDING_ENABLED=true
    WEB_VOICE_BILLING_ENABLED=true
    WEB_VOICE_REPLY_ENABLED=true
-   WEB_UPLOAD_TTL_SECONDS=600
+   WEB_UPLOAD_TTL_SECONDS=3600
    WEB_UPLOAD_MAX_FILE_BYTES=10485760
    WEB_UPLOAD_MAX_FILES_PER_MESSAGE=5
    WEB_UPLOAD_MAX_TOTAL_BYTES=26214400
    WEB_UPLOAD_MAX_EXTRACTED_CHARS=100000
-   WEB_ATTACHMENT_PROMPT_MAX_CHARS=8000
+   WEB_ATTACHMENT_PROMPT_MAX_CHARS=6000
    WEB_AUDIO_MAX_SECONDS=300
    WEB_TTS_MAX_CHARACTERS=5000
    WEB_UPLOAD_RATE_LIMIT_PER_MINUTE=10
@@ -208,7 +232,8 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
    WEB_TTS_RATE_LIMIT_PER_MINUTE=10
    WEB_UPLOAD_STORE_RAW=false
    WEB_REALTIME_VOICE_ENABLED=false
-   WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3
+   WEB_REALTIME_VOICE_PLAYBACK_MODE=pcm_stream
+   WEB_REALTIME_VOICE_BACKCHANNEL_ENABLED=false
    SARVAM_TTS_STREAM_OUTPUT_CODEC=mp3
    SARVAM_TTS_STREAM_SAMPLE_RATE=24000
    WEB_SEPARATE_VOICE_CREDITS_ENABLED=false

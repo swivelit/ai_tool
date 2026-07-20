@@ -20,10 +20,11 @@ from app.database import SessionLocal
 from app.models import WebUsagePreferences
 from app.web_api.router import (
     _tickets, _voice_audio_end, _voice_audio_start, _voice_playback_selection,
-    _voice_tts_chunks,
+    _voice_backchannel_due, _voice_tts_chunks,
 )
+from app.web_api.adaptive_endpointing import TranscriptClassification
 from app.web_api.realtime_voice import (
-    VoiceEndpointConfig, endpoint_delay_ms, join_final_segments,
+    VoiceEndpointConfig, VoiceState, endpoint_delay_ms, join_final_segments,
     safe_provider_category, transcript_appears_unfinished,
 )
 from app.web_api.voice_sessions import VoiceTicket, VoiceTicketStore
@@ -130,7 +131,7 @@ def test_internal_voice_diagnostics_are_safe_and_hidden_from_normal_users(client
     assert response.headers["cache-control"] == "no-store"
     body = response.json()
     assert body["backend_release"] == "208e3024abcd"
-    assert body["alembic_head"] == "e2b7c4d9a1f3"
+    assert body["alembic_head"] == "f9c2d7a4e1b6"
     assert body["authentication"] == {
         "internal_test_user": True, "email_verified": True, "owned_email_matches": True,
     }
@@ -605,3 +606,23 @@ def test_tts_chunks_release_complete_sentences_before_the_answer_finishes():
     chunks, pending = _voice_tts_chunks(pending, final=True)
     assert chunks == ["Tail"]
     assert pending == ""
+
+
+def test_backchannel_gate_is_local_rate_limited_and_never_completes_a_turn():
+    # This pure gate has no request/provider argument and only authorizes a
+    # locally bundled cue; model generation remains tied to finalized STT.
+    assert _voice_backchannel_due(
+        enabled=True, state=VoiceState.LISTENING, utterance_started_at=10.0,
+        last_backchannel_at=0.0, now=18.0,
+        classification=TranscriptClassification.UNFINISHED,
+    )
+    assert not _voice_backchannel_due(
+        enabled=True, state=VoiceState.LISTENING, utterance_started_at=10.0,
+        last_backchannel_at=17.0, now=18.0,
+        classification=TranscriptClassification.UNFINISHED,
+    )
+    assert not _voice_backchannel_due(
+        enabled=True, state=VoiceState.LISTENING, utterance_started_at=10.0,
+        last_backchannel_at=0.0, now=18.0,
+        classification=TranscriptClassification.COMPLETE,
+    )
