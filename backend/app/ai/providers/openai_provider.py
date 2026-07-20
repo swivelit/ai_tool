@@ -102,6 +102,7 @@ class OpenAIProvider(AIProvider):
             "provider_attempts": int(metadata.get("provider_attempts") or len(metadata.get("attempted_models") or []) or 1),
             "provider_calls_with_usage": int(metadata.get("provider_calls_with_usage") or (1 if metadata.get("actual_input_tokens") is not None or metadata.get("actual_output_tokens") is not None else 0)),
             "actual_cost_usd": metadata.get("actual_cost_usd"),
+            **_completion_metadata(response),
         }
         return AIProviderResponse(
             text=text or "I could not produce an answer. Please try again.",
@@ -147,6 +148,9 @@ class OpenAIProvider(AIProvider):
             text_parts: list[str] = []
             input_tokens = output_tokens = cached_tokens = cache_write_tokens = 0
             provider_usage_received = False
+            finish_reason = "unknown"
+            completion_status = "unknown"
+            incomplete_reason = ""
             budget_router = OpenAIModelRouter()
             budget_input = int(request.metadata.get("estimated_prompt_tokens") or budget_router.estimate_tokens(canonical_prompt))
             budget_output = min(route.max_output_tokens, budget_router.max_output_hard)
@@ -181,6 +185,9 @@ class OpenAIProvider(AIProvider):
                         "cancelled": True,
                         "provider_attempts": provider_attempts,
                         "provider_calls_with_usage": 1 if provider_usage_received else 0,
+                        "finish_reason": "cancelled",
+                        "truncated": False,
+                        "completion_status": "cancelled",
                     },
                 )
 
@@ -210,6 +217,13 @@ class OpenAIProvider(AIProvider):
                                 text_parts.append(delta)
                                 on_delta(delta)
                         response = getattr(event, "response", None)
+                        if event_type == "response.created" and response is not None:
+                            completion_status = str(getattr(response, "status", "") or "in_progress")
+                        if event_type in {"response.completed", "response.incomplete", "response.failed"}:
+                            final_metadata = _completion_metadata(response)
+                            finish_reason = str(final_metadata["finish_reason"])
+                            completion_status = str(final_metadata["completion_status"])
+                            incomplete_reason = str(final_metadata.get("incomplete_reason") or "")
                         usage = getattr(response, "usage", None)
                         if usage is not None:
                             provider_usage_received = True
@@ -236,6 +250,10 @@ class OpenAIProvider(AIProvider):
                         check_cancelled()
                         choices = getattr(chunk, "choices", None) or []
                         if choices:
+                            observed_finish = getattr(choices[0], "finish_reason", None)
+                            if observed_finish:
+                                finish_reason = _normalize_finish_reason(observed_finish)
+                                completion_status = "incomplete" if finish_reason == "length" else "complete"
                             delta = str(
                                 getattr(getattr(choices[0], "delta", None), "content", "") or ""
                             )
@@ -303,6 +321,10 @@ class OpenAIProvider(AIProvider):
                             if provider_attempts > 1
                             else route.metadata.get("selected_model_reason") or "configured_primary"
                         ),
+                        "finish_reason": finish_reason,
+                        "truncated": finish_reason == "length",
+                        "completion_status": completion_status,
+                        "incomplete_reason": incomplete_reason,
                     },
                 )
             except GenerationCancelled:
@@ -347,6 +369,52 @@ def _extract_response_text(response: Any) -> str:
     except Exception:
         return ""
     return ""
+
+
+def _value(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _normalize_finish_reason(value: Any) -> str:
+    reason = str(value or "").strip().lower()
+    if reason in {"length", "max_output_tokens", "max_tokens"}:
+        return "length"
+    if reason in {"stop", "completed", "complete", "end_turn"}:
+        return "stop"
+    if reason in {"content_filter", "safety"}:
+        return "content_filter"
+    if reason in {"cancelled", "canceled"}:
+        return "cancelled"
+    if reason in {"tool_calls", "function_call"}:
+        return reason
+    return reason or "unknown"
+
+
+def _completion_metadata(response: Any) -> dict[str, Any]:
+    status = str(_value(response, "status", "") or "").strip().lower()
+    incomplete = _value(response, "incomplete_details", None)
+    incomplete_reason = str(_value(incomplete, "reason", "") or "").strip().lower()
+    finish_reason = "unknown"
+    choices = _value(response, "choices", None) or []
+    if choices:
+        finish_reason = _normalize_finish_reason(_value(choices[0], "finish_reason", None))
+    elif incomplete_reason:
+        finish_reason = _normalize_finish_reason(incomplete_reason)
+    elif status in {"completed", "complete"}:
+        finish_reason = "stop"
+    completion_status = (
+        "incomplete" if status == "incomplete" or finish_reason == "length"
+        else "complete" if status in {"completed", "complete"} or finish_reason == "stop"
+        else status or "unknown"
+    )
+    return {
+        "finish_reason": finish_reason,
+        "truncated": finish_reason == "length",
+        "completion_status": completion_status,
+        "incomplete_reason": incomplete_reason,
+    }
 
 
 def _exception_reported_output_or_usage(exc: Exception) -> bool:

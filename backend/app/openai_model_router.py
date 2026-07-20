@@ -147,7 +147,7 @@ class OpenAIModelRouter:
         self.disable_highest = _env_bool("OPENAI_DISABLE_HIGHEST_MODEL", True)
         self.daily_budget_usd = _env_float("OPENAI_DAILY_BUDGET_USD", 0.0)
         self.max_output_default = _env_int("OPENAI_MAX_OUTPUT_TOKENS_DEFAULT", 450, minimum=1)
-        self.max_output_hard = _env_int("OPENAI_MAX_OUTPUT_TOKENS_HARD", 900, minimum=1)
+        self.max_output_hard = _env_int("OPENAI_MAX_OUTPUT_TOKENS_HARD", 1800, minimum=1)
         self.high_allowlist = {
             item.strip().lower()
             for item in _env_str("OPENAI_HIGH_MODEL_ALLOWLIST", "").split(",")

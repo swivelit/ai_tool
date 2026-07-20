@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import math
+from collections import Counter
 from dataclasses import dataclass
 
 from .upload_store import EphemeralUpload
@@ -15,9 +17,21 @@ UNTRUSTED_ATTACHMENT_INSTRUCTION = (
 )
 
 
+class FullDocumentConfirmationRequired(ValueError):
+    """An all-text operation cannot fit the bounded attachment prompt."""
+
+
+_FULL_TEXT_ACTIONS = {
+    "summarize": "summarize",
+    "analyze": "analyze",
+    "rewrite": "rewrite",
+    "translate": "translate",
+}
+
+
 @dataclass(frozen=True)
 class RankedChunk:
-    score: int
+    score: float
     upload_index: int
     chunk_index: int
     label: str
@@ -34,7 +48,7 @@ def _tokens(value: str) -> set[str]:
 
 def attachment_prompt_max_chars() -> int:
     try:
-        value = int(os.getenv("WEB_ATTACHMENT_PROMPT_MAX_CHARS", "8000"))
+        value = int(os.getenv("WEB_ATTACHMENT_PROMPT_MAX_CHARS", "6000"))
     except ValueError:
         value = 8_000
     return min(100_000, max(1_000, value))
@@ -43,11 +57,44 @@ def attachment_prompt_max_chars() -> int:
 def select_attachment_context(uploads: list[EphemeralUpload], question: str) -> str:
     if not uploads:
         return ""
+    limit = attachment_prompt_max_chars()
+    normalized_question = " ".join(str(question or "").lower().split())
+    full_uploads = [
+        upload for upload in uploads
+        if upload.virtual_text_operation in _FULL_TEXT_ACTIONS
+        and normalized_question.startswith(
+            f"{_FULL_TEXT_ACTIONS[upload.virtual_text_operation]} the attached pasted text"
+        )
+    ]
+    if full_uploads:
+        blocks = [
+            f"[{upload.name}, {chunk.source}]\n{chunk.text.strip()}"
+            for upload in full_uploads for chunk in upload.chunks if chunk.text.strip()
+        ]
+        full_context = "\n\n".join(blocks)
+        if len(full_context) > limit:
+            raise FullDocumentConfirmationRequired(
+                "This action needs the complete pasted text, which exceeds the current prompt budget. "
+                "Narrow the request or explicitly confirm a larger, separately budgeted document operation."
+            )
+        return full_context
     question_tokens = _tokens(question)
+    all_chunks = [chunk for upload in uploads for chunk in upload.chunks]
+    document_frequency = Counter(
+        token for chunk in all_chunks for token in _tokens(chunk.text)
+    )
     ranked: list[RankedChunk] = []
     for upload_index, upload in enumerate(uploads):
         for chunk_index, chunk in enumerate(upload.chunks):
-            overlap = len(question_tokens & _tokens(chunk.text)) if question_tokens else 0
+            chunk_tokens = _tokens(chunk.text)
+            overlap_terms = question_tokens & chunk_tokens
+            lexical = sum(
+                math.log((len(all_chunks) + 1) / (document_frequency[token] + 1)) + 1.0
+                for token in overlap_terms
+            )
+            phrase = 2.5 if question.strip().lower() in chunk.text.lower() else 0.0
+            length_normalizer = 1.0 + max(0, len(chunk_tokens) - 120) / 600
+            overlap = (lexical + phrase) / length_normalizer if question_tokens else 0.0
             label = f"[{upload.name}, {chunk.source}]"
             ranked.append(RankedChunk(overlap, upload_index, chunk_index, label, chunk.text))
 
@@ -84,7 +131,6 @@ def select_attachment_context(uploads: list[EphemeralUpload], question: str) -> 
             if len(selected) >= 5:
                 break
 
-    limit = attachment_prompt_max_chars()
     blocks: list[str] = []
     used = 0
     for item in selected:

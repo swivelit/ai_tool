@@ -185,7 +185,7 @@ def _max_output_tokens(message: str = "") -> int:
     except Exception:
         default = 450
     try:
-        hard = int(str(os.getenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "900")).strip())
+        hard = int(str(os.getenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "1800")).strip())
     except Exception:
-        hard = 900
+        hard = 1800
     return concise_max_output_tokens(message, configured_default=default, configured_hard=hard)

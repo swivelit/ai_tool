@@ -34,12 +34,20 @@ class WebChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: UUID
-    message: str = Field(default="", max_length=16_000)
+    message: str = Field(default="", max_length=64_000)
     thread_id: UUID | None = None
     reply_language: str | None = Field(default=None, max_length=16)
     input_mode: Literal["text", "voice", "dictation", "realtime_voice"] = "text"
     voice_turn_id: UUID | None = None
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=5)
+    continue_message_id: UUID | None = None
+    edit_message_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def exclusive_mutation(self):
+        if self.continue_message_id is not None and self.edit_message_id is not None:
+            raise ValueError("continue_message_id and edit_message_id cannot be combined")
+        return self
 
     @field_validator("message")
     @classmethod
@@ -57,6 +65,25 @@ class WebChatRequest(BaseModel):
         if self.input_mode == "text" and self.voice_turn_id is not None:
             raise ValueError("voice_turn_id is only valid for voice input")
         return self
+
+
+class VirtualTextUploadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    upload_id: UUID
+    text: str = Field(min_length=1, max_length=64_000)
+    operation: Literal["summarize", "analyze", "ask_questions", "rewrite", "translate"] = "analyze"
+
+    @field_validator("text")
+    @classmethod
+    def valid_unicode(cls, value: str) -> str:
+        try:
+            value.encode("utf-8", errors="strict")
+        except UnicodeError as exc:
+            raise ValueError("text contains invalid Unicode") from exc
+        if not value.strip():
+            raise ValueError("text cannot be blank")
+        return value
 
 
 class WebTTSRequest(BaseModel):
@@ -144,3 +171,9 @@ class AssistantSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tier: Literal["lite", "standard", "pro"]
+
+
+class MemorySettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool

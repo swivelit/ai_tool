@@ -93,6 +93,34 @@ def _extract_chat_usage(raw: Any) -> dict[str, int]:
     return result if result["input_tokens"] or result["output_tokens"] else {}
 
 
+def _sarvam_finish_metadata(raw: Any) -> dict[str, Any]:
+    choices = raw.get("choices") if isinstance(raw, dict) else getattr(raw, "choices", None)
+    choice = choices[0] if choices else None
+    finish = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
+    status = raw.get("status") if isinstance(raw, dict) else getattr(raw, "status", None)
+    normalized = str(finish or "").strip().lower()
+    if normalized in {"max_tokens", "max_output_tokens", "length"}:
+        normalized = "length"
+    elif normalized in {"completed", "complete", "end_turn"}:
+        normalized = "stop"
+    elif not normalized:
+        normalized = "unknown"
+    raw_status = str(status or "").strip().lower()
+    completion_status = (
+        "complete" if raw_status in {"complete", "completed", "success", "succeeded"}
+        else "incomplete" if raw_status in {"incomplete", "truncated"}
+        else "failed" if raw_status in {"failed", "error"}
+        else "incomplete" if normalized == "length"
+        else "complete" if normalized == "stop"
+        else "unknown"
+    )
+    return {
+        "finish_reason": normalized,
+        "truncated": normalized == "length",
+        "completion_status": completion_status,
+    }
+
+
 def normalize_sarvam_tts_model(model: str | None, premium: bool = False) -> str:
     value = str(model or "").strip()
     if value:
@@ -290,6 +318,7 @@ class SarvamProvider(AIProvider):
                 "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
                 "provider_attempts": 1,
                 "provider_calls_with_usage": 1 if usage else 0,
+                **_sarvam_finish_metadata(raw),
             },
         )
         if self._cache_recorder is not None:
@@ -332,6 +361,10 @@ class SarvamProvider(AIProvider):
             cancellation.bind_stream(stream)
         parts: list[str] = []
         final_usage: dict[str, int] = {}
+        finish_metadata: dict[str, Any] = {
+            "finish_reason": "unknown", "truncated": False,
+            "completion_status": "unknown",
+        }
         try:
             for chunk in stream:
                 if cancellation and cancellation.cancelled:
@@ -346,12 +379,15 @@ class SarvamProvider(AIProvider):
                             input_tokens=input_tokens, output_tokens=output_tokens, characters=len(text),
                             estimated_cost_amount=estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens),
                             estimated_cost_currency="INR",
-                            raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "cancelled": True, "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False},
+                            raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "cancelled": True, "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False, "finish_reason": "cancelled", "truncated": False, "completion_status": "cancelled"},
                         )
                     raise GenerationCancelled(response)
                 final_usage = _extract_chat_usage(chunk) or final_usage
                 choices = getattr(chunk, "choices", None) or (chunk.get("choices") if isinstance(chunk, dict) else []) or []
                 choice = choices[0] if choices else None
+                observed = _sarvam_finish_metadata(chunk)
+                if observed["finish_reason"] != "unknown" or observed["completion_status"] != "unknown":
+                    finish_metadata = observed
                 delta_obj = choice.get("delta") if isinstance(choice, dict) else getattr(choice, "delta", None)
                 delta = delta_obj.get("content") if isinstance(delta_obj, dict) else getattr(delta_obj, "content", None)
                 if delta:
@@ -381,7 +417,7 @@ class SarvamProvider(AIProvider):
             text=text, provider="sarvam", model=route.model, route=route.route, reason=route.reason,
             language=route.language, intent=route.intent, input_tokens=input_tokens, output_tokens=output_tokens,
             characters=len(text), estimated_cost_amount=estimate_sarvam_chat_cost(route.model or "", input_tokens, output_tokens),
-            estimated_cost_currency="INR", raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False},
+            estimated_cost_currency="INR", raw={"usage_actual": bool(final_usage), "cached_input_tokens": int(final_usage.get("cached_input_tokens") or 0), "cache_write_tokens": int(final_usage.get("cache_write_tokens") or 0), "provider_attempts": 1, "provider_calls_with_usage": 1 if final_usage else 0, "fallback_attempted": False, **finish_metadata},
         )
 
 

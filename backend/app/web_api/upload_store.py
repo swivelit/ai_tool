@@ -4,12 +4,13 @@ import json
 import os
 import threading
 from collections import OrderedDict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 
-DEFAULT_UPLOAD_TTL_SECONDS = 600
+DEFAULT_UPLOAD_TTL_SECONDS = 3_600
+MAX_UPLOAD_TTL_SECONDS = 86_400
 UPLOAD_KEY_PREFIX = "swico:web-upload:"
 
 
@@ -36,6 +37,8 @@ class EphemeralUpload:
     chunks: list[ExtractedChunk]
     source_locators: list[str]
     warnings: list[str]
+    warning_codes: list[str] = field(default_factory=list)
+    virtual_text_operation: str | None = None
 
     def display_metadata(self, *, status: str = "ready") -> dict[str, object]:
         return {
@@ -47,6 +50,8 @@ class EphemeralUpload:
             "expires_at": self.expires_at,
             "status": status,
             "warnings": list(self.warnings),
+            "warning_codes": list(self.warning_codes),
+            "virtual_text_operation": self.virtual_text_operation,
         }
 
 
@@ -73,8 +78,7 @@ def upload_ttl_seconds() -> int:
         value = int(os.getenv("WEB_UPLOAD_TTL_SECONDS", str(DEFAULT_UPLOAD_TTL_SECONDS)))
     except ValueError:
         value = DEFAULT_UPLOAD_TTL_SECONDS
-    # Temporary attachment content must never live longer than ten minutes.
-    return min(DEFAULT_UPLOAD_TTL_SECONDS, max(1, value))
+    return min(MAX_UPLOAD_TTL_SECONDS, max(1, value))
 
 
 def _encode(upload: EphemeralUpload) -> str:
@@ -99,7 +103,7 @@ class InProcessEphemeralUploadStore:
     """Bounded local/test store. It is intentionally never selected in production."""
 
     def __init__(self, *, ttl_seconds: int = DEFAULT_UPLOAD_TTL_SECONDS, max_entries: int = 256) -> None:
-        self.ttl_seconds = min(DEFAULT_UPLOAD_TTL_SECONDS, max(1, int(ttl_seconds)))
+        self.ttl_seconds = min(MAX_UPLOAD_TTL_SECONDS, max(1, int(ttl_seconds)))
         self.max_entries = max(1, int(max_entries))
         self._items: OrderedDict[str, EphemeralUpload] = OrderedDict()
         self._lock = threading.RLock()
@@ -143,7 +147,7 @@ class RedisEphemeralUploadStore:
             import redis
         except ImportError as exc:  # pragma: no cover - dependency is required in production
             raise UploadStoreUnavailable("The temporary upload cache client is unavailable.") from exc
-        self.ttl_seconds = min(DEFAULT_UPLOAD_TTL_SECONDS, max(1, int(ttl_seconds)))
+        self.ttl_seconds = min(MAX_UPLOAD_TTL_SECONDS, max(1, int(ttl_seconds)))
         self._client = redis.Redis.from_url(url, decode_responses=True, socket_connect_timeout=2, socket_timeout=2)
 
     @staticmethod

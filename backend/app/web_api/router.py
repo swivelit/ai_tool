@@ -72,20 +72,21 @@ from ..ai.swico_tiers import (
 from ..database import SessionLocal, get_session
 from ..models import (
     PaymentOrder, ProcessedWebhook, UsageCharge, WebChatMessage, WebChatThread,
-    WalletLedger, WebUsagePreferences,
+    WalletLedger, WebConversationSummary, WebMemoryFact, WebUsagePreferences,
 )
 from ..observability import APP_RELEASE, get_request_id
 from ..time_utils import utc_now
 from .chat_service import (
-    AttachmentRequestError, DuplicateRequestInProgress, execute_web_turn, prepare_web_turn,
+    AttachmentRequestError, DuplicateRequestInProgress, EditRequestError,
+    execute_web_turn, prepare_web_turn,
 )
 from .document_extraction import (
-    DocumentValidationError, SUPPORTED_EXTENSIONS, extract_document, max_file_bytes,
-    sanitize_filename, validate_extension_and_mime,
+    DocumentValidationError, SUPPORTED_EXTENSIONS, chunk_virtual_text, extract_document, max_file_bytes,
+    sanitize_filename, validate_content_signature, validate_extension_and_mime,
 )
 from .schemas import (
-    AssistantSettingsPatch, ProfilePatch, ThreadCreate, ThreadPatch,
-    UsagePreferencesPatch, WebChatRequest, WebTTSRequest,
+    AssistantSettingsPatch, MemorySettingsPatch, ProfilePatch, ThreadCreate, ThreadPatch,
+    UsagePreferencesPatch, VirtualTextUploadRequest, WebChatRequest, WebTTSRequest,
 )
 from .usage_service import ai_credits, selected_swico_tier, usage_preferences_dict, usage_summary
 from .upload_store import (
@@ -100,8 +101,8 @@ from .realtime_voice import (
     join_final_segments, provider_error_code,
 )
 from .adaptive_endpointing import (
-    EndpointEvidence, EndpointTiming, VoiceProsodyTracker, append_final_segment,
-    decide_endpoint,
+    EndpointEvidence, EndpointTiming, TranscriptClassification, VoiceProsodyTracker,
+    append_final_segment, classify_transcript, decide_endpoint,
 )
 
 router = APIRouter(prefix="/api/web", tags=["web"])
@@ -110,7 +111,7 @@ _active_generations: dict[str, tuple[int, GenerationCancellation]] = {}
 _active_generations_lock = threading.Lock()
 _voice_ticket_store: VoiceTicketStore | None = None
 VOICE_PROTOCOL_VERSION = 1
-ALEMBIC_HEAD = "e2b7c4d9a1f3"
+ALEMBIC_HEAD = "f9c2d7a4e1b6"
 
 
 def _tickets() -> VoiceTicketStore:
@@ -257,6 +258,13 @@ def _uploads_public_config() -> dict[str, Any]:
         "max_files_per_message": min(5, max(1, configured_files)),
         "max_total_bytes": min(25 * 1024 * 1024, max(1, configured_total)),
         "supported_extensions": list(SUPPORTED_EXTENSIONS),
+        "long_input_enabled": _env_enabled("WEB_LONG_INPUT_ENABLED"),
+        "long_input_inline_threshold_chars": _bounded_int_env(
+            "WEB_LONG_INPUT_INLINE_THRESHOLD_CHARS", 12_000, 1_000, 16_000
+        ),
+        "long_input_max_chars": _bounded_int_env(
+            "WEB_LONG_INPUT_MAX_CHARS", 64_000, 16_000, 64_000
+        ),
     }
 
 
@@ -394,6 +402,8 @@ def _serialize_message(
             "status": status,
             "warnings": [str(item)[:240] for item in value.get("warnings", [])[:5]]
             if isinstance(value.get("warnings"), list) else [],
+            "warning_codes": [str(item)[:80] for item in value.get("warning_codes", [])[:5]]
+            if isinstance(value.get("warning_codes"), list) else [],
         })
     return {
         "id": row.id, "thread_id": row.thread_id, "role": row.role, "content": row.content,
@@ -404,6 +414,12 @@ def _serialize_message(
         "status": row.status, "created_at": row.created_at, "attachments": attachments,
         "input_mode": input_mode, "voice_turn_id": voice_turn_id,
         "reply_language": reply_language,
+        "finish_reason": str(metadata.get("finish_reason") or "unknown"),
+        "truncated": bool(metadata.get("truncated")),
+        "completion_status": str(metadata.get("completion_status") or "unknown"),
+        "can_continue": bool(metadata.get("truncated")) and row.role == "assistant" and row.status == "complete",
+        "replaces_message_id": row.replaces_message_id,
+        "revision_number": row.revision_number,
     }
 
 
@@ -466,6 +482,9 @@ def bootstrap(
             "web_voice_billing": _env_enabled("WEB_VOICE_BILLING_ENABLED"),
             "web_realtime_voice": _env_enabled("WEB_REALTIME_VOICE_ENABLED"),
             "separate_voice_credits": _env_enabled("WEB_SEPARATE_VOICE_CREDITS_ENABLED"),
+            "web_message_edit": _env_enabled("WEB_MESSAGE_EDIT_ENABLED"),
+            "web_cross_thread_memory": _env_enabled("WEB_CROSS_THREAD_MEMORY_ENABLED"),
+            "web_long_input": _env_enabled("WEB_LONG_INPUT_ENABLED"),
         },
         "backend_release": _backend_release(),
         "voice_protocol_version": VOICE_PROTOCOL_VERSION,
@@ -748,6 +767,44 @@ def _voice_tts_chunks(buffer: str, *, final: bool = False) -> tuple[list[str], s
     return chunks, buffer
 
 
+def _voice_latency_payload(values: dict[str, float | int]) -> dict[str, int | None]:
+    speech = float(values.get("speech_started_at") or 0)
+    final = float(values.get("final_transcript_at") or 0)
+
+    def elapsed(end_key: str, start: float) -> int | None:
+        end = float(values.get(end_key) or 0)
+        if end <= 0 or start <= 0 or end < start:
+            return None
+        return int((end - start) * 1000)
+
+    return {
+        "time_to_first_stt_partial_ms": elapsed("first_partial_at", speech),
+        "time_to_final_transcript_ms": elapsed("final_transcript_at", speech),
+        "time_to_first_model_delta_ms": elapsed("first_model_delta_at", final),
+        "time_to_first_tts_audio_ms": elapsed("first_tts_audio_at", final),
+        "barge_in_stop_latency_ms": (
+            int(values["barge_in_stop_latency_ms"])
+            if "barge_in_stop_latency_ms" in values else None
+        ),
+    }
+
+
+def _voice_backchannel_due(
+    *, enabled: bool, state: VoiceState, utterance_started_at: float | None,
+    last_backchannel_at: float, now: float,
+    classification: TranscriptClassification,
+) -> bool:
+    """Pure local gate; the backchannel path cannot invoke text generation."""
+    return bool(
+        enabled
+        and state == VoiceState.LISTENING
+        and utterance_started_at is not None
+        and now - utterance_started_at >= 2.5
+        and now - last_backchannel_at >= 8.0
+        and classification is TranscriptClassification.UNFINISHED
+    )
+
+
 def _voice_chat_preflight_micros(tier: str) -> int:
     """Smallest non-zero reserve needed to begin the selected tier.
 
@@ -816,6 +873,9 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
     client_closed = False
     stop_event = asyncio.Event()
     process_lock = asyncio.Lock()
+    voice_latency_by_turn: dict[int, dict[str, float | int]] = {}
+    last_barge_in_stop_latency_ms: int | None = None
+    last_backchannel_at = 0.0
 
     def diagnostic(exc: BaseException | None = None, *, cleanup: bool | None = None) -> None:
         logger.info(
@@ -844,6 +904,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 "turn_number": turn_number,
                 "cleanup_succeeded": cleanup,
                 "reservations_released": reservations_released,
+                "barge_in_stop_latency_ms": last_barge_in_stop_latency_ms,
             },
         )
 
@@ -994,6 +1055,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
 
     async def synthesize_stream(
         text_queue: asyncio.Queue[str | None], request_id: str, active_turn: int,
+        latency: dict[str, float | int],
     ) -> None:
         nonlocal stage
         first_chunk = await text_queue.get()
@@ -1063,6 +1125,8 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                     )
                 chunks_sent += 1
                 bytes_sent += len(audio_chunk)
+                if "first_tts_audio_at" not in latency:
+                    latency["first_tts_audio_at"] = time.monotonic()
                 await websocket.send_bytes(chunks_sent.to_bytes(4, "big") + audio_chunk)
 
         try:
@@ -1134,6 +1198,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             await set_state(VoiceState.THINKING)
             await _voice_send(websocket, "stt.final", transcript=transcript, turn_number=active_turn)
             await _voice_send(websocket, "assistant.start", turn_number=active_turn)
+            latency = voice_latency_by_turn.setdefault(active_turn, {})
             stage = "chat_prepare"
             chat_request = f"realtime-chat:{metadata.session_id}:{active_turn}"
             try:
@@ -1157,12 +1222,15 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
             tts_task = asyncio.create_task(
                 synthesize_stream(
                     text_queue, f"realtime-tts:{metadata.session_id}:{active_turn}", active_turn,
+                    latency,
                 ),
                 name="voice-tts",
             )
             loop = asyncio.get_running_loop()
 
             def delta(value: str) -> None:
+                if "first_model_delta_at" not in latency:
+                    latency["first_model_delta_at"] = time.monotonic()
                 loop.call_soon_threadsafe(delta_queue.put_nowait, value)
 
             stage = "chat_generate"
@@ -1223,7 +1291,12 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 websocket, "turn.done", thread_id=completed.thread_id,
                 user_message_id=user_message.id, assistant_message_id=completed.message.id,
                 turn_number=active_turn, input_mode="realtime_voice", completion_status="complete",
+                telemetry=_voice_latency_payload(latency),
             )
+            logger.info("realtime_voice_turn_latency", extra={
+                "event": "realtime_voice_turn_latency", "turn_number": active_turn,
+                **_voice_latency_payload(latency),
+            })
             if state not in {VoiceState.INTERRUPTED, VoiceState.ERROR, VoiceState.CLOSING}:
                 await set_state(VoiceState.LISTENING)
 
@@ -1271,6 +1344,8 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         stage = "settlement"
         settle_stt(request_id, actual_ms)
         active_turn = turn_number
+        latency = voice_latency_by_turn.setdefault(active_turn, {})
+        latency["final_transcript_at"] = time.monotonic()
         turn_number += 1
         final_segments = []
         last_partial = ""
@@ -1367,6 +1442,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
         nonlocal generation_cancellation, stage, tts_task, speech_ended_at
         nonlocal transcript_updated_at, deadline_generation, endpoint_cancel_count
         nonlocal endpoint_delay, endpoint_reason
+        nonlocal last_barge_in_stop_latency_ms, last_backchannel_at
         stage = "microphone_stream"
         async for event in provider.stt_events():
             event_type = event.get("type")
@@ -1395,12 +1471,18 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 endpoint_reason = "speech_resumed"
                 if utterance_started_at is None:
                     utterance_started_at = time.monotonic()
+                    voice_latency_by_turn.setdefault(turn_number, {})["speech_started_at"] = utterance_started_at
                 if state in {VoiceState.THINKING, VoiceState.SPEAKING}:
+                    barge_started = time.monotonic()
                     if generation_cancellation:
                         generation_cancellation.cancel()
                     if tts_task and not tts_task.done():
                         tts_task.cancel()
                     await provider.close_tts()
+                    last_barge_in_stop_latency_ms = int((time.monotonic() - barge_started) * 1000)
+                    voice_latency_by_turn.setdefault(max(1, turn_number - 1), {})[
+                        "barge_in_stop_latency_ms"
+                    ] = last_barge_in_stop_latency_ms
                     await set_state(VoiceState.INTERRUPTED)
                     await _voice_send(
                         websocket, "warning", code="assistant_interrupted",
@@ -1419,9 +1501,25 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 if next_partial != last_partial:
                     last_partial = next_partial
                     transcript_updated_at = time.monotonic()
+                    latency = voice_latency_by_turn.setdefault(turn_number, {})
+                    latency.setdefault("first_partial_at", transcript_updated_at)
                 await _voice_send(
                     websocket, "stt.partial", transcript=last_partial, turn_number=turn_number
                 )
+                backchannel_now = time.monotonic()
+                backchannel_classification = classify_transcript(
+                    join_final_segments(final_segments), metadata.language,
+                    latest_partial=last_partial, has_final_transcript=bool(final_segments),
+                    transcript_updated_at=transcript_updated_at, now=backchannel_now,
+                )
+                if _voice_backchannel_due(
+                    enabled=_env_enabled("WEB_REALTIME_VOICE_BACKCHANNEL_ENABLED"),
+                    state=state, utterance_started_at=utterance_started_at,
+                    last_backchannel_at=last_backchannel_at, now=backchannel_now,
+                    classification=backchannel_classification,
+                ):
+                    last_backchannel_at = backchannel_now
+                    await _voice_send(websocket, "backchannel", cue="listening", turn_number=turn_number)
                 if endpoint.adaptive_enabled and state == VoiceState.ENDPOINT_PENDING:
                     await schedule_endpoint()
                 continue
@@ -1706,6 +1804,89 @@ def patch_assistant_settings(
     return public_tier_settings(row.assistant_tier)
 
 
+def _memory_settings_payload(session: Session, user_id: int) -> dict[str, Any]:
+    available = _env_enabled("WEB_CROSS_THREAD_MEMORY_ENABLED")
+    preferences = session.exec(select(WebUsagePreferences).where(
+        WebUsagePreferences.user_id == user_id
+    )).first()
+    rows = session.exec(select(WebMemoryFact).where(
+        WebMemoryFact.user_id == user_id,
+        WebMemoryFact.deleted_at.is_(None),
+    ).order_by(WebMemoryFact.updated_at.desc()).limit(100)).all()
+    return {
+        "available": available,
+        "enabled": bool(available and preferences and preferences.memory_enabled),
+        "items": [{
+            "id": row.id, "value_text": row.value_text,
+            "category": row.category, "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        } for row in rows],
+    }
+
+
+@router.get("/settings/memory")
+def get_memory_settings(
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    return _memory_settings_payload(session, int(user.id))
+
+
+@router.patch("/settings/memory")
+def patch_memory_settings(
+    payload: MemorySettingsPatch, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if payload.enabled and not _env_enabled("WEB_CROSS_THREAD_MEMORY_ENABLED"):
+        return _temporary_error(503, "web_memory_disabled", "Cross-chat memory is not available.")
+    row = session.exec(select(WebUsagePreferences).where(
+        WebUsagePreferences.user_id == int(user.id)
+    ).with_for_update()).first()
+    if row is None:
+        row = WebUsagePreferences(user_id=int(user.id))
+    row.memory_enabled = payload.enabled
+    row.updated_at = utc_now()
+    session.add(row)
+    session.flush()
+    return _memory_settings_payload(session, int(user.id))
+
+
+@router.delete("/settings/memory/{memory_id}", status_code=204)
+def delete_memory_fact(
+    memory_id: str, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    row = session.exec(select(WebMemoryFact).where(
+        WebMemoryFact.id == memory_id,
+        WebMemoryFact.user_id == int(user.id),
+        WebMemoryFact.deleted_at.is_(None),
+    )).first()
+    if row is None:
+        raise HTTPException(404, "Memory not found")
+    row.deleted_at = utc_now()
+    row.updated_at = utc_now()
+    session.add(row)
+    return None
+
+
+@router.delete("/settings/memory", status_code=204)
+def clear_memory(
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    now = utc_now()
+    session.exec(sa_update(WebMemoryFact).where(
+        WebMemoryFact.user_id == int(user.id),
+        WebMemoryFact.deleted_at.is_(None),
+    ).values(deleted_at=now, updated_at=now))
+    session.exec(sa_delete(WebConversationSummary).where(
+        WebConversationSummary.user_id == int(user.id)
+    ))
+    return None
+
+
 @router.get("/settings/usage")
 def get_usage_settings(
     session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
@@ -1842,7 +2023,8 @@ def list_messages(
     user = get_owned_user(session, auth)
     _owned_thread(session, int(user.id), thread_id)
     rows = session.exec(select(WebChatMessage).where(
-        WebChatMessage.thread_id == thread_id, WebChatMessage.user_id == user.id
+        WebChatMessage.thread_id == thread_id, WebChatMessage.user_id == user.id,
+        WebChatMessage.superseded_at.is_(None),
     ).order_by(WebChatMessage.created_at.asc()).offset(offset).limit(limit)).all()
     attachment_cache: dict[str, tuple[str, int | None]] = {}
     return {
@@ -1909,6 +2091,7 @@ async def upload_document(
         )
         if size <= 0:
             return _temporary_error(400, "empty_file", "The uploaded file is empty.")
+        validate_content_signature(temp_path, extension)
         extraction = await asyncio.to_thread(extract_document, temp_path, extension)
     except DocumentValidationError as exc:
         return _temporary_error(exc.status_code, exc.code, exc.message)
@@ -1932,6 +2115,7 @@ async def upload_document(
         chunks=extraction.chunks,
         source_locators=extraction.source_locators,
         warnings=extraction.warnings,
+        warning_codes=extraction.warning_codes,
     )
     try:
         get_upload_store().put(upload)
@@ -1964,6 +2148,47 @@ def delete_upload(
             503, "attachment_cache_unavailable", "Temporary attachments are unavailable. Please try again later."
         )
     return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/uploads/text", status_code=201)
+def upload_virtual_text(
+    payload: VirtualTextUploadRequest, session: Session = Depends(get_session),
+    auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    if not _env_enabled("WEB_LONG_INPUT_ENABLED"):
+        return _temporary_error(503, "web_long_input_disabled", "Large pasted-text processing is unavailable.")
+    maximum = _bounded_int_env("WEB_LONG_INPUT_MAX_CHARS", 64_000, 16_000, 64_000)
+    if len(payload.text) > maximum:
+        return _temporary_error(413, "long_input_too_large", f"Pasted text exceeds the {maximum:,}-character limit.")
+    _rate_limit(
+        session, user_id=int(user.id), action="web_text_upload",
+        limit=int(os.getenv("WEB_UPLOAD_RATE_LIMIT_PER_MINUTE", "10")),
+    )
+    session.commit()
+    upload_id = str(payload.upload_id)
+    try:
+        store = get_upload_store()
+        existing = store.get(upload_id)
+        if existing is not None:
+            if existing.owner_user_id != int(user.id):
+                return _temporary_error(404, "attachment_not_found", "Attachment not found.")
+            return JSONResponse(status_code=200, content=existing.display_metadata(), headers={"Cache-Control": "no-store"})
+        encoded_size = len(payload.text.encode("utf-8"))
+        ttl = upload_ttl_seconds()
+        upload = EphemeralUpload(
+            id=upload_id, owner_user_id=int(user.id),
+            name=f"Pasted text — {payload.operation.replace('_', ' ')}.txt",
+            extension=".txt", media_type="text/plain", size_bytes=encoded_size,
+            created_at=utc_iso(), expires_at=expiration_iso(ttl),
+            chunks=chunk_virtual_text(payload.text),
+            source_locators=["pasted text"], warnings=[], warning_codes=[],
+            virtual_text_operation=payload.operation,
+        )
+        store.put(upload)
+    except UploadStoreUnavailable:
+        return _temporary_error(503, "attachment_cache_unavailable", "Temporary attachments are unavailable. Please try again later.")
+    return JSONResponse(status_code=201, content=upload.display_metadata(), headers={"Cache-Control": "no-store"})
 
 
 @router.post("/audio/transcribe")
@@ -2366,6 +2591,16 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 
 @router.post("/chat/stream")
 async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_current_user)):
+    inline_limit = 16_000
+    if _env_enabled("WEB_LONG_INPUT_ENABLED"):
+        inline_limit = _bounded_int_env(
+            "WEB_LONG_INPUT_INLINE_THRESHOLD_CHARS", 12_000, 1_000, 16_000
+        )
+    if len(payload.message) > inline_limit:
+        return _temporary_error(
+            422, "long_input_requires_ingestion",
+            "Large pasted text must be ingested as a temporary attachment before chat generation.",
+        )
     with SessionLocal() as rate_session:
         user = get_owned_user(rate_session, auth)
         user_id = int(user.id)
@@ -2382,6 +2617,8 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             billing_exempt=billing_exempt,
             input_mode=payload.input_mode,
             voice_turn_id=str(payload.voice_turn_id) if payload.voice_turn_id else None,
+            continue_message_id=str(payload.continue_message_id) if payload.continue_message_id else None,
+            edit_message_id=str(payload.edit_message_id) if payload.edit_message_id else None,
         )
     except InsufficientCreditError as exc:
         return JSONResponse(status_code=402, content={"error": {
@@ -2405,6 +2642,8 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
     except DuplicateRequestInProgress as exc:
         raise HTTPException(409, str(exc))
     except AttachmentRequestError as exc:
+        return _temporary_error(exc.status_code, exc.code, exc.message)
+    except EditRequestError as exc:
         return _temporary_error(exc.status_code, exc.code, exc.message)
     except (SwicoTierUnavailableError, SwicoTierConfigurationError):
         return JSONResponse(status_code=503, content={"error": {
@@ -2463,6 +2702,10 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                 "input_mode": prepared.input_mode,
                 "voice_turn_id": prepared.voice_turn_id,
                 "reply_language": prepared.reply_language,
+                "finish_reason": str(response.raw.get("finish_reason") or "unknown"),
+                "truncated": bool(response.raw.get("truncated")),
+                "can_continue": bool(response.raw.get("truncated")) and completed.message.status == "complete",
+                "completion_status": str(response.raw.get("completion_status") or "unknown"),
             })
         except asyncio.CancelledError:
             cancellation.cancel()

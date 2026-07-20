@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 from .time_utils import utc_now
 from sqlmodel import SQLModel, Field
-from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint
 
 
 # --------------------
@@ -365,7 +365,60 @@ class WebChatMessage(SQLModel, table=True):
     charge_micros: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, server_default="0"))
     status: str = Field(default="complete", max_length=24, index=True)
     metadata_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    replaces_message_id: Optional[str] = Field(
+        default=None, foreign_key="web_chat_message.id", ondelete="SET NULL",
+        index=True, max_length=36,
+    )
+    revision_number: int = Field(
+        default=1, sa_column=Column(Integer, nullable=False, server_default="1")
+    )
+    superseded_at: Optional[datetime] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class WebMemoryFact(SQLModel, table=True):
+    __tablename__ = "web_memory_fact"
+    __table_args__ = (
+        Index("ix_web_memory_fact_user_updated", "user_id", "updated_at"),
+        UniqueConstraint("user_id", "normalized_key", name="uq_web_memory_fact_user_key"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    normalized_key: str = Field(max_length=160)
+    value_text: str = Field(sa_column=Column(Text, nullable=False))
+    category: str = Field(default="preference", max_length=40, index=True)
+    salience: float = Field(default=0.5)
+    confidence: float = Field(default=1.0)
+    source_thread_id: Optional[str] = Field(
+        default=None, foreign_key="web_chat_thread.id", ondelete="SET NULL", index=True,
+        max_length=36,
+    )
+    source_message_id: Optional[str] = Field(
+        default=None, foreign_key="web_chat_message.id", ondelete="SET NULL", index=True,
+        max_length=36,
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+    deleted_at: Optional[datetime] = Field(default=None, index=True)
+
+
+class WebConversationSummary(SQLModel, table=True):
+    __tablename__ = "web_conversation_summary"
+    __table_args__ = (
+        UniqueConstraint("user_id", "thread_id", name="uq_web_conversation_summary_user_thread"),
+        Index("ix_web_conversation_summary_user_updated", "user_id", "updated_at"),
+    )
+
+    id: str = Field(default_factory=_public_id, primary_key=True, max_length=36)
+    user_id: int = Field(foreign_key="user.id", ondelete="CASCADE", index=True)
+    thread_id: str = Field(
+        foreign_key="web_chat_thread.id", ondelete="CASCADE", index=True, max_length=36,
+    )
+    summary_text: str = Field(sa_column=Column(Text, nullable=False))
+    keywords_text: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
 
 
 class UsageCharge(SQLModel, table=True):
@@ -420,6 +473,9 @@ class WebUsagePreferences(SQLModel, table=True):
     )
     warning_threshold_percent: int = Field(default=80)
     notify_at_threshold: bool = Field(default=True)
+    memory_enabled: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default="false")
+    )
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now, index=True)
 

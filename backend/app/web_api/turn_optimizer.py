@@ -16,7 +16,7 @@ from .swico_brand import (
 )
 
 
-AnswerClass = Literal["simple", "normal", "detailed"]
+AnswerClass = Literal["simple", "normal", "detailed", "long_form"]
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,7 @@ def optimize_web_turn(
     profile_prompt = build_compact_profile_prompt(
         profile_context or {}, text, reply_language=reply_language
     )
-    attachment_limit = _env_int("WEB_ATTACHMENT_PROMPT_MAX_CHARS", 8_000, minimum=1)
+    attachment_limit = _env_int("WEB_ATTACHMENT_PROMPT_MAX_CHARS", 6_000, minimum=1)
     attachment_context = str(attachment_prompt_context or "").strip()[:attachment_limit].rstrip()
     cache_eligible = bool(
         not local_route
@@ -243,6 +243,15 @@ def build_compact_profile_prompt(
 
 def classify_answer_class(message: str, intent: str = "") -> AnswerClass:
     text = str(message or "").strip()
+    lowered = re.sub(r"\s+", " ", text.lower())
+    long_form_triggers = (
+        "roadmap", "learning plan", "curriculum", "complete guide",
+        "implementation plan", "migration plan", "step by step", "tutorial",
+        "all steps", "end-to-end", "end to end", "complete solution",
+        "complete code", "full code", "deep dive", "full architecture",
+    )
+    if any(trigger in lowered for trigger in long_form_triggers):
+        return "long_form"
     if intent in {"coding", "complex_reasoning"} or detailed_answer_requested(text):
         return "detailed"
     if len(text.split()) <= 12 and (
@@ -254,14 +263,15 @@ def classify_answer_class(message: str, intent: str = "") -> AnswerClass:
 
 
 def output_ceiling(answer_class: AnswerClass) -> int:
-    defaults = {"simple": 220, "normal": 320, "detailed": 700}
+    defaults = {"simple": 220, "normal": 420, "detailed": 1400, "long_form": 1400}
     names = {
         "simple": "WEB_SIMPLE_MAX_OUTPUT_TOKENS",
         "normal": "WEB_NORMAL_MAX_OUTPUT_TOKENS",
         "detailed": "WEB_DETAILED_MAX_OUTPUT_TOKENS",
+        "long_form": "WEB_LONG_FORM_MAX_OUTPUT_TOKENS",
     }
     web_limit = _env_int(names[answer_class], defaults[answer_class], minimum=1)
-    provider_hard = _env_int("OPENAI_MAX_OUTPUT_TOKENS_HARD", 900, minimum=1)
+    provider_hard = _env_int("OPENAI_MAX_OUTPUT_TOKENS_HARD", 1800, minimum=1)
     return min(web_limit, provider_hard)
 
 

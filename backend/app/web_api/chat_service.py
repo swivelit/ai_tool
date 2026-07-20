@@ -22,16 +22,21 @@ from ..billing.service import (
     settle_billing_exempt_usage, settle_usage_reservation,
 )
 from ..database import SessionLocal
-from ..models import UsageCharge, WebChatMessage, WebChatThread
+from ..models import (
+    UsageCharge, WebChatMessage, WebChatThread, WebConversationSummary,
+    WebMemoryFact,
+)
 from ..profile_context import build_profile_prompt_context, profile_prompt_context_text
 from ..time_utils import utc_now
-from .attachment_context import select_attachment_context
+from .attachment_context import FullDocumentConfirmationRequired, select_attachment_context
 from .upload_store import UploadStoreUnavailable, get_upload_store
 from .usage_service import selected_swico_tier
 from .turn_optimizer import (
-    WebTurnOptimization, optimize_web_turn, optimizer_enabled, with_prompt_estimate,
+    WebTurnOptimization, optimizer_enabled, with_prompt_estimate,
 )
+from .request_coordinator import WebRequestCoordinator, WebRequestDecision
 from .swico_brand import swico_brand_response
+from .web_memory import needs_cross_thread_memory, retrieve_memory, write_turn_memory
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +47,14 @@ class DuplicateRequestInProgress(RuntimeError):
 
 
 class AttachmentRequestError(RuntimeError):
+    def __init__(self, code: str, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+
+
+class EditRequestError(RuntimeError):
     def __init__(self, code: str, message: str, status_code: int) -> None:
         super().__init__(message)
         self.code = code
@@ -65,6 +78,7 @@ class PreparedWebTurn:
     existing_response: WebChatMessage | None = None
     provider_messages: list[dict[str, str]] | None = None
     optimization: WebTurnOptimization | None = None
+    coordinator_decision: WebRequestDecision | None = None
     precomputed_response: AIProviderResponse | None = None
 
 
@@ -96,6 +110,7 @@ def _context(session: Session, thread_id: str, user_id: int, limit: int = 20) ->
             WebChatMessage.thread_id == thread_id,
             WebChatMessage.user_id == user_id,
             WebChatMessage.status == "complete",
+            WebChatMessage.superseded_at.is_(None),
         ).order_by(WebChatMessage.created_at.desc()).limit(limit)
     ).all())
     turns: list[dict[str, str]] = []
@@ -121,6 +136,7 @@ def _previous_assistant_safe_metadata(
             WebChatMessage.user_id == user_id,
             WebChatMessage.role == "assistant",
             WebChatMessage.status == "complete",
+            WebChatMessage.superseded_at.is_(None),
         ).order_by(WebChatMessage.created_at.desc()).limit(1)
     ).first()
     if row is None:
@@ -147,9 +163,13 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _max_provider_attempts() -> int:
     try:
-        return min(2, max(1, int(str(os.getenv("WEB_MAX_PROVIDER_ATTEMPTS", "2")).strip())))
+        configured = os.getenv(
+            "WEB_PROVIDER_CALLS_PER_TURN_MAX",
+            os.getenv("WEB_MAX_PROVIDER_ATTEMPTS", "1"),
+        )
+        return min(2, max(1, int(str(configured).strip())))
     except Exception:
-        return 2
+        return 1
 
 
 def _cache_response(user_id: int, message: str, reply_language: str | None) -> AIProviderResponse | None:
@@ -246,6 +266,8 @@ def prepare_web_turn(
     reply_language: str | None, attachment_ids: list[str] | None = None,
     billing_exempt: bool = False, input_mode: str = "text",
     voice_turn_id: str | None = None,
+    continue_message_id: str | None = None,
+    edit_message_id: str | None = None,
 ) -> PreparedWebTurn:
     with SessionLocal() as session:
         swico_tier = selected_swico_tier(session, user_id)
@@ -280,9 +302,106 @@ def prepare_web_turn(
             session.add(thread)
             session.flush()
 
+        edit_target: WebChatMessage | None = None
+        if edit_message_id and existing_user_message is None:
+            if not _env_bool("WEB_MESSAGE_EDIT_ENABLED", False):
+                raise EditRequestError(
+                    "message_edit_disabled", "Message editing is not enabled.", 503
+                )
+            any_target = session.get(WebChatMessage, edit_message_id)
+            if any_target is None or any_target.user_id != user_id:
+                raise EditRequestError(
+                    "edit_not_authorized", "This message cannot be edited.", 404
+                )
+            if any_target.thread_id != thread.id:
+                raise EditRequestError(
+                    "edit_not_authorized", "This message does not belong to this chat.", 403
+                )
+            if any_target.role != "user" or any_target.superseded_at is not None:
+                raise EditRequestError(
+                    "stale_edit", "This message has already been replaced.", 409
+                )
+            active_request = session.exec(select(WebChatMessage).where(
+                WebChatMessage.thread_id == thread.id,
+                WebChatMessage.user_id == user_id,
+                WebChatMessage.status == "pending",
+                WebChatMessage.superseded_at.is_(None),
+            )).first()
+            if active_request is not None:
+                raise EditRequestError(
+                    "edit_conflict", "Wait for the active response to finish before editing.", 409
+                )
+            latest_user = session.exec(select(WebChatMessage).where(
+                WebChatMessage.thread_id == thread.id,
+                WebChatMessage.user_id == user_id,
+                WebChatMessage.role == "user",
+                WebChatMessage.superseded_at.is_(None),
+            ).order_by(WebChatMessage.created_at.desc()).limit(1)).first()
+            if latest_user is None or latest_user.id != any_target.id:
+                raise EditRequestError(
+                    "stale_edit", "Only the latest active user message can be edited.", 409
+                )
+            edit_target = any_target
+            superseded_at = utc_now()
+            edit_target.superseded_at = superseded_at
+            session.add(edit_target)
+            following_assistant = session.exec(select(WebChatMessage).where(
+                WebChatMessage.thread_id == thread.id,
+                WebChatMessage.user_id == user_id,
+                WebChatMessage.role == "assistant",
+                WebChatMessage.request_id == edit_target.request_id,
+                WebChatMessage.superseded_at.is_(None),
+            ).order_by(WebChatMessage.created_at.asc()).limit(1)).first()
+            if following_assistant is not None:
+                following_assistant.superseded_at = superseded_at
+                session.add(following_assistant)
+            for fact in session.exec(select(WebMemoryFact).where(
+                WebMemoryFact.user_id == user_id,
+                WebMemoryFact.source_message_id == edit_target.id,
+                WebMemoryFact.deleted_at.is_(None),
+            )).all():
+                fact.deleted_at = superseded_at
+                fact.updated_at = superseded_at
+                session.add(fact)
+            summary = session.exec(select(WebConversationSummary).where(
+                WebConversationSummary.user_id == user_id,
+                WebConversationSummary.thread_id == thread.id,
+            )).first()
+            if summary is not None:
+                session.delete(summary)
+
+        continuation_row: WebChatMessage | None = None
+        if continue_message_id:
+            continuation_row = session.exec(select(WebChatMessage).where(
+                WebChatMessage.id == continue_message_id,
+                WebChatMessage.thread_id == thread.id,
+                WebChatMessage.user_id == user_id,
+                WebChatMessage.role == "assistant",
+                WebChatMessage.status == "complete",
+                WebChatMessage.superseded_at.is_(None),
+            )).first()
+            if continuation_row is None:
+                raise AttachmentRequestError(
+                    "continuation_not_found", "The response to continue is no longer available.", 404
+                )
+            try:
+                continuation_metadata = json.loads(continuation_row.metadata_json or "{}")
+            except (TypeError, ValueError):
+                continuation_metadata = {}
+            if not bool(continuation_metadata.get("truncated")):
+                raise AttachmentRequestError(
+                    "continuation_not_allowed", "Only a truncated response can be continued.", 409
+                )
+
         uploads = _load_attachments(user_id, attachment_ids or [])
         visible_message = message.strip()
         model_message = visible_message or "Review and summarize the attached document."
+        if continuation_row is not None:
+            visible_message = "Continue response"
+            model_message = (
+                "Continue the previous response exactly from where it stopped. "
+                "Do not repeat completed sections; finish all remaining steps end-to-end."
+            )
         display_attachments = [upload.display_metadata() for upload in uploads]
         visible_content = visible_message or (
             "Attached: " + ", ".join(upload.name for upload in uploads)
@@ -294,11 +413,14 @@ def prepare_web_turn(
                 "input_mode": input_mode,
                 "voice_turn_id": voice_turn_id,
                 "reply_language": reply_language,
+                "continue_message_id": continue_message_id,
             }
             session.add(WebChatMessage(
                 thread_id=thread.id, user_id=user_id, role="user", content=visible_content,
                 request_id=request_id, status="pending",
                 metadata_json=json.dumps(message_metadata, ensure_ascii=False),
+                replaces_message_id=edit_target.id if edit_target is not None else None,
+                revision_number=(edit_target.revision_number + 1) if edit_target is not None else 1,
             ))
         thread.updated_at = utc_now()
         session.add(thread)
@@ -308,7 +430,9 @@ def prepare_web_turn(
         )
 
         enabled = optimizer_enabled()
-        preliminary = optimize_web_turn(
+        coordinator = WebRequestCoordinator()
+        needs_memory = needs_cross_thread_memory(model_message)
+        preliminary = coordinator.preliminary(
             model_message, reply_language=reply_language,
             has_attachments=bool(uploads),
             previous_topic=previous_safe_metadata.get("topic"),
@@ -363,7 +487,7 @@ def prepare_web_turn(
                 billing_exempt, optimization=preliminary,
             )
 
-        if enabled and preliminary.cache_eligible:
+        if enabled and preliminary.cache_eligible and not needs_memory:
             cached = _cache_response(user_id, model_message, reply_language)
             if cached is not None:
                 metrics = {
@@ -392,19 +516,40 @@ def prepare_web_turn(
                 )
 
         profile_context = build_profile_prompt_context(session, user_id)
-        all_context = (
-            _context(session, thread.id, user_id)
-            if (not enabled or preliminary.is_contextual_followup) else []
-        )
-        attachment_context = select_attachment_context(uploads, visible_message)
+        memory_selection = retrieve_memory(
+            session, user_id=user_id, message=model_message,
+            current_thread_id=thread.id,
+        ) if needs_memory else None
+        memory_context = memory_selection.prompt_context if memory_selection else ""
+        if continuation_row is not None:
+            tail_limit = min(1_200, max(200, int(os.getenv("WEB_CONTINUE_TAIL_MAX_CHARS", "900"))))
+            all_context = [{
+                "user": "Previous truncated response",
+                "assistant": continuation_row.content[-tail_limit:],
+            }]
+        else:
+            all_context = (
+                _context(session, thread.id, user_id)
+                if (not enabled or preliminary.is_contextual_followup) else []
+            )
+        try:
+            attachment_context = select_attachment_context(uploads, visible_message)
+        except FullDocumentConfirmationRequired as exc:
+            raise AttachmentRequestError(
+                "full_document_confirmation_required", str(exc), 422
+            ) from exc
+        coordinator_decision: WebRequestDecision | None = None
         if enabled:
-            optimization = optimize_web_turn(
+            coordinator_decision = coordinator.decide(
                 model_message, reply_language=reply_language,
                 context_turns=all_context, profile_context=profile_context,
-                attachment_prompt_context=attachment_context,
+                attachment_context=attachment_context,
+                memory_context=memory_context,
+                needs_memory=needs_memory,
                 has_attachments=bool(uploads),
                 previous_topic=previous_safe_metadata.get("topic"),
             )
+            optimization = coordinator_decision.optimization
             context_turns = optimization.selected_context_turns
             profile_prompt = optimization.compact_profile_prompt
             attachment_context = optimization.attachment_prompt_context
@@ -437,6 +582,8 @@ def prepare_web_turn(
             "profile_prompt_context": profile_prompt,
             "age_group": profile_context.get("age_group", ""),
             "attachment_prompt_context": attachment_context,
+            "memory_prompt_context": memory_context,
+            "answer_class": optimization.answer_class,
         }
         if enabled:
             metadata["formatted_context"] = optimization.formatted_context
@@ -460,7 +607,15 @@ def prepare_web_turn(
             route = replace(route, max_output_tokens=optimization.max_output_tokens)
         provider_messages = build_provider_messages(ai_request, route, provider=route.provider)
         serialized_prompt = serialize_provider_messages(provider_messages)
-        optimization = with_prompt_estimate(optimization, serialized_prompt)
+        if coordinator_decision is not None:
+            coordinator_decision = coordinator.with_exact_prompt(
+                coordinator_decision,
+                serialized_prompt=serialized_prompt,
+                system_prompt=str(provider_messages[0].get("content") or "") if provider_messages else "",
+            )
+            optimization = coordinator_decision.optimization
+        else:
+            optimization = with_prompt_estimate(optimization, serialized_prompt)
         input_tokens = optimization.estimated_prompt_tokens
 
         # Reorder only healthy candidates already admitted by the authoritative
@@ -495,6 +650,10 @@ def prepare_web_turn(
         ai_request.metadata["provider_messages"] = provider_messages
         ai_request.metadata["serialized_provider_prompt"] = serialized_prompt
         ai_request.metadata["estimated_prompt_tokens"] = input_tokens
+        if coordinator_decision is not None and _env_bool(
+            "WEB_PROMPT_TOKEN_BREAKDOWN_ENABLED", True
+        ):
+            ai_request.metadata["coordinator_metadata"] = coordinator_decision.sanitized_metadata
         reserve = reserve_price(route.provider, route.model or "", input_tokens, route.max_output_tokens)
         if billing_exempt:
             create_billing_exempt_usage(
@@ -518,6 +677,7 @@ def prepare_web_turn(
             0 if billing_exempt else reserve.micros, swico_tier,
             input_mode, voice_turn_id, str(reply_language or "en"), billing_exempt,
             provider_messages=provider_messages, optimization=optimization,
+            coordinator_decision=coordinator_decision,
         )
 
 
@@ -563,10 +723,24 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         with SessionLocal() as session:
             message = session.get(WebChatMessage, prepared.existing_response.id)
             assert message is not None
+            try:
+                replay_metadata = json.loads(message.metadata_json or "{}")
+            except (TypeError, ValueError):
+                replay_metadata = {}
             response = AIProviderResponse(
                 text=message.content, provider=message.provider or "", model=message.model,
                 route="idempotent_replay", reason="already_complete", language="en", intent="replay",
                 input_tokens=message.input_tokens, output_tokens=message.output_tokens,
+                raw={
+                    "finish_reason": str(replay_metadata.get("finish_reason") or "unknown"),
+                    "truncated": bool(replay_metadata.get("truncated")),
+                    "completion_status": str(
+                        replay_metadata.get("completion_status") or "unknown"
+                    ),
+                    "usage_source": str(message.usage_source or "estimated"),
+                    "provider_attempts": 0,
+                    "provider_calls_with_usage": 0,
+                },
             )
             if on_delta:
                 on_delta(message.content)
@@ -647,6 +821,10 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             WebChatMessage.role == "user",
         )).one()
         optimization_metrics = dict(prepared.optimization.metrics if prepared.optimization else {})
+        if prepared.coordinator_decision is not None and _env_bool(
+            "WEB_PROMPT_TOKEN_BREAKDOWN_ENABLED", True
+        ):
+            optimization_metrics.update(prepared.coordinator_decision.sanitized_metadata)
         if prepared.ai_request.metadata.get("client_surface") == "web":
             for unsafe_key in ("original_message", "normalized_message", "stripped_prefix", "profile_context"):
                 response.raw.pop(unsafe_key, None)
@@ -674,9 +852,17 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 or prepared.route.metadata.get("selected_model_reason") or ""
             ),
             "reserved_micros": int(prepared.reserved_micros),
+            "finish_reason": str(response.raw.get("finish_reason") or "unknown"),
+            "truncated": bool(response.raw.get("truncated")),
+            "completion_status": str(
+                response.raw.get("completion_status")
+                or ("cancelled" if cancelled else "unknown")
+            ),
         })
         response.raw.update(optimization_metrics)
         usage_source = "actual" if bool(response.raw.get("usage_actual")) else "estimated"
+        optimization_metrics["usage_source"] = usage_source
+        response.raw["usage_source"] = usage_source
         cached_tokens = int(response.raw.get("cached_input_tokens") or 0)
         price = price_usage(
             response.provider, response.model or "", response.input_tokens,
@@ -756,6 +942,25 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         session.commit()
         session.refresh(assistant)
 
+        if assistant.status == "complete":
+            try:
+                with SessionLocal() as memory_session:
+                    memory_user = memory_session.get(WebChatMessage, user_message.id)
+                    memory_assistant = memory_session.get(WebChatMessage, assistant.id)
+                    if memory_user is not None and memory_assistant is not None:
+                        write_turn_memory(
+                            memory_session, user_id=prepared.user_id,
+                            thread_id=prepared.thread_id,
+                            user_message=memory_user, assistant_message=memory_assistant,
+                            answer_class=(prepared.optimization.answer_class if prepared.optimization else "normal"),
+                        )
+                        memory_session.commit()
+            except Exception:
+                logger.exception(
+                    "web_memory_write_failed",
+                    extra={"request_id": prepared.request_id, "thread_id": prepared.thread_id},
+                )
+
         if (
             response.provider == "openai"
             and assistant.status == "complete"
@@ -787,6 +992,11 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                         "fallback_attempted", "reserved_micros", "charged_micros",
                         "cached_input_tokens", "cache_write_tokens", "primary_model_candidate",
                         "selected_model", "selected_model_reason",
+                        "system_prompt_estimated_tokens", "user_message_estimated_tokens",
+                        "same_thread_estimated_tokens", "memory_estimated_tokens",
+                        "profile_estimated_tokens", "attachment_estimated_tokens",
+                        "total_estimated_prompt_tokens", "usage_source", "finish_reason",
+                        "truncated", "completion_status",
                     )
                 },
             },
