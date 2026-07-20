@@ -334,7 +334,6 @@ export function ChatPage() {
     setFocusKey(`voice-close-${Date.now()}`)
   }, [active, loadMessages, loadThreads, refreshWallet])
 
-  const backendRelease = bootstrap?.backend_release || 'unavailable'
   const voiceReady = bootstrap ? voiceAvailability(bootstrap, frontendRelease) : { enabled:false, reason:'Voice Mode is loading.' }
   const voiceUnavailableReason = voiceReady.reason
   const realtimeVoiceEnabled = voiceReady.enabled
@@ -360,8 +359,7 @@ export function ChatPage() {
     </section>
     {billing && !bootstrap.wallet.billing_exempt && <Suspense fallback={null}><BillingModal user={user} config={bootstrap.billing} initialBucket={billingBucket} close={closeBilling} refreshed={() => { void refreshWallet() }} /></Suspense>}
     {voiceMode && <Suspense fallback={null}><VoiceMode user={user} threadId={active} close={closeVoiceMode} onTurnDone={voiceTurnDone}
-      tuning={bootstrap.voice_tuning} frontendRelease={frontendRelease} backendRelease={backendRelease}
-      internalDiagnostics={Boolean(bootstrap.wallet.billing_exempt || bootstrap.wallets?.chat.billing_exempt)}
+      tuning={bootstrap.voice_tuning} internalDiagnostics={Boolean(bootstrap.wallet.billing_exempt || bootstrap.wallets?.chat.billing_exempt)}
       addCredits={bucket => { closeVoiceMode(); openBilling(bucket) }} /></Suspense>}
     {settings && <Suspense fallback={null}><SettingsModal user={user} theme={theme} setTheme={setTheme} assistant={bootstrap.assistant} tierSaving={tierSaving || streaming} saveTier={saveTier} close={closeSettings} addCredits={() => { setSettings(false); setBilling(true) }} openArchived={() => { setSettings(false); setArchived(true); setActive(null); if (window.matchMedia('(max-width: 900px)').matches) setDrawer(true) }} savedProfile={(profile: ProfileSettings) => setBootstrap(value => value ? { ...value, user: { ...value.user, name: profile.name, reply_language: profile.reply_language } } : value)} /></Suspense>}
     {dialog && <ThreadDialog state={dialog} setState={setDialog} confirm={() => { const current = dialog; setDialog(null); void runMutation(current.thread, current.type, current.value.trim()) }} />}

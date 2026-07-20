@@ -1,45 +1,33 @@
-import { useEffect, useRef, useState } from 'react'
-import { Captions, Mic, MicOff, PhoneOff, RefreshCw, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { RefreshCw, X } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import type { CreditBucket, VoiceTuning } from '../types'
 import { useRealtimeVoice, type VoiceTurnDone } from '../hooks/useRealtimeVoice'
-import { apiJson } from '../api/client'
 
-type InternalVoiceDiagnostics = {
-  backend_release: string; alembic_head: string;
-  features: { web_realtime_voice:boolean; separate_voice_credits:boolean; web_voice_billing:boolean };
-  valkey: { configured:boolean; reachable:boolean }; sarvam: {
-    configured:boolean; playback_mode:string; selected_codec:string; provider_sample_rate:number;
-  };
-  origin: { request_origin_allowed:boolean };
-  session_lock: { active_session:boolean; remaining_lock_ttl_seconds:number };
-}
-
-export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tuning, frontendRelease = 'dev', backendRelease = 'unavailable', internalDiagnostics = false }: {
+export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tuning, internalDiagnostics = false }: {
   user: User; threadId: string | null; close: () => void;
   addCredits: (bucket: CreditBucket) => void; onTurnDone?: (turn: VoiceTurnDone) => void;
-  tuning?: VoiceTuning; frontendRelease?: string; backendRelease?: string; internalDiagnostics?: boolean;
+  tuning?: VoiceTuning; internalDiagnostics?: boolean;
 }) {
   const dialogRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
-  const [captions, setCaptions] = useState(true)
-  const [diagnostics, setDiagnostics] = useState<InternalVoiceDiagnostics | null>(null)
+  const finishingRef = useRef(false)
+  const [finishing, setFinishing] = useState(false)
   const voice = useRealtimeVoice({ user, threadId, onTurnDone, tuning, collectDiagnostics:internalDiagnostics })
   const endVoice = voice.end
 
-  useEffect(() => {
-    if (!internalDiagnostics) return
-    let active = true
-    void apiJson<InternalVoiceDiagnostics>(user, '/api/web/voice/diagnostics')
-      .then(value => { if (active) setDiagnostics(value) })
-      .catch(() => undefined)
-    return () => { active = false }
-  }, [internalDiagnostics, user])
-
-  const finish = async () => {
-    await endVoice()
-    close()
-  }
+  const finish = useCallback(async () => {
+    if (finishingRef.current) return
+    finishingRef.current = true
+    setFinishing(true)
+    try {
+      await endVoice()
+    } catch {
+      // The hook normally cleans up safely; the overlay must still close if it rejects.
+    } finally {
+      close()
+    }
+  }, [close, endVoice])
 
   useEffect(() => {
     closeRef.current?.focus()
@@ -58,9 +46,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
     }
     window.addEventListener('keydown', keyboard)
     return () => window.removeEventListener('keydown', keyboard)
-    // `finish` intentionally follows the current hook instance.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [close, endVoice])
+  }, [finish])
 
   const status = voice.phase === 'listening' ? 'Listening'
     : voice.phase === 'endpoint_pending' ? 'Still listening…'
@@ -78,7 +64,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
           <strong id="voice-mode-title">Voice</strong>
           <span>{voice.ticketInfo?.tier_label ?? 'Swico'} · {voice.ticketInfo?.language === 'ta' ? 'Tamil' : 'English'}</span>
         </div>
-        <button ref={closeRef} className="voice-close" aria-label="Close Voice Mode" onClick={() => void finish()}><X /></button>
+        <button ref={closeRef} className="voice-close" aria-label="Close Voice Mode" aria-busy={finishing} disabled={finishing} onClick={() => void finish()}><X /></button>
       </header>
 
       <div className="voice-stage">
@@ -88,9 +74,9 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
         <h2>{status}</h2>
         <span className="voice-status-live" aria-live="polite">{status}</span>
         {voice.phase === 'endpoint_pending' && <p className="voice-take-time" aria-hidden="true">Take your time</p>}
-        {captions && <div className="voice-captions" aria-label="Voice captions">
-          {voice.partial && <p className="voice-transcript"><span>You</span>{voice.partial}</p>}
-          {voice.assistant && <p className="voice-transcript assistant"><span>Swico</span>{voice.assistant}</p>}
+        {(voice.partial.trim() || voice.assistant.trim()) && <div className="voice-captions" aria-label="Voice captions">
+          {voice.partial.trim() && <p className="voice-transcript"><span>You</span>{voice.partial}</p>}
+          {voice.assistant.trim() && <p className="voice-transcript assistant"><span>Swico</span>{voice.assistant}</p>}
         </div>}
         {voice.phase === 'interrupted' && <p className="voice-interruption" role="status">Listening for you now.</p>}
         <div className="voice-microphone-level" aria-label="Microphone level" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(voice.microphoneLevel * 100)}>
@@ -110,66 +96,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
             {voice.creditRequired === 'voice' && <button onClick={() => addCredits('voice')}>Add Voice credits</button>}
           </div>
         </div>}
-        {internalDiagnostics && <details className="voice-diagnostics"><summary>Voice diagnostics</summary>
-          <dl><dt>Frontend release</dt><dd>{frontendRelease}</dd><dt>Backend release</dt><dd>{diagnostics?.backend_release ?? backendRelease}</dd>
-            <dt>Alembic head</dt><dd>{diagnostics?.alembic_head ?? 'loading'}</dd>
-            <dt>Features ready</dt><dd>{diagnostics ? String(Object.values(diagnostics.features).every(Boolean)) : 'loading'}</dd>
-            <dt>Valkey ready</dt><dd>{diagnostics ? String(diagnostics.valkey.configured && diagnostics.valkey.reachable) : 'loading'}</dd>
-            <dt>Sarvam configured</dt><dd>{diagnostics ? String(diagnostics.sarvam.configured) : 'loading'}</dd>
-            <dt>Origin allowed</dt><dd>{diagnostics ? String(diagnostics.origin.request_origin_allowed) : 'loading'}</dd>
-            <dt>Active session</dt><dd>{diagnostics ? String(diagnostics.session_lock.active_session) : 'loading'}</dd>
-            <dt>Lock TTL seconds</dt><dd>{diagnostics?.session_lock.remaining_lock_ttl_seconds ?? 'loading'}</dd>
-            <dt>HTTP status</dt><dd>{voice.errorStatus ?? 'none'}</dd><dt>Error code</dt><dd>{voice.errorCode || 'none'}</dd>
-            <dt>Playback state</dt><dd>{voice.playbackState}</dd>
-            <dt>Server voice state</dt><dd>{voice.serverVoiceState}</dd>
-            <dt>Transcript classification</dt><dd>{voice.endpointDiagnostics.transcript_classification}</dd>
-            <dt>Terminal cadence</dt><dd>{String(voice.endpointDiagnostics.terminal_cadence_detected)}</dd>
-            <dt>Trailing off</dt><dd>{String(voice.endpointDiagnostics.trailing_off_detected)}</dd>
-            <dt>Voiced duration ms</dt><dd>{voice.endpointDiagnostics.voiced_duration_ms}</dd>
-            <dt>Endpoint delay ms</dt><dd>{voice.endpointDiagnostics.endpoint_delay_ms}</dd>
-            <dt>Endpoint reason</dt><dd>{voice.endpointDiagnostics.endpoint_reason}</dd>
-            <dt>Endpoint generation</dt><dd>{voice.endpointDiagnostics.endpoint_deadline_generation}</dd>
-            <dt>Endpoint cancellations</dt><dd>{voice.endpointDiagnostics.endpoint_cancel_count}</dd>
-            <dt>Playback mode</dt><dd>{voice.playbackDiagnostics.playback_mode ?? diagnostics?.sarvam.playback_mode ?? 'loading'}</dd>
-            <dt>Selected codec</dt><dd>{voice.playbackDiagnostics.selected_codec ?? diagnostics?.sarvam.selected_codec ?? 'loading'}</dd>
-            <dt>Content type</dt><dd>{voice.playbackDiagnostics.content_type ?? 'none'}</dd>
-            <dt>Provider sample rate</dt><dd>{voice.playbackDiagnostics.provider_sample_rate ?? 'none'}</dd>
-            <dt>MediaSource available</dt><dd>{String(voice.playbackDiagnostics.media_source_available)}</dd>
-            <dt>MediaSource type supported</dt><dd>{String(voice.playbackDiagnostics.media_source_type_supported)}</dd>
-            <dt>SourceBuffer created</dt><dd>{String(voice.playbackDiagnostics.source_buffer_created)}</dd>
-            <dt>Audio chunks</dt><dd>{voice.playbackDiagnostics.audio_chunks_received}</dd>
-            <dt>Audio bytes</dt><dd>{voice.playbackDiagnostics.audio_bytes_received}</dd>
-            <dt>Expected sequence</dt><dd>{voice.playbackDiagnostics.expected_sequence}</dd>
-            <dt>Duplicate chunks</dt><dd>{voice.playbackDiagnostics.duplicate_chunks}</dd>
-            <dt>Sequence gap</dt><dd>{String(voice.playbackDiagnostics.missing_sequence_detected)}</dd>
-            <dt>Fallback used</dt><dd>{String(voice.playbackDiagnostics.fallback_used)}</dd>
-            <dt>Failure stage</dt><dd>{voice.playbackDiagnostics.failure_stage ?? 'none'}</dd>
-            <dt>Media error</dt><dd>{voice.playbackDiagnostics.media_error_category ?? 'none'}</dd>
-            <dt>DOM exception</dt><dd>{voice.playbackDiagnostics.dom_exception_name ?? 'none'}</dd>
-            <dt>Autoplay blocked</dt><dd>{String(voice.playbackDiagnostics.autoplay_blocked)}</dd>
-            <dt>Scheduled PCM seconds</dt><dd>{voice.playbackDiagnostics.scheduled_pcm_seconds.toFixed(3)}</dd>
-            <dt>Active PCM sources</dt><dd>{voice.playbackDiagnostics.active_pcm_sources}</dd>
-            <dt>Playback finished</dt><dd>{String(voice.playbackDiagnostics.playback_finished)}</dd>
-            <dt>Microphone device</dt><dd>{voice.microphoneDiagnostics.selectedDeviceLabel}</dd>
-            <dt>Browser sample rate</dt><dd>{voice.microphoneDiagnostics.browserSampleRate}</dd>
-            <dt>Resampled rate</dt><dd>{voice.microphoneDiagnostics.resampledSampleRate}</dd>
-            <dt>Current RMS</dt><dd>{voice.microphoneDiagnostics.currentRms.toFixed(4)}</dd>
-            <dt>Noise floor</dt><dd>{voice.microphoneDiagnostics.calibratedNoiseFloor.toFixed(4)}</dd>
-            <dt>Active threshold</dt><dd>{voice.microphoneDiagnostics.activeThreshold.toFixed(4)}</dd>
-            <dt>Emitted frames</dt><dd>{voice.microphoneDiagnostics.emittedFrameCount}</dd>
-            <dt>Backpressure drops</dt><dd>{voice.microphoneDiagnostics.backpressureDroppedFrameCount}</dd></dl>
-        </details>}
       </div>
-
-      <footer className="voice-controls">
-        <button aria-label={voice.muted ? 'Unmute microphone' : 'Mute microphone'} aria-pressed={voice.muted} onClick={voice.toggleMute}>
-          {voice.muted ? <MicOff /> : <Mic />}<span>{voice.muted ? 'Unmute' : 'Mute'}</span>
-        </button>
-        <button aria-label={captions ? 'Hide captions' : 'Show captions'} aria-pressed={captions} onClick={() => setCaptions(value => !value)}>
-          <Captions /><span>Captions</span>
-        </button>
-        <button className="end-voice" aria-label="End conversation" onClick={() => void finish()}><PhoneOff /><span>End conversation</span></button>
-      </footer>
     </section>
   </div>
 }

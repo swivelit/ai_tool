@@ -238,7 +238,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 :root[data-theme='dark'] .checkout-disabled, :root[data-theme='dark'] .usage-warning { background: #3a321c; color: #ffe9a7 }
 .voice-mode-backdrop { position: fixed; z-index: 120; inset: 0; min-width: 320px; background: #f3f1f7 }
 :root[data-theme='dark'] .voice-mode-backdrop { background: #09090b }
-.voice-mode { position: relative; display: grid; width: 100%; height: 100dvh; min-height: 420px; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; padding: max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left)); background: radial-gradient(circle at 50% 42%, rgb(125 101 160 / 12%), transparent 42%); color: #19171d; text-align: center }
+.voice-mode { position: relative; display: grid; width: 100%; height: 100dvh; min-height: 420px; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; padding: max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left)); background: radial-gradient(circle at 50% 42%, rgb(125 101 160 / 12%), transparent 42%); color: #19171d; text-align: center }
 :root[data-theme='dark'] .voice-mode { background: radial-gradient(circle at 50% 42%, rgb(111 79 145 / 18%), transparent 43%), #09090b; color: #f3f0f5 }
 .voice-mode-header { z-index: 2; display: flex; width: 100%; align-items: center; justify-content: space-between; text-align: left }
 .voice-mode-identity { display: grid; gap: 4px }
@@ -246,8 +246,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .voice-mode-identity span { color: color-mix(in srgb, currentColor 62%, transparent); font-size: 12px }
 .voice-close { display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid rgb(80 72 87 / 14%); border-radius: 50%; background: rgb(255 255 255 / 58%); cursor: pointer }
 :root[data-theme='dark'] .voice-close { border-color: rgb(255 255 255 / 12%); background: rgb(255 255 255 / 7%) }
+.voice-close:focus-visible { outline: 3px solid currentColor; outline-offset: 3px }
+.voice-close:disabled { cursor: progress; opacity: .55 }
+@media (hover: hover) and (pointer: fine) {
+  .voice-close:not(:disabled):hover { background: rgb(255 255 255 / 82%); border-color: rgb(80 72 87 / 24%) }
+  :root[data-theme='dark'] .voice-close:not(:disabled):hover { background: rgb(255 255 255 / 14%); border-color: rgb(255 255 255 / 22%) }
+}
 .voice-stage { display: flex; min-height: 0; align-items: center; flex-direction: column; justify-content: center; padding: 16px 0; overflow-y: auto }
-.voice-orb { position: relative; width: clamp(168px, 25vw, 286px); aspect-ratio: 1; margin: auto 0 24px; filter: drop-shadow(0 28px 55px rgb(76 45 111 / 25%)); transform: translateZ(0); animation: swico-breathe 3.8s ease-in-out infinite }
+.voice-orb { position: relative; width: clamp(168px, 25vw, 286px); aspect-ratio: 1; margin: 0 0 24px; filter: drop-shadow(0 28px 55px rgb(76 45 111 / 25%)); transform: translateZ(0); animation: swico-breathe 3.8s ease-in-out infinite }
 .voice-orb-core, .voice-orb-glow { position: absolute; inset: 7%; border-radius: 43% 57% 52% 48% / 48% 43% 57% 52%; background: conic-gradient(from 215deg, #ff9f72, #d46fc4 31%, #6857cc 62%, #41a9b8 82%, #ff9f72); box-shadow: inset -20px -16px 36px rgb(42 25 80 / 28%), inset 18px 18px 38px rgb(255 255 255 / 25%); animation: swico-morph 7s ease-in-out infinite alternate }
 .voice-orb-glow { inset: 0; background: radial-gradient(circle at 35% 25%, rgb(255 255 255 / 65%), transparent 25%), radial-gradient(circle at 65% 70%, rgb(78 205 189 / 68%), transparent 42%); filter: blur(12px); opacity: .8; mix-blend-mode: screen }
 .voice-orb.endpoint_pending { animation: swico-hold 1.7s ease-in-out infinite }
@@ -258,14 +264,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .voice-orb.error, .voice-orb.closed, .voice-orb.closing { animation: none; filter: grayscale(.35); opacity: .6 }
 .voice-mode h2 { margin: 0; font-size: clamp(22px, 3vw, 30px); font-weight: 560; letter-spacing: -.03em }
 .voice-take-time { margin: 6px 0 0; color: color-mix(in srgb, currentColor 54%, transparent); font-size: 13px }
-.voice-microphone-level { width: min(280px, 70vw); height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, currentColor 12%, transparent) }
+.voice-microphone-level { width: min(280px, 70vw); height: 7px; margin-top: 18px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, currentColor 12%, transparent) }
 .voice-microphone-level span { display: block; width: 100%; height: 100%; border-radius: inherit; background: var(--accent); transform-origin: left; transition: transform 80ms linear }
 .voice-playback-warning { display: flex; flex-wrap: wrap; max-width: 520px; align-items: center; justify-content: center; gap: 10px; padding: 14px; border-radius: 16px; background: color-mix(in srgb, var(--accent) 10%, transparent) }
 .voice-playback-warning p { flex-basis: 100%; margin: 0 }
 .voice-tap-play { min-width: 180px; min-height: 52px; font-size: 17px }
-.voice-diagnostics { max-width: 520px; text-align: left; font-size: 12px; opacity: .78 }
-.voice-diagnostics dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px }
-.voice-diagnostics dd { margin: 0; font-family: ui-monospace, monospace }
 .voice-status-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0) }
 .voice-captions { display: grid; width: min(620px, calc(100% - 24px)); max-height: 24vh; gap: 8px; margin-top: 18px; overflow: hidden }
 .voice-transcript { display: -webkit-box; margin: 0; overflow: hidden; color: color-mix(in srgb, currentColor 78%, transparent); line-height: 1.5; text-align: center; -webkit-box-orient: vertical; -webkit-line-clamp: 3 }
@@ -277,10 +280,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .voice-error-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 13px }
 .voice-error-actions button { display: inline-flex; min-height: 44px; align-items: center; gap: 7px; padding: 9px 14px; border: 1px solid currentColor; border-radius: 999px; background: transparent; cursor: pointer }
 .voice-error-actions .primary { background: var(--accent); color: var(--accent-text) }
-.voice-controls { z-index: 2; display: flex; align-items: center; justify-content: center; gap: 12px; padding-top: 10px }
-.voice-controls button { display: inline-flex; min-width: 108px; min-height: 52px; align-items: center; justify-content: center; gap: 8px; padding: 11px 17px; border: 1px solid rgb(80 72 87 / 15%); border-radius: 999px; background: rgb(255 255 255 / 60%); cursor: pointer }
-:root[data-theme='dark'] .voice-controls button { border-color: rgb(255 255 255 / 12%); background: rgb(255 255 255 / 8%) }
-.voice-controls .end-voice { border-color: #9e343c; background: #b73a43; color: #fff }
 @keyframes swico-breathe { 50% { transform: scale(1.035) translateY(-3px) } }
 @keyframes swico-hold { 50% { transform: scale(.985); filter: saturate(.8) drop-shadow(0 20px 42px rgb(76 45 111 / 20%)) } }
 @keyframes swico-turn { to { transform: rotate(360deg) } }
@@ -433,9 +432,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .actual-usage dl { grid-template-columns: 1fr }
   .settings-legal { grid-template-columns: 1fr }
   .voice-mode { padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right)) }
-  .voice-controls { gap: 7px }
-  .voice-controls button { min-width: 52px; padding-inline: 13px }
-  .voice-controls button span { display: none }
   .auth-brand { margin-bottom: 40px }
   .auth-links { align-items: flex-start; flex-direction: column }
 }
@@ -444,6 +440,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .voice-stage { padding-block: 2px }
   .voice-orb { width: min(30vh, 150px); margin-bottom: 6px }
   .voice-captions { max-height: 18vh; margin-top: 6px }
-  .voice-controls { padding-top: 3px }
+  .voice-microphone-level { margin-top: 6px }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important } }
