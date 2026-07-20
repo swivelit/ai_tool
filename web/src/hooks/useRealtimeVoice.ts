@@ -585,6 +585,22 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     playBufferedMp3()
   }, [drainQueue, finishPcmIfReady, playBufferedMp3, playbackFailed, schedulePcm, updatePlaybackDiagnostics])
 
+  const playBackchannel = useCallback(() => {
+    if (phaseRef.current !== 'listening' || !audioEnded.current) return
+    const AudioContextCtor = window.AudioContext
+    if (!AudioContextCtor) return
+    const audioContext = playbackContext.current ?? new AudioContextCtor()
+    playbackContext.current = audioContext
+    const oscillator = audioContext.createOscillator()
+    const gain = audioContext.createGain()
+    oscillator.type = 'sine'; oscillator.frequency.value = 185
+    gain.gain.setValueAtTime(0.0001, audioContext.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.018, audioContext.currentTime + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.13)
+    oscillator.connect(gain); gain.connect(audioContext.destination)
+    oscillator.start(); oscillator.stop(audioContext.currentTime + 0.14)
+  }, [])
+
   const handleMessage = useCallback((event: MessageEvent) => {
     if (event.data instanceof Blob) { void event.data.arrayBuffer().then(appendAudio); return }
     if (event.data instanceof ArrayBuffer) { appendAudio(event.data); return }
@@ -624,6 +640,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     }
     else if (message.type === 'stt.partial') { setCannotHear(false); setPartial(String(message.transcript ?? '')) }
     else if (message.type === 'stt.final') { setCannotHear(false); setPartial(String(message.transcript ?? '')); setPhase('thinking') }
+    else if (message.type === 'backchannel') playBackchannel()
     else if (message.type === 'assistant.start') { setAssistant(''); setPhase('thinking') }
     else if (message.type === 'assistant.delta') setAssistant(value => value + String(message.delta ?? ''))
     else if (message.type === 'audio.start') setupPlayback(message)
@@ -645,7 +662,7 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
       const bucket = message.credit_bucket === 'chat' || message.credit_bucket === 'voice' ? message.credit_bucket : undefined
       rememberError({ code:String(message.code ?? 'voice_internal_failure'), message:String(message.message ?? 'Voice Mode stopped safely.'), ...(bucket ? { credit_bucket:bucket } : {}) })
     } else if (message.type === 'session.closed') { readyForAudio.current = false; setCannotHear(false); setPhase('closed') }
-  }, [appendAudio, collectDiagnostics, completeProviderAudio, rememberError, setupPlayback, stopPlayback])
+  }, [appendAudio, collectDiagnostics, completeProviderAudio, playBackchannel, rememberError, setupPlayback, stopPlayback])
 
   const sendPcm = useCallback((pcm: ArrayBuffer) => {
     const ws = socket.current

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, Copy, FileText, Pause, Play, RefreshCw, RotateCcw, Volume2 } from 'lucide-react'
+import { Check, ChevronDown, Copy, FileText, Pause, Pencil, Play, RefreshCw, RotateCcw, Volume2, X } from 'lucide-react'
 import type { Message, MessageAttachment, VoiceReplyState } from '../types'
 import { MarkdownMessage } from './MarkdownMessage'
 
-export function Conversation({ messages, phase, retry, suggest, voiceStates = {}, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined }: {
+export function Conversation({ messages, phase, retry, suggest, continueResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceStates = {}, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined }: {
   messages: Message[]; phase?: string; retry: (message: Message) => void; suggest: (text: string) => void;
+  continueResponse?: (message: Message) => void;
+  editMessage?: (message: Message, content: string) => void; editingAvailable?: boolean; editingDisabled?: boolean;
   voiceStates?: Record<string, VoiceReplyState>; playVoice?: (messageId: string) => void;
   pauseVoice?: (messageId: string) => void; retryVoice?: (messageId: string, voiceTurnId: string) => void;
   addCredits?: () => void;
@@ -29,7 +31,9 @@ export function Conversation({ messages, phase, retry, suggest, voiceStates = {}
   return <div className="conversation-frame">
     <div className="conversation" ref={scrollRef} onScroll={onScroll} aria-live="polite" data-testid="conversation">
       {!messages.length && <EmptyState suggest={suggest} />}
-      {messages.map(message => <MessageView key={message.id} message={message} retry={retry}
+      {messages.map(message => <MessageView key={message.id} message={message} retry={retry} continueResponse={continueResponse}
+        canEdit={editingAvailable && message.role === 'user' && message.id === [...messages].reverse().find(item => item.role === 'user')?.id}
+        editMessage={editMessage} editingDisabled={editingDisabled}
         voiceState={voiceStates[message.id]} playVoice={playVoice} pauseVoice={pauseVoice}
         retryVoice={retryVoice} addCredits={addCredits} />)}
       {phase && ['connecting', 'routing', 'reserved'].includes(phase) && <div className="thinking" role="status"><span />Swico is thinking</div>}
@@ -45,15 +49,26 @@ function EmptyState({ suggest }: { suggest: (text: string) => void }) {
   </div>
 }
 
-function MessageView({ message, retry, voiceState, playVoice, pauseVoice, retryVoice, addCredits }: {
+function MessageView({ message, retry, continueResponse, canEdit, editMessage, editingDisabled, voiceState, playVoice, pauseVoice, retryVoice, addCredits }: {
   message: Message; retry: (message: Message) => void; voiceState?: VoiceReplyState;
+  continueResponse: (message: Message) => void;
+  canEdit: boolean; editMessage: (message: Message, content: string) => void; editingDisabled: boolean;
   playVoice: (messageId: string) => void; pauseVoice: (messageId: string) => void;
   retryVoice: (messageId: string, voiceTurnId: string) => void; addCredits: () => void;
 }) {
   const [copied, setCopied] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editValue, setEditValue] = useState(message.content)
   if (message.role === 'user') return <article className="message user">
     {!!message.attachments?.length && <div className="message-attachments">{message.attachments.map(attachment => <AttachmentCard attachment={attachment} key={attachment.id} />)}</div>}
-    {message.content && <div className="user-bubble">{message.content}</div>}
+    {editing ? <div className="message-editor">
+      <label htmlFor={`edit-${message.id}`}>Edit message</label>
+      <textarea id={`edit-${message.id}`} autoFocus value={editValue} maxLength={64000} onChange={event => setEditValue(event.target.value)} />
+      <small>Regenerating creates a new revision and may use additional credits.</small>
+      <div><button type="button" onClick={() => { setEditing(false); setEditValue(message.content) }}><X size={14} /> Cancel</button>
+        <button type="button" disabled={!editValue.trim() || editValue.trim() === message.content.trim()} onClick={() => { editMessage(message, editValue.trim()); setEditing(false) }}><Check size={14} /> Save and regenerate</button></div>
+    </div> : <>{message.content && <div className="user-bubble">{message.content}</div>}
+      {canEdit && message.status === 'complete' && <button className="edit-message" type="button" aria-label="Edit message" title="Edit and regenerate" disabled={editingDisabled} onClick={() => { setEditValue(message.content); setEditing(true) }}><Pencil size={14} /> Edit</button>}</>}
     {message.status === 'retryable' && <button className="retry" onClick={() => retry(message)}><RefreshCw size={14} /> Retry</button>}
   </article>
   return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''}`}><div className="message-body">
@@ -67,6 +82,7 @@ function MessageView({ message, retry, voiceState, playVoice, pauseVoice, retryV
       {voiceState?.status === 'ended' && <button aria-label="Replay voice reply" title="Replay voice reply" onClick={() => playVoice(message.id)}><RotateCcw size={16} /></button>}
       {voiceState?.status === 'error' && <span className="voice-reply-error" role="status">{voiceState.error}{voiceState.canRetry !== false && <button aria-label="Retry voice reply" onClick={() => message.voice_turn_id && retryVoice(message.id, message.voice_turn_id)}><RefreshCw size={15} /> Retry</button>}{voiceState.insufficientCredits && <button onClick={addCredits}>Add credits</button>}</span>}
       {message.status === 'retryable' && <button aria-label="Retry answer" title="Retry answer" onClick={() => retry(message)}><RefreshCw size={16} /></button>}
+      {message.status === 'complete' && message.truncated && message.can_continue && <button className="continue-response" aria-label="Continue response" onClick={() => continueResponse(message)}><RefreshCw size={16} /> Continue response</button>}
       {(message.usage_source || message.input_tokens || message.output_tokens) && <details className="message-details"><summary>Details</summary><div>
         <span>{message.tier_label || 'Swico'}</span>
         <span>Input {message.input_tokens.toLocaleString()} · Output {message.output_tokens.toLocaleString()} · Total {(message.input_tokens + message.output_tokens).toLocaleString()} tokens</span>
@@ -91,5 +107,6 @@ function AttachmentCard({ attachment }: { attachment: MessageAttachment }) {
     <FileText size={18} aria-hidden="true" />
     <span><strong>{attachment.name}</strong><small>{attachment.media_type} · {size}</small></span>
     {expired ? <span className="attachment-badge">Expired</span> : <span className="attachment-badge">Active</span>}
+    {!!attachment.warnings.length && <span className="attachment-warning" role="status">{attachment.warnings.join(' ')}</span>}
   </div>
 }

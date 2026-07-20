@@ -20,7 +20,7 @@ const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_descript
   { id:'pro' as const, label:'Swico Pro', description:'Best for complex reasoning, planning, and coding.', available:false, selected:false },
 ] }
 
-function mockSettingsApi(payments: unknown[] = [], usageValue: UsageSummary = usage) {
+function mockSettingsApi(payments: unknown[] = [], usageValue: UsageSummary = usage, memoryValue: unknown = { available:false, enabled:false, items:[] }) {
   vi.mocked(apiJson).mockImplementation(async (_user, path, init) => {
     if (path === '/api/web/settings/profile' && init?.method === 'PATCH') return { ...profile, ...(JSON.parse(String(init.body)) as object) } as never
     if (path === '/api/web/settings/profile') return profile as never
@@ -28,6 +28,11 @@ function mockSettingsApi(payments: unknown[] = [], usageValue: UsageSummary = us
     if (path === '/api/web/settings/usage') return preferences as never
     if (path.includes('/usage/summary')) return usageValue as never
     if (path === '/api/web/billing/payments') return { items:payments } as never
+    if (path.startsWith('/api/web/settings/memory') && init?.method === 'DELETE') return {} as never
+    if (path === '/api/web/settings/memory' && init?.method === 'PATCH') {
+      return { ...(memoryValue as object), ...(JSON.parse(String(init.body)) as object) } as never
+    }
+    if (path === '/api/web/settings/memory') return memoryValue as never
     throw new Error(`Unhandled ${path}`)
   })
 }
@@ -42,6 +47,27 @@ it('displays and saves the shared Swico mode in General settings', async () => {
   expect(screen.getByRole('listbox', { name:'Swico modes' })).toBeInTheDocument()
   await userEvent.click(screen.getByRole('option', { name:/Balanced quality and speed/ }))
   await waitFor(() => expect(saveTier).toHaveBeenCalledWith('standard'))
+})
+
+it('controls owner-scoped cross-chat memory when the backend exposes it', async () => {
+  mockSettingsApi([], usage, { available:true, enabled:false, items:[{
+    id:'memory-1', category:'reply_style', value_text:'Use concise replies',
+    created_at:'2026-07-20T00:00:00Z', updated_at:'2026-07-20T00:00:00Z',
+  }] })
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(<SettingsModal user={{} as never} theme="light" setTheme={vi.fn()} assistant={assistant} tierSaving={false} saveTier={vi.fn()} close={vi.fn()} addCredits={vi.fn()} openArchived={vi.fn()} savedProfile={vi.fn()} />)
+  await userEvent.click(await screen.findByRole('button', { name:'Data controls' }))
+  await userEvent.click(screen.getByLabelText('Use relevant saved details in other chats'))
+  await waitFor(() => expect(apiJson).toHaveBeenCalledWith(
+    expect.anything(), '/api/web/settings/memory',
+    expect.objectContaining({ method:'PATCH', body:'{"enabled":true}' }),
+  ))
+  await userEvent.click(screen.getByRole('button', { name:/Delete memory Use concise replies/ }))
+  await waitFor(() => expect(apiJson).toHaveBeenCalledWith(
+    expect.anything(), '/api/web/settings/memory/memory-1',
+    expect.objectContaining({ method:'DELETE' }),
+  ))
+  confirm.mockRestore()
 })
 
 it('uses the same conservative created-checkout presentation in settings', async () => {

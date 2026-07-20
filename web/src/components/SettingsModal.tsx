@@ -3,13 +3,13 @@ import { Archive, CreditCard, Database, Settings2, UserRound, X } from 'lucide-r
 import type { User } from 'firebase/auth'
 import { ApiError, ApiNetworkError, apiJson } from '../api/client'
 import { formatRupeesFromPaise, fullTokenRangeLabel, tokenRangeLabel } from '../credits'
-import type { AssistantSettings, PaymentHistory, ProfileSettings, SwicoTier, UsagePreferences, UsageSummary } from '../types'
+import type { AssistantSettings, MemorySettings, PaymentHistory, ProfileSettings, SwicoTier, UsagePreferences, UsageSummary } from '../types'
 import type { Theme } from '../theme'
 import { paymentPresentation } from '../billing/paymentPresentation'
 import { SwicoTierSelector } from './SwicoTierSelector'
 
 type Section = 'general' | 'profile' | 'usage' | 'data'
-type Loaded = { profile: ProfileSettings; usage: UsageSummary; preferences: UsagePreferences; payments: PaymentHistory[] }
+type Loaded = { profile: ProfileSettings; usage: UsageSummary; preferences: UsagePreferences; payments: PaymentHistory[]; memory: MemorySettings }
 
 const sections: Array<{ id: Section; label: string; icon: typeof Settings2 }> = [
   { id: 'general', label: 'General', icon: Settings2 },
@@ -85,7 +85,9 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
         apiJson<UsagePreferences>(user, '/api/web/settings/usage'),
         apiJson<{ items: PaymentHistory[] }>(user, '/api/web/billing/payments'),
       ])
-      setLoaded({ profile: nextProfile, usage, preferences, payments: payments.items })
+      const memory = await apiJson<MemorySettings>(user, '/api/web/settings/memory')
+        .catch(() => ({ available: false, enabled: false, items: [] }))
+      setLoaded({ profile: nextProfile, usage, preferences, payments: payments.items, memory })
       setProfile(nextProfile)
       setUnlimited(preferences.hard_limit_micros === null)
       setCap(preferences.hard_limit_token_estimate?.estimated_blended_tokens?.toString() ?? '')
@@ -152,6 +154,25 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
       setNotice('Swico mode could not be changed. Your previous mode is still active.')
     }
   }
+  const setMemoryEnabled = async (enabled: boolean) => {
+    setSaving(true); setNotice('')
+    try {
+      const memory = await apiJson<MemorySettings>(user, '/api/web/settings/memory', {
+        method: 'PATCH', body: JSON.stringify({ enabled }),
+      })
+      setLoaded(value => value ? { ...value, memory } : value)
+      setNotice(enabled ? 'Cross-chat memory enabled.' : 'Cross-chat memory disabled. No new memory will be saved or retrieved.')
+    } catch (error) { setNotice(safeError(error)) } finally { setSaving(false) }
+  }
+  const deleteMemory = async (memoryId?: string) => {
+    if (!window.confirm(memoryId ? 'Delete this saved memory?' : 'Clear all saved cross-chat memory?')) return
+    setSaving(true); setNotice('')
+    try {
+      await apiJson<unknown>(user, memoryId ? `/api/web/settings/memory/${memoryId}` : '/api/web/settings/memory', { method: 'DELETE' })
+      const memory = await apiJson<MemorySettings>(user, '/api/web/settings/memory')
+      setLoaded(value => value ? { ...value, memory } : value); setNotice(memoryId ? 'Saved memory deleted.' : 'All cross-chat memory cleared.')
+    } catch (error) { setNotice(safeError(error)) } finally { setSaving(false) }
+  }
 
   return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !saving) close() }}>
     <section ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
@@ -179,7 +200,11 @@ export function SettingsModal({ user, theme, setTheme, assistant, tierSaving, sa
             {!billingExempt && <button className="secondary-button" onClick={addCredits}>Add credits</button>}
             <div className="settings-history"><h4>Payment history</h4>{!loaded.payments.length ? <p>No payments or refunds yet.</p> : loaded.payments.map(payment => { const presentation = paymentPresentation(payment); const paymentBucket = payment.credit_bucket ?? 'chat'; return <article key={payment.id}><strong>{presentation.heading}</strong><span>{paymentBucket === 'voice' ? 'Voice credits' : 'Chat credits'}</span>{presentation.detail && <span>{presentation.detail}</span>}{presentation.amountLabel && <span>{presentation.amountLabel}: {formatRupeesFromPaise(payment.gross_amount_paise)}</span>}{presentation.showTokensAdded && paymentBucket === 'chat' && <span>Estimated {payment.token_estimate ? tokenRangeLabel(payment.token_estimate.range_min_tokens, payment.token_estimate.range_max_tokens) : 'tokens unavailable'} added</span>}{presentation.showTokensAdded && paymentBucket === 'voice' && <span>{payment.voice_estimate ? `${payment.voice_estimate.estimated_stt_minutes} STT-only minutes or ${payment.voice_estimate.estimated_tts_characters.toLocaleString()} TTS-only characters` : 'Voice estimate unavailable'}</span>}{presentation.showRefundAmount && <span>{formatRupeesFromPaise(payment.refunded_amount_paise)} refunded</span>}{presentation.showReversalEstimate && <span>Estimated {payment.reversal_token_estimate ? tokenRangeLabel(payment.reversal_token_estimate.range_min_tokens, payment.reversal_token_estimate.range_max_tokens) : 'credits unavailable'} reversed</span>}<span>{presentation.timestampLabel} <time dateTime={presentation.timestamp}>{new Date(presentation.timestamp).toLocaleDateString()}</time></span></article> })}</div>
           </section>}
-          {loaded && section === 'data' && <section aria-labelledby="data-settings"><h3 id="data-settings">Data controls</h3><button className="data-control" onClick={openArchived}><Archive size={18} /><span><strong>Archived chats</strong><small>Review or restore conversations you archived.</small></span></button><div className="settings-legal"><a href="/legal/terms">Terms</a><a href="/legal/privacy">Privacy</a><a href="/legal/refunds">Refund and cancellation</a><a href="/legal/contact">Contact and support</a><a href="/legal/ai">AI limitations</a><a href="/legal/delivery">Digital delivery</a><a href="/legal/pricing">Pricing and top-ups</a></div><p className="data-note">Account deletion is not offered here because secure reauthentication and server-side deletion are not implemented.</p></section>}
+          {loaded && section === 'data' && <section aria-labelledby="data-settings"><h3 id="data-settings">Data controls</h3><button className="data-control" onClick={openArchived}><Archive size={18} /><span><strong>Archived chats</strong><small>Review or restore conversations you archived.</small></span></button>
+            <div className="memory-controls"><h4>Cross-chat memory</h4>{loaded.memory.available ? <><label className="check-row"><input type="checkbox" checked={loaded.memory.enabled} disabled={saving} onChange={event => void setMemoryEnabled(event.target.checked)} />Use relevant saved details in other chats</label><small>Only explicit preferences, ongoing projects, and deterministic conversation summaries are saved. No LLM is called to manage memory.</small>
+              <div className="memory-list">{!loaded.memory.items.length ? <p>No saved memory facts.</p> : loaded.memory.items.map(item => <article key={item.id}><span><strong>{item.category.replaceAll('_', ' ')}</strong><small>{item.value_text}</small></span><button type="button" disabled={saving} aria-label={`Delete memory ${item.value_text}`} onClick={() => void deleteMemory(item.id)}>Delete</button></article>)}</div>
+              {loaded.memory.items.length > 0 && <button className="danger-button" type="button" disabled={saving} onClick={() => void deleteMemory()}>Clear all memory</button>}</> : <p>Cross-chat memory is not enabled on this deployment.</p>}</div>
+            <div className="settings-legal"><a href="/legal/terms">Terms</a><a href="/legal/privacy">Privacy</a><a href="/legal/refunds">Refund and cancellation</a><a href="/legal/contact">Contact and support</a><a href="/legal/ai">AI limitations</a><a href="/legal/delivery">Digital delivery</a><a href="/legal/pricing">Pricing and top-ups</a></div><p className="data-note">Account deletion is not offered here because secure reauthentication and server-side deletion are not implemented.</p></section>}
           <div className="sr-status" role="status" aria-live="polite">{notice}</div>{notice && <p className="settings-notice" aria-hidden="true">{notice}</p>}
         </div>
       </div>

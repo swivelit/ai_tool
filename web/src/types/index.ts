@@ -17,7 +17,7 @@ export type AssistantSettings = {
 export type Thread = { id: string; title: string; archived_at: string | null; created_at: string; updated_at: string }
 export type AttachmentDisplay = {
   id: string; name: string; media_type: string; size_bytes: number;
-  created_at: string; expires_at: string; warnings: string[];
+  created_at: string; expires_at: string; warnings: string[]; warning_codes?: string[];
 }
 export type PendingAttachment = {
   local_id: string; file: File; name: string; media_type: string; size_bytes: number;
@@ -40,6 +40,9 @@ export type Message = {
   charge_micros: number; status: string; created_at: string;
   attachments?: MessageAttachment[];
   input_mode: InputMode; voice_turn_id: string | null; reply_language: 'en' | 'ta' | null;
+  finish_reason?: string; truncated?: boolean; can_continue?: boolean;
+  completion_status?: string;
+  replaces_message_id?: string | null; revision_number?: number;
 }
 export type VoiceCreditEstimate = {
   pricing_version: string; estimated_stt_seconds: number; estimated_stt_minutes: string;
@@ -59,6 +62,7 @@ export type Bootstrap = {
     web_attachments: boolean; web_voice_recording: boolean;
     web_voice_reply: boolean; web_voice_billing: boolean;
     web_realtime_voice: boolean; separate_voice_credits: boolean;
+    web_message_edit?: boolean; web_cross_thread_memory?: boolean; web_long_input?: boolean;
   };
   backend_release?: string;
   voice_protocol_version?: number;
@@ -66,8 +70,11 @@ export type Bootstrap = {
   uploads: {
     available: boolean; ttl_seconds: number; max_file_bytes: number;
     max_files_per_message: number; max_total_bytes: number; supported_extensions: string[];
+    long_input_enabled?: boolean; long_input_inline_threshold_chars?: number;
+    long_input_max_chars?: number;
   };
 }
+export type LongInputMode = 'summarize' | 'analyze' | 'ask_questions' | 'rewrite' | 'translate'
 export type VoiceTuning = {
   calibration_ms: number; noise_multiplier: number; threshold_min: number;
   threshold_max: number; quiet_fallback: number; no_speech_warning_ms: number;
@@ -104,6 +111,10 @@ export type UsagePreferences = {
   tier: SwicoTier; tier_label: string;
   billing_exempt?: boolean;
 }
+export type MemoryFact = {
+  id: string; value_text: string; category: string; created_at: string; updated_at: string;
+}
+export type MemorySettings = { available: boolean; enabled: boolean; items: MemoryFact[] }
 export type UsageBreakdown = {
   request_count: number; input_tokens: number;
   cached_input_tokens: number; output_tokens: number; total_tokens: number;

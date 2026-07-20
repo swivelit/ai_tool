@@ -122,6 +122,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .answer-actions { display: flex; min-height: 30px; align-items: center; gap: 2px; margin-top: 8px; color: var(--muted) }
 .answer-actions > button { display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer }
 .answer-actions > button:hover { background: var(--surface) }
+.answer-actions > .continue-response { display: inline-flex; width: auto; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line) }
+.edit-message { display: inline-flex; align-items: center; gap: 5px; margin: 5px 8px 0 0; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer }
+.edit-message:hover { background: var(--surface) }
+.edit-message:disabled { opacity: .45; cursor: default }
+.message-editor { display: grid; width: min(560px, 88%); gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface) }
+.message-editor label { font-size: 12px; font-weight: 650 }
+.message-editor textarea { min-height: 96px; resize: vertical; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--text); font: inherit; line-height: 1.5 }
+.message-editor small { color: var(--muted); font-size: 11px }
+.message-editor > div { display: flex; justify-content: flex-end; gap: 7px }
+.message-editor button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer }
 .voice-reply-status { display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; font-size: 12px }
 .voice-reply-error { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--danger); font-size: 12px }
 .voice-reply-error button { min-height: 30px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); cursor: pointer }
@@ -172,6 +182,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .attachment-chip > button { display: grid; width: 27px; height: 27px; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer }
 .attachment-chip > button:hover { background: var(--hover); color: var(--text) }
 .attachment-context-note { padding: 4px 12px 2px; color: var(--muted); font-size: 10px }
+.attachment-warning { grid-column: 1 / -1; color: var(--danger) !important; white-space: normal !important }
+.long-input-mode { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px 0; color: var(--muted); font-size: 11px }
+.long-input-mode select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text) }
+.character-count { display: block; padding: 0 12px 7px; color: var(--subtle); text-align: right; font-size: 10px }
+.character-count.over-limit { color: var(--danger) }
 .recording-row { display: flex; min-height: 42px; align-items: center; gap: 9px; padding: 7px 11px 2px; color: var(--muted); font-size: 12px }
 .recording-row strong { color: var(--text) }
 .recording-row button, .composer-error button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 0; border-radius: 7px; background: var(--surface-2); cursor: pointer }
@@ -347,6 +362,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .data-control { display: flex; width: 100%; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: transparent; text-align: left; cursor: pointer }
 .data-control span { display: grid; gap: 4px }
 .data-control small, .data-note { color: var(--muted); font-size: 11px; line-height: 1.5 }
+.memory-controls { display: grid; gap: 10px; margin-top: 20px; padding: 14px; border: 1px solid var(--line); border-radius: 11px }
+.memory-controls h4, .memory-controls p { margin: 0 }
+.memory-controls > small { color: var(--muted); line-height: 1.5 }
+.memory-controls .check-row { display: flex; align-items: center; gap: 8px; font-size: 12px }
+.memory-list { display: grid; gap: 7px }
+.memory-list article { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px; border-radius: 8px; background: var(--surface) }
+.memory-list article span { display: grid; gap: 3px }
+.memory-list article small { color: var(--muted) }
+.memory-list article button { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); cursor: pointer }
 .settings-legal { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 22px }
 .settings-legal a { padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); text-decoration: none; font-size: 12px; overflow-wrap: anywhere }
 .settings-notice { position: sticky; bottom: -30px; margin: 20px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--surface); font-size: 12px }

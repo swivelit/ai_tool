@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { AssistantSettings, ComposerAttachment, InputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, Wallets, SSEEvent } from '../types'
-import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, uploadDocument } from '../api/client'
+import type { AssistantSettings, ComposerAttachment, InputMode, LongInputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, Wallets, SSEEvent } from '../types'
+import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, uploadDocument, uploadVirtualText } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
 import { useAuth } from '../auth/useAuth'
@@ -26,6 +26,7 @@ export function ChatPage() {
   const [threads, setThreads] = useState<Thread[]>([]); const [hasMore, setHasMore] = useState(false)
   const [active, setActive] = useState<string | null>(null); const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState(''); const [streaming, setStreaming] = useState(false)
+  const [longInputMode, setLongInputMode] = useState<LongInputMode>('analyze')
   const [draftVoiceTurnId, setDraftVoiceTurnId] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [drawer, setDrawer] = useState(false); const [collapsed, setCollapsed] = useState(localStorage.getItem('swico-sidebar-collapsed') === 'true')
@@ -191,17 +192,55 @@ export function ChatPage() {
   const send = async (
     text = draft, threadId = active, retryRequestId?: string,
     attachmentOverride?: MessageAttachment[], originOverride?: { inputMode: InputMode; voiceTurnId: string | null },
+    requestOptions?: { continueMessageId?: string; editMessageId?: string },
   ) => {
-    const selectedAttachments = (attachmentOverride ?? attachments).filter((item): item is ReadyAttachment => item.status === 'ready')
+    let selectedAttachments = (attachmentOverride ?? attachments).filter((item): item is ReadyAttachment => item.status === 'ready')
     if (!user || !bootstrap || streaming || (!text.trim() && !selectedAttachments.length) || offline || attachments.some(item => item.status === 'uploading')) return
+    const maxCharacters = bootstrap.uploads.long_input_enabled
+      ? (bootstrap.uploads.long_input_max_chars ?? 64000) : 16000
+    if (text.length > maxCharacters) {
+      setError(`Pasted text exceeds the ${maxCharacters.toLocaleString()}-character limit. No characters were removed.`)
+      return
+    }
+    const inlineThreshold = bootstrap.uploads.long_input_enabled
+      ? (bootstrap.uploads.long_input_inline_threshold_chars ?? 12000) : 16000
+    let providerText = text.trim()
+    if (text.length > inlineThreshold) {
+      if (!bootstrap.uploads.long_input_enabled) {
+        setError('Large pasted-text processing is not enabled.')
+        return
+      }
+      if (selectedAttachments.length >= bootstrap.uploads.max_files_per_message) {
+        setError('Remove one attachment before sending this large pasted text.')
+        return
+      }
+      setStreaming(true); setError('Preparing large pasted text…')
+      try {
+        const virtual = await uploadVirtualText(user, {
+          upload_id: crypto.randomUUID(), text, operation: longInputMode,
+        })
+        selectedAttachments = [...selectedAttachments, virtual]
+        setAttachments(value => [...value.filter(item => item.status === 'ready'), virtual].slice(-bootstrap.uploads.max_files_per_message))
+        const labels: Record<LongInputMode, string> = {
+          summarize: 'Summarize', analyze: 'Analyze', ask_questions: 'Answer questions about',
+          rewrite: 'Rewrite', translate: 'Translate',
+        }
+        providerText = `${labels[longInputMode]} the attached pasted text. Preserve its meaning and cite the supplied chunk labels when useful.`
+      } catch (caught) {
+        setError(chatErrorMessage(caught, !navigator.onLine)); setStreaming(false)
+        return
+      }
+    }
     const nextRequestId = retryRequestId || crypto.randomUUID()
     const origin = originOverride ?? {
       inputMode: draftVoiceTurnId ? 'dictation' as const : 'text' as const,
       voiceTurnId: draftVoiceTurnId,
     }
+    const editTarget = requestOptions?.editMessageId
+      ? messages.find(item => item.id === requestOptions.editMessageId && item.role === 'user') : undefined
     const existingUser = messages.some(item => item.role === 'user' && item.request_id === nextRequestId)
-    if (!existingUser) {
-      const content = text.trim() || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
+    if (!existingUser && !editTarget) {
+      const content = providerText || `Attached: ${selectedAttachments.map(item => item.name).join(', ')}`
       const optimistic: Message = { id: `pending-${nextRequestId}`, thread_id: threadId ?? '', role: 'user', content, request_id: nextRequestId, tier: null, tier_label: 'Swico', input_tokens: 0, output_tokens: 0, usage_source: null, charge_micros: 0, status: 'pending', created_at: new Date().toISOString(), attachments: selectedAttachments, input_mode: origin.inputMode, voice_turn_id: origin.voiceTurnId, reply_language: bootstrap.user.reply_language === 'ta' ? 'ta' : 'en' }
       setMessages(value => [...value, optimistic])
     }
@@ -211,14 +250,29 @@ export function ChatPage() {
     try {
       await streamChat(user, {
         request_id: nextRequestId,
-        message: text.trim(),
+        message: providerText,
         attachment_ids: selectedAttachments.map(item => item.id),
         input_mode: origin.inputMode,
         ...(origin.inputMode !== 'text' && origin.voiceTurnId ? { voice_turn_id: origin.voiceTurnId } : {}),
         ...(threadId ? { thread_id: threadId } : {}),
-      }, handleEvent, abort.signal)
+        ...(requestOptions?.continueMessageId ? { continue_message_id: requestOptions.continueMessageId } : {}),
+        ...(requestOptions?.editMessageId ? { edit_message_id: requestOptions.editMessageId } : {}),
+      }, handleEvent, abort.signal, () => {
+        if (!editTarget) return
+        const replacement: Message = {
+          ...editTarget, id: `pending-${nextRequestId}`, content: providerText,
+          request_id: nextRequestId, status: 'pending', created_at: new Date().toISOString(),
+          replaces_message_id: editTarget.id,
+          revision_number: (editTarget.revision_number ?? 1) + 1,
+        }
+        setMessages(value => [
+          ...value.filter(item => item.request_id !== editTarget.request_id && item.request_id !== nextRequestId),
+          replacement,
+        ])
+      })
       setDraftVoiceTurnId(null)
       await loadThreads(true)
+      if (editTarget?.thread_id) await loadMessages(editTarget.thread_id)
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
         dispatchStream({ type: 'event', event: { event: 'done', data: { cancelled: true } } }); setError('Generation stopped. Partial measured usage may already have been charged.')
@@ -233,6 +287,7 @@ export function ChatPage() {
         setError(chatErrorMessage(caught, !navigator.onLine))
         if (!(caught instanceof SSEStreamError)) dispatchStream({ type: 'event', event: { event: 'error', data: { code: 'request_failed', message: chatErrorMessage(caught, !navigator.onLine) } } })
       }
+      if (editTarget?.thread_id) await loadMessages(editTarget.thread_id)
     } finally { setStreaming(false); setController(null); setRequestId(null); setFocusKey(`complete-${Date.now()}`) }
   }
 
@@ -255,6 +310,18 @@ export function ChatPage() {
     void send(retryText, original.thread_id || active, original.request_id, original.attachments, {
       inputMode: original.input_mode, voiceTurnId: original.voice_turn_id,
     })
+  }
+  const continueResponse = (message: Message) => {
+    if (streaming || !message.thread_id || !message.truncated) return
+    void send('Continue response', message.thread_id, undefined, [], {
+      inputMode: 'text', voiceTurnId: null,
+    }, { continueMessageId: message.id })
+  }
+  const editMessage = (message: Message, content: string) => {
+    if (streaming || !message.thread_id || !content.trim()) return
+    void send(content, message.thread_id, undefined, message.attachments, {
+      inputMode: message.input_mode, voiceTurnId: message.voice_turn_id,
+    }, { editMessageId: message.id })
   }
   const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
   const select = (id: string) => { setDraftVoiceTurnId(null); setAttachments([]); setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
@@ -345,11 +412,14 @@ export function ChatPage() {
     <section className="chat-main"><header className="chat-head"><SidebarTrigger open={() => setDrawer(true)} /><span className="header-title">{threads.find(item => item.id === active)?.title || ''}</span></header>
       {offline && <div className="offline" role="status">You’re offline. Reconnect to send messages.</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
-      <Conversation messages={messages} phase={streamState.phase} retry={retry} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
+      <Conversation messages={messages} phase={streamState.phase} retry={retry} continueResponse={continueResponse} editMessage={editMessage} editingAvailable={Boolean(bootstrap.features.web_message_edit)} editingDisabled={streaming} suggest={text => { setDraftVoiceTurnId(null); setDraft(text); setFocusKey(`suggest-${Date.now()}`) }}
         voiceStates={voiceReply.states} playVoice={messageId => void voiceReply.play(messageId)} pauseVoice={voiceReply.pause}
         retryVoice={voiceReply.retry} addCredits={() => openBilling('voice')} />
       <Composer user={user} value={draft} setValue={setDraft} send={() => void send()} stop={stop} streaming={streaming} disabled={offline} focusKey={focusKey}
         attachments={attachments} attachmentsEnabled={Boolean(bootstrap.features.web_attachments)} voiceEnabled={Boolean(bootstrap.features.web_voice_recording && bootstrap.features.web_voice_billing)}
+        inlineThreshold={bootstrap.uploads.long_input_enabled ? bootstrap.uploads.long_input_inline_threshold_chars ?? 12000 : 16000}
+        maxCharacters={bootstrap.uploads.long_input_enabled ? bootstrap.uploads.long_input_max_chars ?? 64000 : 16000}
+        longInputMode={longInputMode} setLongInputMode={setLongInputMode}
         realtimeVoiceEnabled={realtimeVoiceEnabled} realtimeVoiceUnavailableReason={voiceUnavailableReason}
         assistant={bootstrap.assistant} tierDisabled={streaming || voiceMode} tierSaving={tierSaving} onTierSelect={saveTier}
         onRealtimeVoice={() => { voiceThreadRef.current = active; setVoiceMode(true) }}

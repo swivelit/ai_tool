@@ -23,6 +23,17 @@ describe('chatStreamReducer', () => {
     expect(state.error).toEqual({ code: 'provider_failed', message: 'Try again' })
     expect(state.assistant?.status).toBe('retryable'); expect(state.assistant?.id).toBe(id)
   })
+  it('records truncation and enables explicit continuation only from done metadata', () => {
+    let state = chatStreamReducer(emptyStreamState, { type:'start', requestId:'long', threadId:'t1', tier:'lite', tierLabel:'Swico Lite' })
+    state = chatStreamReducer(state, { type:'event', event:{ event:'done', data:{
+      message_id:'m-long', finish_reason:'length', truncated:true,
+      can_continue:true, completion_status:'incomplete',
+    } } })
+    expect(state.assistant).toMatchObject({
+      id:'m-long', finish_reason:'length', truncated:true,
+      can_continue:true, completion_status:'incomplete',
+    })
+  })
   it('ignores malformed and unknown events safely', () => {
     const state = chatStreamReducer(emptyStreamState, { type: 'event', event: { event: 'future', data: 'bad' } })
     expect(state).toBe(emptyStreamState)

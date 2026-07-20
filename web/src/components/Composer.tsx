@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import type { User } from 'firebase/auth'
 import { ArrowUp, AudioLines, FileText, Mic, Plus, Square, Upload, X } from 'lucide-react'
-import type { AssistantSettings, ComposerAttachment, SwicoTier, Wallet } from '../types'
+import type { AssistantSettings, ComposerAttachment, LongInputMode, SwicoTier, Wallet } from '../types'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 import { SwicoTierSelector } from './SwicoTierSelector'
 
@@ -54,6 +54,10 @@ export function Composer({
   supportedExtensions = [],
   addFiles = () => undefined,
   removeAttachment = () => undefined,
+  inlineThreshold = 16000,
+  maxCharacters = 16000,
+  longInputMode = 'analyze',
+  setLongInputMode = () => undefined,
 }: {
   user?: User | null;
   value: string; setValue: (value: string) => void; send: () => void; stop: () => void;
@@ -68,6 +72,8 @@ export function Composer({
   onVoiceWallet?: (wallet: Wallet) => void;
   supportedExtensions?: string[]; addFiles?: (files: File[]) => void;
   removeAttachment?: (attachment: ComposerAttachment) => void;
+  inlineThreshold?: number; maxCharacters?: number; longInputMode?: LongInputMode;
+  setLongInputMode?: (mode: LongInputMode) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -102,7 +108,8 @@ export function Composer({
   const uploadBusy = attachments.some(item => item.status === 'uploading')
   const readyAttachments = attachments.filter(item => item.status === 'ready')
   const hasSendableContent = !!value.trim() || readyAttachments.length > 0
-  const canSend = !disabled && !streaming && !uploadBusy && !audioBusy && hasSendableContent
+  const overLimit = value.length > maxCharacters
+  const canSend = !disabled && !streaming && !uploadBusy && !audioBusy && hasSendableContent && !overLimit
 
   const resize = () => {
     const element = ref.current
@@ -171,6 +178,7 @@ export function Composer({
               : attachment.status === 'error' ? attachment.error || 'Upload failed'
                 : attachment.status === 'ready' ? remaining(attachment.expires_at, now)
                   : attachment.status === 'unavailable' ? 'Unavailable' : 'Expired'}</small>
+            {'warnings' in attachment && attachment.warnings.map(warning => <small className="attachment-warning" role="status" key={warning}>{warning}</small>)}
           </span>
           <button type="button" aria-label={`Remove ${attachment.name}`} title={`Remove ${attachment.name}`} onClick={() => removeAttachment(attachment)}><X size={15} /></button>
         </div>)}
@@ -183,6 +191,8 @@ export function Composer({
       </div> : null}
       {recorder.state.status === 'transcribing' && <div className="recording-row" role="status"><span className="spinner" />Transcribing…</div>}
       {recorder.state.error && <div className="composer-error" role="alert"><span>{recorder.state.error}</span><button type="button" onClick={recorder.resetError}>Dismiss</button></div>}
+      {overLimit && <div className="composer-error" role="alert">Pasted text exceeds the {maxCharacters.toLocaleString()}-character limit. No characters were removed.</div>}
+      {value.length > inlineThreshold && !overLimit && <label className="long-input-mode">Large text action<select value={longInputMode} onChange={event => setLongInputMode(event.target.value as LongInputMode)}><option value="summarize">Summarize</option><option value="analyze">Analyze</option><option value="ask_questions">Ask questions</option><option value="rewrite">Rewrite</option><option value="translate">Translate</option></select></label>}
       <div className="composer" data-testid="composer">
         <div className="composer-plus-wrap">
           <input ref={fileRef} className="hidden-file-input" type="file" multiple aria-label="Upload files" accept={supportedExtensions.join(',')}
@@ -197,7 +207,7 @@ export function Composer({
         <textarea ref={ref} aria-label="Message Swico" value={value} disabled={disabled}
           onChange={event => { setValue(event.target.value); if (!event.target.value) onComposerClear() }} onKeyDown={keyDown}
           onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
-          placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} maxLength={16000} />
+          placeholder={disabled ? 'Reconnect to send a message' : 'Message Swico'} rows={1} aria-describedby="composer-character-count" />
         <SwicoTierSelector assistant={assistant} disabled={tierDisabled || streaming} saving={tierSaving} onSelect={onTierSelect} context="composer" />
         {voiceEnabled && recorder.state.status !== 'recording' && recorder.state.status !== 'stopping' && <button className="composer-tool" type="button" aria-label="Start voice dictation" title="Start voice dictation" disabled={disabled || streaming || uploadBusy || recorder.state.status === 'transcribing'} onClick={() => void recorder.start()}><Mic size={19} /></button>}
         {streaming
@@ -208,6 +218,7 @@ export function Composer({
               title={realtimeVoiceEnabled ? 'Start real-time Voice Mode' : realtimeVoiceUnavailableReason}
               disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
       </div>
+      <small id="composer-character-count" className={overLimit ? 'character-count over-limit' : 'character-count'} aria-live="polite">{value.length.toLocaleString()} / {maxCharacters.toLocaleString()} characters{value.length > inlineThreshold && !overLimit ? ' · will be sent as a temporary text attachment' : ''}</small>
       {dragging && <div className="drop-overlay" aria-hidden="true"><Upload size={20} /> Drop documents to attach</div>}
     </div>
     <span className="sr-status" aria-live="polite">{statusText}</span>

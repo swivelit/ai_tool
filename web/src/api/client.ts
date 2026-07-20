@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth'
-import type { InputMode, ReadyAttachment, SSEEvent, SynthesisResponse, TranscriptionResponse } from '../types'
+import type { InputMode, LongInputMode, ReadyAttachment, SSEEvent, SynthesisResponse, TranscriptionResponse } from '../types'
 import { publicConfig } from '../config/publicConfig'
 import { consumeSSE } from './sse'
 
@@ -72,14 +72,15 @@ export async function apiJson<T>(user: User, path: string, init: RequestInit = {
 }
 
 export async function streamChat(
-  user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[]; input_mode: InputMode; voice_turn_id?: string },
-  onEvent: (event: SSEEvent) => void, signal: AbortSignal,
+  user: User, payload: { request_id: string; message: string; thread_id?: string; attachment_ids?: string[]; input_mode: InputMode; voice_turn_id?: string; continue_message_id?: string; edit_message_id?: string },
+  onEvent: (event: SSEEvent) => void, signal: AbortSignal, onAccepted?: () => void,
 ) {
   const response = await authorizedFetch(user, '/api/web/chat/stream', { method: 'POST', body: JSON.stringify(payload), signal })
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as unknown
     throw new ApiError(response.status, body)
   }
+  onAccepted?.()
   let streamError: SSEStreamError | null = null
   await consumeSSE(response, event => {
     onEvent(event)
@@ -126,6 +127,14 @@ export async function deleteUpload(user: User, uploadId: string): Promise<void> 
     const body = await response.json().catch(() => ({})) as unknown
     throw new ApiError(response.status, body)
   }
+}
+
+export async function uploadVirtualText(
+  user: User, payload: { upload_id: string; text: string; operation: LongInputMode },
+): Promise<ReadyAttachment> {
+  return apiJson<ReadyAttachment>(user, '/api/web/uploads/text', {
+    method: 'POST', body: JSON.stringify(payload),
+  })
 }
 
 export async function transcribeAudio(

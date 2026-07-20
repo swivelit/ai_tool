@@ -103,8 +103,9 @@ it('shows upload state, countdown, expiry, and removes attachments', async () =>
   expect(screen.getByText('Uploading… 42%')).toBeInTheDocument()
   expect(screen.getByRole('button', { name:'Send message' })).toBeDisabled()
   rerender(<Composer value="" setValue={vi.fn()} send={vi.fn()} stop={vi.fn()} streaming={false}
-    attachments={[ready()]} removeAttachment={remove} />)
+    attachments={[ready({ warnings:['This PDF appears scanned. OCR was not performed.'] })]} removeAttachment={remove} />)
   expect(screen.getByText(/remaining/)).toBeInTheDocument()
+  expect(screen.getByText(/OCR was not performed/)).toHaveAttribute('role', 'status')
   expect(screen.getByRole('button', { name:'Send message' })).toBeEnabled()
   await userEvent.click(screen.getByRole('button', { name:'Remove notes.txt' }))
   expect(remove).toHaveBeenCalled()

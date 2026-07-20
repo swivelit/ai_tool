@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
-import { ApiError, apiJson, deleteUpload, streamChat, synthesizeAudio, transcribeAudio, uploadDocument } from '../api/client'
+import { ApiError, apiJson, deleteUpload, streamChat, synthesizeAudio, transcribeAudio, uploadDocument, uploadVirtualText } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { ChatPage } from './ChatPage'
 
@@ -9,7 +9,7 @@ const user = { getIdToken: vi.fn().mockResolvedValue('token') }
 vi.mock('../auth/useAuth', () => ({ useAuth: () => ({ user, signOut:vi.fn() }) }))
 vi.mock('../api/client', async importOriginal => {
   const actual = await importOriginal<typeof import('../api/client')>()
-  return { ...actual, apiJson:vi.fn(), streamChat:vi.fn(), uploadDocument:vi.fn(), deleteUpload:vi.fn(), transcribeAudio:vi.fn(), synthesizeAudio:vi.fn() }
+  return { ...actual, apiJson:vi.fn(), streamChat:vi.fn(), uploadDocument:vi.fn(), uploadVirtualText:vi.fn(), deleteUpload:vi.fn(), transcribeAudio:vi.fn(), synthesizeAudio:vi.fn() }
 })
 
 const assistant = { tier:'lite' as const, tier_label:'Swico Lite', tier_description:'Fast and efficient for everyday questions.', tier_selection_enabled:true, tiers:[
@@ -34,10 +34,21 @@ it('prioritises the offline state over an HTTP error', () => {
   expect(chatErrorMessage(new ApiError(500, {}), true)).toContain('offline')
 })
 
+it('surfaces only allowlisted safe document confirmation errors', () => {
+  expect(chatErrorMessage(new ApiError(422, { error:{
+    code:'full_document_confirmation_required',
+    message:'Narrow the request or explicitly confirm a larger document operation.',
+  } }), false)).toContain('explicitly confirm')
+  expect(chatErrorMessage(new ApiError(422, { error:{
+    code:'private_internal_error', message:'postgresql://private-host',
+  } }), false)).toBe('Review your message and try again.')
+})
+
 function mockApi() {
   vi.mocked(apiJson).mockReset()
   vi.mocked(streamChat).mockReset().mockResolvedValue(undefined)
   vi.mocked(uploadDocument).mockReset()
+  vi.mocked(uploadVirtualText).mockReset()
   vi.mocked(deleteUpload).mockReset().mockResolvedValue(undefined)
   vi.mocked(transcribeAudio).mockReset()
   vi.mocked(synthesizeAudio).mockReset()
@@ -74,6 +85,37 @@ it('opens the accessible composer mode selector with all public names and closes
   fireEvent.pointerDown(document.body)
   await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument())
   expect(trigger).toHaveFocus()
+})
+
+it('turns a 50000-character paste into a virtual attachment without sending it inline', async () => {
+  mockApi()
+  const longBootstrap = {
+    ...bootstrap,
+    features: { ...bootstrap.features, web_long_input:true },
+    uploads: {
+      ...bootstrap.uploads, long_input_enabled:true,
+      long_input_inline_threshold_chars:12000, long_input_max_chars:64000,
+    },
+  }
+  vi.mocked(apiJson).mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return longBootstrap as never
+    if (path.startsWith('/api/web/threads')) return { items:[], has_more:false } as never
+    return {} as never
+  })
+  const virtual = { ...uploaded, id:'virtual-50000', name:'Pasted text — analyze.txt', size_bytes:50_000 }
+  vi.mocked(uploadVirtualText).mockResolvedValue(virtual)
+  render(<ChatPage />)
+  const paste = 'x'.repeat(50_000)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  fireEvent.change(composer, { target:{ value:paste } })
+  expect(screen.getByText(/50,000 \/ 64,000 characters/)).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  expect(uploadVirtualText).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ text:paste, operation:'analyze' }))
+  const payload = vi.mocked(streamChat).mock.calls[0][1]
+  expect(payload.message).toMatch(/^Analyze the attached pasted text/)
+  expect(payload.message.length).toBeLessThan(200)
+  expect(payload.attachment_ids).toEqual(['virtual-50000'])
 })
 
 it('saves a selected mode and refreshes the tier-sensitive token estimate', async () => {

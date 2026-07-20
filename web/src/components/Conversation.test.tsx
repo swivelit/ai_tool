@@ -32,6 +32,31 @@ it('labels historical messages without a tier simply as Swico', () => {
   expect(screen.getByText('Swico')).toBeInTheDocument()
 })
 
+it('shows Continue only for provider-confirmed truncated answers', () => {
+  const continueResponse = vi.fn()
+  const { rerender } = render(<Conversation messages={[{
+    ...message('long'), truncated:true, can_continue:true, finish_reason:'length',
+  }]} retry={vi.fn()} suggest={vi.fn()} continueResponse={continueResponse} />)
+  fireEvent.click(screen.getByRole('button', { name:'Continue response' }))
+  expect(continueResponse).toHaveBeenCalledWith(expect.objectContaining({ id:'long' }))
+  rerender(<Conversation messages={[{
+    ...message('done'), truncated:false, can_continue:false, finish_reason:'stop',
+  }]} retry={vi.fn()} suggest={vi.fn()} continueResponse={continueResponse} />)
+  expect(screen.queryByRole('button', { name:'Continue response' })).not.toBeInTheDocument()
+})
+
+it('edits only the latest active user message with accessible save and cancel controls', () => {
+  const editMessage = vi.fn()
+  const userMessage = { ...message('user-latest'), role:'user' as const, content:'Original question' }
+  render(<Conversation messages={[userMessage]} retry={vi.fn()} suggest={vi.fn()} editMessage={editMessage} />)
+  fireEvent.click(screen.getByRole('button', { name:'Edit message' }))
+  const editor = screen.getByLabelText('Edit message')
+  fireEvent.change(editor, { target:{ value:'Revised question' } })
+  expect(screen.getByText(/may use additional credits/i)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name:/Save and regenerate/i }))
+  expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({ id:'user-latest' }), 'Revised question')
+})
+
 it('renders user attachment cards and marks expired metadata without an open action', () => {
   const userMessage: Message = {
     ...message('attachment'), role:'user', content:'Attached: report.pdf', attachments:[{
