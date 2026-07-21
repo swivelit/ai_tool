@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from ..billing.pricing import estimate_tokens
+from .conversation_continuity import SameThreadContinuityDecision
 from .turn_optimizer import WebTurnOptimization, optimize_web_turn, with_prompt_estimate
 
 
@@ -45,6 +46,7 @@ class WebRequestDecision:
     model_candidate_strategy: str
     cache_eligible: bool
     expected_provider_call_count: int
+    continuity: SameThreadContinuityDecision
     optimization: WebTurnOptimization
 
     @property
@@ -73,6 +75,12 @@ class WebRequestDecision:
             "model_candidate_strategy": self.model_candidate_strategy,
             "cache_eligible": self.cache_eligible,
             "expected_provider_call_count": self.expected_provider_call_count,
+            "same_thread_context_mode": self.continuity.mode,
+            "same_thread_context_reason": self.continuity.reason,
+            "same_thread_context_confidence": self.continuity.confidence,
+            "same_thread_context_turns_sent": len(self.same_thread_context),
+            "same_thread_context_chars_sent": self.same_thread.characters,
+            "same_thread_estimated_tokens": self.same_thread.estimated_tokens,
         }
 
 
@@ -117,6 +125,7 @@ class WebRequestCoordinator:
         needs_memory: bool = False,
         has_attachments: bool = False,
         previous_topic: str | None = None,
+        continuity: SameThreadContinuityDecision,
     ) -> WebRequestDecision:
         optimization = optimize_web_turn(
             message,
@@ -126,16 +135,21 @@ class WebRequestCoordinator:
             attachment_prompt_context=attachment_context,
             has_attachments=has_attachments,
             previous_topic=previous_topic,
+            continuity=continuity,
         )
         selected = tuple(
             (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
             for turn in optimization.selected_context_turns
         )
+        same_thread_text = "\n".join(
+            value for pair in selected for value in pair if value
+        )
+        same_thread_used = bool(selected)
         return WebRequestDecision(
             request_classification=optimization.optimization_route,
-            contextual_followup=optimization.is_contextual_followup,
+            contextual_followup=continuity.use_context,
             answer_class=optimization.answer_class,
-            needs_same_thread_context=optimization.is_contextual_followup,
+            needs_same_thread_context=same_thread_used,
             needs_cross_thread_memory=bool(needs_memory),
             needs_document_context=bool(has_attachments),
             same_thread_context=selected,
@@ -144,7 +158,7 @@ class WebRequestCoordinator:
             profile_context=optimization.compact_profile_prompt,
             system_prompt=PromptSourceUsage(),
             user_message=_usage(message),
-            same_thread=_usage(optimization.formatted_context),
+            same_thread=_usage(same_thread_text),
             memory=_usage(memory_context),
             profile=_usage(optimization.compact_profile_prompt),
             attachment=_usage(optimization.attachment_prompt_context),
@@ -155,8 +169,11 @@ class WebRequestCoordinator:
                 if optimization.answer_class in {"detailed", "long_form"}
                 else "economical_tier_candidate"
             ),
-            cache_eligible=optimization.cache_eligible and not memory_context,
+            cache_eligible=(
+                optimization.cache_eligible and not memory_context and not same_thread_used
+            ),
             expected_provider_call_count=1,
+            continuity=continuity,
             optimization=optimization,
         )
 

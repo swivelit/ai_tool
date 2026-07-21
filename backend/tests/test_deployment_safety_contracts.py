@@ -40,6 +40,7 @@ def test_staging_blueprint_contains_required_safe_values():
         "APP_ENV": "staging",
         "WEB_APP_ENABLED": "true",
         "WEB_TURN_OPTIMIZER_ENABLED": "true",
+        "WEB_SAME_THREAD_CONTEXT_MODE": "adaptive",
         "WEB_SWICO_BRAND_GUARD_ENABLED": "true",
         "WEB_CONTEXT_MAX_TURNS": "2",
         "WEB_CONTEXT_MAX_CHARS": "900",

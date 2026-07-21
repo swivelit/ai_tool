@@ -78,6 +78,11 @@ Set `WEB_APP_ENABLED=true`, `APP_ENV=production`, `LOG_CHAT_CONTENT=false`, `AUT
 
 Exact environment delta for this release:
 
+Production should initially enable adaptive same-thread continuity with
+`WEB_SAME_THREAD_CONTEXT_MODE=adaptive`, the optimizer enabled, the two-turn /
+900-character bounds, one provider call and one provider attempt, and prompt
+token breakdown telemetry as shown below.
+
 The Web Turn Optimizer values below belong directly on the existing **ai_tool**
 API service. Do not add them to a shared environment group, the static site,
 `swico-web`, `web/.env.example`, any `VITE_*` variable, the PostgreSQL service,
@@ -87,6 +92,7 @@ cross-thread memory:
 
 ```text
 WEB_TURN_OPTIMIZER_ENABLED=true
+WEB_SAME_THREAD_CONTEXT_MODE=adaptive
 WEB_SWICO_BRAND_GUARD_ENABLED=true
 WEB_CONTEXT_MAX_TURNS=2
 WEB_CONTEXT_MAX_CHARS=900
@@ -117,8 +123,9 @@ WEB_LEGACY_DOC_CONVERSION_ENABLED=false
 
 Keep prompt caching disabled for this pass: provider cache-write token billing
 is not part of wallet settlement yet, so enabling it could undercharge writes.
-Rollback is configuration-only: set `WEB_TURN_OPTIMIZER_ENABLED=false` and
-redeploy the API; this restores legacy web history/profile prompt behavior.
+The normal continuity rollback is configuration-only: set
+`WEB_SAME_THREAD_CONTEXT_MODE=explicit_only` and redeploy the API. Do not disable
+the entire optimizer as the normal rollback.
 The narrower Swico Brand Guard rollback is
 `WEB_SWICO_BRAND_GUARD_ENABLED=false`; it restores the previous provider path
 for public product questions while retaining the vendor-neutral public prompt.

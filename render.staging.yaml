@@ -25,6 +25,8 @@ projects:
                 value: "true"
               - key: WEB_TURN_OPTIMIZER_ENABLED
                 value: "true"
+              - key: WEB_SAME_THREAD_CONTEXT_MODE
+                value: adaptive
               - key: WEB_SWICO_BRAND_GUARD_ENABLED
                 value: "true"
               - key: WEB_CONTEXT_MAX_TURNS

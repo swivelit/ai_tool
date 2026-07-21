@@ -41,9 +41,17 @@ true.
 Do not place it on `swico-web`, in a shared environment group, on PostgreSQL or
 Valkey, or on billing cron jobs.
 
-Standalone questions send no historical turns. Contextual follow-ups use the
-shared `classify_contextual_followup` rules and send at most two recent turns
-and 900 formatted characters by default. Profile and attachment blocks are
+Same-thread continuity is selected by the provider-free deterministic policy in
+`backend/app/web_api/conversation_continuity.py`. In `adaptive` mode it honors
+explicit topic resets, preserves the existing explicit-follow-up rules, and
+uses referential language, elliptical questions, Unicode lexical topic overlap,
+and a conservative short-message fallback. Clear self-contained new subjects
+send no history. The selected latest one turn (or at most two for comparisons
+and numbered continuations) is bounded to 900 raw history characters by
+default. Invalid mode values normalize safely to `explicit_only`; `off` sends no
+same-thread history, `explicit_only` retains the narrow legacy classifier, and
+`always_last` is a diagnostic fallback that sends the latest complete turn
+unless the message explicitly resets the topic. Profile and attachment blocks are
 selective and bounded at 500 and 6,000 characters. Cross-thread memory is
 retrieved only for explicit lexical memory requests, is owner-scoped, and is
 bounded to four items / 1,200 characters. The exact provider messages
@@ -58,11 +66,14 @@ is permitted only after a zero-output, zero-usage failure and only within
 `WEB_PROVIDER_CALLS_PER_TURN_MAX`. The production-safe default is one.
 Prompt-cache request parameters are disabled by
 default because cache-write token pricing is not yet included in settlement.
-Sanitized decisions and counts are stored in assistant message metadata. The
+Historical chat text stays in its original `user` and `assistant` provider
+roles; it is never embedded in a system message. Sanitized continuity reasons,
+confidence, counts, characters, and token estimates are stored in assistant
+message metadata without raw conversation text. The
 additive revision `f9c2d7a4e1b6` adds active message revisions and user-scoped
-memory tables. Set
-`WEB_TURN_OPTIMIZER_ENABLED=false` for an application-level rollback to the
-legacy context/profile behavior.
+memory tables. Roll back the adaptive continuity policy with
+`WEB_SAME_THREAD_CONTEXT_MODE=explicit_only`; disabling the whole optimizer is
+not the normal continuity rollback.
 
 OpenAI streaming uses provider deltas and the final usage event. Sarvam streaming is used when supported by the installed SDK; otherwise the service emits the completed response as one `delta` and marks estimated usage where needed.
 

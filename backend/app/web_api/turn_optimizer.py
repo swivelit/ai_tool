@@ -10,6 +10,7 @@ from ..ai.intent import classify_contextual_followup, classify_intent_with_metad
 from ..ai.prompts import detailed_answer_requested
 from ..billing.pricing import estimate_tokens
 from ..global_qa_cache import is_live_or_current_question, is_private_or_personal_question
+from .conversation_continuity import SameThreadContinuityDecision
 from .swico_brand import (
     SWICO_PUBLIC_PROFILE_VERSION,
     classify_swico_brand_query,
@@ -54,6 +55,7 @@ def optimize_web_turn(
     attachment_prompt_context: str = "",
     has_attachments: bool = False,
     previous_topic: str | None = None,
+    continuity: SameThreadContinuityDecision | None = None,
 ) -> WebTurnOptimization:
     """Build a deterministic, provider-free website turn policy."""
     text = str(message or "").strip()
@@ -96,11 +98,19 @@ def optimize_web_turn(
             brand_profile_version=SWICO_PUBLIC_PROFILE_VERSION,
         )
     decision = classify_intent_with_metadata(text)
-    contextual = classify_contextual_followup(text) is not None
+    contextual = (
+        continuity.use_context
+        if continuity is not None
+        else classify_contextual_followup(text) is not None
+    )
     answer_class = classify_answer_class(text, decision.intent)
     maximum = output_ceiling(answer_class)
     local_route = "" if has_attachments else _local_route(decision.intent)
-    selected, formatted = select_context_turns(context_turns or [], contextual=contextual)
+    selected, formatted = select_context_turns(
+        context_turns or [],
+        contextual=contextual,
+        preferred_turn_count=(continuity.preferred_turn_count if continuity else None),
+    )
     profile_prompt = build_compact_profile_prompt(
         profile_context or {}, text, reply_language=reply_language
     )
@@ -161,11 +171,14 @@ def with_prompt_estimate(
 
 
 def select_context_turns(
-    turns: list[dict[str, str]], *, contextual: bool
+    turns: list[dict[str, str]], *, contextual: bool,
+    preferred_turn_count: int | None = None,
 ) -> tuple[list[dict[str, str]], str]:
     if not contextual:
         return [], ""
     max_turns = _env_int("WEB_CONTEXT_MAX_TURNS", 2, minimum=0)
+    if preferred_turn_count is not None:
+        max_turns = min(max_turns, max(0, preferred_turn_count))
     max_chars = _env_int("WEB_CONTEXT_MAX_CHARS", 900, minimum=0)
     if max_turns <= 0 or max_chars <= 0:
         return [], ""
@@ -185,7 +198,7 @@ def select_context_turns(
     blocks: list[str] = []
     used = 0
     for turn in reversed(normalized[-max_turns:]):
-        block = _format_turn(turn)
+        block = _context_text(turn)
         separator = 1 if blocks else 0
         if len(block) + separator + used <= max_chars:
             candidates.insert(0, turn)
@@ -195,7 +208,7 @@ def select_context_turns(
         if not blocks:
             bounded = _bounded_turn(turn, max_chars)
             candidates.insert(0, bounded)
-            blocks.insert(0, _format_turn(bounded))
+            blocks.insert(0, _context_text(bounded))
         # Older context is skipped if it cannot fit as a complete turn.
     formatted = "\n".join(blocks).strip()
     return candidates, formatted
@@ -288,20 +301,19 @@ def _local_route(intent: str) -> str:
     return ""
 
 
-def _format_turn(turn: dict[str, str]) -> str:
-    parts: list[str] = []
-    if turn.get("user"):
-        parts.append(f"User: {turn['user']}")
-    if turn.get("assistant"):
-        parts.append(f"Assistant: {turn['assistant']}")
-    return "\n".join(parts)
+def _context_text(turn: dict[str, str]) -> str:
+    """Raw history characters actually sent, without adding role-label text."""
+    return "\n".join(
+        value for value in (str(turn.get("user") or ""), str(turn.get("assistant") or ""))
+        if value
+    )
 
 
 def _bounded_turn(turn: dict[str, str], limit: int) -> dict[str, str]:
     user = str(turn.get("user") or "")
     assistant = str(turn.get("assistant") or "")
     if user and assistant:
-        fixed = len("User: \nAssistant: ")
+        fixed = 1
         available = max(0, limit - fixed)
         user_limit = available * 2 // 5
         assistant_limit = available - user_limit
@@ -310,8 +322,8 @@ def _bounded_turn(turn: dict[str, str], limit: int) -> dict[str, str]:
             "assistant": _truncate(assistant, assistant_limit),
         }
     if user:
-        return {"user": _truncate(user, max(0, limit - len("User: "))), "assistant": ""}
-    return {"user": "", "assistant": _truncate(assistant, max(0, limit - len("Assistant: ")))}
+        return {"user": _truncate(user, max(0, limit)), "assistant": ""}
+    return {"user": "", "assistant": _truncate(assistant, max(0, limit))}
 
 
 def _compact(value: Any, limit: int = 10_000) -> str:

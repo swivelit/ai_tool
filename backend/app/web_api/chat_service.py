@@ -29,10 +29,15 @@ from ..models import (
 from ..profile_context import build_profile_prompt_context, profile_prompt_context_text
 from ..time_utils import utc_now
 from .attachment_context import FullDocumentConfirmationRequired, select_attachment_context
+from .conversation_continuity import (
+    SameThreadContinuityDecision,
+    decide_same_thread_continuity,
+    normalize_same_thread_context_mode,
+)
 from .upload_store import UploadStoreUnavailable, get_upload_store
 from .usage_service import selected_swico_tier
 from .turn_optimizer import (
-    WebTurnOptimization, optimizer_enabled, with_prompt_estimate,
+    WebTurnOptimization, optimizer_enabled, select_context_turns, with_prompt_estimate,
 )
 from .request_coordinator import WebRequestCoordinator, WebRequestDecision
 from .swico_brand import swico_brand_response
@@ -80,6 +85,7 @@ class PreparedWebTurn:
     optimization: WebTurnOptimization | None = None
     coordinator_decision: WebRequestDecision | None = None
     precomputed_response: AIProviderResponse | None = None
+    continuity_decision: SameThreadContinuityDecision | None = None
 
 
 @dataclass
@@ -104,15 +110,33 @@ def _owned_thread(session: Session, thread_id: str, user_id: int) -> WebChatThre
     return thread
 
 
-def _context(session: Session, thread_id: str, user_id: int, limit: int = 20) -> list[dict[str, str]]:
+def _context(
+    session: Session, thread_id: str, user_id: int, *, turn_limit: int = 2
+) -> tuple[list[dict[str, str]], dict[str, str]]:
+    row_limit = min(24, max(8, max(1, turn_limit) * 4))
     rows = list(session.exec(
         select(WebChatMessage).where(
             WebChatMessage.thread_id == thread_id,
             WebChatMessage.user_id == user_id,
             WebChatMessage.status == "complete",
             WebChatMessage.superseded_at.is_(None),
-        ).order_by(WebChatMessage.created_at.desc()).limit(limit)
+        ).order_by(WebChatMessage.created_at.desc(), WebChatMessage.role.asc()).limit(row_limit)
     ).all())
+    previous_metadata: dict[str, str] = {}
+    for row in rows:
+        if row.role != "assistant":
+            continue
+        try:
+            stored = json.loads(row.metadata_json or "{}")
+        except (TypeError, ValueError):
+            stored = {}
+        if isinstance(stored, dict):
+            previous_metadata = {
+                key: str(stored.get(key) or "")[:80]
+                for key in ("topic", "brand_subintent", "brand_profile_version")
+                if stored.get(key)
+            }
+        break
     turns: list[dict[str, str]] = []
     pending: WebChatMessage | None = None
     for row in reversed(rows):
@@ -120,38 +144,11 @@ def _context(session: Session, thread_id: str, user_id: int, limit: int = 20) ->
             pending = row
         elif row.role == "assistant" and pending is not None:
             if pending.request_id and row.request_id and pending.request_id != row.request_id:
+                pending = None
                 continue
             turns.append({"user": pending.content, "assistant": row.content})
             pending = None
-    return turns[-6:]
-
-
-def _previous_assistant_safe_metadata(
-    session: Session, thread_id: str, user_id: int
-) -> dict[str, str]:
-    """Read only bounded Brand Guard metadata from the immediately prior answer."""
-    row = session.exec(
-        select(WebChatMessage).where(
-            WebChatMessage.thread_id == thread_id,
-            WebChatMessage.user_id == user_id,
-            WebChatMessage.role == "assistant",
-            WebChatMessage.status == "complete",
-            WebChatMessage.superseded_at.is_(None),
-        ).order_by(WebChatMessage.created_at.desc()).limit(1)
-    ).first()
-    if row is None:
-        return {}
-    try:
-        stored = json.loads(row.metadata_json or "{}")
-    except (TypeError, ValueError):
-        return {}
-    if not isinstance(stored, dict):
-        return {}
-    return {
-        key: str(stored.get(key) or "")[:80]
-        for key in ("topic", "brand_subintent", "brand_profile_version")
-        if stored.get(key)
-    }
+    return turns[-max(1, turn_limit):], previous_metadata
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -295,6 +292,7 @@ def prepare_web_turn(
         if existing_user_message is not None and existing_charge is not None and existing_charge.status != "released":
             raise DuplicateRequestInProgress("This request is already being processed.")
 
+        newly_created_thread = not bool(thread_id)
         if thread_id:
             thread = _owned_thread(session, thread_id, user_id)
         else:
@@ -425,11 +423,56 @@ def prepare_web_turn(
         thread.updated_at = utc_now()
         session.add(thread)
 
-        previous_safe_metadata = _previous_assistant_safe_metadata(
-            session, thread.id, user_id
-        )
-
         enabled = optimizer_enabled()
+        context_mode = normalize_same_thread_context_mode(
+            os.getenv("WEB_SAME_THREAD_CONTEXT_MODE", "explicit_only")
+        )
+        try:
+            configured_context_turns = max(
+                0, int(os.getenv("WEB_CONTEXT_MAX_TURNS", "2"))
+            )
+        except (TypeError, ValueError):
+            configured_context_turns = 2
+        candidate_turn_limit = 6 if not enabled else max(2, configured_context_turns)
+        previous_safe_metadata: dict[str, str] = {}
+        if continuation_row is not None:
+            try:
+                continuation_safe = json.loads(continuation_row.metadata_json or "{}")
+            except (TypeError, ValueError):
+                continuation_safe = {}
+            if isinstance(continuation_safe, dict):
+                previous_safe_metadata = {
+                    key: str(continuation_safe.get(key) or "")[:80]
+                    for key in ("topic", "brand_subintent", "brand_profile_version")
+                    if continuation_safe.get(key)
+                }
+            tail_limit = min(
+                1_200, max(200, int(os.getenv("WEB_CONTINUE_TAIL_MAX_CHARS", "900")))
+            )
+            all_context = [{
+                "user": "Previous truncated response",
+                "assistant": continuation_row.content[-tail_limit:],
+            }]
+        elif newly_created_thread:
+            all_context = []
+        else:
+            all_context, previous_safe_metadata = _context(
+                session, thread.id, user_id, turn_limit=candidate_turn_limit
+            )
+
+        if continuation_row is not None and context_mode != "off":
+            continuity = SameThreadContinuityDecision(
+                mode=context_mode,
+                use_context=True,
+                reason="continue_response",
+                confidence=1.0,
+                preferred_turn_count=1,
+            )
+        else:
+            continuity = decide_same_thread_continuity(
+                model_message, all_context, mode=context_mode
+            )
+
         coordinator = WebRequestCoordinator()
         needs_memory = needs_cross_thread_memory(model_message)
         preliminary = coordinator.preliminary(
@@ -448,8 +491,9 @@ def prepare_web_turn(
             "prompt_cache_version": os.getenv("WEB_PROMPT_CACHE_VERSION", "v1"),
         }
 
-        # Existing local routes remain ahead of profile/history/cache/provider
-        # work and therefore cannot create a reservation.
+        # Existing local routes remain ahead of profile/context selection,
+        # cache/provider work, and therefore cannot create a reservation. The
+        # bounded owner-scoped candidate read above is reused if a provider is needed.
         if preliminary.local_intent == "swico_brand" or (enabled and preliminary.local_intent):
             brand_metadata = (
                 {
@@ -485,9 +529,15 @@ def prepare_web_turn(
                 request_id, user_id, thread.id, ai_request, route, 0,
                 swico_tier, input_mode, voice_turn_id, str(reply_language or "en"),
                 billing_exempt, optimization=preliminary,
+                continuity_decision=continuity,
             )
 
-        if enabled and preliminary.cache_eligible and not needs_memory:
+        if (
+            enabled
+            and preliminary.cache_eligible
+            and not needs_memory
+            and not continuity.use_context
+        ):
             cached = _cache_response(user_id, model_message, reply_language)
             if cached is not None:
                 metrics = {
@@ -513,6 +563,7 @@ def prepare_web_turn(
                     request_id, user_id, thread.id, ai_request, route, 0,
                     swico_tier, input_mode, voice_turn_id, str(reply_language or "en"),
                     billing_exempt, optimization=optimization, precomputed_response=cached,
+                    continuity_decision=continuity,
                 )
 
         profile_context = build_profile_prompt_context(session, user_id)
@@ -521,17 +572,6 @@ def prepare_web_turn(
             current_thread_id=thread.id,
         ) if needs_memory else None
         memory_context = memory_selection.prompt_context if memory_selection else ""
-        if continuation_row is not None:
-            tail_limit = min(1_200, max(200, int(os.getenv("WEB_CONTINUE_TAIL_MAX_CHARS", "900"))))
-            all_context = [{
-                "user": "Previous truncated response",
-                "assistant": continuation_row.content[-tail_limit:],
-            }]
-        else:
-            all_context = (
-                _context(session, thread.id, user_id)
-                if (not enabled or preliminary.is_contextual_followup) else []
-            )
         try:
             attachment_context = select_attachment_context(uploads, visible_message)
         except FullDocumentConfirmationRequired as exc:
@@ -548,20 +588,26 @@ def prepare_web_turn(
                 needs_memory=needs_memory,
                 has_attachments=bool(uploads),
                 previous_topic=previous_safe_metadata.get("topic"),
+                continuity=continuity,
             )
             optimization = coordinator_decision.optimization
             context_turns = optimization.selected_context_turns
             profile_prompt = optimization.compact_profile_prompt
             attachment_context = optimization.attachment_prompt_context
         else:
-            context_turns = all_context
+            context_turns, formatted_context = select_context_turns(
+                all_context,
+                contextual=continuity.use_context,
+                preferred_turn_count=continuity.preferred_turn_count,
+            )
             profile_prompt = profile_prompt_context_text(profile_context)
             optimization = replace(
                 preliminary,
                 optimization_route="legacy_optimizer_disabled",
+                is_contextual_followup=continuity.use_context,
                 selected_context_turns=context_turns,
-                formatted_context="",
-                context_chars_sent=len(str(context_turns)),
+                formatted_context=formatted_context,
+                context_chars_sent=len(formatted_context),
                 compact_profile_prompt=profile_prompt,
                 profile_chars_sent=len(profile_prompt),
                 attachment_prompt_context=attachment_context,
@@ -570,7 +616,7 @@ def prepare_web_turn(
                     **preliminary.metrics,
                     "optimization_route": "legacy_optimizer_disabled",
                     "context_turns_sent": len(context_turns),
-                    "context_chars_sent": len(str(context_turns)),
+                    "context_chars_sent": len(formatted_context),
                     "profile_chars_sent": len(profile_prompt),
                     "attachment_chars_sent": len(attachment_context),
                 },
@@ -585,8 +631,6 @@ def prepare_web_turn(
             "memory_prompt_context": memory_context,
             "answer_class": optimization.answer_class,
         }
-        if enabled:
-            metadata["formatted_context"] = optimization.formatted_context
         ai_request = AIRequest(
             user_id=user_id, message=model_message, reply_language=reply_language,
             channel="text", request_id=request_id, metadata=metadata,
@@ -601,6 +645,8 @@ def prepare_web_turn(
                 request_id, user_id, thread.id, ai_request, route, 0,
                 swico_tier, input_mode, voice_turn_id, str(reply_language or "en"),
                 billing_exempt, optimization=optimization,
+                coordinator_decision=coordinator_decision,
+                continuity_decision=continuity,
             )
 
         if enabled:
@@ -678,6 +724,7 @@ def prepare_web_turn(
             input_mode, voice_turn_id, str(reply_language or "en"), billing_exempt,
             provider_messages=provider_messages, optimization=optimization,
             coordinator_decision=coordinator_decision,
+            continuity_decision=continuity,
         )
 
 
@@ -821,10 +868,38 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
             WebChatMessage.role == "user",
         )).one()
         optimization_metrics = dict(prepared.optimization.metrics if prepared.optimization else {})
-        if prepared.coordinator_decision is not None and _env_bool(
-            "WEB_PROMPT_TOKEN_BREAKDOWN_ENABLED", True
-        ):
-            optimization_metrics.update(prepared.coordinator_decision.sanitized_metadata)
+        if prepared.coordinator_decision is not None:
+            coordinator_metadata = prepared.coordinator_decision.sanitized_metadata
+            if _env_bool("WEB_PROMPT_TOKEN_BREAKDOWN_ENABLED", True):
+                optimization_metrics.update(coordinator_metadata)
+            else:
+                optimization_metrics.update({
+                    key: coordinator_metadata[key]
+                    for key in (
+                        "same_thread_context_mode", "same_thread_context_reason",
+                        "same_thread_context_confidence", "same_thread_context_turns_sent",
+                        "same_thread_context_chars_sent", "same_thread_estimated_tokens",
+                    )
+                })
+        elif prepared.continuity_decision is not None:
+            same_thread_text = "\n".join(
+                value
+                for turn in prepared.ai_request.context_turns
+                for value in (
+                    str(turn.get("user") or ""), str(turn.get("assistant") or "")
+                )
+                if value
+            )
+            optimization_metrics.update({
+                "same_thread_context_mode": prepared.continuity_decision.mode,
+                "same_thread_context_reason": prepared.continuity_decision.reason,
+                "same_thread_context_confidence": prepared.continuity_decision.confidence,
+                "same_thread_context_turns_sent": len(prepared.ai_request.context_turns),
+                "same_thread_context_chars_sent": len(same_thread_text),
+                "same_thread_estimated_tokens": (
+                    estimate_tokens(same_thread_text) if same_thread_text else 0
+                ),
+            })
         if prepared.ai_request.metadata.get("client_surface") == "web":
             for unsafe_key in ("original_message", "normalized_message", "stripped_prefix", "profile_context"):
                 response.raw.pop(unsafe_key, None)
@@ -997,6 +1072,9 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                         "profile_estimated_tokens", "attachment_estimated_tokens",
                         "total_estimated_prompt_tokens", "usage_source", "finish_reason",
                         "truncated", "completion_status",
+                        "same_thread_context_mode", "same_thread_context_reason",
+                        "same_thread_context_confidence", "same_thread_context_turns_sent",
+                        "same_thread_context_chars_sent",
                     )
                 },
             },

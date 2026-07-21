@@ -78,6 +78,9 @@ def test_standalone_turn_has_no_history_memory_or_document_and_one_provider_call
         "total_estimated_prompt_tokens", "max_output_tokens", "answer_class",
         "provider_attempts", "reserved_micros", "charged_micros",
         "usage_source", "finish_reason", "truncated",
+        "same_thread_context_mode", "same_thread_context_reason",
+        "same_thread_context_confidence", "same_thread_context_turns_sent",
+        "same_thread_context_chars_sent",
     ):
         assert key in stored
     assert stored["same_thread_estimated_tokens"] == 0

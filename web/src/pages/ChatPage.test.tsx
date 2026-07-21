@@ -66,6 +66,61 @@ const uploaded = {
   status:'ready' as const, warnings:[],
 }
 
+it('keeps the authoritative SSE thread for follow-ups, supports selection, and clears it for New chat', async () => {
+  const existingThread = {
+    id:'thread-existing', title:'Existing topic', archived:false,
+    created_at:new Date().toISOString(), updated_at:new Date().toISOString(),
+  }
+  vi.mocked(apiJson).mockReset().mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.startsWith('/api/web/threads?')) return { items:[existingThread], has_more:false } as never
+    if (path.includes('/messages')) return { items:[] } as never
+    return {} as never
+  })
+  vi.mocked(streamChat).mockReset().mockImplementation(async (_user, _payload, onEvent) => {
+    if (vi.mocked(streamChat).mock.calls.length === 1) {
+      onEvent({ event:'thread', data:{ thread_id:'thread-from-sse' } })
+    }
+  })
+  render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+
+  await userEvent.type(composer, 'first message')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(1))
+  expect(vi.mocked(streamChat).mock.calls[0][1]).not.toHaveProperty('thread_id')
+
+  await userEvent.type(composer, 'same chat follow-up')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(streamChat).mock.calls[1][1]).toMatchObject({ thread_id:'thread-from-sse' })
+
+  await userEvent.click(await screen.findByRole('button', { name:'Existing topic' }))
+  await userEvent.type(composer, 'selected chat follow-up')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(3))
+  expect(vi.mocked(streamChat).mock.calls[2][1]).toMatchObject({ thread_id:'thread-existing' })
+
+  await userEvent.click(screen.getByRole('button', { name:'New chat' }))
+  await userEvent.type(composer, 'fresh topic')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(4))
+  expect(vi.mocked(streamChat).mock.calls[3][1]).not.toHaveProperty('thread_id')
+})
+
+it('does not start a second request while a stream is active', async () => {
+  mockApi()
+  vi.mocked(streamChat).mockImplementation(() => new Promise(() => undefined))
+  render(<ChatPage />)
+  const composer = await screen.findByRole('textbox', { name:'Message Swico' })
+  await userEvent.type(composer, 'first request')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+  fireEvent.change(composer, { target:{ value:'second request' } })
+  fireEvent.keyDown(composer, { key:'Enter', code:'Enter' })
+  expect(streamChat).toHaveBeenCalledOnce()
+})
+
 it('opens the accessible composer mode selector with all public names and closes on Escape', async () => {
   mockApi(); render(<ChatPage />)
   const trigger = await screen.findByRole('button', { name:'Swico Lite' })
@@ -281,7 +336,7 @@ it('sends an edited transcript as dictation without automatic synthesis, then re
   await userEvent.type(composer, 'normal typed message')
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(2))
-  expect(vi.mocked(streamChat).mock.calls[1][1]).toMatchObject({ input_mode:'text' })
+  expect(vi.mocked(streamChat).mock.calls[1][1]).toMatchObject({ input_mode:'text', thread_id:'thread-voice' })
   expect(vi.mocked(streamChat).mock.calls[1][1]).not.toHaveProperty('voice_turn_id')
   expect(synthesizeAudio).not.toHaveBeenCalled()
   view.unmount()

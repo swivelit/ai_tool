@@ -24,6 +24,16 @@ source telemetry. Normal provider-backed turns permit one paid generation
 attempt. A configured fallback is safe only after zero output and zero reported
 usage.
 
+Same-thread continuity is decided before global cache lookup by
+`conversation_continuity.py`, with no model or embedding call. `adaptive` mode
+uses explicit resets, explicit/referential and elliptical follow-ups, Unicode
+lexical overlap, standalone-subject detection, and a one-turn ambiguous
+fallback. It sends at most two complete active non-superseded turns / 900 raw
+characters. Cross-thread memory remains a separate owner-scoped source.
+Historical messages retain their `user` and `assistant` provider roles, and the
+same frozen message list drives prompt estimation, reservation, and provider
+invocation.
+
 Website messages, revisions, user-scoped memory, reservations, settled usage,
 and wallet ledger records live in PostgreSQL. Temporary extracted attachment
 text lives in the dedicated private Valkey and raw uploads are not retained.
