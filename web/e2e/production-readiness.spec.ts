@@ -268,6 +268,162 @@ test('zero-credit block, token package details, Test Mode payment, streaming, se
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
 })
 
+test('rapid Markdown streaming stays pinned, yields to manual scrolling, and completes without remounting', async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    type StreamHarness = {
+      phase: string
+      positions: number[]
+      resumeManual: () => void
+      resumeFollowing: () => void
+      finish: () => void
+    }
+    const nativeFetch = window.fetch.bind(window)
+    const harness: StreamHarness = {
+      phase:'idle', positions:[], resumeManual:() => undefined,
+      resumeFollowing:() => undefined, finish:() => undefined,
+    }
+    ;(window as typeof window & { __streamTest?: StreamHarness }).__streamTest = harness
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (!url.includes('/api/web/chat/stream')) return nativeFetch(input, init)
+      const encoder = new TextEncoder()
+      let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+      let timer: number | null = null
+      const event = (name: string, data: unknown) => encoder.encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+      const initial = [
+        '# Streaming stability\n\n',
+        'A paragraph arrives before a long code sample.\n\n',
+        '```typescript\n',
+        ...Array.from({ length:80 }, (_, index) => `const row_${index} = ${index}; // ${'x'.repeat(72)}\n`),
+      ]
+      const manual = Array.from({ length:40 }, (_, offset) => {
+        const index = offset + 80
+        return `const row_${index} = ${index}; // ${'y'.repeat(72)}\n`
+      })
+      const following = [
+        ...Array.from({ length:30 }, (_, offset) => {
+          const index = offset + 120
+          return `const row_${index} = ${index}; // ${'z'.repeat(72)}\n`
+        }),
+        '```\n\nThe streamed block is complete.\n',
+      ]
+      const pump = (pieces: string[], phase: string) => {
+        if (!controller || timer !== null) return
+        let index = 0
+        harness.phase = `${phase}-streaming`
+        timer = window.setInterval(() => {
+          const text = pieces[index++]
+          if (text !== undefined) controller?.enqueue(event('delta', { text }))
+          if (index < pieces.length) return
+          if (timer !== null) window.clearInterval(timer)
+          timer = null
+          harness.phase = `${phase}-done`
+        }, 4)
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        start(nextController) {
+          controller = nextController
+          nextController.enqueue(event('thread', { thread_id:'thread-1' }))
+          nextController.enqueue(event('status', { phase:'responding' }))
+          pump(initial, 'initial')
+        },
+        cancel() {
+          if (timer !== null) window.clearInterval(timer)
+          timer = null
+        },
+      })
+      harness.resumeManual = () => pump(manual, 'manual')
+      harness.resumeFollowing = () => pump(following, 'following')
+      harness.finish = () => {
+        if (!controller || timer !== null) return
+        controller.enqueue(event('usage', { tier:'lite', tier_label:'Swico Lite', input_tokens:8, output_tokens:150, usage_source:'actual', charged_micros:1200 }))
+        controller.enqueue(event('done', { message_id:'persisted-e2e-message', thread_id:'thread-1', cancelled:false, finish_reason:'stop', truncated:false, can_continue:false, completion_status:'complete' }))
+        controller.close()
+        controller = null
+        harness.phase = 'complete'
+      }
+      return new Response(stream, { status:200, headers:{ 'Content-Type':'text/event-stream' } })
+    }
+  })
+  await installBackend(page, { wallet:5_000_000 })
+  await signIn(page)
+  await page.getByLabel('Message Swico').fill('Show a long streamed code sample')
+  await page.getByRole('button', { name:'Send message' }).click()
+  const assistant = page.locator('.message.assistant[data-request-id]')
+  await expect(assistant).toHaveCount(1)
+  const originalAssistant = await assistant.elementHandle()
+  expect(originalAssistant).not.toBeNull()
+  await page.evaluate(() => {
+    type Harness = { positions: number[] }
+    const harness = (window as typeof window & { __streamTest?: Harness }).__streamTest
+    const conversation = document.querySelector<HTMLElement>('.conversation')
+    const message = document.querySelector<HTMLElement>('.message.assistant[data-request-id]')
+    if (!harness || !conversation || !message) return
+    const sample = () => window.requestAnimationFrame(() => harness.positions.push(conversation.scrollTop))
+    new MutationObserver(sample).observe(message, { childList:true, subtree:true, characterData:true })
+  })
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __streamTest?: { phase:string } }).__streamTest?.phase)).toBe('initial-done')
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+  const initialMetrics = await page.locator('.conversation').evaluate(element => ({
+    top:element.scrollTop, bottomGap:element.scrollHeight - element.scrollTop - element.clientHeight,
+  }))
+  expect(Math.abs(initialMetrics.bottomGap)).toBeLessThanOrEqual(2)
+  expect(initialMetrics.top).toBeGreaterThan(100)
+  const pinnedPositions = await page.evaluate(() => (window as typeof window & { __streamTest?: { positions:number[] } }).__streamTest?.positions ?? [])
+  expect(pinnedPositions.length).toBeGreaterThan(10)
+  for (let index = 1; index < pinnedPositions.length; index += 1) {
+    expect(pinnedPositions[index] + 2).toBeGreaterThanOrEqual(pinnedPositions[index - 1])
+  }
+
+  const manualTop = await page.locator('.conversation').evaluate(element => {
+    element.scrollTop = Math.max(0, element.scrollTop - 350)
+    element.dispatchEvent(new Event('scroll'))
+    return element.scrollTop
+  })
+  await expect(page.getByRole('button', { name:'Scroll to bottom' })).toBeVisible()
+  await page.evaluate(() => (window as typeof window & { __streamTest?: { resumeManual:() => void } }).__streamTest?.resumeManual())
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __streamTest?: { phase:string } }).__streamTest?.phase)).toBe('manual-done')
+  await page.waitForTimeout(50)
+  expect(await page.locator('.conversation').evaluate(element => element.scrollTop)).toBeCloseTo(manualTop, 0)
+
+  await page.getByRole('button', { name:'Scroll to bottom' }).click()
+  await expect.poll(() => page.locator('.conversation').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(2)
+  await page.evaluate(() => (window as typeof window & { __streamTest?: { resumeFollowing:() => void } }).__streamTest?.resumeFollowing())
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __streamTest?: { phase:string } }).__streamTest?.phase)).toBe('following-done')
+  await expect.poll(() => page.locator('.conversation').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(2)
+  await expect(assistant.locator('code')).toContainText('const row_149 = 149;')
+  const codeText = await assistant.locator('code').textContent()
+  expect(codeText?.match(/const row_125 = 125;/g)).toHaveLength(1)
+
+  await page.evaluate(() => (window as typeof window & { __streamTest?: { finish:() => void } }).__streamTest?.finish())
+  await expect(assistant).toHaveAttribute('data-message-id', 'persisted-e2e-message')
+  expect(await originalAssistant!.evaluate(node => node === document.querySelector('.message.assistant[data-request-id]'))).toBe(true)
+  await expect(page.locator('.message.assistant[data-request-id]')).toHaveCount(1)
+  expect((await assistant.locator('code').textContent())?.match(/const row_125 = 125;/g)).toHaveLength(1)
+
+  await page.getByLabel('Message Swico').focus()
+  const composerGeometry = await page.locator('.composer-shell').evaluate(shell => {
+    const inner = shell.querySelector<HTMLElement>('.composer')!
+    const outerStyle = getComputedStyle(shell)
+    const innerStyle = getComputedStyle(inner)
+    return {
+      outerBorder:outerStyle.borderBottomWidth,
+      outerRadius:outerStyle.borderRadius,
+      outerShadow:outerStyle.boxShadow,
+      innerBorder:innerStyle.borderBottomWidth,
+      innerShadow:innerStyle.boxShadow,
+    }
+  })
+  expect(composerGeometry.outerBorder).not.toBe('0px')
+  expect(composerGeometry.outerRadius).not.toBe('0px')
+  expect(composerGeometry.outerShadow).not.toBe('none')
+  expect(composerGeometry.innerBorder).toBe('0px')
+  expect(composerGeometry.innerShadow).toBe('none')
+  await expect(page.locator('#composer-character-count')).toHaveClass(/sr-only/)
+
+  await testInfo.attach('streaming-render-diagnostic', { body:await page.screenshot(), contentType:'image/png' })
+})
+
 test('order failure is safe and primary views have no critical accessibility violations', async ({ page }, testInfo) => {
   const state = await installBackend(page)
   await signIn(page)
@@ -479,18 +635,18 @@ test('real-time Voice Mode completes a pause-aware turn, syncs chat, handles bar
   await expect(voiceDialog.getByText('Voice diagnostics')).toHaveCount(0)
   await expect(voiceDialog.locator('.voice-controls')).toHaveCount(0)
   await expect(page.getByRole('heading', { name:'Thinking' })).toHaveCount(0)
-  await expect(page.getByText('I need help because')).toBeVisible()
+  await expect(voiceDialog.getByText('I need help because')).toBeVisible()
   await expect(page.getByRole('heading', { name:'Still listening…' })).toBeVisible()
   await expect(page.getByRole('heading', { name:'Thinking' })).toHaveCount(0)
-  await expect(page.getByText('I need help planning')).toBeVisible()
-  await expect(page.getByText('Let us make a clear plan.')).toBeVisible()
+  await expect(page.getByText('I need help planning').first()).toBeVisible()
+  await expect(page.getByText('Let us make a clear plan.').first()).toBeVisible()
   await page.evaluate(() => {
     const socket = (window as typeof window & { __voiceSocket?: { emit:(message: object) => void } }).__voiceSocket
     socket?.emit({ type:'warning', code:'assistant_interrupted', message:'Assistant interrupted. Listening now.' })
   })
   await expect(page.getByRole('heading', { name:'Listening' })).toBeVisible()
-  await expect(page.getByText('What comes next?')).toBeVisible()
-  await expect(page.getByText('Next, choose the first task.')).toBeVisible()
+  await expect(page.getByText('What comes next?').first()).toBeVisible()
+  await expect(page.getByText('Next, choose the first task.').first()).toBeVisible()
   const axe = await new AxeBuilder({ page }).analyze()
   expect(axe.violations.filter(item => item.impact === 'critical')).toEqual([])
   if (testInfo.project.name === 'chromium') await page.setViewportSize({ width:320, height:640 })

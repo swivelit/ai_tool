@@ -94,7 +94,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .tier-options em { color: var(--muted); font-size: 10px; font-style: normal; text-transform: uppercase }
 .header-title { max-width: 42vw; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font-size: 12px }
 .conversation-frame { position: relative; min-height: 0; flex: 1 }
-.conversation { height: 100%; overflow-y: auto; padding: 82px max(20px, calc((100% - 768px) / 2)) 180px; scroll-behavior: smooth }
+.conversation { height: 100%; overflow-y: auto; padding: 82px max(20px, calc((100% - 768px) / 2)) 180px }
+.conversation-content { width: 100% }
 .empty-state { display: flex; min-height: calc(100dvh - 280px); flex-direction: column; align-items: center; justify-content: center; text-align: center }
 .swico-mark { width: 42px; height: 42px; margin-bottom: 18px; border-radius: 13px; font-size: 20px }
 .empty-state h1 { margin: 0; font-size: clamp(26px, 3vw, 32px); font-weight: 600; letter-spacing: -.035em }
@@ -117,7 +118,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .code-head { display: flex; justify-content: space-between; padding: 8px 12px; background: #2a2a2a; color: #c5c5c5; font: 11px ui-monospace, monospace }
 .code-head button { border: 0; background: transparent; color: inherit; cursor: pointer }
 .code-block pre { margin: 0; padding: 16px; overflow: auto }
-.code-block code { font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace }
+.code-block code { display: block; min-width: max-content; padding: 0; overflow: visible; font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre }
 .cursor { display: inline-block; width: 7px; height: 16px; margin-left: 2px; vertical-align: text-bottom; background: var(--text); animation: blink .85s infinite }
 .answer-actions { display: flex; min-height: 30px; align-items: center; gap: 2px; margin-top: 8px; color: var(--muted) }
 .answer-actions > button { display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer }
@@ -147,8 +148,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .composer-shell { position: relative; width: min(768px, 100%); margin: 0 auto; border: 1px solid color-mix(in srgb, var(--line) 75%, transparent); border-radius: 24px; background: var(--composer); box-shadow: 0 2px 10px rgb(0 0 0 / 8%) }
 .composer-shell:focus-within { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus) }
 .composer-shell.dragging { border-color: var(--focus); box-shadow: 0 0 0 2px var(--focus) }
-.composer { display: flex; width: 100%; align-items: flex-end; gap: 8px; margin: 0 auto; padding: 9px 10px; border: 0; border-radius: 24px; background: transparent }
-.composer:focus-within { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus) }
+.composer { display: flex; width: 100%; align-items: flex-end; gap: 8px; margin: 0 auto; padding: 9px 10px; border: 0; border-radius: 24px; outline: 0; background: transparent; box-shadow: none }
+.composer-shell.has-character-count .composer { padding-bottom: 25px }
 .composer textarea { width: 100%; min-width: 52px; min-height: 28px; max-height: 200px; resize: none; overflow-y: auto; padding: 4px 0; border: 0; outline: 0; background: transparent; line-height: 1.45 }
 .composer textarea::placeholder { color: var(--subtle) }
 .composer-tools { display: flex; flex: none; align-items: center; gap: 1px }
@@ -185,7 +186,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .attachment-warning { grid-column: 1 / -1; color: var(--danger) !important; white-space: normal !important }
 .long-input-mode { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px 0; color: var(--muted); font-size: 11px }
 .long-input-mode select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text) }
-.character-count { display: block; padding: 0 12px 7px; color: var(--subtle); text-align: right; font-size: 10px }
+.character-count { position: absolute; right: 13px; bottom: 6px; max-width: calc(100% - 26px); color: var(--subtle); text-align: right; font-size: 10px; line-height: 1.25; pointer-events: none }
 .character-count.over-limit { color: var(--danger) }
 .recording-row { display: flex; min-height: 42px; align-items: center; gap: 9px; padding: 7px 11px 2px; color: var(--muted); font-size: 12px }
 .recording-row strong { color: var(--text) }
@@ -374,7 +375,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .settings-legal { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 22px }
 .settings-legal a { padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); text-decoration: none; font-size: 12px; overflow-wrap: anywhere }
 .settings-notice { position: sticky; bottom: -30px; margin: 20px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--surface); font-size: 12px }
-.sr-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap }
+.sr-only, .sr-status { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0 }
 
 .login-page { display: grid; min-height: 100dvh; place-items: center; padding: 32px 20px; overflow-y: auto; background: var(--bg) }
 .auth-card { width: min(360px, 100%) }
@@ -437,6 +438,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .message-body { font-size: 14px }
   .composer-wrap { padding: 24px 9px 8px }
   .composer { padding-inline: 8px }
+  .composer-shell.has-character-count .composer { padding-bottom: 32px }
   .tier-selector-composer .product-selector { max-width: 92px; overflow: hidden; font-size: 11px; text-overflow: ellipsis }
   .attachment-chip { flex-basis: min(225px, 82vw) }
   .recording-row { flex-wrap: wrap }

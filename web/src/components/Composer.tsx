@@ -109,6 +109,8 @@ export function Composer({
   const readyAttachments = attachments.filter(item => item.status === 'ready')
   const hasSendableContent = !!value.trim() || readyAttachments.length > 0
   const overLimit = value.length > maxCharacters
+  const nearLimit = value.length >= Math.floor(maxCharacters * 0.8)
+  const showCharacterCount = overLimit || nearLimit || value.length >= inlineThreshold
   const canSend = !disabled && !streaming && !uploadBusy && !audioBusy && hasSendableContent && !overLimit
 
   const resize = () => {
@@ -166,7 +168,7 @@ export function Composer({
           : uploadBusy ? 'Uploading attachment…' : '')
 
   return <div className="composer-wrap">
-    <div className={`composer-shell ${dragging ? 'dragging' : ''}`}
+    <div className={`composer-shell ${dragging ? 'dragging' : ''} ${showCharacterCount ? 'has-character-count' : ''}`}
       onDragEnter={event => { event.preventDefault(); if (attachmentsEnabled) setDragging(true) }}
       onDragOver={event => event.preventDefault()} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false) }} onDrop={drop}>
       {attachments.length > 0 && <div className="attachment-tray" aria-label="Active attachments">
@@ -218,7 +220,7 @@ export function Composer({
               title={realtimeVoiceEnabled ? 'Start real-time Voice Mode' : realtimeVoiceUnavailableReason}
               disabled={disabled || !realtimeVoiceEnabled || audioBusy || uploadBusy} onClick={onRealtimeVoice}><AudioLines size={21} /></button>}
       </div>
-      <small id="composer-character-count" className={overLimit ? 'character-count over-limit' : 'character-count'} aria-live="polite">{value.length.toLocaleString()} / {maxCharacters.toLocaleString()} characters{value.length > inlineThreshold && !overLimit ? ' · will be sent as a temporary text attachment' : ''}</small>
+      <small id="composer-character-count" className={`${showCharacterCount ? 'character-count' : 'sr-only'}${overLimit ? ' over-limit' : ''}`} aria-live="polite">{value.length.toLocaleString()} / {maxCharacters.toLocaleString()} characters{value.length > inlineThreshold && !overLimit ? ' · will be sent as a temporary text attachment' : ''}</small>
       {dragging && <div className="drop-overlay" aria-hidden="true"><Upload size={20} /> Drop documents to attach</div>}
     </div>
     <span className="sr-status" aria-live="polite">{statusText}</span>

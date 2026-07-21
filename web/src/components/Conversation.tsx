@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, Copy, FileText, Pause, Pencil, Play, RefreshCw, RotateCcw, Volume2, X } from 'lucide-react'
 import type { Message, MessageAttachment, VoiceReplyState } from '../types'
+import { messageRenderKey } from '../messageRenderKey'
 import { MarkdownMessage } from './MarkdownMessage'
+
+const BOTTOM_THRESHOLD_PX = 120
 
 export function Conversation({ messages, phase, retry, suggest, continueResponse = () => undefined, editMessage = () => undefined, editingAvailable = true, editingDisabled = false, voiceStates = {}, playVoice = () => undefined, pauseVoice = () => undefined, retryVoice = () => undefined, addCredits = () => undefined }: {
   messages: Message[]; phase?: string; retry: (message: Message) => void; suggest: (text: string) => void;
@@ -12,31 +15,101 @@ export function Conversation({ messages, phase, retry, suggest, continueResponse
   addCredits?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const nearBottom = useRef(true)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const pinnedToBottom = useRef(true)
+  const lastAlignedScrollTop = useRef(0)
+  const frameRef = useRef<number | null>(null)
+  const previousMessagesRef = useRef<Message[]>([])
   const [showBottom, setShowBottom] = useState(false)
-  const onScroll = () => {
+
+  const setBottomButtonVisible = useCallback((visible: boolean) => {
+    setShowBottom(current => current === visible ? current : visible)
+  }, [])
+  const alignToBottom = useCallback(() => {
+    const element = scrollRef.current
+    if (element) {
+      element.scrollTop = element.scrollHeight
+      lastAlignedScrollTop.current = element.scrollTop
+    }
+  }, [])
+  const scheduleBottomAlignment = useCallback(() => {
+    if (!pinnedToBottom.current || frameRef.current !== null) return
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null
+      if (pinnedToBottom.current) alignToBottom()
+    })
+  }, [alignToBottom])
+  const onScroll = useCallback(() => {
     const element = scrollRef.current
     if (!element) return
-    nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 120
-    setShowBottom(!nearBottom.current)
-  }
+    const nextPinned = element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_THRESHOLD_PX
+    // A scroll event from the previous immediate alignment can arrive after a
+    // rapid content-height change. Keep following unless the position actually
+    // moved upward from the last aligned point.
+    if (!nextPinned && pinnedToBottom.current && element.scrollTop >= lastAlignedScrollTop.current - 1) {
+      scheduleBottomAlignment()
+      return
+    }
+    if (nextPinned === pinnedToBottom.current) return
+    pinnedToBottom.current = nextPinned
+    setBottomButtonVisible(!nextPinned)
+  }, [scheduleBottomAlignment, setBottomButtonVisible])
+
   useEffect(() => {
-    if (!nearBottom.current) return
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [messages])
-  const scrollBottom = () => {
-    nearBottom.current = true; setShowBottom(false)
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }
+    const previous = previousMessagesRef.current
+    const latest = messages.at(-1)
+    const latestKey = latest ? messageRenderKey(latest) : null
+    const previousLatest = previous.at(-1)
+    const isNewTail = Boolean(latest && (!previousLatest || messageRenderKey(previousLatest) !== latestKey))
+    const isNewUserMessage = isNewTail && latest?.role === 'user'
+    const isNewAssistantStream = latest?.role === 'assistant' && latest.status === 'streaming'
+      && !previous.some(message => messageRenderKey(message) === latestKey)
+    previousMessagesRef.current = messages
+
+    if (isNewUserMessage || isNewAssistantStream) {
+      pinnedToBottom.current = true
+      setBottomButtonVisible(false)
+      alignToBottom()
+    }
+    scheduleBottomAlignment()
+  }, [alignToBottom, messages, scheduleBottomAlignment, setBottomButtonVisible])
+
+  useEffect(() => {
+    const content = contentRef.current
+    if (!content || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => scheduleBottomAlignment())
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [scheduleBottomAlignment])
+
+  useEffect(() => () => {
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
+  }, [])
+
+  const scrollBottom = useCallback(() => {
+    pinnedToBottom.current = true
+    setBottomButtonVisible(false)
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
+    alignToBottom()
+  }, [alignToBottom, setBottomButtonVisible])
+
   return <div className="conversation-frame">
     <div className="conversation" ref={scrollRef} onScroll={onScroll} aria-live="polite" data-testid="conversation">
-      {!messages.length && <EmptyState suggest={suggest} />}
-      {messages.map(message => <MessageView key={message.id} message={message} retry={retry} continueResponse={continueResponse}
-        canEdit={editingAvailable && message.role === 'user' && message.id === [...messages].reverse().find(item => item.role === 'user')?.id}
-        editMessage={editMessage} editingDisabled={editingDisabled}
-        voiceState={voiceStates[message.id]} playVoice={playVoice} pauseVoice={pauseVoice}
-        retryVoice={retryVoice} addCredits={addCredits} />)}
-      {phase && ['connecting', 'routing', 'reserved'].includes(phase) && <div className="thinking" role="status"><span />Swico is thinking</div>}
+      <div className="conversation-content" ref={contentRef}>
+        {!messages.length && <EmptyState suggest={suggest} />}
+        {messages.map(message => <MessageView key={messageRenderKey(message)} message={message} retry={retry} continueResponse={continueResponse}
+          canEdit={editingAvailable && message.role === 'user' && message.id === [...messages].reverse().find(item => item.role === 'user')?.id}
+          editMessage={editMessage} editingDisabled={editingDisabled}
+          voiceState={voiceStates[message.id]} playVoice={playVoice} pauseVoice={pauseVoice}
+          retryVoice={retryVoice} addCredits={addCredits} />)}
+        {phase && ['connecting', 'routing', 'reserved'].includes(phase) && <div className="thinking" role="status"><span />Swico is thinking</div>}
+      </div>
     </div>
     {showBottom && <button className="scroll-bottom" aria-label="Scroll to bottom" title="Scroll to bottom" onClick={scrollBottom}><ChevronDown size={19} /></button>}
   </div>
@@ -71,8 +144,9 @@ function MessageView({ message, retry, continueResponse, canEdit, editMessage, e
       {canEdit && message.status === 'complete' && <button className="edit-message" type="button" aria-label="Edit message" title="Edit and regenerate" disabled={editingDisabled} onClick={() => { setEditValue(message.content); setEditing(true) }}><Pencil size={14} /> Edit</button>}</>}
     {message.status === 'retryable' && <button className="retry" onClick={() => retry(message)}><RefreshCw size={14} /> Retry</button>}
   </article>
-  return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''}`}><div className="message-body">
-    {message.content ? <MarkdownMessage>{message.content}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
+  return <article className={`message assistant ${message.status === 'streaming' ? 'streaming' : ''}`}
+    data-message-id={message.id} data-request-id={message.request_id ?? undefined}><div className="message-body">
+    {message.content ? <MarkdownMessage streaming={message.status === 'streaming'}>{message.content}</MarkdownMessage> : message.status === 'streaming' ? null : <p>Generation stopped.</p>}
     {message.status === 'streaming' && message.content && <span className="cursor" />}
     {message.status !== 'streaming' && <div className="answer-actions">
       <button aria-label="Copy answer" title="Copy answer" onClick={() => void navigator.clipboard.writeText(message.content).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1200) })}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>

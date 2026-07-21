@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import type { AssistantSettings, ComposerAttachment, InputMode, LongInputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, Wallets, SSEEvent } from '../types'
+import type { AssistantSettings, ComposerAttachment, InputMode, LongInputMode, Message, MessageAttachment, Bootstrap, ProfileSettings, ReadyAttachment, SwicoTier, Thread, Wallet, Wallets } from '../types'
 import { ApiError, SSEStreamError, apiJson, deleteUpload, streamChat, uploadDocument, uploadVirtualText } from '../api/client'
 import { chatErrorMessage } from '../chatErrors'
 import { chatStreamReducer, emptyStreamState } from '../chatStreamReducer'
@@ -43,7 +43,10 @@ export function ChatPage() {
   const removedLocalUploads = useRef(new Set<string>())
   const threadCountRef = useRef(0)
   const voiceThreadRef = useRef<string | null>(null)
+  const activeRef = useRef<string | null>(active)
+  const streamScopeRef = useRef<{ requestId: string; initialThreadId: string | null; threadId: string | null } | null>(null)
   useEffect(() => { threadCountRef.current = threads.length }, [threads.length])
+  useEffect(() => { activeRef.current = active }, [active])
 
   const loadThreads = useCallback(async (reset = true) => {
     if (!user) return
@@ -65,6 +68,7 @@ export function ChatPage() {
     if (!user) return
     const data = await apiJson<{ items: Message[] }>(user, `/api/web/threads/${threadId}/messages`)
     const unique = Array.from(new Map(data.items.map(message => [message.id, message])).values())
+    if (activeRef.current !== threadId) return
     setMessages(unique)
     const restored = new Map<string, MessageAttachment>()
     for (const message of unique) {
@@ -157,6 +161,11 @@ export function ChatPage() {
   useEffect(() => {
     const assistant = streamState.assistant
     if (!assistant) return
+    const scope = streamScopeRef.current
+    if (scope?.requestId === assistant.request_id) {
+      const streamThread = scope.threadId ?? scope.initialThreadId
+      if (activeRef.current !== streamThread) return
+    }
     setMessages(value => {
       const without = value.filter(item => !(item.role === 'assistant' && item.request_id === assistant.request_id))
       return [...without, assistant]
@@ -175,19 +184,6 @@ export function ChatPage() {
     }
     window.addEventListener('keydown', keyboard); return () => window.removeEventListener('keydown', keyboard)
   })
-
-  const handleEvent = (event: SSEEvent) => {
-    dispatchStream({ type: 'event', event })
-    if (event.event === 'thread' && typeof event.data === 'object' && event.data) {
-      const id = String((event.data as Record<string, unknown>).thread_id ?? '')
-      if (id) {
-        setActive(id)
-        setMessages(value => value.map(item => item.thread_id ? item : { ...item, thread_id: id }))
-      }
-    }
-    // Dictation is an input convenience only. Manual speaker playback remains
-    // available from completed messages, but is never auto-generated here.
-  }
 
   const send = async (
     text = draft, threadId = active, retryRequestId?: string,
@@ -232,6 +228,7 @@ export function ChatPage() {
       }
     }
     const nextRequestId = retryRequestId || crypto.randomUUID()
+    streamScopeRef.current = { requestId:nextRequestId, initialThreadId:threadId, threadId }
     const origin = originOverride ?? {
       inputMode: draftVoiceTurnId ? 'dictation' as const : 'text' as const,
       voiceTurnId: draftVoiceTurnId,
@@ -257,7 +254,25 @@ export function ChatPage() {
         ...(threadId ? { thread_id: threadId } : {}),
         ...(requestOptions?.continueMessageId ? { continue_message_id: requestOptions.continueMessageId } : {}),
         ...(requestOptions?.editMessageId ? { edit_message_id: requestOptions.editMessageId } : {}),
-      }, handleEvent, abort.signal, () => {
+      }, event => {
+        const scope = streamScopeRef.current
+        if (!scope || scope.requestId !== nextRequestId) return
+        dispatchStream({ type: 'event', event })
+        if (event.event === 'thread' && typeof event.data === 'object' && event.data) {
+          const id = String((event.data as Record<string, unknown>).thread_id ?? '')
+          if (id) {
+            const stillViewingOrigin = activeRef.current === scope.initialThreadId
+            scope.threadId = id
+            if (stillViewingOrigin) {
+              activeRef.current = id
+              setActive(id)
+              setMessages(value => value.map(item => item.thread_id ? item : { ...item, thread_id:id }))
+            }
+          }
+        }
+        // Dictation is an input convenience only. Manual speaker playback remains
+        // available from completed messages, but is never auto-generated here.
+      }, abort.signal, () => {
         if (!editTarget) return
         const replacement: Message = {
           ...editTarget, id: `pending-${nextRequestId}`, content: providerText,
@@ -323,8 +338,8 @@ export function ChatPage() {
       inputMode: message.input_mode, voiceTurnId: message.voice_turn_id,
     }, { editMessageId: message.id })
   }
-  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
-  const select = (id: string) => { setDraftVoiceTurnId(null); setAttachments([]); setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
+  const newChat = () => { voiceReply.clear(); setDraft(''); setDraftVoiceTurnId(null); activeRef.current = null; setActive(null); setMessages([]); setAttachments([]); dispatchStream({ type: 'reset' }); setDrawer(false); setError(''); setFocusKey(`new-${Date.now()}`) }
+  const select = (id: string) => { setDraftVoiceTurnId(null); setAttachments([]); activeRef.current = id; setActive(id); setDrawer(false); setError(''); setFocusKey(`select-${id}`) }
   const addFiles = (files: File[]) => {
     if (!user || !bootstrap?.features.web_attachments || !bootstrap.uploads) return
     const limits = bootstrap.uploads
@@ -385,6 +400,7 @@ export function ChatPage() {
   const voiceTurnDone = useCallback((turn: VoiceTurnDone) => {
     if (turn.completion_status !== 'complete') return
     voiceThreadRef.current = turn.thread_id
+    activeRef.current = turn.thread_id
     setActive(turn.thread_id)
     void Promise.all([loadMessages(turn.thread_id), loadThreads(true), refreshWallet()])
       .catch(() => setError('The Voice turn was saved, but chat history could not be refreshed yet.'))
@@ -393,6 +409,7 @@ export function ChatPage() {
     setVoiceMode(false)
     const authoritativeThread = voiceThreadRef.current ?? active
     if (authoritativeThread) {
+      activeRef.current = authoritativeThread
       setActive(authoritativeThread)
       void loadMessages(authoritativeThread).catch(() => setError('Voice messages were saved, but the final refresh failed.'))
     }

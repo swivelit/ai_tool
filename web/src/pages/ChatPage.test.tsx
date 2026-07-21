@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { ApiError, apiJson, deleteUpload, streamChat, synthesizeAudio, transcribeAudio, uploadDocument, uploadVirtualText } from '../api/client'
@@ -106,6 +106,48 @@ it('keeps the authoritative SSE thread for follow-ups, supports selection, and c
   await userEvent.click(screen.getByRole('button', { name:'Send message' }))
   await waitFor(() => expect(streamChat).toHaveBeenCalledTimes(4))
   expect(vi.mocked(streamChat).mock.calls[3][1]).not.toHaveProperty('thread_id')
+})
+
+it('isolates late stream events from a different selected thread', async () => {
+  const threads = [
+    { id:'thread-a', title:'Thread A', archived_at:null, created_at:new Date().toISOString(), updated_at:new Date().toISOString() },
+    { id:'thread-b', title:'Thread B', archived_at:null, created_at:new Date().toISOString(), updated_at:new Date().toISOString() },
+  ]
+  const historical = (threadId: string, content: string) => ({
+    id:`message-${threadId}`, thread_id:threadId, role:'assistant' as const, content, request_id:null,
+    tier:'lite' as const, tier_label:'Swico Lite', input_tokens:1, output_tokens:1,
+    usage_source:'actual' as const, charge_micros:1, status:'complete', created_at:new Date().toISOString(),
+    input_mode:'text' as const, voice_turn_id:null, reply_language:'en' as const,
+  })
+  vi.mocked(apiJson).mockReset().mockImplementation(async (_user, path) => {
+    if (path === '/api/web/bootstrap') return bootstrap as never
+    if (path.includes('/thread-a/messages')) return { items:[historical('thread-a', 'History A')] } as never
+    if (path.includes('/thread-b/messages')) return { items:[historical('thread-b', 'History B')] } as never
+    if (path.startsWith('/api/web/threads')) return { items:threads, has_more:false } as never
+    return {} as never
+  })
+  let emit: ((event: Parameters<Parameters<typeof streamChat>[2]>[0]) => void) | undefined
+  let finish: (() => void) | undefined
+  vi.mocked(streamChat).mockReset().mockImplementation(async (_user, _payload, onEvent) => {
+    emit = onEvent
+    await new Promise<void>(resolve => { finish = resolve })
+  })
+  render(<ChatPage />)
+  await userEvent.click(await screen.findByRole('button', { name:'Thread A' }))
+  expect(await screen.findByText('History A')).toBeInTheDocument()
+  await userEvent.type(screen.getByRole('textbox', { name:'Message Swico' }), 'stream in A')
+  await userEvent.click(screen.getByRole('button', { name:'Send message' }))
+  await waitFor(() => expect(streamChat).toHaveBeenCalledOnce())
+
+  await userEvent.click(screen.getByRole('button', { name:'Thread B' }))
+  expect(await screen.findByText('History B')).toBeInTheDocument()
+  await act(async () => { emit?.({ event:'delta', data:{ text:'Late answer from A' } }) })
+  expect(screen.queryByText('Late answer from A')).not.toBeInTheDocument()
+  expect(screen.getByText('History B')).toBeInTheDocument()
+  await act(async () => {
+    emit?.({ event:'done', data:{ message_id:'persisted-a', thread_id:'thread-a' } })
+    finish?.()
+  })
 })
 
 it('does not start a second request while a stream is active', async () => {

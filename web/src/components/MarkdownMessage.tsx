@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import hljs from 'highlight.js/lib/core'
@@ -16,25 +16,32 @@ hljs.registerLanguage('json', json)
 hljs.registerLanguage('python', python)
 hljs.registerLanguage('typescript', typescript)
 hljs.registerLanguage('ts', typescript)
+hljs.registerAliases(['sh', 'shell'], { languageName: 'bash' })
+hljs.registerAliases('py', { languageName: 'python' })
 
-export function MarkdownMessage({ children }: { children: string }) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-    a: props => <a {...props} target="_blank" rel="noreferrer" />,
-    code: ({ className, children: codeChildren, ...props }) => {
+export const MarkdownMessage = memo(function MarkdownMessage({ children, streaming = false }: { children: string; streaming?: boolean }) {
+  const components = useMemo(() => ({
+    a: (props: React.ComponentPropsWithoutRef<'a'>) => <a {...props} target="_blank" rel="noreferrer" />,
+    code: ({ className, children: codeChildren, ...props }: React.ComponentPropsWithoutRef<'code'>) => {
       const value = String(codeChildren).replace(/\n$/, '')
       const block = Boolean(className) || value.includes('\n')
-      return block ? <CodeBlock className={className}>{value}</CodeBlock> : <code {...props}>{codeChildren}</code>
+      return block ? <CodeBlock className={className} streaming={streaming}>{value}</CodeBlock> : <code {...props}>{codeChildren}</code>
     },
-  }}>{children}</ReactMarkdown>
-}
+  }), [streaming])
+  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{children}</ReactMarkdown>
+})
 
-function CodeBlock({ children, className }: { children: string; className?: string }) {
+function CodeBlock({ children, className, streaming }: { children: string; className?: string; streaming: boolean }) {
   const [copied, setCopied] = useState(false)
-  const codeRef = useRef<HTMLElement>(null)
   const language = className?.replace('language-', '') || 'code'
-  useEffect(() => { if (codeRef.current) hljs.highlightElement(codeRef.current) }, [children, className])
+  const highlighted = useMemo(() => {
+    if (streaming || language === 'code' || !hljs.getLanguage(language)) return null
+    return hljs.highlight(children, { language, ignoreIllegals: true }).value
+  }, [children, language, streaming])
   return <div className="code-block">
     <div className="code-head"><span>{language}</span><button onClick={() => void navigator.clipboard.writeText(children).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })}>{copied ? 'Copied' : 'Copy code'}</button></div>
-    <pre><code ref={codeRef} className={className}>{children as ReactNode}</code></pre>
+    <pre>{highlighted === null
+      ? <code className={className}>{children}</code>
+      : <code className={[className, 'hljs'].filter(Boolean).join(' ')} dangerouslySetInnerHTML={{ __html:highlighted }} />}</pre>
   </div>
 }

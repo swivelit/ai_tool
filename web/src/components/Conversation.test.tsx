@@ -1,19 +1,140 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { Profiler, StrictMode } from 'react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { vi } from 'vitest'
 import { Conversation } from './Conversation'
 import type { Message } from '../types'
 
-const message = (id: string): Message => ({ id, thread_id:'t', role:'assistant', content:`Answer ${id}`, request_id:id, tier:'lite', tier_label:'Swico Lite', input_tokens:1, output_tokens:1, usage_source:'actual', charge_micros:1, status:'complete', created_at:new Date().toISOString(), input_mode:'text', voice_turn_id:null, reply_language:'en' })
+const message = (id: string, overrides: Partial<Message> = {}): Message => ({ id, thread_id:'t', role:'assistant', content:`Answer ${id}`, request_id:id, tier:'lite', tier_label:'Swico Lite', input_tokens:1, output_tokens:1, usage_source:'actual', charge_micros:1, status:'complete', created_at:new Date().toISOString(), input_mode:'text', voice_turn_id:null, reply_language:'en', ...overrides })
 
-it('auto-scrolls only while near the bottom and offers a return button', () => {
-  const scrollTo = vi.fn(); const { rerender } = render(<Conversation messages={[message('1')]} retry={vi.fn()} suggest={vi.fn()} />)
+function controlledAnimationFrames() {
+  let nextId = 1
+  const callbacks = new Map<number, FrameRequestCallback>()
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+    const id = nextId++
+    callbacks.set(id, callback)
+    return id
+  })
+  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => { callbacks.delete(id) })
+  return {
+    callbacks,
+    flush() {
+      const pending = [...callbacks.values()]
+      callbacks.clear()
+      act(() => pending.forEach(callback => callback(performance.now())))
+    },
+  }
+}
+
+function scrollMetrics(element: HTMLElement, initialTop = 0) {
+  let top = initialTop
+  const writes = vi.fn((value: number) => { top = value })
+  Object.defineProperties(element, {
+    scrollHeight:{ configurable:true, get:() => 1200 },
+    clientHeight:{ configurable:true, get:() => 300 },
+    scrollTop:{ configurable:true, get:() => top, set:writes },
+  })
+  return { writes, setTop:(value: number) => { top = value }, getTop:() => top }
+}
+
+it('keeps the same assistant DOM node when completion replaces the temporary database id', () => {
+  controlledAnimationFrames()
+  const streaming = message('stream-request-1', { request_id:'request-1', content:'Partial', status:'streaming' })
+  const { rerender } = render(<Conversation messages={[streaming]} retry={vi.fn()} suggest={vi.fn()} />)
+  const original = document.querySelector<HTMLElement>('[data-request-id="request-1"]')
+  expect(original).toHaveAttribute('data-message-id', 'stream-request-1')
+  rerender(<Conversation messages={[{ ...streaming, id:'database-message-1', content:'Complete', status:'complete' }]} retry={vi.fn()} suggest={vi.fn()} />)
+  const completed = document.querySelector<HTMLElement>('[data-request-id="request-1"]')
+  expect(completed).toBe(original)
+  expect(completed).toHaveAttribute('data-message-id', 'database-message-1')
+})
+
+it('does not collide user and assistant render keys for the same request', () => {
+  controlledAnimationFrames()
+  render(<Conversation messages={[
+    message('user-database-id', { role:'user', request_id:'shared-request', content:'Question' }),
+    message('assistant-database-id', { request_id:'shared-request', content:'Answer' }),
+  ]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(screen.getByText('Question')).toBeInTheDocument()
+  expect(screen.getByText('Answer')).toBeInTheDocument()
+  expect(document.querySelectorAll('.message')).toHaveLength(2)
+})
+
+it('coalesces a burst of streaming deltas into one immediate animation-frame scroll', () => {
+  const frames = controlledAnimationFrames()
+  const stream = message('stream-burst', { request_id:'burst', content:'a', status:'streaming' })
+  const { rerender } = render(<Conversation messages={[stream]} retry={vi.fn()} suggest={vi.fn()} />)
   const conversation = screen.getByTestId('conversation')
-  conversation.scrollTo = scrollTo
-  Object.defineProperties(conversation, { scrollHeight:{ configurable:true, value:1000 }, clientHeight:{ configurable:true, value:200 }, scrollTop:{ configurable:true, writable:true, value:0 } })
-  fireEvent.scroll(conversation); const calls = scrollTo.mock.calls.length
-  rerender(<Conversation messages={[message('1'), message('2')]} retry={vi.fn()} suggest={vi.fn()} />)
-  expect(scrollTo).toHaveBeenCalledTimes(calls)
-  fireEvent.click(screen.getByRole('button', { name:'Scroll to bottom' })); expect(scrollTo.mock.calls.length).toBe(calls + 1)
+  const metrics = scrollMetrics(conversation)
+  const scrollTo = vi.spyOn(conversation, 'scrollTo')
+  frames.flush()
+  metrics.writes.mockClear()
+  for (let index = 0; index < 30; index += 1) {
+    rerender(<Conversation messages={[{ ...stream, content:`a${'b'.repeat(index + 1)}` }]} retry={vi.fn()} suggest={vi.fn()} />)
+  }
+  expect(frames.callbacks.size).toBe(1)
+  frames.flush()
+  expect(metrics.writes).toHaveBeenCalledTimes(1)
+  expect(metrics.getTop()).toBe(1200)
+  expect(scrollTo).not.toHaveBeenCalled()
+})
+
+it('keeps one live scheduled frame through StrictMode effect cleanup replay', () => {
+  const frames = controlledAnimationFrames()
+  const stream = message('stream-strict', { request_id:'strict', content:'a', status:'streaming' })
+  render(<StrictMode><Conversation messages={[stream]} retry={vi.fn()} suggest={vi.fn()} /></StrictMode>)
+  expect(frames.callbacks.size).toBe(1)
+  frames.flush()
+  expect(frames.callbacks.size).toBe(0)
+})
+
+it('does not steal scroll after the user moves upward', () => {
+  const frames = controlledAnimationFrames()
+  const stream = message('stream-up', { request_id:'up', content:'a', status:'streaming' })
+  const { rerender } = render(<Conversation messages={[stream]} retry={vi.fn()} suggest={vi.fn()} />)
+  const conversation = screen.getByTestId('conversation')
+  const metrics = scrollMetrics(conversation)
+  frames.flush()
+  metrics.setTop(200); metrics.writes.mockClear()
+  fireEvent.scroll(conversation)
+  expect(screen.getByRole('button', { name:'Scroll to bottom' })).toBeVisible()
+  rerender(<Conversation messages={[{ ...stream, content:'a new token' }]} retry={vi.fn()} suggest={vi.fn()} />)
+  frames.flush()
+  expect(metrics.writes).not.toHaveBeenCalled()
+  expect(metrics.getTop()).toBe(200)
+})
+
+it('resumes following after an immediate jump-to-bottom action', () => {
+  const frames = controlledAnimationFrames()
+  const stream = message('stream-resume', { request_id:'resume', content:'a', status:'streaming' })
+  const { rerender } = render(<Conversation messages={[stream]} retry={vi.fn()} suggest={vi.fn()} />)
+  const conversation = screen.getByTestId('conversation')
+  const metrics = scrollMetrics(conversation)
+  frames.flush()
+  metrics.setTop(100); metrics.writes.mockClear(); fireEvent.scroll(conversation)
+  fireEvent.click(screen.getByRole('button', { name:'Scroll to bottom' }))
+  expect(metrics.writes).toHaveBeenCalledTimes(1)
+  expect(metrics.getTop()).toBe(1200)
+  metrics.writes.mockClear()
+  rerender(<Conversation messages={[{ ...stream, content:'another delta' }]} retry={vi.fn()} suggest={vi.fn()} />)
+  expect(frames.callbacks.size).toBe(1)
+  frames.flush()
+  expect(metrics.writes).toHaveBeenCalledTimes(1)
+})
+
+it('does not commit repeated visibility state updates while the pinned state is unchanged', () => {
+  controlledAnimationFrames()
+  let commits = 0
+  const stream = message('stream-state', { request_id:'state', status:'streaming' })
+  render(<Profiler id="conversation" onRender={() => { commits += 1 }}><Conversation messages={[stream]} retry={vi.fn()} suggest={vi.fn()} /></Profiler>)
+  const conversation = screen.getByTestId('conversation')
+  const metrics = scrollMetrics(conversation, 100)
+  fireEvent.scroll(conversation)
+  const afterVisibleChange = commits
+  for (let index = 0; index < 10; index += 1) {
+    metrics.setTop(100 - index)
+    fireEvent.scroll(conversation)
+  }
+  expect(commits).toBe(afterVisibleChange)
 })
 
 it('shows public tier and measured categories without monetary or routing details', () => {
