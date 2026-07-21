@@ -186,7 +186,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .attachment-warning { grid-column: 1 / -1; color: var(--danger) !important; white-space: normal !important }
 .long-input-mode { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px 0; color: var(--muted); font-size: 11px }
 .long-input-mode select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text) }
-.character-count { position: absolute; right: 13px; bottom: 6px; max-width: calc(100% - 26px); color: var(--subtle); text-align: right; font-size: 10px; line-height: 1.25; pointer-events: none }
+.character-count { position: absolute; right: 15px; bottom: 7px; min-width: 140px; max-width: calc(100% - 30px); color: var(--subtle); text-align: right; font-size: 10px; line-height: 1.25; overflow-wrap: anywhere; pointer-events: none }
+.character-count.near-limit { color: var(--muted) }
 .character-count.over-limit { color: var(--danger) }
 .recording-row { display: flex; min-height: 42px; align-items: center; gap: 9px; padding: 7px 11px 2px; color: var(--muted); font-size: 12px }
 .recording-row strong { color: var(--text) }

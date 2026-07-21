@@ -99,6 +99,9 @@ def usage_summary(
     }
     voice: dict[str, Any] = {
         "label": "Voice", "stt_request_count": 0, "tts_request_count": 0,
+        "llm_request_count": 0, "llm_input_tokens": 0,
+        "llm_cached_input_tokens": 0, "llm_output_tokens": 0,
+        "llm_total_tokens": 0,
         "total_audio_milliseconds": 0, "total_tts_characters": 0,
         "request_count": 0, "debited_micros": 0,
     }
@@ -112,7 +115,8 @@ def usage_summary(
         totals["debited_micros"] += int(row.debited_micros)
         totals[f"{row.usage_source}_usage_count"] += 1
         usage_kind = getattr(row, "usage_kind", "chat") or "chat"
-        if usage_kind == "chat" and row.swico_tier in by_tier:
+        credit_bucket = getattr(row, "credit_bucket", "chat") or "chat"
+        if credit_bucket == "chat" and usage_kind == "chat" and row.swico_tier in by_tier:
             tier_values = by_tier[str(row.swico_tier)]
             tier_values["request_count"] += 1
             tier_values["input_tokens"] += int(row.input_tokens)
@@ -120,14 +124,21 @@ def usage_summary(
             tier_values["output_tokens"] += int(row.output_tokens)
             tier_values["total_tokens"] += total_tokens
             tier_values["debited_micros"] += int(row.debited_micros)
-        elif usage_kind in {"stt", "tts"}:
-            voice[f"{usage_kind}_request_count"] += 1
+        elif credit_bucket == "voice":
             voice["request_count"] += 1
             voice["debited_micros"] += int(row.debited_micros)
             if usage_kind == "stt":
+                voice["stt_request_count"] += 1
                 voice["total_audio_milliseconds"] += int(row.audio_milliseconds)
-            else:
+            elif usage_kind == "tts":
+                voice["tts_request_count"] += 1
                 voice["total_tts_characters"] += int(row.characters)
+            elif usage_kind == "chat":
+                voice["llm_request_count"] += 1
+                voice["llm_input_tokens"] += int(row.input_tokens)
+                voice["llm_cached_input_tokens"] += int(row.cached_input_tokens)
+                voice["llm_output_tokens"] += int(row.output_tokens)
+                voice["llm_total_tokens"] += total_tokens
         local_day = ensure_utc(row.settled_at or row.created_at).astimezone(zone).date().isoformat()
         day = daily[local_day]
         for key, value in (

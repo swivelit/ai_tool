@@ -20,7 +20,7 @@ from app.database import SessionLocal
 from app.models import WebUsagePreferences
 from app.web_api.router import (
     _tickets, _voice_audio_end, _voice_audio_start, _voice_playback_selection,
-    _voice_backchannel_due, _voice_tts_chunks,
+    _voice_backchannel_due, _voice_llm_preflight_micros, _voice_tts_chunks,
 )
 from app.web_api.adaptive_endpointing import TranscriptClassification
 from app.web_api.realtime_voice import (
@@ -136,6 +136,12 @@ def test_internal_voice_diagnostics_are_safe_and_hidden_from_normal_users(client
         "internal_test_user": True, "email_verified": True, "owned_email_matches": True,
     }
     assert body["valkey"] == {"configured": True, "reachable": True}
+    assert body["wallet_preflight"]["chat"]["non_exempt_required_micros"] == 0
+    assert body["wallet_preflight"]["chat"]["required_for_realtime_voice"] is False
+    assert body["wallet_preflight"]["voice"]["non_exempt_required_micros"] == (
+        stt_price(5_000).micros + _voice_llm_preflight_micros(body["selected_tier_id"])
+    )
+    assert body["wallet_preflight"]["voice"]["required_for_realtime_voice"] is True
     serialized = json.dumps(body)
     for forbidden in ("sarvam-super-secret", "secret-database", "secret-valkey", email, "firebase_uid", "ticket"):
         assert forbidden not in serialized
@@ -371,7 +377,7 @@ def test_audio_start_and_end_contracts_are_exact_and_content_free():
     }
 
 
-def test_voice_ticket_preflight_targets_voice_then_chat_and_exempt_bypasses(client, monkeypatch):
+def test_voice_ticket_preflight_requires_only_combined_voice_minimum_and_exempt_bypasses(client, monkeypatch):
     _enable(monkeypatch)
     voice_empty = create_test_user("voice-empty", "voice-empty@example.com")
     _set_balance(int(voice_empty.id), "chat", 5_000_000)
@@ -380,7 +386,7 @@ def test_voice_ticket_preflight_targets_voice_then_chat_and_exempt_bypasses(clie
     assert response.json()["error"] == {
         "code": "insufficient_voice_credit",
         "credit_bucket": "voice",
-        "required_micros": stt_price(5_000).micros,
+        "required_micros": stt_price(5_000).micros + _voice_llm_preflight_micros("lite"),
         "available_micros": 0,
         "message": "Add Voice credits to start Voice Mode.",
     }
@@ -388,10 +394,9 @@ def test_voice_ticket_preflight_targets_voice_then_chat_and_exempt_bypasses(clie
     chat_empty = create_test_user("chat-empty", "chat-empty@example.com")
     _set_balance(int(chat_empty.id), "voice", 5_000_000)
     response = _session(client, "chat-empty", "chat-empty@example.com")
-    assert response.status_code == 402
-    assert response.json()["error"]["code"] == "insufficient_chat_credit"
-    assert response.json()["error"]["credit_bucket"] == "chat"
-    assert response.json()["error"]["required_micros"] > 0
+    assert response.status_code == 201
+    assert response.json()["wallets"]["chat"]["available_micros"] == 0
+    assert response.json()["wallets"]["voice"]["available_micros"] == 5_000_000
 
     exempt = create_test_user("voice-exempt", "voice-exempt@example.com")
     monkeypatch.setenv("SWICO_INTERNAL_TEST_EMAILS", "voice-exempt@example.com")

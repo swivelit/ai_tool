@@ -9,12 +9,12 @@ from decimal import Decimal
 import pytest
 from sqlmodel import Session, select
 
-from app.billing.errors import InsufficientCreditError
+from app.billing.errors import InsufficientCreditError, PaymentValidationError
 from app.billing.audit import financial_audit
 from app.billing.pricing import calculate_topup, openai_price, sarvam_price, snapshot_json
 from app.billing.reconciliation import reconcile_razorpay_orders
 from app.billing.service import (
-    create_usage_reservation, credit_payment_once, get_wallet_summary,
+    create_billing_exempt_usage, create_usage_reservation, credit_payment_once, get_wallet_summary,
     enforce_rate_limit, recover_stale_usage_reservations, release_usage_reservation,
     reverse_credit_for_refund, settle_usage_reservation,
 )
@@ -274,6 +274,37 @@ def test_reserve_settle_and_release_are_atomic():
         second = create_usage_reservation(session, request_id="b" * 36, user_id=int(user.id), thread_id=None, provider="openai", model="gpt-4o-mini", reserved_micros=500_000, pricing_snapshot_json="{}")
         release_usage_reservation(session, second.request_id)
         assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
+
+
+def test_released_and_billing_exempt_request_ids_cannot_switch_wallet_bucket():
+    user = create_test_user("usage-bucket-idempotency", "usage-bucket-idempotency@example.com")
+    with SessionLocal() as session:
+        chat_order = make_order(int(user.id)); session.add(chat_order); session.flush(); credit_payment_once(session, chat_order)
+        voice_order = make_order(int(user.id)); voice_order.receipt += "-voice"; voice_order.provider_order_id += "-voice"; voice_order.credit_bucket = "voice"
+        session.add(voice_order); session.flush(); credit_payment_once(session, voice_order)
+        create_usage_reservation(
+            session, request_id="bucket-release-id", user_id=int(user.id), thread_id=None,
+            provider="openai", model="gpt-5.4-mini", reserved_micros=100,
+            pricing_snapshot_json="{}", credit_bucket="chat",
+        )
+        release_usage_reservation(session, "bucket-release-id")
+        with pytest.raises(PaymentValidationError, match="another credit bucket"):
+            create_usage_reservation(
+                session, request_id="bucket-release-id", user_id=int(user.id), thread_id=None,
+                provider="openai", model="gpt-5.4-mini", reserved_micros=100,
+                pricing_snapshot_json="{}", credit_bucket="voice",
+            )
+        create_billing_exempt_usage(
+            session, request_id="bucket-exempt-id", user_id=int(user.id), thread_id=None,
+            provider="openai", model="gpt-5.4-mini", pricing_snapshot_json="{}",
+            credit_bucket="voice",
+        )
+        with pytest.raises(PaymentValidationError, match="another credit bucket"):
+            create_billing_exempt_usage(
+                session, request_id="bucket-exempt-id", user_id=int(user.id), thread_id=None,
+                provider="openai", model="gpt-5.4-mini", pricing_snapshot_json="{}",
+                credit_bucket="chat",
+            )
 
 
 def test_insufficient_credit_prevents_reservation():
@@ -658,17 +689,20 @@ def test_provider_overage_is_absorbed_instead_of_making_normal_wallet_negative()
         assert json.loads(settled.pricing_snapshot_json)["reconciliation"]["amount_micros"] == 3_000_000
 
 
-def test_stale_reservation_recovery_is_aged_idempotent_and_records_reason():
+def test_stale_voice_reservation_recovery_uses_original_bucket_and_is_idempotent():
     user = create_test_user()
     with SessionLocal() as session:
-        order = make_order(int(user.id)); session.add(order); session.flush(); credit_payment_once(session, order)
-        stale = create_usage_reservation(session, request_id="stale-charge", user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=100_000, pricing_snapshot_json="{}")
-        fresh = create_usage_reservation(session, request_id="fresh-charge", user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=100_000, pricing_snapshot_json="{}")
+        order = make_order(int(user.id)); order.credit_bucket = "voice"; session.add(order); session.flush(); credit_payment_once(session, order)
+        stale = create_usage_reservation(session, request_id="stale-charge", user_id=int(user.id), thread_id=None, provider="openai", model="gpt-5.4-mini", reserved_micros=100_000, pricing_snapshot_json="{}", usage_kind="chat", credit_bucket="voice")
+        fresh = create_usage_reservation(session, request_id="fresh-charge", user_id=int(user.id), thread_id=None, provider="openai", model="gpt-5.4-mini", reserved_micros=100_000, pricing_snapshot_json="{}", usage_kind="chat", credit_bucket="voice")
         stale.created_at = utc_now() - timedelta(hours=2); session.add(stale); session.flush()
         assert recover_stale_usage_reservations(session, age_seconds=1800) == ["stale-charge"]
         assert recover_stale_usage_reservations(session, age_seconds=1800) == []
         assert session.get(UsageCharge, fresh.id).status == "reserved"
         ledger = session.exec(select(WalletLedger).where(WalletLedger.reference_id == stale.id, WalletLedger.entry_type == "reservation_release")).one()
+        assert ledger.credit_bucket == "voice"
+        assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] == 0
+        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["reserved_micros"] == 100_000
         assert json.loads(ledger.metadata_json)["reason"] == "stale_reservation_recovery"
 
 

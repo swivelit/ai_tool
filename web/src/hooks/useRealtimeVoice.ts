@@ -99,7 +99,7 @@ const CLOSE_ERRORS: Record<number, VoiceError> = {
   4403:{ code:'voice_origin_rejected', message:'Voice Mode was blocked for this site origin. Check the configured web origin.' },
   4409:{ code:'voice_session_active', message:'Another Voice Mode session is already active.' },
   4429:{ code:'voice_rate_limit', message:'Too many Voice Mode starts. Wait a moment, then try again.' },
-  4450:{ code:'insufficient_chat_credit', message:'Add Chat credits to continue Voice Mode.', credit_bucket:'chat' },
+  4450:{ code:'voice_server_update_required', message:'Voice Mode was served by an older version. Refresh Swico and try again.' },
   4451:{ code:'insufficient_voice_credit', message:'Add Voice credits to continue Voice Mode.', credit_bucket:'voice' },
   4460:{ code:'sarvam_authentication_failed', message:'Voice provider authentication failed. Please contact support.' },
   4461:{ code:'sarvam_quota_exhausted', message:'Voice provider quota is exhausted. Please try again later.' },
@@ -118,6 +118,9 @@ function apiVoiceError(caught: ApiError): VoiceError | null {
   const raw = (caught.body as { error?: unknown }).error
   if (!raw || typeof raw !== 'object') return null
   const value = raw as { code?: unknown; message?: unknown; credit_bucket?: unknown }
+  if (value.code === 'insufficient_chat_credit') {
+    return { code:'voice_server_update_required', message:'Voice Mode was served by an older version. Refresh Swico and try again.' }
+  }
   const bucket = value.credit_bucket === 'chat' || value.credit_bucket === 'voice' ? value.credit_bucket : undefined
   return { code:String(value.code || 'voice_start_failed'), message:String(value.message || 'Voice Mode could not start.'), ...(bucket ? { credit_bucket:bucket } : {}) }
 }
@@ -657,8 +660,12 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
       if (audioEnded.current) setPhase('listening')
     } else if (message.type === 'warning' && message.code === 'assistant_interrupted') {
       stopPlayback('interrupted'); setPhase('interrupted')
-    } else if (message.type === 'warning' && message.credit_bucket) setCreditRequired(message.credit_bucket as CreditBucket)
+    } else if (message.type === 'warning' && message.credit_bucket === 'voice') setCreditRequired('voice')
     else if (message.type === 'error') {
+      if (message.code === 'insufficient_chat_credit') {
+        rememberError({ code:'voice_server_update_required', message:'Voice Mode was served by an older version. Refresh Swico and try again.' })
+        return
+      }
       const bucket = message.credit_bucket === 'chat' || message.credit_bucket === 'voice' ? message.credit_bucket : undefined
       rememberError({ code:String(message.code ?? 'voice_internal_failure'), message:String(message.message ?? 'Voice Mode stopped safely.'), ...(bucket ? { credit_bucket:bucket } : {}) })
     } else if (message.type === 'session.closed') { readyForAudio.current = false; setCannotHear(false); setPhase('closed') }

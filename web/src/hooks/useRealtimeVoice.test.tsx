@@ -306,7 +306,6 @@ it('maps known application close codes without replacing an earlier server error
 })
 
 it.each([
-  [402, 'insufficient_chat_credit', 'chat', 'Add Chat credits to start the selected Swico mode.'],
   [402, 'insufficient_voice_credit', 'voice', 'Add Voice credits to start Voice Mode.'],
   [503, 'voice_ticket_store_unavailable', null, 'Voice Mode is temporarily unavailable.'],
   [409, 'voice_session_active', null, 'Another Voice Mode session may already be active.'],
@@ -319,6 +318,32 @@ it.each([
   expect(result.current.error).toBe(message)
   expect(result.current.creditRequired).toBe(bucket)
   expect(FakeWebSocket.instances).toHaveLength(0)
+})
+
+it('maps a legacy Chat-credit Voice 402 to refresh guidance without a purchase bucket', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockRejectedValue(new ApiError(402, { error:{
+    code:'insufficient_chat_credit', credit_bucket:'chat',
+    message:'Add Chat credits to start the selected Swico mode.',
+  } }))
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
+  await waitFor(() => expect(result.current.errorCode).toBe('voice_server_update_required'))
+  expect(result.current.error).toMatch(/older version.*refresh/i)
+  expect(result.current.creditRequired).toBeNull()
+  expect(FakeWebSocket.instances).toHaveLength(0)
+})
+
+it('maps legacy close code 4450 to refresh guidance without a Chat purchase bucket', async () => {
+  stubBrowser()
+  vi.mocked(apiJson).mockResolvedValue(ticket('legacy-close'))
+  const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
+  await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+  act(() => FakeWebSocket.instances[0].dispatchEvent(new CloseEvent('close', {
+    code:4450, reason:'insufficient_chat_credit',
+  })))
+  expect(result.current.errorCode).toBe('voice_server_update_required')
+  expect(result.current.error).toMatch(/older version.*refresh/i)
+  expect(result.current.creditRequired).toBeNull()
 })
 
 it('captures close and error events that occur before open', async () => {

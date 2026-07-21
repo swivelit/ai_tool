@@ -197,6 +197,50 @@ def test_web_chat_voice_input_requires_turn_id_and_text_rejects_it(client):
     ).status_code == 422
 
 
+def test_public_realtime_voice_metadata_is_still_billed_only_to_chat(client, monkeypatch):
+    monkeypatch.setenv("WEB_SEPARATE_VOICE_CREDITS_ENABLED", "true")
+    user = create_test_user("spoof-bucket", "spoof-bucket@example.com")
+    _fund(int(user.id))
+    credit, platform = calculate_topup(1000)
+    with SessionLocal() as session:
+        voice_order = PaymentOrder(
+            user_id=int(user.id), receipt="fund-spoof-voice",
+            provider_order_id="fund-order-spoof-voice", gross_amount_paise=1000,
+            credited_amount_micros=credit, platform_share_paise=platform,
+            credit_bucket="voice", status="captured",
+        )
+        session.add(voice_order); session.flush(); credit_payment_once(session, voice_order); session.commit()
+
+    def complete(self, request, route, on_delta):
+        on_delta("Server-authoritative billing.")
+        return AIProviderResponse(
+            text="Server-authoritative billing.", provider="openai", model=route.model,
+            route=route.route, reason=route.reason, language="en", intent=route.intent,
+            input_tokens=30, output_tokens=10, raw={"usage_actual": True},
+        )
+
+    monkeypatch.setattr("app.ai.providers.openai_provider.OpenAIProvider.stream_complete", complete)
+    response = client.post(
+        "/api/web/chat/stream",
+        headers=auth_headers("spoof-bucket", "spoof-bucket@example.com"),
+        json={
+            "request_id": "33333333-3333-4333-8333-333333333334",
+            "message": "Explain why authoritative billing matters",
+            "input_mode": "realtime_voice",
+            "voice_turn_id": "33333333-3333-4333-8333-333333333335",
+        },
+    )
+    assert response.status_code == 200
+    assert _sse_events(response, "done")[0]["billing_credit_bucket"] == "chat"
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == "33333333-3333-4333-8333-333333333334"
+        )).one()
+        assert charge.usage_kind == "chat" and charge.credit_bucket == "chat"
+        assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] < credit
+        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["balance_micros"] == credit
+
+
 def test_deterministic_web_intents_are_saved_zero_charge_and_replay_safely(client):
     user = create_test_user()
     headers = auth_headers("test-uid", "test@example.com")

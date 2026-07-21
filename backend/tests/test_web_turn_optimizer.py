@@ -11,15 +11,18 @@ from app.ai.prompts import (
     build_system_instructions, serialize_provider_messages,
 )
 from app.ai.providers.openai_provider import OpenAIProvider
+from app.ai.providers.base import GenerationCancelled
 from app.ai.types import AIProviderResponse, AIRequest, AIRoute
 from app.billing.pricing import estimate_tokens
+from app.billing.errors import PaymentValidationError
+from app.billing.service import get_or_create_wallet, get_wallet_summary
 from app.database import SessionLocal
 from app.models import UsageCharge, WebChatMessage, WebChatThread
 from app.openai_model_router import OpenAIModelRouter
 from app.profile_context import build_profile_prompt_context
 from app.time_utils import utc_now
 from app.web_api.attachment_context import select_attachment_context
-from app.web_api.chat_service import prepare_web_turn
+from app.web_api.chat_service import execute_web_turn, prepare_web_turn
 from app.web_api.turn_optimizer import optimize_web_turn
 from app.web_api.upload_store import EphemeralUpload, ExtractedChunk, utc_iso
 from tests.conftest import auth_headers, create_test_user
@@ -259,6 +262,127 @@ def test_realtime_voice_uses_the_same_adaptive_thread_continuity(monkeypatch):
     assert len(prepared.ai_request.context_turns) == 1
     assert prepared.coordinator_decision is not None
     assert prepared.coordinator_decision.continuity.use_context is True
+
+
+def test_realtime_voice_billing_exempt_llm_audit_keeps_voice_bucket(monkeypatch):
+    user = create_test_user("voice-exempt-llm", "voice-exempt-llm@example.com")
+    voice_turn_id = "voice-audit-session"
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Explain indexes",
+        request_id="realtime-chat:voice-audit-session:1", thread_id=None,
+        reply_language="en", billing_exempt=True, input_mode="realtime_voice",
+        voice_turn_id=voice_turn_id, billing_credit_bucket="voice",
+    )
+
+    class Provider:
+        def complete(self, request, route):
+            return AIProviderResponse(
+                text="Indexes speed up selected reads.", provider=route.provider or "openai",
+                model=route.model, route=route.route, reason=route.reason,
+                language="en", intent=route.intent, input_tokens=20, output_tokens=8,
+                raw={"usage_actual": True},
+            )
+
+    completed = execute_web_turn(prepared, providers={"openai": Provider(), "sarvam": Provider()})
+    assert completed.wallet["credit_bucket"] == "voice"
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == prepared.request_id
+        )).one()
+        assert charge.usage_kind == "chat"
+        assert charge.credit_bucket == "voice"
+        assert charge.voice_turn_id == voice_turn_id
+        assert charge.status == "billing_exempt" and charge.debited_micros == 0
+        assistant = session.get(WebChatMessage, completed.message.id)
+        assert json.loads(assistant.metadata_json)["billing_credit_bucket"] == "voice"
+
+
+def test_deterministic_replay_cannot_switch_billing_bucket():
+    user = create_test_user("deterministic-bucket", "deterministic-bucket@example.com")
+    request_id = "deterministic-bucket-replay"
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="hello", request_id=request_id,
+        thread_id=None, reply_language="en", billing_credit_bucket="voice",
+    )
+    execute_web_turn(prepared)
+    replay = prepare_web_turn(
+        user_id=int(user.id), message="hello", request_id=request_id,
+        thread_id=prepared.thread_id, reply_language="en",
+        billing_credit_bucket="voice",
+    )
+    assert replay.existing_response is not None
+    assert replay.billing_credit_bucket == "voice"
+    with pytest.raises(PaymentValidationError, match="another credit bucket"):
+        prepare_web_turn(
+            user_id=int(user.id), message="hello", request_id=request_id,
+            thread_id=prepared.thread_id, reply_language="en",
+            billing_credit_bucket="chat",
+        )
+
+
+def test_paid_realtime_voice_llm_settles_only_voice_wallet():
+    user = create_test_user("voice-paid-llm", "voice-paid-llm@example.com")
+    with SessionLocal() as session:
+        voice_wallet = get_or_create_wallet(session, int(user.id), "voice")
+        voice_wallet.balance_micros = 5_000_000
+        session.add(voice_wallet); session.commit()
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Explain indexes",
+        request_id="realtime-chat:voice-paid-session:1", thread_id=None,
+        reply_language="en", input_mode="realtime_voice",
+        voice_turn_id="voice-paid-session", billing_credit_bucket="voice",
+    )
+
+    class Provider:
+        def complete(self, request, route):
+            return AIProviderResponse(
+                text="Indexes speed selected reads.", provider=route.provider or "openai",
+                model=route.model, route=route.route, reason=route.reason,
+                language="en", intent=route.intent, input_tokens=25, output_tokens=9,
+                raw={"usage_actual": True},
+            )
+
+    completed = execute_web_turn(prepared, providers={"openai": Provider(), "sarvam": Provider()})
+    assert completed.wallet["credit_bucket"] == "voice"
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == prepared.request_id
+        )).one()
+        assert charge.status == "settled" and charge.debited_micros > 0
+        assert charge.usage_kind == "chat" and charge.credit_bucket == "voice"
+        assert charge.voice_turn_id == "voice-paid-session"
+        assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] == 0
+        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["balance_micros"] < 5_000_000
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("provider down"), GenerationCancelled()])
+def test_realtime_voice_llm_failure_or_cancellation_releases_voice_reservation(failure):
+    suffix = "cancel" if isinstance(failure, GenerationCancelled) else "failure"
+    user = create_test_user(f"voice-{suffix}-llm", f"voice-{suffix}-llm@example.com")
+    with SessionLocal() as session:
+        voice_wallet = get_or_create_wallet(session, int(user.id), "voice")
+        voice_wallet.balance_micros = 5_000_000
+        session.add(voice_wallet); session.commit()
+    prepared = prepare_web_turn(
+        user_id=int(user.id), message="Explain indexes",
+        request_id=f"realtime-chat:voice-{suffix}-session:1", thread_id=None,
+        reply_language="en", input_mode="realtime_voice",
+        voice_turn_id=f"voice-{suffix}-session", billing_credit_bucket="voice",
+    )
+
+    class Provider:
+        def complete(self, request, route):
+            raise failure
+
+    with pytest.raises(type(failure)):
+        execute_web_turn(prepared, providers={"openai": Provider(), "sarvam": Provider()})
+    with SessionLocal() as session:
+        charge = session.exec(select(UsageCharge).where(
+            UsageCharge.request_id == prepared.request_id
+        )).one()
+        assert charge.status == "released" and charge.credit_bucket == "voice"
+        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["reserved_micros"] == 0
+        assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] == 0
 
 
 def test_complete_software_developer_roadmap_is_long_form(monkeypatch):

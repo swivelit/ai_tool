@@ -92,7 +92,6 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
           <p>{voice.error}</p>
           <div className="voice-error-actions">
             <button className="primary" onClick={() => void voice.retry()}><RefreshCw size={18} />Try again</button>
-            {voice.creditRequired === 'chat' && <button onClick={() => addCredits('chat')}>Add Chat credits</button>}
             {voice.creditRequired === 'voice' && <button onClick={() => addCredits('voice')}>Add Voice credits</button>}
           </div>
         </div>}

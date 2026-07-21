@@ -295,61 +295,32 @@ three financial Cron code paths become bucket-aware; do not add a fourth job.
 
 ## Voice patch deployment and rollback order
 
-This patch has no migration. Confirm `alembic heads` is still
-`e2b7c4d9a1f3`; do not create or run another revision. Keep
-`BILLING_CHECKOUT_ENABLED=false` and `WEB_REALTIME_VOICE_ENABLED=false` while
-deploying in this exact order:
+This correction has no migration, new environment variable, or new Render
+resource. Deploy API-first and static-site-second in this exact order:
 
-1. On the existing API only, configure Stage 1:
-   `SARVAM_TTS_STREAM_OUTPUT_CODEC=mp3`,
-   `SARVAM_TTS_STREAM_SAMPLE_RATE=24000`, and
-   `WEB_REALTIME_VOICE_PLAYBACK_MODE=buffered_mp3`. Also configure
-   `WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED=true`,
-   `WEB_REALTIME_VOICE_END_SILENCE_MS=1100`,
-   `WEB_REALTIME_VOICE_UNFINISHED_GRACE_MS=900`, and
-   `WEB_REALTIME_VOICE_MAX_ENDPOINT_WAIT_MS=2600`. Do not add these to the
-   static site or create a resource.
-2. Deploy the existing API service first. There is no schema step for this patch;
-   retain the normal pre-deploy `upgrade head` safety command.
-3. Manually run the existing stale-reservation, dry-run Razorpay reconciliation
-   (without `--apply`), and financial-audit commands. A persistent Razorpay read
-   outage must fail the reconciliation job non-zero.
-4. Verify health/bootstrap, Voice 402 preflight for both buckets, one dedicated
-   `SWICO_INTERNAL_TEST_EMAILS` account, exact Origin rejection, safe logs, and
-   one-use lock cleanup.
-5. Deploy/rebuild the existing static site and clear its build/cache. In
-   DevTools verify one ticket POST and one WebSocket, English/Tamil buffered MP3
-   playback, autoplay enable, a second turn without reopening, barge-in,
-   ordinary chat-history synchronization, browser refresh persistence, 320 px/
-   mobile landscape, keyboard focus, and reduced motion.
-6. Enable `WEB_SEPARATE_VOICE_CREDITS_ENABLED=true` only if it is not already
-   enabled and the deployed wallet architecture is verified. Enable
-   `WEB_REALTIME_VOICE_ENABLED=true` last as its own reviewed API configuration
-   deploy. Checkout stays disabled pending legal and payment verification.
+1. Deploy the staging API.
+2. Verify `WEB_VOICE_RECORDING_ENABLED=true`,
+   `WEB_VOICE_BILLING_ENABLED=true`,
+   `WEB_SEPARATE_VOICE_CREDITS_ENABLED=true`, and
+   `WEB_REALTIME_VOICE_ENABLED=true` on the staging API.
+3. Test Voice-only, Chat-only, and both-funded staging accounts. Confirm typed
+   Chat touches only Chat, realtime STT/LLM/TTS touch only Voice, Voice-only can
+   complete a turn, Chat-only receives the Voice 402, cancellation/failure
+   release Voice reservations, and usage totals classify Voice LLM under Voice.
+4. Deploy the staging static site.
+5. Verify the subtle always-visible character counter at zero, ordinary, near,
+   exact-limit, and over-limit input on desktop/mobile; verify Voice Mode offers
+   only **Add Voice credits** and a Voice 402 opens the Voice tab.
+6. Deploy the production API.
+7. Deploy the production static site only after the production API is healthy.
+8. To roll back realtime Voice, set `WEB_REALTIME_VOICE_ENABLED=false` on the
+   existing API and deploy that configuration. Never disable separate Voice
+   credits as the normal rollback.
 
-After a successful opt-in English and Tamil probe with `--output-codec
-linear16 --sample-rate 24000 --validate-audio`, Stage 2 changes those same API
-variables to `SARVAM_TTS_STREAM_OUTPUT_CODEC=linear16`,
-`SARVAM_TTS_STREAM_SAMPLE_RATE=24000`, and
-`WEB_REALTIME_VOICE_PLAYBACK_MODE=pcm_stream`, then repeats steps 2, 4, and 5.
-The API must be deployed before the static site because authenticated session
-metadata is authoritative. `auto` is optional and should be staged separately.
-Adaptive endpointing reuses accepted STT PCM for bounded local scalar analysis;
-it adds no provider call, billable audio, reservation, usage charge, or pause
-billing and does not change Chat/Voice wallet rules.
-
-Endpoint-only rollback is API-first: set
-`WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED=false` on the existing API
-and deploy that configuration. This restores fixed silence plus bounded
-English/Tamil unfinished grace while retaining buffered MP3/PCM playback,
-barge-in, billing, and ordinary-chat synchronization. If a full Voice disable
-is required, set
-`WEB_REALTIME_VOICE_ENABLED=false` on the existing API and deploy that
-configuration. Bootstrap then hides Voice Mode. Fix forward; do not revert the
-database, move balances, reclassify history, or delete completed Voice chat
-messages. No new Render service, database, Valkey, Cron Job, disk, migration,
-object storage, or public Vite variable is part of this patch. Checkout remains
-disabled.
+Retain the normal pre-deploy `upgrade head` safety command, but this patch adds
+no revision. Do not move balances, rewrite or reclassify historical usage or
+ledger rows, add a `VITE_*` billing setting, or create a service, database,
+Valkey, worker, queue, Cron Job, disk, or object store.
 
 ## Financial Cron Jobs
 

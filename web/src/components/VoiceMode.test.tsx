@@ -119,15 +119,20 @@ it('keeps error retry recovery available without closing the dialog', async () =
   expect(props.close).not.toHaveBeenCalled()
 })
 
-it.each([
-  ['chat', 'Add Chat credits'],
-  ['voice', 'Add Voice credits'],
-] as const)('keeps %s credit recovery available', async (creditRequired, accessibleName) => {
+it('offers only Voice-credit recovery inside Voice Mode', async () => {
   const addCredits = vi.fn()
-  vi.mocked(useRealtimeVoice).mockReturnValue({ ...base, phase:'error', error:'Credits required.', creditRequired } as never)
+  vi.mocked(useRealtimeVoice).mockReturnValue({ ...base, phase:'error', error:'Credits required.', creditRequired:'voice' } as never)
   render(<VoiceMode {...props} addCredits={addCredits} />)
-  await userEvent.click(screen.getByRole('button', { name:accessibleName }))
-  expect(addCredits).toHaveBeenCalledWith(creditRequired)
+  expect(screen.queryByRole('button', { name:'Add Chat credits' })).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name:'Add Voice credits' }))
+  expect(addCredits).toHaveBeenCalledWith('voice')
+})
+
+it('does not expose a Chat purchase for a legacy Chat-credit Voice error', () => {
+  vi.mocked(useRealtimeVoice).mockReturnValue({ ...base, phase:'error', error:'Refresh Swico.', creditRequired:'chat' } as never)
+  render(<VoiceMode {...props} />)
+  expect(screen.queryByRole('button', { name:'Add Chat credits' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name:'Add Voice credits' })).not.toBeInTheDocument()
 })
 
 it.each([

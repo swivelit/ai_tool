@@ -122,26 +122,32 @@ it('sends an attachment-only message on Enter', () => {
   expect(send).toHaveBeenCalledOnce()
 })
 
-it('keeps the character count accessible but only shows it near configured limits', () => {
+it('keeps the character count visible from zero through over-limit states', () => {
   const props = { setValue:vi.fn(), send:vi.fn(), stop:vi.fn(), streaming:false, maxCharacters:100, inlineThreshold:90 }
   const { container, rerender } = render(<Composer {...props} value="" />)
   const count = () => container.querySelector<HTMLElement>('#composer-character-count')!
   expect(count()).toHaveTextContent('0 / 100 characters')
-  expect(count()).toHaveClass('sr-only')
+  expect(count()).toHaveClass('character-count')
+  expect(count()).not.toHaveClass('sr-only')
   expect(screen.getByRole('textbox')).toHaveAttribute('aria-describedby', 'composer-character-count')
 
   rerender(<Composer {...props} value="short" />)
-  expect(count()).toHaveClass('sr-only')
-  rerender(<Composer {...props} value={'x'.repeat(80)} />)
   expect(count()).toHaveClass('character-count')
+  expect(count()).not.toHaveClass('near-limit')
+  rerender(<Composer {...props} value={'x'.repeat(80)} />)
+  expect(count()).toHaveClass('character-count', 'near-limit')
   expect(count()).not.toHaveClass('sr-only')
   expect(container.querySelector('.composer-shell')).toHaveClass('has-character-count')
 
   rerender(<Composer {...props} inlineThreshold={30} value={'x'.repeat(30)} />)
   expect(count()).toHaveClass('character-count')
+  rerender(<Composer {...props} value={'x'.repeat(100)} />)
+  expect(count()).toHaveTextContent('100 / 100 characters')
+  expect(count()).not.toHaveClass('over-limit')
   rerender(<Composer {...props} value={'x'.repeat(101)} />)
   expect(count()).toHaveClass('character-count', 'over-limit')
   expect(screen.getByRole('alert')).toHaveTextContent('exceeds the 100-character limit')
+  expect(count()).not.toHaveAttribute('aria-live')
 })
 
 it('keeps keyboard focus inside the single outer composer shell', () => {

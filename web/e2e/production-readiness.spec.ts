@@ -129,7 +129,7 @@ async function installBackend(page: Page, initial?: Partial<MockState>) {
         ['standard', { label:'Swico', request_count:0, input_tokens:0, cached_input_tokens:0, output_tokens:0, total_tokens:0, debited_micros:0, debited_ai_credits:'0.000000', debited_token_credits:'0.000000', period_debit_percentage:0, monthly_limit_percentage:0, utilization_percentage:0, utilization_basis:'available_balance_plus_period_debit' }],
         ['pro', { label:'Swico Pro', request_count:0, input_tokens:0, cached_input_tokens:0, output_tokens:0, total_tokens:0, debited_micros:0, debited_ai_credits:'0.000000', debited_token_credits:'0.000000', period_debit_percentage:0, monthly_limit_percentage:0, utilization_percentage:0, utilization_basis:'available_balance_plus_period_debit' }],
       ]),
-      voice:{ label:'Voice', stt_request_count:0, tts_request_count:0, total_audio_seconds:0, total_tts_characters:0, request_count:0, debited_micros:0, debited_voice_credits:'0.000000', period_debit_percentage:0, monthly_limit_percentage:0, utilization_percentage:0, utilization_basis:'available_balance_plus_period_debit' },
+      voice:{ label:'Voice', stt_request_count:0, tts_request_count:0, llm_request_count:0, llm_input_tokens:0, llm_cached_input_tokens:0, llm_output_tokens:0, llm_total_tokens:0, total_audio_seconds:0, total_tts_characters:0, request_count:0, debited_micros:0, debited_voice_credits:'0.000000', period_debit_percentage:0, monthly_limit_percentage:0, utilization_percentage:0, utilization_basis:'available_plus_period_debit' },
       estimated_tokens_remaining:tokenEstimate(), token_estimate:tokenEstimate(),
     })
     if (path === '/api/web/billing/orders') {
@@ -419,7 +419,8 @@ test('rapid Markdown streaming stays pinned, yields to manual scrolling, and com
   expect(composerGeometry.outerShadow).not.toBe('none')
   expect(composerGeometry.innerBorder).toBe('0px')
   expect(composerGeometry.innerShadow).toBe('none')
-  await expect(page.locator('#composer-character-count')).toHaveClass(/sr-only/)
+  await expect(page.locator('#composer-character-count')).toHaveClass(/character-count/)
+  await expect(page.locator('#composer-character-count')).toBeVisible()
 
   await testInfo.attach('streaming-render-diagnostic', { body:await page.screenshot(), contentType:'image/png' })
 })

@@ -5,8 +5,7 @@ Swico API; provider credentials and provider WebSockets remain server-side.
 Sarvam supplies streaming STT/TTS, while the selected Swico tier uses the
 existing chat service, persisted threads/messages, and deployed Chat/Voice
 wallet architecture. This release adds no schema migration, service, database,
-Valkey, Cron Job, disk, or stored-audio facility. Alembic head remains
-`e2b7c4d9a1f3`.
+Valkey, Cron Job, disk, or stored-audio facility.
 
 ## Local startup, handshake, and wallet preflight
 
@@ -19,14 +18,18 @@ WebSocket, send `session.start`, and wait for `session.ready` with
 permission failure therefore creates no ticket or Valkey lock; ticket or socket
 failure closes the microphone tracks, worklet, and AudioContext. Before a
 one-use ticket is minted, the API performs a non-mutating capacity check for
-the initial five-second Voice STT reservation and the minimum non-zero Chat
-reserve for the selected tier. A failure is HTTP 402:
+the initial five-second Voice STT reservation plus the smallest non-zero LLM
+reservation for the selected tier. Both requirements are checked only against
+the Voice wallet; Chat balance does not control realtime Voice readiness. A
+failure is HTTP 402 with the calculated combined `required_micros`:
 
 ```json
 {"error":{"code":"insufficient_voice_credit","credit_bucket":"voice","required_micros":41667,"available_micros":0,"message":"Add Voice credits to start Voice Mode."}}
 ```
 
-The Chat form uses `insufficient_chat_credit` and `credit_bucket: "chat"`.
+The normal Chat form uses `insufficient_chat_credit` and `credit_bucket:
+"chat"`; realtime Voice uses only `insufficient_voice_credit` and
+`credit_bucket: "voice"`.
 `SWICO_INTERNAL_TEST_EMAILS` accounts bypass wallet capacity checks, but still
 create billing-exempt usage audit rows and remain subject to provider, safety,
 rate-limit, and configuration controls. Preflight is not a reservation: the
@@ -129,13 +132,21 @@ source remains active; microphone forwarding stays gated except through the
 existing provider-confirmed barge-in path.
 
 `turn.done` is emitted only after both ordinary chat messages are complete and
-the chat reservation is settled. The web app activates a new Voice-created
+the Voice-bucket LLM reservation is settled. The web app activates a new Voice-created
 thread, reloads authoritative messages by public ID, refreshes the thread list
 and wallets, and repeats that authoritative refresh on close. Failed/cancelled
 turns are not presented as complete; completed turns are never deleted by End
 conversation and survive browser refresh.
 
 ## Endpointing, gating, barge-in, and accounting
+
+Every billable realtime turn component uses the Voice wallet: STT is
+`usage_kind=stt`, LLM response generation is `usage_kind=chat` with
+`credit_bucket=voice`, and TTS is `usage_kind=tts`. The trusted WebSocket path
+sets this internal bucket explicitly. The public Chat endpoint remains
+authoritatively Chat-billed even if a caller submits realtime-voice metadata.
+TTS may reserve incrementally; if Voice credits run out, the completed text is
+preserved and the existing Voice-credit warning is shown.
 
 After permission, a 300–500 ms local-only calibration estimates noise floor.
 Those samples are never uploaded or billed. Authenticated bootstrap supplies
@@ -222,7 +233,7 @@ protocol; 401/403 are authentication; 429/quota codes are quota; and
 | `voice_origin_rejected` | 4403 | Origin rejected |
 | `voice_session_active` | 4409 | existing active user session |
 | `voice_rate_limit` | 4429 | Voice start/turn rate limit |
-| `insufficient_chat_credit` | 4450 | Chat reserve unavailable |
+| `voice_server_update_required` | 4450 | legacy server response; refresh/update guidance only |
 | `insufficient_voice_credit` | 4451 | Voice reserve unavailable |
 | `sarvam_authentication_failed` | 4460 | provider authentication rejection |
 | `sarvam_quota_exhausted` | 4461 | provider quota/rate rejection |
@@ -234,8 +245,11 @@ protocol; 401/403 are authentication; 429/quota codes are quota; and
 | `voice_internal_failure` | 4500 | contained internal failure |
 
 HTTP also uses structured `voice_session_active`, `voice_rate_limit`, and
-credit errors. `microphone_permission_denied` is a browser-local structured
-error. The first structured error always wins over a later socket close.
+credit errors. A fixed server does not emit `insufficient_chat_credit` during
+Voice Mode. Clients retain 4450 for one rolling-deployment compatibility window
+and map it to generic refresh guidance without a Chat purchase action.
+`microphone_permission_denied` is a browser-local structured error. The first
+structured error always wins over a later socket close.
 
 ## Environment
 
@@ -292,6 +306,10 @@ first-chunk/playback timings, fallback/autoplay state, scheduled PCM seconds,
 active sources, and playback completion. It excludes email, Firebase UID,
 ticket, credentials/URLs, header dumps, transcript text, raw PCM, pitch history,
 audio, and provider bodies.
+
+The diagnostic Chat entry is informational: its required micros are zero and it
+is explicitly marked not required for realtime Voice. The Voice entry reports
+the combined five-second STT plus minimum tier LLM requirement.
 
 ### Explicit live provider probe
 

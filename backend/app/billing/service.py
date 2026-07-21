@@ -202,9 +202,9 @@ def create_usage_reservation(
     bucket = normalize_credit_bucket(credit_bucket or usage_credit_bucket(usage_kind))
     acquire_sqlite_usage_transaction_lock(session, user_id)
     existing = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
+    if existing and existing.credit_bucket != bucket:
+        raise PaymentValidationError("Request ID was already used for another credit bucket.")
     if existing and existing.status != "released":
-        if existing.credit_bucket != bucket:
-            raise PaymentValidationError("Request ID was already used for another credit bucket.")
         return existing
     required = max(0, int(reserved_micros))
     wallet = _locked_wallet(session, user_id, bucket)
@@ -278,6 +278,8 @@ def create_billing_exempt_usage(
     existing = session.exec(
         select(UsageCharge).where(UsageCharge.request_id == request_id).with_for_update()
     ).first()
+    if existing is not None and existing.credit_bucket != bucket:
+        raise PaymentValidationError("Request ID was already used for another credit bucket.")
     if existing is not None and existing.status != "released":
         return existing
     charge = existing or UsageCharge(

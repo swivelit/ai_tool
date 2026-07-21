@@ -47,11 +47,12 @@ def _settled_charge(
     input_tokens: int = 100, cached_tokens: int = 25, output_tokens: int = 40,
     usage_kind: str = "chat", swico_tier: str | None = None,
     audio_milliseconds: int = 0, characters: int = 0,
+    credit_bucket: str = "chat",
 ) -> None:
     with SessionLocal() as session:
         session.add(UsageCharge(
             request_id=request_id, user_id=user_id, provider=provider, model=model,
-            usage_kind=usage_kind, swico_tier=swico_tier,
+            usage_kind=usage_kind, credit_bucket=credit_bucket, swico_tier=swico_tier,
             audio_milliseconds=audio_milliseconds, characters=characters,
             input_tokens=input_tokens, cached_input_tokens=cached_tokens,
             output_tokens=output_tokens, usage_source=source,
@@ -72,13 +73,21 @@ def test_usage_summary_has_zero_filled_tiers_and_authoritative_voice_breakdown(c
     _settled_charge(
         int(user.id), "voice-stt", settled_at=now, debit=5_000,
         provider="sarvam", model="saaras:v3", usage_kind="stt",
+        credit_bucket="voice",
         input_tokens=0, cached_tokens=0, output_tokens=0,
         audio_milliseconds=1500,
     )
     _settled_charge(
         int(user.id), "voice-tts", settled_at=now, debit=10_000,
         provider="sarvam", model="bulbul:v2", usage_kind="tts",
+        credit_bucket="voice",
         input_tokens=0, cached_tokens=0, output_tokens=0, characters=25,
+    )
+    _settled_charge(
+        int(user.id), "voice-llm", settled_at=now, debit=7_000,
+        provider="openai", model="gpt-5.4-mini", usage_kind="chat",
+        credit_bucket="voice", swico_tier="lite",
+        input_tokens=80, cached_tokens=15, output_tokens=20,
     )
     response = client.get(
         "/api/web/usage/summary?period=current_month",
@@ -93,14 +102,18 @@ def test_usage_summary_has_zero_filled_tiers_and_authoritative_voice_breakdown(c
     assert body["by_tier"]["pro"]["debited_micros"] == 0
     assert body["voice"] == {
         "label": "Voice", "stt_request_count": 1, "tts_request_count": 1,
-        "total_tts_characters": 25, "request_count": 2,
-        "debited_micros": 15_000, "total_audio_seconds": 1.5,
-        "debited_voice_credits": "0.015000",
-            "period_debit_percentage": 42.86, "monthly_limit_percentage": 0.0,
+        "llm_request_count": 1, "llm_input_tokens": 80,
+        "llm_cached_input_tokens": 15, "llm_output_tokens": 20,
+        "llm_total_tokens": 100,
+        "total_tts_characters": 25, "request_count": 3,
+        "debited_micros": 22_000, "total_audio_seconds": 1.5,
+        "debited_voice_credits": "0.022000",
+            "period_debit_percentage": 52.38, "monthly_limit_percentage": 0.0,
             "utilization_percentage": 100.0,
             "utilization_basis": "available_plus_period_debit",
         }
-    assert body["debited_micros"] == 35_000
+    assert body["debited_micros"] == 42_000
+    assert body["by_tier"]["lite"]["debited_micros"] == 20_000
 
 
 def test_usage_summary_aggregates_authoritative_settled_rows_and_ownership(client):

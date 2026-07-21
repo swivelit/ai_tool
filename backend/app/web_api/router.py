@@ -506,8 +506,7 @@ def voice_diagnostics(
     wallets = get_wallet_summaries(
         session, int(user.id), swico_tier=tier, billing_exempt=True,
     )
-    voice_required = stt_price(5_000).micros
-    chat_required = _voice_chat_preflight_micros(tier)
+    voice_required = stt_price(5_000).micros + _voice_llm_preflight_micros(tier)
     store = _tickets()
     session_status = getattr(store, "session_status", None)
     active_session, remaining_lock_ttl_seconds = (
@@ -542,7 +541,8 @@ def voice_diagnostics(
                 "available_micros": max(0, int(wallets["chat"]["available_micros"])),
                 "required_micros": 0,
                 "ready": True,
-                "non_exempt_required_micros": chat_required,
+                "non_exempt_required_micros": 0,
+                "required_for_realtime_voice": False,
             },
             "voice": {
                 "billing_exempt": True,
@@ -550,6 +550,7 @@ def voice_diagnostics(
                 "required_micros": 0,
                 "ready": True,
                 "non_exempt_required_micros": voice_required,
+                "required_for_realtime_voice": True,
             },
         },
         "valkey": {"configured": store.configured, "reachable": store.reachable()},
@@ -627,7 +628,7 @@ def create_voice_session(
         session, int(user.id), swico_tier=tier, billing_exempt=billing_exempt,
     )
     if not billing_exempt:
-        voice_required = stt_price(5_000).micros
+        voice_required = stt_price(5_000).micros + _voice_llm_preflight_micros(tier)
         voice_available = max(0, int(wallets["voice"]["available_micros"]))
         if voice_available < voice_required:
             session.rollback()
@@ -638,18 +639,6 @@ def create_voice_session(
                 "required_micros": voice_required,
                 "available_micros": voice_available,
                 "message": "Add Voice credits to start Voice Mode.",
-            }}, headers={"Cache-Control": "no-store"})
-        chat_required = _voice_chat_preflight_micros(tier)
-        chat_available = max(0, int(wallets["chat"]["available_micros"]))
-        if chat_available < chat_required:
-            session.rollback()
-            outcome(402, "insufficient_chat_credit")
-            return JSONResponse(status_code=402, content={"error": {
-                "code": "insufficient_chat_credit",
-                "credit_bucket": "chat",
-                "required_micros": chat_required,
-                "available_micros": chat_available,
-                "message": "Add Chat credits to start the selected Swico mode.",
             }}, headers={"Cache-Control": "no-store"})
     session.commit()
     ttl = int(os.getenv("WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS", "60"))
@@ -805,7 +794,7 @@ def _voice_backchannel_due(
     )
 
 
-def _voice_chat_preflight_micros(tier: str) -> int:
+def _voice_llm_preflight_micros(tier: str) -> int:
     """Smallest non-zero reserve needed to begin the selected tier.
 
     The real chat reservation remains authoritative once a transcript exists.
@@ -1207,11 +1196,12 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                     request_id=chat_request, thread_id=current_thread_id,
                     reply_language=metadata.language, billing_exempt=metadata.billing_exempt,
                     input_mode="realtime_voice", voice_turn_id=metadata.session_id,
+                    billing_credit_bucket="voice",
                 )
             except InsufficientCreditError as exc:
                 await targeted_error(
-                    "insufficient_chat_credit", "Add Chat credits to continue.",
-                    credit_bucket="chat", available_micros=exc.available_micros,
+                    "insufficient_voice_credit", "Add Voice credits to continue Voice Mode.",
+                    credit_bucket="voice", available_micros=exc.available_micros,
                     required_micros=exc.estimated_required_micros,
                 )
                 return
@@ -1291,6 +1281,7 @@ async def realtime_voice_socket(websocket: WebSocket, ticket: str = Query(..., m
                 websocket, "turn.done", thread_id=completed.thread_id,
                 user_message_id=user_message.id, assistant_message_id=completed.message.id,
                 turn_number=active_turn, input_mode="realtime_voice", completion_status="complete",
+                billing_credit_bucket=prepared.billing_credit_bucket,
                 telemetry=_voice_latency_payload(latency),
             )
             logger.info("realtime_voice_turn_latency", extra={
@@ -2619,6 +2610,7 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
             voice_turn_id=str(payload.voice_turn_id) if payload.voice_turn_id else None,
             continue_message_id=str(payload.continue_message_id) if payload.continue_message_id else None,
             edit_message_id=str(payload.edit_message_id) if payload.edit_message_id else None,
+            billing_credit_bucket="chat",
         )
     except InsufficientCreditError as exc:
         return JSONResponse(status_code=402, content={"error": {
@@ -2641,6 +2633,11 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
         raise HTTPException(404, "Thread not found")
     except DuplicateRequestInProgress as exc:
         raise HTTPException(409, str(exc))
+    except PaymentValidationError:
+        return _temporary_error(
+            409, "request_id_bucket_conflict",
+            "This request identifier was already used for another billing mode.",
+        )
     except AttachmentRequestError as exc:
         return _temporary_error(exc.status_code, exc.code, exc.message)
     except EditRequestError as exc:
@@ -2702,6 +2699,7 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                 "input_mode": prepared.input_mode,
                 "voice_turn_id": prepared.voice_turn_id,
                 "reply_language": prepared.reply_language,
+                "billing_credit_bucket": prepared.billing_credit_bucket,
                 "finish_reason": str(response.raw.get("finish_reason") or "unknown"),
                 "truncated": bool(response.raw.get("truncated")),
                 "can_continue": bool(response.raw.get("truncated")) and completed.message.status == "complete",
@@ -2719,6 +2717,7 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                     get_wallet_summary(
                         session, user_id, swico_tier=prepared.swico_tier,
                         billing_exempt=prepared.billing_exempt,
+                        credit_bucket=prepared.billing_credit_bucket,
                     ),
                 )
             yield _sse("status", {"phase": "stopped"})
@@ -2727,6 +2726,7 @@ async def chat_stream(payload: WebChatRequest, auth: AuthUser = Depends(get_curr
                 "input_mode": prepared.input_mode,
                 "voice_turn_id": prepared.voice_turn_id,
                 "reply_language": prepared.reply_language,
+                "billing_credit_bucket": prepared.billing_credit_bucket,
             })
         except Exception:
             logger.exception("web_chat_generation_failed", extra={"request_id": prepared.request_id})

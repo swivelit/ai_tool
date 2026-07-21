@@ -127,6 +127,8 @@ export type TierUsageBreakdown = UsageBreakdown & {
 }
 export type VoiceUsageBreakdown = {
   label: 'Voice'; stt_request_count: number; tts_request_count: number;
+  llm_request_count: number; llm_input_tokens: number; llm_cached_input_tokens: number;
+  llm_output_tokens: number; llm_total_tokens: number;
   total_audio_seconds: number; total_tts_characters: number; request_count: number;
   debited_micros: number; debited_voice_credits: string;
   period_debit_percentage: number; monthly_limit_percentage: number;

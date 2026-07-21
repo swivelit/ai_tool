@@ -5,7 +5,7 @@ from decimal import Decimal
 import json
 import logging
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from sqlmodel import Session, select
 
@@ -16,8 +16,10 @@ from ..ai.providers.base import GenerationCancelled
 from ..ai.router import AIProviderRouter
 from ..ai.types import AIProviderResponse, AIRequest, AIRoute
 from ..billing.pricing import estimate_tokens, env_decimal, openai_reported_price, price_usage, reserve_price, snapshot_json
+from ..billing.errors import PaymentValidationError
 from ..billing.service import (
     create_billing_exempt_usage, create_usage_reservation, get_wallet_summary,
+    normalize_credit_bucket,
     release_billing_exempt_usage, release_usage_reservation,
     settle_billing_exempt_usage, settle_usage_reservation,
 )
@@ -86,6 +88,7 @@ class PreparedWebTurn:
     coordinator_decision: WebRequestDecision | None = None
     precomputed_response: AIProviderResponse | None = None
     continuity_decision: SameThreadContinuityDecision | None = None
+    billing_credit_bucket: Literal["chat", "voice"] = "chat"
 
 
 @dataclass
@@ -265,22 +268,48 @@ def prepare_web_turn(
     voice_turn_id: str | None = None,
     continue_message_id: str | None = None,
     edit_message_id: str | None = None,
+    billing_credit_bucket: Literal["chat", "voice"] = "chat",
 ) -> PreparedWebTurn:
+    authoritative_bucket = normalize_credit_bucket(billing_credit_bucket)
     with SessionLocal() as session:
         swico_tier = selected_swico_tier(session, user_id)
+        existing_charge = session.exec(
+            select(UsageCharge).where(UsageCharge.request_id == request_id)
+        ).first()
+        if existing_charge is not None and existing_charge.credit_bucket != authoritative_bucket:
+            raise PaymentValidationError("Request ID was already used for another credit bucket.")
         existing_assistant = session.exec(select(WebChatMessage).where(
             WebChatMessage.user_id == user_id,
             WebChatMessage.request_id == request_id,
             WebChatMessage.role == "assistant",
         )).first()
         if existing_assistant is not None:
+            try:
+                existing_metadata = json.loads(existing_assistant.metadata_json or "{}")
+            except (TypeError, ValueError):
+                existing_metadata = {}
+            stored_bucket = (
+                existing_charge.credit_bucket
+                if existing_charge is not None
+                else normalize_credit_bucket(
+                    existing_metadata.get("billing_credit_bucket")
+                    if isinstance(existing_metadata, dict) else "chat"
+                )
+            )
+            if stored_bucket != authoritative_bucket:
+                raise PaymentValidationError(
+                    "Request ID was already used for another credit bucket."
+                )
             thread = _owned_thread(session, existing_assistant.thread_id, user_id)
             dummy = AIRequest(user_id, message, reply_language, "text", request_id, {})
             route = AIRoute("blocked", None, "idempotent_replay", "already_complete", "en", "replay", 0)
             return PreparedWebTurn(
-                request_id, user_id, thread.id, dummy, route, 0, swico_tier,
-                input_mode, voice_turn_id, str(reply_language or "en"),
-                billing_exempt, existing_assistant,
+                request_id=request_id, user_id=user_id, thread_id=thread.id,
+                ai_request=dummy, route=route, reserved_micros=0,
+                swico_tier=swico_tier, input_mode=input_mode,
+                voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
+                billing_exempt=billing_exempt, existing_response=existing_assistant,
+                billing_credit_bucket=stored_bucket,
             )
 
         existing_user_message = session.exec(select(WebChatMessage).where(
@@ -288,7 +317,6 @@ def prepare_web_turn(
             WebChatMessage.request_id == request_id,
             WebChatMessage.role == "user",
         )).first()
-        existing_charge = session.exec(select(UsageCharge).where(UsageCharge.request_id == request_id)).first()
         if existing_user_message is not None and existing_charge is not None and existing_charge.status != "released":
             raise DuplicateRequestInProgress("This request is already being processed.")
 
@@ -526,10 +554,13 @@ def prepare_web_turn(
                     )
             session.commit()
             return PreparedWebTurn(
-                request_id, user_id, thread.id, ai_request, route, 0,
-                swico_tier, input_mode, voice_turn_id, str(reply_language or "en"),
-                billing_exempt, optimization=preliminary,
+                request_id=request_id, user_id=user_id, thread_id=thread.id,
+                ai_request=ai_request, route=route, reserved_micros=0,
+                swico_tier=swico_tier, input_mode=input_mode,
+                voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
+                billing_exempt=billing_exempt, optimization=preliminary,
                 continuity_decision=continuity,
+                billing_credit_bucket=authoritative_bucket,
             )
 
         if (
@@ -560,10 +591,14 @@ def prepare_web_turn(
                 )
                 session.commit()
                 return PreparedWebTurn(
-                    request_id, user_id, thread.id, ai_request, route, 0,
-                    swico_tier, input_mode, voice_turn_id, str(reply_language or "en"),
-                    billing_exempt, optimization=optimization, precomputed_response=cached,
+                    request_id=request_id, user_id=user_id, thread_id=thread.id,
+                    ai_request=ai_request, route=route, reserved_micros=0,
+                    swico_tier=swico_tier, input_mode=input_mode,
+                    voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
+                    billing_exempt=billing_exempt, optimization=optimization,
+                    precomputed_response=cached,
                     continuity_decision=continuity,
+                    billing_credit_bucket=authoritative_bucket,
                 )
 
         profile_context = build_profile_prompt_context(session, user_id)
@@ -642,11 +677,14 @@ def prepare_web_turn(
             # Deterministic safety blocks do not consume wallet credit.
             session.commit()
             return PreparedWebTurn(
-                request_id, user_id, thread.id, ai_request, route, 0,
-                swico_tier, input_mode, voice_turn_id, str(reply_language or "en"),
-                billing_exempt, optimization=optimization,
+                request_id=request_id, user_id=user_id, thread_id=thread.id,
+                ai_request=ai_request, route=route, reserved_micros=0,
+                swico_tier=swico_tier, input_mode=input_mode,
+                voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
+                billing_exempt=billing_exempt, optimization=optimization,
                 coordinator_decision=coordinator_decision,
                 continuity_decision=continuity,
+                billing_credit_bucket=authoritative_bucket,
             )
 
         if enabled:
@@ -707,7 +745,8 @@ def prepare_web_turn(
                 provider=route.provider, model=route.model or "",
                 pricing_snapshot_json=snapshot_json(reserve.snapshot),
                 swico_tier=swico_tier,
-                usage_kind="chat", voice_turn_id=voice_turn_id,
+                usage_kind="chat", credit_bucket=authoritative_bucket,
+                voice_turn_id=voice_turn_id,
             )
         else:
             create_usage_reservation(
@@ -715,16 +754,21 @@ def prepare_web_turn(
                 provider=route.provider, model=route.model or "", reserved_micros=reserve.micros,
                 pricing_snapshot_json=snapshot_json(reserve.snapshot),
                 swico_tier=swico_tier,
-                usage_kind="chat", voice_turn_id=voice_turn_id,
+                usage_kind="chat", credit_bucket=authoritative_bucket,
+                voice_turn_id=voice_turn_id,
             )
         session.commit()
         return PreparedWebTurn(
-            request_id, user_id, thread.id, ai_request, route,
-            0 if billing_exempt else reserve.micros, swico_tier,
-            input_mode, voice_turn_id, str(reply_language or "en"), billing_exempt,
+            request_id=request_id, user_id=user_id, thread_id=thread.id,
+            ai_request=ai_request, route=route,
+            reserved_micros=0 if billing_exempt else reserve.micros,
+            swico_tier=swico_tier, input_mode=input_mode,
+            voice_turn_id=voice_turn_id, reply_language=str(reply_language or "en"),
+            billing_exempt=billing_exempt,
             provider_messages=provider_messages, optimization=optimization,
             coordinator_decision=coordinator_decision,
             continuity_decision=continuity,
+            billing_credit_bucket=authoritative_bucket,
         )
 
 
@@ -797,6 +841,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 get_wallet_summary(
                     session, prepared.user_id, swico_tier=prepared.swico_tier,
                     billing_exempt=prepared.billing_exempt,
+                    credit_bucket=prepared.billing_credit_bucket,
                 ),
                 response,
             )
@@ -964,6 +1009,7 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                 "input_mode": prepared.input_mode,
                 "voice_turn_id": prepared.voice_turn_id,
                 "reply_language": prepared.reply_language,
+                "billing_credit_bucket": prepared.billing_credit_bucket,
                 **optimization_metrics,
             }, sort_keys=True, separators=(",", ":")),
         )
@@ -1082,5 +1128,6 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         wallet = get_wallet_summary(
             session, prepared.user_id, swico_tier=prepared.swico_tier,
             billing_exempt=prepared.billing_exempt,
+            credit_bucket=prepared.billing_credit_bucket,
         )
         return CompletedWebTurn(prepared.thread_id, assistant, wallet, response)

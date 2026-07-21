@@ -39,12 +39,24 @@ Public config returns explicit `razorpay_mode`, `checkout_enabled`, `custom_topu
 ## Chat and Voice credit buckets
 
 Wallets are keyed by `(user_id, credit_bucket)`, where the supported buckets
-are `chat` and `voice`. LLM generation reserves and debits Chat. New STT and
-TTS operations reserve and debit Voice only when
-`WEB_SEPARATE_VOICE_CREDITS_ENABLED=true`; the false default preserves the
-legacy shared-Chat behavior during rollout. A real-time turn can therefore
-have three independent, stable usage IDs: `realtime-stt:<session>:<turn>`,
+are `chat` and `voice`. Normal Chat LLM generation—including typed messages,
+file/document questions, Continue response, edit, and regenerate—reserves and
+debits Chat. Realtime Voice Mode LLM generation retains `usage_kind=chat` for
+provider/audit semantics but reserves and debits Voice. STT and TTS operations
+reserve and debit Voice when `WEB_SEPARATE_VOICE_CREDITS_ENABLED=true`; the
+false default preserves legacy shared-Chat behavior during rollout. Dictation
+transcription uses Voice; sending its normal composer draft uses Chat; a
+separately requested spoken reply uses Voice. Cached and deterministic free
+responses remain free. A realtime turn can therefore have three independent,
+stable usage IDs: `realtime-stt:<session>:<turn>`,
 `realtime-chat:<session>:<turn>`, and `realtime-tts:<session>:<turn>`.
+
+The public `POST /api/web/chat/stream` route always supplies trusted
+`billing_credit_bucket=chat`, regardless of client `input_mode`, voice-turn
+metadata, or request JSON. Only the authenticated realtime Voice WebSocket
+server path supplies `billing_credit_bucket=voice`. Clients cannot select a
+billing bucket. Settlement, cancellation, provider failure, expansion, and
+stale cleanup use the bucket already stored on `UsageCharge`.
 
 Revision `e2b7c4d9a1f3` classifies every historical wallet, ledger entry,
 payment, and usage charge as Chat. It preserves all integer-micro balances
@@ -53,7 +65,15 @@ is created lazily and idempotently. A top-up applies
 `BILLING_CREDIT_PERCENT=50` once, to the order's authoritative database bucket;
 webhooks, verification, reconciliation and refunds cannot change it. Partial
 refund proportional arithmetic uses `Decimal`/integer micros and reverses the
-same bucket. There is no transfer operation between buckets.
+same bucket. There is no transfer operation between buckets. Settled historical
+usage and ledger rows are not reclassified or rewritten by this application
+change.
+
+Usage Settings classifies wallet spending by `credit_bucket`, not just
+`usage_kind`: Chat tier bars contain only Chat-bucket LLM rows, while Voice
+totals contain Voice-bucket STT, LLM, and TTS rows. Voice LLM request and token
+fields are additive. Overall terminal-usage totals and the account-level monthly
+hard limit remain unchanged.
 
 The legacy single `wallet` response remains the Chat wallet for mobile and old
 web clients. New clients use `wallets: { chat, voice }`. Payment and ledger
