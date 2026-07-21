@@ -86,6 +86,14 @@ class VoiceTicketStore:
                 return False, 0
             return True, max(0, current[0] - now)
 
+    def force_release_user(self, user_id: int) -> bool:
+        """Unconditionally clear a user's active-session lock."""
+        user_id = int(user_id)
+        if self._redis is not None:
+            return bool(self._redis.delete(f"{ACTIVE_PREFIX}{user_id}"))
+        with self._lock:
+            return self._locks.pop(user_id, None) is not None
+
     @staticmethod
     def _digest(ticket: str) -> str:
         return hashlib.sha256(ticket.encode("utf-8")).hexdigest()

@@ -27,7 +27,7 @@ from app.web_api.realtime_voice import (
     VoiceEndpointConfig, VoiceState, endpoint_delay_ms, join_final_segments,
     safe_provider_category, transcript_appears_unfinished,
 )
-from app.web_api.voice_sessions import VoiceTicket, VoiceTicketStore
+from app.web_api.voice_sessions import VoiceSessionConflict, VoiceTicket, VoiceTicketStore
 from tests.conftest import auth_headers, create_test_user
 
 
@@ -179,7 +179,10 @@ def test_ticket_origin_reuse_and_concurrent_session_security(client, monkeypatch
     created = _session(client, "voice-security", "voice-security@example.com")
     assert created.status_code == 201
     body = created.json()
-    assert _session(client, "voice-security", "voice-security@example.com").status_code == 409
+    conflict = _session(client, "voice-security", "voice-security@example.com")
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["retry_after_seconds"] > 0
+    assert conflict.headers["retry-after"] == str(conflict.json()["error"]["retry_after_seconds"])
 
     with pytest.raises(WebSocketDisconnect) as invalid_origin:
         with client.websocket_connect(
@@ -215,6 +218,72 @@ def test_voice_lock_status_is_metadata_only_and_release_is_owner_scoped(monkeypa
     assert store.consume(ticket) == first
     store.release(first)
     assert store.session_status(101) == (False, 0)
+
+
+def test_voice_conflict_force_release_then_mint_succeeds(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    store = VoiceTicketStore(url="")
+    first = VoiceTicket("session-one", 101, "lite", "en", True, int(time.time()) + 60)
+    second = VoiceTicket("session-two", 101, "lite", "en", True, int(time.time()) + 60)
+    third = VoiceTicket("session-three", 101, "lite", "en", True, int(time.time()) + 60)
+
+    store.mint(first, 60, 900)
+    with pytest.raises(VoiceSessionConflict):
+        store.mint(second, 60, 900)
+    assert store.force_release_user(101) is True
+    assert store.force_release_user(101) is False
+    assert store.mint(third, 60, 900)
+
+
+def test_force_release_user_redis_path_deletes_only_the_active_lock_key():
+    class Redis:
+        deleted: list[str] = []
+
+        def delete(self, key: str) -> int:
+            self.deleted.append(key)
+            return 1 if len(self.deleted) == 1 else 0
+
+    store = VoiceTicketStore(url="")
+    redis = Redis()
+    store._redis = redis
+
+    assert store.force_release_user(204) is True
+    assert store.force_release_user(204) is False
+    assert redis.deleted == ["swico:voice:active:204", "swico:voice:active:204"]
+
+
+def test_release_voice_session_requires_auth_is_owner_scoped_and_rate_limited(client, monkeypatch, caplog):
+    assert client.delete("/api/web/voice/sessions").status_code in {401, 403}
+    owner = create_test_user("voice-release-owner", "voice-release-owner@example.com")
+    other = create_test_user("voice-release-other", "voice-release-other@example.com")
+    store = VoiceTicketStore(url="")
+    monkeypatch.setattr("app.web_api.router._tickets", lambda: store)
+    store.mint(
+        VoiceTicket("owner-session", int(owner.id), "lite", "en", True, int(time.time()) + 60),
+        60, 900,
+    )
+    store.mint(
+        VoiceTicket("other-session", int(other.id), "lite", "en", True, int(time.time()) + 60),
+        60, 900,
+    )
+    headers = auth_headers("voice-release-owner", "voice-release-owner@example.com")
+
+    with caplog.at_level(logging.INFO, logger="app.web_api.router"):
+        responses = [client.delete(
+            "/api/web/voice/sessions",
+            headers=headers,
+            params={"user_id": int(other.id)} if index == 0 else None,
+        ) for index in range(10)]
+    assert all(response.status_code == 204 for response in responses)
+    assert responses[0].headers["cache-control"] == "no-store"
+    assert store.session_status(int(owner.id)) == (False, 0)
+    assert store.session_status(int(other.id))[0] is True
+    limited = client.delete("/api/web/voice/sessions", headers=headers)
+    assert limited.status_code == 429
+    assert limited.headers["retry-after"] == "60"
+    events = [record for record in caplog.records if record.message == "voice_session_release"]
+    assert events[0].released is True
+    assert events[-1].released is False
 
 
 def test_expired_ticket_idle_timeout_and_maximum_duration(client, monkeypatch):

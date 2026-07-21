@@ -655,11 +655,13 @@ def create_voice_session(
     try:
         ticket = _tickets().mint(metadata, ttl, max_session)
     except VoiceSessionConflict:
+        _, retry_after_seconds = _tickets().session_status(int(user.id))
         outcome(409, "session_conflict")
         return JSONResponse(status_code=409, content={"error": {
             "code": "voice_session_active",
             "message": "Another Voice Mode session may already be active. End it before trying again.",
-        }}, headers={"Cache-Control": "no-store"})
+            "retry_after_seconds": retry_after_seconds,
+        }}, headers={"Cache-Control": "no-store", "Retry-After": str(retry_after_seconds)})
     except Exception:
         outcome(503, "valkey_unavailable")
         return _temporary_error(
@@ -685,6 +687,22 @@ def create_voice_session(
         "wallet": wallets["chat"],
         "wallets": wallets,
     }
+
+
+@router.delete("/voice/sessions", status_code=204)
+def release_voice_session(
+    session: Session = Depends(get_session), auth: AuthUser = Depends(get_current_user),
+):
+    user = get_owned_user(session, auth)
+    _rate_limit(
+        session, user_id=int(user.id), action="voice_session_release", limit=10,
+    )
+    released = _tickets().force_release_user(int(user.id))
+    logger.info("voice_session_release", extra={
+        "request_id": get_request_id(), "backend_release": _backend_release(),
+        "released": released,
+    })
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
 def _allowed_websocket_origin(origin: str | None) -> bool:

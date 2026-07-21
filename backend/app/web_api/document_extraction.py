@@ -12,7 +12,9 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable
 
 from .upload_store import ExtractedChunk
-from .legacy_doc_conversion import configured_legacy_doc_converter, unavailable_message
+from .legacy_doc_conversion import (
+    configured_legacy_doc_converter, legacy_doc_conversion_enabled, unavailable_message,
+)
 
 
 SUPPORTED_EXTENSIONS = (".txt", ".md", ".csv", ".json", ".pdf", ".docx", ".xlsx", ".pptx")
@@ -99,6 +101,11 @@ def validate_extension_and_mime(filename: str, content_type: str | None) -> tupl
         # isolated worker must implement the converter protocol before this
         # branch may accept the upload.
         configured_legacy_doc_converter()
+        if not legacy_doc_conversion_enabled():
+            raise DocumentValidationError(
+                "legacy_doc_unsupported",
+                "Legacy .doc files are not supported. Re-save this document as .docx and upload it again.",
+            )
         raise DocumentValidationError(
             "legacy_doc_conversion_required",
             unavailable_message(),
@@ -368,7 +375,14 @@ def extract_document(path: str, extension: str) -> ExtractionResult:
     try:
         if extension == ".pdf":
             sections, page_character_counts = _pdf_sections(path)
-            if page_character_counts and (
+            total_pdf_chars = sum(page_character_counts)
+            ocr_enabled = str(os.getenv("WEB_DOCUMENT_OCR_ENABLED") or "").strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+            if page_character_counts and total_pdf_chars == 0 and not ocr_enabled:
+                warning_codes.append("pdf_no_extractable_text")
+                warnings.append("This PDF looks scanned — no selectable text was found.")
+            elif page_character_counts and (
                 sum(page_character_counts) < max(40, len(page_character_counts) * 20)
                 or sum(1 for count in page_character_counts if count < 10) / len(page_character_counts) >= 0.8
             ):
@@ -401,7 +415,9 @@ def extract_document(path: str, extension: str) -> ExtractionResult:
         raise
     except Exception as exc:
         raise DocumentValidationError("document_parse_failed", "The document could not be parsed safely.") from exc
-    if not chunks and extension == ".pdf" and "likely_scanned_pdf" in warning_codes:
+    if not chunks and extension == ".pdf" and any(
+        code in warning_codes for code in {"likely_scanned_pdf", "pdf_no_extractable_text"}
+    ):
         return ExtractionResult(
             chunks=[], source_locators=[f"page {index}" for index in range(1, len(page_character_counts) + 1)],
             warnings=warnings, extracted_chars=0, warning_codes=warning_codes,

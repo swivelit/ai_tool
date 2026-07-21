@@ -7,11 +7,11 @@ import { VoiceMode } from './VoiceMode'
 vi.mock('../hooks/useRealtimeVoice', () => ({ useRealtimeVoice:vi.fn() }))
 
 const base = {
-  phase:'listening' as const, partial:'hello', assistant:'', muted:false, error:'',
+  phase:'listening' as const, partial:'hello', assistant:'', muted:false, error:'', errorCode:'',
   ticketInfo:{ tier_label:'Swico Pro', language:'ta' as const }, creditRequired:null,
   microphoneLevel:.25, cannotHear:false,
   playbackWarning:'', playbackState:'playback_finished', canReplay:false,
-  toggleMute:vi.fn(), retry:vi.fn(), end:vi.fn().mockResolvedValue(undefined),
+  toggleMute:vi.fn(), retry:vi.fn(), endVoiceSession:vi.fn().mockResolvedValue(undefined), end:vi.fn().mockResolvedValue(undefined),
   manualPlay:vi.fn(), skipPlayback:vi.fn(),
 }
 
@@ -117,6 +117,23 @@ it('keeps error retry recovery available without closing the dialog', async () =
   await userEvent.click(screen.getByRole('button', { name:'Try again' }))
   expect(retry).toHaveBeenCalledTimes(1)
   expect(props.close).not.toHaveBeenCalled()
+})
+
+it('ends the previous active session before retrying Voice Mode', async () => {
+  const order: string[] = []
+  const endVoiceSession = vi.fn(async () => { order.push('release') })
+  const retry = vi.fn(async () => { order.push('retry') })
+  vi.mocked(useRealtimeVoice).mockReturnValue({
+    ...base, phase:'error', errorCode:'voice_session_active',
+    error:'Another session is active. Try again in 42 seconds.', endVoiceSession, retry,
+  } as never)
+  render(<VoiceMode {...props} />)
+
+  expect(screen.getByRole('alert')).toHaveTextContent('Try again in 42 seconds.')
+  await userEvent.click(screen.getByRole('button', { name:'End previous session' }))
+  expect(endVoiceSession).toHaveBeenCalledTimes(1)
+  expect(retry).toHaveBeenCalledTimes(1)
+  expect(order).toEqual(['release', 'retry'])
 })
 
 it('offers only Voice-credit recovery inside Voice Mode', async () => {

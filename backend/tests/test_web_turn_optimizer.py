@@ -23,7 +23,7 @@ from app.profile_context import build_profile_prompt_context
 from app.time_utils import utc_now
 from app.web_api.attachment_context import select_attachment_context
 from app.web_api.chat_service import execute_web_turn, prepare_web_turn
-from app.web_api.turn_optimizer import optimize_web_turn
+from app.web_api.turn_optimizer import classify_answer_class, optimize_web_turn
 from app.web_api.upload_store import EphemeralUpload, ExtractedChunk, utc_iso
 from tests.conftest import auth_headers, create_test_user
 from tests.test_web_chat_api import _fund
@@ -385,13 +385,18 @@ def test_realtime_voice_llm_failure_or_cancellation_releases_voice_reservation(f
         assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] == 0
 
 
-def test_complete_software_developer_roadmap_is_long_form(monkeypatch):
+def test_software_developer_roadmap_is_long_form_and_other_classes_are_unchanged(monkeypatch):
     monkeypatch.setenv("WEB_LONG_FORM_MAX_OUTPUT_TOKENS", "1400")
     monkeypatch.setenv("OPENAI_MAX_OUTPUT_TOKENS_HARD", "1800")
     result = optimize_web_turn(
-        "I want to become a software developer. Give me a complete roadmap"
+        "I want to become a software developer. Can you give me a roadmap?"
     )
     assert result.answer_class == "long_form"
+    assert classify_answer_class("What is Python?", "general") == "simple"
+    assert classify_answer_class(
+        "Please help me compare a few practical ideas for my weekend meals and schedule.",
+        "general",
+    ) == "normal"
     assert result.max_output_tokens == 1400
     assert result.max_output_tokens > optimize_web_turn("What is Python?").max_output_tokens
 

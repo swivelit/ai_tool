@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, ApiNetworkError, authorizedFetch, publicApiJson, SSEStreamError, streamChat } from './client'
+import { ApiError, ApiNetworkError, authorizedFetch, endVoiceSession, publicApiJson, SSEStreamError, streamChat } from './client'
 
 describe('authorizedFetch', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -24,6 +24,16 @@ describe('authorizedFetch', () => {
     const headers = new Headers(fetchMock.mock.calls[0][1]?.headers)
     expect(headers.has('Content-Type')).toBe(false)
   })
+})
+
+it('ends the authenticated Voice session with DELETE', async () => {
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status:204 }))
+  const user = { getIdToken:vi.fn().mockResolvedValue('firebase-token') }
+
+  await endVoiceSession(user as never)
+
+  expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/web/voice/sessions')
+  expect(fetchMock.mock.calls[0][1]?.method).toBe('DELETE')
 })
 
 it('treats an event:error as a failed stream even when HTTP status is 200', async () => {

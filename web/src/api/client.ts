@@ -129,6 +129,10 @@ export async function deleteUpload(user: User, uploadId: string): Promise<void> 
   }
 }
 
+export async function endVoiceSession(user: User): Promise<void> {
+  await apiJson<void>(user, '/api/web/voice/sessions', { method:'DELETE' })
+}
+
 export async function uploadVirtualText(
   user: User, payload: { upload_id: string; text: string; operation: LongInputMode },
 ): Promise<ReadyAttachment> {

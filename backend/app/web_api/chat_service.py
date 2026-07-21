@@ -501,8 +501,30 @@ def prepare_web_turn(
                 model_message, all_context, mode=context_mode
             )
 
+        fresh_thread = not all_context and continuation_row is None
+        if fresh_thread and not continuity.use_context:
+            # Probe intent with a non-user placeholder because the continuity
+            # classifier otherwise exits early when same-thread history is empty.
+            # Only its high-confidence reference/ellipsis reasons are accepted.
+            fresh_thread_intent = decide_same_thread_continuity(
+                model_message, [{"user": "", "assistant": ""}], mode=context_mode
+            )
+            if (
+                fresh_thread_intent.use_context
+                and fresh_thread_intent.reason
+                in {"referential_language", "elliptical_followup"}
+            ):
+                continuity = fresh_thread_intent
+
         coordinator = WebRequestCoordinator()
-        needs_memory = needs_cross_thread_memory(model_message)
+        natural_cross_thread_followup = bool(
+            fresh_thread
+            and continuity.use_context
+            and continuity.reason in {"referential_language", "elliptical_followup"}
+        )
+        needs_memory = bool(
+            needs_cross_thread_memory(model_message) or natural_cross_thread_followup
+        )
         preliminary = coordinator.preliminary(
             model_message, reply_language=reply_language,
             has_attachments=bool(uploads),
@@ -605,6 +627,7 @@ def prepare_web_turn(
         memory_selection = retrieve_memory(
             session, user_id=user_id, message=model_message,
             current_thread_id=thread.id,
+            allow_natural_followup=natural_cross_thread_followup,
         ) if needs_memory else None
         memory_context = memory_selection.prompt_context if memory_selection else ""
         try:

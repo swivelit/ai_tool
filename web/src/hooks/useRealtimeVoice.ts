@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { User } from 'firebase/auth'
-import { API_BASE, ApiError, apiJson } from '../api/client'
+import { API_BASE, ApiError, apiJson, endVoiceSession as requestEndVoiceSession } from '../api/client'
 import type { CreditBucket, VoiceTuning, Wallets } from '../types'
 
 export type VoicePhase = 'connecting' | 'listening' | 'endpoint_pending' | 'thinking' | 'speaking' | 'interrupted' | 'closing' | 'error' | 'closed'
@@ -19,7 +19,7 @@ type Ticket = {
   provider_sample_rate?: number | null; media_source_allowed?: boolean;
 }
 type ProtocolMessage = { protocol_version: 1; type: string; [key: string]: unknown }
-type VoiceError = { code: string; message: string; credit_bucket?: CreditBucket }
+type VoiceError = { code: string; message: string; credit_bucket?: CreditBucket; retry_after_seconds?: number }
 export type MicrophoneDiagnostics = {
   selectedDeviceLabel: string; browserSampleRate: number; resampledSampleRate: 16000;
   currentRms: number; calibratedNoiseFloor: number; activeThreshold: number;
@@ -117,12 +117,20 @@ function apiVoiceError(caught: ApiError): VoiceError | null {
   if (!caught.body || typeof caught.body !== 'object' || !('error' in caught.body)) return null
   const raw = (caught.body as { error?: unknown }).error
   if (!raw || typeof raw !== 'object') return null
-  const value = raw as { code?: unknown; message?: unknown; credit_bucket?: unknown }
+  const value = raw as { code?: unknown; message?: unknown; credit_bucket?: unknown; retry_after_seconds?: unknown }
   if (value.code === 'insufficient_chat_credit') {
     return { code:'voice_server_update_required', message:'Voice Mode was served by an older version. Refresh Swico and try again.' }
   }
   const bucket = value.credit_bucket === 'chat' || value.credit_bucket === 'voice' ? value.credit_bucket : undefined
-  return { code:String(value.code || 'voice_start_failed'), message:String(value.message || 'Voice Mode could not start.'), ...(bucket ? { credit_bucket:bucket } : {}) }
+  const retryAfter = typeof value.retry_after_seconds === 'number' && Number.isFinite(value.retry_after_seconds)
+    ? Math.max(0, Math.floor(value.retry_after_seconds)) : undefined
+  const message = String(value.message || 'Voice Mode could not start.')
+  return {
+    code:String(value.code || 'voice_start_failed'),
+    message:retryAfter === undefined ? message : `${message} Try again in ${retryAfter} seconds.`,
+    ...(bucket ? { credit_bucket:bucket } : {}),
+    ...(retryAfter === undefined ? {} : { retry_after_seconds:retryAfter }),
+  }
 }
 
 export function validatedSocketUrl(
@@ -903,6 +911,9 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     if (pending) await pending
     await cleanup(); closing.current = false; await start()
   }, [cleanup, start])
+  const endVoiceSession = useCallback(
+    async () => requestEndVoiceSession(user), [user],
+  )
   const toggleMute = useCallback(() => setMuted(value => {
     const next = !value
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ protocol_version:1, type:next ? 'mute' : 'unmute' }))
@@ -936,6 +947,6 @@ export function useRealtimeVoice({ user, threadId, onTurnDone, tuning = DEFAULT_
     ticketInfo, creditRequired, microphoneLevel, cannotHear, microphoneDiagnostics,
     playbackDiagnostics, endpointDiagnostics,
     canReplay:manualReplayAvailable.current,
-    toggleMute, manualPlay, skipPlayback, retry, end,
+    toggleMute, manualPlay, skipPlayback, retry, endVoiceSession, end,
   }
 }

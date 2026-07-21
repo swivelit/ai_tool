@@ -95,8 +95,12 @@ def _score(query: set[str], value: str, recency_rank: int) -> float:
 
 def retrieve_memory(
     session: Session, *, user_id: int, message: str, current_thread_id: str | None,
+    allow_natural_followup: bool = False,
 ) -> MemorySelection:
-    if not needs_cross_thread_memory(message) or not memory_enabled(session, user_id):
+    if (
+        not (needs_cross_thread_memory(message) or allow_natural_followup)
+        or not memory_enabled(session, user_id)
+    ):
         return MemorySelection("", ())
     limit = _env_int("WEB_MEMORY_MAX_ITEMS", 4, 1, 4)
     char_limit = _env_int("WEB_MEMORY_MAX_CHARS", 1200, 100, 1200)

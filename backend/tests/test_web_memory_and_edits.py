@@ -88,6 +88,40 @@ def test_standalone_turn_has_no_history_memory_or_document_and_one_provider_call
     assert stored["attachment_estimated_tokens"] == 0
 
 
+def test_fresh_thread_natural_followup_retrieves_memory_only_when_enabled(monkeypatch):
+    monkeypatch.setenv("WEB_CROSS_THREAD_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("WEB_SAME_THREAD_CONTEXT_MODE", "adaptive")
+    user = create_test_user("natural-memory-user", "natural-memory-user@example.com")
+    _fund(int(user.id))
+    with SessionLocal() as session:
+        session.add(WebUsagePreferences(user_id=int(user.id), memory_enabled=True))
+        old_thread = WebChatThread(user_id=int(user.id), title="Developer plan")
+        session.add(old_thread)
+        session.flush()
+        session.add(WebMemoryFact(
+            user_id=int(user.id), normalized_key="project:developer-plan",
+            value_text="The software developer plan starts with Python and FastAPI.",
+            category="ongoing_project", source_thread_id=old_thread.id,
+        ))
+        session.commit()
+
+    enabled = prepare_web_turn(
+        user_id=int(user.id), message="how do I implement that plan we made?",
+        request_id="natural-memory-enabled", thread_id=None, reply_language="en",
+    )
+    assert enabled.continuity_decision is not None
+    assert enabled.continuity_decision.use_context is True
+    assert enabled.continuity_decision.reason == "referential_language"
+    assert "software developer plan" in enabled.ai_request.metadata["memory_prompt_context"]
+
+    monkeypatch.setenv("WEB_CROSS_THREAD_MEMORY_ENABLED", "false")
+    disabled = prepare_web_turn(
+        user_id=int(user.id), message="how do I implement that plan we made?",
+        request_id="natural-memory-disabled", thread_id=None, reply_language="en",
+    )
+    assert disabled.ai_request.metadata["memory_prompt_context"] == ""
+
+
 def test_edit_latest_message_creates_revision_and_preserves_settled_charge(monkeypatch):
     monkeypatch.setenv("WEB_MESSAGE_EDIT_ENABLED", "true")
     monkeypatch.setenv("WEB_CROSS_THREAD_MEMORY_ENABLED", "true")

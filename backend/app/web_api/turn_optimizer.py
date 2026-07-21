@@ -262,6 +262,8 @@ def classify_answer_class(message: str, intent: str = "") -> AnswerClass:
         "implementation plan", "migration plan", "step by step", "tutorial",
         "all steps", "end-to-end", "end to end", "complete solution",
         "complete code", "full code", "deep dive", "full architecture",
+        "become a", "career path", "career roadmap", "guide to", "study plan",
+        "syllabus", "checklist", "how do i learn", "teach me",
     )
     if any(trigger in lowered for trigger in long_form_triggers):
         return "long_form"

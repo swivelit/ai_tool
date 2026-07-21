@@ -13,6 +13,7 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
   const closeRef = useRef<HTMLButtonElement>(null)
   const finishingRef = useRef(false)
   const [finishing, setFinishing] = useState(false)
+  const [releasingPrevious, setReleasingPrevious] = useState(false)
   const voice = useRealtimeVoice({ user, threadId, onTurnDone, tuning, collectDiagnostics:internalDiagnostics })
   const endVoice = voice.end
 
@@ -28,6 +29,19 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
       close()
     }
   }, [close, endVoice])
+
+  const releasePrevious = useCallback(async () => {
+    if (releasingPrevious) return
+    setReleasingPrevious(true)
+    try {
+      await voice.endVoiceSession()
+      await voice.retry()
+    } catch {
+      // Keep the current error visible so the user can try the action again.
+    } finally {
+      setReleasingPrevious(false)
+    }
+  }, [releasingPrevious, voice])
 
   useEffect(() => {
     closeRef.current?.focus()
@@ -92,6 +106,9 @@ export function VoiceMode({ user, threadId, close, addCredits, onTurnDone, tunin
           <p>{voice.error}</p>
           <div className="voice-error-actions">
             <button className="primary" onClick={() => void voice.retry()}><RefreshCw size={18} />Try again</button>
+            {voice.errorCode === 'voice_session_active' && <button disabled={releasingPrevious} onClick={() => void releasePrevious()}>
+              {releasingPrevious ? 'Ending previous session…' : 'End previous session'}
+            </button>}
             {voice.creditRequired === 'voice' && <button onClick={() => addCredits('voice')}>Add Voice credits</button>}
           </div>
         </div>}

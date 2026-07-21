@@ -112,8 +112,9 @@ def test_unsupported_mismatch_empty_and_per_file_limit(client, monkeypatch):
     assert too_large.status_code == 413 and too_large.json()["error"]["code"] == "file_too_large"
 
 
-def test_octet_stream_requires_a_valid_signature_and_legacy_doc_is_honest(client):
+def test_octet_stream_requires_a_valid_signature_and_legacy_doc_is_honest(client, monkeypatch):
     create_test_user("upload-user", "upload-user@example.com")
+    monkeypatch.setenv("WEB_LEGACY_DOC_CONVERSION_ENABLED", "false")
     valid = _upload(client, "report.pdf", _supported_files()["pdf"], "application/octet-stream")
     assert valid.status_code == 201
     invalid = _upload(client, "report.pdf", b"not a pdf", "application/octet-stream")
@@ -121,7 +122,9 @@ def test_octet_stream_requires_a_valid_signature_and_legacy_doc_is_honest(client
     assert invalid.json()["error"]["code"] == "invalid_pdf"
     legacy = _upload(client, "report.doc", b"\xd0\xcf\x11\xe0", "application/msword")
     assert legacy.status_code == 422
-    assert legacy.json()["error"]["code"] == "legacy_doc_conversion_required"
+    assert legacy.json()["error"]["code"] == "legacy_doc_unsupported"
+    assert "re-save" in legacy.json()["error"]["message"].lower()
+    assert ".docx" in legacy.json()["error"]["message"].lower()
 
 
 def test_encrypted_pdf_is_rejected_explicitly(client):
@@ -190,8 +193,9 @@ def test_docx_extracts_headers_and_footers(client):
     assert any("footer" in chunk.source and "Footer text" in chunk.text for chunk in upload.chunks)
 
 
-def test_likely_scanned_pdf_is_ready_with_explicit_no_ocr_warning(client):
+def test_zero_text_pdf_is_ready_with_explicit_no_ocr_warning(client, monkeypatch):
     from reportlab.pdfgen import canvas
+    monkeypatch.setenv("WEB_DOCUMENT_OCR_ENABLED", "false")
     create_test_user("upload-user", "upload-user@example.com")
     value = io.BytesIO()
     document = canvas.Canvas(value)
@@ -199,8 +203,8 @@ def test_likely_scanned_pdf_is_ready_with_explicit_no_ocr_warning(client):
     response = _upload(client, "scan.pdf", value.getvalue(), MIME["pdf"])
     assert response.status_code == 201
     payload = response.json()
-    assert "likely_scanned_pdf" in payload["warning_codes"]
-    assert any("OCR was not performed" in warning for warning in payload["warnings"])
+    assert "pdf_no_extractable_text" in payload["warning_codes"]
+    assert "This PDF looks scanned — no selectable text was found." in payload["warnings"]
     upload = get_upload_store().get(payload["id"])
     assert upload is not None and upload.chunks == []
 

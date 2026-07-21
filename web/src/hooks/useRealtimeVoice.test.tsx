@@ -308,10 +308,14 @@ it('maps known application close codes without replacing an earlier server error
 it.each([
   [402, 'insufficient_voice_credit', 'voice', 'Add Voice credits to start Voice Mode.'],
   [503, 'voice_ticket_store_unavailable', null, 'Voice Mode is temporarily unavailable.'],
-  [409, 'voice_session_active', null, 'Another Voice Mode session may already be active.'],
+  [409, 'voice_session_active', null, 'Another Voice Mode session may already be active. Try again in 42 seconds.'],
 ] as const)('preserves pre-WebSocket HTTP %s/%s and never opens a socket', async (status, code, bucket, message) => {
   stubBrowser()
-  vi.mocked(apiJson).mockRejectedValue(new ApiError(status, { error:{ code, message, ...(bucket ? { credit_bucket:bucket } : {}) } }))
+  const baseMessage = message.replace(' Try again in 42 seconds.', '')
+  vi.mocked(apiJson).mockRejectedValue(new ApiError(status, { error:{
+    code, message:baseMessage, ...(bucket ? { credit_bucket:bucket } : {}),
+    ...(status === 409 ? { retry_after_seconds:42 } : {}),
+  } }))
   const { result } = renderHook(() => useRealtimeVoice({ user:testUser, threadId:null }))
   await waitFor(() => expect(result.current.errorCode).toBe(code))
   expect(result.current.errorStatus).toBe(status)
