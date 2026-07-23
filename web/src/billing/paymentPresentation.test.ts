@@ -7,8 +7,8 @@ const paidAt = '2026-07-17T10:05:00Z'
 
 function payment(status: string, changes: Partial<PaymentHistory> = {}): PaymentHistory {
   return {
-    id:`order-${status}`, gross_amount_paise:1000, credited_amount_micros:5_000_000,
-    platform_share_paise:500, refunded_amount_paise:0, credit_reversal_micros:0,
+    id:`order-${status}`, gross_amount_paise:1500, credited_amount_micros:7_500_000,
+    platform_share_paise:750, refunded_amount_paise:0, credit_reversal_micros:0,
     status, created_at:createdAt, updated_at:createdAt, paid_at:null, refunded_at:null,
     payment_received:false, credit_applied:false, ...changes,
   }
@@ -54,7 +54,7 @@ describe('paymentPresentation', () => {
   it('shows full-refund information', () => {
     const view = paymentPresentation(payment('refunded', {
       payment_received:true, credit_applied:true, paid_at:paidAt,
-      refunded_amount_paise:1000, credit_reversal_micros:5_000_000,
+      refunded_amount_paise:1500, credit_reversal_micros:7_500_000,
     }))
     expect(view.heading).toBe('Refunded')
     expect(view.showRefundAmount).toBe(true)

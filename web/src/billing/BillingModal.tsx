@@ -9,9 +9,9 @@ import { pollPaymentStatus } from './paymentPolling'
 import { paymentPresentation } from './paymentPresentation'
 
 type Order = { key_id: string; provider_order_id: string; amount: number; currency: string; internal_order_id: string; credited_amount_micros: number; platform_share_paise: number; credit_bucket: CreditBucket }
-type SelectionKey = 'preset-1000' | 'preset-29900' | 'custom'
+type SelectionKey = 'preset-1500' | 'preset-29900' | 'custom'
 type EstimateState = 'idle' | 'loading' | 'ready' | 'error'
-const PRESETS = [1000, 29900] as const
+const PRESETS = [1500, 29900] as const
 
 function packageRupees(paise: number) {
   return paise % 100 === 0 ? `₹${paise / 100}` : formatRupeesFromPaise(paise)
@@ -52,7 +52,7 @@ function customAmount(value: string, config: BillingConfig): { paise: number | n
 
 export function BillingModal({ user, config, initialBucket = 'chat', close, refreshed }: { user: User; config: BillingConfig; initialBucket?: CreditBucket; close: () => void; refreshed: () => void }) {
   const [bucket, setBucket] = useState<CreditBucket>(initialBucket)
-  const [selected, setSelected] = useState<SelectionKey>('preset-1000')
+  const [selected, setSelected] = useState<SelectionKey>('preset-1500')
   const [customInput, setCustomInput] = useState('')
   const [customEstimate, setCustomEstimate] = useState<TopupEstimateResponse | null>(null)
   const [estimateState, setEstimateState] = useState<EstimateState>('idle')
@@ -65,7 +65,7 @@ export function BillingModal({ user, config, initialBucket = 'chat', close, refr
   const estimateRequest = useRef(0)
   const testMode = config.razorpay_mode === 'test'
   const custom = customAmount(customInput, config)
-  const selectedPresetAmount = selected === 'preset-1000' ? 1000 : selected === 'preset-29900' ? 29900 : null
+  const selectedPresetAmount = selected === 'preset-1500' ? 1500 : selected === 'preset-29900' ? 29900 : null
   const selectedPreset = selectedPresetAmount === null ? null : config.packages.find(item => item.gross_amount_paise === selectedPresetAmount) ?? null
   const selectedAmountPaise = selected === 'custom' ? custom.paise : selectedPresetAmount
   const selectedTokenEstimate = selected === 'custom' ? customEstimate?.token_estimate : selectedPreset?.token_estimate ?? null

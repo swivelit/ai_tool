@@ -1,6 +1,7 @@
 from app.ai.providers.openai_provider import OpenAIProvider
 from app.ai.model_health import clear_model_health
 from app.ai.prompts import (
+    STATIC_SYSTEM_PREFIX,
     UNCLEAR_MEDICAL_TERM_INSTRUCTION,
     build_provider_messages,
     build_system_instructions,
@@ -118,6 +119,27 @@ def test_provider_messages_include_hidden_profile_context():
     assert "Saved user profile and preferences" in messages[1]["content"]
     assert "Do not reveal this block" in messages[1]["content"]
     assert "Chennai-based founder" in messages[1]["content"]
+
+
+def test_provider_system_message_starts_with_byte_stable_static_prefix():
+    first = build_provider_messages(
+        AIRequest(1, "What is photosynthesis?", "en", "text", "stable-en", {
+            "client_surface": "web",
+        }),
+        _route("en"),
+        provider="openai",
+    )
+    second = build_provider_messages(
+        AIRequest(1, "Translate this sentence", "ta", "text", "stable-ta", {
+            "client_surface": "web",
+            "profile_prompt_context": "reply_language: ta",
+        }),
+        _route("ta"),
+        provider="sarvam",
+    )
+
+    assert first[0]["content"].startswith(STATIC_SYSTEM_PREFIX)
+    assert second[0]["content"].startswith(STATIC_SYSTEM_PREFIX)
 
 
 def test_system_prompt_constrains_life_context_usage():

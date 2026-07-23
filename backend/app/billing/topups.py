@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 
-DEFAULT_TOPUP_PACKAGES_PAISE = (1000, 29900)
+DEFAULT_TOPUP_PACKAGES_PAISE = (1500, 29900)
 _TRUE = {"1", "true", "yes", "on"}
 
 
@@ -25,7 +25,7 @@ def topup_packages() -> list[int]:
 
 def topup_bounds() -> tuple[int, int]:
     return (
-        int(os.getenv("BILLING_MIN_TOPUP_PAISE", "1000")),
+        int(os.getenv("BILLING_MIN_TOPUP_PAISE", "1500")),
         int(os.getenv("BILLING_MAX_TOPUP_PAISE", "50000")),
     )
 

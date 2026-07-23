@@ -111,9 +111,9 @@ def _custom_topup_checks(values: dict[str, str]) -> list[tuple[str, bool]]:
     maximum = _integer(values.get("BILLING_MAX_TOPUP_PAISE", ""))
     enforcement = values.get("BILLING_ENFORCE_TOPUP_PACKAGES", "").strip().lower()
     return [
-        ("configured packages are exactly INR 10 and INR 299", packages is not None and len(packages) == 2 and set(packages) == {1000, 29900}),
+        ("configured packages are exactly INR 15 and INR 299", packages is not None and len(packages) == 2 and set(packages) == {1500, 29900}),
         ("BILLING_ENFORCE_TOPUP_PACKAGES is false", enforcement == "false"),
-        ("BILLING_MIN_TOPUP_PAISE is 1000", minimum == 1000),
+        ("BILLING_MIN_TOPUP_PAISE is 1500", minimum == 1500),
         ("BILLING_MAX_TOPUP_PAISE is valid and allows INR 299", maximum is not None and maximum >= 29900 and maximum % 100 == 0),
         ("custom top-ups remain bounded", minimum is not None and maximum is not None and 0 < minimum <= maximum),
     ]

@@ -30,6 +30,16 @@ UNCLEAR_MEDICAL_TERM_INSTRUCTION = (
     "Tamil/Tanglish while keeping the safety note clear."
 )
 
+STATIC_SYSTEM_PREFIX = "\n".join((
+    (
+        "Present your public identity only as Swico; do not identify yourself as an "
+        "underlying model or service, and do not name underlying model or service brands "
+        "when answering about Swico."
+    ),
+    "Do not claim access to live/current data unless it was provided.",
+    "Apply saved profile preferences only when supplied. Do not invent or reveal profile facts.",
+))
+
 
 def build_provider_messages(request: AIRequest, route: AIRoute, *, provider: str) -> list[dict[str, str]]:
     prepared = (request.metadata or {}).get("provider_messages")
@@ -116,20 +126,14 @@ def build_system_instructions(request: AIRequest, route: AIRoute, *, provider: s
     """
     language = request.reply_language or route.language or "en"
     parts = [
+        STATIC_SYSTEM_PREFIX,
         (
             "You are Swico, the website assistant. Answer directly."
             if (request.metadata or {}).get("client_surface") == "web"
             else "You are Swico, the mobile assistant. Answer directly."
         ),
-        (
-            "Present your public identity only as Swico; do not identify yourself as an "
-            "underlying model or service, and do not name underlying model or service brands "
-            "when answering about Swico."
-        ),
-        "Do not claim access to live/current data unless it was provided.",
         f"Requested reply language: {language}. The final answer must obey this requested reply_language.",
         _language_contract(language),
-        "Apply saved profile preferences only when supplied. Do not invent or reveal profile facts.",
         _style_policy(
             request.message,
             answer_class=str((request.metadata or {}).get("answer_class") or ""),

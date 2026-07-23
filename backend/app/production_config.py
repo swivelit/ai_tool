@@ -87,6 +87,8 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
 
     if _bool(env, "WEB_APP_ENABLED", False) is not True:
         errors.append("WEB_APP_ENABLED must be true")
+    if _bool(env, "WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED", False) is None:
+        errors.append("WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED must be a boolean")
 
     voice_recording = _bool(env, "WEB_VOICE_RECORDING_ENABLED", False)
     voice_reply = _bool(env, "WEB_VOICE_REPLY_ENABLED", False)
@@ -297,19 +299,19 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
 
     if _decimal(env, "BILLING_CREDIT_PERCENT", "50") != Decimal("50"):
         errors.append("BILLING_CREDIT_PERCENT must be 50")
-    minimum = _integer(env, "BILLING_MIN_TOPUP_PAISE", "1000")
+    minimum = _integer(env, "BILLING_MIN_TOPUP_PAISE", "1500")
     maximum = _integer(env, "BILLING_MAX_TOPUP_PAISE", "50000")
     if minimum is None or minimum <= 0:
         errors.append("BILLING_MIN_TOPUP_PAISE must be a positive integer")
     if maximum is None or maximum <= 0 or (minimum is not None and maximum < minimum):
         errors.append("BILLING_MAX_TOPUP_PAISE must be valid")
-    if minimum is not None and maximum is not None and not (minimum <= 1000 <= maximum):
-        errors.append("BILLING_MIN_TOPUP_PAISE and BILLING_MAX_TOPUP_PAISE must allow ₹10")
+    if minimum is not None and maximum is not None and not (minimum <= 1500 <= maximum):
+        errors.append("BILLING_MIN_TOPUP_PAISE and BILLING_MAX_TOPUP_PAISE must allow ₹15")
     enforce_packages = _bool(env, "BILLING_ENFORCE_TOPUP_PACKAGES", False)
     package_values: list[int] = []
     packages: set[int] = set()
     try:
-        package_values = [int(item.strip()) for item in _value(env, "BILLING_TOPUP_PACKAGES_PAISE", "1000,29900").split(",") if item.strip()]
+        package_values = [int(item.strip()) for item in _value(env, "BILLING_TOPUP_PACKAGES_PAISE", "1500,29900").split(",") if item.strip()]
         packages = set(package_values)
     except ValueError:
         errors.append("BILLING_TOPUP_PACKAGES_PAISE must contain integers")
@@ -317,12 +319,12 @@ def production_configuration_errors(environ: Mapping[str, str] | None = None) ->
         errors.append("BILLING_ENFORCE_TOPUP_PACKAGES must be a boolean")
     elif enforce_packages:
         errors.append("BILLING_ENFORCE_TOPUP_PACKAGES must be false")
-    if 1000 not in packages:
-        errors.append("BILLING_TOPUP_PACKAGES_PAISE must include ₹10")
-    if packages != {1000, 29900} or len(package_values) != 2:
-        errors.append("BILLING_TOPUP_PACKAGES_PAISE must contain exactly ₹10 and ₹299")
-    if minimum != 1000:
-        errors.append("BILLING_MIN_TOPUP_PAISE must be 1000")
+    if 1500 not in packages:
+        errors.append("BILLING_TOPUP_PACKAGES_PAISE must include ₹15")
+    if packages != {1500, 29900} or len(package_values) != 2:
+        errors.append("BILLING_TOPUP_PACKAGES_PAISE must contain exactly ₹15 and ₹299")
+    if minimum != 1500:
+        errors.append("BILLING_MIN_TOPUP_PAISE must be 1500")
     if maximum is not None and (maximum < 29900 or maximum % 100 != 0):
         errors.append("BILLING_MAX_TOPUP_PAISE must be a whole-rupee bound allowing ₹299")
 

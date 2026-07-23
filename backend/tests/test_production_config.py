@@ -15,6 +15,7 @@ def valid_environment() -> dict[str, str]:
         "LOG_CHAT_CONTENT": "false",
         "AUTH_ALLOW_DEV_TOKENS": "false",
         "WEB_APP_ENABLED": "true",
+        "WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED": "false",
         "WEB_REALTIME_VOICE_ENABLED": "false",
         "WEB_SEPARATE_VOICE_CREDITS_ENABLED": "false",
         "WEB_REALTIME_VOICE_SESSION_TICKET_TTL_SECONDS": "60",
@@ -33,9 +34,9 @@ def valid_environment() -> dict[str, str]:
         "RAZORPAY_KEY_SECRET": "checkout-configured",
         "RAZORPAY_WEBHOOK_SECRET": "webhook-configured",
         "BILLING_CREDIT_PERCENT": "50",
-        "BILLING_MIN_TOPUP_PAISE": "1000",
+        "BILLING_MIN_TOPUP_PAISE": "1500",
         "BILLING_MAX_TOPUP_PAISE": "50000",
-        "BILLING_TOPUP_PACKAGES_PAISE": "1000,29900",
+        "BILLING_TOPUP_PACKAGES_PAISE": "1500,29900",
         "BILLING_ENFORCE_TOPUP_PACKAGES": "false",
         "CORS_ALLOW_ORIGINS": "https://swico-web.onrender.com",
         "AUTO_CREATE_TABLES": "false",
@@ -90,22 +91,22 @@ def test_production_requires_custom_topup_presets_and_bounds() -> None:
     validate_production_configuration(valid_environment())
     validate_production_configuration({
         **valid_environment(),
-        "BILLING_TOPUP_PACKAGES_PAISE": "29900,1000",
+        "BILLING_TOPUP_PACKAGES_PAISE": "29900,1500",
     })
-    with pytest.raises(ProductionConfigurationError, match="exactly ₹10 and ₹299"):
+    with pytest.raises(ProductionConfigurationError, match="exactly ₹15 and ₹299"):
         validate_production_configuration({
             **valid_environment(),
-            "BILLING_TOPUP_PACKAGES_PAISE": "1000,5000,29900",
+            "BILLING_TOPUP_PACKAGES_PAISE": "1500,5000,29900",
         })
     with pytest.raises(ProductionConfigurationError, match="whole-rupee bound allowing ₹299"):
         validate_production_configuration({
             **valid_environment(),
             "BILLING_MAX_TOPUP_PAISE": "25000",
         })
-    with pytest.raises(ProductionConfigurationError, match="exactly ₹10 and ₹299"):
+    with pytest.raises(ProductionConfigurationError, match="exactly ₹15 and ₹299"):
         validate_production_configuration({
             **valid_environment(),
-            "BILLING_TOPUP_PACKAGES_PAISE": "1000,29900,1000",
+            "BILLING_TOPUP_PACKAGES_PAISE": "1500,29900,1500",
         })
     with pytest.raises(ProductionConfigurationError, match="whole-rupee bound"):
         validate_production_configuration({
@@ -131,6 +132,7 @@ def test_production_requires_custom_topup_presets_and_bounds() -> None:
         ({"WEB_STT_RATE_LIMIT_PER_MINUTE": "many"}, "WEB_STT_RATE_LIMIT_PER_MINUTE"),
         ({"WEB_REALTIME_VOICE_ENABLED": "sometimes"}, "WEB_REALTIME_VOICE_ENABLED"),
         ({"WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED": "sometimes"}, "WEB_REALTIME_VOICE_ADAPTIVE_ENDPOINTING_ENABLED"),
+        ({"WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED": "sometimes"}, "WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED"),
         ({"WEB_REALTIME_VOICE_ENABLED": "true"}, "requires WEB_SEPARATE_VOICE_CREDITS_ENABLED"),
         ({"WEB_REALTIME_VOICE_MAX_CONCURRENT_SESSIONS_PER_USER": "2"}, "must be 1"),
         ({"WEB_REALTIME_VOICE_END_SILENCE_MS": "0"}, "WEB_REALTIME_VOICE_END_SILENCE_MS"),
@@ -149,8 +151,8 @@ def test_production_requires_custom_topup_presets_and_bounds() -> None:
         ({"RAZORPAY_KEY_ID": "rzp_live_not_allowed"}, "rzp_test_"),
         ({"RAZORPAY_WEBHOOK_SECRET": "checkout-configured"}, "must be distinct"),
         ({"BILLING_CREDIT_PERCENT": "49"}, "BILLING_CREDIT_PERCENT"),
-        ({"BILLING_MIN_TOPUP_PAISE": "1001"}, "must allow ₹10"),
-        ({"BILLING_TOPUP_PACKAGES_PAISE": "5000"}, "must include ₹10"),
+        ({"BILLING_MIN_TOPUP_PAISE": "1501"}, "must allow ₹15"),
+        ({"BILLING_TOPUP_PACKAGES_PAISE": "5000"}, "must include ₹15"),
         ({"BILLING_ENFORCE_TOPUP_PACKAGES": "true"}, "must be false"),
         ({"CORS_ALLOW_ORIGINS": "https://swico-web.onrender.com/"}, "CORS_ALLOW_ORIGINS"),
         ({"CORS_ALLOW_ORIGINS": "*"}, "CORS_ALLOW_ORIGINS"),

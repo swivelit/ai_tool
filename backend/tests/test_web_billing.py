@@ -24,7 +24,7 @@ from app.time_utils import utc_now
 from tests.conftest import auth_headers, create_test_user
 
 
-def make_order(user_id: int, gross: int = 1000) -> PaymentOrder:
+def make_order(user_id: int, gross: int = 1500) -> PaymentOrder:
     credit, platform = calculate_topup(gross)
     return PaymentOrder(
         user_id=user_id, receipt=f"receipt-{user_id}-{gross}", gross_amount_paise=gross,
@@ -33,10 +33,10 @@ def make_order(user_id: int, gross: int = 1000) -> PaymentOrder:
     )
 
 
-def test_ten_rupees_credit_split_is_exact():
-    assert calculate_topup(1000) == (5_000_000, 500)
+def test_fifteen_rupees_credit_split_is_exact():
+    assert calculate_topup(1500) == (7_500_000, 750)
     assert calculate_topup(10_000) == (50_000_000, 5_000)
-    assert calculate_topup(1001) == (5_000_000, 501)  # fractional credit paise goes to platform
+    assert calculate_topup(1501) == (7_500_000, 751)  # fractional credit paise goes to platform
 
 
 def test_public_config_exposes_explicit_mode_and_checkout_boolean(client):
@@ -46,8 +46,8 @@ def test_public_config_exposes_explicit_mode_and_checkout_boolean(client):
     assert body["razorpay_mode"] == "test"
     assert body["checkout_enabled"] is True
     assert body["custom_topup_enabled"] is True
-    assert [item["gross_amount_paise"] for item in body["packages"]] == [1000, 29900]
-    assert body["packages"][0]["credited_amount_micros"] == 5_000_000
+    assert [item["gross_amount_paise"] for item in body["packages"]] == [1500, 29900]
+    assert body["packages"][0]["credited_amount_micros"] == 7_500_000
     assert body["packages"][0]["token_estimate"]["estimated_blended_tokens"] > 0
     estimate = body["packages"][0]["token_estimate"]
     assert estimate["tier"] == "lite"
@@ -64,7 +64,7 @@ def test_public_config_reports_package_enforcement(client, monkeypatch):
     assert response.json()["custom_topup_enabled"] is False
 
 
-@pytest.mark.parametrize("gross", [1000, 29900, 7500])
+@pytest.mark.parametrize("gross", [1500, 29900, 7500])
 def test_topup_estimate_accepts_presets_and_custom_without_charging(client, gross):
     create_test_user()
     response = client.get(
@@ -106,7 +106,7 @@ def test_topup_estimate_uses_selected_tier_and_does_not_require_checkout(client,
 def test_voice_estimate_uses_speech_units_not_tokens(client):
     create_test_user()
     response = client.get(
-        "/api/web/billing/estimate?gross_amount_paise=1000&credit_bucket=voice",
+        "/api/web/billing/estimate?gross_amount_paise=1500&credit_bucket=voice",
         headers=auth_headers("test-uid"),
     )
     assert response.status_code == 200
@@ -155,7 +155,7 @@ def test_checkout_kill_switch_rejects_before_order_or_provider_call(client, monk
         lambda *args, **kwargs: called.update(provider=True),
     )
     response = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
-        "gross_amount_paise": 1000, "idempotency_key": "disabled-checkout",
+        "gross_amount_paise": 1500, "idempotency_key": "disabled-checkout",
     })
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "checkout_disabled"
@@ -177,10 +177,10 @@ def test_checkout_enabled_creates_server_order_before_provider_order(client, mon
     monkeypatch.setenv("BILLING_CHECKOUT_ENABLED", "true")
     monkeypatch.setattr("app.web_api.router.RazorpayClient.create_order", create_provider_order)
     response = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
-        "gross_amount_paise": 1000, "idempotency_key": "enabled-checkout",
+        "gross_amount_paise": 1500, "idempotency_key": "enabled-checkout",
     })
     assert response.status_code == 201
-    assert response.json()["credited_amount_micros"] == 5_000_000
+    assert response.json()["credited_amount_micros"] == 7_500_000
 
 
 def test_order_idempotency_key_cannot_change_credit_bucket(client, monkeypatch):
@@ -190,10 +190,10 @@ def test_order_idempotency_key_cannot_change_credit_bucket(client, monkeypatch):
         lambda _self, amount, _receipt: {"id":"order_bucket", "amount":amount, "currency":"INR"},
     )
     first = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
-        "gross_amount_paise":1000, "credit_bucket":"voice", "idempotency_key":"same-bucket-key",
+        "gross_amount_paise":1500, "credit_bucket":"voice", "idempotency_key":"same-bucket-key",
     })
     changed = client.post("/api/web/billing/orders", headers=auth_headers("test-uid"), json={
-        "gross_amount_paise":1000, "credit_bucket":"chat", "idempotency_key":"same-bucket-key",
+        "gross_amount_paise":1500, "credit_bucket":"chat", "idempotency_key":"same-bucket-key",
     })
     assert first.status_code == 201 and first.json()["credit_bucket"] == "voice"
     assert changed.status_code == 409
@@ -201,7 +201,7 @@ def test_order_idempotency_key_cannot_change_credit_bucket(client, monkeypatch):
         assert session.exec(select(PaymentOrder)).one().credit_bucket == "voice"
 
 
-@pytest.mark.parametrize("gross", [1000, 29900, 2500, 7500, 35000])
+@pytest.mark.parametrize("gross", [1500, 29900, 2500, 7500, 35000])
 def test_order_creation_accepts_presets_and_custom_and_sends_exact_paise(client, monkeypatch, gross):
     create_test_user()
     received: list[int] = []
@@ -257,7 +257,7 @@ def test_credit_and_duplicate_are_idempotent():
     with SessionLocal() as session:
         order = make_order(int(user.id)); session.add(order); session.flush()
         credit_payment_once(session, order); credit_payment_once(session, order); session.commit()
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 7_500_000
         assert get_wallet_summary(session, int(user.id))["token_estimate"]["estimated_blended_tokens"] > 0
         assert len(session.exec(select(WalletLedger).where(WalletLedger.entry_type == "payment_credit")).all()) == 1
 
@@ -267,10 +267,10 @@ def test_reserve_settle_and_release_are_atomic():
     with SessionLocal() as session:
         order = make_order(int(user.id)); session.add(order); session.flush(); credit_payment_once(session, order)
         charge = create_usage_reservation(session, request_id="a" * 36, user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=1_000_000, pricing_snapshot_json="{}")
-        assert get_wallet_summary(session, int(user.id))["available_micros"] == 4_000_000
+        assert get_wallet_summary(session, int(user.id))["available_micros"] == 6_500_000
         settle_usage_reservation(session, request_id=charge.request_id, provider_cost_amount=Decimal("0.25"), provider_cost_currency="INR", provider_cost_micros=250_000, input_tokens=10, cached_input_tokens=0, output_tokens=10, usage_source="estimated", pricing_snapshot_json="{}")
         summary = get_wallet_summary(session, int(user.id))
-        assert summary["balance_micros"] == 4_750_000 and summary["reserved_micros"] == 0
+        assert summary["balance_micros"] == 7_250_000 and summary["reserved_micros"] == 0
         second = create_usage_reservation(session, request_id="b" * 36, user_id=int(user.id), thread_id=None, provider="openai", model="gpt-4o-mini", reserved_micros=500_000, pricing_snapshot_json="{}")
         release_usage_reservation(session, second.request_id)
         assert get_wallet_summary(session, int(user.id))["reserved_micros"] == 0
@@ -344,10 +344,10 @@ def test_full_and_partial_refund_reclaim_credit_without_negative_balance():
     with SessionLocal() as session:
         order = make_order(int(user.id)); session.add(order); session.flush(); credit_payment_once(session, order)
         reverse_credit_for_refund(session, order, 500)
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 2_500_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
         wallet = session.exec(select(__import__('app.models', fromlist=['WalletAccount']).WalletAccount)).one()
         wallet.balance_micros = 1_000_000; session.add(wallet)
-        reverse_credit_for_refund(session, order, 1000)
+        reverse_credit_for_refund(session, order, 1500)
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
         with pytest.raises(InsufficientCreditError):
             create_usage_reservation(session, request_id="d" * 36, user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=1, pricing_snapshot_json="{}")
@@ -363,8 +363,8 @@ def test_payment_history_adds_grant_and_reversal_estimates_without_removing_lega
     response = client.get("/api/web/billing/payments", headers=auth_headers("history-owner", "history@example.com"))
     assert response.status_code == 200
     item = response.json()["items"][0]
-    assert item["credited_amount_micros"] == 5_000_000
-    assert item["platform_share_paise"] == 500
+    assert item["credited_amount_micros"] == 7_500_000
+    assert item["platform_share_paise"] == 750
     assert item["credit_reversal_micros"] == 2_500_000
     assert item["token_estimate"]["estimated_blended_tokens"] > 0
     assert item["reversal_token_estimate"]["estimated_blended_tokens"] > 0
@@ -434,11 +434,11 @@ def test_verify_rejects_bad_provider_state(client, monkeypatch, bad_field, bad_v
     user = create_test_user()
     with SessionLocal() as session:
         order = make_order(int(user.id)); session.add(order); session.commit(); order_id = order.id
-    payment = {"id":"pay_1234", "order_id":f"order_{user.id}_1000", "amount":1000, "currency":"INR", "status":"captured"}
+    payment = {"id":"pay_1234", "order_id":f"order_{user.id}_1500", "amount":1500, "currency":"INR", "status":"captured"}
     payment[bad_field] = bad_value
     monkeypatch.setattr("app.web_api.router.RazorpayClient.fetch_payment", lambda self, payment_id: payment)
-    signature = hmac.new(b"test_checkout_secret", f"order_{user.id}_1000|pay_1234".encode(), hashlib.sha256).hexdigest()
-    response = client.post("/api/web/billing/verify", headers=auth_headers("test-uid", "test@example.com"), json={"internal_order_id":order_id,"razorpay_order_id":f"order_{user.id}_1000","razorpay_payment_id":"pay_1234","razorpay_signature":signature})
+    signature = hmac.new(b"test_checkout_secret", f"order_{user.id}_1500|pay_1234".encode(), hashlib.sha256).hexdigest()
+    response = client.post("/api/web/billing/verify", headers=auth_headers("test-uid", "test@example.com"), json={"internal_order_id":order_id,"razorpay_order_id":f"order_{user.id}_1500","razorpay_payment_id":"pay_1234","razorpay_signature":signature})
     if bad_field == "status":
         assert response.status_code == 200 and response.json()["status"] == "pending"
     else:
@@ -478,7 +478,7 @@ def test_invalid_checkout_signature_never_credits(client):
     user = create_test_user()
     with SessionLocal() as session:
         order = make_order(int(user.id)); session.add(order); session.commit(); order_id = order.id
-    response = client.post("/api/web/billing/verify", headers=auth_headers("test-uid"), json={"internal_order_id":order_id,"razorpay_order_id":f"order_{user.id}_1000","razorpay_payment_id":"pay_1234","razorpay_signature":"0"*64})
+    response = client.post("/api/web/billing/verify", headers=auth_headers("test-uid"), json={"internal_order_id":order_id,"razorpay_order_id":f"order_{user.id}_1500","razorpay_payment_id":"pay_1234","razorpay_signature":"0"*64})
     assert response.status_code == 400
 
 
@@ -492,14 +492,14 @@ def test_duplicate_and_out_of_order_paid_webhooks_credit_once(client):
     user = create_test_user()
     with SessionLocal() as session:
         order = make_order(int(user.id)); session.add(order); session.commit()
-    payment = {"id":"pay_once", "order_id":f"order_{user.id}_1000", "amount":1000, "currency":"INR", "status":"captured"}
+    payment = {"id":"pay_once", "order_id":f"order_{user.id}_1500", "amount":1500, "currency":"INR", "status":"captured"}
     captured = {"event":"payment.captured", "payload":{"payment":{"entity":payment}}}
     assert _webhook(client, "evt-1", captured).status_code == 200
     assert _webhook(client, "evt-1", captured).json()["duplicate"] is True
-    paid = {"event":"order.paid", "payload":{"order":{"entity":{"id":f"order_{user.id}_1000", "amount_paid":1000, "currency":"INR", "status":"paid"}}}}
+    paid = {"event":"order.paid", "payload":{"order":{"entity":{"id":f"order_{user.id}_1500", "amount_paid":1500, "currency":"INR", "status":"paid"}}}}
     assert _webhook(client, "evt-2", paid).status_code == 200
     with SessionLocal() as session:
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 7_500_000
         credits = session.exec(select(WalletLedger).where(WalletLedger.entry_type == "payment_credit")).all()
         assert len(credits) == 1
 
@@ -508,14 +508,14 @@ def test_duplicate_verify_does_not_double_credit(client, monkeypatch):
     user = create_test_user()
     with SessionLocal() as session:
         order = make_order(int(user.id)); session.add(order); session.commit(); order_id = order.id
-    payment = {"id":"pay_repeat", "order_id":f"order_{user.id}_1000", "amount":1000, "currency":"INR", "status":"captured"}
+    payment = {"id":"pay_repeat", "order_id":f"order_{user.id}_1500", "amount":1500, "currency":"INR", "status":"captured"}
     monkeypatch.setattr("app.web_api.router.RazorpayClient.fetch_payment", lambda self, payment_id: payment)
-    signature = hmac.new(b"test_checkout_secret", f"order_{user.id}_1000|pay_repeat".encode(), hashlib.sha256).hexdigest()
-    body = {"internal_order_id":order_id,"razorpay_order_id":f"order_{user.id}_1000","razorpay_payment_id":"pay_repeat","razorpay_signature":signature}
+    signature = hmac.new(b"test_checkout_secret", f"order_{user.id}_1500|pay_repeat".encode(), hashlib.sha256).hexdigest()
+    body = {"internal_order_id":order_id,"razorpay_order_id":f"order_{user.id}_1500","razorpay_payment_id":"pay_repeat","razorpay_signature":signature}
     assert client.post("/api/web/billing/verify", headers=auth_headers("test-uid"), json=body).status_code == 200
     assert client.post("/api/web/billing/verify", headers=auth_headers("test-uid"), json=body).status_code == 200
     with SessionLocal() as session:
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 7_500_000
 
 
 def test_custom_duplicate_verify_and_webhook_credit_only_once(client, monkeypatch):
@@ -556,10 +556,10 @@ def test_partial_then_full_refund_webhooks_reverse_proportionally(client):
     with SessionLocal() as session:
         order = make_order(int(user.id)); order.provider_payment_id = "pay_refund"; session.add(order); session.flush(); credit_payment_once(session, order); session.commit()
     partial = {"event":"refund.processed", "payload":{"refund":{"entity":{"id":"rfnd_1", "payment_id":"pay_refund", "amount":250, "currency":"INR"}}}}
-    full_rest = {"event":"refund.processed", "payload":{"refund":{"entity":{"id":"rfnd_2", "payment_id":"pay_refund", "amount":750, "currency":"INR"}}}}
+    full_rest = {"event":"refund.processed", "payload":{"refund":{"entity":{"id":"rfnd_2", "payment_id":"pay_refund", "amount":1250, "currency":"INR"}}}}
     assert _webhook(client, "refund-1", partial).status_code == 200
     with SessionLocal() as session:
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 3_750_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 6_250_000
     assert _webhook(client, "refund-2", full_rest).status_code == 200
     with SessionLocal() as session:
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
@@ -598,7 +598,7 @@ def test_same_refund_id_under_a_new_event_id_is_idempotent(client):
     assert _webhook(client, "refund-replay-1", payload).status_code == 200
     assert _webhook(client, "refund-replay-2", payload).status_code == 200
     with SessionLocal() as session:
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 3_750_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 6_250_000
         assert len(session.exec(select(WalletLedger).where(WalletLedger.entry_type == "refund_debit")).all()) == 1
 
 
@@ -609,21 +609,21 @@ def test_refund_requires_provider_refund_id(client):
     payload = {"event":"refund.processed", "payload":{"refund":{"entity":{"payment_id":"pay_missing_refund_id", "amount":250, "currency":"INR"}}}}
     assert _webhook(client, "refund-missing-id", payload).status_code == 400
     with SessionLocal() as session:
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 7_500_000
 
 
 def test_out_of_order_refund_links_and_credits_before_reversal(client):
     user = create_test_user()
     with SessionLocal() as session:
         order = make_order(int(user.id)); session.add(order); session.commit()
-    payment = {"id":"pay_early_refund", "order_id":f"order_{user.id}_1000", "amount":1000, "currency":"INR", "status":"captured"}
+    payment = {"id":"pay_early_refund", "order_id":f"order_{user.id}_1500", "amount":1500, "currency":"INR", "status":"captured"}
     payload = {"event":"refund.processed", "payload":{
         "payment":{"entity":payment},
         "refund":{"entity":{"id":"rfnd_early", "payment_id":"pay_early_refund", "amount":500, "currency":"INR"}},
     }}
     assert _webhook(client, "refund-early", payload).status_code == 200
     with SessionLocal() as session:
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 2_500_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
 
 
 def test_webhook_requires_signature_but_not_firebase(client):
@@ -650,7 +650,7 @@ def test_failed_refund_is_recorded_without_reversing_credit(client):
     }}}}
     assert _webhook(client, "refund-failed", payload).status_code == 200
     with SessionLocal() as session:
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 7_500_000
         assert session.exec(select(WalletLedger).where(WalletLedger.entry_type == "refund_debit")).all() == []
 
 
@@ -666,7 +666,7 @@ def test_payment_credit_is_rolled_back_with_database_transaction():
 
 
 @pytest.mark.parametrize("actual,reserved,expected_balance", [
-    (250_000, 500_000, 4_750_000), (500_000, 500_000, 4_500_000), (750_000, 500_000, 4_250_000),
+    (250_000, 500_000, 7_250_000), (500_000, 500_000, 7_000_000), (750_000, 500_000, 6_750_000),
 ])
 def test_settlement_less_equal_and_greater_than_reservation(actual, reserved, expected_balance):
     user = create_test_user()
@@ -685,8 +685,8 @@ def test_provider_overage_is_absorbed_instead_of_making_normal_wallet_negative()
         charge = create_usage_reservation(session, request_id="absorbed-overage", user_id=int(user.id), thread_id=None, provider="sarvam", model="sarvam-30b", reserved_micros=1_000_000, pricing_snapshot_json="{}")
         settled = settle_usage_reservation(session, request_id=charge.request_id, provider_cost_amount=Decimal("8"), provider_cost_currency="INR", provider_cost_micros=8_000_000, input_tokens=10, cached_input_tokens=0, output_tokens=10, usage_source="actual", pricing_snapshot_json="{}")
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
-        assert settled.provider_cost_micros == 8_000_000 and settled.debited_micros == 5_000_000
-        assert json.loads(settled.pricing_snapshot_json)["reconciliation"]["amount_micros"] == 3_000_000
+        assert settled.provider_cost_micros == 8_000_000 and settled.debited_micros == 7_500_000
+        assert json.loads(settled.pricing_snapshot_json)["reconciliation"]["amount_micros"] == 500_000
 
 
 def test_stale_voice_reservation_recovery_uses_original_bucket_and_is_idempotent():
@@ -714,7 +714,7 @@ def test_payment_status_requires_auth_and_enforces_ownership(client):
     assert client.get(f"/api/web/billing/payments/{order_id}", headers=auth_headers("other", "other@example.com")).status_code == 404
     response = client.get(f"/api/web/billing/payments/{order_id}", headers=auth_headers("owner", "owner@example.com"))
     assert response.status_code == 200
-    assert response.json()["gross_amount_paise"] == 1000
+    assert response.json()["gross_amount_paise"] == 1500
     assert "checkout_signature" not in response.json()
 
 
@@ -736,7 +736,7 @@ def test_reconciliation_dry_run_is_non_mutating_and_apply_is_idempotent():
     user = create_test_user()
     with SessionLocal() as session:
         order = make_order(int(user.id)); order.status = "attempted"; order.created_at = utc_now() - timedelta(hours=1); session.add(order); session.commit(); order_id = order.id
-        payment = {"id":"pay_reconcile", "order_id":order.provider_order_id, "amount":1000, "currency":"INR", "status":"captured"}
+        payment = {"id":"pay_reconcile", "order_id":order.provider_order_id, "amount":1500, "currency":"INR", "status":"captured"}
         client = _ReconciliationClient(payment)
         dry_run = reconcile_razorpay_orders(session, client=client, apply=False)[0]
         assert dry_run["action"] == "credit_captured_payment"
@@ -747,10 +747,10 @@ def test_reconciliation_dry_run_is_non_mutating_and_apply_is_idempotent():
         assert order.status == "attempted"
         assert get_wallet_summary(session, int(user.id))["balance_micros"] == 0
         assert reconcile_razorpay_orders(session, client=client, apply=True)[0]["action"] == "credit_captured_payment"
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 7_500_000
         order = session.get(PaymentOrder, order_id); order.created_at = utc_now() - timedelta(hours=1); order.status = "captured"; session.add(order); session.commit()
         reconcile_razorpay_orders(session, client=client, apply=True)
-        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id))["balance_micros"] == 7_500_000
 
 
 def test_voice_reconciliation_and_refund_stay_in_original_bucket():
@@ -763,19 +763,19 @@ def test_voice_reconciliation_and_refund_stay_in_original_bucket():
         session.add(order); session.commit()
         payment = {
             "id":"pay_voice_reconcile", "order_id":order.provider_order_id,
-            "amount":1000, "currency":"INR", "status":"captured",
+            "amount":1500, "currency":"INR", "status":"captured",
         }
         result = reconcile_razorpay_orders(
             session, client=_ReconciliationClient(payment), apply=True,
         )[0]
         assert result["action"] == "credit_captured_payment"
         assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] == 0
-        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["balance_micros"] == 5_000_000
+        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["balance_micros"] == 7_500_000
         assert reverse_credit_for_refund(session, order, 500) == 2_500_000
         session.commit()
         assert get_wallet_summary(session, int(user.id), credit_bucket="chat")["balance_micros"] == 0
-        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["balance_micros"] == 2_500_000
-        assert financial_audit(session)["wallet_totals_by_bucket"]["voice"]["balance_micros"] == 2_500_000
+        assert get_wallet_summary(session, int(user.id), credit_bucket="voice")["balance_micros"] == 5_000_000
+        assert financial_audit(session)["wallet_totals_by_bucket"]["voice"]["balance_micros"] == 5_000_000
 
 
 def test_custom_reconciliation_and_financial_audit_remain_exact_and_clean():
@@ -808,7 +808,7 @@ def test_reconciliation_never_credits_mismatched_capture(field, value):
     user = create_test_user()
     with SessionLocal() as session:
         order = make_order(int(user.id)); order.status = "attempted"; order.created_at = utc_now() - timedelta(hours=1); session.add(order); session.commit()
-        payment = {"id":"pay_reconcile_bad", "order_id":order.provider_order_id, "amount":1000, "currency":"INR", "status":"captured"}
+        payment = {"id":"pay_reconcile_bad", "order_id":order.provider_order_id, "amount":1500, "currency":"INR", "status":"captured"}
         payment[field] = value
         result = reconcile_razorpay_orders(session, client=_ReconciliationClient(payment), apply=True)
         assert result[0]["action"] == "review_provider_mismatch"
@@ -833,7 +833,7 @@ def test_attempted_order_without_captured_payment_is_warning():
     with SessionLocal() as session:
         order = make_order(int(user.id)); order.status = "attempted"; order.created_at = utc_now() - timedelta(hours=1)
         session.add(order); session.commit()
-        authorized = {"id":"pay_pending", "order_id":order.provider_order_id, "amount":1000, "currency":"INR", "status":"authorized"}
+        authorized = {"id":"pay_pending", "order_id":order.provider_order_id, "amount":1500, "currency":"INR", "status":"authorized"}
         result = reconcile_razorpay_orders(session, client=_ReconciliationClient(authorized))[0]
     assert result["action"] == "review_long_lived_attempt"
     assert result["severity"] == "warning" and result["actionable"] is False
@@ -846,7 +846,7 @@ def test_created_order_with_valid_captured_provider_payment_is_actionable():
     with SessionLocal() as session:
         order = make_order(int(user.id)); order.status = "created"; order.created_at = utc_now() - timedelta(hours=1)
         session.add(order); session.commit()
-        payment = {"id":"pay_created_capture", "order_id":order.provider_order_id, "amount":1000, "currency":"INR", "status":"captured"}
+        payment = {"id":"pay_created_capture", "order_id":order.provider_order_id, "amount":1500, "currency":"INR", "status":"captured"}
         result = reconcile_razorpay_orders(session, client=_ReconciliationClient(payment), apply=False)[0]
         session.refresh(order)
     assert result["action"] == "credit_captured_payment"

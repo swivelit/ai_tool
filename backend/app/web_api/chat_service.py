@@ -161,6 +161,25 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _candidate_swico_tier(
+    swico_tier: str,
+    *,
+    answer_class: str,
+    has_attachments: bool,
+    intent: str,
+) -> tuple[str, bool]:
+    downshift = bool(
+        _env_bool("WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED", False)
+        and str(swico_tier).strip().lower() != "lite"
+        and str(answer_class).strip().lower() == "simple"
+        and not has_attachments
+        and str(intent).strip().lower() not in {
+            "coding", "complex_reasoning", "long_form",
+        }
+    )
+    return ("lite" if downshift else swico_tier), downshift
+
+
 def _max_provider_attempts() -> int:
     try:
         configured = os.getenv(
@@ -725,14 +744,20 @@ def prepare_web_turn(
             optimization = with_prompt_estimate(optimization, serialized_prompt)
         input_tokens = optimization.estimated_prompt_tokens
 
-        # Reorder only healthy candidates already admitted by the authoritative
-        # selected Swico tier. Detailed/complex turns remain primary-first.
+        # Reorder healthy candidates within the effective tier. The optional
+        # simple-turn policy may use Lite without changing the user's saved tier.
         if enabled and route.provider == "openai" and swico_tier:
             from ..openai_model_router import OpenAIModelRouter
 
             model_router = OpenAIModelRouter()
+            candidate_tier, simple_turn_downshift = _candidate_swico_tier(
+                swico_tier,
+                answer_class=optimization.answer_class,
+                has_attachments=bool(uploads),
+                intent=route.intent,
+            )
             selections = model_router.select_swico_candidates(
-                swico_tier, model_message, user_tier="paid",
+                candidate_tier, model_message, user_tier="paid",
                 estimated_input_tokens=input_tokens,
                 max_output_tokens=route.max_output_tokens,
                 answer_class=optimization.answer_class,
@@ -745,8 +770,14 @@ def prepare_web_turn(
                 provider_endpoint_candidates=[item.endpoint for item in selections],
                 metadata={
                     **route.metadata,
+                    "model_tier": f"swico_{candidate_tier}",
                     "primary_model_candidate": selection_meta.get("primary_model_candidate") or route.model,
-                    "selected_model_reason": selection_meta.get("selected_model_reason") or "configured_swico_tier_primary_first",
+                    "selected_model_reason": (
+                        "simple_turn_downshift"
+                        if simple_turn_downshift
+                        else selection_meta.get("selected_model_reason")
+                        or "configured_swico_tier_primary_first"
+                    ),
                     "answer_class": optimization.answer_class,
                     "estimated_prompt_tokens": input_tokens,
                 },
@@ -977,13 +1008,20 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         provider_calls_with_usage = int(response.raw.get("provider_calls_with_usage") or 0)
         if response.raw.get("usage_actual") and provider_calls_with_usage <= 0:
             provider_calls_with_usage = 1
+        cached_tokens = int(response.raw.get("cached_input_tokens") or 0)
+        input_tokens = max(0, int(response.input_tokens or 0))
+        cached_input_ratio = (
+            min(max(0, cached_tokens), input_tokens) / input_tokens
+            if input_tokens else 0.0
+        )
         optimization_metrics.update({
             "provider_attempts": provider_attempts,
             "provider_calls_with_usage": provider_calls_with_usage,
             "fallback_attempted": bool(response.raw.get("fallback_attempted")),
             "cache_hit": response.provider == "cache" or bool(response.raw.get("cache_hit")),
             "cache_hit_source": str(response.raw.get("cache_hit_source") or ""),
-            "cached_input_tokens": int(response.raw.get("cached_input_tokens") or 0),
+            "cached_input_tokens": cached_tokens,
+            "cached_input_ratio": cached_input_ratio,
             "cache_write_tokens": int(response.raw.get("cache_write_tokens") or 0),
             "primary_model_candidate": str(
                 response.raw.get("primary_model_candidate")
@@ -1006,7 +1044,6 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
         usage_source = "actual" if bool(response.raw.get("usage_actual")) else "estimated"
         optimization_metrics["usage_source"] = usage_source
         response.raw["usage_source"] = usage_source
-        cached_tokens = int(response.raw.get("cached_input_tokens") or 0)
         price = price_usage(
             response.provider, response.model or "", response.input_tokens,
             response.output_tokens, cached_tokens,
@@ -1134,7 +1171,8 @@ def execute_web_turn(prepared: PreparedWebTurn, *, on_delta: Callable[[str], Non
                         "cache_hit", "cache_hit_source", "estimated_prompt_tokens",
                         "max_output_tokens", "provider_attempts", "provider_calls_with_usage",
                         "fallback_attempted", "reserved_micros", "charged_micros",
-                        "cached_input_tokens", "cache_write_tokens", "primary_model_candidate",
+                        "cached_input_tokens", "cached_input_ratio", "cache_write_tokens",
+                        "primary_model_candidate",
                         "selected_model", "selected_model_reason",
                         "system_prompt_estimated_tokens", "user_message_estimated_tokens",
                         "same_thread_estimated_tokens", "memory_estimated_tokens",

@@ -488,6 +488,36 @@ def test_task_aware_lite_ordering_never_crosses_tier(monkeypatch):
     assert {item.model for item in simple + complex_candidates} == {"gpt-5.4-mini", "gpt-5.4-nano"}
 
 
+def test_pro_simple_turn_downshifts_but_detailed_turn_never_does(monkeypatch):
+    monkeypatch.setenv("WEB_SIMPLE_TURN_TIER_DOWNSHIFT_ENABLED", "true")
+    monkeypatch.setattr("app.web_api.chat_service.selected_swico_tier", lambda *_args: "pro")
+    monkeypatch.setattr("app.web_api.chat_service.create_usage_reservation", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.web_api.chat_service._cache_response", lambda *args: None)
+    user = create_test_user("pro-downshift", "pro-downshift@example.com")
+
+    simple = prepare_web_turn(
+        user_id=int(user.id),
+        message="What is photosynthesis?",
+        request_id="84000000-0000-4000-8000-000000000001",
+        thread_id=None,
+        reply_language="en",
+    )
+    detailed = prepare_web_turn(
+        user_id=int(user.id),
+        message="Design a detailed backend architecture",
+        request_id="84000000-0000-4000-8000-000000000002",
+        thread_id=None,
+        reply_language="en",
+    )
+
+    assert simple.optimization.answer_class == "simple"
+    assert simple.route.metadata["model_tier"] == "swico_lite"
+    assert simple.route.metadata["selected_model_reason"] == "simple_turn_downshift"
+    assert detailed.optimization.answer_class == "detailed"
+    assert detailed.route.metadata["model_tier"] == "swico_pro"
+    assert detailed.route.metadata["selected_model_reason"] != "simple_turn_downshift"
+
+
 class _Stream:
     def __init__(self, values):
         self.values = iter(values)
@@ -669,7 +699,12 @@ def test_exact_full_prompt_estimate_drives_reservation_and_metadata(client, monk
             text="answer", provider="openai", model=route.model, route=route.route,
             reason=route.reason, language="en", intent=route.intent,
             input_tokens=20, output_tokens=3,
-            raw={"usage_actual": True, "provider_attempts": 1, "provider_calls_with_usage": 1},
+            raw={
+                "usage_actual": True,
+                "provider_attempts": 1,
+                "provider_calls_with_usage": 1,
+                "cached_input_tokens": 5,
+            },
         )
 
     monkeypatch.setattr(service, "reserve_price", reserve)
@@ -688,6 +723,7 @@ def test_exact_full_prompt_estimate_drives_reservation_and_metadata(client, monk
         metadata = json.loads(assistant.metadata_json)
         assert metadata["estimated_prompt_tokens"] == exact
         assert metadata["provider_attempts"] == 1
+        assert metadata["cached_input_ratio"] == 0.25
         serialized = assistant.metadata_json.lower()
         assert "profile_context" not in serialized
         assert "attachment_prompt_context" not in serialized
